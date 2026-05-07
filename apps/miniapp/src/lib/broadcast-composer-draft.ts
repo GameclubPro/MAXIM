@@ -1,4 +1,4 @@
-import type { BroadcastLinkButton, BroadcastTargetMode } from '@maxim/contracts';
+import type { BroadcastImage, BroadcastLinkButton, BroadcastTargetMode } from '@maxim/contracts';
 import {
   normalizeBroadcastCycleDraft,
   normalizeBroadcastTimingMode,
@@ -19,6 +19,7 @@ export type BroadcastComposerDraft = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  images: BroadcastImage[];
   timingMode: BroadcastTimingMode;
   scheduledSlots: string[];
   scheduleTimezone: string;
@@ -96,22 +97,71 @@ function readButtons(value: unknown): BroadcastLinkButton[] {
     .filter((item): item is BroadcastLinkButton => item !== null);
 }
 
+function readImages(value: unknown): BroadcastImage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      if (!isObject(item)) {
+        return null;
+      }
+
+      const base64 = readString(item.base64).trim();
+      if (!base64) {
+        return null;
+      }
+
+      return {
+        base64,
+        mimeType: readString(item.mimeType).trim(),
+        fileName: readString(item.fileName).trim(),
+      };
+    })
+    .filter((item): item is BroadcastImage => item !== null)
+    .slice(0, 10);
+}
+
+function resolveDraftImages(draft: Record<string, unknown>): BroadcastImage[] {
+  const images = readImages(draft.images);
+  if (images.length > 0) {
+    return images;
+  }
+
+  const imageBase64 = readString(draft.imageBase64).trim();
+  if (!imageBase64) {
+    return [];
+  }
+
+  return [
+    {
+      base64: imageBase64,
+      mimeType: readString(draft.imageMimeType).trim(),
+      fileName: readString(draft.imageFileName).trim(),
+    },
+  ];
+}
+
 function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerDraft | null {
   if (!isObject(value) || value.version !== STORAGE_VERSION || !isObject(value.draft)) {
     return null;
   }
 
   const draft = value.draft;
+  const images = resolveDraftImages(draft);
+  const firstImage = images[0];
   return {
     text: readString(draft.text),
     targetMode: readTargetMode(draft.targetMode, 'current'),
     targetChatIds: readStringArray(draft.targetChatIds),
     lastScopedTargetMode: readScopedMode(draft.lastScopedTargetMode, 'current'),
     buttons: readButtons(draft.buttons),
-    imageEnabled: draft.imageEnabled === true,
-    imageBase64: readString(draft.imageBase64),
-    imageMimeType: readString(draft.imageMimeType),
-    imageFileName: readString(draft.imageFileName),
+    imageEnabled: images.length > 0,
+    imageBase64: firstImage?.base64 ?? '',
+    imageMimeType: firstImage?.mimeType ?? '',
+    imageFileName: firstImage?.fileName ?? '',
+    images,
     timingMode: readTimingMode(draft.timingMode, draft.quickPreset),
     scheduledSlots: readStringArray(draft.scheduledSlots),
     scheduleTimezone: readString(draft.scheduleTimezone),
@@ -225,10 +275,14 @@ export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): bo
     draft.targetChatIds.length <= 1 &&
     draft.lastScopedTargetMode === 'current' &&
     draft.buttons.length === 0 &&
-    !draft.imageEnabled &&
+    draft.images.length === 0 &&
     draft.timingMode === 'scheduled' &&
     draft.scheduledSlots.length === 0
   );
+}
+
+function getDraftImagesBase64Length(draft: BroadcastComposerDraft): number {
+  return draft.images.reduce((total, image) => total + image.base64.length, 0);
 }
 
 export function saveBroadcastComposerDraft(
@@ -254,13 +308,15 @@ export function saveBroadcastComposerDraft(
       draft,
     };
     const localDraft =
-      draft.imageEnabled && draft.imageBase64.length > LOCAL_STORAGE_IMAGE_BASE64_LIMIT
+      draft.images.length > 0 &&
+      getDraftImagesBase64Length(draft) > LOCAL_STORAGE_IMAGE_BASE64_LIMIT
         ? {
             ...draft,
             imageEnabled: false,
             imageBase64: '',
             imageMimeType: '',
             imageFileName: '',
+            images: [],
           }
         : draft;
 

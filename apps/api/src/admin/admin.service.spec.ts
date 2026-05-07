@@ -1285,9 +1285,9 @@ describe('AdminService managed bot chat catalog', () => {
     service.managedEntitiesDiscoveryHeaderPrimeRuns = new Map();
     service.managedEntitiesCatalogSyncCursorByScope = new Map();
     service.maxBotRegistry = {
-      getBotById: jest.fn().mockImplementation((botId: string | null | undefined) =>
-        botId ? { id: botId } : null,
-      ),
+      getBotById: jest
+        .fn()
+        .mockImplementation((botId: string | null | undefined) => (botId ? { id: botId } : null)),
       getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
     };
     service.prisma = {
@@ -1348,9 +1348,9 @@ describe('AdminService managed bot chat catalog', () => {
   it('keeps all-bot discovery failure visible when no bot has remote or catalog data', async () => {
     const service = createBareAdminServiceForCatalogTests();
     service.maxBotRegistry = {
-      getBotById: jest.fn().mockImplementation((botId: string | null | undefined) =>
-        botId ? { id: botId } : null,
-      ),
+      getBotById: jest
+        .fn()
+        .mockImplementation((botId: string | null | undefined) => (botId ? { id: botId } : null)),
       getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
     };
     service.prisma = {
@@ -19932,6 +19932,101 @@ describe('AdminService.sendChannelBroadcast', () => {
         }),
       }),
     });
+  });
+
+  it('sends immediate channel broadcast with image gallery attachments', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: false,
+      postSuggestionsButtonText: 'Предложить пост',
+      commentsEnabled: false,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest
+        .fn()
+        .mockResolvedValueOnce({ token: 'upload-token-gallery-1' })
+        .mockResolvedValueOnce({ token: 'upload-token-gallery-2' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Галерея недели',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        images: [
+          {
+            base64: Buffer.from('gallery-image-1').toString('base64'),
+            mimeType: 'image/jpeg',
+            fileName: 'gallery-1.jpg',
+          },
+          {
+            base64: Buffer.from('gallery-image-2').toString('base64'),
+            mimeType: 'image/jpeg',
+            fileName: 'gallery-2.jpg',
+          },
+        ],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'Галерея недели',
+      {
+        attachments: [
+          {
+            type: 'image',
+            payload: { token: 'upload-token-gallery-1' },
+          },
+          {
+            type: 'image',
+            payload: { token: 'upload-token-gallery-2' },
+          },
+        ],
+      },
+      { immediate: true },
+    );
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
   });
 
   it('sends immediate broadcast to channel with a video attachment', async () => {

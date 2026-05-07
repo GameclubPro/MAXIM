@@ -65,6 +65,8 @@ import {
   type ResolveRequiredSubscriptionChannelResponse,
   type UpdateManagedGiveawayRequest,
   type BroadcastLinkButton,
+  type BroadcastImage,
+  type BroadcastMediaType,
   type BroadcastTargetMode,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
@@ -100,7 +102,8 @@ export type SendBroadcastPayload = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
-  mediaType?: 'video' | null;
+  images?: BroadcastImage[];
+  mediaType?: BroadcastMediaType | null;
   mediaPayload?: Record<string, unknown> | null;
   mediaMimeType?: string;
   mediaFileName?: string;

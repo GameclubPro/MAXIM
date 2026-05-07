@@ -805,15 +805,19 @@ function participantMatchesSearch(item: ChatParticipantItem, search: string): bo
 }
 
 function buildBroadcastSummary(details: ManagedBroadcastDetails) {
+  const imageCount = details.images.length || (details.imageEnabled ? 1 : 0);
   return {
     id: details.id,
     status: details.status,
-    textPreview: details.text.trim().slice(0, 120) || 'Пустой автопостинг',
+    textPreview:
+      details.text.trim().slice(0, 120) ||
+      (imageCount > 0 ? 'Фото без текста' : 'Пустой автопостинг'),
     textLength: details.text.length,
     targetMode: details.targetMode,
     applyToAllChats: details.applyToAllChats,
     targetChats: details.targetChatIds.length || 1,
-    hasImage: details.imageEnabled,
+    hasImage: imageCount > 0,
+    imageCount,
     hasVideo: details.mediaType === 'video',
     buttons: details.buttons,
     buttonEnabled: details.buttonEnabled,

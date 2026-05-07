@@ -1,5 +1,7 @@
 import type {
   BroadcastLinkButton,
+  BroadcastImage,
+  BroadcastMediaType,
   BroadcastScheduleMode,
   BroadcastTargetMode,
   BroadcastTextFormat,
@@ -21,7 +23,8 @@ export type SendBroadcastPayload = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
-  mediaType?: 'video' | null;
+  images?: BroadcastImage[];
+  mediaType?: BroadcastMediaType | null;
   mediaPayload?: Record<string, unknown> | null;
   mediaMimeType?: string;
   mediaFileName?: string;

@@ -91,7 +91,7 @@ export const managedGiveawayWinnerStatusSchema = z.enum([
 ]);
 export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
 export const broadcastTargetModeSchema = z.enum(['current', 'selected', 'all']);
-export const broadcastMediaTypeSchema = z.enum(['video']);
+export const broadcastMediaTypeSchema = z.enum(['image', 'video']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
@@ -130,7 +130,9 @@ export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
 export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
+export const MAX_BROADCAST_IMAGES = 10;
 export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
+export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 export const DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES = 0.5;
 export const DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES = 60;
 export const DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES = 2;
@@ -191,6 +193,102 @@ export const broadcastLinkButtonSchema = z
     }
   });
 export type BroadcastLinkButton = z.infer<typeof broadcastLinkButtonSchema>;
+export const broadcastImageSchema = z
+  .object({
+    base64: z.string().trim().max(MAX_BROADCAST_IMAGE_BASE64_LENGTH).default(''),
+    mimeType: z.string().trim().max(128).default(''),
+    fileName: z.string().trim().max(128).default(''),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.base64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['base64'],
+        message: 'Добавьте фото.',
+      });
+    }
+
+    if (!value.mimeType.trim() || !value.mimeType.toLowerCase().startsWith('image/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mimeType'],
+        message: 'Неверный формат фото.',
+      });
+    }
+  });
+export type BroadcastImage = z.infer<typeof broadcastImageSchema>;
+
+function isRecordPayload(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readBroadcastImagePayload(value: unknown): BroadcastImage | null {
+  if (!isRecordPayload(value)) {
+    return null;
+  }
+
+  const base64 = typeof value.base64 === 'string' ? value.base64.trim() : '';
+  if (!base64) {
+    return null;
+  }
+
+  return {
+    base64,
+    mimeType: typeof value.mimeType === 'string' ? value.mimeType.trim() : '',
+    fileName: typeof value.fileName === 'string' ? value.fileName.trim() : '',
+  };
+}
+
+function readBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
+  if (!isRecordPayload(value) || !Array.isArray(value.images)) {
+    return [];
+  }
+
+  return value.images
+    .map((item) => readBroadcastImagePayload(item))
+    .filter((image): image is BroadcastImage => image !== null)
+    .slice(0, MAX_BROADCAST_IMAGES);
+}
+
+function normalizeBroadcastImages(value: {
+  images?: BroadcastImage[];
+  imageBase64?: string;
+  imageMimeType?: string;
+  imageFileName?: string;
+  mediaType?: BroadcastMediaType | null;
+  mediaPayload?: Record<string, unknown> | null;
+}): BroadcastImage[] {
+  const explicitImages = Array.isArray(value.images)
+    ? value.images.filter((image) => image.base64.trim().length > 0)
+    : [];
+  if (explicitImages.length > 0) {
+    return explicitImages.slice(0, MAX_BROADCAST_IMAGES);
+  }
+
+  const payloadImages =
+    value.mediaType === 'image' ? readBroadcastMediaPayloadImages(value.mediaPayload) : [];
+  if (payloadImages.length > 0) {
+    return payloadImages;
+  }
+
+  const imageBase64 = value.imageBase64?.trim() ?? '';
+  if (!imageBase64) {
+    return [];
+  }
+
+  return [
+    {
+      base64: imageBase64,
+      mimeType: value.imageMimeType?.trim() ?? '',
+      fileName: value.imageFileName?.trim() ?? '',
+    },
+  ];
+}
+
+function getBroadcastImagesTotalBase64Length(images: BroadcastImage[]): number {
+  return images.reduce((total, image) => total + image.base64.trim().length, 0);
+}
+
 const storedLinkButtonDraftSchema = z.object({
   text: botButtonTextSchema,
   url: botButtonUrlSchema,
@@ -2937,6 +3035,7 @@ export const sendBroadcastRequestSchema = z
     imageBase64: z.string().trim().max(MAX_BROADCAST_IMAGE_BASE64_LENGTH).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
+    images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
     mediaType: broadcastMediaTypeSchema.nullable().default(null),
     mediaPayload: z.record(z.unknown()).nullable().default(null),
     mediaMimeType: z.string().trim().max(128).default(''),
@@ -2967,12 +3066,20 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    const hasMediaPayload =
+    const images = normalizeBroadcastImages(value);
+    const hasImages = images.length > 0;
+    const hasVideoPayload =
       value.mediaType === 'video' &&
       value.mediaPayload !== null &&
       Object.keys(value.mediaPayload).length > 0;
+    const hasImagePayload =
+      value.mediaType === 'image' &&
+      value.mediaPayload !== null &&
+      readBroadcastMediaPayloadImages(value.mediaPayload).length > 0;
+    const hasMediaPayload =
+      hasVideoPayload || hasImagePayload || (value.mediaType === 'image' && hasImages);
 
-    if (value.text.trim().length === 0 && !value.imageEnabled && !hasMediaPayload) {
+    if (value.text.trim().length === 0 && !hasImages && !hasVideoPayload) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['text'],
@@ -2980,7 +3087,7 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.imageEnabled && hasMediaPayload) {
+    if (hasImages && hasVideoPayload) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['mediaType'],
@@ -2992,7 +3099,7 @@ export const sendBroadcastRequestSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['mediaPayload'],
-        message: 'Видео автопостинга не загружено.',
+        message: 'Медиа автопостинга не загружено.',
       });
     }
 
@@ -3020,22 +3127,38 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.imageEnabled) {
-      if (!value.imageBase64.trim()) {
+    if (value.imageEnabled && !hasImages) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['imageBase64'],
+        message: 'Добавьте фото для автопостинга.',
+      });
+    }
+
+    images.forEach((image, index) => {
+      if (!image.base64.trim()) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['imageBase64'],
-          message: 'Добавьте фото для автопостинга.',
+          path: ['images', index, 'base64'],
+          message: 'Добавьте фото.',
         });
       }
 
-      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+      if (!image.mimeType.trim() || !image.mimeType.toLowerCase().startsWith('image/')) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['imageMimeType'],
+          path: ['images', index, 'mimeType'],
           message: 'Неверный формат фото.',
         });
       }
+    });
+
+    if (getBroadcastImagesTotalBase64Length(images) > MAX_BROADCAST_IMAGES_TOTAL_BASE64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['images'],
+        message: 'Суммарный размер фото слишком большой.',
+      });
     }
 
     if (value.scheduleMode === 'calendar') {
@@ -3068,10 +3191,13 @@ export const sendBroadcastRequestSchema = z
     const buttons = resolveBroadcastLinkButtons(value);
     const primaryButton = buttons[0];
     const targetMode = resolveBroadcastTargetMode(value);
-    const hasMediaPayload =
+    const images = normalizeBroadcastImages(value);
+    const hasVideoPayload =
       value.mediaType === 'video' &&
       value.mediaPayload !== null &&
       Object.keys(value.mediaPayload).length > 0;
+    const hasImageGallery = !hasVideoPayload && images.length > 1;
+    const firstImage = !hasVideoPayload ? images[0] : undefined;
 
     return {
       ...value,
@@ -3082,14 +3208,15 @@ export const sendBroadcastRequestSchema = z
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
       buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-      imageEnabled: hasMediaPayload ? false : value.imageEnabled,
-      imageBase64: hasMediaPayload || !value.imageEnabled ? '' : value.imageBase64,
-      imageMimeType: hasMediaPayload || !value.imageEnabled ? '' : value.imageMimeType,
-      imageFileName: hasMediaPayload || !value.imageEnabled ? '' : value.imageFileName,
-      mediaType: hasMediaPayload ? value.mediaType : null,
-      mediaPayload: hasMediaPayload ? value.mediaPayload : null,
-      mediaMimeType: hasMediaPayload ? value.mediaMimeType.trim() : '',
-      mediaFileName: hasMediaPayload ? value.mediaFileName.trim() : '',
+      imageEnabled: Boolean(firstImage),
+      imageBase64: firstImage?.base64 ?? '',
+      imageMimeType: firstImage?.mimeType ?? '',
+      imageFileName: firstImage?.fileName ?? '',
+      images: hasVideoPayload ? [] : images,
+      mediaType: hasVideoPayload ? 'video' : hasImageGallery ? 'image' : null,
+      mediaPayload: hasVideoPayload ? value.mediaPayload : hasImageGallery ? { images } : null,
+      mediaMimeType: hasVideoPayload ? value.mediaMimeType.trim() : '',
+      mediaFileName: hasVideoPayload ? value.mediaFileName.trim() : '',
       cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
       scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
     };
@@ -3286,6 +3413,7 @@ export const managedBroadcastSummarySchema = z.object({
   applyToAllChats: z.boolean(),
   targetChats: z.number().int().min(1),
   hasImage: z.boolean(),
+  imageCount: z.number().int().min(0).default(0),
   hasVideo: z.boolean().default(false),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
@@ -3327,6 +3455,7 @@ export const managedBroadcastDetailsSchema = z.object({
   imageBase64: z.string(),
   imageMimeType: z.string(),
   imageFileName: z.string(),
+  images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
   mediaType: broadcastMediaTypeSchema.nullable().default(null),
   mediaPayload: z.record(z.unknown()).nullable().default(null),
   mediaMimeType: z.string().default(''),

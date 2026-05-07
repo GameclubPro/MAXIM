@@ -11,6 +11,7 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
+  type BroadcastImage,
   type BroadcastLinkButton,
   type BroadcastTargetMode,
   chatRulesSchema,
@@ -196,6 +197,40 @@ type PendingBroadcastPublishReview = {
   broadcastId: string | null;
   payload: SendBroadcastPayload;
 };
+
+function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
+  return images.filter((image) => image.base64.trim()).slice(0, 10);
+}
+
+function resolveBroadcastImagesFromLegacyFields(value: {
+  imageEnabled?: boolean;
+  imageBase64?: string | null;
+  imageMimeType?: string | null;
+  imageFileName?: string | null;
+  images?: BroadcastImage[] | null;
+}): BroadcastImage[] {
+  const images = normalizeBroadcastImageList(value.images ?? []);
+  const imageBase64 = value.imageBase64?.trim() ?? '';
+  if (images.length > 0 || !value.imageEnabled || !imageBase64) {
+    return images;
+  }
+
+  return [
+    {
+      base64: imageBase64,
+      mimeType: value.imageMimeType?.trim() ?? '',
+      fileName: value.imageFileName?.trim() ?? '',
+    },
+  ];
+}
+
+function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
+  return (
+    images.length > 0 &&
+    images.every((image) => image.base64 && image.mimeType.toLowerCase().startsWith('image/'))
+  );
+}
+
 type DeleteDelayStepperProps = {
   title: string;
   value: number;
@@ -1533,7 +1568,11 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
         : '1 отправка';
   const extras = [
     broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
-    broadcast.hasImage ? 'Фото' : null,
+    broadcast.hasImage
+      ? broadcast.imageCount > 1
+        ? `${broadcast.imageCount} фото`
+        : 'Фото'
+      : null,
     broadcast.hasVideo ? 'Видео' : null,
   ]
     .filter((item): item is string => Boolean(item))
@@ -2161,6 +2200,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageBase64, setMailingImageBase64] = useState('');
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
   const [mailingImageFileName, setMailingImageFileName] = useState('');
+  const [mailingImages, setMailingImages] = useState<BroadcastImage[]>([]);
   const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
   const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('now');
@@ -2189,6 +2229,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState('');
   const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
     useState('');
+
+  function applyMailingImages(nextImages: BroadcastImage[]) {
+    const normalizedImages = normalizeBroadcastImageList(nextImages);
+    const firstImage = normalizedImages[0];
+    setMailingImages(normalizedImages);
+    setMailingImageEnabled(normalizedImages.length > 0);
+    setMailingImageBase64(firstImage?.base64 ?? '');
+    setMailingImageMimeType(firstImage?.mimeType ?? '');
+    setMailingImageFileName(firstImage?.fileName ?? '');
+  }
 
   useEffect(() => {
     const { body } = document;
@@ -2315,10 +2365,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingText('');
     setMailingButtons([]);
     setMailingButtonsSheetOpen(false);
-    setMailingImageEnabled(false);
-    setMailingImageBase64('');
-    setMailingImageMimeType('');
-    setMailingImageFileName('');
+    applyMailingImages([]);
     setMailingVideoCleared(false);
     setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());
@@ -2358,10 +2405,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingLastScopedTargetMode(savedBroadcastDraft.lastScopedTargetMode);
       setMailingText(savedBroadcastDraft.text);
       setMailingButtons(savedBroadcastDraft.buttons);
-      setMailingImageEnabled(savedBroadcastDraft.imageEnabled);
-      setMailingImageBase64(savedBroadcastDraft.imageBase64);
-      setMailingImageMimeType(savedBroadcastDraft.imageMimeType);
-      setMailingImageFileName(savedBroadcastDraft.imageFileName);
+      applyMailingImages(resolveBroadcastImagesFromLegacyFields(savedBroadcastDraft));
       setMailingTimingMode(savedBroadcastDraft.timingMode);
       setMailingCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setMailingScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
@@ -2773,6 +2817,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: mailingImageBase64,
       imageMimeType: mailingImageMimeType,
       imageFileName: mailingImageFileName,
+      images: mailingImages,
       timingMode: mailingTimingMode,
       scheduledSlots: mailingScheduledSlots,
       scheduleTimezone: mailingScheduleTimezone,
@@ -2789,6 +2834,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingImageEnabled,
     mailingImageFileName,
     mailingImageMimeType,
+    mailingImages,
     mailingLastScopedTargetMode,
     mailingScheduleTimezone,
     mailingScheduledSlots,
@@ -3414,10 +3460,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingAudienceError('');
     setMailingText(broadcast.text);
     setMailingButtons(broadcast.buttons);
-    setMailingImageEnabled(broadcast.imageEnabled);
-    setMailingImageBase64(broadcast.imageBase64);
-    setMailingImageMimeType(broadcast.imageMimeType);
-    setMailingImageFileName(broadcast.imageFileName);
+    applyMailingImages(resolveBroadcastImagesFromLegacyFields(broadcast));
     setMailingVideoCleared(false);
     const restoredTimingMode: BroadcastTimingMode =
       broadcast.scheduleMode === 'calendar'
@@ -4635,6 +4678,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
       imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
       imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      images: mailingImageEnabled ? mailingImages : [],
       mediaType: keepVideoMedia ? 'video' : null,
       mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
       mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
@@ -4730,6 +4774,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       !mailingImageEnabled &&
       videoSource?.mediaType === 'video' &&
       videoSource.mediaPayload;
+    const mailingImagesReady = areBroadcastImagesReady(mailingImages);
     const hasDirectContent = Boolean(normalizedText || mailingImageEnabled || keepVideoMedia);
     if (editingManagedBroadcast) {
       if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
@@ -4743,7 +4788,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
 
       if (mailingImageEnabled) {
-        if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+        if (!mailingImagesReady) {
           setMailingImageError('В сохранённом автопостинге отсутствует фото.');
           hasError = true;
         } else {
@@ -4764,7 +4809,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
 
       if (mailingImageEnabled) {
-        if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+        if (!mailingImagesReady) {
           setMailingImageError('Фото не готово.');
           hasError = true;
         } else {
@@ -4820,6 +4865,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
       imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
       imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      images: mailingImageEnabled ? mailingImages : [],
       mediaType: keepVideoMedia ? 'video' : null,
       mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
       mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
@@ -4844,6 +4890,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       !mailingImageEnabled &&
       videoSource?.mediaType === 'video' &&
       videoSource.mediaPayload;
+    const mailingImagesReady = areBroadcastImagesReady(mailingImages);
     let hasError = false;
 
     if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
@@ -4857,7 +4904,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (mailingImageEnabled) {
-      if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+      if (!mailingImagesReady) {
         setMailingImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -5754,6 +5801,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingVideoCleared &&
     mailingVideoSource?.mediaType === 'video' &&
     Boolean(mailingVideoSource.mediaPayload);
+  const mailingImageLabel =
+    mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
@@ -5848,7 +5897,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           : mailingSelectionSummary || 'Автопостинг';
   const mailingFooterMeta = [
     mailingHeaderTargetLabel,
-    mailingImageEnabled ? 'Фото' : null,
+    mailingImageLabel,
     editingMailingHasVideo ? 'Видео' : null,
     mailingButtonEnabled ? formatBroadcastButtonsStatus(normalizedMailingButtons) : null,
   ]
@@ -5875,8 +5924,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     {
       label: 'Контент',
       value: mailingHasPublishableContent
-        ? mailingImageEnabled || editingMailingHasVideo
-          ? 'Медиа'
+        ? mailingImageLabel || editingMailingHasVideo
+          ? mailingImageLabel || 'Видео'
           : `${normalizedMailingText.length}/2000`
         : 'Пусто',
       tone: mailingHasPublishableContent ? 'ready' : 'pending',
@@ -10768,12 +10817,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <LazyBroadcastContentComposer
                                     text={mailingText}
                                     maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                                    image={{
-                                      enabled: mailingImageEnabled,
-                                      base64: mailingImageBase64,
-                                      mimeType: mailingImageMimeType,
-                                      fileName: mailingImageFileName,
-                                    }}
+                                    images={mailingImages}
                                     videoLabel={editingMailingHasVideo ? 'Видео' : null}
                                     disabled={isMailingBusy}
                                     textError={mailingTextError}
@@ -10784,12 +10828,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         setMailingTextError('');
                                       }
                                     }}
-                                    onImageChange={(nextImage) => {
-                                      setMailingImageEnabled(nextImage.enabled);
-                                      setMailingImageBase64(nextImage.base64);
-                                      setMailingImageMimeType(nextImage.mimeType);
-                                      setMailingImageFileName(nextImage.fileName);
-                                      if (nextImage.enabled) {
+                                    onImagesChange={(nextImages) => {
+                                      applyMailingImages(nextImages);
+                                      if (nextImages.length > 0) {
                                         setMailingVideoCleared(true);
                                       }
                                       setMailingImageError('');

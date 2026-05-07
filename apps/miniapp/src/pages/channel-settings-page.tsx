@@ -1,11 +1,12 @@
-import type {
-  BroadcastLinkButton,
-  ChannelAutoPostButtonsMode,
-  ChannelSettings,
-  ChannelSettingsScreenResponse,
-  ChannelSuggestionEntryMode,
-  ManagedBroadcastDetails,
-  SendBroadcastResult,
+import {
+  type BroadcastImage,
+  type BroadcastLinkButton,
+  type ChannelAutoPostButtonsMode,
+  type ChannelSettings,
+  type ChannelSettingsScreenResponse,
+  type ChannelSuggestionEntryMode,
+  type ManagedBroadcastDetails,
+  type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
@@ -112,6 +113,39 @@ type PendingBroadcastPublishReview = {
   broadcastId: string | null;
   payload: SendBroadcastPayload;
 };
+
+function normalizeBroadcastImageList(images: BroadcastImage[]): BroadcastImage[] {
+  return images.filter((image) => image.base64.trim()).slice(0, 10);
+}
+
+function resolveBroadcastImagesFromLegacyFields(value: {
+  imageEnabled?: boolean;
+  imageBase64?: string | null;
+  imageMimeType?: string | null;
+  imageFileName?: string | null;
+  images?: BroadcastImage[] | null;
+}): BroadcastImage[] {
+  const images = normalizeBroadcastImageList(value.images ?? []);
+  const imageBase64 = value.imageBase64?.trim() ?? '';
+  if (images.length > 0 || !value.imageEnabled || !imageBase64) {
+    return images;
+  }
+
+  return [
+    {
+      base64: imageBase64,
+      mimeType: value.imageMimeType?.trim() ?? '',
+      fileName: value.imageFileName?.trim() ?? '',
+    },
+  ];
+}
+
+function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
+  return (
+    images.length > 0 &&
+    images.every((image) => image.base64 && image.mimeType.toLowerCase().startsWith('image/'))
+  );
+}
 
 type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
 type ChannelSettingsHintKey =
@@ -558,7 +592,11 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
         : '1 отправка';
   const extras = [
     broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
-    broadcast.hasImage ? 'Фото' : null,
+    broadcast.hasImage
+      ? broadcast.imageCount > 1
+        ? `${broadcast.imageCount} фото`
+        : 'Фото'
+      : null,
     broadcast.hasVideo ? 'Видео' : null,
   ]
     .filter((item): item is string => Boolean(item))
@@ -790,6 +828,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
+  const [broadcastImages, setBroadcastImages] = useState<BroadcastImage[]>([]);
   const [broadcastVideoCleared, setBroadcastVideoCleared] = useState(false);
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
   const [broadcastTimingMode, setBroadcastTimingMode] = useState<BroadcastTimingMode>('now');
@@ -834,6 +873,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
+
+  function applyBroadcastImages(nextImages: BroadcastImage[]) {
+    const normalizedImages = normalizeBroadcastImageList(nextImages);
+    const firstImage = normalizedImages[0];
+    setBroadcastImages(normalizedImages);
+    setBroadcastImageEnabled(normalizedImages.length > 0);
+    setBroadcastImageBase64(firstImage?.base64 ?? '');
+    setBroadcastImageMimeType(firstImage?.mimeType ?? '');
+    setBroadcastImageFileName(firstImage?.fileName ?? '');
+  }
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
@@ -1009,10 +1058,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastButtons([]);
     setBroadcastButtonsSheetOpen(false);
     setBroadcastButtonErrors([]);
-    setBroadcastImageEnabled(false);
-    setBroadcastImageBase64('');
-    setBroadcastImageMimeType('');
-    setBroadcastImageFileName('');
+    applyBroadcastImages([]);
     setBroadcastVideoCleared(false);
     setBroadcastTimingMode('now');
     setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
@@ -1039,10 +1085,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       setBroadcastText(savedBroadcastDraft.text);
       setBroadcastButtons(savedBroadcastDraft.buttons);
-      setBroadcastImageEnabled(savedBroadcastDraft.imageEnabled);
-      setBroadcastImageBase64(savedBroadcastDraft.imageBase64);
-      setBroadcastImageMimeType(savedBroadcastDraft.imageMimeType);
-      setBroadcastImageFileName(savedBroadcastDraft.imageFileName);
+      applyBroadcastImages(resolveBroadcastImagesFromLegacyFields(savedBroadcastDraft));
       setBroadcastTimingMode(savedBroadcastDraft.timingMode);
       setBroadcastCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
@@ -1083,6 +1126,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: broadcastImageBase64,
       imageMimeType: broadcastImageMimeType,
       imageFileName: broadcastImageFileName,
+      images: broadcastImages,
       timingMode: broadcastTimingMode,
       scheduledSlots: broadcastScheduledSlots,
       scheduleTimezone: broadcastScheduleTimezone,
@@ -1097,6 +1141,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastImageEnabled,
     broadcastImageFileName,
     broadcastImageMimeType,
+    broadcastImages,
     broadcastScheduleTimezone,
     broadcastScheduledSlots,
     broadcastText,
@@ -1511,10 +1556,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastText(broadcast.text);
     setBroadcastButtons(broadcast.buttons);
     setBroadcastButtonErrors([]);
-    setBroadcastImageEnabled(broadcast.imageEnabled);
-    setBroadcastImageBase64(broadcast.imageBase64);
-    setBroadcastImageMimeType(broadcast.imageMimeType);
-    setBroadcastImageFileName(broadcast.imageFileName);
+    applyBroadcastImages(resolveBroadcastImagesFromLegacyFields(broadcast));
     setBroadcastVideoCleared(false);
     const restoredTimingMode: BroadcastTimingMode =
       broadcast.scheduleMode === 'calendar'
@@ -1731,7 +1773,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           : 'Кнопки · нет',
         pendingBroadcastReviewPayload.imageEnabled ||
         pendingBroadcastReviewPayload.mediaType === 'video'
-          ? 'Медиа'
+          ? pendingBroadcastReviewPayload.images && pendingBroadcastReviewPayload.images.length > 1
+            ? `${pendingBroadcastReviewPayload.images.length} фото`
+            : 'Медиа'
           : null,
       ].filter((item): item is string => Boolean(item))
     : [];
@@ -1758,6 +1802,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     !broadcastVideoCleared &&
     broadcastVideoSource?.mediaType === 'video' &&
     Boolean(broadcastVideoSource.mediaPayload);
+  const broadcastImageLabel =
+    broadcastImages.length > 1
+      ? `${broadcastImages.length} фото`
+      : broadcastImageEnabled
+        ? 'Фото'
+        : null;
   const broadcastHasDirectContent = Boolean(
     normalizedBroadcastText || broadcastImageEnabled || editingBroadcastHasVideo,
   );
@@ -1872,7 +1922,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           : broadcastSelectionSummary || 'Автопостинг';
   const broadcastFooterMeta = [
     'Текущий канал',
-    broadcastImageEnabled ? 'Фото' : null,
+    broadcastImageLabel,
     editingBroadcastHasVideo ? 'Видео' : null,
     broadcastHasButton ? formatBroadcastButtonsStatus(normalizedBroadcastButtons) : null,
   ]
@@ -1888,8 +1938,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     {
       label: 'Контент',
       value: broadcastHasPublishableContent
-        ? broadcastImageEnabled || editingBroadcastHasVideo
-          ? 'Медиа'
+        ? broadcastImageLabel || editingBroadcastHasVideo
+          ? broadcastImageLabel || 'Видео'
           : `${normalizedBroadcastText.length}/2000`
         : 'Пусто',
       tone: broadcastHasPublishableContent ? 'ready' : 'pending',
@@ -2200,6 +2250,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
       imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
       imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+      images: broadcastImageEnabled ? broadcastImages : [],
       mediaType: keepVideoMedia ? 'video' : null,
       mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
       mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
@@ -2291,6 +2342,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       !broadcastImageEnabled &&
       videoSource?.mediaType === 'video' &&
       videoSource.mediaPayload;
+    const broadcastImagesReady = areBroadcastImagesReady(broadcastImages);
     const hasDirectContent = Boolean(
       normalizedBroadcastText || broadcastImageEnabled || keepVideoMedia,
     );
@@ -2316,7 +2368,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastImageEnabled) {
-      if (!broadcastImageBase64 || !broadcastImageMimeType.toLowerCase().startsWith('image/')) {
+      if (!broadcastImagesReady) {
         setBroadcastImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -2361,6 +2413,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
       imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
       imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+      images: broadcastImageEnabled ? broadcastImages : [],
       mediaType: keepVideoMedia ? 'video' : null,
       mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
       mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
@@ -2384,6 +2437,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       !broadcastImageEnabled &&
       videoSource?.mediaType === 'video' &&
       videoSource.mediaPayload;
+    const broadcastImagesReady = areBroadcastImagesReady(broadcastImages);
     let hasError = false;
 
     if (!normalizedBroadcastText && !broadcastImageEnabled && !keepVideoMedia) {
@@ -2397,7 +2451,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastImageEnabled) {
-      if (!broadcastImageBase64 || !broadcastImageMimeType.toLowerCase().startsWith('image/')) {
+      if (!broadcastImagesReady) {
         setBroadcastImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -2827,12 +2881,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             <LazyBroadcastContentComposer
                               text={broadcastText}
                               maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                              image={{
-                                enabled: broadcastImageEnabled,
-                                base64: broadcastImageBase64,
-                                mimeType: broadcastImageMimeType,
-                                fileName: broadcastImageFileName,
-                              }}
+                              images={broadcastImages}
                               videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
                               disabled={isBroadcastBusy}
                               textError={broadcastTextError}
@@ -2843,12 +2892,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   setBroadcastTextError('');
                                 }
                               }}
-                              onImageChange={(nextImage) => {
-                                setBroadcastImageEnabled(nextImage.enabled);
-                                setBroadcastImageBase64(nextImage.base64);
-                                setBroadcastImageMimeType(nextImage.mimeType);
-                                setBroadcastImageFileName(nextImage.fileName);
-                                if (nextImage.enabled) {
+                              onImagesChange={(nextImages) => {
+                                applyBroadcastImages(nextImages);
+                                if (nextImages.length > 0) {
                                   setBroadcastVideoCleared(true);
                                 }
                                 setBroadcastImageError('');

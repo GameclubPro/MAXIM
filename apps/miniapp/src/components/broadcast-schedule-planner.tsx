@@ -207,7 +207,11 @@ function buildAgendaFacts(
         : currentTargetLabel;
   return [
     audienceLabel,
-    broadcast.hasImage ? 'Фото' : null,
+    broadcast.hasImage
+      ? broadcast.imageCount > 1
+        ? `${broadcast.imageCount} фото`
+        : 'Фото'
+      : null,
     broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
   ].filter((item): item is string => Boolean(item));
 }
@@ -641,16 +645,6 @@ export function BroadcastSchedulePlanner({
     if (timingMode !== 'scheduled') {
       onTimingModeChange?.('scheduled');
     }
-  }
-
-  function openCalendar() {
-    if (disabled) {
-      return;
-    }
-
-    activateScheduledMode();
-    setCalendarExpanded(true);
-    maxImpact('soft');
   }
 
   function selectTimingMode(nextMode: BroadcastTimingMode) {

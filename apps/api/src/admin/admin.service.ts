@@ -118,8 +118,12 @@ import {
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
   type BroadcastScheduleMode,
+  type BroadcastImage,
+  type BroadcastMediaType,
   DEFAULT_BROADCAST_BUTTON_TEXT,
+  MAX_BROADCAST_IMAGES,
   MAX_BROADCAST_IMAGE_BASE64_LENGTH,
+  MAX_BROADCAST_IMAGES_TOTAL_BASE64,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -537,6 +541,7 @@ type MembershipEventRow = {
 const MAX_UPLOADED_IMAGE_BYTES = Math.floor((MAX_BROADCAST_IMAGE_BASE64_LENGTH * 3) / 4);
 const RULES_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
 const BROADCAST_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
+const BROADCAST_IMAGES_TOTAL_MAX_BYTES = Math.floor((MAX_BROADCAST_IMAGES_TOTAL_BASE64 * 3) / 4);
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const MANAGED_BROADCAST_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -6005,10 +6010,7 @@ export class AdminService implements OnModuleDestroy {
           discoveryBots: discoveryBots.length,
           errors: failedResults.map((result) => ({
             botId: result.botId,
-            err:
-              result.error instanceof Error
-                ? result.error.message
-                : String(result.error),
+            err: result.error instanceof Error ? result.error.message : String(result.error),
           })),
         },
         'Continuing managed entities discovery with partial bot results',
@@ -11412,6 +11414,7 @@ export class AdminService implements OnModuleDestroy {
           imageBase64: row.imageBase64,
           imageMimeType: row.imageMimeType,
           imageFileName: row.imageFileName,
+          images: this.readManagedBroadcastImagesFromRow(row),
           mediaType: this.readManagedBroadcastMediaType(row.mediaType),
           mediaPayload: this.readObjectPayloadOrNull(row.mediaPayload),
           mediaMimeType: row.mediaMimeType,
@@ -11834,15 +11837,37 @@ export class AdminService implements OnModuleDestroy {
     actorUserId: string,
     botId?: string,
   ): Promise<ManagedBroadcastResolvedMedia> {
-    if (payload.imageEnabled) {
+    const images = this.resolveManagedBroadcastRequestImages(payload);
+    if (images.length === 1) {
       const imagePayload = await this.uploadManagedBroadcastImage(
-        payload,
+        images[0],
         entityType,
         sourceChatId,
         actorUserId,
         botId,
       );
       return imagePayload ? { imagePayload } : {};
+    }
+
+    if (images.length > 1) {
+      const attachments: MaxAttachmentPayload[] = [];
+      for (const image of images) {
+        const imagePayload = await this.uploadManagedBroadcastImage(
+          image,
+          entityType,
+          sourceChatId,
+          actorUserId,
+          botId,
+        );
+        if (imagePayload) {
+          attachments.push({
+            type: 'image',
+            payload: imagePayload,
+          });
+        }
+      }
+
+      return attachments.length > 0 ? { attachments } : {};
     }
 
     if (payload.mediaType === 'video' && payload.mediaPayload) {
@@ -11859,41 +11884,125 @@ export class AdminService implements OnModuleDestroy {
     return {};
   }
 
+  private resolveManagedBroadcastRequestImages(payload: SendBroadcastRequest): BroadcastImage[] {
+    const explicitImages = Array.isArray(payload.images)
+      ? payload.images.filter((image) => image.base64.trim().length > 0)
+      : [];
+    if (explicitImages.length > 0) {
+      return explicitImages.slice(0, MAX_BROADCAST_IMAGES);
+    }
+
+    const imageBase64 = payload.imageBase64.trim();
+    if (!payload.imageEnabled || !imageBase64) {
+      return [];
+    }
+
+    return [
+      {
+        base64: imageBase64,
+        mimeType: payload.imageMimeType.trim(),
+        fileName: payload.imageFileName.trim(),
+      },
+    ];
+  }
+
+  private readManagedBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
+    const payload = this.readObjectPayloadOrNull(value);
+    if (!payload || !Array.isArray(payload.images)) {
+      return [];
+    }
+
+    return payload.images
+      .map((item) => this.readManagedBroadcastMediaPayloadImage(item))
+      .filter((image): image is BroadcastImage => image !== null)
+      .slice(0, MAX_BROADCAST_IMAGES);
+  }
+
+  private readManagedBroadcastMediaPayloadImage(value: unknown): BroadcastImage | null {
+    const payload = this.readObjectPayloadOrNull(value);
+    if (!payload) {
+      return null;
+    }
+
+    const base64 = this.readTrimmedString(payload.base64);
+    if (!base64) {
+      return null;
+    }
+
+    return {
+      base64,
+      mimeType: this.readTrimmedString(payload.mimeType) ?? '',
+      fileName: this.readTrimmedString(payload.fileName) ?? '',
+    };
+  }
+
+  private readManagedBroadcastImagesFromRow(row: PersistedManagedBroadcast): BroadcastImage[] {
+    if (this.readManagedBroadcastMediaType(row.mediaType) === 'image') {
+      const payloadImages = this.readManagedBroadcastMediaPayloadImages(row.mediaPayload);
+      if (payloadImages.length > 0) {
+        return payloadImages;
+      }
+    }
+
+    const imageBase64 = row.imageBase64.trim();
+    if (!row.imageEnabled || !imageBase64) {
+      return [];
+    }
+
+    return [
+      {
+        base64: imageBase64,
+        mimeType: row.imageMimeType.trim(),
+        fileName: row.imageFileName.trim(),
+      },
+    ];
+  }
+
   private validateManagedBroadcastMediaPayload(payload: SendBroadcastRequest): void {
-    if (!payload.imageEnabled) {
+    const images = this.resolveManagedBroadcastRequestImages(payload);
+    if (images.length === 0) {
       return;
     }
 
-    const imageMimeType = payload.imageMimeType.trim().toLowerCase();
+    if (images.length > MAX_BROADCAST_IMAGES) {
+      throw new BadRequestException(
+        `В одном автопостинге можно добавить до ${MAX_BROADCAST_IMAGES} фото.`,
+      );
+    }
+
+    let totalBytes = 0;
+    for (const image of images) {
+      totalBytes += this.validateManagedBroadcastImagePayload(image).length;
+    }
+
+    if (totalBytes > BROADCAST_IMAGES_TOTAL_MAX_BYTES) {
+      throw new BadRequestException('Суммарный размер фото слишком большой.');
+    }
+  }
+
+  private validateManagedBroadcastImagePayload(image: BroadcastImage): Buffer {
+    const imageMimeType = image.mimeType.trim().toLowerCase();
     if (!imageMimeType.startsWith('image/')) {
       throw new BadRequestException('Поддерживаются только изображения.');
     }
 
-    const imageBuffer = this.decodeBroadcastImageBase64(payload.imageBase64);
+    const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
     if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
       throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
     }
+
+    return imageBuffer;
   }
 
   private async uploadManagedBroadcastImage(
-    payload: SendBroadcastRequest,
+    image: BroadcastImage,
     entityType: ManagedEntityType,
     sourceChatId: string,
     actorUserId: string,
     botId?: string,
   ): Promise<Record<string, unknown> | undefined> {
-    if (!payload.imageEnabled) {
-      return undefined;
-    }
-
-    const imageMimeType = payload.imageMimeType.trim().toLowerCase();
-    if (!imageMimeType.startsWith('image/')) {
-      throw new BadRequestException('Поддерживаются только изображения.');
-    }
-    const imageBuffer = this.decodeBroadcastImageBase64(payload.imageBase64);
-    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
-      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
-    }
+    const imageMimeType = image.mimeType.trim().toLowerCase();
+    const imageBuffer = this.validateManagedBroadcastImagePayload(image);
 
     let lastError: unknown = null;
     const attempts =
@@ -11908,13 +12017,13 @@ export class AdminService implements OnModuleDestroy {
           return botId
             ? await this.maxClient.uploadImage(
                 imageBuffer,
-                this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
                 imageMimeType,
                 { botId },
               )
             : await this.maxClient.uploadImage(
                 imageBuffer,
-                this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
                 imageMimeType,
               );
         } catch (error: unknown) {
@@ -11958,8 +12067,9 @@ export class AdminService implements OnModuleDestroy {
     return value === 'calendar' ? 'calendar' : 'legacy';
   }
 
-  private readManagedBroadcastMediaType(value: unknown): SendBroadcastRequest['mediaType'] {
-    return this.readLowerString(value) === 'video' ? 'video' : null;
+  private readManagedBroadcastMediaType(value: unknown): BroadcastMediaType | null {
+    const normalized = this.readLowerString(value);
+    return normalized === 'image' || normalized === 'video' ? normalized : null;
   }
 
   private async planManagedBroadcastSchedule(
@@ -13379,6 +13489,7 @@ export class AdminService implements OnModuleDestroy {
       buttonUrl: row.buttonUrl,
       buttonText: row.buttonText,
     });
+    const images = this.readManagedBroadcastImagesFromRow(row);
     const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
 
     return {
@@ -13386,7 +13497,7 @@ export class AdminService implements OnModuleDestroy {
       status: row.status,
       textPreview: normalizedText
         ? normalizedText.slice(0, 160)
-        : row.imageEnabled
+        : images.length > 0
           ? 'Фото без текста'
           : hasVideo
             ? 'Видео без текста'
@@ -13395,7 +13506,8 @@ export class AdminService implements OnModuleDestroy {
       targetMode,
       applyToAllChats: row.applyToAllChats,
       targetChats: targetChatIds.length,
-      hasImage: row.imageEnabled,
+      hasImage: images.length > 0,
+      imageCount: images.length,
       hasVideo,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,
@@ -13434,6 +13546,8 @@ export class AdminService implements OnModuleDestroy {
       buttonText: row.buttonText,
     });
     const mediaType = this.readManagedBroadcastMediaType(row.mediaType);
+    const images = this.readManagedBroadcastImagesFromRow(row);
+    const firstImage = images[0];
 
     return {
       id: row.id,
@@ -13447,10 +13561,11 @@ export class AdminService implements OnModuleDestroy {
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
-      imageEnabled: row.imageEnabled,
-      imageBase64: row.imageBase64,
-      imageMimeType: row.imageMimeType,
-      imageFileName: row.imageFileName,
+      imageEnabled: images.length > 0,
+      imageBase64: firstImage?.base64 ?? '',
+      imageMimeType: firstImage?.mimeType ?? '',
+      imageFileName: firstImage?.fileName ?? '',
+      images,
       mediaType,
       mediaPayload: mediaType ? this.readObjectPayloadOrNull(row.mediaPayload) : null,
       mediaMimeType: mediaType ? row.mediaMimeType : '',
