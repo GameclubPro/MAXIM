@@ -1,4 +1,6 @@
 import {
+  PROFANITY_GENERATED_SHOULD_ALLOW_CASES,
+  PROFANITY_GENERATED_SHOULD_BLOCK_CASES,
   PROFANITY_PERFORMANCE_CORPUS,
   PROFANITY_SHOULD_ALLOW_CASES,
   PROFANITY_SHOULD_BLOCK_CASES,
@@ -22,6 +24,32 @@ describe('profanity corpus', () => {
 
   it.each(PROFANITY_SHOULD_ALLOW_CASES)('allows safe corpus case %#', (text) => {
     expect(probe.hasProfanity(text)).toBe(false);
+  });
+
+  it('allows thousands of generated real-world safe scenarios', () => {
+    expect(PROFANITY_GENERATED_SHOULD_ALLOW_CASES.length).toBeGreaterThanOrEqual(3_000);
+
+    const falsePositiveCases = PROFANITY_GENERATED_SHOULD_ALLOW_CASES.filter((text) =>
+      probe.hasProfanity(text),
+    );
+
+    expect({
+      count: falsePositiveCases.length,
+      samples: falsePositiveCases.slice(0, 30),
+    }).toEqual({ count: 0, samples: [] });
+  });
+
+  it('blocks generated abusive profanity and insult scenarios', () => {
+    expect(PROFANITY_GENERATED_SHOULD_BLOCK_CASES.length).toBeGreaterThanOrEqual(250);
+
+    const missedCases = PROFANITY_GENERATED_SHOULD_BLOCK_CASES.filter(
+      (text) => !probe.hasProfanity(text),
+    );
+
+    expect({
+      count: missedCases.length,
+      samples: missedCases.slice(0, 30),
+    }).toEqual({ count: 0, samples: [] });
   });
 
   it('keeps profanity detection within the hot-path budget', () => {
