@@ -648,15 +648,27 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
         ? mergeHomeEntityFavorites(storedFavorites, readHomeEntityFavorites(previousScope))
         : storedFavorites;
+    const serverFavorites = createHomeEntityFavoritesFromEntities({
+      chats: chatsState.data ?? undefined,
+      channels: channelsState.data ?? undefined,
+    });
+    const hasServerFavorites = HOME_ENTITY_FAVORITE_TYPES.some(
+      (favoriteType) =>
+        serverFavorites.chat[favoriteType].length > 0 ||
+        serverFavorites.channel[favoriteType].length > 0,
+    );
+    const scopedFavorites = hasServerFavorites
+      ? mergeHomeEntityFavorites(nextFavorites, serverFavorites)
+      : nextFavorites;
 
-    if (nextFavorites !== storedFavorites) {
-      saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
+    if (JSON.stringify(scopedFavorites) !== JSON.stringify(storedFavorites)) {
+      saveHomeEntityFavorites(favoriteStorageScope, scopedFavorites);
     }
 
     favoriteStorageScopeRef.current = favoriteStorageScope;
     favoriteMigrationAttemptedRef.current = false;
-    setHomeEntityFavorites(nextFavorites);
-  }, [favoriteStorageScope]);
+    setHomeEntityFavorites(scopedFavorites);
+  }, [channelsState.data, chatsState.data, favoriteStorageScope]);
 
   useEffect(() => {
     if (

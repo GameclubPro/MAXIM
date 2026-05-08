@@ -1,5 +1,7 @@
 import {
+  applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
+  applySettingsTargetSchema,
   broadcastHandoffStateSchema,
   chatParticipantImmunitySchema,
   chatParticipantImmunityUpdateRequestSchema,
@@ -22,6 +24,7 @@ import {
   domainAllowlistEntrySchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
+  managedEntityFavoritesResponseSchema,
   managedEntityBotExecutionPlanSchema,
   managedEntitiesListResponseSchema,
   managedGiveawayDetailsSchema,
@@ -42,8 +45,10 @@ import {
   toggleChannelDialogReactionResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
+  updateManagedEntityFavoritesRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
+  type ApplySettingsTarget,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChatParticipantImmunityUpdateRequest,
@@ -64,6 +69,7 @@ import {
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
   type ManagedEntityBotExecutionPlan,
+  type ManagedEntityType,
   type ManagedEntitiesListResponse,
   type ManagedGiveawayDetails,
   type ManagedGiveawayParticipantState,
@@ -865,6 +871,55 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
       stale: false,
     },
   });
+}
+
+function resolvePreviewApplyTargetChats(
+  state: PreviewState,
+  sourceChatId: string,
+  target: ApplySettingsTarget,
+): ChatSummary[] {
+  if (target.mode === 'current') {
+    return state.chats.filter((item) => item.id === sourceChatId);
+  }
+
+  if (target.mode === 'selectedChats') {
+    const selectedIds = new Set(target.chatIds);
+    return state.chats.filter((item) => selectedIds.has(item.id));
+  }
+
+  if (target.mode === 'allFavorites') {
+    return state.chats.filter((item) => (item.favoriteTypes ?? []).length > 0);
+  }
+
+  if (target.mode === 'favoriteTypes') {
+    const favoriteTypes = new Set(target.favoriteTypes);
+    return state.chats.filter((item) =>
+      (item.favoriteTypes ?? []).some((favoriteType) => favoriteTypes.has(favoriteType)),
+    );
+  }
+
+  return state.chats;
+}
+
+function updatePreviewManagedEntityFavorites(
+  state: PreviewState,
+  entityType: ManagedEntityType,
+  entityId: string,
+  favoriteTypes: ApplySettingsTarget['favoriteTypes'],
+): void {
+  const items = entityType === 'channel' ? state.channels : state.chats;
+  const index = items.findIndex((item) => item.id === entityId);
+  if (index < 0) {
+    throw new Error(`Preview managed entity not found: ${entityType}/${entityId}`);
+  }
+
+  const next = { ...items[index] };
+  if (favoriteTypes.length > 0) {
+    next.favoriteTypes = favoriteTypes;
+  } else {
+    delete next.favoriteTypes;
+  }
+  items[index] = next;
 }
 
 function buildBroadcastHandoffState(details: ManagedBroadcastDetails): BroadcastHandoffState {
@@ -2234,6 +2289,7 @@ function createInitialState(): PreviewState {
         link: null,
         avatarUrl: buildPreviewAvatarDataUrl(PREVIEW_CHAT_TITLE, '#20b7aa', '#117e87'),
         channelOverview: null,
+        favoriteTypes: ['important', 'watch'],
       }),
       createPreviewChatSummary({
         id: 'preview-chat-2',
@@ -2243,6 +2299,7 @@ function createInitialState(): PreviewState {
         link: null,
         avatarUrl: buildPreviewAvatarDataUrl('Клуб соседей', '#6a8cff', '#4b55dd'),
         channelOverview: null,
+        favoriteTypes: ['broadcast'],
       }),
     ],
     channels: [
@@ -2259,6 +2316,7 @@ function createInitialState(): PreviewState {
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
         },
+        favoriteTypes: ['important', 'service'],
       }),
       createPreviewChatSummary({
         id: 'preview-channel-2',
@@ -3086,12 +3144,30 @@ async function handleChatRequest(
   }
 
   if (tail[0] === 'settings' && tail[1] === 'apply-section-to-all' && method === 'POST') {
-    const payload = parseJsonBody(init) as { section?: string } | null;
+    const payload = parseJsonBody(init) as { section?: string; target?: unknown } | null;
+    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'all' });
+    const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
     return applySectionToAllResponseSchema.parse({
       section: payload?.section ?? 'links',
       sourceChatId: chatId,
-      updatedChats: state.chats.length,
-      appliedChatIds: state.chats.map((item) => item.id),
+      updatedChats: targetChats.length,
+      appliedChatIds: targetChats.map((item) => item.id),
+      targetMode: target.mode,
+      favoriteTypes: target.favoriteTypes,
+    });
+  }
+
+  if (tail[0] === 'settings' && tail[1] === 'apply-section-preview' && method === 'POST') {
+    const payload = parseJsonBody(init) as { target?: unknown } | null;
+    const target = applySettingsTargetSchema.parse(payload?.target ?? { mode: 'all' });
+    const targetChats = resolvePreviewApplyTargetChats(state, chatId, target);
+    return applySectionTargetPreviewResponseSchema.parse({
+      sourceChatId: chatId,
+      targetMode: target.mode,
+      favoriteTypes: target.favoriteTypes,
+      updatedChats: targetChats.length,
+      appliedChatIds: targetChats.map((item) => item.id),
+      sampleChats: targetChats.slice(0, 8),
     });
   }
 
@@ -4113,6 +4189,24 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       const segments = url.pathname.split('/').filter(Boolean);
+      if (
+        segments[0] === 'managed-entities' &&
+        segments[1] &&
+        segments[2] &&
+        segments[3] === 'favorites' &&
+        method === 'PUT'
+      ) {
+        const entityType = segments[1] === 'channel' ? 'channel' : 'chat';
+        const entityId = decodeURIComponent(segments[2]);
+        const payload = updateManagedEntityFavoritesRequestSchema.parse(parseJsonBody(init));
+        updatePreviewManagedEntityFavorites(state, entityType, entityId, payload.favoriteTypes);
+        return managedEntityFavoritesResponseSchema.parse({
+          entityType,
+          entityId,
+          favoriteTypes: payload.favoriteTypes,
+        });
+      }
+
       if (segments[0] === 'giveaways' && segments[1]) {
         const giveawayId = decodeURIComponent(segments[1]);
         if (giveawayId !== PREVIEW_PUBLIC_GIVEAWAY_ID) {
