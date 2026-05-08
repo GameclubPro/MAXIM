@@ -273,41 +273,15 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^бля(?:[дт][а-я0-9]*)?$/u,
   /^пизд[а-я0-9]*$/u,
   /^(?:на|по|до|о|за|ни|вы)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
-  /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её]б[а-я0-9]*$/u,
+  /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её]б(?:а(?:л|ть|н|ш|ч)|е(?:т|шь|м|те)|у(?:т|ч|н)|и(?:сь|т|те)|л(?:ан|о|и)?|н(?:у|ут)|уч)[а-я0-9]*$/u,
   /^долбо(?:[её]б)[а-я0-9]*$/u,
-  /^мраз[а-я0-9]*$/u,
-  /^шлюх[а-я0-9]*$/u,
-  /^муда(?:к|ч)[а-я0-9]*$/u,
-  /^мудил[а-я0-9]*$/u,
-  /^ублюд[а-я0-9]*$/u,
-  /^твар(?:ь|и|ин)[а-я0-9]*$/u,
-  /^идиот[а-я0-9]*$/u,
-  /^урод[а-я0-9]*$/u,
-  /^жоп(?:а|ы|е|у|ой|ою|ам|ами|ах|н[а-я0-9]*)$/u,
-  /^говн[а-я0-9]*$/u,
-  /^дерьм[а-я0-9]*$/u,
-  /^быдл[а-я0-9]*$/u,
-  /^тупорыл[а-я0-9]*$/u,
-  /^кончен[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
   /^pizd[a-z0-9]*$/i,
   /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo)(?:y|i|e|ya|yu)[a-z0-9]*$/i,
-  /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a|o|i|y|e|u|l|n|t|s|k|sh|zh)[a-z0-9]*$/i,
+  /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a(?:l|t|n|sh|ch)|e(?:t|sh|m|te)|u(?:t|ch|n)|i(?:s|t|te)|l(?:an|o|i)?|n(?:u|ut)|uch)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
-  /^mraz[a-z0-9]*$/i,
-  /^shl?yuh[a-z0-9]*$/i,
-  /^muda(?:k|ch)[a-z0-9]*$/i,
-  /^mudil[a-z0-9]*$/i,
-  /^ublyu?d[a-z0-9]*$/i,
-  /^tvar(?:in)?[a-z0-9]*$/i,
-  /^urod[a-z0-9]*$/i,
-  /^zhop[a-z0-9]*$/i,
-  /^govn[a-z0-9]*$/i,
-  /^bydl[a-z0-9]*$/i,
-  /^tuporyl[a-z0-9]*$/i,
-  /^konchen[a-z0-9]*$/i,
 ];
 const PROFANITY_CANINE_FEMALE_FORMS = new Set(['сука', 'суки', 'суке', 'суку', 'сукой', 'сукою']);
 const PROFANITY_CANINE_CONTEXT_MARKERS = [
@@ -368,6 +342,39 @@ const PROFANITY_PARASITE_CONTEXT_MARKERS = [
   'клещ',
   'паразит',
   'личин',
+];
+const PROFANITY_GARDEN_PEST_FORMS = new Set([
+  'тварь',
+  'твари',
+  'тварей',
+  'тварям',
+  'тварями',
+  'тварях',
+]);
+const PROFANITY_GARDEN_PEST_CONTEXT_MARKERS = [
+  'клубник',
+  'огород',
+  'сад',
+  'растен',
+  'вредител',
+  'насеком',
+  'жрут',
+  'напали',
+  'актар',
+  'избавиться',
+  'урожай',
+  'листв',
+];
+const PROFANITY_AXIS_DIMENSION_FORMS = new Set(['хуи', 'хуиз']);
+const PROFANITY_AXIS_DIMENSION_CONTEXT_MARKERS = [
+  'осям',
+  'ось',
+  'координат',
+  'габарит',
+  'размер',
+  'мм',
+  'дхш',
+  'дхв',
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -1876,6 +1883,18 @@ export class RuleEngineService {
         normalizedContext,
         PROFANITY_PARASITE_FORMS,
         PROFANITY_PARASITE_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_GARDEN_PEST_FORMS,
+        PROFANITY_GARDEN_PEST_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_AXIS_DIMENSION_FORMS,
+        PROFANITY_AXIS_DIMENSION_CONTEXT_MARKERS,
       )
     );
   }
@@ -3783,11 +3802,11 @@ export class RuleEngineService {
   }
 
   private shouldBuildLatinProfanityCandidate(value: string): boolean {
-    return /[a-z0-9@!|$]/i.test(value);
+    return /[a-z]/i.test(value);
   }
 
   private shouldBuildLatinLeetProfanityCandidate(value: string): boolean {
-    return /[013456789@!|$]/.test(value);
+    return /[a-z]/i.test(value) && /[013456789@!|$]/.test(value);
   }
 
   private normalizeProfanityLatinLeetCandidate(value: string): string {
