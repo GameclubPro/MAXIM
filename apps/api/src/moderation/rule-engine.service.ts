@@ -283,6 +283,12 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^твар(?:ь|и|ин)[а-я0-9]*$/u,
   /^идиот[а-я0-9]*$/u,
   /^урод[а-я0-9]*$/u,
+  /^жоп(?:а|ы|е|у|ой|ою|ам|ами|ах|н[а-я0-9]*)$/u,
+  /^говн[а-я0-9]*$/u,
+  /^дерьм[а-я0-9]*$/u,
+  /^быдл[а-я0-9]*$/u,
+  /^тупорыл[а-я0-9]*$/u,
+  /^кончен[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
@@ -297,6 +303,11 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^ublyu?d[a-z0-9]*$/i,
   /^tvar(?:in)?[a-z0-9]*$/i,
   /^urod[a-z0-9]*$/i,
+  /^zhop[a-z0-9]*$/i,
+  /^govn[a-z0-9]*$/i,
+  /^bydl[a-z0-9]*$/i,
+  /^tuporyl[a-z0-9]*$/i,
+  /^konchen[a-z0-9]*$/i,
 ];
 const PROFANITY_CANINE_FEMALE_FORMS = new Set(['сука', 'суки', 'суке', 'суку', 'сукой', 'сукою']);
 const PROFANITY_CANINE_CONTEXT_MARKERS = [
@@ -1018,6 +1029,30 @@ const MIXED_CHAR_MAP: Record<string, string> = {
   '9': 'д',
   '@': 'а',
   $: 'с',
+};
+const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
+  ...MIXED_CHAR_MAP,
+  '!': 'и',
+  '|': 'и',
+  '@': 'я',
+  '9': 'я',
+  u: 'и',
+  y: 'я',
+};
+const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
+  '0': 'o',
+  '1': 'i',
+  '!': 'i',
+  '|': 'i',
+  '3': 'e',
+  '4': 'a',
+  '@': 'a',
+  '5': 's',
+  $: 's',
+  '6': 'b',
+  '7': 't',
+  '8': 'b',
+  '9': 'g',
 };
 
 @Injectable()
@@ -1781,22 +1816,25 @@ export class RuleEngineService {
     const normalizedContext = this.normalizeForDetection(stripUrlsFromText(text));
     const candidates = this.extractProfanityCandidates(text);
     for (const candidate of candidates) {
-      const normalizedCandidate = this.normalizeProfanityCandidate(candidate);
-      if (
-        normalizedCandidate &&
-        !this.isProfanityException(normalizedCandidate) &&
-        !this.isContextualProfanityException(normalizedCandidate, normalizedContext) &&
-        (this.isProfanityToken(normalizedCandidate) || isExactProfanityVariant(normalizedCandidate))
-      ) {
-        return true;
+      for (const normalizedCandidate of this.buildProfanityCyrillicCandidates(candidate)) {
+        if (
+          normalizedCandidate &&
+          !this.isProfanityException(normalizedCandidate) &&
+          !this.isContextualProfanityException(normalizedCandidate, normalizedContext) &&
+          (this.isProfanityToken(normalizedCandidate) ||
+            isExactProfanityVariant(normalizedCandidate))
+        ) {
+          return true;
+        }
       }
 
-      const normalizedLatinCandidate = this.normalizeProfanityLatinCandidate(candidate);
-      if (
-        normalizedLatinCandidate &&
-        PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) => pattern.test(normalizedLatinCandidate))
-      ) {
-        return true;
+      for (const normalizedLatinCandidate of this.buildProfanityLatinCandidates(candidate)) {
+        if (
+          normalizedLatinCandidate &&
+          PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) => pattern.test(normalizedLatinCandidate))
+        ) {
+          return true;
+        }
       }
     }
 
@@ -3663,6 +3701,55 @@ export class RuleEngineService {
     return normalized;
   }
 
+  private buildProfanityCyrillicCandidates(value: string): string[] {
+    if (!value) {
+      return [];
+    }
+
+    const candidates = new Set<string>();
+    const normalized = this.normalizeProfanityCandidate(value);
+    if (normalized) {
+      candidates.add(normalized);
+    }
+
+    if (this.shouldBuildAmbiguousProfanityCandidate(value)) {
+      const ambiguous = this.normalizeProfanityCandidateWithMap(
+        value,
+        PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP,
+      );
+      if (ambiguous) {
+        candidates.add(ambiguous);
+      }
+    }
+
+    return [...candidates];
+  }
+
+  private shouldBuildAmbiguousProfanityCandidate(value: string): boolean {
+    return /[а-яё@!|9]/iu.test(value) && /[a-z0-9@!|]/iu.test(value);
+  }
+
+  private normalizeProfanityCandidateWithMap(
+    value: string,
+    charMap: Readonly<Record<string, string>>,
+  ): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = '';
+    for (const char of value.toLowerCase()) {
+      const mapped = charMap[char] ?? char;
+      if (/[\p{L}\p{N}]/u.test(mapped)) {
+        normalized += mapped;
+      }
+    }
+
+    normalized = normalized.replace(/ё/g, 'е');
+    normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
+    return normalized;
+  }
+
   private normalizeProfanityLatinCandidate(value: string): string {
     if (!value) {
       return '';
@@ -3674,9 +3761,51 @@ export class RuleEngineService {
     return normalized;
   }
 
+  private buildProfanityLatinCandidates(value: string): string[] {
+    if (!value) {
+      return [];
+    }
+
+    const candidates = new Set<string>();
+    const normalized = this.normalizeProfanityLatinCandidate(value);
+    if (normalized) {
+      candidates.add(normalized);
+    }
+
+    const leetNormalized = this.normalizeProfanityLatinLeetCandidate(value);
+    if (leetNormalized) {
+      candidates.add(leetNormalized);
+    }
+
+    return [...candidates];
+  }
+
+  private normalizeProfanityLatinLeetCandidate(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = '';
+    for (const char of value.toLowerCase()) {
+      const mapped = PROFANITY_LATIN_LEET_CHAR_MAP[char] ?? char;
+      if (/[a-z0-9]/i.test(mapped)) {
+        normalized += mapped;
+      }
+    }
+
+    normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
+    return normalized;
+  }
+
   private normalizeProfanityJoinToken(value: string): string {
-    const normalized = this.normalizeProfanityCandidate(value);
-    return normalized.length <= 2 ? normalized : '';
+    for (const normalized of this.buildProfanityCyrillicCandidates(value)) {
+      if (normalized.length > 0 && normalized.length <= 2) {
+        return normalized;
+      }
+    }
+
+    const latinNormalized = this.normalizeProfanityLatinLeetCandidate(value);
+    return latinNormalized.length <= 2 ? latinNormalized : '';
   }
 
   private normalizeMixedWritingForProfanity(value: string): string {

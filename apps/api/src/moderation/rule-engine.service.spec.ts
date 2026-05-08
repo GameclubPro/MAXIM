@@ -231,8 +231,8 @@ async function detectCommercialViolation(
 }
 
 describe('RuleEngineService', () => {
-  it('ships with 500+ exact profanity and insult variants', () => {
-    expect(PROFANITY_EXACT_VARIANT_COUNT).toBeGreaterThanOrEqual(500);
+  it('ships with 2000+ exact profanity and insult variants', () => {
+    expect(PROFANITY_EXACT_VARIANT_COUNT).toBeGreaterThanOrEqual(2000);
   });
 
   it('detects profanity and blocked links', async () => {
@@ -866,6 +866,23 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
+  it('detects PROFANITY in mixed-script and leetspeak mat obfuscations', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = ['бл@ть', 'бл9ть', 'пuзда', 'хуu', 'p1zda', 'pizd@'];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
   it('detects PROFANITY in latin transliteration of russian mat roots', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -931,12 +948,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
+  it('detects PROFANITY for expanded high-confidence abusive lexicon families', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты полный лошара, быдло и тупорылый недоумок',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
   it('does not detect PROFANITY for safe names like Pedro', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Педро и Pedro пришли на тренировку вовремя',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY for safe words near expanded insult roots', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Хамлет, Hamlet, лохматый пес и dermatology курс приехали на выставку',
       settings: buildSettings(),
       domainAllowlist: [],
     });
