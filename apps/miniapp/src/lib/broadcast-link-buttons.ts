@@ -12,14 +12,14 @@ export type BroadcastLinkButtonFieldErrors = {
 
 export function createEmptyBroadcastLinkButton(): BroadcastLinkButton {
   return {
-    text: '',
+    text: DEFAULT_BROADCAST_BUTTON_TEXT,
     url: '',
   };
 }
 
 export function trimBroadcastLinkButtons(buttons: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return buttons.map((button) => ({
-    text: button.text.trim(),
+    text: button.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
     url: button.url.trim(),
   }));
 }

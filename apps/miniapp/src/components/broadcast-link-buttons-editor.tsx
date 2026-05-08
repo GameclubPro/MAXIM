@@ -134,7 +134,7 @@ export function BroadcastLinkButtonsEditor({
 
   function applyPreset(text: string) {
     const nextButton = { ...createEmptyBroadcastLinkButton(), text };
-    const emptyIndex = buttons.findIndex((button) => !button.text.trim());
+    const emptyIndex = buttons.findIndex((button) => !button.url.trim());
 
     if (emptyIndex >= 0) {
       onChange(
