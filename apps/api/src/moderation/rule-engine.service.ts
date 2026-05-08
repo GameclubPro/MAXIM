@@ -3762,7 +3762,7 @@ export class RuleEngineService {
   }
 
   private buildProfanityLatinCandidates(value: string): string[] {
-    if (!value) {
+    if (!value || !this.shouldBuildLatinProfanityCandidate(value)) {
       return [];
     }
 
@@ -3772,12 +3772,22 @@ export class RuleEngineService {
       candidates.add(normalized);
     }
 
-    const leetNormalized = this.normalizeProfanityLatinLeetCandidate(value);
-    if (leetNormalized) {
-      candidates.add(leetNormalized);
+    if (this.shouldBuildLatinLeetProfanityCandidate(value)) {
+      const leetNormalized = this.normalizeProfanityLatinLeetCandidate(value);
+      if (leetNormalized) {
+        candidates.add(leetNormalized);
+      }
     }
 
     return [...candidates];
+  }
+
+  private shouldBuildLatinProfanityCandidate(value: string): boolean {
+    return /[a-z0-9@!|$]/i.test(value);
+  }
+
+  private shouldBuildLatinLeetProfanityCandidate(value: string): boolean {
+    return /[013456789@!|$]/.test(value);
   }
 
   private normalizeProfanityLatinLeetCandidate(value: string): string {
