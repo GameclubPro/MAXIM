@@ -74,6 +74,19 @@ enum ChatBotMembershipStatus {
   REMOVED
 }
 
+enum ManagedEntityAccessState {
+  GRANTED
+  USER_DENIED
+  BOT_DENIED
+}
+
+enum ManagedEntityAccessRole {
+  OWNER
+  ADMIN
+  MEMBER
+  UNKNOWN
+}
+
 enum ChannelAutoPostButtonsMode {
   OFF
   COMMENTS
@@ -155,6 +168,7 @@ model Chat {
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
   botMemberships           ChatBotMembership[]
+  accessEdges              ManagedEntityAccessEdge[]
   participantImmunities    ChatParticipantModerationImmunity[]
   invitationAccessProgress ChatInvitationAccessProgress[]
 
@@ -479,6 +493,31 @@ model ChatAdminAllowlist {
 
   @@id([chatId, userId])
   @@map("chat_admin_allowlist")
+}
+
+model ManagedEntityAccessEdge {
+  chatId        String                   @map("chat_id")
+  userId        String                   @map("user_id")
+  botId         String                   @map("bot_id")
+  entityType    ChatEntityType           @default(CHAT) @map("entity_type")
+  state         ManagedEntityAccessState
+  userRole      ManagedEntityAccessRole  @default(UNKNOWN) @map("user_role")
+  botRole       ManagedEntityAccessRole  @default(UNKNOWN) @map("bot_role")
+  checkedAt     DateTime                 @default(now()) @map("checked_at")
+  expiresAt     DateTime?                @map("expires_at")
+  deniedReason  String?                  @map("denied_reason")
+  source        String                   @default("unknown")
+  sourceVersion String?                  @map("source_version")
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  updatedAt     DateTime                 @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, userId, botId])
+  @@index([userId, entityType, state, expiresAt, checkedAt(sort: Desc)], map: "managed_entity_access_edges_user_visible_idx")
+  @@index([chatId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_chat_state_idx")
+  @@index([botId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_bot_state_idx")
+  @@map("managed_entity_access_edges")
 }
 
 model DomainAllowlist {

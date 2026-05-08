@@ -231,6 +231,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     keepVisibleOnSameSnapshotVersion: true,
+    treatUserVisibleCompleteAsSettled: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -245,6 +246,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     keepVisibleOnSameSnapshotVersion: true,
+    treatUserVisibleCompleteAsSettled: true,
   });
 
   const activeEntities = useMemo(() => {
@@ -262,7 +264,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     refreshState.manualRefreshRetryAfterMs > 0
       ? Math.max(1, Math.ceil(refreshState.manualRefreshRetryAfterMs / 1_000))
       : null;
-  const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
+  const isUserVisibleSyncSettled =
+    activeEntitiesState.isSyncComplete ||
+    activeEntitiesState.isUserVisibleComplete ||
+    activeEntitiesState.isBackoffActive;
+  const isSyncSettled = isUserVisibleSyncSettled;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
   const isRefreshTemporarilyBlocked =
     manualRefreshBlockedReason === 'backoff' && (manualRefreshRetryAfterSec ?? 0) > 0;
@@ -271,7 +277,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isManualRefreshInProgressByState =
     manualRefreshBlockedReason === 'in_progress' &&
     !activeEntitiesState.isRefreshing &&
-    !activeEntitiesState.isSyncComplete;
+    !activeEntitiesState.isUserVisibleComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
   const homeSyncStatus = buildHomeSyncStatus({
@@ -279,10 +285,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     isBackoffActive: activeEntitiesState.isBackoffActive,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
-    isSyncComplete: activeEntitiesState.isSyncComplete,
+    isSyncComplete: activeEntitiesState.isSyncComplete || activeEntitiesState.isUserVisibleComplete,
   });
   const refreshProgressPercent =
-    !activeEntitiesState.isSyncComplete &&
+    !activeEntitiesState.isUserVisibleComplete &&
     !activeEntitiesState.isBackoffActive &&
     typeof refreshState?.progressPercent === 'number'
       ? Math.max(0, Math.min(100, refreshState.progressPercent))
@@ -346,7 +352,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       buildManagedEntitiesSettledMarker({
         scopeKey: activeTab,
         hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-        isSyncComplete: activeEntitiesState.isSyncComplete,
+        isSyncComplete:
+          activeEntitiesState.isSyncComplete || activeEntitiesState.isUserVisibleComplete,
         isBackoffActive: activeEntitiesState.isBackoffActive,
         snapshotVersion: activeEntitiesState.snapshot?.version,
         snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
@@ -356,6 +363,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       activeEntitiesState.hasLoadedFromServer,
       activeEntitiesState.isBackoffActive,
       activeEntitiesState.isSyncComplete,
+      activeEntitiesState.isUserVisibleComplete,
       activeEntitiesState.refreshState?.lastSyncedAt,
       activeEntitiesState.snapshot?.builtAt,
       activeEntitiesState.snapshot?.version,
@@ -367,7 +375,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     isLoading: activeEntitiesState.isLoading,
     isRefreshing: activeEntitiesState.isRefreshing,
-    isSyncComplete: activeEntitiesState.isSyncComplete,
+    isSyncComplete: activeEntitiesState.isSyncComplete || activeEntitiesState.isUserVisibleComplete,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     settledMarker: settledRefreshMarker,
     minIntervalMs: HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,

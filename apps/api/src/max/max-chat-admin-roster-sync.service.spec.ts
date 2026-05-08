@@ -15,6 +15,10 @@ describe('MaxChatAdminRosterSyncService', () => {
       chatBotMembership: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      managedEntityAccessEdge: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
     };
     const maxClient = {
       getCurrentChatMemberAccess: jest.fn(),
@@ -210,6 +214,53 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100123',
       'user-3',
       'user_denied',
+    );
+    expect(prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_botId: {
+            chatId: '-100123',
+            userId: 'user-1',
+            botId: 'bot-1',
+          },
+        },
+        update: expect.objectContaining({
+          state: 'GRANTED',
+          userRole: 'ADMIN',
+          botRole: 'ADMIN',
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_botId: {
+            chatId: '-100123',
+            userId: 'user-2',
+            botId: 'bot-1',
+          },
+        },
+        update: expect.objectContaining({
+          state: 'GRANTED',
+          userRole: 'ADMIN',
+          botRole: 'ADMIN',
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId: '-100123',
+          userId: {
+            in: ['user-3'],
+          },
+          botId: 'bot-1',
+        },
+        data: expect.objectContaining({
+          state: 'USER_DENIED',
+          deniedReason: 'user_removed_from_admin_roster',
+        }),
+      }),
     );
     expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
       '-100123',

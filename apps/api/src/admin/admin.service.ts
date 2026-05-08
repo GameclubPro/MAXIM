@@ -370,11 +370,15 @@ type AdminAccessResolution =
   | {
       status: 'granted';
       source: 'cache' | 'remote' | 'allowlist_fallback';
+      userRole?: ManagedEntityAccessRoleValue;
+      botRole?: ManagedEntityAccessRoleValue;
     }
   | {
       status: 'denied';
       source: 'cache' | 'remote';
       reason: 'user_not_admin' | 'bot_not_admin';
+      userRole?: ManagedEntityAccessRoleValue;
+      botRole?: ManagedEntityAccessRoleValue;
     }
   | {
       status: 'unknown';
@@ -384,6 +388,14 @@ type AdminAccessResolution =
       status: 'throttled';
       error: unknown;
     };
+
+type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
+type ManagedEntityAccessStateValue = 'GRANTED' | 'USER_DENIED' | 'BOT_DENIED';
+type ManagedEntityAccessEdgeClient = {
+  findMany: (args: unknown) => Promise<Array<{ chatId: string; botId: string }>>;
+  upsert?: (args: unknown) => Promise<unknown>;
+  updateMany?: (args: unknown) => Promise<unknown>;
+};
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
 type ManualBanFollowUpSource = Extract<
@@ -1898,12 +1910,16 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     items: readonly ChatSummary[],
   ): Promise<ChatSummary[]> {
-    if (items.length === 0 || typeof this.chatContextCache.getAdminAccess !== 'function') {
-      return [...items];
+    const strictVisibleItems = await this.filterManagedEntitiesByStrictAccessEdges(userId, items);
+    if (
+      strictVisibleItems.length === 0 ||
+      typeof this.chatContextCache.getAdminAccess !== 'function'
+    ) {
+      return strictVisibleItems;
     }
 
     const accessStates = await Promise.all(
-      items.map(async (item) => {
+      strictVisibleItems.map(async (item) => {
         try {
           return {
             item,
@@ -1921,6 +1937,63 @@ export class AdminService implements OnModuleDestroy {
     return accessStates
       .filter(({ access }) => access !== 'user_denied' && access !== 'bot_denied')
       .map(({ item }) => item);
+  }
+
+  private async filterManagedEntitiesByStrictAccessEdges(
+    userId: string,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client) {
+      return [...items];
+    }
+
+    const chatIds = Array.from(
+      new Set(items.map((item) => item.id.trim()).filter((chatId) => chatId.length > 0)),
+    );
+    if (chatIds.length === 0) {
+      return [];
+    }
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          userId,
+          state: 'GRANTED',
+          chatId: {
+            in: chatIds,
+          },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+      const visibleChatIds = new Set(
+        rows
+          .filter((row) => this.isManagedEntityAccessBotInRuntimeScope(row.botId))
+          .map((row) => row.chatId),
+      );
+
+      return items
+        .filter((item) => visibleChatIds.has(item.id))
+        .map((item) => this.cloneManagedEntitySummary(item));
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          requestedItems: items.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to filter managed entities by strict access edges',
+      );
+      return [];
+    }
   }
 
   private normalizeManagedEntitiesSnapshotVersion(value: string | null | undefined): string | null {
@@ -3251,6 +3324,168 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private getManagedEntityAccessEdgeClient(): ManagedEntityAccessEdgeClient | null {
+    const client = (this.prisma as unknown as { managedEntityAccessEdge?: unknown })
+      .managedEntityAccessEdge;
+    if (!client || typeof client !== 'object') {
+      return null;
+    }
+
+    const candidate = client as Partial<ManagedEntityAccessEdgeClient>;
+    return typeof candidate.findMany === 'function'
+      ? (candidate as ManagedEntityAccessEdgeClient)
+      : null;
+  }
+
+  private resolveManagedEntityAccessRole(
+    access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner'> | null | undefined,
+  ): ManagedEntityAccessRoleValue {
+    if (access?.isOwner === true) {
+      return 'OWNER';
+    }
+    if (access?.isAdmin === true) {
+      return 'ADMIN';
+    }
+    if (access) {
+      return 'MEMBER';
+    }
+    return 'UNKNOWN';
+  }
+
+  private normalizeManagedEntityAccessBotId(botId: string | null | undefined): string | null {
+    return (
+      this.normalizeRuntimeManagedEntityBotId(botId) ??
+      this.maxBotRegistry?.getDefaultBot?.()?.id ??
+      this.readTrimmedString(botId)
+    );
+  }
+
+  private isManagedEntityAccessBotInRuntimeScope(botId: string | null | undefined): boolean {
+    const normalizedBotId = this.normalizeManagedEntityAccessBotId(botId);
+    if (!normalizedBotId) {
+      return false;
+    }
+    return this.managedEntitiesRuntimeBotIds.size === 0
+      ? true
+      : this.managedEntitiesRuntimeBotIds.has(normalizedBotId);
+  }
+
+  private async upsertManagedEntityAccessEdge(params: {
+    chatId: string;
+    userId: string;
+    botId: string | null | undefined;
+    entityType: ManagedEntityType;
+    state: ManagedEntityAccessStateValue;
+    userRole?: ManagedEntityAccessRoleValue;
+    botRole?: ManagedEntityAccessRoleValue;
+    deniedReason?: string | null;
+    source: string;
+    expiresAt?: Date | null;
+  }): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client?.upsert) {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const userId = this.readTrimmedString(params.userId);
+    const botId = this.normalizeManagedEntityAccessBotId(params.botId);
+    if (!chatId || !userId || !botId) {
+      return;
+    }
+
+    const now = new Date();
+    const data = {
+      entityType: this.toPrismaEntityType(params.entityType),
+      state: params.state,
+      userRole: params.userRole ?? 'UNKNOWN',
+      botRole: params.botRole ?? 'UNKNOWN',
+      checkedAt: now,
+      expiresAt: params.expiresAt ?? null,
+      deniedReason: params.deniedReason ?? null,
+      source: params.source,
+    };
+
+    try {
+      await client.upsert({
+        where: {
+          chatId_userId_botId: {
+            chatId,
+            userId,
+            botId,
+          },
+        },
+        create: {
+          chatId,
+          userId,
+          botId,
+          ...data,
+        },
+        update: data,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          botId,
+          state: params.state,
+          source: params.source,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to upsert managed entity access edge',
+      );
+    }
+  }
+
+  private async markManagedEntityAccessEdgesDeniedForUser(params: {
+    chatId: string;
+    userId: string;
+    state: Exclude<ManagedEntityAccessStateValue, 'GRANTED'>;
+    deniedReason: string;
+    source: string;
+  }): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client?.updateMany) {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const userId = this.readTrimmedString(params.userId);
+    if (!chatId || !userId) {
+      return;
+    }
+
+    try {
+      await client.updateMany({
+        where: {
+          chatId,
+          userId,
+        },
+        data: {
+          state: params.state,
+          userRole: params.state === 'USER_DENIED' ? 'MEMBER' : 'UNKNOWN',
+          botRole: params.state === 'BOT_DENIED' ? 'MEMBER' : 'UNKNOWN',
+          checkedAt: new Date(),
+          expiresAt: null,
+          deniedReason: params.deniedReason,
+          source: params.source,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          state: params.state,
+          source: params.source,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to mark managed entity access edges denied',
+      );
+    }
+  }
+
   private readManagedEntitiesLastSuccessSnapshotExact(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -4255,6 +4490,32 @@ export class AdminService implements OnModuleDestroy {
         primaryBotId:
           this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
       });
+      const accessEdgeBotIds = Array.from(
+        new Set(
+          [
+            persistedChat.primaryBotId,
+            persistedChat.botId,
+            params.preferredBotId,
+            ...(params.observedBotIds ?? []),
+          ]
+            .map((botId) => this.normalizeManagedEntityAccessBotId(botId))
+            .filter((botId): botId is string => Boolean(botId)),
+        ),
+      );
+      await Promise.all(
+        accessEdgeBotIds.map((botId) =>
+          this.upsertManagedEntityAccessEdge({
+            chatId: summary.id,
+            userId: params.userId,
+            botId,
+            entityType: summary.entityType,
+            state: 'GRANTED',
+            userRole: 'ADMIN',
+            botRole: 'ADMIN',
+            source: params.source,
+          }),
+        ),
+      );
       this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
       try {
         await this.upsertManagedEntitiesPublishedSnapshotItem(params.userId, summary);
@@ -4546,21 +4807,13 @@ export class AdminService implements OnModuleDestroy {
       attemptedAdminChecks += 1;
       const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
         bypassNegativeCache: true,
+        allowPersistedFallback: false,
+        entityType: hintedEntityType,
         trafficClass: 'interactive',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
       if (access.status === 'unknown' || access.status === 'throttled') {
-        const provisional = await this.buildRecentBotAddedProvisionalChat({
-          row,
-          userId: normalizedUserId,
-          entityType,
-          hintedEntityType,
-          prisma: managedEntitiesReadPrisma,
-        });
-        if (provisional) {
-          bootstrapped.push(provisional);
-        }
         if (row.user_scoped) {
           this.scheduleUserScopedRecentBotAddedFastLane({
             chatId,
@@ -4583,19 +4836,6 @@ export class AdminService implements OnModuleDestroy {
         break;
       }
       if (access.status !== 'granted') {
-        const provisional =
-          row.user_scoped && access.reason === 'bot_not_admin'
-            ? await this.buildRecentBotAddedProvisionalChat({
-                row,
-                userId: normalizedUserId,
-                entityType,
-                hintedEntityType,
-                prisma: managedEntitiesReadPrisma,
-              })
-            : null;
-        if (provisional) {
-          bootstrapped.push(provisional);
-        }
         if (row.user_scoped && access.reason === 'bot_not_admin') {
           this.scheduleUserScopedRecentBotAddedFastLane({
             chatId,
@@ -5108,6 +5348,8 @@ export class AdminService implements OnModuleDestroy {
       strict: boolean;
       options: {
         bypassNegativeCache: true;
+        allowPersistedFallback?: false;
+        entityType?: ManagedEntityType;
         trafficClass?: 'interactive';
         sourceTag?: string;
         timeoutMs?: number;
@@ -5118,6 +5360,8 @@ export class AdminService implements OnModuleDestroy {
         strict: true,
         options: {
           bypassNegativeCache: true as const,
+          allowPersistedFallback: false as const,
+          entityType: candidate.chat.entityType,
         },
       })),
       ...suspiciousChatsToRevalidate.map((candidate) => ({
@@ -5125,6 +5369,8 @@ export class AdminService implements OnModuleDestroy {
         strict: false,
         options: {
           bypassNegativeCache: true as const,
+          allowPersistedFallback: false as const,
+          entityType: candidate.chat.entityType,
           trafficClass: 'interactive' as const,
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           timeoutMs: MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
@@ -5356,6 +5602,8 @@ export class AdminService implements OnModuleDestroy {
         async (candidate) => {
           const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
             bypassNegativeCache: true,
+            allowPersistedFallback: false,
+            entityType: candidate.entityType,
             trafficClass: options.fullScan ? 'background' : 'interactive',
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             timeoutMs: MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
@@ -5809,6 +6057,8 @@ export class AdminService implements OnModuleDestroy {
           }
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
+            allowPersistedFallback: false,
+            entityType: remoteChat.entityType,
             trafficClass: discoveryTrafficClass,
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             timeoutMs: adminCheckTimeoutMs,
@@ -18370,6 +18620,7 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const access = await this.resolveUserAndBotAdminAccess(chatId, userId, {
       bypassNegativeCache: true,
+      ...(entityType ? { entityType } : {}),
       trafficClass: options.trafficClass,
       timeoutMs: options.timeoutMs,
       allowPersistedFallback: options.allowPersistedFallback,
@@ -24682,22 +24933,27 @@ export class AdminService implements OnModuleDestroy {
           (hasRequestOptions
             ? await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions)
             : await this.maxClient.getCurrentChatMemberAccess(chatId));
+        const botRole = this.resolveManagedEntityAccessRole(botAccess);
 
         if (!botAccess.isAdmin && !botAccess.isOwner) {
           return {
             status: 'denied',
             source: 'remote',
             reason: 'bot_not_admin',
+            botRole,
           };
         }
 
         const userAccess =
           accessByUserId.get(normalizedUserId) ??
           (botContactId === normalizedUserId ? botAccess : null);
+        const userRole = this.resolveManagedEntityAccessRole(userAccess);
         if (userAccess?.isAdmin === true || userAccess?.isOwner === true) {
           return {
             status: 'granted',
             source: 'remote',
+            userRole,
+            botRole,
           };
         }
 
@@ -24705,6 +24961,8 @@ export class AdminService implements OnModuleDestroy {
           status: 'denied',
           source: 'remote',
           reason: 'user_not_admin',
+          userRole,
+          botRole,
         };
       }
 
@@ -24715,11 +24973,15 @@ export class AdminService implements OnModuleDestroy {
         ? {
             status: 'granted',
             source: 'remote',
+            userRole: 'ADMIN',
+            botRole: 'ADMIN',
           }
         : {
             status: 'denied',
             source: 'remote',
             reason: 'user_not_admin',
+            userRole: 'MEMBER',
+            botRole: 'ADMIN',
           };
     } catch (error: unknown) {
       if (this.isMaxApiThrottleError(error)) {
@@ -24765,6 +25027,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     userId: string,
     options: {
+      entityType?: ManagedEntityType;
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
       timeoutMs?: number;
@@ -24775,6 +25038,7 @@ export class AdminService implements OnModuleDestroy {
     });
     if (candidateBotIds.length === 0) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+      await this.recordRemoteManagedEntityAccessEdge(chatId, userId, null, options, resolution);
       if (resolution.status === 'granted') {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
         return resolution;
@@ -24799,6 +25063,7 @@ export class AdminService implements OnModuleDestroy {
 
     for (const botId of candidateBotIds) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, botId, options);
+      await this.recordRemoteManagedEntityAccessEdge(chatId, userId, botId, options, resolution);
       if (resolution.status === 'granted') {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
         return resolution;
@@ -24866,11 +25131,53 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private async recordRemoteManagedEntityAccessEdge(
+    chatId: string,
+    userId: string,
+    botId: string | null,
+    options: {
+      entityType?: ManagedEntityType;
+    },
+    resolution: AdminAccessResolution,
+  ): Promise<void> {
+    if (!options.entityType || resolution.status === 'unknown' || resolution.status === 'throttled') {
+      return;
+    }
+
+    if (resolution.status === 'granted') {
+      await this.upsertManagedEntityAccessEdge({
+        chatId,
+        userId,
+        botId,
+        entityType: options.entityType,
+        state: 'GRANTED',
+        userRole: resolution.userRole ?? 'ADMIN',
+        botRole: resolution.botRole ?? 'ADMIN',
+        source: 'remote_admin_access',
+      });
+      return;
+    }
+
+    await this.upsertManagedEntityAccessEdge({
+      chatId,
+      userId,
+      botId,
+      entityType: options.entityType,
+      state: resolution.reason === 'user_not_admin' ? 'USER_DENIED' : 'BOT_DENIED',
+      userRole:
+        resolution.reason === 'user_not_admin' ? (resolution.userRole ?? 'MEMBER') : 'UNKNOWN',
+      botRole: resolution.reason === 'bot_not_admin' ? (resolution.botRole ?? 'MEMBER') : 'ADMIN',
+      deniedReason: resolution.reason,
+      source: 'remote_admin_access',
+    });
+  }
+
   private async resolveUserAndBotAdminAccess(
     chatId: string,
     userId: string,
     options: {
       bypassNegativeCache?: boolean;
+      entityType?: ManagedEntityType;
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
       timeoutMs?: number;
@@ -24910,6 +25217,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
+      entityType: options.entityType,
       trafficClass: options.trafficClass,
       sourceTag: options.sourceTag,
       timeoutMs: options.timeoutMs,
@@ -25722,6 +26030,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async prunePersistedChatAccess(chatId: string, userId: string): Promise<void> {
+    await this.markManagedEntityAccessEdgesDeniedForUser({
+      chatId,
+      userId,
+      state: 'USER_DENIED',
+      deniedReason: 'persisted_access_pruned',
+      source: 'prune_persisted_chat_access',
+    });
     await this.prisma.chatAdminAllowlist.deleteMany({
       where: {
         chatId,
@@ -25979,9 +26294,13 @@ export class AdminService implements OnModuleDestroy {
     const supportedChats = chats.filter(
       (chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType),
     );
-    this.rememberManagedEntitiesLastSuccessChats(userId, supportedChats);
+    const strictVisibleChats = await this.filterManagedEntitiesByStrictAccessEdges(
+      userId,
+      supportedChats,
+    );
+    this.rememberManagedEntitiesLastSuccessChats(userId, strictVisibleChats);
 
-    return supportedChats;
+    return strictVisibleChats;
   }
 
   private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {

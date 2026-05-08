@@ -133,6 +133,8 @@
 - Managed entities are aggregated per unique chat or channel. Do not duplicate cards per bot.
 - The public mini app should not expose internal primary, standby, or execution-owner details.
 - Home readiness is user-scoped. Keep user-visible completion separate from long-running global discovery completion.
+- Home visibility is access-edge scoped: show managed entities only from fresh `GRANTED` `managed_entity_access_edges` for the current user and runtime bot.
+- Fresh `bot_added` candidates must not appear on home until MAX confirms that both the user and at least one runtime bot have admin rights.
 - New managed chats should reach home through `bot_added` signals, recent bootstrap, allowlist, and published snapshots. Do not reintroduce launch-context assumptions for target chat discovery.
 - When recent hydration resolves better chat metadata, keep the user-scoped published snapshot aligned so home does not linger on fallback titles like `Chat <id>`.
 - Managed-entities refresh is async. Diagnose `CHAT` and `CHANNEL` separately and trust refresh state/cursor, not only the first response.

@@ -34,6 +34,12 @@ const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 
+type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
+type ManagedEntityAccessEdgeClient = {
+  upsert?: (args: unknown) => Promise<unknown>;
+  updateMany?: (args: unknown) => Promise<unknown>;
+};
+
 class PendingBotAdminGrantError extends Error {
   constructor(readonly chatId: string) {
     super(`Bot admin access for chat ${chatId} is still propagating`);
@@ -208,7 +214,10 @@ export class MaxChatAdminRosterSyncService {
           normalized.chatId,
           requestOptions,
         );
-        await this.syncAllowlist(normalized, adminUserIds);
+        await this.syncAllowlist(normalized, adminUserIds, {
+          botId,
+          botRole: this.resolveManagedEntityAccessRole(access),
+        });
         return true;
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
@@ -452,6 +461,10 @@ export class MaxChatAdminRosterSyncService {
   private async syncAllowlist(
     job: MaxChatAdminRosterSyncJob,
     adminUserIds: readonly string[],
+    accessContext: {
+      botId: string;
+      botRole: ManagedEntityAccessRoleValue;
+    },
   ): Promise<void> {
     const chatId = job.chatId;
     const normalizedAdminUserIds = Array.from(
@@ -531,6 +544,24 @@ export class MaxChatAdminRosterSyncService {
         this.chatContextCache.setAdminAccess(chatId, userId, 'user_denied'),
       ),
     );
+    await this.upsertManagedEntityAccessEdges({
+      chatId,
+      userIds: normalizedAdminUserIds,
+      botId: accessContext.botId,
+      entityType: job.entityType ?? null,
+      state: 'GRANTED',
+      userRole: 'ADMIN',
+      botRole: accessContext.botRole,
+      source: job.source ?? 'admin_roster_sync',
+    });
+    await this.markManagedEntityAccessEdgesDenied({
+      chatId,
+      userIds: usersToRemove,
+      botId: accessContext.botId,
+      state: 'USER_DENIED',
+      deniedReason: 'user_removed_from_admin_roster',
+      source: job.source ?? 'admin_roster_sync',
+    });
 
     await this.patchManagedEntitiesPublishedSnapshots({
       chatId,
@@ -582,6 +613,13 @@ export class MaxChatAdminRosterSyncService {
         this.chatContextCache.setAdminAccess(chatId, userId, deniedState),
       ),
     );
+    await this.markManagedEntityAccessEdgesDenied({
+      chatId,
+      userIds: existingUserIds,
+      state: deniedState === 'user_denied' ? 'USER_DENIED' : 'BOT_DENIED',
+      deniedReason: deniedState,
+      source: 'admin_roster_sync_clear',
+    });
 
     await this.patchManagedEntitiesPublishedSnapshots({
       chatId,
@@ -600,6 +638,151 @@ export class MaxChatAdminRosterSyncService {
       Number.isFinite(job.retryUntilMs) &&
       job.retryUntilMs > Date.now()
     );
+  }
+
+  private getManagedEntityAccessEdgeClient(): ManagedEntityAccessEdgeClient | null {
+    const client = (this.prisma as unknown as { managedEntityAccessEdge?: unknown })
+      .managedEntityAccessEdge;
+    if (!client || typeof client !== 'object') {
+      return null;
+    }
+
+    const candidate = client as ManagedEntityAccessEdgeClient;
+    return typeof candidate.upsert === 'function' || typeof candidate.updateMany === 'function'
+      ? candidate
+      : null;
+  }
+
+  private resolveManagedEntityAccessRole(access: {
+    isAdmin?: boolean;
+    isOwner?: boolean;
+  }): ManagedEntityAccessRoleValue {
+    if (access.isOwner === true) {
+      return 'OWNER';
+    }
+    if (access.isAdmin === true) {
+      return 'ADMIN';
+    }
+    return 'MEMBER';
+  }
+
+  private async upsertManagedEntityAccessEdges(params: {
+    chatId: string;
+    userIds: readonly string[];
+    botId: string;
+    entityType: ManagedEntityType | null;
+    state: 'GRANTED';
+    userRole: ManagedEntityAccessRoleValue;
+    botRole: ManagedEntityAccessRoleValue;
+    source: string;
+  }): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client?.upsert || !params.entityType) {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const botId =
+      this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId);
+    if (!chatId || !botId) {
+      return;
+    }
+
+    const userIds = Array.from(
+      new Set(
+        params.userIds
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    const now = new Date();
+    await this.mapWithConcurrencyLimit(
+      userIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await client.upsert?.({
+          where: {
+            chatId_userId_botId: {
+              chatId,
+              userId,
+              botId,
+            },
+          },
+          create: {
+            chatId,
+            userId,
+            botId,
+            entityType: this.toPrismaEntityType(params.entityType),
+            state: params.state,
+            userRole: params.userRole,
+            botRole: params.botRole,
+            checkedAt: now,
+            expiresAt: null,
+            deniedReason: null,
+            source: params.source,
+          },
+          update: {
+            entityType: this.toPrismaEntityType(params.entityType),
+            state: params.state,
+            userRole: params.userRole,
+            botRole: params.botRole,
+            checkedAt: now,
+            expiresAt: null,
+            deniedReason: null,
+            source: params.source,
+          },
+        });
+        return null;
+      },
+    );
+  }
+
+  private async markManagedEntityAccessEdgesDenied(params: {
+    chatId: string;
+    userIds: readonly string[];
+    botId?: string | null;
+    state: 'USER_DENIED' | 'BOT_DENIED';
+    deniedReason: string;
+    source: string;
+  }): Promise<void> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client?.updateMany) {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const userIds = Array.from(
+      new Set(
+        params.userIds
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    if (!chatId || userIds.length === 0) {
+      return;
+    }
+
+    const botId = params.botId
+      ? (this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId))
+      : null;
+    await client.updateMany({
+      where: {
+        chatId,
+        userId: {
+          in: userIds,
+        },
+        ...(botId ? { botId } : {}),
+      },
+      data: {
+        state: params.state,
+        userRole: params.state === 'USER_DENIED' ? 'MEMBER' : 'UNKNOWN',
+        botRole: params.state === 'BOT_DENIED' ? 'MEMBER' : 'UNKNOWN',
+        checkedAt: new Date(),
+        expiresAt: null,
+        deniedReason: params.deniedReason,
+        source: params.source,
+      },
+    });
   }
 
   private resolveJobAttempts(job: MaxChatAdminRosterSyncJob): number {

@@ -7542,6 +7542,70 @@ describe('AdminService.listChannels', () => {
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
+  it('filters cached home entities through strict access edges when the edge table is available', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Подтверждённый канал',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+      {
+        chat: {
+          id: 'channel-2',
+          title: 'Устаревший канал',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+    (prisma as any).managedEntityAccessEdge = {
+      findMany: jest.fn().mockResolvedValue([{ chatId: 'channel-1', botId: '777000_bot' }]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'channel-1',
+        title: 'Подтверждённый канал',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        channelOverview: {
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      }),
+    ]);
+    expect((prisma as any).managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: 'admin-1',
+          state: 'GRANTED',
+          chatId: { in: ['channel-1', 'channel-2'] },
+        }),
+      }),
+    );
+  });
+
   it('does not block default channel load on live snapshot hydration', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -10251,7 +10315,7 @@ describe('AdminService.listChats', () => {
     ]);
   });
 
-  it('shows a fresh user-scoped bot_added chat provisionally while bot admin rights are still propagating', async () => {
+  it('hides a fresh user-scoped bot_added chat until bot admin rights are confirmed', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     prisma.$queryRaw
@@ -10296,19 +10360,12 @@ describe('AdminService.listChats', () => {
         displayName: null,
         chatTitle: null,
       }),
-    ).resolves.toEqual([
-      createChatSummaryFixture({
-        id: 'chat-2',
-        title: 'Перепел',
-        createdAt: '2026-04-19T21:07:43.203Z',
-        entityType: 'chat',
-      }),
-    ]);
+    ).resolves.toEqual([]);
 
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
-  it('shows a fresh user-scoped bot_added chat provisionally from the inline recent cache before read-model writes finish', async () => {
+  it('hides a fresh inline recent-cache bot_added chat before admin rights are confirmed', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
@@ -10357,17 +10414,10 @@ describe('AdminService.listChats', () => {
         displayName: null,
         chatTitle: null,
       }),
-    ).resolves.toEqual([
-      createChatSummaryFixture({
-        id: 'chat-inline-1',
-        title: 'Перепел inline',
-        createdAt: '2026-04-20T09:00:00.000Z',
-        entityType: 'chat',
-      }),
-    ]);
+    ).resolves.toEqual([]);
   });
 
-  it('prefers a user-scoped recent bot_added row over a global inline cache hit for the same chat', async () => {
+  it('does not show a user-scoped recent bot_added row over a global inline cache hit until access is confirmed', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     prisma.$queryRaw
@@ -10422,14 +10472,7 @@ describe('AdminService.listChats', () => {
         displayName: null,
         chatTitle: null,
       }),
-    ).resolves.toEqual([
-      createChatSummaryFixture({
-        id: 'chat-priority-1',
-        title: 'Приоритетный чат',
-        createdAt: '2026-04-20T10:00:00.000Z',
-        entityType: 'chat',
-      }),
-    ]);
+    ).resolves.toEqual([]);
   });
 
   it('schedules a published snapshot rebuild when recent bot_added bootstrap finds a chat missing from the snapshot', async () => {
@@ -13269,14 +13312,14 @@ describe('AdminService.listChats', () => {
     secondLookup.resolve(['admin-1']);
     firstLookup.resolve(['admin-1']);
 
-    await expect(second).resolves.toEqual({
+    await expect(second).resolves.toEqual(expect.objectContaining({
       status: 'granted',
       source: 'remote',
-    });
-    await expect(first).resolves.toEqual({
+    }));
+    await expect(first).resolves.toEqual(expect.objectContaining({
       status: 'granted',
       source: 'remote',
-    });
+    }));
   });
 
   it('queues a durable managed entities refresh when refresh is requested and a queue is available', async () => {
