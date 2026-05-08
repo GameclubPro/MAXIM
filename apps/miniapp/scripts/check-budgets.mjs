@@ -10,7 +10,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // which made harmless MAX-miniapp UI polish and VPS/Alpine gzip drift too brittle.
 // Keep the guardrail strict, but give the startup path enough room for iterative design work
 // and the large managed-entities home list virtualization needed for 100+ visible chats/channels.
-const STARTUP_JS_BUDGET_GZIP = 109 * 1024;
+// The six-type managed-entity favorites UI adds server-backed optimistic targeting and migration
+// logic to the startup home surface; keep the added allowance narrow.
+const STARTUP_JS_BUDGET_GZIP = 112 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast
@@ -23,6 +25,7 @@ const STARTUP_JS_BUDGET_GZIP = 109 * 1024;
 // the three-tab broadcast workspace with calendar/archive filters,
 // the publish review sheet,
 // the sheet-based broadcast button editor,
+// the apply-target confirmation sheet for settings fanout by favorite groups,
 // the compact send-now/scheduled/cycle timing selector,
 // favorite-audience quick selection and local text template entry points,
 // bidirectional stop-word preset actions and inline +/- parsing,
@@ -31,7 +34,7 @@ const STARTUP_JS_BUDGET_GZIP = 109 * 1024;
 // plus 10-photo broadcast gallery preparation and preview
 // plus rich paste parity for headings and code blocks in broadcast/suggestion previews
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 15 * 1024;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 18 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

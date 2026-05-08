@@ -1,8 +1,11 @@
 import type {
   ChatSummary,
+  ManagedEntityFavoritesResponse,
   ManagedEntitiesListResponse,
   ManagedEntitiesResponseDiff,
   ManagedEntitiesResponseSnapshot,
+  ManagedEntityFavoriteType,
+  ManagedEntityType,
   Me,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
@@ -115,6 +118,36 @@ function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
   return assignedBots;
 }
 
+function parseFavoriteTypes(value: unknown): ManagedEntityFavoriteType[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<ManagedEntityFavoriteType>();
+  const favoriteTypes: ManagedEntityFavoriteType[] = [];
+  for (const item of value) {
+    if (
+      item !== 'important' &&
+      item !== 'watch' &&
+      item !== 'broadcast' &&
+      item !== 'test' &&
+      item !== 'partner' &&
+      item !== 'service'
+    ) {
+      continue;
+    }
+
+    if (seen.has(item)) {
+      continue;
+    }
+
+    seen.add(item);
+    favoriteTypes.push(item);
+  }
+
+  return favoriteTypes;
+}
+
 function parseChatSummary(value: unknown): ChatSummary {
   if (!isRecord(value)) {
     throw new Error('Invalid chat summary');
@@ -140,6 +173,7 @@ function parseChatSummary(value: unknown): ChatSummary {
     throw new Error('Invalid chat summary');
   }
 
+  const favoriteTypes = parseFavoriteTypes(value.favoriteTypes);
   return {
     id: value.id,
     title: value.title,
@@ -151,6 +185,23 @@ function parseChatSummary(value: unknown): ChatSummary {
     primaryBotId,
     assignedBots: parseAssignedBots(value.assignedBots),
     sharedMode,
+    ...(favoriteTypes.length > 0 ? { favoriteTypes } : {}),
+  };
+}
+
+function parseManagedEntityFavoritesResponse(value: unknown): ManagedEntityFavoritesResponse {
+  if (
+    !isRecord(value) ||
+    (value.entityType !== 'chat' && value.entityType !== 'channel') ||
+    typeof value.entityId !== 'string'
+  ) {
+    throw new Error('Invalid managed entity favorites response');
+  }
+
+  return {
+    entityType: value.entityType,
+    entityId: value.entityId,
+    favoriteTypes: parseFavoriteTypes(value.favoriteTypes),
   };
 }
 
@@ -434,4 +485,20 @@ export async function getChannels(
   }
 
   return response.map((item) => parseChatSummary(item));
+}
+
+export async function updateManagedEntityFavorites(
+  api: ApiTransport,
+  entityType: ManagedEntityType,
+  entityId: string,
+  favoriteTypes: ManagedEntityFavoriteType[],
+): Promise<ManagedEntityFavoritesResponse> {
+  const response = await api.request(
+    `/managed-entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/favorites`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ favoriteTypes }),
+    },
+  );
+  return parseManagedEntityFavoritesResponse(response);
 }

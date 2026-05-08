@@ -389,6 +389,11 @@ function createPrismaMock() {
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue(undefined),
     },
+    managedEntityFavorite: {
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      upsert: jest.fn().mockResolvedValue(undefined),
+    },
     moderationEvent: {
       create: jest.fn().mockResolvedValue(undefined),
       count: jest.fn(),
@@ -3697,6 +3702,80 @@ describe('AdminService required subscription settings', () => {
       updatedChats: 2,
       appliedChatIds: ['chat-1', 'chat-2'],
     });
+  });
+
+  it('applies settings only to chats in selected favorite types', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const settings = chatSettingsSchema.parse({
+      greetingEnabled: true,
+      greetingBotMessageEnabled: true,
+      greetingBotMessageText: 'Привет!',
+    });
+
+    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    jest
+      .spyOn(
+        service as unknown as {
+          ensureEntityType: (...args: unknown[]) => Promise<void>;
+        },
+        'ensureEntityType',
+      )
+      .mockResolvedValue(undefined);
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Регион 2',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+      createChatSummaryFixture({
+        id: 'chat-3',
+        title: 'Регион 3',
+        createdAt: '2026-03-03T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+    prisma.managedEntityFavorite.findMany.mockResolvedValue([
+      { chatId: 'chat-2' },
+      { chatId: 'chat-3' },
+      { chatId: 'chat-2' },
+    ]);
+
+    const result = await service.applySettingsToAllChats('chat-1', actor, settings, 'miniapp', {
+      mode: 'favoriteTypes',
+      favoriteTypes: ['broadcast'],
+      chatIds: [],
+    });
+
+    expect(prisma.managedEntityFavorite.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: actor.userId,
+          entityType: 'CHAT',
+          favoriteType: { in: ['BROADCAST'] },
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      sourceChatId: 'chat-1',
+      updatedChats: 2,
+      appliedChatIds: ['chat-2', 'chat-3'],
+    });
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'chat-2' } }),
+    );
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'chat-3' } }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'chat-1' } }),
+    );
   });
 });
 
@@ -13312,14 +13391,18 @@ describe('AdminService.listChats', () => {
     secondLookup.resolve(['admin-1']);
     firstLookup.resolve(['admin-1']);
 
-    await expect(second).resolves.toEqual(expect.objectContaining({
-      status: 'granted',
-      source: 'remote',
-    }));
-    await expect(first).resolves.toEqual(expect.objectContaining({
-      status: 'granted',
-      source: 'remote',
-    }));
+    await expect(second).resolves.toEqual(
+      expect.objectContaining({
+        status: 'granted',
+        source: 'remote',
+      }),
+    );
+    await expect(first).resolves.toEqual(
+      expect.objectContaining({
+        status: 'granted',
+        source: 'remote',
+      }),
+    );
   });
 
   it('queues a durable managed entities refresh when refresh is requested and a queue is available', async () => {
@@ -15002,10 +15085,13 @@ describe('AdminService settings screen endpoints', () => {
       expect.objectContaining({ userId: 'admin-1' }),
       settings,
       'miniapp',
+      { mode: 'all', favoriteTypes: [], chatIds: [] },
       expect.arrayContaining(['linkPolicy', 'linkBotMessageEnabled', 'linkBotButtonText']),
     );
     expect(result).toEqual({
       section: 'links',
+      targetMode: 'all',
+      favoriteTypes: [],
       sourceChatId: 'chat-1',
       updatedChats: 2,
       appliedChatIds: ['chat-1', 'chat-2'],
@@ -20706,9 +20792,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         ],
       ],
     });
-    expect(String(options.buttons[0][0].url ?? '')).toContain(
-      'https://max.ru/entry-bot?startapp=',
-    );
+    expect(String(options.buttons[0][0].url ?? '')).toContain('https://max.ru/entry-bot?startapp=');
     expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.any(String),
     );

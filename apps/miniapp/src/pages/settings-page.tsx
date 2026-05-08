@@ -11,6 +11,7 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
+  type ApplySettingsTarget,
   type BroadcastImage,
   type BroadcastLinkButton,
   type BroadcastTargetMode,
@@ -35,10 +36,21 @@ import {
   type DomainAllowlistEntry,
   type ManagedEntityAssignedBot,
   type ManagedBroadcastDetails,
+  type ManagedEntityFavoriteType,
   type ManagedEntityHeader,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Check as IconoirCheck,
+  Community as IconoirCommunity,
+  Flask as IconoirFlask,
+  Megaphone as IconoirMegaphone,
+  ShieldAlert as IconoirShieldAlert,
+  Star as IconoirStar,
+  Wrench as IconoirWrench,
+  Xmark as IconoirXmark,
+} from 'iconoir-react';
 import '../styles/lazy-pages.css';
 import {
   Suspense,
@@ -94,6 +106,7 @@ import {
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
+  previewApplySettingsSectionTarget,
   publishRules,
   removeDomain,
   resolveRequiredSubscriptionChannel,
@@ -114,6 +127,11 @@ import type {
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
 import { HEALTH_BASE } from '../lib/public-config';
+import {
+  HOME_ENTITY_FAVORITE_LABELS,
+  HOME_ENTITY_FAVORITE_TITLES,
+  HOME_ENTITY_FAVORITE_TYPES,
+} from '../lib/home-entity-favorites';
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
@@ -656,6 +674,22 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   invitationAccess: 'Доступ по приглашениям',
   extra: 'Сервис',
 };
+const APPLY_TARGET_FAVORITE_ICONS = {
+  important: IconoirStar,
+  watch: IconoirShieldAlert,
+  broadcast: IconoirMegaphone,
+  test: IconoirFlask,
+  partner: IconoirCommunity,
+  service: IconoirWrench,
+} as const satisfies Record<ManagedEntityFavoriteType, typeof IconoirStar>;
+
+function createDefaultApplySettingsTarget(): ApplySettingsTarget {
+  return {
+    mode: 'all',
+    favoriteTypes: [],
+    chatIds: [],
+  };
+}
 
 function resolveDuplicateSharedWindowSec(
   settings: Pick<
@@ -2267,6 +2301,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   } | null>(null);
   const [pendingMailingPublishReview, setPendingMailingPublishReview] =
     useState<PendingBroadcastPublishReview | null>(null);
+  const [applyTargetSheet, setApplyTargetSheet] = useState<{
+    section: ApplySectionKey;
+    sourceSettings: ChatSettings;
+    target: ApplySettingsTarget;
+  } | null>(null);
+  const [applyTargetPreview, setApplyTargetPreview] = useState<Awaited<
+    ReturnType<typeof previewApplySettingsSectionTarget>
+  > | null>(null);
+  const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
+  const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
   const [chatsListRefreshRequest, setChatsListRefreshRequest] = useState<{
     nonce: number;
     behavior: 'default' | 'manual' | 'recovery';
@@ -3117,16 +3161,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: async ({
       section,
       sourceSettings,
+      target,
     }: {
       section: ApplySectionKey;
       sourceSettings: ChatSettings;
+      target: ApplySettingsTarget;
     }) => {
       if (!chatId) {
         throw new Error('Чат не выбран');
       }
 
       const savedSourceSettings = await updateSettings(api, chatId, sourceSettings);
-      const result = await applySettingsSectionToAll(api, chatId, section);
+      const result = await applySettingsSectionToAll(api, chatId, section, target);
       return {
         ...result,
         sourceSettings: savedSourceSettings,
@@ -3139,6 +3185,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         title: `Блок «${SECTION_LABELS[result.section]}» применен`,
         description: `Обновлено чатов: ${result.updatedChats}.`,
       });
+      setApplyTargetSheet(null);
       maxNotify('success');
     },
     onError: (error) => {
@@ -3152,6 +3199,45 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isApplyingSectionToAll = applySectionToAllMutation.isPending;
   const applyingSection = applySectionToAllMutation.variables?.section ?? null;
+
+  useEffect(() => {
+    if (!chatId || !applyTargetSheet) {
+      setApplyTargetPreview(null);
+      setApplyTargetPreviewError(null);
+      setApplyTargetPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setApplyTargetPreviewLoading(true);
+    setApplyTargetPreviewError(null);
+
+    void previewApplySettingsSectionTarget(api, chatId, applyTargetSheet.target)
+      .then((preview) => {
+        if (cancelled) {
+          return;
+        }
+
+        setApplyTargetPreview(preview);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        setApplyTargetPreview(null);
+        setApplyTargetPreviewError(formatApiError(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setApplyTargetPreviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, applyTargetSheet, chatId]);
 
   useEffect(() => {
     const shouldBlockClose = hasPendingHeaderChanges || isHeaderSaving || isApplyingSectionToAll;
@@ -6144,7 +6230,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }
 
-  async function handleSaveSectionToAllChats(section: ApplySectionKey) {
+  function openApplyTargetSheet(section: ApplySectionKey) {
     if (!chatId || !draft) {
       return;
     }
@@ -6159,12 +6245,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    setApplyTargetSheet({
+      section,
+      sourceSettings: payload,
+      target: createDefaultApplySettingsTarget(),
+    });
+  }
+
+  async function handleConfirmApplyTarget() {
+    if (!applyTargetSheet) {
+      return;
+    }
+
     try {
-      await applySectionToAllMutation.mutateAsync({
-        section,
-        sourceSettings: payload,
-      });
-      closeSection(section);
+      await applySectionToAllMutation.mutateAsync(applyTargetSheet);
+      closeSection(applyTargetSheet.section);
     } catch {
       // Errors are handled by the mutation.
     }
@@ -6190,6 +6285,192 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     } catch {
       // Errors are handled by the mutation.
     }
+  }
+
+  function formatApplyTargetCountLabel(count: number): string {
+    const normalized = Math.abs(count) % 100;
+    const remainder = normalized % 10;
+    if (normalized > 10 && normalized < 20) {
+      return `${count} чатов`;
+    }
+    if (remainder === 1) {
+      return `${count} чат`;
+    }
+    if (remainder > 1 && remainder < 5) {
+      return `${count} чата`;
+    }
+    return `${count} чатов`;
+  }
+
+  function updateApplyTarget(target: ApplySettingsTarget) {
+    setApplyTargetSheet((current) => (current ? { ...current, target } : current));
+  }
+
+  function toggleApplyTargetFavoriteType(favoriteType: ManagedEntityFavoriteType) {
+    if (!applyTargetSheet) {
+      return;
+    }
+
+    const currentTypes = applyTargetSheet.target.favoriteTypes;
+    const nextTypes = currentTypes.includes(favoriteType)
+      ? currentTypes.filter((item) => item !== favoriteType)
+      : [...currentTypes, favoriteType];
+    updateApplyTarget({
+      mode: nextTypes.length > 0 ? 'favoriteTypes' : 'allFavorites',
+      favoriteTypes: nextTypes,
+      chatIds: [],
+    });
+  }
+
+  function renderApplyTargetSheet() {
+    if (!applyTargetSheet) {
+      return null;
+    }
+
+    const target = applyTargetSheet.target;
+    const canConfirm =
+      !applyTargetPreviewLoading &&
+      !applyTargetPreviewError &&
+      !isApplyingSectionToAll &&
+      (applyTargetPreview?.updatedChats ?? 0) > 0;
+
+    return (
+      <div className="settings-apply-target" role="dialog" aria-modal="true">
+        <button
+          type="button"
+          className="settings-apply-target__backdrop"
+          aria-label="Закрыть выбор чатов"
+          onClick={() => setApplyTargetSheet(null)}
+        />
+        <div className="settings-apply-target__panel">
+          <div className="settings-apply-target__header">
+            <div>
+              <span>Блок «{SECTION_LABELS[applyTargetSheet.section]}»</span>
+              <strong>Применить в...</strong>
+            </div>
+            <button
+              type="button"
+              className="settings-apply-target__close"
+              aria-label="Закрыть"
+              title="Закрыть"
+              onClick={() => setApplyTargetSheet(null)}
+            >
+              <IconoirXmark aria-hidden />
+            </button>
+          </div>
+
+          <div
+            className="settings-apply-target__modes"
+            role="group"
+            aria-label="Область применения"
+          >
+            {[
+              { mode: 'current' as const, title: 'Текущий чат', hint: 'Только эта карточка' },
+              {
+                mode: 'all' as const,
+                title: 'Все чаты',
+                hint: 'Вся доступная администратору база',
+              },
+              {
+                mode: 'allFavorites' as const,
+                title: 'Все избранные',
+                hint: 'Любая из 6 иконок',
+              },
+            ].map((item) => (
+              <button
+                key={item.mode}
+                type="button"
+                className={cn(
+                  'settings-apply-target__mode',
+                  target.mode === item.mode && 'is-active',
+                )}
+                aria-pressed={target.mode === item.mode}
+                onClick={() =>
+                  updateApplyTarget({
+                    mode: item.mode,
+                    favoriteTypes: [],
+                    chatIds: [],
+                  })
+                }
+              >
+                <strong>{item.title}</strong>
+                <small>{item.hint}</small>
+              </button>
+            ))}
+          </div>
+
+          <div className="settings-apply-target__favorites">
+            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+              const FavoriteIcon = APPLY_TARGET_FAVORITE_ICONS[favoriteType];
+              const active =
+                target.mode === 'favoriteTypes' && target.favoriteTypes.includes(favoriteType);
+              return (
+                <button
+                  key={favoriteType}
+                  type="button"
+                  className={cn(
+                    'settings-apply-target__favorite',
+                    `is-${favoriteType}`,
+                    active && 'is-active',
+                  )}
+                  aria-pressed={active}
+                  title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
+                  onClick={() => toggleApplyTargetFavoriteType(favoriteType)}
+                >
+                  <FavoriteIcon aria-hidden />
+                  <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
+                  {active ? <IconoirCheck aria-hidden /> : null}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="settings-apply-target__preview">
+            {applyTargetPreviewLoading ? (
+              <span>Считаем чаты...</span>
+            ) : applyTargetPreviewError ? (
+              <span className="is-danger">{applyTargetPreviewError}</span>
+            ) : (
+              <span>
+                Будет обновлено:{' '}
+                <strong>
+                  {formatApplyTargetCountLabel(applyTargetPreview?.updatedChats ?? 0)}
+                </strong>
+              </span>
+            )}
+          </div>
+
+          {applyTargetPreview?.sampleChats.length ? (
+            <div className="settings-apply-target__sample" aria-label="Первые чаты">
+              {applyTargetPreview.sampleChats.map((chat) => (
+                <span key={chat.id}>{chat.title}</span>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="settings-apply-target__actions">
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={() => setApplyTargetSheet(null)}
+              disabled={isApplyingSectionToAll}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="button button--accent"
+              onClick={() => void handleConfirmApplyTarget()}
+              disabled={!canConfirm}
+            >
+              {isApplyingSectionToAll
+                ? 'Применяем...'
+                : `Применить к ${applyTargetPreview?.updatedChats ?? 0}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function renderSectionSaveFooter(
@@ -6227,12 +6508,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           <button
             type="button"
             className={applyToAllButtonClassName}
-            onClick={() => void handleSaveSectionToAllChats(section)}
+            onClick={() => openApplyTargetSheet(section)}
             disabled={isCurrentSectionSaving || isCurrentSectionApplying || !canApplyToAllChats}
           >
             {isCurrentSectionApplying
               ? 'Сохраняем...'
-              : (options?.applyToAllLabel ?? 'Сохранить во всех чатах')}
+              : (options?.applyToAllLabel ?? 'Применить в...')}
           </button>
         </div>
       </>
@@ -6251,6 +6532,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="page-stack page-enter">
+      {renderApplyTargetSheet()}
+
       {settingsHandoffMode ? (
         <Suspense fallback={null}>
           <LazySettingsHandoffState mode={settingsHandoffMode} onRetry={refetchSettings} />
@@ -11398,7 +11681,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  applyToAllLabel: 'Применить во всех чатах',
+                  applyToAllLabel: 'Применить в...',
                   emphasize: 'save',
                 })}
               >
@@ -12014,7 +12297,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--invitation-access"
                 onClose={() => toggleSection('invitationAccess')}
                 footer={renderSectionSaveFooter('invitationAccess', {
-                  applyToAllLabel: 'Применить во всех чатах',
+                  applyToAllLabel: 'Применить в...',
                   emphasize: 'save',
                 })}
               >

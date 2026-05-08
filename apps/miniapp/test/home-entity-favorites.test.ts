@@ -2,34 +2,40 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createEmptyHomeEntityFavorites,
+  createEmptyHomeEntityFavoritesByType,
+  getHomeEntityFavoriteTypes,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
   sanitizeHomeEntityFavorites,
-  toggleHomeEntityFavorite,
+  toggleHomeEntityFavoriteType,
 } from '../src/lib/home-entity-favorites';
 
-test('sanitizes favorite ids per entity type', () => {
-  assert.deepEqual(
-    sanitizeHomeEntityFavorites({
-      chat: [' 1 ', '1', '', 2, '2'],
-      channel: ['a', ' b ', 'a'],
-    }),
-    {
-      chat: ['1', '2'],
-      channel: ['a', 'b'],
+test('sanitizes favorite ids per entity type and favorite type', () => {
+  const favorites = sanitizeHomeEntityFavorites({
+    chat: {
+      important: [' 1 ', '1', '', 2, '2'],
+      watch: ['watch-1'],
     },
-  );
+    channel: {
+      broadcast: ['a', ' b ', 'a'],
+    },
+  });
+
+  assert.deepEqual(favorites.chat.important, ['1', '2']);
+  assert.deepEqual(favorites.chat.watch, ['watch-1']);
+  assert.deepEqual(favorites.channel.broadcast, ['a', 'b']);
+  assert.deepEqual(favorites.channel.important, []);
 });
 
-test('toggles favorites with the newest favorite first', () => {
+test('toggles favorite types with the newest favorite first', () => {
   const initial = createEmptyHomeEntityFavorites();
-  const first = toggleHomeEntityFavorite(initial, 'chat', 'chat-1').favorites;
-  const second = toggleHomeEntityFavorite(first, 'chat', 'chat-2').favorites;
-  const removed = toggleHomeEntityFavorite(second, 'chat', 'chat-1');
+  const first = toggleHomeEntityFavoriteType(initial, 'chat', 'chat-1', 'important').favorites;
+  const second = toggleHomeEntityFavoriteType(first, 'chat', 'chat-2', 'important').favorites;
+  const removed = toggleHomeEntityFavoriteType(second, 'chat', 'chat-1', 'important');
 
-  assert.deepEqual(second.chat, ['chat-2', 'chat-1']);
-  assert.equal(removed.favorite, false);
-  assert.deepEqual(removed.favorites.chat, ['chat-2']);
+  assert.deepEqual(second.chat.important, ['chat-2', 'chat-1']);
+  assert.deepEqual(removed.favoriteTypes, []);
+  assert.deepEqual(removed.favorites.chat.important, ['chat-2']);
 });
 
 test('orders visible entities by favorite order without dropping the rest', () => {
@@ -38,8 +44,10 @@ test('orders visible entities by favorite order without dropping the rest', () =
     { id: '2', title: 'Two' },
     { id: '3', title: 'Three' },
   ];
+  const favorites = createEmptyHomeEntityFavoritesByType();
+  favorites.important = ['3', 'missing', '1'];
 
-  assert.deepEqual(orderHomeEntitiesByFavorites(entities, ['3', 'missing', '1']), [
+  assert.deepEqual(orderHomeEntitiesByFavorites(entities, favorites), [
     { id: '3', title: 'Three' },
     { id: '1', title: 'One' },
     { id: '2', title: 'Two' },
@@ -47,14 +55,26 @@ test('orders visible entities by favorite order without dropping the rest', () =
 });
 
 test('merges migrated device favorites behind stored user favorites', () => {
-  assert.deepEqual(
-    mergeHomeEntityFavorites(
-      { chat: ['user-1', 'shared'], channel: ['channel-1'] },
-      { chat: ['shared', 'device-1'], channel: ['channel-2'] },
-    ),
-    {
-      chat: ['user-1', 'shared', 'device-1'],
-      channel: ['channel-1', 'channel-2'],
-    },
-  );
+  const userFavorites = createEmptyHomeEntityFavorites();
+  userFavorites.chat.important = ['user-1', 'shared'];
+  userFavorites.channel.important = ['channel-1'];
+  const deviceFavorites = createEmptyHomeEntityFavorites();
+  deviceFavorites.chat.important = ['shared', 'device-1'];
+  deviceFavorites.channel.important = ['channel-2'];
+
+  const merged = mergeHomeEntityFavorites(userFavorites, deviceFavorites);
+
+  assert.deepEqual(merged.chat.important, ['user-1', 'shared', 'device-1']);
+  assert.deepEqual(merged.channel.important, ['channel-1', 'channel-2']);
+});
+
+test('reads all favorite types for one entity in display order', () => {
+  const favorites = createEmptyHomeEntityFavorites();
+  favorites.chat.service = ['chat-1'];
+  favorites.chat.important = ['chat-1'];
+
+  assert.deepEqual(getHomeEntityFavoriteTypes(favorites, 'chat', 'chat-1'), [
+    'important',
+    'service',
+  ]);
 });

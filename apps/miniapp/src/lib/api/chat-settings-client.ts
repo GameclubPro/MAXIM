@@ -1,5 +1,7 @@
 import {
+  applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
+  applySettingsTargetSchema,
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
@@ -24,6 +26,8 @@ import {
   updateChatRulesRequestSchema,
   updateManagedPollRequestSchema,
   type ApplySectionToAllResponse,
+  type ApplySectionTargetPreviewResponse,
+  type ApplySettingsTarget,
   type AllowlistMatchType,
   type ChatRules,
   type ChatSettings,
@@ -148,12 +152,29 @@ export async function applySettingsSectionToAll(
   api: ApiTransport,
   chatId: string,
   section: ApplySectionToAllResponse['section'],
+  target?: ApplySettingsTarget,
 ): Promise<ApplySectionToAllResponse> {
+  const requestBody = {
+    section,
+    ...(target ? { target: applySettingsTargetSchema.parse(target) } : {}),
+  };
   const response = await api.request(`/chats/${chatId}/settings/apply-section-to-all`, {
     method: 'POST',
-    body: JSON.stringify({ section }),
+    body: JSON.stringify(requestBody),
   });
   return applySectionToAllResponseSchema.parse(response);
+}
+
+export async function previewApplySettingsSectionTarget(
+  api: ApiTransport,
+  chatId: string,
+  target: ApplySettingsTarget,
+): Promise<ApplySectionTargetPreviewResponse> {
+  const response = await api.request(`/chats/${chatId}/settings/apply-section-preview`, {
+    method: 'POST',
+    body: JSON.stringify({ target: applySettingsTargetSchema.parse(target) }),
+  });
+  return applySectionTargetPreviewResponseSchema.parse(response);
 }
 
 export async function getRules(api: ApiTransport, chatId: string): Promise<ChatRules> {

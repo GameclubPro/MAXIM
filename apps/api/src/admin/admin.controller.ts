@@ -132,6 +132,16 @@ export class AdminController {
     return this.adminService.getChannelHeader(chatId, user);
   }
 
+  @Put('managed-entities/:entityType/:entityId/favorites')
+  updateManagedEntityFavorites(
+    @Param('entityType') entityType: string,
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateManagedEntityFavorites(entityType, entityId, user, body);
+  }
+
   @Get('channels/:chatId/bots/plan')
   getChannelBotExecutionPlan(
     @Param('chatId') chatId: string,
@@ -556,6 +566,15 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.applySettingsSectionToAllChats(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/settings/apply-section-preview')
+  previewApplySettingsSectionTarget(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.previewApplySettingsSectionTarget(chatId, user, body);
   }
 
   @Post('chats/:chatId/broadcast')

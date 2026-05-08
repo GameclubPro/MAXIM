@@ -7,7 +7,9 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ElementType,
   type PointerEvent as ReactPointerEvent,
+  type SVGProps,
 } from 'react';
 import {
   RefreshDouble as IconoirRefreshDouble,
@@ -16,24 +18,34 @@ import {
   Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { Link, useSearchParams } from 'react-router-dom';
-import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
+import type { ManagedEntitiesRefreshState, ManagedEntityFavoriteType } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
-import { getMe } from '../lib/api/root-client';
+import { getMe, updateManagedEntityFavorites } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
+  HOME_ENTITY_FAVORITE_TYPES,
+  HOME_ENTITY_FAVORITE_LABELS,
+  HOME_ENTITY_FAVORITE_TITLES,
+  buildHomeEntityFavoritesMigrationKey,
+  createHomeEntityFavoritesFromEntities,
+  createHomeEntityFavoritesFromLegacy,
+  getHomeEntityFavoriteIds,
   getHomeEntityFavoritesFallbackScope,
+  getHomeEntityFavoriteTypes,
   isHomeEntityFavorite,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
+  readLegacyHomeEntityFavorites,
   readHomeEntityFavorites,
   saveHomeEntityFavorites,
-  toggleHomeEntityFavorite,
+  setHomeEntityFavoriteTypes,
+  toggleHomeEntityFavoriteType,
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
 import {
@@ -81,6 +93,15 @@ const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 93;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
+const FAVORITE_FILTER_ALL = 'all';
+const FAVORITE_TYPE_ICONS = {
+  important: IconoirStar,
+  watch: WatchGlyph,
+  broadcast: BroadcastGlyph,
+  test: TestGlyph,
+  partner: PartnerGlyph,
+  service: ServiceGlyph,
+} as const satisfies Record<ManagedEntityFavoriteType, ElementType<SVGProps<SVGSVGElement>>>;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -191,6 +212,110 @@ function ActivityGlyph() {
   );
 }
 
+function PlusGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path
+        d="M5 12.4l4.2 4.1L19 7"
+        stroke="currentColor"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function WatchGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path
+        d="M12 3.5l7 2.7v5.1c0 4.2-2.7 7.4-7 9.2-4.3-1.8-7-5-7-9.2V6.2l7-2.7Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M12 7.8v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 16.2h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function BroadcastGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path
+        d="M5 13.5h3.4l7.6 4.2V6.3l-7.6 4.2H5v3Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M19 9a4.8 4.8 0 010 6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path d="M8 13.5l1.2 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function TestGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path d="M9 3.8h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path
+        d="M10 4v5.2l-4.1 7.2A2.6 2.6 0 008.2 20h7.6a2.6 2.6 0 002.3-3.6L14 9.2V4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M8 16h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PartnerGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path
+        d="M7.5 11.5a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4ZM16.5 11.5a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M3.8 19.2c.7-2.7 2.4-4.2 4.8-4.2 1.4 0 2.5.5 3.4 1.4.9-.9 2-1.4 3.4-1.4 2.4 0 4.1 1.5 4.8 4.2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ServiceGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path
+        d="M14.7 5.2l4.1 4.1-9.5 9.5H5.2v-4.1l9.5-9.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M13.2 6.7l4.1 4.1" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -207,6 +332,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [homeEntityFavorites, setHomeEntityFavorites] = useState(() =>
     readHomeEntityFavorites(favoriteStorageScope),
   );
+  const [favoriteFilter, setFavoriteFilter] = useState<
+    ManagedEntityFavoriteType | typeof FAVORITE_FILTER_ALL
+  >(FAVORITE_FILTER_ALL);
+  const [favoritePicker, setFavoritePicker] = useState<{
+    entityType: ManagedTab;
+    entity: ManagedHomeEntity;
+  } | null>(null);
+  const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
+  const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -304,13 +438,44 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       entities: activeEntities,
       query,
     });
+    const filteredByFavorite =
+      favoriteFilter === FAVORITE_FILTER_ALL
+        ? matchingEntities
+        : matchingEntities.filter((entity) =>
+            isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id, favoriteFilter),
+          );
 
     return [
-      orderHomeEntitiesByFavorites(matchingEntities, homeEntityFavorites[activeTab]),
-      matchingCount,
+      orderHomeEntitiesByFavorites(
+        filteredByFavorite,
+        homeEntityFavorites[activeTab],
+        favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
+      ),
+      favoriteFilter === FAVORITE_FILTER_ALL ? matchingCount : filteredByFavorite.length,
     ] as const;
-  }, [activeEntities, activeTab, homeEntityFavorites, query]);
+  }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites, query]);
   const totalEntitiesCount = Array.isArray(activeEntities) ? activeEntities.length : 0;
+  const favoriteCounts = useMemo(() => {
+    if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
+      return HOME_ENTITY_FAVORITE_TYPES.reduce(
+        (acc, favoriteType) => ({
+          ...acc,
+          [favoriteType]: 0,
+        }),
+        {} as Record<ManagedEntityFavoriteType, number>,
+      );
+    }
+
+    return HOME_ENTITY_FAVORITE_TYPES.reduce(
+      (acc, favoriteType) => {
+        acc[favoriteType] = activeEntities.filter((entity) =>
+          isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id, favoriteType),
+        ).length;
+        return acc;
+      },
+      {} as Record<ManagedEntityFavoriteType, number>,
+    );
+  }, [activeEntities, activeTab, homeEntityFavorites]);
   const favoriteEntitiesCount = useMemo(() => {
     if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
       return 0;
@@ -325,10 +490,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return [];
     }
 
-    return activeEntities
-      .filter((entity) => isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id))
-      .slice(0, FAVORITE_DOCK_LIMIT);
-  }, [activeEntities, activeTab, homeEntityFavorites]);
+    const favoriteIds = getHomeEntityFavoriteIds(
+      homeEntityFavorites,
+      activeTab,
+      favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
+    );
+    const favoriteIdSet = new Set(favoriteIds);
+    return orderHomeEntitiesByFavorites(
+      activeEntities.filter((entity) => favoriteIdSet.has(entity.id)),
+      homeEntityFavorites[activeTab],
+      favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
+    ).slice(0, FAVORITE_DOCK_LIMIT);
+  }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites]);
   const hasSearchQuery = query.trim().length > 0;
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
@@ -420,6 +593,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [channelsState.data, chatsState.data]);
 
   useEffect(() => {
+    const serverFavorites = createHomeEntityFavoritesFromEntities({
+      chats: chatsState.data ?? undefined,
+      channels: channelsState.data ?? undefined,
+    });
+    const hasServerFavorites = HOME_ENTITY_FAVORITE_TYPES.some(
+      (favoriteType) =>
+        serverFavorites.chat[favoriteType].length > 0 ||
+        serverFavorites.channel[favoriteType].length > 0,
+    );
+    if (!hasServerFavorites) {
+      return;
+    }
+
+    setHomeEntityFavorites((current) => {
+      const next = mergeHomeEntityFavorites(current, serverFavorites);
+      if (JSON.stringify(next) === JSON.stringify(current)) {
+        return current;
+      }
+
+      saveHomeEntityFavorites(favoriteStorageScope, next);
+      return next;
+    });
+  }, [channelsState.data, chatsState.data, favoriteStorageScope]);
+
+  useEffect(() => {
     saveLastEntityType(activeTab);
   }, [activeTab]);
 
@@ -428,7 +626,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     if (virtualListViewportRef.current) {
       virtualListViewportRef.current.scrollTop = 0;
     }
-  }, [activeTab, query, shouldVirtualizeEntities]);
+  }, [activeTab, favoriteFilter, query, shouldVirtualizeEntities]);
 
   useEffect(() => {
     document.body.classList.add('chats-home-page-open');
@@ -456,8 +654,52 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     }
 
     favoriteStorageScopeRef.current = favoriteStorageScope;
+    favoriteMigrationAttemptedRef.current = false;
     setHomeEntityFavorites(nextFavorites);
   }, [favoriteStorageScope]);
+
+  useEffect(() => {
+    if (
+      favoriteMigrationAttemptedRef.current ||
+      favoriteStorageScope === getHomeEntityFavoritesFallbackScope() ||
+      typeof window === 'undefined'
+    ) {
+      return;
+    }
+
+    favoriteMigrationAttemptedRef.current = true;
+    const migrationKey = buildHomeEntityFavoritesMigrationKey(favoriteStorageScope);
+    if (window.localStorage.getItem(migrationKey) === '1') {
+      return;
+    }
+
+    const legacy = readLegacyHomeEntityFavorites(favoriteStorageScope);
+    const legacyFavorites = createHomeEntityFavoritesFromLegacy(legacy);
+    const legacyItems = [
+      ...legacyFavorites.chat.important.map((id) => ({ entityType: 'chat' as const, id })),
+      ...legacyFavorites.channel.important.map((id) => ({ entityType: 'channel' as const, id })),
+    ];
+    if (legacyItems.length === 0) {
+      window.localStorage.setItem(migrationKey, '1');
+      return;
+    }
+
+    const nextFavorites = mergeHomeEntityFavorites(homeEntityFavorites, legacyFavorites);
+    setHomeEntityFavorites(nextFavorites);
+    saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
+    window.localStorage.setItem(migrationKey, '1');
+
+    void Promise.allSettled(
+      legacyItems.map((item) =>
+        updateManagedEntityFavorites(
+          api,
+          item.entityType,
+          item.id,
+          getHomeEntityFavoriteTypes(nextFavorites, item.entityType, item.id),
+        ),
+      ),
+    );
+  }, [api, favoriteStorageScope, homeEntityFavorites]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -526,12 +768,46 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     prefetchChatEvents(entityId);
   }
 
-  function handleToggleHomeEntityFavorite(entityType: ManagedTab, entityId: string) {
-    setHomeEntityFavorites((current) => {
-      const next = toggleHomeEntityFavorite(current, entityType, entityId).favorites;
-      saveHomeEntityFavorites(favoriteStorageScope, next);
-      return next;
-    });
+  function buildFavoriteEntityKey(entityType: ManagedTab, entityId: string) {
+    return `${entityType}:${entityId}`;
+  }
+
+  async function handleToggleHomeEntityFavoriteType(
+    entityType: ManagedTab,
+    entityId: string,
+    favoriteType: ManagedEntityFavoriteType,
+  ) {
+    const previousFavorites = homeEntityFavorites;
+    const result = toggleHomeEntityFavoriteType(
+      previousFavorites,
+      entityType,
+      entityId,
+      favoriteType,
+    );
+    setHomeEntityFavorites(result.favorites);
+    saveHomeEntityFavorites(favoriteStorageScope, result.favorites);
+    setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
+
+    try {
+      const saved = await updateManagedEntityFavorites(
+        api,
+        entityType,
+        entityId,
+        result.favoriteTypes,
+      );
+      setHomeEntityFavorites((current) => {
+        const next = setHomeEntityFavoriteTypes(current, entityType, entityId, saved.favoriteTypes);
+        saveHomeEntityFavorites(favoriteStorageScope, next);
+        return next;
+      });
+    } catch {
+      setHomeEntityFavorites(previousFavorites);
+      saveHomeEntityFavorites(favoriteStorageScope, previousFavorites);
+    } finally {
+      setSavingFavoriteEntityKey((current) =>
+        current === buildFavoriteEntityKey(entityType, entityId) ? null : current,
+      );
+    }
   }
 
   function prefetchChannelStats(chatId: string) {
@@ -554,6 +830,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function renderEntityCard(entity: ManagedHomeEntity, index: number) {
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
+    const favoriteTypes = getHomeEntityFavoriteTypes(homeEntityFavorites, activeTab, entity.id);
+    const PrimaryFavoriteIcon =
+      favoriteTypes.length > 0 ? FAVORITE_TYPE_ICONS[favoriteTypes[0]] : PlusGlyph;
+    const favoriteEntitySaving =
+      savingFavoriteEntityKey === buildFavoriteEntityKey(activeTab, entity.id);
     const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
     const className = cn(
       'chat-card',
@@ -610,12 +891,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <button
             type="button"
             className={cn('chat-card__favorite', favorite && 'is-active')}
-            onClick={() => handleToggleHomeEntityFavorite(activeTab, entity.id)}
+            onClick={() => setFavoritePicker({ entityType: activeTab, entity })}
             aria-pressed={favorite}
-            aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
-            title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+            aria-label="Настроить избранное"
+            title="Настроить избранное"
+            disabled={favoriteEntitySaving}
           >
-            <IconoirStar aria-hidden />
+            <PrimaryFavoriteIcon aria-hidden />
           </button>
 
           <Link
@@ -637,12 +919,113 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             <ActivityGlyph />
           </Link>
         </div>
+
+        {favoriteTypes.length > 0 ? (
+          <div className="chat-card__favorite-badges" aria-label="Типы избранного">
+            {favoriteTypes.slice(0, 3).map((favoriteType) => {
+              const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
+              return (
+                <span
+                  key={favoriteType}
+                  className={cn('chat-card__favorite-badge', `is-${favoriteType}`)}
+                  title={HOME_ENTITY_FAVORITE_LABELS[favoriteType]}
+                >
+                  <FavoriteIcon aria-hidden />
+                </span>
+              );
+            })}
+            {favoriteTypes.length > 3 ? (
+              <span className="chat-card__favorite-badge is-more">+{favoriteTypes.length - 3}</span>
+            ) : null}
+          </div>
+        ) : null}
       </GlassCard>
+    );
+  }
+
+  function renderFavoritePicker() {
+    if (!favoritePicker) {
+      return null;
+    }
+
+    const selectedTypes = getHomeEntityFavoriteTypes(
+      homeEntityFavorites,
+      favoritePicker.entityType,
+      favoritePicker.entity.id,
+    );
+    const saving =
+      savingFavoriteEntityKey ===
+      buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id);
+
+    return (
+      <div className="favorite-picker" role="dialog" aria-modal="true">
+        <button
+          type="button"
+          className="favorite-picker__backdrop"
+          aria-label="Закрыть избранное"
+          onClick={() => setFavoritePicker(null)}
+        />
+        <div className="favorite-picker__panel">
+          <div className="favorite-picker__header">
+            <div>
+              <span>{favoritePicker.entityType === 'chat' ? 'Чат' : 'Канал'}</span>
+              <strong>{favoritePicker.entity.title}</strong>
+            </div>
+            <button
+              type="button"
+              className="favorite-picker__close"
+              aria-label="Закрыть"
+              title="Закрыть"
+              onClick={() => setFavoritePicker(null)}
+            >
+              <IconoirXmark aria-hidden />
+            </button>
+          </div>
+
+          <div className="favorite-picker__grid">
+            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+              const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
+              const active = selectedTypes.includes(favoriteType);
+              return (
+                <button
+                  key={favoriteType}
+                  type="button"
+                  className={cn(
+                    'favorite-picker__option',
+                    `is-${favoriteType}`,
+                    active && 'is-active',
+                  )}
+                  aria-pressed={active}
+                  disabled={saving}
+                  onClick={() =>
+                    void handleToggleHomeEntityFavoriteType(
+                      favoritePicker.entityType,
+                      favoritePicker.entity.id,
+                      favoriteType,
+                    )
+                  }
+                >
+                  <span className="favorite-picker__icon">
+                    <FavoriteIcon aria-hidden />
+                  </span>
+                  <span>
+                    <strong>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</strong>
+                    <small>{HOME_ENTITY_FAVORITE_TITLES[favoriteType]}</small>
+                  </span>
+                  {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     );
   }
 
   return (
     <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
+      {renderFavoritePicker()}
+
       <GlassCard className={cn('chats-command', isFetching && 'is-syncing')} padding="sm" elevated>
         <h1 className="chats-command__sr">{tabLabel}</h1>
         <div className="chats-command__topline">
@@ -727,6 +1110,41 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <strong>{favoriteEntitiesCount}</strong>
             </span>
           </div>
+        </div>
+
+        <div className="favorite-filter" role="group" aria-label="Фильтр избранного">
+          <button
+            type="button"
+            className={cn(
+              'favorite-filter__chip',
+              favoriteFilter === FAVORITE_FILTER_ALL && 'is-active',
+            )}
+            aria-pressed={favoriteFilter === FAVORITE_FILTER_ALL}
+            onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
+          >
+            Все
+          </button>
+          {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+            const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
+            return (
+              <button
+                key={favoriteType}
+                type="button"
+                className={cn(
+                  'favorite-filter__chip',
+                  `is-${favoriteType}`,
+                  favoriteFilter === favoriteType && 'is-active',
+                )}
+                aria-pressed={favoriteFilter === favoriteType}
+                title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
+                onClick={() => setFavoriteFilter(favoriteType)}
+              >
+                <FavoriteIcon aria-hidden />
+                <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
+                <strong>{favoriteCounts[favoriteType]}</strong>
+              </button>
+            );
+          })}
         </div>
       </GlassCard>
 
@@ -882,7 +1300,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="neutral"
             title={`${tabLabel} не найдены`}
-            description="Попробуйте изменить поисковый запрос."
+            description={
+              favoriteFilter === FAVORITE_FILTER_ALL
+                ? 'Попробуйте изменить поисковый запрос.'
+                : 'В этом типе избранного пока нет подходящих элементов.'
+            }
           />
         </GlassCard>
       ) : null}

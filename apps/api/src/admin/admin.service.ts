@@ -1,4 +1,6 @@
 import {
+  applySectionTargetPreviewRequestSchema,
+  applySectionTargetPreviewResponseSchema,
   applySectionToAllRequestSchema,
   applySectionToAllResponseSchema,
   addDomainRequestSchema,
@@ -32,6 +34,8 @@ import {
   membershipActivityQuerySchema,
   managedEntityBotCapabilitySchema,
   managedEntityBotExecutionPlanSchema,
+  managedEntityFavoritesResponseSchema,
+  managedEntityTypeSchema,
   publishChatRulesResultSchema,
   promoteManagedEntityStandbyRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
@@ -52,7 +56,10 @@ import {
   type ChannelStatsResponse,
   type ChannelOverview,
   type ApplySectionToAllResponse,
+  type ApplySettingsTarget,
+  type ApplySectionTargetPreviewResponse,
   type ManagedBroadcastDetails,
+  type ManagedEntityFavoriteType,
   type MembershipActivityPage,
   type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
@@ -112,6 +119,7 @@ import {
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateManagedEntityFavoritesRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   updateChannelDialogMessageRequestSchema,
@@ -137,6 +145,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import {
   ChatBotMembershipStatus,
   ChatEntityType,
+  ManagedEntityFavoriteType as PrismaManagedEntityFavoriteType,
   ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
   EventType,
   ManagedBroadcastStatus as PrismaManagedBroadcastStatus,
@@ -875,6 +884,31 @@ const SETTINGS_SECTION_KEYS = {
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
 const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
+const MANAGED_ENTITY_FAVORITE_TYPE_ORDER: ManagedEntityFavoriteType[] = [
+  'important',
+  'watch',
+  'broadcast',
+  'test',
+  'partner',
+  'service',
+];
+const PRISMA_FAVORITE_TYPE_BY_CONTRACT = {
+  important: PrismaManagedEntityFavoriteType.IMPORTANT,
+  watch: PrismaManagedEntityFavoriteType.WATCH,
+  broadcast: PrismaManagedEntityFavoriteType.BROADCAST,
+  test: PrismaManagedEntityFavoriteType.TEST,
+  partner: PrismaManagedEntityFavoriteType.PARTNER,
+  service: PrismaManagedEntityFavoriteType.SERVICE,
+} as const satisfies Record<ManagedEntityFavoriteType, PrismaManagedEntityFavoriteType>;
+const CONTRACT_FAVORITE_TYPE_BY_PRISMA = {
+  [PrismaManagedEntityFavoriteType.IMPORTANT]: 'important',
+  [PrismaManagedEntityFavoriteType.WATCH]: 'watch',
+  [PrismaManagedEntityFavoriteType.BROADCAST]: 'broadcast',
+  [PrismaManagedEntityFavoriteType.TEST]: 'test',
+  [PrismaManagedEntityFavoriteType.PARTNER]: 'partner',
+  [PrismaManagedEntityFavoriteType.SERVICE]: 'service',
+} as const satisfies Record<PrismaManagedEntityFavoriteType, ManagedEntityFavoriteType>;
+const APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT = 8;
 const REQUIRED_SUBSCRIPTION_DURATION_DAY_MS = 24 * 60 * 60 * 1_000;
 const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
@@ -1251,7 +1285,7 @@ export class AdminService implements OnModuleDestroy {
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'chat', options);
-    return result.items;
+    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
   }
 
   async listChatsForMassBroadcast(
@@ -1270,7 +1304,7 @@ export class AdminService implements OnModuleDestroy {
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'channel', options);
-    return result.items;
+    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
   }
 
   async listChatsWithRefreshState(
@@ -1288,15 +1322,16 @@ export class AdminService implements OnModuleDestroy {
         diff: result.diff,
       },
     );
+    const items = await this.attachManagedEntityFavoriteTypes(user.userId, result.items);
     const response: ManagedEntitiesListResponse = {
-      items: result.items,
+      items,
       refresh,
     };
     if (result.snapshot) {
       response.snapshot = result.snapshot;
     }
     if (result.diff) {
-      response.diff = result.diff;
+      response.diff = await this.attachManagedEntityFavoriteTypesToDiff(user.userId, result.diff);
     }
     return response;
   }
@@ -1316,15 +1351,16 @@ export class AdminService implements OnModuleDestroy {
         diff: result.diff,
       },
     );
+    const items = await this.attachManagedEntityFavoriteTypes(user.userId, result.items);
     const response: ManagedEntitiesListResponse = {
-      items: result.items,
+      items,
       refresh,
     };
     if (result.snapshot) {
       response.snapshot = result.snapshot;
     }
     if (result.diff) {
-      response.diff = result.diff;
+      response.diff = await this.attachManagedEntityFavoriteTypesToDiff(user.userId, result.diff);
     }
     return response;
   }
@@ -1335,7 +1371,109 @@ export class AdminService implements OnModuleDestroy {
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, entityType, options);
-    return result.items;
+    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
+  }
+
+  async updateManagedEntityFavorites(
+    entityTypeRaw: string,
+    entityId: string,
+    user: AuthUser,
+    body: unknown,
+  ) {
+    const entityType = managedEntityTypeSchema.parse(entityTypeRaw);
+    const parsed = updateManagedEntityFavoritesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    await this.assertChatAdmin(entityId, user.userId, entityType);
+    await this.ensureEntityType(entityId, user.userId, entityType);
+
+    const favoriteTypes = parsed.data.favoriteTypes;
+    const prismaEntityType = this.toPrismaEntityType(entityType);
+    const prismaFavoriteTypes = favoriteTypes.map(
+      (favoriteType) => PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
+    );
+
+    await this.prisma.$transaction([
+      this.prisma.managedEntityFavorite.deleteMany({
+        where: {
+          userId: user.userId,
+          chatId: entityId,
+          entityType: prismaEntityType,
+          favoriteType:
+            prismaFavoriteTypes.length > 0
+              ? {
+                  notIn: prismaFavoriteTypes,
+                }
+              : undefined,
+        },
+      }),
+      ...favoriteTypes.map((favoriteType, index) =>
+        this.prisma.managedEntityFavorite.upsert({
+          where: {
+            userId_entityType_chatId_favoriteType: {
+              userId: user.userId,
+              entityType: prismaEntityType,
+              chatId: entityId,
+              favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
+            },
+          },
+          create: {
+            userId: user.userId,
+            entityType: prismaEntityType,
+            chatId: entityId,
+            favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
+            position: index,
+          },
+          update: {
+            position: index,
+          },
+        }),
+      ),
+      this.prisma.auditLog.create({
+        data: {
+          chatId: entityId,
+          actorUserId: user.userId,
+          action: 'UPDATE_MANAGED_ENTITY_FAVORITES',
+          payload: {
+            entityType,
+            favoriteTypes,
+          },
+        },
+      }),
+    ]);
+
+    return managedEntityFavoritesResponseSchema.parse({
+      entityType,
+      entityId,
+      favoriteTypes,
+    });
+  }
+
+  async previewApplySettingsSectionTarget(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ApplySectionTargetPreviewResponse> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    const parsed = applySectionTargetPreviewRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const target = parsed.data.target;
+    const targetChats = await this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
+
+    return applySectionTargetPreviewResponseSchema.parse({
+      sourceChatId,
+      targetMode: target.mode,
+      favoriteTypes: target.favoriteTypes,
+      updatedChats: targetChats.length,
+      appliedChatIds: targetChats.map((chat) => chat.id),
+      sampleChats: targetChats.slice(0, APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT),
+    });
   }
 
   private attachManagedEntitiesUserVisibleRefreshState(
@@ -1590,7 +1728,9 @@ export class AdminService implements OnModuleDestroy {
           });
           const mergedFresh = await mergeWithLightweightBootstrap(fresh.items);
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
-          this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+          this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
+            deferStart: true,
+          });
           this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
           return {
             items,
@@ -1607,7 +1747,9 @@ export class AdminService implements OnModuleDestroy {
       );
       if (publishedSnapshot) {
         const items = await mergePublishedSnapshotWithLightweightBootstrap(publishedSnapshot.items);
-        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
+          deferStart: true,
+        });
         const refreshState =
           options.includeRefreshState === true
             ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
@@ -1639,7 +1781,9 @@ export class AdminService implements OnModuleDestroy {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
         );
-        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
+          deferStart: true,
+        });
         return {
           items,
           refresh:
@@ -1683,7 +1827,9 @@ export class AdminService implements OnModuleDestroy {
               await this.hydrateManagedEntities(discoveredItems),
             )
           : [];
-      this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+      this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
+        deferStart: true,
+      });
 
       return {
         items,
@@ -3315,13 +3461,94 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private cloneManagedEntitySummary(chat: ChatSummary): ChatSummary {
-    return {
+    const favoriteTypes = Array.isArray(chat.favoriteTypes)
+      ? this.sortManagedEntityFavoriteTypes(chat.favoriteTypes)
+      : [];
+    const clone: ChatSummary = {
       ...chat,
       channelOverview: chat.channelOverview ? { ...chat.channelOverview } : null,
       assignedBots: Array.isArray(chat.assignedBots)
         ? chat.assignedBots.map((bot) => ({ ...bot }))
         : [],
     };
+    if (favoriteTypes.length > 0) {
+      clone.favoriteTypes = favoriteTypes;
+    } else {
+      delete clone.favoriteTypes;
+    }
+    return clone;
+  }
+
+  private async attachManagedEntityFavoriteTypes(
+    userId: string,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const rows = await this.prisma.managedEntityFavorite.findMany({
+      where: {
+        userId,
+        chatId: {
+          in: Array.from(new Set(items.map((item) => item.id))),
+        },
+      },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        chatId: true,
+        entityType: true,
+        favoriteType: true,
+      },
+    });
+    const favoriteTypesByKey = new Map<string, ManagedEntityFavoriteType[]>();
+    for (const row of rows) {
+      const favoriteType = CONTRACT_FAVORITE_TYPE_BY_PRISMA[row.favoriteType];
+      const key = `${this.fromPrismaEntityType(row.entityType)}:${row.chatId}`;
+      const current = favoriteTypesByKey.get(key) ?? [];
+      if (!current.includes(favoriteType)) {
+        current.push(favoriteType);
+      }
+      favoriteTypesByKey.set(key, current);
+    }
+
+    return items.map((item) => {
+      const favoriteTypes = favoriteTypesByKey.get(`${item.entityType}:${item.id}`) ?? [];
+      const next: ChatSummary = { ...item };
+      if (favoriteTypes.length > 0) {
+        next.favoriteTypes = this.sortManagedEntityFavoriteTypes(favoriteTypes);
+      } else {
+        delete next.favoriteTypes;
+      }
+      return next;
+    });
+  }
+
+  private async attachManagedEntityFavoriteTypesToDiff(
+    userId: string,
+    diff: ManagedEntitiesResponseDiff | null | undefined,
+  ): Promise<ManagedEntitiesResponseDiff | null | undefined> {
+    if (!diff || diff.mode !== 'patch') {
+      return diff;
+    }
+
+    const [added, updated] = await Promise.all([
+      this.attachManagedEntityFavoriteTypes(userId, diff.added),
+      this.attachManagedEntityFavoriteTypes(userId, diff.updated),
+    ]);
+
+    return {
+      ...diff,
+      added,
+      updated,
+    };
+  }
+
+  private sortManagedEntityFavoriteTypes(
+    favoriteTypes: readonly ManagedEntityFavoriteType[],
+  ): ManagedEntityFavoriteType[] {
+    const selected = new Set(favoriteTypes);
+    return MANAGED_ENTITY_FAVORITE_TYPE_ORDER.filter((favoriteType) => selected.has(favoriteType));
   }
 
   private getManagedEntityAccessEdgeClient(): ManagedEntityAccessEdgeClient | null {
@@ -3807,6 +4034,7 @@ export class AdminService implements OnModuleDestroy {
     primaryBotId?: string | null;
     assignedBots?: ManagedEntityAssignedBot[];
     sharedMode?: ChatSummary['sharedMode'];
+    favoriteTypes?: ManagedEntityFavoriteType[];
   }): ChatSummary {
     const assignedBots = [...(params.assignedBots ?? [])];
     return {
@@ -3820,6 +4048,9 @@ export class AdminService implements OnModuleDestroy {
       primaryBotId: this.readTrimmedString(params.primaryBotId) ?? null,
       assignedBots,
       sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),
+      ...(params.favoriteTypes && params.favoriteTypes.length > 0
+        ? { favoriteTypes: this.sortManagedEntityFavoriteTypes(params.favoriteTypes) }
+        : {}),
     };
   }
 
@@ -9165,6 +9396,11 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
+    targetOrSettingKeys: ApplySettingsTarget | readonly (keyof ChatSettings)[] = {
+      mode: 'all',
+      favoriteTypes: [],
+      chatIds: [],
+    },
     settingKeys?: readonly (keyof ChatSettings)[],
   ): Promise<ApplySettingsToAllChatsResult> {
     await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
@@ -9177,14 +9413,20 @@ export class AdminService implements OnModuleDestroy {
       resetRequiredSubscriptionExpiration: true,
     });
 
-    const availableChats = await this.listChatsForMassBroadcast(user, {
-      discoveryMode: 'cached-first',
-    });
-    const appliedChatIds = Array.from(
-      new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]),
-    );
-    const filteredSettingKeys = Array.isArray(settingKeys)
-      ? Array.from(new Set(settingKeys)).filter(
+    const usesLegacySettingKeys = Array.isArray(targetOrSettingKeys);
+    const target: ApplySettingsTarget = usesLegacySettingKeys
+      ? { mode: 'all' as const, favoriteTypes: [], chatIds: [] }
+      : (targetOrSettingKeys as ApplySettingsTarget);
+    const effectiveSettingKeys = usesLegacySettingKeys
+      ? (targetOrSettingKeys as readonly (keyof ChatSettings)[])
+      : settingKeys;
+    const targetChats = await this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
+    if (targetChats.length === 0) {
+      throw new BadRequestException('Нет доступных чатов для применения настроек.');
+    }
+    const appliedChatIds = targetChats.map((chat) => chat.id);
+    const filteredSettingKeys = Array.isArray(effectiveSettingKeys)
+      ? Array.from(new Set(effectiveSettingKeys)).filter(
           (key): key is keyof ChatSettings => typeof key === 'string' && key in normalizedSettings,
         )
       : [];
@@ -9269,6 +9511,8 @@ export class AdminService implements OnModuleDestroy {
                 sourceChatId,
                 targetChatId: chatId,
                 source,
+                targetMode: target.mode,
+                ...(target.favoriteTypes.length > 0 ? { favoriteTypes: target.favoriteTypes } : {}),
                 ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
               },
             },
@@ -9311,6 +9555,7 @@ export class AdminService implements OnModuleDestroy {
       user,
       sourceSettings,
       source,
+      parsed.data.target,
       SETTINGS_SECTION_KEYS[parsed.data.section],
     );
 
@@ -9320,8 +9565,100 @@ export class AdminService implements OnModuleDestroy {
 
     return applySectionToAllResponseSchema.parse({
       section: parsed.data.section,
+      targetMode: parsed.data.target.mode,
+      favoriteTypes: parsed.data.target.favoriteTypes,
       ...result,
     });
+  }
+
+  private async resolveSettingsApplyTargetChats(
+    sourceChatId: string,
+    user: AuthUser,
+    target: ApplySettingsTarget,
+  ): Promise<ChatSummary[]> {
+    const availableChats = await this.listChatsForMassBroadcast(user, {
+      discoveryMode: 'cached-first',
+    });
+    const sourceChat =
+      availableChats.find((chat) => chat.id === sourceChatId) ??
+      this.createManagedEntitySummary({
+        id: sourceChatId,
+        title: `Chat ${sourceChatId}`,
+        createdAt: new Date().toISOString(),
+        entityType: 'chat',
+      });
+    const selectableChats = this.mergeManagedEntityGroups([sourceChat], availableChats);
+    const selectableById = new Map(selectableChats.map((chat) => [chat.id, chat]));
+
+    if (target.mode === 'current') {
+      return [sourceChat];
+    }
+
+    if (target.mode === 'all') {
+      return selectableChats;
+    }
+
+    if (target.mode === 'selectedChats') {
+      return this.resolveOrderedTargetChats(target.chatIds, selectableById);
+    }
+
+    const favoriteTypes =
+      target.mode === 'allFavorites' ? MANAGED_ENTITY_FAVORITE_TYPE_ORDER : target.favoriteTypes;
+    const favoriteChatIds = await this.listFavoriteChatIdsForSettingsTarget(
+      user.userId,
+      favoriteTypes,
+    );
+    return this.resolveOrderedTargetChats(favoriteChatIds, selectableById);
+  }
+
+  private resolveOrderedTargetChats(
+    chatIds: readonly string[],
+    selectableById: ReadonlyMap<string, ChatSummary>,
+  ): ChatSummary[] {
+    const seen = new Set<string>();
+    const targetChats: ChatSummary[] = [];
+
+    for (const chatId of chatIds) {
+      const normalizedChatId = this.readTrimmedString(chatId);
+      if (!normalizedChatId || seen.has(normalizedChatId)) {
+        continue;
+      }
+
+      const chat = selectableById.get(normalizedChatId);
+      if (!chat) {
+        continue;
+      }
+
+      seen.add(normalizedChatId);
+      targetChats.push(chat);
+    }
+
+    return targetChats;
+  }
+
+  private async listFavoriteChatIdsForSettingsTarget(
+    userId: string,
+    favoriteTypes: readonly ManagedEntityFavoriteType[],
+  ): Promise<string[]> {
+    if (favoriteTypes.length === 0) {
+      return [];
+    }
+
+    const rows = await this.prisma.managedEntityFavorite.findMany({
+      where: {
+        userId,
+        entityType: ChatEntityType.CHAT,
+        favoriteType: {
+          in: favoriteTypes.map((favoriteType) => PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType]),
+        },
+      },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        chatId: true,
+      },
+    });
+
+    return Array.from(new Set(rows.map((row) => row.chatId)));
   }
 
   private normalizeChatSettings(
@@ -25140,7 +25477,11 @@ export class AdminService implements OnModuleDestroy {
     },
     resolution: AdminAccessResolution,
   ): Promise<void> {
-    if (!options.entityType || resolution.status === 'unknown' || resolution.status === 'throttled') {
+    if (
+      !options.entityType ||
+      resolution.status === 'unknown' ||
+      resolution.status === 'throttled'
+    ) {
       return;
     }
 
@@ -26495,6 +26836,7 @@ export class AdminService implements OnModuleDestroy {
     chats: ChatSummary[],
     options: {
       remoteChats?: readonly MaxBotChat[];
+      deferStart?: boolean;
     } = {},
   ) {
     if (chats.length === 0) {
@@ -26512,28 +26854,39 @@ export class AdminService implements OnModuleDestroy {
         ? options.remoteChats.map((chat) => ({ ...chat }))
         : undefined;
 
-    const pending = this.runManagedEntityHeaderHydration(
-      userId,
-      entityType,
-      key,
-      chatsSnapshot,
-      remoteChatsSnapshot,
-    )
-      .catch((error: unknown) => {
-        this.logger.warn(
-          {
-            entityType,
-            userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Managed entity header hydration failed',
-        );
-      })
-      .finally(() => {
-        if (this.managedEntityHeaderHydrationRuns.get(key) === pending) {
-          this.managedEntityHeaderHydrationRuns.delete(key);
-        }
-      });
+    let pending: Promise<void> | null = null;
+    const startHydration = (): Promise<void> =>
+      this.runManagedEntityHeaderHydration(
+        userId,
+        entityType,
+        key,
+        chatsSnapshot,
+        remoteChatsSnapshot,
+      )
+        .catch((error: unknown) => {
+          this.logger.warn(
+            {
+              entityType,
+              userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Managed entity header hydration failed',
+          );
+        })
+        .finally(() => {
+          if (pending !== null && this.managedEntityHeaderHydrationRuns.get(key) === pending) {
+            this.managedEntityHeaderHydrationRuns.delete(key);
+          }
+        });
+
+    pending =
+      options.deferStart === true
+        ? new Promise<void>((resolve) => {
+            setImmediate(() => {
+              void startHydration().then(resolve);
+            });
+          })
+        : startHydration();
 
     this.managedEntityHeaderHydrationRuns.set(key, pending);
   }

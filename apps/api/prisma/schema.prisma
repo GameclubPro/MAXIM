@@ -144,6 +144,15 @@ enum ManagedBroadcastDeliveryStatus {
   CANCELED
 }
 
+enum ManagedEntityFavoriteType {
+  IMPORTANT
+  WATCH
+  BROADCAST
+  TEST
+  PARTNER
+  SERVICE
+}
+
 model Chat {
   id           String         @id
   botId        String?        @map("bot_id")
@@ -169,6 +178,7 @@ model Chat {
   managedGiveaways         ManagedGiveaway[]
   botMemberships           ChatBotMembership[]
   accessEdges              ManagedEntityAccessEdge[]
+  favorites                ManagedEntityFavorite[]
   participantImmunities    ChatParticipantModerationImmunity[]
   invitationAccessProgress ChatInvitationAccessProgress[]
 
@@ -518,6 +528,24 @@ model ManagedEntityAccessEdge {
   @@index([chatId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_chat_state_idx")
   @@index([botId, state, checkedAt(sort: Desc)], map: "managed_entity_access_edges_bot_state_idx")
   @@map("managed_entity_access_edges")
+}
+
+model ManagedEntityFavorite {
+  id           String                    @id @default(cuid())
+  userId       String                    @map("user_id")
+  chatId       String                    @map("chat_id")
+  entityType   ChatEntityType            @default(CHAT) @map("entity_type")
+  favoriteType ManagedEntityFavoriteType @map("favorite_type")
+  position     Int                       @default(0)
+  createdAt    DateTime                  @default(now()) @map("created_at")
+  updatedAt    DateTime                  @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entityType, chatId, favoriteType], map: "managed_entity_favorites_user_entity_chat_type_key")
+  @@index([userId, entityType, favoriteType, position], map: "managed_entity_favorites_user_type_position_idx")
+  @@index([chatId], map: "managed_entity_favorites_chat_id_idx")
+  @@map("managed_entity_favorites")
 }
 
 model DomainAllowlist {

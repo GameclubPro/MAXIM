@@ -5,6 +5,7 @@ import {
   type BroadcastScopedTargetMode,
 } from '../lib/broadcast-audience';
 import {
+  getHomeEntityFavoriteIds,
   getHomeEntityFavoritesFallbackScope,
   mergeHomeEntityFavorites,
   readHomeEntityFavorites,
@@ -79,8 +80,8 @@ export function BroadcastAudienceControls({
     const normalizedUserId = favoriteUserId?.trim() || getInitDataUserId()?.trim() || '';
     return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
   }, [favoriteUserId]);
-  const [storedFavoriteChatIds, setStoredFavoriteChatIds] = useState(
-    () => readHomeEntityFavorites(favoriteStorageScope).chat,
+  const [storedFavoriteChatIds, setStoredFavoriteChatIds] = useState(() =>
+    getHomeEntityFavoriteIds(readHomeEntityFavorites(favoriteStorageScope), 'chat'),
   );
   const favoriteStorageScopeRef = useRef(favoriteStorageScope);
   const scopedTargetMode: BroadcastScopedTargetMode =
@@ -121,7 +122,9 @@ export function BroadcastAudienceControls({
     const previousScope = favoriteStorageScopeRef.current;
     if (previousScope === favoriteStorageScope) {
       if (sheetOpen) {
-        setStoredFavoriteChatIds(readHomeEntityFavorites(favoriteStorageScope).chat);
+        setStoredFavoriteChatIds(
+          getHomeEntityFavoriteIds(readHomeEntityFavorites(favoriteStorageScope), 'chat'),
+        );
       }
       return;
     }
@@ -138,7 +141,7 @@ export function BroadcastAudienceControls({
     }
 
     favoriteStorageScopeRef.current = favoriteStorageScope;
-    setStoredFavoriteChatIds(nextFavorites.chat);
+    setStoredFavoriteChatIds(getHomeEntityFavoriteIds(nextFavorites, 'chat'));
   }, [favoriteStorageScope, sheetOpen]);
 
   return (

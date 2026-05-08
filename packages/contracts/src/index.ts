@@ -57,6 +57,14 @@ export const managedEntitySharedModeSchema = z.enum([
   'shared-assist',
   'shared-failover',
 ]);
+export const managedEntityFavoriteTypeSchema = z.enum([
+  'important',
+  'watch',
+  'broadcast',
+  'test',
+  'partner',
+  'service',
+]);
 export const applySettingsSectionSchema = z.enum([
   'links',
   'greeting',
@@ -100,6 +108,7 @@ export type ManagedEntityBotMembershipStatus = z.infer<
 export type ManagedEntityBotLifecycleState = z.infer<typeof managedEntityBotLifecycleStateSchema>;
 export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabilitySchema>;
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
+export type ManagedEntityFavoriteType = z.infer<typeof managedEntityFavoriteTypeSchema>;
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ChannelSuggestionEntryMode = z.infer<typeof channelSuggestionEntryModeSchema>;
@@ -1992,6 +2001,7 @@ export const chatSummarySchema = z.object({
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
+  favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional(),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
@@ -2081,8 +2091,66 @@ export type ResolveRequiredSubscriptionChannelResponse = z.infer<
   typeof resolveRequiredSubscriptionChannelResponseSchema
 >;
 
+export const updateManagedEntityFavoritesRequestSchema = z
+  .object({
+    favoriteTypes: z.array(managedEntityFavoriteTypeSchema).max(6).default([]),
+  })
+  .transform((value) => ({
+    favoriteTypes: Array.from(new Set(value.favoriteTypes)),
+  }));
+export type UpdateManagedEntityFavoritesRequest = z.infer<
+  typeof updateManagedEntityFavoritesRequestSchema
+>;
+
+export const managedEntityFavoritesResponseSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  entityId: z.string().trim().min(1),
+  favoriteTypes: z.array(managedEntityFavoriteTypeSchema),
+});
+export type ManagedEntityFavoritesResponse = z.infer<typeof managedEntityFavoritesResponseSchema>;
+
+export const applySettingsTargetModeSchema = z.enum([
+  'all',
+  'allFavorites',
+  'favoriteTypes',
+  'selectedChats',
+  'current',
+]);
+export type ApplySettingsTargetMode = z.infer<typeof applySettingsTargetModeSchema>;
+
+export const applySettingsTargetSchema = z
+  .object({
+    mode: applySettingsTargetModeSchema.default('all'),
+    favoriteTypes: z.array(managedEntityFavoriteTypeSchema).max(6).default([]),
+    chatIds: z.array(z.string().trim().min(1)).max(500).default([]),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode === 'favoriteTypes' && value.favoriteTypes.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['favoriteTypes'],
+        message: 'Выберите хотя бы один тип избранного.',
+      });
+    }
+
+    if (value.mode === 'selectedChats' && value.chatIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['chatIds'],
+        message: 'Выберите хотя бы один чат.',
+      });
+    }
+  })
+  .transform((value) => ({
+    mode: value.mode,
+    favoriteTypes: Array.from(new Set(value.favoriteTypes)),
+    chatIds: Array.from(new Set(value.chatIds)),
+  }));
+export type ApplySettingsTarget = z.infer<typeof applySettingsTargetSchema>;
+
 export const applySectionToAllRequestSchema = z.object({
   section: applySettingsSectionSchema,
+  target: applySettingsTargetSchema.optional().default({ mode: 'all' }),
 });
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
@@ -2091,8 +2159,29 @@ export const applySectionToAllResponseSchema = z.object({
   sourceChatId: z.string(),
   updatedChats: z.number().int().min(0),
   appliedChatIds: z.array(z.string()),
+  targetMode: applySettingsTargetModeSchema.optional().default('all'),
+  favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional().default([]),
 });
 export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
+
+export const applySectionTargetPreviewRequestSchema = z.object({
+  target: applySettingsTargetSchema.optional().default({ mode: 'all' }),
+});
+export type ApplySectionTargetPreviewRequest = z.infer<
+  typeof applySectionTargetPreviewRequestSchema
+>;
+
+export const applySectionTargetPreviewResponseSchema = z.object({
+  sourceChatId: z.string(),
+  targetMode: applySettingsTargetModeSchema,
+  favoriteTypes: z.array(managedEntityFavoriteTypeSchema).default([]),
+  updatedChats: z.number().int().min(0),
+  appliedChatIds: z.array(z.string()),
+  sampleChats: z.array(chatSummarySchema).default([]),
+});
+export type ApplySectionTargetPreviewResponse = z.infer<
+  typeof applySectionTargetPreviewResponseSchema
+>;
 
 export const meSchema = z.object({
   userId: z.string(),
