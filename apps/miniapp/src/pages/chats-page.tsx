@@ -11,6 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type SVGProps,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   RefreshDouble as IconoirRefreshDouble,
   Search as IconoirSearch,
@@ -637,6 +638,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, []);
 
   useEffect(() => {
+    if (!favoritePicker) {
+      return undefined;
+    }
+
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+
+    body.classList.add('favorite-picker-open');
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+
+    return () => {
+      body.classList.remove('favorite-picker-open');
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+    };
+  }, [favoritePicker]);
+
+  useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
     if (previousScope === favoriteStorageScope) {
       return;
@@ -962,7 +983,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       savingFavoriteEntityKey ===
       buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id);
 
-    return (
+    const picker = (
       <div className="favorite-picker" role="dialog" aria-modal="true">
         <button
           type="button"
@@ -1020,6 +1041,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           </div>
         </div>
       </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return picker;
+    }
+
+    return createPortal(
+      picker,
+      document.querySelector('.design-preview__device-screen') ?? document.body,
     );
   }
 

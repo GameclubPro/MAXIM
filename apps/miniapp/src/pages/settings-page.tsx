@@ -62,6 +62,7 @@ import {
   type CSSProperties,
   type MouseEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
@@ -2310,6 +2311,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   > | null>(null);
   const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
   const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!applyTargetSheet) {
+      return undefined;
+    }
+
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+
+    body.classList.add('settings-apply-target-open');
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+
+    return () => {
+      body.classList.remove('settings-apply-target-open');
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+    };
+  }, [applyTargetSheet]);
+
   const [chatsListRefreshRequest, setChatsListRefreshRequest] = useState<{
     nonce: number;
     behavior: 'default' | 'manual' | 'recovery';
@@ -6333,7 +6355,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       !isApplyingSectionToAll &&
       (applyTargetPreview?.updatedChats ?? 0) > 0;
 
-    return (
+    const sheet = (
       <div className="settings-apply-target" role="dialog" aria-modal="true">
         <button
           type="button"
@@ -6443,6 +6465,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </div>
         </div>
       </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return sheet;
+    }
+
+    return createPortal(
+      sheet,
+      document.querySelector('.design-preview__device-screen') ?? document.body,
     );
   }
 

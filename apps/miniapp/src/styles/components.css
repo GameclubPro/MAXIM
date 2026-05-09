@@ -5191,11 +5191,24 @@ body.chats-home-page-open .bottom-nav__label {
 .settings-apply-target {
   position: fixed;
   inset: 0;
+  box-sizing: border-box;
   z-index: 70;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 0 10px max(10px, env(safe-area-inset-bottom));
+  max-height: 100dvh;
+  overflow: hidden;
+  padding: max(12px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+}
+
+.favorite-picker {
+  align-items: center;
+}
+
+.design-preview__device-screen .favorite-picker,
+.design-preview__device-screen .settings-apply-target {
+  position: absolute;
+  max-height: none;
 }
 
 .favorite-picker__backdrop,
@@ -5212,13 +5225,20 @@ body.chats-home-page-open .bottom-nav__label {
   position: relative;
   z-index: 1;
   width: min(100%, 520px);
-  max-height: min(78dvh, 680px);
-  overflow: auto;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid rgba(191, 210, 226, 0.78);
   border-radius: 22px 22px 18px 18px;
   background: rgba(250, 253, 255, 0.98);
   box-shadow: 0 -18px 44px rgba(20, 45, 67, 0.22);
   padding: 14px;
+}
+
+.favorite-picker__panel {
+  border-radius: 22px;
+  box-shadow: 0 18px 48px rgba(20, 45, 67, 0.24);
 }
 
 .favorite-picker__header,
