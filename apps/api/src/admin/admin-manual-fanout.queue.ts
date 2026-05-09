@@ -36,6 +36,7 @@ export type AdminManualGroupModerationCommandJob = {
   kind: 'manual_group_moderation_command';
   jobId: string;
   sourceChatId: string;
+  commandBotId?: string | null;
   targetUserId: string;
   targetSenderName?: string | null;
   targetMessageId?: string | null;

@@ -7079,6 +7079,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
     const queued = await service.enqueueManualGroupModerationCommand({
       sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
       targetUserId: 'user-2',
       targetSenderName: 'Нарушитель',
       targetMessageId: 'mid-target-1',
@@ -7102,6 +7103,7 @@ describe('AdminService.applyManualSystemBan', () => {
       expect.objectContaining({
         kind: 'manual_group_moderation_command',
         sourceChatId: 'chat-1',
+        commandBotId: 'bot-2',
         targetUserId: 'user-2',
         targetSenderName: 'Нарушитель',
         targetMessageId: 'mid-target-1',
@@ -7152,6 +7154,7 @@ describe('AdminService.applyManualSystemBan', () => {
       kind: 'manual_group_moderation_command',
       jobId: 'job-command-1',
       sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
       targetUserId: 'user-2',
       targetSenderName: 'Нарушитель',
       targetMessageId: 'mid-target-1',
@@ -7182,10 +7185,12 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
       immediate: true,
       trafficClass: 'interactive',
+      botId: 'bot-2',
     });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-command-1', {
       immediate: true,
       trafficClass: 'interactive',
+      botId: 'bot-2',
     });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
@@ -7195,8 +7200,62 @@ describe('AdminService.applyManualSystemBan', () => {
         immediate: true,
         trafficClass: 'interactive',
         autoDeleteDelayMs: 3 * 60 * 1000,
+        botId: 'bot-2',
       },
     );
+  });
+
+  it('uses the command bot for queued group command failure notices', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service, 'applyManualSystemBan')
+      .mockRejectedValue(new BadRequestException('Нельзя применять это действие к своему аккаунту.'));
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_group_moderation_command',
+      jobId: 'job-command-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'admin-1',
+      targetSenderName: 'Админ',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN',
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Не удалось применить бан: Нельзя применять это действие к своему аккаунту.',
+      { textFormat: 'markdown' },
+      {
+        immediate: true,
+        trafficClass: 'interactive',
+        autoDeleteDelayMs: 3 * 60 * 1000,
+        botId: 'bot-2',
+      },
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('retries transient queued group moderation failures without sending an error notice', async () => {

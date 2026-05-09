@@ -8387,12 +8387,16 @@ describe('ModerationService', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createAdminForwardedBanUpdate());
+    await service.handleUpdate({
+      ...createAdminForwardedBanUpdate(),
+      executionOwnerBotId: 'id613002203036_4_bot',
+    } as MaxUpdate & { executionOwnerBotId: string });
 
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceChatId: 'chat-1',
+        commandBotId: 'id613002203036_4_bot',
         targetUserId: 'user-2',
         targetSenderName: 'Нарушитель',
         targetMessageId: 'mid-forward-ban-1',

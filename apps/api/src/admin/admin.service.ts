@@ -17357,6 +17357,7 @@ export class AdminService implements OnModuleDestroy {
 
   async enqueueManualGroupModerationCommand(params: {
     sourceChatId: string;
+    commandBotId?: string | null;
     targetUserId: string;
     targetSenderName?: string | null;
     targetMessageId?: string | null;
@@ -17515,6 +17516,7 @@ export class AdminService implements OnModuleDestroy {
 
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
+        botId: job.commandBotId ?? undefined,
         text: `Не удалось применить ${job.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMarkdownPlainText(
           this.extractManualGroupCommandErrorMessage(error),
         )}`,
@@ -17525,7 +17527,9 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.deleteManualGroupCommandTargetMessage(job);
-    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId);
+    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
+      botId: job.commandBotId ?? undefined,
+    });
 
     const targetLabel = this.formatManualGroupCommandUserLabel(
       job.targetSenderName,
@@ -17533,6 +17537,7 @@ export class AdminService implements OnModuleDestroy {
     );
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
+      botId: job.commandBotId ?? undefined,
       text:
         job.action === 'BAN'
           ? `Пользователь ${targetLabel} забанен.`
@@ -17558,11 +17563,16 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private async deleteManualGroupCommandMessage(chatId: string, messageId: string): Promise<void> {
+  private async deleteManualGroupCommandMessage(
+    chatId: string,
+    messageId: string,
+    options: { botId?: string } = {},
+  ): Promise<void> {
     try {
       await this.maxClient.deleteMessage(chatId, messageId, {
         immediate: true,
         trafficClass: 'interactive',
+        ...(options.botId ? { botId: options.botId } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -17587,6 +17597,7 @@ export class AdminService implements OnModuleDestroy {
       await this.maxClient.deleteMessage(job.sourceChatId, job.targetMessageId, {
         immediate: true,
         trafficClass: 'interactive',
+        ...(job.commandBotId ? { botId: job.commandBotId } : {}),
       });
     } catch (error: unknown) {
       this.logger.debug(
@@ -17603,6 +17614,7 @@ export class AdminService implements OnModuleDestroy {
 
   private async sendManualGroupCommandNotice(params: {
     chatId: string;
+    botId?: string;
     text: string;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
@@ -17610,6 +17622,7 @@ export class AdminService implements OnModuleDestroy {
     const dispatchOptions = this.buildManualGroupCommandNoticeDispatchOptions({
       deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
+      botId: params.botId,
     });
 
     try {
@@ -17633,11 +17646,15 @@ export class AdminService implements OnModuleDestroy {
   private buildManualGroupCommandNoticeDispatchOptions(params: {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
+    botId?: string;
   }): MaxActionDispatchOptions {
     const options: MaxActionDispatchOptions = {
       immediate: true,
       trafficClass: 'interactive',
     };
+    if (params.botId) {
+      options.botId = params.botId;
+    }
     if (params.deleteBotMessagesEnabled) {
       options.autoDeleteDelayMs =
         normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1_000;
@@ -17843,6 +17860,7 @@ export class AdminService implements OnModuleDestroy {
 
   private buildManualGroupModerationCommandJob(params: {
     sourceChatId: string;
+    commandBotId?: string | null;
     targetUserId: string;
     targetSenderName?: string | null;
     targetMessageId?: string | null;
@@ -17863,6 +17881,7 @@ export class AdminService implements OnModuleDestroy {
         params.action,
       ),
       sourceChatId: params.sourceChatId,
+      commandBotId: this.readTrimmedString(params.commandBotId),
       targetUserId: params.targetUserId,
       targetSenderName: params.targetSenderName ?? null,
       targetMessageId: params.targetMessageId ?? null,

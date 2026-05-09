@@ -5225,6 +5225,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       const queued = await this.adminService.enqueueManualGroupModerationCommand({
         sourceChatId: chatId,
+        commandBotId: this.readExecutionOwnerBotId(update),
         targetUserId: target.userId,
         targetSenderName: target.senderName ?? null,
         targetMessageId: target.messageId ?? null,
