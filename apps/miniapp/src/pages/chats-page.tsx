@@ -869,6 +869,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
     const routeState = buildEntityRouteState(activeTab, entity);
     const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
+    const favoriteLabel =
+      favoriteTypes.length > 0
+        ? `Избранное: ${favoriteTypes
+            .map((favoriteType) => HOME_ENTITY_FAVORITE_LABELS[favoriteType])
+            .join(', ')}`
+        : 'Добавить в избранное';
 
     return (
       <GlassCard as="article" key={entity.id} className={className} style={style}>
@@ -902,14 +908,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <div className="chat-card__quick-actions">
           <button
             type="button"
-            className={cn('chat-card__favorite', favorite && 'is-active')}
+            className={cn(
+              'chat-card__favorite',
+              favorite && 'is-active',
+              favoriteTypes[0] && `is-${favoriteTypes[0]}`,
+            )}
             onClick={() => setFavoritePicker({ entityType: activeTab, entity })}
             aria-pressed={favorite}
-            aria-label="Настроить избранное"
-            title="Настроить избранное"
+            aria-label={favoriteLabel}
+            title={favoriteLabel}
             disabled={favoriteEntitySaving}
           >
             <PrimaryFavoriteIcon aria-hidden />
+            {favoriteTypes.length > 1 ? (
+              <span className="chat-card__favorite-count">{favoriteTypes.length}</span>
+            ) : null}
           </button>
 
           <Link
@@ -931,26 +944,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             <ActivityGlyph />
           </Link>
         </div>
-
-        {favoriteTypes.length > 0 ? (
-          <div className="chat-card__favorite-badges" aria-label="Типы избранного">
-            {favoriteTypes.slice(0, 3).map((favoriteType) => {
-              const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
-              return (
-                <span
-                  key={favoriteType}
-                  className={cn('chat-card__favorite-badge', `is-${favoriteType}`)}
-                  title={HOME_ENTITY_FAVORITE_LABELS[favoriteType]}
-                >
-                  <FavoriteIcon aria-hidden />
-                </span>
-              );
-            })}
-            {favoriteTypes.length > 3 ? (
-              <span className="chat-card__favorite-badge is-more">+{favoriteTypes.length - 3}</span>
-            ) : null}
-          </div>
-        ) : null}
       </GlassCard>
     );
   }
@@ -980,7 +973,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <div className="favorite-picker__panel">
           <div className="favorite-picker__header">
             <div>
-              <span>{favoritePicker.entityType === 'chat' ? 'Чат' : 'Канал'}</span>
               <strong>{favoritePicker.entity.title}</strong>
             </div>
             <button
@@ -1020,10 +1012,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <span className="favorite-picker__icon">
                     <FavoriteIcon aria-hidden />
                   </span>
-                  <span>
-                    <strong>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</strong>
-                    <small>{HOME_ENTITY_FAVORITE_TITLES[favoriteType]}</small>
-                  </span>
+                  <strong>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</strong>
                   {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
                 </button>
               );

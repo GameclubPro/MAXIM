@@ -42,7 +42,6 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Check as IconoirCheck,
   Community as IconoirCommunity,
   Flask as IconoirFlask,
   Megaphone as IconoirMegaphone,
@@ -6345,8 +6344,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         <div className="settings-apply-target__panel">
           <div className="settings-apply-target__header">
             <div>
-              <span>Блок «{SECTION_LABELS[applyTargetSheet.section]}»</span>
-              <strong>Применить в...</strong>
+              <strong>{SECTION_LABELS[applyTargetSheet.section]}</strong>
             </div>
             <button
               type="button"
@@ -6365,17 +6363,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             aria-label="Область применения"
           >
             {[
-              { mode: 'current' as const, title: 'Текущий чат', hint: 'Только эта карточка' },
-              {
-                mode: 'all' as const,
-                title: 'Все чаты',
-                hint: 'Вся доступная администратору база',
-              },
-              {
-                mode: 'allFavorites' as const,
-                title: 'Все избранные',
-                hint: 'Любая из 6 иконок',
-              },
+              { mode: 'current' as const, title: 'Текущий' },
+              { mode: 'all' as const, title: 'Все' },
+              { mode: 'allFavorites' as const, title: 'Избранные' },
             ].map((item) => (
               <button
                 key={item.mode}
@@ -6394,7 +6384,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 }
               >
                 <strong>{item.title}</strong>
-                <small>{item.hint}</small>
               </button>
             ))}
           </div>
@@ -6419,7 +6408,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <FavoriteIcon aria-hidden />
                   <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
-                  {active ? <IconoirCheck aria-hidden /> : null}
                 </button>
               );
             })}
@@ -6427,26 +6415,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
           <div className="settings-apply-target__preview">
             {applyTargetPreviewLoading ? (
-              <span>Считаем чаты...</span>
+              <span>...</span>
             ) : applyTargetPreviewError ? (
               <span className="is-danger">{applyTargetPreviewError}</span>
             ) : (
-              <span>
-                Будет обновлено:{' '}
-                <strong>
-                  {formatApplyTargetCountLabel(applyTargetPreview?.updatedChats ?? 0)}
-                </strong>
-              </span>
+              <strong>{formatApplyTargetCountLabel(applyTargetPreview?.updatedChats ?? 0)}</strong>
             )}
           </div>
-
-          {applyTargetPreview?.sampleChats.length ? (
-            <div className="settings-apply-target__sample" aria-label="Первые чаты">
-              {applyTargetPreview.sampleChats.map((chat) => (
-                <span key={chat.id}>{chat.title}</span>
-              ))}
-            </div>
-          ) : null}
 
           <div className="settings-apply-target__actions">
             <button
@@ -6463,9 +6438,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               onClick={() => void handleConfirmApplyTarget()}
               disabled={!canConfirm}
             >
-              {isApplyingSectionToAll
-                ? 'Применяем...'
-                : `Применить к ${applyTargetPreview?.updatedChats ?? 0}`}
+              {isApplyingSectionToAll ? '...' : 'Применить'}
             </button>
           </div>
         </div>
