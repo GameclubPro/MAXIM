@@ -819,6 +819,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     );
     setHomeEntityFavorites(result.favorites);
     saveHomeEntityFavorites(favoriteStorageScope, result.favorites);
+    setFavoritePicker(null);
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
 
     try {
@@ -872,6 +873,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const className = cn(
       'chat-card',
       favorite && 'is-favorite',
+      favoriteTypes[0] && `is-${favoriteTypes[0]}`,
       staggerIndex !== null && 'stagger-in',
       homeSyncStatus.tone === 'cache' && 'is-from-cache',
       homeSyncStatus.tone === 'warning' && 'is-paused',
@@ -941,9 +943,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             disabled={favoriteEntitySaving}
           >
             <PrimaryFavoriteIcon aria-hidden />
-            {favoriteTypes.length > 1 ? (
-              <span className="chat-card__favorite-count">{favoriteTypes.length}</span>
-            ) : null}
           </button>
 
           <Link

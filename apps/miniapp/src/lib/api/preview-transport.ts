@@ -2289,7 +2289,7 @@ function createInitialState(): PreviewState {
         link: null,
         avatarUrl: buildPreviewAvatarDataUrl(PREVIEW_CHAT_TITLE, '#20b7aa', '#117e87'),
         channelOverview: null,
-        favoriteTypes: ['important', 'watch'],
+        favoriteTypes: ['important'],
       }),
       createPreviewChatSummary({
         id: 'preview-chat-2',
@@ -2316,7 +2316,7 @@ function createInitialState(): PreviewState {
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
         },
-        favoriteTypes: ['important', 'service'],
+        favoriteTypes: ['service'],
       }),
       createPreviewChatSummary({
         id: 'preview-channel-2',

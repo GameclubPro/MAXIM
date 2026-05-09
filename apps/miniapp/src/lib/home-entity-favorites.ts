@@ -99,8 +99,16 @@ function sanitizeFavoritesByType(value: unknown): HomeEntityFavoritesByType {
   }
 
   const record = value as Partial<Record<HomeEntityFavoriteType, unknown>>;
+  const selectedIds = new Set<string>();
   for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
-    result[favoriteType] = sanitizeFavoriteIds(record[favoriteType]);
+    result[favoriteType] = sanitizeFavoriteIds(record[favoriteType]).filter((id) => {
+      if (selectedIds.has(id)) {
+        return false;
+      }
+
+      selectedIds.add(id);
+      return true;
+    });
   }
 
   return result;
@@ -240,7 +248,7 @@ export function mergeHomeEntityFavorites(
     }
   }
 
-  return merged;
+  return sanitizeHomeEntityFavorites(merged);
 }
 
 export function createHomeEntityFavoritesFromLegacy(
@@ -275,6 +283,7 @@ export function createHomeEntityFavoritesFromEntities(params: {
         if (!favorites[entityType][favoriteType].includes(id)) {
           favorites[entityType][favoriteType].push(id);
         }
+        break;
       }
     }
   };
@@ -298,6 +307,7 @@ export function getHomeEntityFavoriteTypes(
   for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
     if (favorites[entityType][favoriteType].includes(normalizedId)) {
       result.push(favoriteType);
+      break;
     }
   }
 
@@ -353,12 +363,13 @@ export function setHomeEntityFavoriteTypes(
     return next;
   }
 
-  const selectedTypes = new Set(favoriteTypes);
+  const selectedType = favoriteTypes.find((favoriteType) =>
+    HOME_ENTITY_FAVORITE_TYPES.includes(favoriteType),
+  );
   for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
     const currentIds = next[entityType][favoriteType].filter((id) => id !== normalizedId);
-    next[entityType][favoriteType] = selectedTypes.has(favoriteType)
-      ? [normalizedId, ...currentIds]
-      : currentIds;
+    next[entityType][favoriteType] =
+      selectedType === favoriteType ? [normalizedId, ...currentIds] : currentIds;
   }
 
   return next;
@@ -371,9 +382,7 @@ export function toggleHomeEntityFavoriteType(
   favoriteType: HomeEntityFavoriteType,
 ): { favorites: HomeEntityFavorites; favoriteTypes: HomeEntityFavoriteType[] } {
   const currentTypes = getHomeEntityFavoriteTypes(favorites, entityType, entityId);
-  const nextTypes = currentTypes.includes(favoriteType)
-    ? currentTypes.filter((item) => item !== favoriteType)
-    : [...currentTypes, favoriteType];
+  const nextTypes = currentTypes.includes(favoriteType) ? [] : [favoriteType];
 
   return {
     favorites: setHomeEntityFavoriteTypes(favorites, entityType, entityId, nextTypes),

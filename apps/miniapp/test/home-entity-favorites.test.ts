@@ -14,7 +14,7 @@ test('sanitizes favorite ids per entity type and favorite type', () => {
   const favorites = sanitizeHomeEntityFavorites({
     chat: {
       important: [' 1 ', '1', '', 2, '2'],
-      watch: ['watch-1'],
+      watch: ['watch-1', '1'],
     },
     channel: {
       broadcast: ['a', ' b ', 'a'],
@@ -36,6 +36,16 @@ test('toggles favorite types with the newest favorite first', () => {
   assert.deepEqual(second.chat.important, ['chat-2', 'chat-1']);
   assert.deepEqual(removed.favoriteTypes, []);
   assert.deepEqual(removed.favorites.chat.important, ['chat-2']);
+});
+
+test('selects one favorite category per entity', () => {
+  const initial = createEmptyHomeEntityFavorites();
+  const important = toggleHomeEntityFavoriteType(initial, 'chat', 'chat-1', 'important');
+  const watch = toggleHomeEntityFavoriteType(important.favorites, 'chat', 'chat-1', 'watch');
+
+  assert.deepEqual(watch.favoriteTypes, ['watch']);
+  assert.deepEqual(watch.favorites.chat.important, []);
+  assert.deepEqual(watch.favorites.chat.watch, ['chat-1']);
 });
 
 test('orders visible entities by favorite order without dropping the rest', () => {
@@ -68,13 +78,10 @@ test('merges migrated device favorites behind stored user favorites', () => {
   assert.deepEqual(merged.channel.important, ['channel-1', 'channel-2']);
 });
 
-test('reads all favorite types for one entity in display order', () => {
+test('reads the selected favorite type for one entity', () => {
   const favorites = createEmptyHomeEntityFavorites();
   favorites.chat.service = ['chat-1'];
   favorites.chat.important = ['chat-1'];
 
-  assert.deepEqual(getHomeEntityFavoriteTypes(favorites, 'chat', 'chat-1'), [
-    'important',
-    'service',
-  ]);
+  assert.deepEqual(getHomeEntityFavoriteTypes(favorites, 'chat', 'chat-1'), ['important']);
 });
