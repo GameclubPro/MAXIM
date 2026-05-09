@@ -63,6 +63,7 @@ import {
   buildManagedEntitiesSettledMarker,
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
+import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import {
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
@@ -341,6 +342,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     entity: ManagedHomeEntity;
   } | null>(null);
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
+  const favoritePickerOverlayStyle = useVisualViewportOverlayStyle(Boolean(favoritePicker));
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
@@ -983,7 +985,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       buildFavoriteEntityKey(favoritePicker.entityType, favoritePicker.entity.id);
 
     const picker = (
-      <div className="favorite-picker" role="dialog" aria-modal="true">
+      <div
+        className="favorite-picker"
+        style={favoritePickerOverlayStyle}
+        role="dialog"
+        aria-modal="true"
+      >
         <button
           type="button"
           className="favorite-picker__backdrop"

@@ -191,6 +191,7 @@ import {
   buildManagedEntitiesSettledMarker,
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
+import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import {
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
@@ -2328,6 +2329,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   > | null>(null);
   const [applyTargetPreviewLoading, setApplyTargetPreviewLoading] = useState(false);
   const [applyTargetPreviewError, setApplyTargetPreviewError] = useState<string | null>(null);
+  const applyTargetOverlayStyle = useVisualViewportOverlayStyle(Boolean(applyTargetSheet));
 
   useEffect(() => {
     if (!applyTargetSheet) {
@@ -6439,7 +6441,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       (applyTargetPreview?.updatedChats ?? 0) > 0;
 
     const sheet = (
-      <div className="settings-apply-target" role="dialog" aria-modal="true">
+      <div
+        className="settings-apply-target"
+        style={applyTargetOverlayStyle}
+        role="dialog"
+        aria-modal="true"
+      >
         <button
           type="button"
           className="settings-apply-target__backdrop"
