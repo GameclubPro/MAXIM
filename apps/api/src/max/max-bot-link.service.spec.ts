@@ -155,6 +155,7 @@ function createServiceFixture() {
             botId: membership.botId,
             role: membership.role,
             status: membership.status,
+            permissionsSnapshot: membership.permissionsSnapshot ?? null,
           })),
       ),
       updateMany: jest.fn(
@@ -411,6 +412,141 @@ describe('MaxBotLinkService', () => {
     );
   });
 
+  it('treats the active bot with stronger permissions as primary in shared chats', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-rights', {
+      id: 'chat-rights',
+      title: 'Shared rights chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-rights',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-09T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-rights',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+        },
+        createdAt: new Date('2026-05-09T10:00:01.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:01.000Z'),
+      },
+    );
+
+    const strongerBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-rights',
+      activeBotId: 'id613002203036_4_bot',
+    });
+    const weakerBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-rights',
+      activeBotId: 'id613002203036_bot',
+    });
+
+    expect(strongerBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_4_bot',
+        shouldHandleGroupUpdate: true,
+      }),
+    );
+    expect(weakerBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_4_bot',
+        shouldHandleGroupUpdate: false,
+      }),
+    );
+  });
+
+  it('persists stronger bot permissions as the chat primary during reconciliation', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-reconcile-rights', {
+      id: 'chat-reconcile-rights',
+      title: 'Shared rights chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-reconcile-rights',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-09T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-reconcile-rights',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+        },
+        createdAt: new Date('2026-05-09T10:00:01.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.reconcileChatPrimaryByAccess({ chatId: 'chat-reconcile-rights' }),
+    ).resolves.toBe('id613002203036_4_bot');
+
+    expect(fixture.chats.get('chat-reconcile-rights')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.PRIMARY,
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.STANDBY,
+      }),
+    );
+  });
+
   it('prefers a standby bot with confirmed admin access for member-access lookups', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('channel-1', {
@@ -558,10 +694,10 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'read',
       chatId: 'channel-read-route-1',
-      primaryBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_4_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
-      reason: 'alternate_confirmed',
+      reason: 'primary_confirmed',
     });
   });
 
@@ -929,10 +1065,10 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'moderation_action',
       chatId: 'chat-route-7',
-      primaryBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_4_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
-      reason: 'alternate_confirmed',
+      reason: 'primary_confirmed',
       action: 'delete_message',
     });
   });

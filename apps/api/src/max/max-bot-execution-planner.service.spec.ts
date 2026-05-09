@@ -152,6 +152,7 @@ function createFixture() {
 
   const maxBotLinkService = {
     rememberChatBotBinding: jest.fn(),
+    reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('id613002203036_bot'),
     getEntryBotId: jest.fn(() => 'id613002203036_bot'),
   };
 

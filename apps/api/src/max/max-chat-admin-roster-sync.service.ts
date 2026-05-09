@@ -204,7 +204,7 @@ export class MaxChatAdminRosterSyncService {
           normalized.chatId,
           requestOptions,
         );
-        await this.persistBotSelfAccessSnapshot(normalized.chatId, botId, access);
+        await this.persistBotSelfAccessSnapshot(normalized, botId, access);
 
         if (!access.isAdmin && !access.isOwner) {
           continue;
@@ -221,7 +221,7 @@ export class MaxChatAdminRosterSyncService {
         return true;
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
-          await this.persistBotSelfAccessSnapshot(normalized.chatId, botId, null);
+          await this.persistBotSelfAccessSnapshot(normalized, botId, null);
           continue;
         }
 
@@ -1218,7 +1218,7 @@ export class MaxChatAdminRosterSyncService {
   }
 
   private async persistBotSelfAccessSnapshot(
-    chatId: string,
+    job: Pick<MaxChatAdminRosterSyncJob, 'chatId' | 'title' | 'entityType'>,
     botId: string,
     access: {
       isAdmin: boolean;
@@ -1229,7 +1229,7 @@ export class MaxChatAdminRosterSyncService {
     try {
       await this.prisma.chatBotMembership.updateMany({
         where: {
-          chatId,
+          chatId: job.chatId,
           botId,
         },
         data: {
@@ -1248,10 +1248,15 @@ export class MaxChatAdminRosterSyncService {
           } satisfies Prisma.InputJsonValue,
         },
       });
+      await this.maxBotLinkService.reconcileChatPrimaryByAccess({
+        chatId: job.chatId,
+        title: job.title ?? null,
+        entityType: this.toPrismaEntityType(job.entityType),
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {
-          chatId,
+          chatId: job.chatId,
           botId,
           err: error instanceof Error ? error.message : String(error),
         },

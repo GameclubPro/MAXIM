@@ -27,6 +27,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     };
     const maxBotLinkService = {
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('bot-1'),
+      reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('bot-1'),
     };
     const maxBotRegistry = {
       getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),

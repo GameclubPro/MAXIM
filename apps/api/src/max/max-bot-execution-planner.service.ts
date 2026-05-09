@@ -258,6 +258,11 @@ export class MaxBotExecutionPlannerService {
     chatId: string,
     entityType: ManagedEntityType,
   ): Promise<ManagedEntityBotExecutionPlan> {
+    await this.maxBotLinkService.reconcileChatPrimaryByAccess({
+      chatId,
+      entityType: this.toPrismaEntityType(entityType),
+    });
+
     const state = await this.loadChatState(chatId);
     const assignedBots = this.buildAssignedBots(state.memberships, state.primaryBotId);
     const sharedMode = this.resolveSharedMode(assignedBots);

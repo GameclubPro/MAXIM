@@ -41,6 +41,46 @@ const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'delete_members',
   'can_delete_members',
 ]);
+const PRIMARY_UNKNOWN_ACCESS_SCORE = 50_000;
+const PRIMARY_ADMIN_BASE_SCORE = 100_000;
+const PRIMARY_OWNER_BASE_SCORE = 1_000_000;
+const PRIMARY_PERMISSION_WEIGHTS = new Map<string, number>([
+  ['add_remove_members', 20_000],
+  ['can_add_remove_members', 20_000],
+  ['remove_members', 20_000],
+  ['can_remove_members', 20_000],
+  ['manage_members', 20_000],
+  ['can_manage_members', 20_000],
+  ['kick_members', 20_000],
+  ['can_kick_members', 20_000],
+  ['ban_members', 20_000],
+  ['can_ban_members', 20_000],
+  ['ban_users', 20_000],
+  ['can_ban_users', 20_000],
+  ['delete_members', 20_000],
+  ['can_delete_members', 20_000],
+  ['delete_message', 18_000],
+  ['delete_messages', 18_000],
+  ['can_delete_message', 18_000],
+  ['can_delete_messages', 18_000],
+  ['post_edit_delete_message', 18_000],
+  ['post_edit_delete_messages', 18_000],
+  ['can_post_edit_delete_message', 18_000],
+  ['can_post_edit_delete_messages', 18_000],
+  ['read_all_messages', 8_000],
+  ['write', 5_000],
+  ['edit_message', 4_000],
+  ['can_edit_message', 4_000],
+  ['add_admins', 3_000],
+  ['can_add_admins', 3_000],
+  ['change_chat_info', 2_000],
+  ['can_change_chat_info', 2_000],
+  ['pin_message', 1_500],
+  ['can_pin_message', 1_500],
+  ['edit_link', 1_000],
+  ['can_edit_link', 1_000],
+  ['can_call', 100],
+]);
 
 type ModerationActionPermission = 'delete_message' | 'moderate_member';
 
@@ -146,6 +186,7 @@ type ResolvedChatRouteMembership = {
 type ResolvedChatRouteState = {
   chatId: string;
   entityType: ChatEntityType | null;
+  storedPrimaryBotId: string | null;
   primaryBotId: string | null;
   memberships: ResolvedChatRouteMembership[];
   activeKnownMemberships: ResolvedChatRouteMembership[];
@@ -543,7 +584,13 @@ export class MaxBotLinkService {
     }
 
     this.rememberChatBotBinding(chatId, nextPrimaryBotId);
-    return nextPrimaryBotId;
+    return (
+      (await this.reconcileChatPrimaryByAccess({
+        chatId,
+        title,
+        entityType,
+      })) ?? nextPrimaryBotId
+    );
   }
 
   async getChatExecutionBinding(params: {
@@ -573,6 +620,7 @@ export class MaxBotLinkService {
             botId: true,
             role: true,
             status: true,
+            permissionsSnapshot: true,
           },
         },
       },
@@ -583,6 +631,10 @@ export class MaxBotLinkService {
         Boolean(this.botRegistry.getBotById(membership.botId)),
     );
     const primaryBotId =
+      this.resolvePreferredPrimaryBotId(
+        this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null,
+        activeKnownMemberships,
+      ) ??
       this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
@@ -784,6 +836,88 @@ export class MaxBotLinkService {
     }
 
     this.rememberChatBotBinding(chatId, nextPrimaryBotId);
+    return (
+      (await this.reconcileChatPrimaryByAccess({
+        chatId,
+        title,
+        entityType,
+      })) ?? nextPrimaryBotId
+    );
+  }
+
+  async reconcileChatPrimaryByAccess(params: {
+    chatId: string;
+    title?: string | null;
+    entityType?: ChatEntityType | null;
+  }): Promise<string | null> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const state = await this.loadChatRouteState(chatId);
+    if (!state?.primaryBotId) {
+      this.forgetChatBotBinding(chatId);
+      return null;
+    }
+
+    const nextPrimaryBotId = state.primaryBotId;
+    const activeMemberships = state.activeKnownMemberships;
+    const roleAlreadyConsistent =
+      activeMemberships.some(
+        (membership) =>
+          membership.botId === nextPrimaryBotId &&
+          membership.role === ChatBotMembershipRole.PRIMARY,
+      ) &&
+      activeMemberships.every(
+        (membership) =>
+          membership.botId === nextPrimaryBotId ||
+          membership.role !== ChatBotMembershipRole.PRIMARY,
+      );
+    const title = params.title?.trim() || null;
+    const entityType = params.entityType ?? null;
+
+    if (
+      state.storedPrimaryBotId === nextPrimaryBotId &&
+      roleAlreadyConsistent &&
+      !title &&
+      !entityType
+    ) {
+      this.rememberChatBotBinding(chatId, nextPrimaryBotId);
+      return nextPrimaryBotId;
+    }
+
+    await this.prisma.chat.update({
+      where: { id: chatId },
+      data: {
+        ...(title ? { title } : {}),
+        botId: nextPrimaryBotId,
+        primaryBotId: nextPrimaryBotId,
+        ...(entityType ? { entityType } : {}),
+      },
+    });
+
+    await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      data: {
+        role: ChatBotMembershipRole.STANDBY,
+      },
+    });
+    await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId: nextPrimaryBotId,
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      data: {
+        role: ChatBotMembershipRole.PRIMARY,
+      },
+    });
+
+    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
     return nextPrimaryBotId;
   }
 
@@ -804,6 +938,19 @@ export class MaxBotLinkService {
     }
 
     if (chatId) {
+      const state = await this.loadChatRouteState(chatId);
+      if (state?.primaryBotId) {
+        this.rememberChatBotBinding(chatId, state.primaryBotId);
+        return this.buildRoute({
+          purpose: 'default',
+          chatId,
+          primaryBotId: state.primaryBotId,
+          botId: state.primaryBotId,
+          candidateBotIds: [state.primaryBotId],
+          reason: 'chat_primary',
+        });
+      }
+
       const cachedBotId = this.getCachedChatBotId(chatId);
       if (cachedBotId) {
         return this.buildRoute({
@@ -813,23 +960,6 @@ export class MaxBotLinkService {
           botId: cachedBotId,
           candidateBotIds: [cachedBotId],
           reason: 'chat_cache',
-        });
-      }
-
-      const chat = await this.prisma.chat.findUnique({
-        where: { id: chatId },
-        select: { primaryBotId: true, botId: true },
-      });
-      const chatBot = this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null);
-      if (chatBot) {
-        this.rememberChatBotBinding(chatId, chatBot.id);
-        return this.buildRoute({
-          purpose: 'default',
-          chatId,
-          primaryBotId: chatBot.id,
-          botId: chatBot.id,
-          candidateBotIds: [chatBot.id],
-          reason: 'chat_primary',
         });
       }
     }
@@ -1138,8 +1268,14 @@ export class MaxBotLinkService {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
     });
+    const storedPrimaryBotId =
+      this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ?? null;
     const primaryBotId =
-      this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ??
+      this.resolvePreferredPrimaryBotId(
+        storedPrimaryBotId,
+        activeActionableMemberships.length > 0 ? activeActionableMemberships : activeKnownMemberships,
+      ) ??
+      storedPrimaryBotId ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
       activeKnownMemberships[0]?.botId ??
@@ -1148,11 +1284,100 @@ export class MaxBotLinkService {
     return {
       chatId: normalizedChatId,
       entityType: chat.entityType ?? null,
+      storedPrimaryBotId,
       primaryBotId,
       memberships,
       activeKnownMemberships,
       activeActionableMemberships,
     };
+  }
+
+  private resolvePreferredPrimaryBotId(
+    currentPrimaryBotId: string | null,
+    memberships: readonly Pick<
+      ResolvedChatRouteMembership,
+      'botId' | 'role' | 'status' | 'permissionsSnapshot'
+    >[],
+  ): string | null {
+    const activeMemberships = memberships.filter(
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        Boolean(this.botRegistry.getBotById(membership.botId)),
+    );
+    if (activeMemberships.length === 0) {
+      return currentPrimaryBotId;
+    }
+
+    const fallback =
+      (currentPrimaryBotId &&
+      activeMemberships.some((membership) => membership.botId === currentPrimaryBotId)
+        ? currentPrimaryBotId
+        : null) ??
+      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
+        ?.botId ??
+      activeMemberships[0]?.botId ??
+      null;
+    const scored = activeMemberships.map((membership, index) => {
+      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      return {
+        membership,
+        index,
+        hasSnapshot: snapshot !== null,
+        score: this.calculatePrimaryAccessScore(snapshot),
+      };
+    });
+
+    if (!scored.some((candidate) => candidate.hasSnapshot)) {
+      return fallback;
+    }
+
+    scored.sort((left, right) => {
+      const scoreDiff = right.score - left.score;
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+
+      if (currentPrimaryBotId) {
+        const leftIsCurrent = left.membership.botId === currentPrimaryBotId;
+        const rightIsCurrent = right.membership.botId === currentPrimaryBotId;
+        if (leftIsCurrent !== rightIsCurrent) {
+          return leftIsCurrent ? -1 : 1;
+        }
+      }
+
+      const leftIsPrimary = left.membership.role === ChatBotMembershipRole.PRIMARY;
+      const rightIsPrimary = right.membership.role === ChatBotMembershipRole.PRIMARY;
+      if (leftIsPrimary !== rightIsPrimary) {
+        return leftIsPrimary ? -1 : 1;
+      }
+
+      return left.index - right.index;
+    });
+
+    return scored[0]?.membership.botId ?? fallback;
+  }
+
+  private calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot | null): number {
+    if (!snapshot) {
+      return PRIMARY_UNKNOWN_ACCESS_SCORE;
+    }
+
+    const baseScore = snapshot.isOwner
+      ? PRIMARY_OWNER_BASE_SCORE
+      : snapshot.isAdmin
+        ? PRIMARY_ADMIN_BASE_SCORE
+        : 0;
+    return baseScore + this.calculatePrimaryPermissionScore(snapshot.permissions);
+  }
+
+  private calculatePrimaryPermissionScore(permissions: readonly string[]): number {
+    let score = 0;
+    for (const permission of new Set(
+      permissions.map((item) => this.normalizePermissionName(item)).filter(Boolean),
+    )) {
+      score += PRIMARY_PERMISSION_WEIGHTS.get(permission) ?? 0;
+    }
+    return score;
   }
 
   private buildModerationActionCandidateBotIdsFromState(
@@ -1492,6 +1717,7 @@ export class MaxBotLinkService {
         botId: true,
         role: true,
         status: true,
+        permissionsSnapshot: true,
       },
     });
 
@@ -1501,6 +1727,7 @@ export class MaxBotLinkService {
         this.botRegistry.getBotById(membership.botId),
     );
     const nextPrimaryBotId =
+      this.resolvePreferredPrimaryBotId(null, activeMemberships) ??
       activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
       activeMemberships[0]?.botId ??

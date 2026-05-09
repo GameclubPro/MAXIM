@@ -471,4 +471,82 @@ describe('MaxBotOwnershipFoundationService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('repairs primary assignment to the active bot with stronger permissions', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const prisma = createPrismaMock({
+      chats: [
+        {
+          id: 'chat-stronger-standby',
+          entityType: ChatEntityType.CHAT,
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+        },
+      ],
+      memberships: [
+        {
+          chatId: 'chat-stronger-standby',
+          botId: 'id613002203036_bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:00:00.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages'],
+          },
+        },
+        {
+          chatId: 'chat-stronger-standby',
+          botId: 'id613002203036_4_bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:00:01.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages', 'delete_messages', 'add_remove_members'],
+          },
+        },
+      ],
+    });
+    const maxBotLinkService = {
+      rememberChatBotBinding: jest.fn(),
+    };
+
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([
+          { id: 'id613002203036_bot', state: 'active' },
+          { id: 'id613002203036_4_bot', state: 'active' },
+        ]),
+        getAdminVisibleBots: jest.fn().mockReturnValue([
+          { id: 'id613002203036_bot', state: 'active' },
+          { id: 'id613002203036_4_bot', state: 'active' },
+        ]),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-stronger-standby' },
+        data: {
+          primaryBotId: 'id613002203036_4_bot',
+          botId: 'id613002203036_4_bot',
+        },
+      }),
+    );
+    expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
+      'chat-stronger-standby',
+      'id613002203036_4_bot',
+    );
+
+    await service.onModuleDestroy();
+  });
 });
