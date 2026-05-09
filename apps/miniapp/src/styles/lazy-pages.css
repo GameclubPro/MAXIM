@@ -6657,6 +6657,174 @@
   }
 }
 
+.broadcast-planner__smart-side {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.broadcast-planner__target-chip {
+  min-width: 0;
+  max-width: min(38vw, 190px);
+  min-height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 159, 188, 0.2);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(236, 249, 250, 0.94)),
+    rgba(255, 255, 255, 0.92);
+  color: #087d91;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  font-weight: 880;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.broadcast-planner__smart-head.is-refreshing .broadcast-planner__target-chip,
+.broadcast-planner__calendar-context.is-refreshing .broadcast-planner__target-chip {
+  border-color: rgba(124, 148, 170, 0.22);
+  background: rgba(246, 250, 253, 0.94);
+  color: #627789;
+}
+
+.broadcast-planner__calendar-context {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.broadcast-planner__calendar-context small {
+  flex: 0 0 auto;
+  color: #6a8296;
+  font-size: 0.66rem;
+  font-weight: 780;
+  line-height: 1;
+}
+
+.broadcast-planner__day.has-free-window:not(.is-selected) {
+  border-color: rgba(31, 169, 126, 0.18);
+}
+
+.broadcast-planner__day.is-dense:not(.is-selected) {
+  border-color: rgba(197, 139, 32, 0.2);
+}
+
+.broadcast-planner__day-foot {
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.broadcast-planner__day-foot-main {
+  min-width: 0;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.broadcast-planner__day-signals {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.broadcast-planner__day-signals.is-empty {
+  visibility: hidden;
+}
+
+.broadcast-planner__day-signal {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #9dafbf;
+  box-shadow: 0 0 0 2px rgba(151, 173, 191, 0.08);
+}
+
+.broadcast-planner__day-signal.is-free {
+  background: #1fa97e;
+  box-shadow: 0 0 0 2px rgba(31, 169, 126, 0.12);
+}
+
+.broadcast-planner__day-signal.is-busy {
+  background: #9dafbf;
+}
+
+.broadcast-planner__day-signal.is-dense {
+  background: #c58b20;
+  box-shadow: 0 0 0 2px rgba(197, 139, 32, 0.12);
+}
+
+.broadcast-planner__day-signal.is-selected {
+  background: #1984ef;
+  box-shadow: 0 0 0 2px rgba(25, 132, 239, 0.12);
+}
+
+.broadcast-planner__free-windows {
+  gap: 7px;
+  padding: 0 0 2px;
+}
+
+.broadcast-planner__free-window {
+  min-height: 34px;
+  border-color: rgba(31, 169, 126, 0.22);
+  background:
+    linear-gradient(180deg, rgba(239, 251, 247, 0.98), rgba(226, 247, 241, 0.94)),
+    rgba(235, 250, 245, 0.94);
+  box-shadow:
+    0 8px 16px rgba(31, 169, 126, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.broadcast-planner__suggested-chip.is-free {
+  border-color: rgba(31, 169, 126, 0.24);
+  background: rgba(234, 250, 244, 0.96);
+  color: #12705a;
+}
+
+.broadcast-planner__suggested-chip.is-free.is-selected {
+  border-color: rgba(15, 102, 182, 0.18);
+  background: rgba(255, 240, 194, 0.92);
+  color: #7d4c00;
+}
+
+.broadcast-planner__day-agenda-delete {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.settings-drilldown .broadcast-planner__smart-side,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__smart-side {
+  gap: 5px;
+}
+
+.settings-drilldown .broadcast-planner__target-chip,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__target-chip {
+  max-width: min(34vw, 150px);
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 0.6rem;
+}
+
+.settings-drilldown .broadcast-planner__calendar-context,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-context {
+  padding: 0 1px;
+}
+
 @media (max-width: 360px) {
   .broadcast-planner__calendar-card {
     padding: 14px;

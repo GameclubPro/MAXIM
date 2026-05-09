@@ -524,10 +524,26 @@ async function openBroadcastPlannerTimeSheet(page) {
   await page.waitForTimeout(1000);
 
   const dockButton = page.getByRole('button', { name: /^Время$/u }).first();
+  const addTimeButton = page.getByRole('button', { name: /^Добавить время$/u }).first();
+  const planner = page.locator('.broadcast-planner').first();
+  if ((await planner.count()) > 0) {
+    await planner.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(150);
+  }
+
   if ((await dockButton.count()) > 0) {
     await dockButton.click();
     await page.waitForTimeout(350);
     return;
+  }
+
+  const planIntentButton = page
+    .locator('.broadcast-planner__intent-chip')
+    .filter({ hasText: /План/u })
+    .first();
+  if ((await planIntentButton.count()) > 0) {
+    await planIntentButton.click();
+    await page.waitForTimeout(250);
   }
 
   const selectedDayButton = page.locator('.broadcast-planner__day.is-selected').first();
@@ -539,6 +555,11 @@ async function openBroadcastPlannerTimeSheet(page) {
       await page.waitForTimeout(350);
       return;
     }
+    if ((await addTimeButton.count()) > 0) {
+      await addTimeButton.click();
+      await page.waitForTimeout(350);
+      return;
+    }
   }
 
   const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
@@ -546,6 +567,22 @@ async function openBroadcastPlannerTimeSheet(page) {
     await scheduleCard.click();
     await page.waitForTimeout(350);
     return;
+  }
+
+  const calendarDay = page.locator('.broadcast-planner__day:not([disabled])').first();
+  if ((await calendarDay.count()) > 0) {
+    await calendarDay.click();
+    await page.waitForTimeout(250);
+    if ((await addTimeButton.count()) > 0) {
+      await addTimeButton.click();
+      await page.waitForTimeout(350);
+      return;
+    }
+    if ((await dockButton.count()) > 0) {
+      await dockButton.click();
+      await page.waitForTimeout(350);
+      return;
+    }
   }
 
   throw new Error('Broadcast planner time sheet trigger was not found.');

@@ -5964,7 +5964,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     choices: mailingAudienceChoices,
     currentChat: mailingCurrentChatPreview,
   });
-  const mailingHeaderTargetLabel = buildBroadcastAudiencePresentation({
+  const mailingHeaderTargetPresentation = buildBroadcastAudiencePresentation({
     targetMode: mailingTargetMode,
     targetChatIds:
       mailingTargetMode === 'all'
@@ -5978,7 +5978,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : mailingAudiencePayload.targetChatIds.length,
     currentLabel: 'Текущий чат',
     currentTitle: chatTitle,
-  }).label;
+  });
+  const mailingHeaderTargetLabel = mailingHeaderTargetPresentation.label;
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -11295,6 +11296,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       mailingCalendarQuery.isFetching
                                     }
                                     currentTargetLabel="Текущий чат"
+                                    targetContextLabel={
+                                      mailingHeaderTargetPresentation.compactLabel
+                                    }
+                                    calendarRefreshing={mailingCalendarQuery.isFetching}
                                     excludeBroadcastId={editingManagedBroadcast?.id ?? null}
                                     onEditBroadcast={handleEditManagedBroadcastById}
                                     onDeleteBroadcast={handleDeleteManagedBroadcastById}
@@ -11336,7 +11341,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card__head">
                               <div className="broadcast-stage-card__title-wrap">
                                 <strong>Календарь</strong>
-                                <small>{orderedManagedBroadcasts.length}</small>
                               </div>
                             </div>
 
@@ -11356,6 +11360,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     mailingCalendarQuery.isFetching
                                   }
                                   currentTargetLabel="Текущий чат"
+                                  targetContextLabel={mailingHeaderTargetPresentation.compactLabel}
+                                  calendarRefreshing={mailingCalendarQuery.isFetching}
                                   excludeBroadcastId={editingManagedBroadcast?.id ?? null}
                                   onEditBroadcast={handleEditManagedBroadcastById}
                                   onDeleteBroadcast={handleDeleteManagedBroadcastById}

@@ -975,6 +975,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showSettingsHandoffError =
     Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
+  const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({
     queryKey: ['channel-managed-broadcast-calendar', chatId],
@@ -3016,7 +3017,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 settingsScreenQuery.isFetching ||
                                 broadcastCalendarQuery.isFetching
                               }
-                              currentTargetLabel="Текущий канал"
+                              currentTargetLabel={broadcastTargetContextLabel}
+                              targetContextLabel={broadcastTargetContextLabel}
+                              calendarRefreshing={broadcastCalendarQuery.isFetching}
                               excludeBroadcastId={editingManagedBroadcast?.id ?? null}
                               onEditBroadcast={handleEditManagedBroadcastById}
                               onDeleteBroadcast={handleDeleteManagedBroadcastById}
@@ -3058,7 +3061,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
                           <strong>Календарь</strong>
-                          <small>{orderedManagedBroadcasts.length}</small>
                         </div>
                       </div>
 
@@ -3077,7 +3079,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               settingsScreenQuery.isFetching ||
                               broadcastCalendarQuery.isFetching
                             }
-                            currentTargetLabel="Текущий канал"
+                            currentTargetLabel={broadcastTargetContextLabel}
+                            targetContextLabel={broadcastTargetContextLabel}
+                            calendarRefreshing={broadcastCalendarQuery.isFetching}
                             excludeBroadcastId={editingManagedBroadcast?.id ?? null}
                             onEditBroadcast={handleEditManagedBroadcastById}
                             onDeleteBroadcast={handleDeleteManagedBroadcastById}
