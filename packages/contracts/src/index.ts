@@ -3445,6 +3445,15 @@ export const broadcastHandoffStateSchema = z.object({
 });
 export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;
 
+export const managedBroadcastTargetPreviewSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  entityType: managedEntityTypeSchema.default('chat'),
+  link: z.string().trim().max(2048).nullable().optional().default(null),
+  avatarUrl: z.string().trim().url().nullable().optional().default(null),
+});
+export type ManagedBroadcastTargetPreview = z.infer<typeof managedBroadcastTargetPreviewSchema>;
+
 export const sendBroadcastResultSchema = z.object({
   sourceChatId: z.string(),
   targetChats: z.number().int().min(1),
@@ -3452,6 +3461,10 @@ export const sendBroadcastResultSchema = z.object({
   failedChats: z.number().int().min(0),
   sentChatIds: z.array(z.string()),
   failedChatIds: z.array(z.string()),
+  sentChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  failedChatPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  sentChatOverflowCount: z.number().int().min(0).default(0),
+  failedChatOverflowCount: z.number().int().min(0).default(0),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
   scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
   scheduledSlots: z.array(z.string().datetime()).default([]),
@@ -3500,7 +3513,10 @@ export const managedBroadcastSummarySchema = z.object({
   textLength: z.number().int().min(0),
   targetMode: broadcastTargetModeSchema.default('current'),
   applyToAllChats: z.boolean(),
+  targetChatIds: z.array(z.string()).default([]),
   targetChats: z.number().int().min(1),
+  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  targetOverflowCount: z.number().int().min(0).default(0),
   hasImage: z.boolean(),
   imageCount: z.number().int().min(0).default(0),
   hasVideo: z.boolean().default(false),
@@ -3536,6 +3552,8 @@ export const managedBroadcastDetailsSchema = z.object({
   targetMode: broadcastTargetModeSchema.default('current'),
   applyToAllChats: z.boolean(),
   targetChatIds: z.array(z.string()),
+  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  targetOverflowCount: z.number().int().min(0).default(0),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   buttonUrl: botButtonUrlSchema,
@@ -3570,6 +3588,36 @@ export const managedBroadcastDetailsSchema = z.object({
   lastError: z.string().nullable(),
 });
 export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSchema>;
+
+export const managedBroadcastCalendarSlotSchema = z.object({
+  broadcastId: z.string(),
+  sourceChatId: z.string(),
+  scheduledAt: z.string().datetime(),
+  status: managedBroadcastStatusSchema,
+  textPreview: z.string(),
+  targetMode: broadcastTargetModeSchema.default('current'),
+  targetChatIds: z.array(z.string()).default([]),
+  targetChats: z.number().int().min(1),
+  targetPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  targetOverflowCount: z.number().int().min(0).default(0),
+  overlapChatIds: z.array(z.string()).default([]),
+  overlapPreviews: z.array(managedBroadcastTargetPreviewSchema).default([]),
+  overlapOverflowCount: z.number().int().min(0).default(0),
+  hasTargetOverlap: z.boolean().default(false),
+});
+export type ManagedBroadcastCalendarSlot = z.infer<typeof managedBroadcastCalendarSlotSchema>;
+
+export const managedBroadcastCalendarResponseSchema = z.object({
+  sourceChatId: z.string(),
+  entityType: managedEntityTypeSchema,
+  from: z.string().datetime(),
+  to: z.string().datetime(),
+  targetChatIds: z.array(z.string()).default([]),
+  slots: z.array(managedBroadcastCalendarSlotSchema).default([]),
+});
+export type ManagedBroadcastCalendarResponse = z.infer<
+  typeof managedBroadcastCalendarResponseSchema
+>;
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,

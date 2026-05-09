@@ -59,13 +59,16 @@ import {
   type ApplySettingsTarget,
   type ApplySectionTargetPreviewResponse,
   type ManagedBroadcastDetails,
+  type ManagedBroadcastCalendarResponse,
   type ManagedEntityFavoriteType,
   type MembershipActivityPage,
   type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
+  type ManagedBroadcastTargetPreview,
   type ManagedEntityBotCapability,
   type ManagedEntityBotExecutionPlan,
+  managedBroadcastCalendarResponseSchema,
   managedBroadcastSummarySchema,
   type ChannelSettings,
   type ChatSettingsScreenResponse,
@@ -544,6 +547,11 @@ type ManagedBroadcastDeliverySnapshot = {
   canRetry: boolean;
 };
 
+type ManagedBroadcastTargetPreviewBundle = {
+  previews: ManagedBroadcastTargetPreview[];
+  overflowCount: number;
+};
+
 type ManagedBroadcastFailureBreakdown = {
   transient: number;
   permanentTarget: number;
@@ -581,6 +589,7 @@ const MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES = 3;
 const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS = MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
 const MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX =
   'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки';
+const MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT = 3;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
@@ -10807,6 +10816,22 @@ export class AdminService implements OnModuleDestroy {
     return this.listManagedBroadcastsForEntity(sourceChatId, user, 'channel', options);
   }
 
+  async getManagedBroadcastCalendar(
+    sourceChatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ManagedBroadcastCalendarResponse> {
+    return this.getManagedBroadcastCalendarForEntity(sourceChatId, user, 'chat', query);
+  }
+
+  async getChannelManagedBroadcastCalendar(
+    sourceChatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ManagedBroadcastCalendarResponse> {
+    return this.getManagedBroadcastCalendarForEntity(sourceChatId, user, 'channel', query);
+  }
+
   async getManagedBroadcast(
     sourceChatId: string,
     broadcastId: string,
@@ -10991,9 +11016,10 @@ export class AdminService implements OnModuleDestroy {
       ...recentRows.filter((row) => !activeRows.some((active) => active.id === row.id)),
     ];
 
-    const [snapshots, upcomingSlotsMap] = await Promise.all([
+    const [snapshots, upcomingSlotsMap, targetPreviewBundles] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshots(rows),
       this.getManagedBroadcastUpcomingSlotsMap(rows),
+      this.getManagedBroadcastTargetPreviewBundles(rows),
     ]);
 
     return rows.map((row) =>
@@ -11002,9 +11028,191 @@ export class AdminService implements OnModuleDestroy {
           row,
           snapshots.get(row.id),
           upcomingSlotsMap.get(row.id) ?? [],
+          targetPreviewBundles.get(row.id),
         ),
       ),
     );
+  }
+
+  private parseManagedBroadcastCalendarQuery(query: unknown): {
+    from: Date;
+    to: Date;
+    targetChatIds: string[];
+  } {
+    const source = query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
+    const now = new Date();
+    const fromRaw = typeof source.from === 'string' ? source.from : '';
+    const toRaw = typeof source.to === 'string' ? source.to : '';
+    const from = fromRaw ? new Date(fromRaw) : now;
+    const to = toRaw ? new Date(toRaw) : new Date(from.getTime() + BROADCAST_MAX_DELAY_MS);
+
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+      throw new BadRequestException('Некорректный диапазон календаря автопостинга.');
+    }
+    if (to.getTime() < from.getTime()) {
+      throw new BadRequestException('Конец календаря должен быть позже начала.');
+    }
+    if (to.getTime() - from.getTime() > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException('Календарь автопостинга доступен максимум на 31 день.');
+    }
+
+    const readTargetValue = (value: unknown): string[] => {
+      if (Array.isArray(value)) {
+        return value.flatMap((item) => readTargetValue(item));
+      }
+      if (typeof value !== 'string') {
+        return [];
+      }
+      return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    };
+
+    return {
+      from,
+      to,
+      targetChatIds: this.normalizeManagedBroadcastTargetChatIds(
+        readTargetValue(source.targetChatIds),
+      ),
+    };
+  }
+
+  private async getManagedBroadcastCalendarForEntity(
+    sourceChatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    query: unknown,
+  ): Promise<ManagedBroadcastCalendarResponse> {
+    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+
+    const parsedQuery = this.parseManagedBroadcastCalendarQuery(query);
+    const targetChatIds =
+      parsedQuery.targetChatIds.length > 0 ? parsedQuery.targetChatIds : [sourceChatId];
+    const allowedTargetIds = new Set([sourceChatId]);
+    if (entityType === 'chat') {
+      const availableTargets = await this.listChatsForMassBroadcast(user, {
+        discoveryMode: 'cached-first',
+      });
+      for (const chat of availableTargets) {
+        if (chat.entityType === entityType) {
+          allowedTargetIds.add(chat.id);
+        }
+      }
+    }
+
+    const invalidTargetChatIds = targetChatIds.filter((chatId) => !allowedTargetIds.has(chatId));
+    if (invalidTargetChatIds.length > 0) {
+      throw new BadRequestException(
+        'Некоторые выбранные чаты больше недоступны. Откройте список заново.',
+      );
+    }
+
+    const prismaEntityType = this.mapManagedEntityTypeToChatEntityType(entityType);
+    const occurrences = await this.prisma.managedBroadcastOccurrence.findMany({
+      where: {
+        entityType: prismaEntityType,
+        status: {
+          in: [
+            PrismaManagedBroadcastStatus.ACTIVE,
+            PrismaManagedBroadcastStatus.PARTIAL,
+            PrismaManagedBroadcastStatus.FAILED,
+          ],
+        },
+        scheduledAt: {
+          gte: parsedQuery.from,
+          lte: parsedQuery.to,
+        },
+      },
+      include: {
+        broadcast: true,
+      },
+      orderBy: [{ scheduledAt: 'asc' }],
+    });
+    const requestedTargetChatIdSet = new Set(targetChatIds);
+    const activeOccurrences = occurrences.filter((occurrence) => {
+      if (
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.ACTIVE &&
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.PARTIAL &&
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.FAILED
+      ) {
+        return false;
+      }
+
+      return this.parseManagedBroadcastTargetChatIds(
+        occurrence.broadcast.targetChatIds,
+        occurrence.broadcast.sourceChatId,
+      ).some((chatId) => requestedTargetChatIdSet.has(chatId));
+    });
+    const broadcastRows = Array.from(
+      new Map(
+        activeOccurrences.map((occurrence) => [occurrence.broadcast.id, occurrence.broadcast]),
+      ).values(),
+    ) as PersistedManagedBroadcast[];
+    const allTargetChatIds = [
+      ...targetChatIds,
+      ...broadcastRows.flatMap((row) =>
+        this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+      ),
+    ];
+    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(
+      allTargetChatIds,
+      entityType,
+    );
+
+    return managedBroadcastCalendarResponseSchema.parse({
+      sourceChatId,
+      entityType,
+      from: parsedQuery.from.toISOString(),
+      to: parsedQuery.to.toISOString(),
+      targetChatIds,
+      slots: activeOccurrences.map((occurrence) => {
+        const row = occurrence.broadcast;
+        const { targetMode, targetChatIds: rowTargetChatIds } =
+          this.resolveManagedBroadcastTargetsFromRow(row);
+        const targetPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+          rowTargetChatIds,
+          previewMap,
+          this.fromPrismaEntityType(row.entityType),
+        );
+        const overlapChatIds =
+          requestedTargetChatIdSet.size > 0
+            ? rowTargetChatIds.filter((chatId) => requestedTargetChatIdSet.has(chatId))
+            : [];
+        const overlapPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+          overlapChatIds,
+          previewMap,
+          this.fromPrismaEntityType(row.entityType),
+        );
+        const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
+        const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
+        const hasImage = this.readManagedBroadcastImagesFromRow(row).length > 0;
+
+        return {
+          broadcastId: row.id,
+          sourceChatId: row.sourceChatId,
+          scheduledAt: occurrence.scheduledAt.toISOString(),
+          status: row.status,
+          textPreview: normalizedText
+            ? normalizedText.slice(0, 160)
+            : hasImage
+              ? 'Фото без текста'
+              : hasVideo
+                ? 'Видео без текста'
+                : 'Пустой автопостинг',
+          targetMode,
+          targetChatIds: rowTargetChatIds,
+          targetChats: rowTargetChatIds.length,
+          targetPreviews: targetPreviewBundle.previews,
+          targetOverflowCount: targetPreviewBundle.overflowCount,
+          overlapChatIds,
+          overlapPreviews: overlapPreviewBundle.previews,
+          overlapOverflowCount: overlapPreviewBundle.overflowCount,
+          hasTargetOverlap: overlapChatIds.length > 0,
+        };
+      }),
+    });
   }
 
   private async getManagedBroadcastForEntity(
@@ -11027,12 +11235,17 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Автопостинг не найден.');
     }
 
-    const [snapshot, upcomingSlots] = await Promise.all([
+    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
+      row.targetChatIds,
+      row.sourceChatId,
+    );
+    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(row),
       this.getManagedBroadcastUpcomingSlots(row),
+      this.getManagedBroadcastTargetPreviewBundle(targetChatIds, entityType),
     ]);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots),
+      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots, targetPreviewBundle),
     );
   }
 
@@ -11168,6 +11381,7 @@ export class AdminService implements OnModuleDestroy {
           entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
+          targetChatIds: request.targetChatIds,
           excludeBroadcastId: existing.id,
           allowOverwrite: request.payload.replaceConflictingSlots,
         });
@@ -11202,12 +11416,17 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
-    const [snapshot, upcomingSlots] = await Promise.all([
+    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+      updated.targetChatIds,
+      updated.sourceChatId,
+    );
+    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(updated),
       this.getManagedBroadcastUpcomingSlots(updated),
+      this.getManagedBroadcastTargetPreviewBundle(updatedTargetChatIds, entityType),
     ]);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots),
+      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots, targetPreviewBundle),
     );
   }
 
@@ -11285,12 +11504,17 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
-    const [snapshot, upcomingSlots] = await Promise.all([
+    const canceledTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+      canceled.targetChatIds,
+      canceled.sourceChatId,
+    );
+    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(canceled),
       this.getManagedBroadcastUpcomingSlots(canceled),
+      this.getManagedBroadcastTargetPreviewBundle(canceledTargetChatIds, entityType),
     ]);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(canceled, snapshot, upcomingSlots),
+      this.mapManagedBroadcastDetails(canceled, snapshot, upcomingSlots, targetPreviewBundle),
     );
   }
 
@@ -11362,12 +11586,17 @@ export class AdminService implements OnModuleDestroy {
         },
       });
 
-      const [snapshot, upcomingSlots] = await Promise.all([
+      const finalizedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+        finalized.targetChatIds,
+        finalized.sourceChatId,
+      );
+      const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
         this.getManagedBroadcastDeliverySnapshot(finalized),
         this.getManagedBroadcastUpcomingSlots(finalized),
+        this.getManagedBroadcastTargetPreviewBundle(finalizedTargetChatIds, entityType),
       ]);
       return managedBroadcastDetailsSchema.parse(
-        this.mapManagedBroadcastDetails(finalized, snapshot, upcomingSlots),
+        this.mapManagedBroadcastDetails(finalized, snapshot, upcomingSlots, targetPreviewBundle),
       );
     }
 
@@ -11437,12 +11666,17 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
-    const [snapshot, upcomingSlots] = await Promise.all([
+    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+      updated.targetChatIds,
+      updated.sourceChatId,
+    );
+    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshot(updated),
       this.getManagedBroadcastUpcomingSlots(updated),
+      this.getManagedBroadcastTargetPreviewBundle(updatedTargetChatIds, entityType),
     ]);
     return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots),
+      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots, targetPreviewBundle),
     );
   }
 
@@ -11837,6 +12071,21 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
+    const targetPreviewMap = await this.loadManagedBroadcastTargetPreviewMap(
+      request.targetChatIds,
+      entityType,
+    );
+    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+      sentChatIds,
+      targetPreviewMap,
+      entityType,
+    );
+    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+      failedChatIds,
+      targetPreviewMap,
+      entityType,
+    );
+
     return {
       sourceChatId,
       targetChats: request.targetChatIds.length,
@@ -11844,6 +12093,10 @@ export class AdminService implements OnModuleDestroy {
       failedChats: failedChatIds.length,
       sentChatIds,
       failedChatIds,
+      sentChatPreviews: sentChatPreviewBundle.previews,
+      failedChatPreviews: failedChatPreviewBundle.previews,
+      sentChatOverflowCount: sentChatPreviewBundle.overflowCount,
+      failedChatOverflowCount: failedChatPreviewBundle.overflowCount,
       scheduleMode: 'legacy',
       scheduleTimezone: request.payload.scheduleTimezone,
       scheduledSlots: [],
@@ -11932,6 +12185,7 @@ export class AdminService implements OnModuleDestroy {
           entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
+          targetChatIds: request.targetChatIds,
           excludeBroadcastId: createdBroadcast.id,
           allowOverwrite: request.payload.replaceConflictingSlots,
         });
@@ -11999,6 +12253,21 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
+    const targetPreviewMap = await this.loadManagedBroadcastTargetPreviewMap(
+      request.targetChatIds,
+      entityType,
+    );
+    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+      occurrence.sentChatIds,
+      targetPreviewMap,
+      entityType,
+    );
+    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
+      occurrence.failedChatIds,
+      targetPreviewMap,
+      entityType,
+    );
+
     return {
       sourceChatId,
       targetChats: request.targetChatIds.length,
@@ -12006,6 +12275,10 @@ export class AdminService implements OnModuleDestroy {
       failedChats: occurrence.failedChatIds.length,
       sentChatIds: occurrence.sentChatIds,
       failedChatIds: occurrence.failedChatIds,
+      sentChatPreviews: sentChatPreviewBundle.previews,
+      failedChatPreviews: failedChatPreviewBundle.previews,
+      sentChatOverflowCount: sentChatPreviewBundle.overflowCount,
+      failedChatOverflowCount: failedChatPreviewBundle.overflowCount,
       scheduleMode: schedulePlan.scheduleMode,
       scheduleTimezone: schedulePlan.scheduleTimezone,
       scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
@@ -12935,6 +13208,7 @@ export class AdminService implements OnModuleDestroy {
       entityType: ChatEntityType;
       fromOccurrenceIndex: number;
       slots: Date[];
+      targetChatIds: string[];
       excludeBroadcastId: string | null;
       allowOverwrite: boolean;
     },
@@ -12959,6 +13233,12 @@ export class AdminService implements OnModuleDestroy {
         excludeBroadcastId: options.excludeBroadcastId,
         allowOverwrite: options.allowOverwrite,
       });
+      await this.assertManagedBroadcastTargetCalendarSlotsAvailable(tx, {
+        targetChatIds: options.targetChatIds,
+        entityType: options.entityType,
+        slots: options.slots,
+        excludeBroadcastId: options.excludeBroadcastId,
+      });
 
       try {
         await tx.managedBroadcastOccurrence.createMany({
@@ -12971,6 +13251,88 @@ export class AdminService implements OnModuleDestroy {
         }
       }
     }
+  }
+
+  private async assertManagedBroadcastTargetCalendarSlotsAvailable(
+    tx: Prisma.TransactionClient,
+    options: {
+      targetChatIds: readonly string[];
+      entityType: ChatEntityType;
+      slots: Date[];
+      excludeBroadcastId: string | null;
+    },
+  ): Promise<void> {
+    const targetChatIds = this.normalizeManagedBroadcastTargetChatIds(options.targetChatIds);
+    if (targetChatIds.length === 0 || options.slots.length === 0) {
+      return;
+    }
+
+    const targetChatIdSet = new Set(targetChatIds);
+    const occurrences = await tx.managedBroadcastOccurrence.findMany({
+      where: {
+        entityType: options.entityType,
+        status: {
+          in: [
+            PrismaManagedBroadcastStatus.ACTIVE,
+            PrismaManagedBroadcastStatus.PARTIAL,
+            PrismaManagedBroadcastStatus.FAILED,
+          ],
+        },
+        scheduledAt: {
+          in: options.slots,
+        },
+        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
+      },
+      select: {
+        broadcastId: true,
+        scheduledAt: true,
+        broadcast: {
+          select: {
+            sourceChatId: true,
+            targetChatIds: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: [{ scheduledAt: 'asc' }],
+    });
+
+    const conflictSlots = new Set<string>();
+    const conflictTargetChatIds = new Set<string>();
+    for (const occurrence of occurrences) {
+      if (
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.ACTIVE &&
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.PARTIAL &&
+        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.FAILED
+      ) {
+        continue;
+      }
+
+      const existingTargetChatIds = this.parseManagedBroadcastTargetChatIds(
+        occurrence.broadcast.targetChatIds,
+        occurrence.broadcast.sourceChatId,
+      );
+      const overlaps = existingTargetChatIds.filter((chatId) => targetChatIdSet.has(chatId));
+      if (overlaps.length === 0) {
+        continue;
+      }
+
+      conflictSlots.add(occurrence.scheduledAt.toISOString());
+      for (const chatId of overlaps) {
+        conflictTargetChatIds.add(chatId);
+      }
+    }
+
+    if (conflictSlots.size === 0) {
+      return;
+    }
+
+    throw new BadRequestException({
+      code: 'BROADCAST_TARGET_SLOT_CONFLICT',
+      message: 'В выбранной группе на это время уже есть автопостинг.',
+      conflicts: [...conflictSlots],
+      targetChatIds: [...conflictTargetChatIds],
+    });
   }
 
   private async overwriteManagedBroadcastCalendarSlots(
@@ -13315,6 +13677,173 @@ export class AdminService implements OnModuleDestroy {
       }),
       targetChatIds,
     };
+  }
+
+  private fallbackManagedBroadcastTargetPreview(
+    chatId: string,
+    entityType: ManagedEntityType = 'chat',
+  ): ManagedBroadcastTargetPreview {
+    const normalizedChatId = chatId.trim();
+    return {
+      id: normalizedChatId,
+      title: `${entityType === 'channel' ? 'Канал' : 'Чат'} ${normalizedChatId}`,
+      entityType,
+      link: null,
+      avatarUrl: null,
+    };
+  }
+
+  private async loadManagedBroadcastTargetPreviewMap(
+    targetChatIds: readonly string[],
+    fallbackEntityType: ManagedEntityType = 'chat',
+  ): Promise<Map<string, ManagedBroadcastTargetPreview>> {
+    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
+    if (normalizedIds.length === 0) {
+      return new Map();
+    }
+
+    const [chatRows, catalogRows] = await Promise.all([
+      this.prisma.chat.findMany({
+        where: {
+          id: { in: normalizedIds },
+        },
+        select: {
+          id: true,
+          title: true,
+          entityType: true,
+        },
+      }),
+      this.prisma.managedBotChatCatalog.findMany({
+        where: {
+          chatId: { in: normalizedIds },
+          status: 'ACTIVE',
+        },
+        orderBy: [{ lastSeenAt: 'desc' }],
+        select: {
+          chatId: true,
+          entityType: true,
+          title: true,
+          link: true,
+          avatarUrl: true,
+        },
+      }),
+    ]);
+
+    const previews = new Map<string, ManagedBroadcastTargetPreview>();
+    for (const row of chatRows) {
+      const entityType = this.fromPrismaEntityType(row.entityType);
+      previews.set(row.id, {
+        id: row.id,
+        title:
+          this.readTrimmedString(row.title) ??
+          this.fallbackManagedBroadcastTargetPreview(row.id, entityType).title,
+        entityType,
+        link: null,
+        avatarUrl: null,
+      });
+    }
+
+    for (const row of catalogRows) {
+      if (previews.has(row.chatId)) {
+        const current = previews.get(row.chatId);
+        if (current) {
+          previews.set(row.chatId, {
+            ...current,
+            title:
+              this.readTrimmedString(current.title) ??
+              this.readTrimmedString(row.title) ??
+              current.title,
+            link: this.readTrimmedString(current.link) ?? this.readTrimmedString(row.link) ?? null,
+            avatarUrl:
+              this.readTrimmedString(current.avatarUrl) ??
+              this.readTrimmedString(row.avatarUrl) ??
+              null,
+          });
+        }
+        continue;
+      }
+
+      const entityType = this.fromPrismaEntityType(row.entityType);
+      previews.set(row.chatId, {
+        id: row.chatId,
+        title:
+          this.readTrimmedString(row.title) ??
+          this.fallbackManagedBroadcastTargetPreview(row.chatId, entityType).title,
+        entityType,
+        link: this.readTrimmedString(row.link) ?? null,
+        avatarUrl: this.readTrimmedString(row.avatarUrl) ?? null,
+      });
+    }
+
+    for (const chatId of normalizedIds) {
+      if (!previews.has(chatId)) {
+        previews.set(
+          chatId,
+          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
+        );
+      }
+    }
+
+    return previews;
+  }
+
+  private buildManagedBroadcastTargetPreviewBundle(
+    targetChatIds: readonly string[],
+    previewMap: ReadonlyMap<string, ManagedBroadcastTargetPreview>,
+    fallbackEntityType: ManagedEntityType = 'chat',
+  ): ManagedBroadcastTargetPreviewBundle {
+    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
+    const previews = normalizedIds
+      .slice(0, MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT)
+      .map(
+        (chatId) =>
+          previewMap.get(chatId) ??
+          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
+      );
+
+    return {
+      previews,
+      overflowCount: Math.max(0, normalizedIds.length - previews.length),
+    };
+  }
+
+  private async getManagedBroadcastTargetPreviewBundle(
+    targetChatIds: readonly string[],
+    fallbackEntityType: ManagedEntityType = 'chat',
+  ): Promise<ManagedBroadcastTargetPreviewBundle> {
+    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(
+      targetChatIds,
+      fallbackEntityType,
+    );
+    return this.buildManagedBroadcastTargetPreviewBundle(
+      targetChatIds,
+      previewMap,
+      fallbackEntityType,
+    );
+  }
+
+  private async getManagedBroadcastTargetPreviewBundles(
+    rows: readonly PersistedManagedBroadcast[],
+  ): Promise<Map<string, ManagedBroadcastTargetPreviewBundle>> {
+    const allTargetChatIds = rows.flatMap((row) =>
+      this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+    );
+    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(allTargetChatIds);
+    const result = new Map<string, ManagedBroadcastTargetPreviewBundle>();
+
+    for (const row of rows) {
+      const fallbackEntityType = this.fromPrismaEntityType(row.entityType);
+      result.set(
+        row.id,
+        this.buildManagedBroadcastTargetPreviewBundle(
+          this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
+          previewMap,
+          fallbackEntityType,
+        ),
+      );
+    }
+
+    return result;
   }
 
   private normalizeBroadcastTextFormat(value: string): BroadcastTextFormat {
@@ -14166,10 +14695,18 @@ export class AdminService implements OnModuleDestroy {
     row: PersistedManagedBroadcast,
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
+    targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
   ): ManagedBroadcastSummary {
     const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
+    const resolvedTargetPreviewBundle =
+      targetPreviewBundle ??
+      this.buildManagedBroadcastTargetPreviewBundle(
+        targetChatIds,
+        new Map(),
+        this.fromPrismaEntityType(row.entityType),
+      );
     const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
       buttonEnabled: row.buttonEnabled,
       buttonUrl: row.buttonUrl,
@@ -14191,7 +14728,10 @@ export class AdminService implements OnModuleDestroy {
       textLength: row.text.length,
       targetMode,
       applyToAllChats: row.applyToAllChats,
+      targetChatIds,
       targetChats: targetChatIds.length,
+      targetPreviews: resolvedTargetPreviewBundle.previews,
+      targetOverflowCount: resolvedTargetPreviewBundle.overflowCount,
       hasImage: images.length > 0,
       imageCount: images.length,
       hasVideo,
@@ -14223,9 +14763,17 @@ export class AdminService implements OnModuleDestroy {
     row: PersistedManagedBroadcast,
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
+    targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
   ): ManagedBroadcastDetails {
     const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
+    const resolvedTargetPreviewBundle =
+      targetPreviewBundle ??
+      this.buildManagedBroadcastTargetPreviewBundle(
+        targetChatIds,
+        new Map(),
+        this.fromPrismaEntityType(row.entityType),
+      );
     const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
       buttonEnabled: row.buttonEnabled,
       buttonUrl: row.buttonUrl,
@@ -14243,6 +14791,8 @@ export class AdminService implements OnModuleDestroy {
       targetMode,
       applyToAllChats: row.applyToAllChats,
       targetChatIds,
+      targetPreviews: resolvedTargetPreviewBundle.previews,
+      targetOverflowCount: resolvedTargetPreviewBundle.overflowCount,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,

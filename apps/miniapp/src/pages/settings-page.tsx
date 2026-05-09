@@ -105,6 +105,7 @@ import {
   clearBroadcastHandoffState,
   getBroadcastHandoffState,
   getManagedBroadcast,
+  getManagedBroadcastCalendar,
   getSettingsScreen,
   previewApplySettingsSectionTarget,
   publishRules,
@@ -165,10 +166,14 @@ import {
   normalizeBroadcastAudienceTargetChatIds,
   resolveBroadcastAudienceLastScopedMode,
   resolveBroadcastAudiencePayload,
-  resolveBroadcastAudienceTargetLabel,
   restoreBroadcastAudienceModeFromAll,
   type BroadcastScopedTargetMode,
 } from '../lib/broadcast-audience';
+import {
+  buildBroadcastAudiencePresentation,
+  buildBroadcastAudiencePreviewBundle,
+  toManagedBroadcastTargetPreview,
+} from '../lib/broadcast-audience-presentation';
 import {
   applyMessageLimitsBlockedWordsInput,
   splitMessageLimitsBlockedWordsInput,
@@ -1356,11 +1361,22 @@ function formatRemovalDateTime(value: string | null, timeZone?: string | null): 
 }
 
 function formatMiniappBroadcastResultDescription(result: SendBroadcastResult): string {
+  const sentTargetLabel =
+    result.sentChatPreviews.length > 0
+      ? `${result.sentChatPreviews[0]?.title}${result.sentChatOverflowCount > 0 ? ` +${result.sentChatOverflowCount}` : ''}`
+      : '';
+  const failedTargetLabel =
+    result.failedChatPreviews.length > 0
+      ? `${result.failedChatPreviews[0]?.title}${result.failedChatOverflowCount > 0 ? ` +${result.failedChatOverflowCount}` : ''}`
+      : '';
   if (result.sentChats === 0 && result.nextSendAt) {
     return `Первый слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
   }
 
   if (result.failedChats > 0) {
+    if (failedTargetLabel) {
+      return `Ошибки: ${failedTargetLabel}. Отправлено: ${result.sentChats}/${result.targetChats}.`;
+    }
     return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
   }
 
@@ -1368,7 +1384,9 @@ function formatMiniappBroadcastResultDescription(result: SendBroadcastResult): s
     return `Следующий слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
   }
 
-  return `Отправлено: ${result.sentChats}/${result.targetChats}.`;
+  return sentTargetLabel
+    ? `Отправлено: ${sentTargetLabel}.`
+    : `Отправлено: ${result.sentChats}/${result.targetChats}.`;
 }
 
 function formatAllowlistModeLabel(matchType: AllowlistMatchType): string {
@@ -1539,15 +1557,14 @@ function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): 
 }
 
 function resolveManagedBroadcastScopeLabel(broadcast: ManagedBroadcastListItem): string {
-  if (broadcast.targetMode === 'all') {
-    return 'Все чаты';
-  }
-
-  if (broadcast.targetMode === 'selected') {
-    return formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов');
-  }
-
-  return 'Текущий чат';
+  return buildBroadcastAudiencePresentation({
+    targetMode: broadcast.targetMode,
+    targetChatIds: broadcast.targetChatIds,
+    targetPreviews: broadcast.targetPreviews,
+    targetOverflowCount: broadcast.targetOverflowCount,
+    targetChats: broadcast.targetChats,
+    currentLabel: 'Текущий чат',
+  }).label;
 }
 
 function resolveManagedBroadcastMetric(
@@ -3346,6 +3363,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         void clearBroadcastHandoffState(api, chatId).catch(() => undefined);
       }
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
       void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
@@ -3466,6 +3484,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }) => updateManagedBroadcast(api, chatId ?? '', broadcastId, payload),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
       resetMailingComposer();
       pushToast({
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
@@ -3492,6 +3511,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) => cancelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
       setManagedBroadcastDeleteTarget(null);
       if (editingManagedBroadcast?.id === broadcast.id) {
         resetMailingComposer();
@@ -3515,6 +3535,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) => retryManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
       pushToast({
         tone: broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL' ? 'info' : 'success',
         title:
@@ -4608,10 +4629,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
     if (
       message.toLowerCase().includes('выбранное время') ||
-      message.includes('BROADCAST_SLOT_CONFLICT')
+      message.includes('BROADCAST_SLOT_CONFLICT') ||
+      message.includes('BROADCAST_TARGET_SLOT_CONFLICT')
     ) {
       setMailingScheduleError('Календарь обновился. Выберите свободный слот.');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['managed-broadcast-calendar', chatId] });
     }
     return message;
   }
@@ -5733,10 +5756,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     chatTitle,
     chatsList.data,
   ]);
-  const mailingSelectedTargetChatIds = useMemo(
-    () => normalizeBroadcastAudienceTargetChatIds(mailingTargetChatIds),
-    [mailingTargetChatIds],
-  );
   const mailingAudiencePayload = useMemo(
     () =>
       resolveBroadcastAudiencePayload({
@@ -5746,6 +5765,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }),
     [chatId, mailingTargetChatIds, mailingTargetMode],
   );
+  const mailingCalendarTargetChatIds = useMemo(
+    () =>
+      mailingAudiencePayload.targetMode === 'all'
+        ? mailingAudienceChoices.map((chat) => chat.id)
+        : mailingAudiencePayload.targetChatIds,
+    [
+      mailingAudienceChoices,
+      mailingAudiencePayload.targetChatIds,
+      mailingAudiencePayload.targetMode,
+    ],
+  );
+  const mailingCalendarQuery = useQuery({
+    queryKey: [
+      'managed-broadcast-calendar',
+      chatId,
+      mailingCalendarTargetChatIds.join(':'),
+      editingManagedBroadcast?.id ?? null,
+    ],
+    queryFn: () =>
+      getManagedBroadcastCalendar(api, chatId ?? '', {
+        targetChatIds: mailingCalendarTargetChatIds,
+      }),
+    enabled: Boolean(chatId) && expandedSections.mailing,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
   const mailingAudienceChoicesLoading = chatsList.isLoading && (chatsList.data?.length ?? 0) === 0;
   const mailingAudienceChoicesError = chatsList.error
     ? formatApiError(chatsList.error) || 'Не удалось загрузить список чатов.'
@@ -5825,18 +5870,41 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : [];
   const pendingMailingConflictPreviewSlot =
     pendingMailingConflictSlots[0] ?? pendingMailingSlotConflict?.payload.scheduledSlots[0] ?? null;
+  const mailingCurrentChatChoice = mailingAudienceChoices.find((chat) => chat.id === chatId);
+  const mailingCurrentChatPreview = mailingCurrentChatChoice
+    ? toManagedBroadcastTargetPreview(mailingCurrentChatChoice)
+    : chatId
+      ? {
+          id: chatId,
+          title: chatTitle || 'Текущий чат',
+          entityType: 'chat' as const,
+          link: chatHeaderQuery.data?.link ?? null,
+          avatarUrl: chatHeaderQuery.data?.avatarUrl ?? null,
+        }
+      : null;
   const pendingMailingReviewPayload = pendingMailingPublishReview?.payload ?? null;
   const pendingMailingReviewAudienceLabel = pendingMailingReviewPayload
-    ? pendingMailingReviewPayload.targetMode === 'all'
-      ? `Все чаты · ${mailingAudienceChoices.length || pendingMailingReviewPayload.targetChatIds.length}`
-      : pendingMailingReviewPayload.targetMode === 'selected'
-        ? formatRussianCountLabel(
-            pendingMailingReviewPayload.targetChatIds.length,
-            'чат',
-            'чата',
-            'чатов',
-          )
-        : 'Текущий чат'
+    ? buildBroadcastAudiencePresentation({
+        targetMode: pendingMailingReviewPayload.targetMode,
+        targetChatIds:
+          pendingMailingReviewPayload.targetMode === 'all'
+            ? mailingCalendarTargetChatIds
+            : pendingMailingReviewPayload.targetChatIds,
+        targetPreviews: buildBroadcastAudiencePreviewBundle({
+          targetChatIds:
+            pendingMailingReviewPayload.targetMode === 'all'
+              ? mailingCalendarTargetChatIds
+              : pendingMailingReviewPayload.targetChatIds,
+          choices: mailingAudienceChoices,
+          currentChat: mailingCurrentChatPreview,
+        }).previews,
+        targetChats:
+          pendingMailingReviewPayload.targetMode === 'all'
+            ? mailingCalendarTargetChatIds.length
+            : pendingMailingReviewPayload.targetChatIds.length,
+        currentLabel: 'Текущий чат',
+        currentTitle: chatTitle,
+      }).label
     : '';
   const pendingMailingReviewFacts = pendingMailingReviewPayload
     ? [
@@ -5886,14 +5954,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     commentsEnabled: draft?.commentsEnabled,
     commentsChatBroadcastsEnabled: draft?.commentsChatBroadcastsEnabled,
   });
-  const mailingHeaderTargetLabel = resolveBroadcastAudienceTargetLabel({
+  const mailingAudiencePreviewBundle = buildBroadcastAudiencePreviewBundle({
+    targetChatIds:
+      mailingTargetMode === 'all'
+        ? mailingCalendarTargetChatIds
+        : mailingAudiencePayload.targetChatIds,
+    choices: mailingAudienceChoices,
+    currentChat: mailingCurrentChatPreview,
+  });
+  const mailingHeaderTargetLabel = buildBroadcastAudiencePresentation({
     targetMode: mailingTargetMode,
     targetChatIds:
-      mailingTargetMode === 'selected'
-        ? mailingAudiencePayload.targetChatIds
-        : mailingSelectedTargetChatIds,
+      mailingTargetMode === 'all'
+        ? mailingCalendarTargetChatIds
+        : mailingAudiencePayload.targetChatIds,
+    targetPreviews: mailingAudiencePreviewBundle.previews,
+    targetOverflowCount: mailingAudiencePreviewBundle.overflowCount,
+    targetChats:
+      mailingTargetMode === 'all'
+        ? mailingCalendarTargetChatIds.length
+        : mailingAudiencePayload.targetChatIds.length,
     currentLabel: 'Текущий чат',
-  });
+    currentTitle: chatTitle,
+  }).label;
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -11196,9 +11279,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     error={mailingScheduleError || mailingCycleError}
                                     disabled={isMailingBusy}
                                     managedBroadcasts={managedBroadcasts}
+                                    calendarSlots={mailingCalendarQuery.data?.slots ?? []}
+                                    targetAwareAvailability
+                                    sourceChatId={chatId}
                                     managedBroadcastsLoading={
                                       settingsScreenQuery.isLoading ||
-                                      settingsScreenQuery.isFetching
+                                      settingsScreenQuery.isFetching ||
+                                      mailingCalendarQuery.isFetching
                                     }
                                     currentTargetLabel="Текущий чат"
                                     excludeBroadcastId={editingManagedBroadcast?.id ?? null}
@@ -11254,8 +11341,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   occupiedSlots={mailingOccupiedSlots}
                                   disabled={isMailingBusy}
                                   managedBroadcasts={managedBroadcasts}
+                                  calendarSlots={mailingCalendarQuery.data?.slots ?? []}
+                                  sourceChatId={chatId}
                                   managedBroadcastsLoading={
-                                    settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
+                                    settingsScreenQuery.isLoading ||
+                                    settingsScreenQuery.isFetching ||
+                                    mailingCalendarQuery.isFetching
                                   }
                                   currentTargetLabel="Текущий чат"
                                   excludeBroadcastId={editingManagedBroadcast?.id ?? null}

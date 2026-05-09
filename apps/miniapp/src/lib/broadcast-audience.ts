@@ -2,7 +2,12 @@ import type { BroadcastTargetMode } from '@maxim/contracts';
 
 export type BroadcastScopedTargetMode = Exclude<BroadcastTargetMode, 'all'>;
 
-function formatRussianCountLabel(count: number, one: string, few: string, many: string): string {
+export function formatRussianCountLabel(
+  count: number,
+  one: string,
+  few: string,
+  many: string,
+): string {
   const normalized = Math.abs(count) % 100;
   const remainder = normalized % 10;
   if (normalized > 10 && normalized < 20) {

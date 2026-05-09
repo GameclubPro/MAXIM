@@ -53,6 +53,7 @@ import {
   cancelChannelManagedBroadcast,
   clearChannelBroadcastHandoffState,
   getChannelBroadcastHandoffState,
+  getChannelManagedBroadcastCalendar,
   getChannelManagedBroadcast,
   getChannelSettingsScreen,
   retryChannelManagedBroadcast,
@@ -90,6 +91,7 @@ import {
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
 import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
+import { buildBroadcastAudiencePresentation } from '../lib/broadcast-audience-presentation';
 import { cn } from '../lib/cn';
 import { maxNotify, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -394,6 +396,14 @@ function formatManagedBroadcastDateTime(value: string | null, timeZone?: string 
 }
 
 function formatChannelBroadcastResultDescription(result: SendBroadcastResult): string {
+  const sentTargetLabel =
+    result.sentChatPreviews.length > 0
+      ? `${result.sentChatPreviews[0]?.title}${result.sentChatOverflowCount > 0 ? ` +${result.sentChatOverflowCount}` : ''}`
+      : '';
+  const failedTargetLabel =
+    result.failedChatPreviews.length > 0
+      ? `${result.failedChatPreviews[0]?.title}${result.failedChatOverflowCount > 0 ? ` +${result.failedChatOverflowCount}` : ''}`
+      : '';
   if (result.sentChats === 0 && result.nextSendAt) {
     return `Первый слот: ${formatManagedBroadcastDateTime(
       result.nextSendAt,
@@ -402,6 +412,9 @@ function formatChannelBroadcastResultDescription(result: SendBroadcastResult): s
   }
 
   if (result.failedChats > 0) {
+    if (failedTargetLabel) {
+      return `Ошибки: ${failedTargetLabel}. Отправлено: ${result.sentChats}/${result.targetChats}.`;
+    }
     return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
   }
 
@@ -412,7 +425,9 @@ function formatChannelBroadcastResultDescription(result: SendBroadcastResult): s
     )}.`;
   }
 
-  return `Отправлено: ${result.sentChats}/${result.targetChats}.`;
+  return sentTargetLabel
+    ? `Отправлено: ${sentTargetLabel}.`
+    : `Отправлено: ${result.sentChats}/${result.targetChats}.`;
 }
 
 function formatCompactManagedBroadcastDateTime(
@@ -575,15 +590,27 @@ function resolveManagedBroadcastMetric(
   return {
     label: 'Доставлено',
     value: `${broadcast.deliveredChats}/${broadcast.targetChats}`,
-    caption: broadcast.applyToAllChats ? 'все чаты' : 'текущий канал',
+    caption: buildBroadcastAudiencePresentation({
+      targetMode: broadcast.targetMode,
+      targetChatIds: broadcast.targetChatIds,
+      targetPreviews: broadcast.targetPreviews,
+      targetOverflowCount: broadcast.targetOverflowCount,
+      targetChats: broadcast.targetChats,
+      currentLabel: 'Текущий канал',
+    }).label,
     tone: broadcast.status === 'COMPLETED' ? 'muted' : 'active',
   };
 }
 
 function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): string[] {
-  const scopeLabel = broadcast.applyToAllChats
-    ? formatChannelCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
-    : 'Текущий канал';
+  const scopeLabel = buildBroadcastAudiencePresentation({
+    targetMode: broadcast.targetMode,
+    targetChatIds: broadcast.targetChatIds,
+    targetPreviews: broadcast.targetPreviews,
+    targetOverflowCount: broadcast.targetOverflowCount,
+    targetChats: broadcast.targetChats,
+    currentLabel: 'Текущий канал',
+  }).label;
   const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
       ? formatChannelCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
@@ -949,6 +976,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
+  const broadcastCalendarQuery = useQuery({
+    queryKey: ['channel-managed-broadcast-calendar', chatId],
+    queryFn: () =>
+      getChannelManagedBroadcastCalendar(api, chatId ?? '', {
+        targetChatIds: chatId ? [chatId] : [],
+      }),
+    enabled: Boolean(chatId) && expandedSections.broadcast,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
       if (item.status === 'FAILED') {
@@ -1384,6 +1421,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         void clearChannelBroadcastHandoffState(api, chatId).catch(() => undefined);
       }
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-managed-broadcast-calendar', chatId],
+      });
       void queryClient.invalidateQueries({ queryKey: ['channel-broadcast-handoff', chatId] });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
@@ -1396,10 +1436,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       const description = normalizeApiError(error);
       if (
         description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT')
+        description.includes('BROADCAST_SLOT_CONFLICT') ||
+        description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
         void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+        void queryClient.invalidateQueries({
+          queryKey: ['channel-managed-broadcast-calendar', chatId],
+        });
       }
       pushToast({
         tone: 'danger',
@@ -1460,6 +1504,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }) => updateChannelManagedBroadcast(api, chatId ?? '', broadcastId, payload),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-managed-broadcast-calendar', chatId],
+      });
       resetBroadcastComposer();
       pushToast({
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
@@ -1476,10 +1523,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       const description = normalizeApiError(error);
       if (
         description.includes('выбранное время') ||
-        description.includes('BROADCAST_SLOT_CONFLICT')
+        description.includes('BROADCAST_SLOT_CONFLICT') ||
+        description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
         void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+        void queryClient.invalidateQueries({
+          queryKey: ['channel-managed-broadcast-calendar', chatId],
+        });
       }
       pushToast({
         tone: 'danger',
@@ -1495,6 +1546,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       cancelChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-managed-broadcast-calendar', chatId],
+      });
       setManagedBroadcastDeleteTarget(null);
       if (editingManagedBroadcast?.id === broadcast.id) {
         resetBroadcastComposer();
@@ -1519,6 +1573,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       retryChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-managed-broadcast-calendar', chatId],
+      });
       pushToast({
         tone: broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL' ? 'info' : 'success',
         title:
@@ -2951,8 +3008,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               error={broadcastScheduleError || broadcastCycleError}
                               disabled={isBroadcastBusy}
                               managedBroadcasts={managedBroadcasts}
+                              calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
+                              targetAwareAvailability
+                              sourceChatId={chatId}
                               managedBroadcastsLoading={
-                                settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
+                                settingsScreenQuery.isLoading ||
+                                settingsScreenQuery.isFetching ||
+                                broadcastCalendarQuery.isFetching
                               }
                               currentTargetLabel="Текущий канал"
                               excludeBroadcastId={editingManagedBroadcast?.id ?? null}
@@ -3008,8 +3070,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             occupiedSlots={broadcastOccupiedSlots}
                             disabled={isBroadcastBusy}
                             managedBroadcasts={managedBroadcasts}
+                            calendarSlots={broadcastCalendarQuery.data?.slots ?? []}
+                            sourceChatId={chatId}
                             managedBroadcastsLoading={
-                              settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
+                              settingsScreenQuery.isLoading ||
+                              settingsScreenQuery.isFetching ||
+                              broadcastCalendarQuery.isFetching
                             }
                             currentTargetLabel="Текущий канал"
                             excludeBroadcastId={editingManagedBroadcast?.id ?? null}

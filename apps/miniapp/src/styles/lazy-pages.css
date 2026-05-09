@@ -6323,6 +6323,40 @@
   line-height: 1;
 }
 
+.broadcast-planner__free-windows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+
+.broadcast-planner__free-window {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 169, 126, 0.2);
+  background: rgba(235, 250, 245, 0.94);
+  color: #12705a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.71rem;
+  font-weight: 820;
+  letter-spacing: 0;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.broadcast-planner__free-window:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.broadcast-planner__free-window:disabled {
+  opacity: 0.58;
+}
+
 .broadcast-planner__day-agenda-actions {
   display: flex;
   justify-content: flex-end;

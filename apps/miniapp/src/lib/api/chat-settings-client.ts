@@ -11,6 +11,7 @@ import {
   managedEntityBotExecutionPlanSchema,
   domainAllowlistEntrySchema,
   managedBroadcastDetailsSchema,
+  managedBroadcastCalendarResponseSchema,
   managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
   managedPollSchema,
@@ -34,6 +35,7 @@ import {
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
   type BroadcastHandoffState,
+  type ManagedBroadcastCalendarResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
   type ManagedEntityBotExecutionPlan,
@@ -292,6 +294,28 @@ export async function getManagedBroadcasts(
   }
 
   return response.map((item: unknown) => managedBroadcastSummarySchema.parse(item));
+}
+
+export async function getManagedBroadcastCalendar(
+  api: ApiTransport,
+  chatId: string,
+  params: { from?: string; to?: string; targetChatIds?: readonly string[] } = {},
+): Promise<ManagedBroadcastCalendarResponse> {
+  const search = new URLSearchParams();
+  if (params.from) {
+    search.set('from', params.from);
+  }
+  if (params.to) {
+    search.set('to', params.to);
+  }
+  if (params.targetChatIds && params.targetChatIds.length > 0) {
+    search.set('targetChatIds', params.targetChatIds.join(','));
+  }
+
+  const response = await api.request(
+    `/chats/${chatId}/broadcast-calendar${search.toString() ? `?${search.toString()}` : ''}`,
+  );
+  return managedBroadcastCalendarResponseSchema.parse(response);
 }
 
 export async function getManagedBroadcast(

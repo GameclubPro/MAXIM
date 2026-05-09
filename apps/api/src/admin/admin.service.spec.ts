@@ -211,6 +211,9 @@ function createPrismaMock() {
         entityType: 'CHAT',
       }),
     },
+    managedBotChatCatalog: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     channelSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -17913,6 +17916,211 @@ describe('AdminService.sendBroadcast', () => {
           occurrence.scheduledAt.getTime() === new Date('2026-03-03T12:00:00.000Z').getTime(),
       ),
     ).toBe(false);
+  });
+
+  it('rejects calendar slots already occupied in a selected target chat', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const slot = new Date('2026-03-03T12:00:00.000Z');
+    prisma.managedBroadcastOccurrence.findMany.mockImplementation(
+      async ({ where }: { where?: Record<string, unknown> } = {}) => {
+        if (typeof where?.sourceChatId === 'string') {
+          return [];
+        }
+
+        return [
+          {
+            broadcastId: 'broadcast-target-conflict',
+            scheduledAt: slot,
+            broadcast: {
+              sourceChatId: 'chat-other',
+              targetChatIds: ['chat-2'],
+              status: 'ACTIVE',
+            },
+          },
+        ];
+      },
+    );
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    await expect(
+      service.sendBroadcast(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Новый автопостинг',
+          textFormat: 'plain',
+          targetMode: 'selected',
+          targetChatIds: ['chat-2'],
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          scheduleMode: 'calendar',
+          scheduleTimezone: 'Europe/Moscow',
+          scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+          replaceConflictingSlots: true,
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'BROADCAST_TARGET_SLOT_CONFLICT',
+        conflicts: ['2026-03-03T12:00:00.000Z'],
+        targetChatIds: ['chat-2'],
+      }),
+    });
+    expect(prisma.managedBroadcastOccurrence.createMany).not.toHaveBeenCalled();
+  });
+
+  it('returns only calendar slots that overlap the requested target chats', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.managedBroadcastOccurrence.findMany.mockResolvedValue([
+      {
+        broadcastId: 'broadcast-overlap',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        occurrenceIndex: 1,
+        scheduledAt: new Date('2026-03-03T12:00:00.000Z'),
+        status: 'ACTIVE',
+        broadcast: {
+          id: 'broadcast-overlap',
+          sourceChatId: 'chat-1',
+          entityType: 'CHAT',
+          text: 'Пост в выбранный чат',
+          mediaType: null,
+          mediaPayload: null,
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          targetChatIds: ['chat-2', 'chat-3'],
+          applyToAllChats: false,
+          status: 'ACTIVE',
+        },
+      },
+      {
+        broadcastId: 'broadcast-other',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        occurrenceIndex: 1,
+        scheduledAt: new Date('2026-03-03T13:00:00.000Z'),
+        status: 'ACTIVE',
+        broadcast: {
+          id: 'broadcast-other',
+          sourceChatId: 'chat-1',
+          entityType: 'CHAT',
+          text: 'Пост в другой чат',
+          mediaType: null,
+          mediaPayload: null,
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          targetChatIds: ['chat-3'],
+          applyToAllChats: false,
+          status: 'ACTIVE',
+        },
+      },
+    ]);
+    prisma.chat.findMany.mockResolvedValue([
+      { id: 'chat-2', title: 'Чат 2', entityType: 'CHAT' },
+      { id: 'chat-3', title: 'Чат 3', entityType: 'CHAT' },
+    ]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+      createChatSummaryFixture({
+        id: 'chat-3',
+        title: 'Чат 3',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    const result = await service.getManagedBroadcastCalendar(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        from: '2026-03-03T00:00:00.000Z',
+        to: '2026-03-04T00:00:00.000Z',
+        targetChatIds: 'chat-2',
+      },
+    );
+
+    expect(result.targetChatIds).toEqual(['chat-2']);
+    expect(result.slots).toHaveLength(1);
+    expect(result.slots[0]).toEqual(
+      expect.objectContaining({
+        broadcastId: 'broadcast-overlap',
+        scheduledAt: '2026-03-03T12:00:00.000Z',
+        hasTargetOverlap: true,
+        overlapChatIds: ['chat-2'],
+        targetChats: 2,
+      }),
+    );
+    expect(result.slots[0]?.targetPreviews.map((preview) => preview.title)).toEqual([
+      'Чат 2',
+      'Чат 3',
+    ]);
   });
 
   it('sends first cycle immediately and stores remaining launches', async () => {

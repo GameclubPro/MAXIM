@@ -369,6 +369,15 @@ export class AdminController {
     return this.adminService.sendChannelBroadcastTest(chatId, user, body);
   }
 
+  @Get('channels/:chatId/broadcast-calendar')
+  getChannelManagedBroadcastCalendar(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getChannelManagedBroadcastCalendar(chatId, user, query);
+  }
+
   @Get('channels/:chatId/broadcasts')
   getChannelManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.listChannelManagedBroadcasts(chatId, user);
@@ -593,6 +602,15 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.sendBroadcastTest(chatId, user, body);
+  }
+
+  @Get('chats/:chatId/broadcast-calendar')
+  getManagedBroadcastCalendar(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getManagedBroadcastCalendar(chatId, user, query);
   }
 
   @Get('chats/:chatId/broadcasts')

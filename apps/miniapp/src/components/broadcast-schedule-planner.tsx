@@ -1,4 +1,8 @@
-import type { ManagedBroadcastSummary } from '@maxim/contracts';
+import type {
+  ManagedBroadcastCalendarSlot,
+  ManagedBroadcastSummary,
+  ManagedBroadcastTargetPreview,
+} from '@maxim/contracts';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
@@ -39,7 +43,10 @@ type BroadcastSchedulePlannerProps = {
   onOpenDay?: (dayKey: string) => void;
   onSelectionStateChange?: (state: BroadcastSchedulePlannerSelectionState) => void;
   managedBroadcasts?: ManagedBroadcastSummary[];
+  calendarSlots?: ManagedBroadcastCalendarSlot[];
+  targetAwareAvailability?: boolean;
   managedBroadcastsLoading?: boolean;
+  sourceChatId?: string | null;
   currentTargetLabel?: string;
   excludeBroadcastId?: string | null;
   onEditBroadcast?: (broadcastId: string) => void;
@@ -74,6 +81,7 @@ type BroadcastScheduleAgendaTone = 'active' | 'warning' | 'danger' | 'muted';
 
 type BroadcastScheduleAgendaEntry = {
   id: string;
+  sourceChatId: string | null;
   dayKey: string;
   title: string;
   previewSource: string;
@@ -82,6 +90,13 @@ type BroadcastScheduleAgendaEntry = {
   timeSlots: string[];
   facts: string[];
   canEdit: boolean;
+};
+
+type BroadcastFreeWindow = {
+  id: string;
+  label: string;
+  startMinutes: number;
+  endMinutes: number;
 };
 
 function areSelectionStatesEqual(
@@ -199,12 +214,13 @@ function buildAgendaFacts(
   broadcast: ManagedBroadcastSummary,
   currentTargetLabel: string,
 ): string[] {
-  const audienceLabel =
-    broadcast.targetMode === 'all'
-      ? formatCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
-      : broadcast.targetMode === 'selected'
-        ? formatCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
-        : currentTargetLabel;
+  const audienceLabel = formatAgendaAudienceLabel({
+    targetMode: broadcast.targetMode,
+    targetChats: broadcast.targetChats,
+    targetPreviews: broadcast.targetPreviews,
+    targetOverflowCount: broadcast.targetOverflowCount,
+    currentTargetLabel,
+  });
   return [
     audienceLabel,
     broadcast.hasImage
@@ -214,6 +230,31 @@ function buildAgendaFacts(
       : null,
     broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
   ].filter((item): item is string => Boolean(item));
+}
+
+function formatAgendaAudienceLabel(params: {
+  targetMode: ManagedBroadcastSummary['targetMode'];
+  targetChats: number;
+  targetPreviews?: readonly ManagedBroadcastTargetPreview[];
+  targetOverflowCount?: number;
+  currentTargetLabel: string;
+}): string {
+  const firstPreviewTitle = params.targetPreviews?.[0]?.title.trim();
+  const overflowCount =
+    params.targetOverflowCount ??
+    Math.max(0, params.targetChats - (params.targetPreviews?.length ?? 0));
+  if (params.targetMode === 'all') {
+    return params.targetChats > 0 ? `Все · ${params.targetChats}` : 'Все чаты';
+  }
+
+  if (params.targetMode === 'selected') {
+    if (firstPreviewTitle) {
+      return overflowCount > 0 ? `${firstPreviewTitle} +${overflowCount}` : firstPreviewTitle;
+    }
+    return formatCountLabel(params.targetChats, 'чат', 'чата', 'чатов');
+  }
+
+  return firstPreviewTitle || params.currentTargetLabel;
 }
 
 function buildAgendaEntries(
@@ -239,6 +280,7 @@ function buildAgendaEntries(
     for (const [dayKey, timeSlots] of slotsByDay) {
       entries.push({
         id: broadcast.id,
+        sourceChatId: null,
         dayKey,
         title:
           formatSupportedMarkdownPreview(broadcast.textPreview, 120) ||
@@ -267,6 +309,70 @@ function buildAgendaEntries(
 
     return left.title.localeCompare(right.title, 'ru');
   });
+}
+
+function buildAgendaEntriesFromCalendarSlots(
+  calendarSlots: ManagedBroadcastCalendarSlot[],
+  sourceChatId: string | null | undefined,
+  currentTargetLabel: string,
+  excludeBroadcastId: string | null | undefined,
+): BroadcastScheduleAgendaEntry[] {
+  const grouped = new Map<string, ManagedBroadcastCalendarSlot[]>();
+  for (const slot of calendarSlots) {
+    if (excludeBroadcastId && slot.broadcastId === excludeBroadcastId) {
+      continue;
+    }
+    const key = `${slot.broadcastId}:${getBroadcastScheduleDayKey(slot.scheduledAt)}`;
+    const current = grouped.get(key) ?? [];
+    current.push(slot);
+    grouped.set(key, current);
+  }
+
+  return [...grouped.values()]
+    .map((slots) => {
+      const firstSlot = slots[0];
+      const timeSlots = sortAndUniqueBroadcastSlots(slots.map((slot) => slot.scheduledAt));
+      const dayKey = getBroadcastScheduleDayKey(timeSlots[0] ?? firstSlot?.scheduledAt ?? '');
+      const targetMode = firstSlot?.targetMode ?? 'current';
+      const targetChats = firstSlot?.targetChats ?? 1;
+      const targetPreviews = firstSlot?.hasTargetOverlap
+        ? firstSlot.overlapPreviews
+        : (firstSlot?.targetPreviews ?? []);
+      const targetOverflowCount = firstSlot?.hasTargetOverlap
+        ? firstSlot.overlapOverflowCount
+        : firstSlot?.targetOverflowCount;
+
+      return {
+        id: firstSlot?.broadcastId ?? dayKey,
+        sourceChatId: firstSlot?.sourceChatId ?? null,
+        dayKey,
+        title:
+          formatSupportedMarkdownPreview(firstSlot?.textPreview ?? '', 120) ||
+          firstSlot?.textPreview ||
+          'Автопостинг',
+        previewSource: firstSlot?.textPreview ?? '',
+        statusLabel: firstSlot ? resolveAgendaStatusLabel(firstSlot.status) : null,
+        tone: firstSlot ? resolveAgendaTone(firstSlot.status) : 'active',
+        timeSlots,
+        facts: [
+          formatAgendaAudienceLabel({
+            targetMode,
+            targetChats,
+            targetPreviews,
+            targetOverflowCount,
+            currentTargetLabel,
+          }),
+        ],
+        canEdit: Boolean(sourceChatId && firstSlot?.sourceChatId === sourceChatId),
+      };
+    })
+    .sort((left, right) => {
+      const dayDiff = left.dayKey.localeCompare(right.dayKey);
+      if (dayDiff !== 0) {
+        return dayDiff;
+      }
+      return (left.timeSlots[0] ?? '').localeCompare(right.timeSlots[0] ?? '');
+    });
 }
 
 function getMonthKeys(windowStart: Date, windowEnd: Date): string[] {
@@ -368,6 +474,40 @@ function getSuggestedMinutes(dayKey: string, minimumTimeMs: number): number[] {
   ).slice(0, 4);
 }
 
+function getSlotMinutes(slot: string): number | null {
+  const date = new Date(slot);
+  if (!Number.isFinite(date.getTime())) {
+    return null;
+  }
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function buildFreeWindowsForDay(slots: readonly string[]): BroadcastFreeWindow[] {
+  const minutes = Array.from(
+    new Set(
+      slots.map((slot) => getSlotMinutes(slot)).filter((value): value is number => value !== null),
+    ),
+  ).sort((left, right) => left - right);
+  const windows: BroadcastFreeWindow[] = [];
+
+  for (let index = 0; index < minutes.length - 1; index += 1) {
+    const startMinutes = minutes[index] + BROADCAST_SCHEDULE_STEP_MINUTES;
+    const endMinutes = minutes[index + 1];
+    if (endMinutes - startMinutes < BROADCAST_SCHEDULE_STEP_MINUTES) {
+      continue;
+    }
+
+    windows.push({
+      id: `${startMinutes}-${endMinutes}`,
+      label: `${formatMinuteLabel(startMinutes)}-${formatMinuteLabel(endMinutes)}`,
+      startMinutes,
+      endMinutes,
+    });
+  }
+
+  return windows.slice(0, 4);
+}
+
 export function BroadcastSchedulePlanner({
   value,
   occupiedSlots = [],
@@ -378,7 +518,10 @@ export function BroadcastSchedulePlanner({
   onOpenDay,
   onSelectionStateChange,
   managedBroadcasts = [],
+  calendarSlots = [],
+  targetAwareAvailability = false,
   managedBroadcastsLoading = false,
+  sourceChatId = null,
   currentTargetLabel = 'Текущий чат',
   excludeBroadcastId = null,
   onEditBroadcast,
@@ -420,7 +563,14 @@ export function BroadcastSchedulePlanner({
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
-  const occupiedSet = new Set(sortAndUniqueBroadcastSlots(occupiedSlots));
+  const calendarBusySlots = sortAndUniqueBroadcastSlots(
+    calendarSlots
+      .filter((slot) => !targetAwareAvailability || slot.hasTargetOverlap)
+      .map((slot) => slot.scheduledAt),
+  );
+  const occupiedSet = new Set(
+    calendarSlots.length > 0 ? calendarBusySlots : sortAndUniqueBroadcastSlots(occupiedSlots),
+  );
   const selectedSet = new Set(normalizedValue);
   const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = liveNowMs + 30_000;
@@ -434,11 +584,15 @@ export function BroadcastSchedulePlanner({
     cycle ?? createDefaultBroadcastCycleDraft(liveNowMs),
     liveNowMs,
   );
-  const agendaEntries = buildAgendaEntries(
-    managedBroadcasts,
-    currentTargetLabel,
-    excludeBroadcastId,
-  );
+  const agendaEntries =
+    calendarSlots.length > 0
+      ? buildAgendaEntriesFromCalendarSlots(
+          calendarSlots,
+          sourceChatId,
+          currentTargetLabel,
+          excludeBroadcastId,
+        )
+      : buildAgendaEntries(managedBroadcasts, currentTargetLabel, excludeBroadcastId);
   const agendaEntriesByDay = new Map<string, BroadcastScheduleAgendaEntry[]>();
   for (const entry of agendaEntries) {
     const current = agendaEntriesByDay.get(entry.dayKey) ?? [];
@@ -450,6 +604,17 @@ export function BroadcastSchedulePlanner({
     (count, entry) => count + entry.timeSlots.length,
     0,
   );
+  const agendaFreeWindowSlots =
+    agendaDayKey && calendarSlots.length > 0
+      ? calendarSlots
+          .filter(
+            (slot) =>
+              getBroadcastScheduleDayKey(slot.scheduledAt) === agendaDayKey &&
+              (!targetAwareAvailability || slot.hasTargetOverlap),
+          )
+          .map((slot) => slot.scheduledAt)
+      : agendaDayEntries.flatMap((entry) => entry.timeSlots);
+  const agendaFreeWindows = buildFreeWindowsForDay(agendaFreeWindowSlots);
   const showAgendaSkeleton =
     sheetMode === 'agenda' && managedBroadcastsLoading && agendaDayEntries.length === 0;
   const isDaySheetOpen = sheetMode !== null;
@@ -801,6 +966,24 @@ export function BroadcastSchedulePlanner({
     maxImpact('medium');
   }
 
+  function pickFreeWindow(window: BroadcastFreeWindow) {
+    if (disabled || !agendaDayKey) {
+      return;
+    }
+
+    activateScheduledMode();
+    setIsConfirmed(false);
+    setPickedDayKeys([agendaDayKey]);
+    setActiveDayKey(agendaDayKey);
+    setApplyToAllPickedDays(false);
+    setSheetMode('time');
+    replaceSlotsForDays([agendaDayKey], (dayKey, currentSlots) => {
+      const slotIso = buildBroadcastScheduleSlotIso(dayKey, window.startMinutes);
+      return sortAndUniqueBroadcastSlots([...currentSlots, slotIso]);
+    });
+    maxImpact('medium');
+  }
+
   function handleAgendaEdit(broadcastId: string) {
     if (disabled || !onEditBroadcast) {
       return;
@@ -986,7 +1169,7 @@ export function BroadcastSchedulePlanner({
                   const dayKey = getBroadcastScheduleDayKey(cell);
                   const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
                   const agendaCount = (agendaEntriesByDay.get(dayKey) ?? []).length;
-                  const busyCount = occupiedSlots.filter(
+                  const busyCount = [...occupiedSet].filter(
                     (slot) => getBroadcastScheduleDayKey(slot) === dayKey && !selectedSet.has(slot),
                   ).length;
                   const isOutsideMonth = getMonthKey(cell) !== visibleMonthKey;
@@ -1501,21 +1684,42 @@ export function BroadcastSchedulePlanner({
                                   </div>
                                 )}
 
-                                <div className="broadcast-planner__day-agenda-actions">
-                                  <button
-                                    type="button"
-                                    className="broadcast-planner__day-agenda-delete"
-                                    onClick={() => handleAgendaDelete(entry.id)}
-                                    disabled={disabled || isDeleting || isEditing}
-                                  >
-                                    {isDeleting ? 'Удаляем...' : 'Удалить'}
-                                  </button>
-                                </div>
+                                {entry.canEdit ? (
+                                  <div className="broadcast-planner__day-agenda-actions">
+                                    <button
+                                      type="button"
+                                      className="broadcast-planner__day-agenda-delete"
+                                      onClick={() => handleAgendaDelete(entry.id)}
+                                      disabled={disabled || isDeleting || isEditing}
+                                    >
+                                      {isDeleting ? 'Удаляем...' : 'Удалить'}
+                                    </button>
+                                  </div>
+                                ) : null}
                               </article>
                             );
                           })}
                         </div>
                       )}
+
+                      {agendaFreeWindows.length > 0 ? (
+                        <div
+                          className="broadcast-planner__free-windows"
+                          aria-label="Свободное время"
+                        >
+                          {agendaFreeWindows.map((window) => (
+                            <button
+                              key={`${agendaDayKey}-${window.id}`}
+                              type="button"
+                              className="broadcast-planner__free-window"
+                              onClick={() => pickFreeWindow(window)}
+                              disabled={disabled}
+                            >
+                              {window.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
 
                       <div className="broadcast-planner__sheet-footer">
                         <button

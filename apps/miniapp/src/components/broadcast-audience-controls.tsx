@@ -5,6 +5,11 @@ import {
   type BroadcastScopedTargetMode,
 } from '../lib/broadcast-audience';
 import {
+  buildBroadcastAudiencePresentation,
+  buildBroadcastAudiencePreviewBundle,
+  toManagedBroadcastTargetPreview,
+} from '../lib/broadcast-audience-presentation';
+import {
   getHomeEntityFavoriteIds,
   getHomeEntityFavoritesFallbackScope,
   mergeHomeEntityFavorites,
@@ -101,6 +106,45 @@ export function BroadcastAudienceControls({
   const allModeActive = targetMode === 'all';
   const allChoicesLabel =
     choices.length > 0 ? formatAudienceCountLabel(choices.length) : 'Все чаты';
+  const currentChatChoice = choices.find((chat) => chat.id === currentChatId);
+  const currentChatPreview = currentChatChoice
+    ? toManagedBroadcastTargetPreview(currentChatChoice)
+    : currentChatId
+      ? {
+          id: currentChatId,
+          title: currentLabel,
+          entityType: 'chat' as const,
+          link: null,
+          avatarUrl: null,
+        }
+      : null;
+  const selectedPreviewBundle = buildBroadcastAudiencePreviewBundle({
+    targetChatIds,
+    choices,
+    currentChat: currentChatPreview,
+  });
+  const currentAudiencePresentation = buildBroadcastAudiencePresentation({
+    targetMode: 'current',
+    targetChatIds: currentChatId ? [currentChatId] : [],
+    targetPreviews: currentChatPreview ? [currentChatPreview] : [],
+    currentLabel,
+    currentTitle: currentChatPreview?.title ?? currentLabel,
+  });
+  const selectedAudiencePresentation = buildBroadcastAudiencePresentation({
+    targetMode: 'selected',
+    targetChatIds,
+    targetPreviews: selectedPreviewBundle.previews,
+    targetOverflowCount: selectedPreviewBundle.overflowCount,
+    currentLabel,
+  });
+  const allAudiencePresentation = buildBroadcastAudiencePresentation({
+    targetMode: 'all',
+    targetChatIds: choices.map((chat) => chat.id),
+    targetPreviews: choices.slice(0, 3).map((chat) => toManagedBroadcastTargetPreview(chat)),
+    targetOverflowCount: Math.max(0, choices.length - 3),
+    targetChats: choices.length,
+    allLabel,
+  });
 
   useEffect(() => {
     if (targetMode !== 'selected') {
@@ -165,7 +209,7 @@ export function BroadcastAudienceControls({
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
             <strong>{currentLabel}</strong>
-            <small>1 чат</small>
+            <small>{currentAudiencePresentation.compactLabel}</small>
           </button>
 
           <button
@@ -183,7 +227,9 @@ export function BroadcastAudienceControls({
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
             <strong>{selectedLabel}</strong>
-            <small>{selectedModeActive ? triggerLabel : selectedAudienceLabel}</small>
+            <small>
+              {selectedModeActive ? selectedAudiencePresentation.label : selectedAudienceLabel}
+            </small>
           </button>
 
           <button
@@ -200,7 +246,7 @@ export function BroadcastAudienceControls({
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
             <strong>{allLabel}</strong>
-            <small>{allChoicesLabel}</small>
+            <small>{allModeActive ? allAudiencePresentation.compactLabel : allChoicesLabel}</small>
           </button>
         </div>
 
@@ -246,7 +292,9 @@ export function BroadcastAudienceControls({
           >
             <span className="broadcast-audience-card__trigger-copy">
               <strong>Чаты</strong>
-              <small>{triggerLabel}</small>
+              <small>
+                {remoteError || loading ? triggerLabel : selectedAudiencePresentation.label}
+              </small>
             </span>
             <span className="broadcast-audience-card__trigger-badge">{targetChatIds.length}</span>
           </button>
