@@ -6754,7 +6754,7 @@ describe('AdminService.applyManualSystemBan', () => {
           action: 'BAN',
           metadata: expect.objectContaining({
             source: 'group_command',
-            mode: 'MAX_BLOCK_PERMANENT',
+            mode: 'MAX_BLOCK',
           }),
         }),
       }),
@@ -6766,6 +6766,77 @@ describe('AdminService.applyManualSystemBan', () => {
       muteDurationHours: null,
       muteExpiresAt: null,
       message: 'Пользователь забанен.',
+    });
+  });
+
+  it('falls back to removal-only system ban for closed chats without link', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Закрытый чат',
+        participantsCount: 6,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'chat',
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualSystemBan(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'group_command',
+    );
+
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            mode: 'MAX_REMOVE_ONLY',
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-3',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь удалён.',
     });
   });
 
@@ -7202,6 +7273,62 @@ describe('AdminService.applyManualSystemBan', () => {
         autoDeleteDelayMs: 3 * 60 * 1000,
         botId: 'bot-2',
       },
+    );
+  });
+
+  it('reports queued group ban commands as removal when MAX cannot block the chat', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь удалён.',
+    });
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_group_moderation_command',
+      jobId: 'job-command-1',
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN',
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь [Нарушитель](max://user/user-2) удалён.',
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        botId: 'bot-2',
+      }),
     );
   });
 

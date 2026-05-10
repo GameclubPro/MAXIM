@@ -17236,6 +17236,7 @@ export class AdminService implements OnModuleDestroy {
         botId: resolvedBotId,
       },
     );
+    let executionMode: ManualBanExecutionMode = 'MAX_BLOCK';
     try {
       await this.assertManualMemberModerationPreconditions(
         chatId,
@@ -17243,6 +17244,7 @@ export class AdminService implements OnModuleDestroy {
         'BAN',
         resolvedBotId,
       );
+      executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
     } catch (error: unknown) {
       this.throwManualModerationTransientMaxError(error);
       throw error;
@@ -17268,10 +17270,17 @@ export class AdminService implements OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.banMember(chatId, targetUserId, {
-        immediate: true,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-      });
+      if (executionMode === 'MAX_REMOVE_ONLY') {
+        await this.maxClient.kickMember(chatId, targetUserId, {
+          immediate: true,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
+      } else {
+        await this.maxClient.banMember(chatId, targetUserId, {
+          immediate: true,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
+      }
     } catch (error: unknown) {
       this.throwManualModerationTransientMaxError(error);
       const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
@@ -17325,7 +17334,7 @@ export class AdminService implements OnModuleDestroy {
           source === 'group_command'
             ? 'Постоянный ручной бан участника через команду в чате'
             : 'Постоянный ручной бан участника через команду в личке',
-        mode: 'MAX_BLOCK_PERMANENT',
+        mode: executionMode,
         recentMessageCleanup,
         crossChatFanout,
       },
@@ -17333,6 +17342,7 @@ export class AdminService implements OnModuleDestroy {
         userId: targetUserId,
         source,
         permanent: true,
+        mode: executionMode,
         recentMessageCleanup,
         crossChatFanout,
       },
@@ -17341,7 +17351,7 @@ export class AdminService implements OnModuleDestroy {
       chatId,
       targetUserId,
       source,
-      removedOnly: false,
+      removedOnly: executionMode === 'MAX_REMOVE_ONLY',
       botId: resolvedBotId,
     });
 
@@ -17351,7 +17361,7 @@ export class AdminService implements OnModuleDestroy {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Пользователь забанен.',
+      message: executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
     });
   }
 
@@ -17540,7 +17550,9 @@ export class AdminService implements OnModuleDestroy {
       botId: job.commandBotId ?? undefined,
       text:
         job.action === 'BAN'
-          ? `Пользователь ${targetLabel} забанен.`
+          ? `Пользователь ${targetLabel} ${
+              result.message.toLowerCase().includes('удал') ? 'удалён' : 'забанен'
+            }.`
           : `${result.message}\nПользователь: ${targetLabel}`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
