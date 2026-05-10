@@ -506,6 +506,72 @@ describe('WebhookService', () => {
     );
   });
 
+  it('marks the removed bot from MAX bot_removed payload when another bot receives the event', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-4b' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    maxBotLinkService.markChatBotRemoved.mockResolvedValueOnce('id613002203036_bot');
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-removed-cross-bot-1',
+          type: 'bot_removed',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_removed:u-bot-removed-cross-bot-1',
+            chatId: '-73729721862151',
+            chatTitle: 'Пантера',
+            entityType: 'chat',
+            senderId: '214634783',
+            senderName: 'Майор Максимова',
+            text: '',
+            createdAt: new Date('2026-05-10T02:10:01.411Z').toISOString(),
+          },
+          raw: {
+            update_type: 'bot_removed',
+            chat_id: -73729721862151,
+            user_id: 214634783,
+            user: {
+              user_id: 214634783,
+              username: 'id613002203036_4_bot',
+              name: 'Майор Максимова',
+              is_bot: true,
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith({
+      chatId: '-73729721862151',
+      title: 'Пантера',
+      entityType: 'CHAT',
+      botId: 'id613002203036_4_bot',
+    });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('fails over execution owner to the incoming bot from cached snapshots without a live MAX lookup', async () => {
     const prisma = {
       webhookEvent: {

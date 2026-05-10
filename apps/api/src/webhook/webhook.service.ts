@@ -286,11 +286,12 @@ export class WebhookService {
     const normalizedType = update.type.trim().toLowerCase();
     try {
       if (this.isBotRemovalUpdate(update)) {
+        const removedBotId = this.resolveRemovedChatBotId(update);
         const nextOwnerBotId = await this.maxBotLinkService.markChatBotRemoved({
           chatId,
           title: update.message?.chatTitle ?? null,
           entityType,
-          botId: update.botId,
+          botId: removedBotId,
         });
         this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return nextOwnerBotId;
@@ -1045,6 +1046,41 @@ export class WebhookService {
 
   private isBotRemovalUpdate(update: MaxUpdate): boolean {
     return update.type.trim().toLowerCase() === 'bot_removed';
+  }
+
+  private resolveRemovedChatBotId(update: MaxUpdate): string | null {
+    const raw = this.asRecord(update.raw);
+    const rawUser = this.asRecord(raw?.user);
+    const removedUserIsBot = rawUser?.is_bot === true || rawUser?.isBot === true;
+    const rawUsername = this.readTrimmedString(rawUser?.username);
+    if (removedUserIsBot && rawUsername) {
+      return rawUsername;
+    }
+
+    const senderId = this.readTrimmedString(update.message?.senderId);
+    if (senderId && this.looksLikeBotUsername(senderId)) {
+      return senderId;
+    }
+
+    return this.readTrimmedString(update.botId);
+  }
+
+  private looksLikeBotUsername(value: string): boolean {
+    return /(?:^|_)bot$/i.test(value.trim());
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return null;
+    }
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private scheduleExecutionOwnerFailoverRecheck(params: {
