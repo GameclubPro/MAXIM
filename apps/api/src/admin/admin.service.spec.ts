@@ -2,6 +2,8 @@ import {
   channelSettingsSchema,
   chatRulesSchema,
   chatSettingsSchema,
+  managedBroadcastDetailsSchema,
+  managedBroadcastSummarySchema,
   type ChatSummary,
   type ChannelDialogType,
   type ManagedEntityHeader,
@@ -19405,6 +19407,33 @@ describe('AdminService.sendBroadcast', () => {
     expect(videoDetails.mediaPayload).toEqual({ token: 'video-token-1' });
     expect(videoDetails.mediaMimeType).toBe('video/mp4');
     expect(videoDetails.mediaFileName).toBe('announce.mp4');
+  });
+
+  it('normalizes legacy managed broadcasts with zero cycle count for response contracts', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const baseRow = await prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } });
+    expect(baseRow).not.toBeNull();
+
+    const legacyRow = {
+      ...baseRow!,
+      status: 'COMPLETED',
+      cycleCount: 0,
+      sentCount: 0,
+    };
+    const snapshot = (service as any).createManagedBroadcastDeliverySnapshot(legacyRow, []);
+    const summary = (service as any).mapManagedBroadcastSummary(legacyRow, snapshot, []);
+    const details = (service as any).mapManagedBroadcastDetails(legacyRow, snapshot, []);
+
+    expect(summary.cycleCount).toBe(1);
+    expect(details.cycleCount).toBe(1);
+    expect(managedBroadcastSummarySchema.parse(summary).cycleCount).toBe(1);
+    expect(managedBroadcastDetailsSchema.parse(details).cycleCount).toBe(1);
   });
 
   it('keeps selected target mode when updating a scheduled broadcast', async () => {

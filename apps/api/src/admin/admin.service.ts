@@ -13855,6 +13855,10 @@ export class AdminService implements OnModuleDestroy {
     return Math.min(Math.max(1, row.sentCount + 1), Math.max(1, row.cycleCount));
   }
 
+  private normalizeManagedBroadcastCycleCount(row: Pick<PersistedManagedBroadcast, 'cycleCount'>) {
+    return Math.max(1, row.cycleCount);
+  }
+
   private buildManagedBroadcastDeliveryRows(
     broadcastId: string,
     targetChatIds: string[],
@@ -14715,6 +14719,7 @@ export class AdminService implements OnModuleDestroy {
     });
     const images = this.readManagedBroadcastImagesFromRow(row);
     const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
+    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
 
     return {
       id: row.id,
@@ -14744,7 +14749,7 @@ export class AdminService implements OnModuleDestroy {
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
       cycleEnabled: row.cycleEnabled,
       cycleEveryHours: row.cycleEveryHours,
-      cycleCount: row.cycleCount,
+      cycleCount,
       sentCount: row.sentCount,
       currentOccurrence: resolvedSnapshot.currentOccurrence,
       deliveredChats: resolvedSnapshot.deliveredChats,
@@ -14783,6 +14788,7 @@ export class AdminService implements OnModuleDestroy {
     const mediaType = this.readManagedBroadcastMediaType(row.mediaType);
     const images = this.readManagedBroadcastImagesFromRow(row);
     const firstImage = images[0];
+    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
 
     return {
       id: row.id,
@@ -14813,7 +14819,7 @@ export class AdminService implements OnModuleDestroy {
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
       cycleEnabled: row.cycleEnabled,
       cycleEveryHours: row.cycleEveryHours,
-      cycleCount: row.cycleCount,
+      cycleCount,
       sentCount: row.sentCount,
       currentOccurrence: resolvedSnapshot.currentOccurrence,
       deliveredChats: resolvedSnapshot.deliveredChats,
