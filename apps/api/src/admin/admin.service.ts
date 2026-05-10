@@ -18744,14 +18744,11 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    if (
-      botAccess.permissions.length > 0 &&
-      !botAccess.permissions.some((permission) => this.isDeleteMessagesPermission(permission))
-    ) {
-      throw new ForbiddenException(
-        'У бота нет права MAX delete_message, поэтому он не может применять мут.',
-      );
-    }
+    /*
+     * MAX can omit delete_message from members/me for admins that are still able to
+     * delete chat messages. Do not block manual mute on the incomplete granular
+     * snapshot; active mute will exercise the real delete endpoint on new messages.
+     */
   }
 
   private async assertTargetUserCanBeModerated(

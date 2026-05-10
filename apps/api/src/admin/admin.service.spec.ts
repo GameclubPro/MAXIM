@@ -5706,7 +5706,7 @@ describe('AdminService.applyManualModerationAction', () => {
     );
   });
 
-  it('rejects manual mute when the selected bot cannot delete messages', async () => {
+  it('allows manual mute when MAX omits explicit delete_message for an admin bot', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -5715,6 +5715,88 @@ describe('AdminService.applyManualModerationAction', () => {
         isAdmin: true,
         isOwner: false,
         permissions: ['read_all_messages'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotRoutes: jest
+        .fn()
+        .mockImplementation(async (request: { chatId: string; action: string }) => ({
+          purpose: 'moderation_action',
+          chatId: request.chatId,
+          primaryBotId: 'primary-bot',
+          botId: 'primary-bot',
+          candidateBotIds: ['primary-bot'],
+          reason: 'primary_soft',
+          action: request.action,
+        })),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'primary-bot' }]),
+      getDiscoveryBots: jest.fn().mockReturnValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'MUTE', muteDurationHours: 6 },
+    );
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        botId: 'primary-bot',
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+        }),
+      }),
+    );
+  });
+
+  it('rejects manual mute when the selected bot is not a chat admin', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'primary-bot',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
       }),
       getChatMemberAccess: jest.fn(),
     };
@@ -5764,7 +5846,9 @@ describe('AdminService.applyManualModerationAction', () => {
         },
         { action: 'MUTE', muteDurationHours: 6 },
       ),
-    ).rejects.toThrow('У бота нет права MAX delete_message, поэтому он не может применять мут.');
+    ).rejects.toThrow(
+      'Бот должен быть администратором этого чата MAX, чтобы удалять сообщения во время мута.',
+    );
 
     expect(maxClient.getChatMemberAccess).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
