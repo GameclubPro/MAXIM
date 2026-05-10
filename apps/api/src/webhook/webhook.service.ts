@@ -446,7 +446,35 @@ export class WebhookService {
   }
 
   private shouldPerformInlineExecutionOwnerLiveRefresh(update: MaxUpdate): boolean {
-    return INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES.has(update.type.trim().toLowerCase());
+    return (
+      INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES.has(update.type.trim().toLowerCase()) ||
+      this.isPotentialGroupAdminModerationCommand(update)
+    );
+  }
+
+  private isPotentialGroupAdminModerationCommand(update: MaxUpdate): boolean {
+    if (update.type.trim().toLowerCase() !== 'message_created') {
+      return false;
+    }
+
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!chatId.startsWith('-')) {
+      return false;
+    }
+
+    const text = this.readTrimmedString(update.message?.text)?.toLowerCase() ?? '';
+    if (!text) {
+      return false;
+    }
+
+    return (
+      /^(?:бан|ban)(?:\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?)?[.!]?$/u.test(
+        text,
+      ) ||
+      /^(?:мут|мьют|мью|mute)(?:\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?)?[.!]?$/u.test(
+        text,
+      )
+    );
   }
 
   private async shouldRefreshExecutionOwnerFromWebhook(

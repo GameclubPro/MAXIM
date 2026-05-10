@@ -740,6 +740,104 @@ describe('WebhookService', () => {
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
   });
 
+  it('refreshes the execution owner inline for group admin moderation commands', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-command-failover' }),
+        updateMany: jest.fn(),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_4_bot',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['add_remove_members'],
+        }),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('id613002203036_4_bot');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-command-failover-1',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-command-ban-1',
+            chatId: '-73729721862151',
+            chatTitle: 'Пантера',
+            senderId: '98315271',
+            text: 'Бан',
+            createdAt: new Date('2026-05-10T03:00:26.996Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      1,
+      '-73729721862151',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        trafficClass: 'interactive',
+        timeoutMs: 900,
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      2,
+      '-73729721862151',
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        trafficClass: 'interactive',
+        timeoutMs: 900,
+      }),
+    );
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-73729721862151',
+        botId: 'id613002203036_bot',
+        allowReassign: true,
+      }),
+    );
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the current owner on ordinary message updates without running a live failover check', async () => {
     const prisma = {
       webhookEvent: {
