@@ -2055,6 +2055,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('encodes batched targeted chat member lookups as a comma separated user_ids value', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                role: 'member',
+              },
+              {
+                user_id: 'user-2',
+                role: 'member',
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMembersAccess('chat-1', ['user-1', 'user-2']);
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
+      }),
+    );
+    expect([...result.keys()]).toEqual(['user-1', 'user-2']);
+
+    await service.onModuleDestroy();
+  });
+
   it('passes timeout override to chat admin lookups', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -2179,7 +2214,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1&user_ids=user-2',
+        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1%2Cuser-2',
       }),
     );
     expect(result.get('user-1')).toEqual({

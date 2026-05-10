@@ -1587,10 +1587,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     for (let index = 0; index < normalizedUserIds.length; index += 100) {
       const chunk = normalizedUserIds.slice(index, index + 100);
-      const query = new URLSearchParams();
-      for (const requestedUserId of chunk) {
-        query.append('user_ids', requestedUserId);
-      }
+      const query = new URLSearchParams({ user_ids: chunk.join(',') });
 
       const data = await this.executeChatRequest(
         chatId,
@@ -1675,10 +1672,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     for (let index = 0; index < normalizedUserIds.length; index += 100) {
       const chunk = normalizedUserIds.slice(index, index + 100);
-      const query = new URLSearchParams();
-      for (const userId of chunk) {
-        query.append('user_ids', userId);
-      }
+      const query = new URLSearchParams({ user_ids: chunk.join(',') });
 
       const data = await this.executeChatRequest(
         chatId,
