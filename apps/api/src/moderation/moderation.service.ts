@@ -5197,9 +5197,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const targets = this.extractForwardedModerationTargets(update);
+    const targets = this.extractForwardedModerationTargets(update, chatId);
     if (targets.length === 0) {
-      return false;
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: 'Ответьте на сообщение из этого чата или перешлите его и добавьте слово `бан` или `мут`.',
+      });
+      return true;
     }
 
     const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
@@ -5380,7 +5385,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return '';
   }
 
-  private extractForwardedModerationTargets(update: MaxUpdate): ForwardedModerationTarget[] {
+  private extractForwardedModerationTargets(
+    update: MaxUpdate,
+    fallbackReplyChatId?: string | null,
+  ): ForwardedModerationTarget[] {
     const raw = this.asRecord(update.raw);
     if (!raw) {
       return [];
@@ -5416,7 +5424,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const targets: ForwardedModerationTarget[] = [];
     for (const candidate of candidates) {
-      this.collectForwardedModerationTargets(candidate, targets);
+      this.collectForwardedModerationTargets(candidate, targets, 0, fallbackReplyChatId);
     }
 
     return this.dedupeForwardedModerationTargets(targets);
@@ -5426,6 +5434,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     node: unknown,
     acc: ForwardedModerationTarget[],
     depth = 0,
+    fallbackReplyChatId?: string | null,
   ): void {
     if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
       return;
@@ -5433,7 +5442,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectForwardedModerationTargets(item, acc, depth + 1);
+        this.collectForwardedModerationTargets(item, acc, depth + 1, fallbackReplyChatId);
       }
       return;
     }
@@ -5443,22 +5452,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const target = this.parseForwardedModerationTarget(row);
+    const target = this.parseForwardedModerationTarget(row, fallbackReplyChatId);
     if (target) {
       acc.push(target);
     }
 
     for (const value of Object.values(row)) {
       if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedModerationTargets(value, acc, depth + 1);
+        this.collectForwardedModerationTargets(value, acc, depth + 1, fallbackReplyChatId);
       }
     }
   }
 
   private parseForwardedModerationTarget(
     row: Record<string, unknown>,
+    fallbackReplyChatId?: string | null,
   ): ForwardedModerationTarget | null {
-    const chatId = this.readChatIdFromEntity(row);
+    const chatId =
+      this.readChatIdFromEntity(row) ??
+      (this.isReplyLinkedMessage(row) ? this.readString(fallbackReplyChatId) : null);
     const userId = this.readUserIdFromForwardedNode(row);
     if (!chatId || !userId) {
       return null;
@@ -5471,6 +5483,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderName: this.readSenderNameFromForwardedNode(row),
       messageId: this.readMessageIdFromForwardedNode(row),
     };
+  }
+
+  private isReplyLinkedMessage(node: Record<string, unknown>): boolean {
+    const type = this.readLowerString(node.type ?? node.link_type ?? node.linkType);
+    return type === 'reply';
   }
 
   private dedupeForwardedModerationTargets(

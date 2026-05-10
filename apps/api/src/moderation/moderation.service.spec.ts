@@ -411,6 +411,47 @@ function createAdminLinkedModerationUpdate(
   };
 }
 
+function createAdminReplyModerationUpdate(text = 'бан'): MaxUpdate {
+  return {
+    updateId: 'upd-admin-reply-moderation-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-admin-reply-moderation-1',
+      chatId: 'chat-1',
+      senderId: 'admin-1',
+      senderName: 'Админ',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 'admin-1',
+          display_name: 'Админ',
+        },
+        recipient: {
+          chat_id: 'chat-1',
+        },
+        link: {
+          type: 'reply',
+          sender: {
+            user_id: 'user-2',
+            display_name: 'Нарушитель',
+          },
+          message: {
+            mid: 'mid-reply-target-1',
+            text: 'spam message',
+          },
+        },
+        body: {
+          text,
+        },
+      },
+    },
+  };
+}
+
 function createAdminForwardedRulesUpdate(
   text = 'правила',
   forwardedChatId: string | number = 'chat-1',
@@ -8498,6 +8539,84 @@ describe('ModerationService', () => {
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('uses the current chat for MAX reply moderation commands without recipient in the reply link', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminReplyModerationUpdate());
+
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-reply-target-1',
+        commandMessageId: 'msg-admin-reply-moderation-1',
+        action: 'BAN',
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
+      }),
+    );
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
