@@ -314,6 +314,7 @@ export class WebhookService {
               incomingBotId: update.botId ?? null,
               currentOwnerBotId: storedOwnerBotId,
               allowLiveCheck,
+              bypassLiveCache: allowLiveCheck,
             });
             if (!allowLiveCheck && executionOwnerBotId === storedOwnerBotId) {
               this.scheduleExecutionOwnerFailoverRecheck({
@@ -361,6 +362,7 @@ export class WebhookService {
           incomingBotId: update.botId ?? null,
           currentOwnerBotId: boundBotId,
           allowLiveCheck,
+          bypassLiveCache: allowLiveCheck,
         });
         if (!allowLiveCheck && executionOwnerBotId === boundBotId) {
           this.scheduleExecutionOwnerFailoverRecheck({
@@ -393,6 +395,7 @@ export class WebhookService {
     incomingBotId: string | null;
     currentOwnerBotId: string | null;
     allowLiveCheck: boolean;
+    bypassLiveCache?: boolean;
   }): Promise<string | null> {
     const incomingBotId = params.incomingBotId?.trim() ?? '';
     const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
@@ -406,7 +409,9 @@ export class WebhookService {
     }
 
     const currentOwnerCanHandleUserFacing = params.allowLiveCheck
-      ? await this.getBotSelfModerationAccessState(params.chatId, currentOwnerBotId)
+      ? await this.getBotSelfModerationAccessState(params.chatId, currentOwnerBotId, {
+          bypassCache: params.bypassLiveCache === true,
+        })
       : await this.getCachedOrPersistedBotSelfModerationAccessState(
           params.chatId,
           currentOwnerBotId,
@@ -416,7 +421,9 @@ export class WebhookService {
     }
 
     const incomingBotCanHandleUserFacing = params.allowLiveCheck
-      ? await this.getBotSelfModerationAccessState(params.chatId, incomingBotId)
+      ? await this.getBotSelfModerationAccessState(params.chatId, incomingBotId, {
+          bypassCache: params.bypassLiveCache === true,
+        })
       : await this.getCachedOrPersistedBotSelfModerationAccessState(params.chatId, incomingBotId);
     if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
@@ -778,11 +785,14 @@ export class WebhookService {
   private async getBotSelfModerationAccessState(
     chatId: string,
     botId: string,
+    options: { bypassCache?: boolean } = {},
   ): Promise<boolean | null> {
     const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
-    const cached = this.readCachedBotSelfAccess(cacheKey);
-    if (cached !== null) {
-      return cached;
+    if (options.bypassCache !== true) {
+      const cached = this.readCachedBotSelfAccess(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
     }
 
     const backoffUntilMs = this.botSelfAccessBackoffUntilMs.get(cacheKey) ?? 0;
