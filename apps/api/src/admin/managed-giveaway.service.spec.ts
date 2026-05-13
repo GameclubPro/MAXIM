@@ -1766,6 +1766,16 @@ describe('ManagedGiveawayService', () => {
         'giveaway-1',
       );
       expect(chatContextCache.incrementManagedGiveawayRunnerFailureCount).not.toHaveBeenCalled();
+      expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'giveaway-1',
+          status: ManagedGiveawayStatus.DRAWING,
+        },
+        data: {
+          status: ManagedGiveawayStatus.ACTIVE,
+          lockedAt: null,
+        },
+      });
     } finally {
       jest.useRealTimers();
     }

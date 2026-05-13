@@ -13,6 +13,7 @@ type JobMock = {
   getState: jest.Mock<Promise<string>, []>;
   retry: jest.Mock<Promise<void>, []>;
   remove: jest.Mock<Promise<void>, []>;
+  failedReason?: string;
 };
 
 type QueueMock = {
@@ -519,6 +520,37 @@ describe('WebhookOutboxService', () => {
         data: expect.objectContaining({
           status: WebhookStatus.FAILED,
           nextEnqueueAt: null,
+        }),
+      }),
+    );
+  });
+
+  it('preserves the terminal BullMQ failure reason when a failed job exhausts retries', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+      failedReason: 'Request failed with status code 503',
+    };
+    const { service, prisma } = createService();
+
+    await (
+      service as unknown as {
+        retryFailedJob: (
+          webhookEventId: string,
+          enqueueAttempts: number,
+          job: JobMock,
+        ) => Promise<void>;
+      }
+    ).retryFailedJob('evt-terminal-503', 120, job);
+
+    expect(job.retry).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.FAILED,
+          nextEnqueueAt: null,
+          errorMessage: expect.stringContaining('Request failed with status code 503'),
         }),
       }),
     );

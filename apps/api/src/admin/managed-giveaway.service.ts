@@ -2446,11 +2446,30 @@ export class ManagedGiveawayService {
           'Failed to process managed giveaway',
         );
       }
-      await this.prisma.managedGiveaway.updateMany({
-        where: { id: giveawayId },
-        data: { lockedAt: null },
-      });
+      await this.releaseManagedGiveawayRunnerLockAfterFailure(giveawayId);
     }
+  }
+
+  private async releaseManagedGiveawayRunnerLockAfterFailure(giveawayId: string): Promise<void> {
+    const recoveredDrawing = await this.prisma.managedGiveaway.updateMany({
+      where: {
+        id: giveawayId,
+        status: ManagedGiveawayStatus.DRAWING,
+      },
+      data: {
+        status: ManagedGiveawayStatus.ACTIVE,
+        lockedAt: null,
+      },
+    });
+
+    if (recoveredDrawing.count > 0) {
+      return;
+    }
+
+    await this.prisma.managedGiveaway.updateMany({
+      where: { id: giveawayId },
+      data: { lockedAt: null },
+    });
   }
 
   private isManagedGiveawayRunnerRetryableError(error: unknown): boolean {

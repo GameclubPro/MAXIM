@@ -604,12 +604,12 @@ const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE = 'Europe/Moscow';
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
-const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 220;
-const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
-const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 6;
+const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 350;
+const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 550;
+const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 3;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
-const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 10;
-const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 6;
+const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 6;
+const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 3;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
@@ -619,8 +619,8 @@ const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
 const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
 const MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS = 1_500;
 const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
-const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 750;
-const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 1_200;
+const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_800;
 const MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS = 2_500;
 const MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS = 4_000;
 const MANAGED_ENTITIES_PRIORITY_ALLOWLIST_WARMUP_LIMIT = 12;
@@ -5852,6 +5852,9 @@ export class AdminService implements OnModuleDestroy {
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
           }
+          if (access.status === 'unknown') {
+            return null;
+          }
           if (access.status !== 'granted') {
             return {
               kind: 'remove' as const,
@@ -6306,6 +6309,9 @@ export class AdminService implements OnModuleDestroy {
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
+          }
+          if (access.status === 'unknown') {
+            return null;
           }
 
           if (access.status !== 'granted') {

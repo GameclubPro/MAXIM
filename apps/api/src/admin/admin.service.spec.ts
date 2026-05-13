@@ -9303,12 +9303,12 @@ describe('AdminService.listChannels', () => {
     ]);
     expect(result.refresh).toEqual({
       complete: false,
-      cursor: 10,
+      cursor: 6,
       backoffActive: false,
       nextPollAfterMs: 1500,
-      processedCandidates: 10,
+      processedCandidates: 6,
       totalCandidates: 26,
-      progressPercent: 38,
+      progressPercent: 23,
       lastSyncedAt: null,
       manualRefreshBlockedReason: 'in_progress',
       manualRefreshRetryAfterMs: 1500,
@@ -11298,7 +11298,7 @@ describe('AdminService.listChats', () => {
       sourceTag: 'managed_refresh',
       timeoutMs: 2500,
     });
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(6);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(3);
     expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
       1,
       'chat-1',
@@ -11306,7 +11306,7 @@ describe('AdminService.listChats', () => {
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         sourceTag: 'managed_refresh',
-        timeoutMs: 750,
+        timeoutMs: 1200,
       }),
     );
   });
@@ -13716,7 +13716,7 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
-      timeoutMs: 750,
+      timeoutMs: 1200,
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-stale', expect.anything());
   });
@@ -13801,7 +13801,7 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
-      timeoutMs: 750,
+      timeoutMs: 1200,
     });
   });
 
@@ -14682,7 +14682,7 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
-      timeoutMs: 750,
+      timeoutMs: 1200,
     });
   });
 

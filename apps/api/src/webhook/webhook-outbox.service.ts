@@ -601,7 +601,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     job: Job<ProcessWebhookJob>,
   ) {
     if (enqueueAttempts >= this.maxEnqueueAttempts) {
-      await this.markExhausted(webhookEventId, enqueueAttempts);
+      await this.markExhausted(webhookEventId, enqueueAttempts, job);
       return;
     }
 
@@ -683,8 +683,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async markExhausted(webhookEventId: string, enqueueAttempts: number) {
-    const message = `Enqueue attempts exhausted (${enqueueAttempts}/${this.maxEnqueueAttempts})`;
+  private async markExhausted(
+    webhookEventId: string,
+    enqueueAttempts: number,
+    job?: Pick<Job<ProcessWebhookJob>, 'failedReason'> | null,
+  ) {
+    const failedReason = this.readFailedJobReason(job);
+    const message = failedReason
+      ? `Enqueue attempts exhausted (${enqueueAttempts}/${this.maxEnqueueAttempts}); terminal BullMQ failure: ${failedReason}`
+      : `Enqueue attempts exhausted (${enqueueAttempts}/${this.maxEnqueueAttempts})`;
     await this.prisma.webhookEvent.updateMany({
       where: {
         id: webhookEventId,
@@ -697,6 +704,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         nextEnqueueAt: null,
       },
     });
+  }
+
+  private readFailedJobReason(job?: Pick<Job<ProcessWebhookJob>, 'failedReason'> | null): string {
+    if (!job || typeof job.failedReason !== 'string') {
+      return '';
+    }
+
+    return job.failedReason.trim().replace(/\s+/gu, ' ').slice(0, 300);
   }
 
   private async markProcessedFromCompletedJob(webhookEventId: string) {
