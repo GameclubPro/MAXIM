@@ -4,10 +4,7 @@ import {
   COMMERCIAL_REAL_WORLD_POSITIVE_CASES,
 } from './commercial-real-world.fixture';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import {
-  PROFANITY_EXACT_VARIANT_COUNT,
-  TARGETED_INSULT_VARIANT_COUNT,
-} from './profanity-lexicon';
+import { PROFANITY_EXACT_VARIANT_COUNT, TARGETED_INSULT_VARIANT_COUNT } from './profanity-lexicon';
 import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
@@ -1871,6 +1868,107 @@ describe('RuleEngineService', () => {
         'booster:quantity',
       ]),
     );
+  });
+
+  it('detects betting and casino referral promos with registration bonus links', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Фрибеты и ставки на спорт, забирайте бонус за регистрацию в нашем канале https://max.ru/join/bet-club',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:betting-gambling', 'deal-channel:link']),
+    );
+  });
+
+  it('detects crypto and investment leadgen with direct-message CTA', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Крипта и трейдинг: бесплатный разбор портфеля, доходность от 20%, пишите в личку.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'risk:crypto-investment',
+        'risk:lead-magnet',
+        'contact:пишите в лич',
+      ]),
+    );
+  });
+
+  it('detects loan leadgen with fast approval and application link', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Займ до зарплаты, одобрение за 5 минут, заявка по ссылке https://example.ru/apply',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:loan-leadgen', 'deal-channel:link']),
+    );
+  });
+
+  it('detects marketplace seller promotion and referral offers', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Реферальная ссылка для селлеров WB: продвижение карточек, бонус после регистрации https://t.me/wb_growth',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'risk:marketplace-seller',
+        'risk:referral-offer',
+        'deal-channel:link',
+      ]),
+    );
+  });
+
+  it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect financial advice request with a reference link on %s sensitivity',
+    async (sensitivity) => {
+      const service = createRuleEngine();
+      const violation = await detectCommercialViolation(
+        service,
+        'Подскажите, нормальные ли ставки по кредиту? Вот калькулятор https://bank.example/calc',
+        {
+          commercialAdsSensitivity: sensitivity,
+        },
+      );
+
+      expect(violation).toBeUndefined();
+    },
+  );
+
+  it('does not detect casual crypto discussion without deal channel or contact', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Обсуждали крипту и инвестиции без ссылок, кто как хранит портфель в 2026 году?',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
   });
 
   describe('commercial real-world benchmark', () => {

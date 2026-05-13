@@ -749,14 +749,7 @@ const PROFANITY_TARGET_BRIDGE_TOKENS = new Set([
   'polnyy',
   'polnaya',
 ]);
-const PROFANITY_DEMONSTRATIVE_TARGET_MARKERS = new Set([
-  'этот',
-  'эта',
-  'эти',
-  'тот',
-  'та',
-  'те',
-]);
+const PROFANITY_DEMONSTRATIVE_TARGET_MARKERS = new Set(['этот', 'эта', 'эти', 'тот', 'та', 'те']);
 const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
   'уйди',
   'вали',
@@ -874,6 +867,42 @@ const ADS_BUSINESS_PATTERNS: LabeledPattern[] = [
     pattern: /(?:^|[^\p{L}\p{N}_-])в\s+магазин[\p{L}\p{N}\s"«»_-]{0,40}привез/u,
   },
 ];
+const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'betting-gambling',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:казино|букмекер[\p{L}\p{N}_-]*|фрибет[\p{L}\p{N}_-]*|фриспин[\p{L}\p{N}_-]*|слот[\p{L}\p{N}_-]*|ставк[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,40})(?:спорт|матч|коэффициент|к[эе]ф|экспресс|игр[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|бонус))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'crypto-investment',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:крипт[\p{L}\p{N}_-]*|трейдинг|инвестиц[\p{L}\p{N}_-]*|инвестор[\p{L}\p{N}_-]*|доходност[\p{L}\p{N}_-]*|пассивн[\p{L}\p{N}_-]*(?:\s+доход)?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:сигнал[\p{L}\p{N}_-]*|портфел[\p{L}\p{N}_-]*|разбор|доход|канал|чат|групп[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|пишите|ссылк[\p{L}\p{N}_-]*)|сигнал[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:крипт[\p{L}\p{N}_-]*|трейдинг))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'loan-leadgen',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:займ[\p{L}\p{N}_-]*|микрозайм[\p{L}\p{N}_-]*|кредит[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:одобр[\p{L}\p{N}_-]*|без\s+отказ[\p{L}\p{N}_-]*|до\s+зарплат[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|получи[\p{L}\p{N}_-]*|онлайн)|одобр[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})(?:займ[\p{L}\p{N}_-]*|кредит[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'marketplace-seller',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:маркетплейс[\p{L}\p{N}_-]*|wildberries|wb|вайлдберриз|озон|ozon)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:выкуп[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|карточк[\p{L}\p{N}_-]*|селлер[\p{L}\p{N}_-]*|поставщик[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*|артикул[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'lead-magnet',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:бесплатн[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,28})(?:разбор|аудит|диагностик[\p{L}\p{N}_-]*)|(?:гайд|чек[\s-]*лист|чеклист)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:забер[\p{L}\p{N}_-]*|получи[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|директ|лс|личк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'referral-offer',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:реферал[\p{L}\p{N}_-]*|реферальн[\p{L}\p{N}_-]*|партнерск[\p{L}\p{N}_-]*|партн[её]рск[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:ссылк[\p{L}\p{N}_-]*|код|промокод|бонус|регистрац[\p{L}\p{N}_-]*)?(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
+const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map([
+  ['lead-magnet', 8],
+  ['referral-offer', 12],
+]);
 const ADS_SERVICE_SPECIALTY_MARKERS = [
   'ремонт',
   'сантехник',
@@ -1861,7 +1890,9 @@ export class RuleEngineService {
         (marker) =>
           !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
           hasMarker(marker),
-      ) || ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+      ) ||
+      ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      ADS_HIGH_RISK_COMMERCIAL_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasCommercialContext =
       hasPromoContext ||
       hasBusinessContext ||
@@ -2478,6 +2509,7 @@ export class RuleEngineService {
       ADS_INTENT_MARKERS.some((marker) => candidateText.includes(marker)) ||
       ADS_CONTACT_MARKERS.some((marker) => candidateText.includes(marker)) ||
       ADS_PROMO_MARKERS.some((marker) => candidateText.includes(marker)) ||
+      ADS_HIGH_RISK_COMMERCIAL_PATTERNS.some(({ pattern }) => pattern.test(candidateText)) ||
       ADS_PRICE_PATTERN.test(candidateText) ||
       ADS_TRANSACTIONAL_PATTERN.test(candidateText);
     if (hasAdMarker) {
@@ -3739,6 +3771,15 @@ export class RuleEngineService {
     ];
     for (const marker of [...new Set(businessHits)].slice(0, 2)) {
       addPositive(`business:${marker}`, 16);
+      hasBusinessContext = true;
+      hasCommercialContext = true;
+    }
+
+    const highRiskCommercialHits = ADS_HIGH_RISK_COMMERCIAL_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of highRiskCommercialHits.slice(0, 3)) {
+      addPositive(`risk:${label}`, ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS.get(label) ?? 18);
       hasBusinessContext = true;
       hasCommercialContext = true;
     }
