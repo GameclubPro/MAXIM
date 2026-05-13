@@ -1,6 +1,8 @@
-@import './styles/fonts.css';
-@import './styles/tokens.css';
-@import './styles/base.css';
-@import './styles/layout.css';
-@import './styles/components.css';
-@import './styles/motion.css';
+@layer fonts, tokens, base, layout, components, pages, motion;
+
+@import './styles/fonts.css' layer(fonts);
+@import './styles/tokens.css' layer(tokens);
+@import './styles/base.css' layer(base);
+@import './styles/layout.css' layer(layout);
+@import './styles/components.css' layer(components);
+@import './styles/motion.css' layer(motion);

@@ -359,7 +359,7 @@
   font-size: clamp(0.94rem, 0.9rem + 0.22vw, 1.02rem);
   font-weight: 820;
   line-height: 1.08;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .settings-home-sticky-header .compact-page-header__status {
@@ -1401,32 +1401,6 @@
   gap: 8px;
 }
 
-.chat-card__bot-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.chat-card__bot-chip {
-  min-height: 24px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-}
-
-.chat-card__created {
-  font-size: 0.86rem;
-  color: var(--text-muted);
-}
-
-.chat-card__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
 .channel-overview-card {
   position: relative;
   overflow: hidden;
@@ -1635,7 +1609,7 @@
 .channel-stats-hero__main h1 {
   font-size: clamp(1.35rem, 1.15rem + 1vw, 1.9rem);
   line-height: 1.04;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .channel-stats-hero__main p {
@@ -2541,7 +2515,7 @@
   font-size: clamp(1.14rem, 1rem + 0.68vw, 1.42rem);
   font-weight: 860;
   line-height: 1.02;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
 }
 
 .channel-insights__summary-copy p {
@@ -2720,7 +2694,7 @@
   font-family: var(--font-heading);
   font-size: clamp(2rem, 1.64rem + 1.3vw, 2.78rem);
   line-height: 0.92;
-  letter-spacing: -0.06em;
+  letter-spacing: 0;
 }
 
 .channel-insights__hero-copy span {
@@ -2754,7 +2728,7 @@
   font-family: var(--font-heading);
   font-size: 1.34rem;
   line-height: 0.95;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .channel-insights__hero-delta--success strong {
@@ -2801,7 +2775,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.12rem, 0.98rem + 0.62vw, 1.46rem);
   line-height: 0.96;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .channel-insights__ledger-metric span,
@@ -2887,7 +2861,7 @@
   font-size: 1.02rem;
   font-weight: 820;
   line-height: 1.02;
-  letter-spacing: -0.024em;
+  letter-spacing: 0;
 }
 
 .channel-insights__panel-copy small {
@@ -2991,7 +2965,7 @@
   font-size: 0.94rem;
   font-weight: 780;
   line-height: 1.2;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .channel-insights__secondary-metric--comments {
@@ -3216,10 +3190,6 @@
     min-width: 0;
     justify-items: start;
   }
-}
-
-.chats-search-card__field input {
-  min-height: 44px;
 }
 
 .chats-onboarding__hero {
@@ -3630,7 +3600,6 @@
   }
 }
 
-/* 2026 mobile surface polish for home and shared entity headers. */
 .compact-page-header {
   --compact-page-header-height: 56px;
   --compact-page-header-radius: 22px;
@@ -3670,125 +3639,13 @@
 .compact-page-header__title {
   font-size: clamp(1rem, 0.94rem + 0.28vw, 1.12rem);
   font-weight: 820;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .compact-page-header__entity-avatar {
   width: 40px;
   height: 40px;
   border-radius: 14px;
-}
-
-.chat-card {
-  --chat-card-favorite-accent: #f2a31b;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 22px;
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  border-color: rgba(210, 224, 237, 0.9);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 252, 255, 0.92)),
-    linear-gradient(115deg, rgba(11, 132, 255, 0.055), transparent 48%), rgba(255, 255, 255, 0.9);
-  box-shadow:
-    0 10px 22px rgba(28, 61, 92, 0.065),
-    0 1px 0 rgba(255, 255, 255, 0.76) inset;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.2s ease;
-}
-
-.chat-card::after {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  z-index: 0;
-  width: 3px;
-  border-radius: 999px;
-  opacity: 0;
-  background: var(--accent);
-  pointer-events: none;
-}
-
-.chat-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-.chat-card.is-from-cache {
-  border-color: rgba(102, 124, 144, 0.2);
-}
-
-.chat-card.is-from-cache::after {
-  opacity: 0.55;
-  background: #7a8fa2;
-}
-
-.chat-card.is-paused {
-  border-color: rgba(240, 164, 43, 0.26);
-  background:
-    linear-gradient(180deg, rgba(255, 250, 241, 0.96), rgba(255, 255, 255, 0.91)),
-    rgba(255, 244, 222, 0.76);
-}
-
-.chat-card.is-paused::after {
-  opacity: 0.85;
-  background: var(--warning);
-}
-
-.chat-card.is-favorite {
-  border-color: rgba(245, 168, 34, 0.3);
-}
-
-.chat-card.is-favorite::after {
-  opacity: 0.8;
-  background: var(--chat-card-favorite-accent);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chats-search-card.is-syncing::after,
-  .chats-search-card__sync-chip.is-syncing .chats-search-card__sync-dot,
-  .chats-search-card__sync-chip.is-warning .chats-search-card__sync-dot {
-    animation: none;
-  }
-}
-
-.chat-card__identity {
-  gap: 11px;
-}
-
-.chat-card__avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 15px;
-}
-
-.chat-card__header h3 {
-  font-size: 1rem;
-  line-height: 1.18;
-  letter-spacing: 0;
-}
-
-.chat-card__actions {
-  gap: 8px;
-}
-
-.chat-card__actions .button {
-  min-height: 42px;
-  border-radius: 15px;
-  font-size: 0.95rem;
-  font-weight: 800;
-}
-
-.chats-search-card__field input {
-  min-height: 46px;
-  border-radius: 18px;
-  border-color: rgba(195, 211, 226, 0.9);
-  background: rgba(255, 255, 255, 0.82);
-  padding: 0 44px 0 42px;
-  font-size: 0.96rem;
 }
 
 .system-root-card {
@@ -3824,7 +3681,7 @@
   color: rgba(247, 252, 255, 0.98);
   font-size: clamp(1.24rem, 1.08rem + 0.74vw, 1.52rem);
   line-height: 1.02;
-  letter-spacing: -0.045em;
+  letter-spacing: 0;
 }
 
 .system-root-card__copy p {
@@ -3858,27 +3715,10 @@
 .system-root-card__stat strong {
   color: #fff;
   font-size: 1.18rem;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 @media (max-width: 380px) {
-  .chat-card {
-    padding: 12px;
-    border-radius: 20px;
-  }
-
-  .chat-card__actions .button {
-    min-height: 40px;
-    font-size: 0.88rem;
-  }
-
-  .chats-search-card__field input {
-    min-height: 42px;
-    border-radius: 16px;
-    padding-inline: 38px;
-    font-size: 0.9rem;
-  }
-
   .system-root-card {
     padding: 13px;
     border-radius: 22px;
@@ -3913,6 +3753,51 @@
 
   .system-root-card__stat strong {
     font-size: 1.05rem;
+  }
+}
+
+@media (max-height: 740px) {
+  .system-root-card {
+    gap: 9px;
+    padding: 12px;
+    border-radius: 22px;
+  }
+
+  .system-root-card__eyebrow .chip {
+    min-height: 24px;
+    padding-inline: 8px;
+    font-size: 0.68rem;
+  }
+
+  .system-root-card__content,
+  .system-root-card__copy {
+    gap: 8px;
+  }
+
+  .system-root-card__copy h2 {
+    font-size: 1.1rem;
+    line-height: 1.08;
+  }
+
+  .system-root-card__copy p {
+    display: none;
+  }
+
+  .system-root-card__stats {
+    gap: 6px;
+  }
+
+  .system-root-card__stat {
+    padding: 8px;
+    border-radius: 14px;
+  }
+
+  .system-root-card__stat span {
+    font-size: 0.6rem;
+  }
+
+  .system-root-card__stat strong {
+    font-size: 1rem;
   }
 }
 
@@ -4656,18 +4541,6 @@ body.chats-home-page-open .bottom-nav__label {
   -webkit-line-clamp: 2;
 }
 
-.chat-card__chevron {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  color: rgba(83, 107, 129, 0.55);
-  flex: 0 0 auto;
-}
-
 .chat-card__quick-actions {
   position: relative;
   z-index: 3;
@@ -4715,6 +4588,36 @@ body.chats-home-page-open .bottom-nav__label {
   box-shadow:
     0 10px 20px rgba(173, 111, 0, 0.15),
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+@keyframes chats-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes chats-sync-sweep {
+  0% {
+    transform: translateX(-112%);
+  }
+
+  58%,
+  100% {
+    transform: translateX(112%);
+  }
+}
+
+@keyframes chats-status-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.28);
+    opacity: 1;
+  }
 }
 
 @keyframes favoriteDockIn {
@@ -4883,10 +4786,6 @@ body.chats-home-page-open .bottom-nav__label {
     line-height: 1.16;
   }
 
-  .chat-card__chevron {
-    display: none;
-  }
-
   .chat-card__quick-actions {
     gap: 5px;
   }
@@ -4906,7 +4805,6 @@ body.chats-home-page-open .bottom-nav__label {
   }
 }
 
-/* 2026 home layout pass: stable command surface and non-overlapping entity rows. */
 .chats-home {
   --chats-home-accent: #0b84ff;
   --chats-home-accent-2: #1fa97e;

@@ -1,9 +1,13 @@
+@layer pages {
+
 /* Public giveaway route styles split from lazy-pages.css. */
 
 .giveaway-page {
   width: min(100%, 960px);
   margin: 0 auto;
   gap: 16px;
+}
+
 }
 
 .giveaway-page--modal-only {
@@ -1667,4 +1671,3 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
-

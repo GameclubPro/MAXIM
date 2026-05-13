@@ -1,3 +1,5 @@
+@layer pages {
+
 /* Loaded only with the comments dialog route. */
 
 .channel-dialog-screen {
@@ -14,6 +16,8 @@
   padding: max(10px, env(safe-area-inset-top, 0px)) clamp(10px, 2vw, 16px)
     max(10px, calc(var(--safe-bottom) + 6px)) clamp(10px, 2vw, 16px);
   background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+}
+
 }
 
 .channel-dialog-screen--suggest {
@@ -1259,7 +1263,7 @@
   margin: 0;
   font-size: clamp(1.02rem, 0.98rem + 0.52vw, 1.2rem);
   line-height: 1.08;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .channel-dialog-topbar__title span {
@@ -1919,7 +1923,7 @@
   white-space: nowrap;
   font-size: 0.78rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   line-height: 1.2;
 }
 
@@ -2031,7 +2035,7 @@
   color: var(--text-primary);
   font-size: 0.94rem;
   line-height: 1.42;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   white-space: pre-wrap;
 }
 

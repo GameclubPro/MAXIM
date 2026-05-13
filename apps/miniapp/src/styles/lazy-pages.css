@@ -1,3 +1,5 @@
+@layer pages {
+
 /* Lazy route styles: loaded only with non-startup mini app screens. */
 
 .settings-handoff-card {
@@ -15,6 +17,8 @@
   box-shadow:
     0 22px 46px rgba(32, 66, 96, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
 }
 
 .settings-handoff-card::before {
@@ -377,7 +381,7 @@
   font-size: 0.78rem;
   font-weight: 800;
   line-height: 1.1;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .settings-speech-preview {
@@ -986,7 +990,7 @@
   font-size: clamp(1.04rem, 0.98rem + 0.28vw, 1.16rem);
   font-weight: 860;
   line-height: 1.08;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .settings-drilldown__summary {
@@ -1313,7 +1317,7 @@
   min-height: 44px;
   border-radius: 16px;
   font-weight: 780;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .settings-drilldown .segmented-control__item.is-active {
@@ -1515,7 +1519,7 @@
   font-size: 0.97rem;
   font-weight: 840;
   line-height: 1.16;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   overflow-wrap: anywhere;
 }
 
@@ -2015,7 +2019,7 @@
 .settings-drilldown .policy-card__title {
   font-size: 1.02rem;
   line-height: 1.08;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .settings-drilldown .policy-card__description {
@@ -3118,7 +3122,7 @@
 .managed-broadcast-card__main > strong {
   font-size: 0.92rem;
   line-height: 1.18;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   color: var(--text-primary);
 }
 
@@ -3174,7 +3178,7 @@
 .managed-broadcast-card__metric strong {
   font-size: 1.02rem;
   line-height: 1;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
@@ -3403,7 +3407,7 @@
 .managed-broadcast-editor-note__timer strong {
   font-size: 1rem;
   line-height: 1;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3426,7 +3430,7 @@
 .managed-broadcast-editor-note strong {
   font-size: 0.94rem;
   line-height: 1.18;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   color: rgba(18, 43, 63, 0.96);
 }
 
@@ -3559,7 +3563,7 @@
 .broadcast-stage-card__title-wrap strong {
   font-size: 0.94rem;
   line-height: 1.18;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   color: var(--text-primary);
 }
 
@@ -3917,7 +3921,7 @@
   font-size: 0.84rem;
   font-weight: 820;
   line-height: 1.06;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-audience-card__toggle-copy span,
@@ -4175,7 +4179,7 @@
     rgba(255, 255, 255, 0.94);
   color: var(--settings-panel-accent-text);
   font-size: 0.78rem;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .mailing-message-field {
@@ -4390,7 +4394,7 @@
 .settings-drilldown .mailing-option-card__title {
   font-size: 0.94rem;
   font-weight: 820;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .settings-drilldown .mailing-option-card__head {
@@ -4969,7 +4973,7 @@
   color: #5f7385;
   font-size: 0.74rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   transition:
     transform 140ms ease,
     background-color 140ms ease,
@@ -5071,7 +5075,7 @@
   font-weight: 820;
   line-height: 1;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-planner__weekdays {
@@ -5193,7 +5197,7 @@
   font-size: 0.88rem;
   font-weight: 820;
   line-height: 1;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   color: #21384d;
 }
 
@@ -5247,7 +5251,7 @@
   font-size: 0.62rem;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-planner__day-density {
@@ -5263,7 +5267,7 @@
   font-size: 0.64rem;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .broadcast-planner__day-density.is-picked {
@@ -6237,7 +6241,7 @@
   font-size: 0.89rem;
   line-height: 1.32;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-planner__day-agenda-chevron {
@@ -6300,7 +6304,7 @@
   font-size: 0.76rem;
   font-weight: 800;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .broadcast-planner__day-agenda-facts {
@@ -6374,7 +6378,7 @@
   justify-content: center;
   font-size: 0.69rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   transition:
     transform 140ms ease,
     background-color 140ms ease,
@@ -6527,7 +6531,7 @@
   font-size: 0.85rem;
   line-height: 1.3;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .action-confirm-sheet__preview-meta {
@@ -6550,7 +6554,7 @@
   justify-content: center;
   font-size: 0.77rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   transition:
     transform 140ms ease,
     background-color 140ms ease,
@@ -8447,7 +8451,7 @@
   color: #10283f;
   font-size: clamp(1.1rem, 4.4vw, 1.42rem);
   line-height: 1.04;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__hero-copy p {
@@ -8474,7 +8478,7 @@
   color: #48657c;
   font-size: 0.7rem;
   font-weight: 770;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__hero-button--danger {
@@ -8515,7 +8519,7 @@
   font-size: 0.74rem;
   font-weight: 760;
   line-height: 1.18;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__step-pill.is-active {
@@ -8658,7 +8662,7 @@
   min-height: 48px;
   border-radius: 16px;
   font-size: 0.86rem;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__primary-actions .button--accent {
@@ -8694,7 +8698,7 @@
   color: #10283f;
   font-size: 1.1rem;
   line-height: 1.04;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__dashboard-stat small {
@@ -8866,7 +8870,7 @@
   color: var(--text-primary);
   font-size: 0.9rem;
   line-height: 1.16;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__section-copy small,
@@ -8975,7 +8979,7 @@
   color: var(--text-primary);
   font-size: 0.82rem;
   line-height: 1.18;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__subsection-copy small {
@@ -9400,7 +9404,7 @@
   color: var(--text-primary);
   font-size: 1rem;
   line-height: 1.1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .required-subscription__timer-slider-wrap {
@@ -9683,7 +9687,7 @@
   color: var(--text-primary);
   font-size: 0.88rem;
   line-height: 1.2;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .managed-giveaway__action-dock-copy span {
@@ -10002,7 +10006,7 @@
   font-size: 1.42rem;
   font-weight: 860;
   line-height: 1.02;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .broadcast-audience-sheet__hero-copy span {
@@ -10024,7 +10028,7 @@
   color: #163453;
   font-size: 0.82rem;
   font-weight: 820;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
     0 10px 24px rgba(33, 84, 143, 0.08);
@@ -10072,7 +10076,7 @@
   color: #4f6881;
   font-size: 0.78rem;
   font-weight: 760;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-audience-sheet__stat.is-primary {
@@ -10153,7 +10157,7 @@
   font: inherit;
   font-size: 0.76rem;
   font-weight: 760;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
 
@@ -10302,7 +10306,7 @@
   color: #667f98;
   font-size: 0.68rem;
   font-weight: 780;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-audience-sheet__checkbox {
@@ -10405,7 +10409,7 @@
   color: #132c43;
   font-size: 0.94rem;
   font-weight: 810;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .broadcast-audience-sheet__actions {
@@ -10649,7 +10653,7 @@
   margin: 0;
   font-size: clamp(1.48rem, 1.24rem + 0.84vw, 2rem);
   line-height: 0.98;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
   max-width: 11ch;
   text-wrap: balance;
 }
@@ -10720,7 +10724,7 @@
   color: var(--text-primary);
   font-size: 1rem;
   line-height: 1.15;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .giveaway-page__hero-visual {
@@ -10778,7 +10782,7 @@
   color: #11283d;
   font-size: 1.4rem;
   line-height: 1.02;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .giveaway-page__art-card small {
@@ -10940,7 +10944,7 @@
   color: var(--text-primary);
   font-size: 1rem;
   line-height: 1.18;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .giveaway-page__state-copy p {
@@ -13363,7 +13367,7 @@
   font-size: 1.02rem;
   font-weight: 830;
   line-height: 1.02;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -13469,7 +13473,7 @@
   font-size: 0.78rem;
   font-weight: 780;
   line-height: 1.1;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .events-dashboard {
@@ -13506,7 +13510,7 @@
   font-size: 1.02rem;
   font-weight: 820;
   line-height: 1.02;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .events-dashboard__range {
@@ -13591,7 +13595,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.82rem, 1.5rem + 1.2vw, 2.4rem);
   line-height: 0.94;
-  letter-spacing: -0.055em;
+  letter-spacing: 0;
 }
 
 .events-dashboard__hero-value {
@@ -13707,7 +13711,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.18rem, 1.02rem + 0.72vw, 1.56rem);
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .events-dashboard__metric span {
@@ -13784,7 +13788,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.82rem, 1.48rem + 1.15vw, 2.35rem);
   line-height: 0.94;
-  letter-spacing: -0.055em;
+  letter-spacing: 0;
 }
 
 .events-dashboard__activity-balance span,
@@ -13841,7 +13845,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.18rem, 1.02rem + 0.72vw, 1.54rem);
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .events-dashboard__flow-card--joined strong {
@@ -14361,7 +14365,7 @@
   font-family: var(--font-heading);
   font-size: clamp(1.42rem, 1.2rem + 0.9vw, 1.9rem);
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .stats-metric-card span {
@@ -14760,7 +14764,7 @@
   color: #17324a;
   font-size: 1.02rem;
   font-weight: 820;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .membership-feed--immersive .membership-feed__title p {
@@ -15129,7 +15133,7 @@
   color: #0e6eb8;
   font-size: 0.73rem;
   font-weight: 900;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1;
   white-space: nowrap;
 }
@@ -15167,7 +15171,7 @@
   color: var(--participants-roster-violations-fg, #9c5808);
   font-size: 0.73rem;
   font-weight: 900;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1;
   white-space: nowrap;
 }
@@ -15334,7 +15338,7 @@
   font-size: 1.08rem;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: 0;
 }
 
 .participant-sheet__avatar img {
@@ -15362,7 +15366,7 @@
   font-size: 0.98rem;
   font-weight: 860;
   line-height: 1.06;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -16186,7 +16190,7 @@
       .settings-drilldown__panel--campaign
     )
     .settings-drilldown__title {
-    letter-spacing: -0.04em;
+    letter-spacing: 0;
   }
 
   :is(
@@ -16497,7 +16501,7 @@
     border-radius: 18px;
     text-align: center;
     font-size: 1.08rem;
-    letter-spacing: -0.05em;
+    letter-spacing: 0;
     background: rgba(255, 255, 255, 0.92);
   }
 
@@ -16782,7 +16786,6 @@
   }
 }
 
-/* 2026 mobile redesign overrides: native density for settings and channel analytics. */
 .settings-sections--chat-home,
 .channel-settings-screen,
 .channel-insights__body {
@@ -16917,7 +16920,7 @@
 .channel-settings-card .settings-section__toggle-main h3 {
   font-size: 0.94rem;
   line-height: 1.12;
-  letter-spacing: -0.018em;
+  letter-spacing: 0;
 }
 
 .settings-home-entry--list .settings-section__toggle-main h3 {
@@ -17180,7 +17183,7 @@
 
   .channel-insights__hero-copy strong {
     font-size: clamp(1.9rem, 1.66rem + 1vw, 2.28rem);
-    letter-spacing: -0.05em;
+    letter-spacing: 0;
   }
 
   .channel-insights__hero-copy span {
@@ -17260,7 +17263,6 @@
   }
 }
 
-/* 2026 settings command surface: visual hierarchy without extra UI copy. */
 body.settings-home-page-open {
   background:
     linear-gradient(180deg, rgba(250, 253, 255, 0.99) 0%, rgba(236, 247, 254, 0.98) 54%),
@@ -17808,7 +17810,6 @@ body.settings-home-page-open .bottom-nav__item.is-active::after {
   }
 }
 
-/* 2026 settings quality pass: lighter native sheets, denser editors, less web-form weight. */
 .settings-drilldown {
   --settings-drilldown-top-offset: 6px;
   padding-top: var(--settings-drilldown-top-offset);
@@ -18579,7 +18580,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   color: var(--broadcast-studio-ink);
   font-size: 1.1rem;
   line-height: 1.04;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .broadcast-studio-command__copy small {
@@ -18736,7 +18737,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 .settings-drilldown .broadcast-stage-card__title-wrap strong {
   color: var(--broadcast-studio-ink);
   font-size: 1.05rem;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .settings-drilldown .broadcast-stage-card__status {
@@ -22458,7 +22459,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   }
 }
 
-/* Broadcast composer 2026 */
 .settings-drilldown__panel--broadcast-screen {
   --broadcast-studio-ink: #102233;
   --broadcast-studio-muted: #657684;
@@ -23284,7 +23284,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   }
 }
 
-/* 2026 channel settings pass: denser blocks, clear layering, no clipped info hints. */
 body.channel-settings-page-open {
   background:
     linear-gradient(180deg, rgba(250, 253, 255, 0.99) 0%, rgba(238, 246, 250, 0.98) 56%),
