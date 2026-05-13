@@ -587,6 +587,8 @@ const PROFANITY_EXCEPTIONS = [
 ];
 const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
   'б',
+  'бл',
+  'бля',
   'л',
   'я',
   'д',
@@ -594,13 +596,36 @@ const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
   'т',
   'ть',
   'п',
+  'пид',
+  'пидо',
+  'пед',
+  'педо',
+  'педа',
+  'пиз',
   'и',
   'з',
   'х',
   'у',
+  'убл',
+  'блю',
+  'юд',
   'й',
   'е',
   'ё',
+  'еб',
+  'ебл',
+  'еба',
+  'ебан',
+  'деб',
+  'диб',
+  'дол',
+  'дал',
+  'бол',
+  'бал',
+  'бо',
+  'ба',
+  'рас',
+  'раз',
   'на',
   'по',
   'до',
@@ -614,7 +639,7 @@ const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
   'про',
   'у',
 ]);
-const PROFANITY_JOIN_WINDOW_TOKENS = 6;
+const PROFANITY_JOIN_WINDOW_TOKENS = 8;
 const ADS_INTENT_MARKERS = [
   'продам',
   'продаю',
@@ -3954,6 +3979,11 @@ export class RuleEngineService {
     }
 
     if (this.shouldBuildAmbiguousProfanityCandidate(value)) {
+      const primaryMapped = this.normalizeProfanityCandidateWithMap(value, MIXED_CHAR_MAP);
+      if (primaryMapped) {
+        candidates.add(primaryMapped);
+      }
+
       const ambiguous = this.normalizeProfanityCandidateWithMap(
         value,
         PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP,
@@ -4050,7 +4080,10 @@ export class RuleEngineService {
 
   private normalizeProfanityJoinToken(value: string): string {
     for (const normalized of this.buildProfanityCyrillicCandidates(value)) {
-      if (normalized.length > 0 && normalized.length <= 2) {
+      if (
+        normalized.length > 0 &&
+        (normalized.length <= 2 || PROFANITY_SHORT_JOINABLE_TOKENS.has(normalized))
+      ) {
         return normalized;
       }
     }

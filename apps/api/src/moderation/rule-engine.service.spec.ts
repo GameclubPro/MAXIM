@@ -853,6 +853,23 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
+  it('detects PROFANITY when longer russian insults are split into letters or chunks', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = ['д о л б о е б', 'у б л ю д о к', 'деб и л', 'пидо рас', 'бл я ть'];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
   it('still detects PROFANITY in digit-obfuscated russian mat token', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -868,7 +885,7 @@ describe('RuleEngineService', () => {
 
   it('detects PROFANITY in mixed-script and leetspeak mat obfuscations', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const samples = ['бл@ть', 'бл9ть', 'пuзда', 'хуu', 'p1zda', 'pizd@'];
+    const samples = ['бл@ть', 'бл9ть', 'пuзда', 'хуu', 'мр@зь', 'p1zda', 'pizd@'];
 
     for (const text of samples) {
       const result = await service.detect({
