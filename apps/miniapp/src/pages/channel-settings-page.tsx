@@ -744,7 +744,7 @@ function ChannelSettingsToggleCard({
 }) {
   return (
     <div
-      className={cn('channel-settings-toggle-card', disabled && 'is-disabled')}
+      className={cn('channel-settings-toggle-card', checked && 'is-on', disabled && 'is-disabled')}
       onClick={(event) => {
         if (disabled) {
           return;
@@ -1891,12 +1891,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : null;
   const broadcastTimingSummary =
     broadcastTimingMode === 'now'
-      ? 'сразу'
+      ? 'Сейчас'
       : broadcastTimingMode === 'cycle'
         ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
         : broadcastScheduledSlots.length > 0
           ? broadcastSlotsLabel
-          : 'без слотов';
+          : 'Без слотов';
   const broadcastSelectionSummary = [
     broadcastPlannerState.selectedDayCount > 0
       ? formatChannelCountLabel(broadcastPlannerState.selectedDayCount, 'день', 'дня', 'дней')
@@ -1943,20 +1943,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastHasButton;
   const broadcastHeaderSummary = broadcastTimingSummary;
   const commentsCardSummary = !draft.commentsEnabled
-    ? 'обсуждение через бота выключено'
+    ? 'Выкл'
     : draft.commentsModerationEnabled
-      ? 'обсуждение через бота с модерацией'
-      : 'обсуждение через бота без модерации';
+      ? 'Модерация'
+      : 'Без модерации';
   const commentsCardStatus = !draft.commentsEnabled
     ? 'Выкл'
     : draft.commentsModerationEnabled
       ? 'Модер'
       : 'Вкл';
-  const postSuggestionsEntryLabel =
-    draft.postSuggestionsEntryMode === 'MINIAPP' ? 'мини-апп' : 'бот';
+  const postSuggestionsEntryLabel = draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Апп' : 'Бот';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
-    ? `${postSuggestionsEntryLabel} · лимит ${draft.postSuggestionsDailyLimit}/24ч`
-    : 'ручная публикация кнопки';
+    ? `${postSuggestionsEntryLabel} · ${draft.postSuggestionsDailyLimit}/24ч`
+    : 'Ручной режим';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled
     ? draft.postSuggestionsEntryMode === 'MINIAPP'
       ? 'Апп'
@@ -2557,7 +2556,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         backTo={buildManagedEntitiesRoute('channel')}
         backLabel="Назад к каналам"
         title={resolvedTitle || 'Настройки'}
-        subtitle="Настройки канала"
+        subtitle="Канал"
         avatar={
           <EntityAvatar
             title={resolvedTitle || 'Настройки'}
@@ -2644,8 +2643,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.comments ? (
               <div className="settings-section__collapse-inner">
                 <ChannelSettingsToggleCard
-                  title="Включить обсуждение"
-                  description="Тред под постами через бота. Это отдельно от нативных комментариев MAX."
+                  title="Обсуждение"
+                  description="Тред под постами через бота. Нативные комментарии MAX не меняются."
                   hintKey="commentsEnabled"
                   openHintKey={openHintKey}
                   onToggleHint={toggleHint}
@@ -2654,9 +2653,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 />
 
                 {draft.commentsEnabled ? (
-                  <div className="channel-settings-stack">
-                    <label className="field">
-                      <span>Текст-подсказка в диалоге комментариев</span>
+                  <div className="channel-settings-stack channel-settings-stack--form">
+                    <label className="field channel-settings-field--wide">
+                      <span>Подсказка</span>
                       <textarea
                         rows={3}
                         value={draft.commentsMessageText}
@@ -2667,7 +2666,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                     <ChannelSettingsToggleCard
                       title="Модерация"
-                      description="Проверка комментариев."
+                      description="Проверка комментариев перед публикацией."
                       hintKey="commentsModerationEnabled"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
@@ -2676,10 +2675,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     />
 
                     {draft.commentsModerationEnabled ? (
-                      <div className="channel-settings-stack">
+                      <div className="channel-settings-stack channel-settings-toggle-grid">
                         <ChannelSettingsToggleCard
-                          title="Запретить ссылки"
-                          description="Ссылки в комментариях блокируются."
+                          title="Без ссылок"
+                          description="Комментарии со ссылками блокируются."
                           hintKey="commentsBlockLinksEnabled"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
@@ -2691,7 +2690,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                         <ChannelSettingsToggleCard
                           title="Антиспам"
-                          description="Блок частых повторов."
+                          description="Блокирует частые повторы."
                           hintKey="commentsAntiSpamEnabled"
                           openHintKey={openHintKey}
                           onToggleHint={toggleHint}
@@ -2700,7 +2699,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         />
 
                         <ChannelSettingsToggleCard
-                          title="Не больше двух подряд"
+                          title="Два подряд"
                           description="Третий подряд блокируется."
                           hintKey="commentsLimitTwoInRowEnabled"
                           openHintKey={openHintKey}
@@ -2754,7 +2753,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.postSuggestions ? (
               <div className="settings-section__collapse-inner">
                 <ChannelSettingsToggleCard
-                  title="Разрешить предложения"
+                  title="Приём предложек"
                   description="Кнопка предложки под новыми постами."
                   hintKey="postSuggestionsEnabled"
                   openHintKey={openHintKey}
@@ -2774,9 +2773,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   />
                 </div>
 
-                <div className="channel-settings-stack">
+                <div className="channel-settings-stack channel-settings-form-grid">
                   <label className="field">
-                    <span>Название кнопки</span>
+                    <span>Кнопка</span>
                     <input
                       type="text"
                       value={draft.postSuggestionsButtonText}
@@ -2788,8 +2787,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     />
                   </label>
 
-                  <label className="field">
-                    <span>Требования для предложки</span>
+                  <label className="field channel-settings-field--wide">
+                    <span>Требования</span>
                     <textarea
                       rows={4}
                       value={draft.postSuggestionsText}
@@ -2798,21 +2797,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     />
                   </label>
 
-                  <label className="field">
-                    <span>Текст поста с кнопками</span>
+                  <label className="field channel-settings-field--wide">
+                    <span>Пост с кнопками</span>
                     <textarea
                       rows={3}
                       value={draft.engagementMessageText}
                       onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
                       placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
                     />
-                    <span className="field__hint">
-                      Используется, когда бот публикует пост с кнопками обсуждения и предложки.
-                    </span>
                   </label>
 
                   <label className="field">
-                    <span>Максимум предложек от одного подписчика</span>
+                    <span>Лимит</span>
                     <div className="field__number-wrap">
                       <select
                         value={String(draft.postSuggestionsDailyLimit)}
@@ -2828,9 +2824,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       </select>
                       <small>/ 24ч</small>
                     </div>
-                    <span className="field__hint">
-                      Считается отдельно для каждого подписчика и канала за последние 24 часа.
-                    </span>
                   </label>
                 </div>
               </div>
@@ -3376,9 +3369,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-poll"
             open={expandedSections.poll}
             title="Опросы"
-            summary="Голосование отдельным постом"
+            summary="Пост с голосованием"
             tone="ink"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--poll"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--poll settings-drilldown__panel--channel-poll"
             onClose={() => toggleSection('poll')}
           >
             <div
@@ -3401,7 +3394,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             <SettingsSectionToggle
               title="Розыгрыши"
               summary=""
-              status="Mini app"
+              status="Апп"
               icon="gift"
               tone="amber"
               open={expandedSections.giveaway}
@@ -3414,9 +3407,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-giveaway"
             open={expandedSections.giveaway}
             title="Розыгрыши"
-            summary="Запуск, итоги и реролл в mini app"
+            summary="Запуск и итоги"
             tone="amber"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway settings-drilldown__panel--channel-giveaway"
             onClose={() => toggleSection('giveaway')}
           >
             <div

@@ -23479,3 +23479,374 @@ body.channel-settings-page-open .app-shell {
     font-size: 0.58rem;
   }
 }
+
+body.channel-settings-page-open {
+  background:
+    linear-gradient(180deg, rgba(250, 253, 255, 0.99), rgba(241, 247, 251, 0.98)), #f4f8fb;
+}
+
+.channel-settings-screen {
+  gap: 8px;
+  width: min(100%, 720px);
+}
+
+.channel-settings-screen__sticky-header .compact-page-header__bar {
+  border-radius: 24px;
+  border-color: rgba(210, 225, 237, 0.72);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 14px 34px rgba(24, 55, 83, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.82) inset;
+}
+
+.channel-settings-screen__sticky-header .compact-page-header__subtitle {
+  display: none;
+}
+
+.channel-settings-card .settings-section__toggle {
+  min-height: 58px;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(42px, auto) 28px;
+  gap: 9px;
+  border-radius: 16px;
+  border-color: rgba(205, 221, 234, 0.84);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 252, 255, 0.94)),
+    linear-gradient(110deg, var(--settings-entry-soft), transparent 48%);
+  padding: 8px 9px 8px 10px;
+  box-shadow:
+    0 10px 22px rgba(24, 55, 83, 0.055),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-settings-card .settings-section__toggle::before {
+  opacity: 0.6;
+}
+
+.channel-settings-card .settings-section__toggle::after {
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+}
+
+.channel-settings-card .settings-section__toggle[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--settings-entry-accent) 28%, #ffffff 72%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 251, 255, 0.96)),
+    linear-gradient(112deg, var(--settings-entry-soft), transparent 52%);
+  box-shadow:
+    0 14px 28px var(--settings-entry-glow),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.channel-settings-card .settings-section__icon-badge {
+  width: 38px;
+  height: 38px;
+  border-radius: 13px;
+}
+
+.channel-settings-card .settings-section__icon-badge svg {
+  width: 19px;
+  height: 19px;
+}
+
+.channel-settings-card .settings-section__toggle-main h3 {
+  font-size: 0.93rem;
+  line-height: 1.08;
+  font-weight: 840;
+}
+
+.channel-settings-card .settings-section__status-chip {
+  max-width: 78px;
+  min-height: 24px;
+  padding-inline: 8px;
+  font-size: 0.62rem;
+  font-weight: 840;
+  text-transform: none;
+}
+
+.channel-settings-card .settings-section__chevron {
+  width: 28px;
+  height: 28px;
+}
+
+.settings-drilldown__panel--channel-comments,
+.settings-drilldown__panel--post-suggestions,
+.settings-drilldown__panel--channel-poll,
+.settings-drilldown__panel--channel-giveaway {
+  width: min(100%, 680px);
+  border-color: rgba(138, 163, 186, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.97)), #f7fafc;
+}
+
+.settings-drilldown__panel--channel-comments,
+.settings-drilldown__panel--post-suggestions {
+  min-height: min(390px, calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)));
+}
+
+.settings-drilldown__panel--channel-comments .settings-drilldown__header,
+.settings-drilldown__panel--post-suggestions .settings-drilldown__header,
+.settings-drilldown__panel--channel-poll .settings-drilldown__header,
+.settings-drilldown__panel--channel-giveaway .settings-drilldown__header {
+  padding: 18px 12px 9px;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.settings-drilldown__panel--channel-comments .settings-drilldown__summary,
+.settings-drilldown__panel--post-suggestions .settings-drilldown__summary,
+.settings-drilldown__panel--channel-poll .settings-drilldown__summary,
+.settings-drilldown__panel--channel-giveaway .settings-drilldown__summary {
+  min-height: 24px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.62rem;
+  font-weight: 820;
+  letter-spacing: 0;
+}
+
+.settings-drilldown__panel--channel-comments .settings-section__collapse-inner,
+.settings-drilldown__panel--post-suggestions .settings-section__collapse-inner,
+.settings-drilldown__panel--channel-poll .settings-section__collapse-inner,
+.settings-drilldown__panel--channel-giveaway .settings-section__collapse-inner {
+  display: grid;
+  gap: 8px;
+  padding: 10px 10px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-stack,
+.settings-drilldown__panel--post-suggestions .channel-settings-stack {
+  gap: 8px;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-stack--form,
+.settings-drilldown__panel--post-suggestions .channel-settings-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.settings-drilldown__panel--post-suggestions .channel-settings-mode-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border-radius: 15px;
+  border-color: rgba(198, 213, 225, 0.72);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 9px 10px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--post-suggestions .channel-settings-mode-card__label {
+  color: #526b80;
+  font-size: 0.72rem;
+  font-weight: 840;
+}
+
+.settings-drilldown__panel--post-suggestions .channel-settings-mode-card__control {
+  border-radius: 13px;
+  padding: 3px;
+}
+
+.settings-drilldown__panel--post-suggestions
+  .channel-settings-mode-card__control
+  .segmented-control__item {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 7px 9px;
+  font-size: 0.74rem;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-card,
+.settings-drilldown__panel--post-suggestions .channel-settings-toggle-card {
+  min-height: 54px;
+  border-radius: 15px;
+  border-color: rgba(198, 213, 225, 0.72);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px 10px 10px 12px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-card::before,
+.settings-drilldown__panel--post-suggestions .channel-settings-toggle-card::before {
+  content: none;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-card.is-on,
+.settings-drilldown__panel--post-suggestions .channel-settings-toggle-card.is-on {
+  border-color: var(--settings-panel-accent-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), var(--settings-panel-accent-soft)),
+    rgba(255, 255, 255, 0.86);
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-card__copy strong,
+.settings-drilldown__panel--post-suggestions .channel-settings-toggle-card__copy strong {
+  color: #173048;
+  font-size: 0.9rem;
+  line-height: 1.12;
+}
+
+.settings-drilldown__panel--channel-comments .channel-settings-toggle-card__title-row,
+.settings-drilldown__panel--post-suggestions .channel-settings-toggle-card__title-row {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+}
+
+.settings-drilldown__panel--channel-comments .settings-info-button,
+.settings-drilldown__panel--post-suggestions .settings-info-button,
+.settings-drilldown__panel--channel-poll .settings-info-button,
+.settings-drilldown__panel--channel-giveaway .settings-info-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  border-radius: 999px;
+  color: #5d7487;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--channel-comments .field,
+.settings-drilldown__panel--post-suggestions .field,
+.settings-drilldown__panel--channel-poll .field,
+.settings-drilldown__panel--channel-giveaway .field {
+  gap: 8px;
+  border-radius: 15px;
+  border-color: rgba(198, 213, 225, 0.72);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--channel-comments .field > span,
+.settings-drilldown__panel--post-suggestions .field > span,
+.settings-drilldown__panel--channel-poll .field > span,
+.settings-drilldown__panel--channel-giveaway .field > span,
+.settings-drilldown__panel--channel-comments .field__label,
+.settings-drilldown__panel--post-suggestions .field__label,
+.settings-drilldown__panel--channel-poll .field__label,
+.settings-drilldown__panel--channel-giveaway .field__label {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #526b80;
+  font-size: 0.73rem;
+  font-weight: 820;
+  letter-spacing: 0;
+  line-height: 1.12;
+  text-transform: none;
+}
+
+.settings-drilldown__panel--channel-comments .field input,
+.settings-drilldown__panel--post-suggestions .field input,
+.settings-drilldown__panel--channel-poll .field input,
+.settings-drilldown__panel--channel-giveaway .field input,
+.settings-drilldown__panel--channel-comments .field select,
+.settings-drilldown__panel--post-suggestions .field select,
+.settings-drilldown__panel--channel-poll .field select,
+.settings-drilldown__panel--channel-giveaway .field select,
+.settings-drilldown__panel--channel-comments .field textarea,
+.settings-drilldown__panel--post-suggestions .field textarea,
+.settings-drilldown__panel--channel-poll .field textarea,
+.settings-drilldown__panel--channel-giveaway .field textarea {
+  min-height: 44px;
+  border-radius: 12px;
+  border-color: rgba(188, 205, 220, 0.82);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 9px 11px;
+  font-size: 0.9rem;
+  line-height: 1.28;
+}
+
+.settings-drilldown__panel--channel-comments .field textarea,
+.settings-drilldown__panel--post-suggestions .field textarea {
+  min-height: 88px;
+}
+
+.settings-drilldown__panel--channel-poll .managed-poll-card,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__surface,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__section,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__subsection {
+  border-radius: 16px;
+  border-color: rgba(198, 213, 225, 0.72);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--channel-poll .managed-poll-card::before,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__surface::before,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__section::before,
+.settings-drilldown__panel--channel-giveaway .managed-giveaway__subsection::before {
+  content: none;
+}
+
+@media (min-width: 620px) {
+  .settings-drilldown__panel--post-suggestions .channel-settings-form-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 0.42fr);
+  }
+
+  .settings-drilldown__panel--post-suggestions .channel-settings-field--wide {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-settings-screen {
+    gap: 7px;
+  }
+
+  .channel-settings-screen__sticky-header .compact-page-header__bar {
+    border-radius: 22px;
+  }
+
+  .channel-settings-card .settings-section__toggle {
+    min-height: 56px;
+    grid-template-columns: 36px minmax(0, 1fr) minmax(38px, auto) 26px;
+    gap: 8px;
+    border-radius: 15px;
+    padding: 8px;
+  }
+
+  .channel-settings-card .settings-section__icon-badge {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+  }
+
+  .channel-settings-card .settings-section__status-chip {
+    max-width: 66px;
+    min-height: 23px;
+    padding-inline: 7px;
+    font-size: 0.58rem;
+  }
+
+  .settings-drilldown__panel--post-suggestions .channel-settings-mode-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 360px) {
+  .channel-settings-card .settings-section__toggle {
+    grid-template-columns: 34px minmax(0, 1fr) 26px;
+    grid-template-rows: auto auto;
+  }
+
+  .channel-settings-card .settings-section__icon-badge {
+    width: 34px;
+    height: 34px;
+  }
+
+  .channel-settings-card .settings-section__status-chip {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    max-width: 100%;
+  }
+}
