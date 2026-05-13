@@ -44,6 +44,8 @@ const INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES = new Set([
   'bot_added',
   'bot_started',
   'chat_title_changed',
+  'user_added',
+  'user_removed',
 ]);
 const CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES = new Set([
   'bot_started',

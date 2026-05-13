@@ -944,6 +944,115 @@ describe('WebhookService', () => {
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
   });
 
+  it('promotes the incoming bot inline on membership churn when the stored owner lost admin rights', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-membership-failover' }),
+        updateMany: jest.fn(),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_bot',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_4_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        }),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('id613002203036_bot');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_4_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    (service as any).botSelfAccessCache.set('-73729721862151:id613002203036_bot', {
+      canHandleUserFacing: true,
+      expiresAtMs: Date.now() + 60_000,
+    });
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-membership-failover-1',
+          type: 'user_added',
+          botId: 'id613002203036_4_bot',
+          message: {
+            messageId: 'user_added:u-membership-failover-1',
+            chatId: '-73729721862151',
+            chatTitle: 'Пантера',
+            entityType: 'chat',
+            senderId: '98315271',
+            senderName: 'Новый админ',
+            text: '',
+            createdAt: new Date('2026-05-10T03:21:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['98315271'],
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      1,
+      '-73729721862151',
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        trafficClass: 'interactive',
+        timeoutMs: 900,
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      2,
+      '-73729721862151',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        trafficClass: 'interactive',
+        timeoutMs: 900,
+      }),
+    );
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-73729721862151',
+        botId: 'id613002203036_4_bot',
+        allowReassign: true,
+      }),
+    );
+    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_4_bot',
+          }),
+        }),
+      }),
+    );
+    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the current owner on ordinary message updates without running a live failover check', async () => {
     const prisma = {
       webhookEvent: {
