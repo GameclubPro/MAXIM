@@ -4,7 +4,10 @@ import {
   COMMERCIAL_REAL_WORLD_POSITIVE_CASES,
 } from './commercial-real-world.fixture';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import { PROFANITY_EXACT_VARIANT_COUNT } from './profanity-lexicon';
+import {
+  PROFANITY_EXACT_VARIANT_COUNT,
+  TARGETED_INSULT_VARIANT_COUNT,
+} from './profanity-lexicon';
 import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
@@ -233,6 +236,10 @@ async function detectCommercialViolation(
 describe('RuleEngineService', () => {
   it('ships with 2000+ exact profanity and insult variants', () => {
     expect(PROFANITY_EXACT_VARIANT_COUNT).toBeGreaterThanOrEqual(2000);
+  });
+
+  it('ships with a targeted-insult lexicon for ambiguous user-directed abuse', () => {
+    expect(TARGETED_INSULT_VARIANT_COUNT).toBeGreaterThanOrEqual(250);
   });
 
   it('detects profanity and blocked links', async () => {
@@ -580,6 +587,30 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
+  it('detects PROFANITY for targeted ambiguous russian insults', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      'ты полный дурак',
+      'вы все бараны',
+      'ты реально даун',
+      'этот псих пишет опять',
+      'додик, уйди из чата',
+      'ty durak',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
   it('does not detect PROFANITY for safe exception words', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -593,12 +624,49 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
+  it('does not detect PROFANITY for ambiguous insults in non-abusive russian contexts', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      'Вы продаете барана или только петухов?',
+      'Фонд помогает семьям, где есть ребенок с синдромом Дауна.',
+      'Психолог объяснил, как поддержать аутиста в школе.',
+      'В редакторе выбран жирный шрифт для заголовка.',
+      'На ферме овцы, козлы, петухи и свиньи.',
+      'Книга Идиот Достоевского есть в школьной программе.',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+    }
+  });
+
   it('does not detect PROFANITY for canine context around "сука" in pet ads', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Чита. Срочно отдаётся собака, охранница. Сука, крупная. Стерилизованная, привитая. Привезу.',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY for canine context around derived female-dog forms', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Питомник продает щенка: сучка с родословной, привита, паспорт есть.',
       settings: buildSettings(),
       domainAllowlist: [],
     });

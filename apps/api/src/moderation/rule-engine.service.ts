@@ -11,7 +11,7 @@ import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../co
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { buildDuplicateStageKey } from './duplicate-state';
-import { isExactProfanityVariant } from './profanity-lexicon';
+import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -69,6 +69,11 @@ type RuleEngineDetectProfile = {
 
 type DuplicateReactionStage = {
   action: DuplicateAction | null;
+};
+
+type ProfanityCandidate = {
+  value: string;
+  joined: boolean;
 };
 
 type CommercialDetection = {
@@ -283,7 +288,29 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a(?:l|t|n|sh|ch)|e(?:t|sh|m|te)|u(?:t|ch|n)|i(?:s|t|te)|l(?:an|o|i)?|n(?:u|ut)|uch)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
 ];
-const PROFANITY_CANINE_FEMALE_FORMS = new Set(['сука', 'суки', 'суке', 'суку', 'сукой', 'сукою']);
+const PROFANITY_CANINE_FEMALE_FORMS = new Set([
+  'сука',
+  'суки',
+  'суке',
+  'суку',
+  'сукой',
+  'сукою',
+  'сучка',
+  'сучки',
+  'сучке',
+  'сучку',
+  'сучкой',
+  'сучкою',
+  'сучек',
+  'сучкам',
+  'сучками',
+  'сучках',
+  'сучонок',
+  'сучонка',
+  'сучонку',
+  'сучонком',
+  'сучонки',
+]);
 const PROFANITY_CANINE_CONTEXT_MARKERS = [
   'собак',
   'щен',
@@ -540,6 +567,22 @@ const PROFANITY_CLINICAL_CONTEXT_MARKERS = [
   'заключени',
   'справк',
 ];
+const PROFANITY_LITERARY_TITLE_FORMS = new Set(['идиот', 'идиота', 'идиоту', 'идиотом']);
+const PROFANITY_LITERARY_TITLE_CONTEXT_MARKERS = [
+  'роман',
+  'книг',
+  'литератур',
+  'достоевск',
+  'произведени',
+  'экранизац',
+  'фильм',
+  'спектакл',
+  'театр',
+  'названи',
+  'цитат',
+  'персонаж',
+  'глав',
+];
 const PROFANITY_LATIN_CULTURAL_NAME_FORMS = new Set([
   'suki',
   'suke',
@@ -640,6 +683,105 @@ const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
   'у',
 ]);
 const PROFANITY_JOIN_WINDOW_TOKENS = 8;
+const PROFANITY_DIRECT_ADDRESS_MARKERS = new Set([
+  'ты',
+  'вы',
+  'тебя',
+  'тебе',
+  'тобой',
+  'вас',
+  'вам',
+  'вами',
+  'ty',
+  'ti',
+  'vy',
+  'vi',
+  'tebya',
+  'tebe',
+  'vas',
+  'vam',
+]);
+const PROFANITY_TARGET_BRIDGE_TOKENS = new Set([
+  'же',
+  'ж',
+  'прям',
+  'прямо',
+  'реально',
+  'просто',
+  'полный',
+  'полная',
+  'полное',
+  'полные',
+  'конченый',
+  'конченный',
+  'конченая',
+  'конченная',
+  'конченое',
+  'конченное',
+  'тупой',
+  'тупая',
+  'тупое',
+  'тупые',
+  'жалкий',
+  'жалкая',
+  'жалкое',
+  'жалкие',
+  'настоящий',
+  'настоящая',
+  'настоящее',
+  'настоящие',
+  'какой',
+  'какая',
+  'какое',
+  'какие',
+  'все',
+  'всё',
+  'какой-то',
+  'какая-то',
+  'какое-то',
+  'какие-то',
+  'то',
+  'vse',
+  'same',
+  'sam',
+  'realno',
+  'prosto',
+  'polnyy',
+  'polnaya',
+]);
+const PROFANITY_DEMONSTRATIVE_TARGET_MARKERS = new Set([
+  'этот',
+  'эта',
+  'эти',
+  'тот',
+  'та',
+  'те',
+]);
+const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
+  'уйди',
+  'вали',
+  'свали',
+  'заткнись',
+  'молчи',
+  'исчезни',
+  'проваливай',
+  'отстань',
+  'достал',
+  'достала',
+  'достали',
+  'спамишь',
+  'спамит',
+  'пишешь',
+  'пишет',
+  'лезешь',
+  'лезет',
+  'приперся',
+  'приперлась',
+  'приперлись',
+  'пришел',
+  'пришла',
+  'пришли',
+]);
 const ADS_INTENT_MARKERS = [
   'продам',
   'продаю',
@@ -2039,21 +2181,42 @@ export class RuleEngineService {
 
   private hasProfanity(text: string): boolean {
     const normalizedContext = this.normalizeForDetection(stripUrlsFromText(text));
+    const latinTargetContext = this.normalizeProfanityLatinContext(stripUrlsFromText(text));
     const candidates = this.extractProfanityCandidates(text);
     for (const candidate of candidates) {
-      for (const normalizedCandidate of this.buildProfanityCyrillicCandidates(candidate)) {
+      for (const normalizedCandidate of this.buildProfanityCyrillicCandidates(candidate.value)) {
+        if (!normalizedCandidate || this.isProfanityException(normalizedCandidate)) {
+          continue;
+        }
+
+        if (this.isContextualProfanityException(normalizedCandidate, normalizedContext)) {
+          continue;
+        }
+
         if (
-          normalizedCandidate &&
-          !this.isProfanityException(normalizedCandidate) &&
-          !this.isContextualProfanityException(normalizedCandidate, normalizedContext) &&
-          (this.isProfanityToken(normalizedCandidate) ||
-            isExactProfanityVariant(normalizedCandidate))
+          this.isProfanityToken(normalizedCandidate) ||
+          isExactProfanityVariant(normalizedCandidate)
+        ) {
+          return true;
+        }
+
+        if (
+          isTargetedInsultVariant(normalizedCandidate) &&
+          this.matchesTargetedInsultContext(normalizedCandidate, normalizedContext, candidate)
         ) {
           return true;
         }
       }
 
-      for (const normalizedLatinCandidate of this.buildProfanityLatinCandidates(candidate)) {
+      for (const normalizedLatinCandidate of this.buildProfanityLatinCandidates(candidate.value)) {
+        if (
+          normalizedLatinCandidate &&
+          isTargetedInsultVariant(normalizedLatinCandidate) &&
+          this.matchesTargetedInsultContext(normalizedLatinCandidate, latinTargetContext, candidate)
+        ) {
+          return true;
+        }
+
         if (
           normalizedLatinCandidate &&
           PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) => pattern.test(normalizedLatinCandidate))
@@ -2138,6 +2301,13 @@ export class RuleEngineService {
       this.matchesProfanityContextException(
         token,
         normalizedContext,
+        PROFANITY_LITERARY_TITLE_FORMS,
+        PROFANITY_LITERARY_TITLE_CONTEXT_MARKERS,
+        1,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
         PROFANITY_LATIN_CULTURAL_NAME_FORMS,
         PROFANITY_LATIN_CULTURAL_NAME_CONTEXT_MARKERS,
         1,
@@ -2165,6 +2335,122 @@ export class RuleEngineService {
       matchedMarkers += 1;
       if (matchedMarkers >= minimumMatchedMarkers) {
         return true;
+      }
+    }
+
+    return false;
+  }
+
+  private matchesTargetedInsultContext(
+    token: string,
+    normalizedContext: string,
+    candidate: ProfanityCandidate,
+  ): boolean {
+    if (candidate.joined) {
+      return true;
+    }
+
+    const tokens = normalizedContext
+      .replace(/[^\p{L}\p{N}-]+/gu, ' ')
+      .split(/\s+/u)
+      .filter(Boolean);
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (tokens[index] !== token) {
+        continue;
+      }
+
+      if (
+        this.hasDirectAddressBeforeTarget(tokens, index) ||
+        this.hasDirectAddressAfterTarget(tokens, index) ||
+        this.hasDemonstrativeHostileTarget(tokens, index) ||
+        this.hasHostileCommandAfterTarget(tokens, index)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private hasDirectAddressBeforeTarget(tokens: readonly string[], targetIndex: number): boolean {
+    for (let index = targetIndex - 1; index >= Math.max(0, targetIndex - 5); index -= 1) {
+      const token = tokens[index];
+      if (!token) {
+        continue;
+      }
+
+      if (PROFANITY_DIRECT_ADDRESS_MARKERS.has(token)) {
+        return true;
+      }
+
+      if (!PROFANITY_TARGET_BRIDGE_TOKENS.has(token)) {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  private hasDirectAddressAfterTarget(tokens: readonly string[], targetIndex: number): boolean {
+    for (
+      let index = targetIndex + 1;
+      index <= Math.min(tokens.length - 1, targetIndex + 4);
+      index += 1
+    ) {
+      const token = tokens[index];
+      if (!token) {
+        continue;
+      }
+
+      if (PROFANITY_DIRECT_ADDRESS_MARKERS.has(token)) {
+        return true;
+      }
+
+      if (!PROFANITY_TARGET_BRIDGE_TOKENS.has(token)) {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  private hasDemonstrativeHostileTarget(tokens: readonly string[], targetIndex: number): boolean {
+    const previous = tokens[targetIndex - 1];
+    if (!previous || !PROFANITY_DEMONSTRATIVE_TARGET_MARKERS.has(previous)) {
+      return false;
+    }
+
+    for (
+      let index = targetIndex + 1;
+      index <= Math.min(tokens.length - 1, targetIndex + 3);
+      index += 1
+    ) {
+      const token = tokens[index];
+      if (token && PROFANITY_HOSTILE_AFTER_TARGET_TOKENS.has(token)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private hasHostileCommandAfterTarget(tokens: readonly string[], targetIndex: number): boolean {
+    for (
+      let index = targetIndex + 1;
+      index <= Math.min(tokens.length - 1, targetIndex + 3);
+      index += 1
+    ) {
+      const token = tokens[index];
+      if (!token) {
+        continue;
+      }
+
+      if (PROFANITY_HOSTILE_AFTER_TARGET_TOKENS.has(token)) {
+        return true;
+      }
+
+      if (!PROFANITY_TARGET_BRIDGE_TOKENS.has(token)) {
+        return false;
       }
     }
 
@@ -3913,7 +4199,7 @@ export class RuleEngineService {
     return normalized;
   }
 
-  private extractProfanityCandidates(value: string): string[] {
+  private extractProfanityCandidates(value: string): ProfanityCandidate[] {
     if (!value) {
       return [];
     }
@@ -3923,7 +4209,7 @@ export class RuleEngineService {
       .split(/\s+/u)
       .map((segment) => segment.trim())
       .filter(Boolean);
-    const candidates = [...segments];
+    const candidates = segments.map((segment) => ({ value: segment, joined: false }));
 
     for (let index = 0; index < segments.length; index += 1) {
       let joinedCandidate = '';
@@ -3945,7 +4231,7 @@ export class RuleEngineService {
         joinedCandidate += normalizedToken;
         joinedCount += 1;
         if (joinedCount >= 2) {
-          candidates.push(joinedCandidate);
+          candidates.push({ value: joinedCandidate, joined: true });
         }
       }
     }
@@ -4029,6 +4315,18 @@ export class RuleEngineService {
     let normalized = value.toLowerCase();
     normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
     normalized = normalized.replace(/[^a-z0-9]+/g, '');
+    return normalized;
+  }
+
+  private normalizeProfanityLatinContext(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = value.toLowerCase();
+    normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
+    normalized = normalized.replace(/[^a-z0-9-]+/g, ' ');
+    normalized = normalized.replace(/\s+/g, ' ').trim();
     return normalized;
   }
 
