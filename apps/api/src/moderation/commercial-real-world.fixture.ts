@@ -294,6 +294,49 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'cross-chat audience group invite from production audit',
+    text: `Рассылка - добавка MAX, ватцап. Строго в группу писать. Более 400 клиентов. Действуют акции, пишите в группу. https://max.ru/join/example-audience-group`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: true,
+    requireClassifier: true,
+    campaignContext: {
+      senderDistinctChatCount: 6,
+      sameTextDistinctChatCount: 6,
+      repeatedPhoneDistinctChatCount: 0,
+      repeatedLinkDistinctChatCount: 6,
+    },
+    expectedSignals: [
+      'promo:акци',
+      'audience:клиент',
+      'deal-channel:link',
+      'campaign:cross-chat-text',
+      'campaign:cross-chat-link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'beauty service promo from production audit',
+    text: `Милые дамы, приглашаю вас на маникюр и педикюр. Будь готова к лету. Действует акция: при депиляции подмышки в подарок. Цена за две процедуры 1200 рублей. Запись по телефону +7 900 000 00 20.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:запись',
+      'promo:акци',
+      'service-specialty:маникюр',
+      'service-specialty:педикюр',
+      'transaction:price',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -363,6 +406,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'two used scooters resale with phone from production logs',
     text: `Продам два самоката, б/у, после одного ребенка, в хорошем состоянии. Один 4000р, второй 3500р. Торг уместен. +7 900 000 00 18.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'wellness diary note from production audit without direct deal channel',
+    text: `Завтра быстрый и вкусный завтрак: огурец, зелень, сыр, яйцо, греческий йогурт. После завтрака коллаген. Сегодня снова записи по самочувствию и питанию, без боли и без отеков.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

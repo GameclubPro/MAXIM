@@ -1815,6 +1815,27 @@ describe('RuleEngineService', () => {
     expect(violation).toBeUndefined();
   });
 
+  it('does not let campaign repetition override wellness diary content without direct deal evidence', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Завтра быстрый и вкусный завтрак: огурец, зелень, сыр, яйцо, греческий йогурт. После завтрака коллаген. Сегодня снова записи по самочувствию и питанию, курс привычек идет спокойно.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 5,
+          sameTextDistinctChatCount: 4,
+          repeatedPhoneDistinctChatCount: 0,
+          repeatedLinkDistinctChatCount: 0,
+        },
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
   it('detects self-promotional craft offer from real logs when contact is in personal messages and phone', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
