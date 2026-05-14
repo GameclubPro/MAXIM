@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { botSpeechPersonaSchema } from '@maxim/contracts';
+import { botSpeechPersonaSchema } from '@maxim/contracts/bot-speech';
 import { parseAdditionalMaxBotsJson } from '../max/max-bot-config.util';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;

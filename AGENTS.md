@@ -12,6 +12,7 @@
   - `apps/api`: NestJS/Fastify API, Prisma, BullMQ workers, Postgres, Redis.
   - `apps/miniapp`: React 19 + Vite MAX mini app. MAX Bridge is loaded from `https://st.max.ru/js/max-web-app.js`.
   - `packages/contracts`: shared Zod/API contracts. Contract changes normally require matching API, mini app, tests, and typechecks.
+- Keep `packages/contracts` subpath exports, root `tsconfig.base.json` paths, and `apps/api/jest.config.cjs` mappers in sync so API Jest resolves ESM contract sources correctly.
 - Production API uses one shared API image split by `APP_ROLE`; `api-ingress` is the public API role, `api-admin` is the local admin/API role, and moderation/action/enqueue roles process queues.
 - Production mini app is served under `/app/`. Standalone bot stacks can use their own prefixed app/API paths, for example `/reshenie/app/` and `/reshenie/api/`.
 

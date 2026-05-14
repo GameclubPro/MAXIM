@@ -1,7 +1,4 @@
 import {
-  BOT_SPEECH_EDITABLE_FIELD_KEYS,
-  BOT_SPEECH_STYLE_METADATA,
-  BOT_SPEECH_STYLE_OPTIONS,
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -10,7 +7,6 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
-  applyBotSpeechStylePreset,
   type ApplySettingsTarget,
   type BroadcastImage,
   type BroadcastLinkButton,
@@ -18,17 +14,11 @@ import {
   chatRulesSchema,
   chatSettingsSchema,
   formatDeleteBotMessagesDelayLabel,
-  getBotSpeechEditableTemplate,
-  getBotSpeechSystemTemplate,
-  hasBotSpeechEditableOverrides,
   normalizeAllowlistDomain,
   normalizeAllowlistLink,
   normalizeStoredAllowlistEntry,
   stepDeleteBotMessagesDelayMinutes,
   type AllowlistMatchType,
-  type BotSpeechEditableFieldKey,
-  type BotSpeechPersona,
-  type BotSpeechStyle,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -40,6 +30,18 @@ import {
   type ManagedEntityHeader,
   type SendBroadcastResult,
 } from '@maxim/contracts';
+import {
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  BOT_SPEECH_STYLE_METADATA,
+  BOT_SPEECH_STYLE_OPTIONS,
+  applyBotSpeechStylePreset,
+  getBotSpeechEditableTemplate,
+  getBotSpeechSystemTemplate,
+  hasBotSpeechEditableOverrides,
+  type BotSpeechEditableFieldKey,
+  type BotSpeechPersona,
+  type BotSpeechStyle,
+} from '@maxim/contracts/bot-speech';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
 import {

@@ -14,15 +14,17 @@ import {
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
+  normalizeDeleteBotMessagesDelayMinutes,
+  type MaxUpdate,
+} from '@maxim/contracts';
+import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
-  normalizeDeleteBotMessagesDelayMinutes,
   type BotSpeechEditableFieldKey,
   type BotSpeechPersona,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
-  type MaxUpdate,
-} from '@maxim/contracts';
+} from '@maxim/contracts/bot-speech';
 import {
   ChatBotMembershipStatus,
   ChatEntityType,

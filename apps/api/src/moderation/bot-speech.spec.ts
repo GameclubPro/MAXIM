@@ -5,7 +5,7 @@ import {
   getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
   type BotSpeechSettingsSubset,
-} from '@maxim/contracts';
+} from '@maxim/contracts/bot-speech';
 import { ModerationService } from './moderation.service';
 
 function createBotSpeechSettings(

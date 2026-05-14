@@ -10,7 +10,8 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
-      "@maxim/contracts": ["packages/contracts/src/index.ts"]
+      "@maxim/contracts": ["packages/contracts/src/index.ts"],
+      "@maxim/contracts/*": ["packages/contracts/src/*.ts"]
     }
   }
 }

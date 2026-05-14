@@ -2483,7 +2483,11 @@ describe('RuleEngineService', () => {
 
   it('avoids compiling blocked-word regexes for repeated non-matching detects on the same settings list', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const buildPatternSpy = jest.spyOn(service as any, 'buildMessageLimitsBlockedWordPattern');
+    const blockedWordDetector = (service as any).blockedWordDetector;
+    const buildPatternSpy = jest.spyOn(
+      blockedWordDetector as any,
+      'buildMessageLimitsBlockedWordPattern',
+    );
     const settings = buildSettings({
       messageLimitsBlockedWords: ['крипта', 'казино', 'ставки'],
     });
@@ -2508,10 +2512,20 @@ describe('RuleEngineService', () => {
 
   it('reuses normalized blocked-word lists across cloned settings payloads', () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const normalizeTokenSpy = jest.spyOn(service as any, 'normalizeMessageLimitsBlockedWordToken');
+    const blockedWordDetector = (service as any).blockedWordDetector;
+    const normalizeTokenSpy = jest.spyOn(
+      blockedWordDetector as any,
+      'normalizeMessageLimitsBlockedWordToken',
+    );
 
-    const first = (service as any).resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
-    const second = (service as any).resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
+    const first = (blockedWordDetector as any).resolveMessageLimitsBlockedWordList([
+      'крипта',
+      'казино',
+    ]);
+    const second = (blockedWordDetector as any).resolveMessageLimitsBlockedWordList([
+      'крипта',
+      'казино',
+    ]);
 
     expect(second).toBe(first);
     expect(normalizeTokenSpy).toHaveBeenCalledTimes(2);
@@ -2519,7 +2533,11 @@ describe('RuleEngineService', () => {
 
   it('compiles regexes only for blocked words that survive the compact-text prefilter', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const buildPatternSpy = jest.spyOn(service as any, 'buildMessageLimitsBlockedWordPattern');
+    const blockedWordDetector = (service as any).blockedWordDetector;
+    const buildPatternSpy = jest.spyOn(
+      blockedWordDetector as any,
+      'buildMessageLimitsBlockedWordPattern',
+    );
 
     const result = await service.detect({
       chatId: 'chat-1',

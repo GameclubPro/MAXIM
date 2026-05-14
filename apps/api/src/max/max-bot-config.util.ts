@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { botSpeechPersonaSchema, type BotSpeechPersona } from '@maxim/contracts';
+import { botSpeechPersonaSchema, type BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 
 export const maxBotLifecycleStateSchema = z.enum(['active', 'dormant', 'draining', 'disabled']);

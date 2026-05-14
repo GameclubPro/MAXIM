@@ -1,19 +1,30 @@
 import { Injectable, Optional } from '@nestjs/common';
-import {
-  normalizeMessageLimitsBlockedWordCandidate,
-  normalizeAllowlistDomain,
-  normalizeAllowlistLink,
-  parseStoredAllowlistEntry,
-} from '@maxim/contracts';
-import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
+import { CommercialAdsSensitivity, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { raceWithTimeout } from '../common/promise-timeout.util';
-import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
+import { stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import { buildDuplicateStageKey } from './duplicate-state';
 import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
+import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
+import {
+  RuleEngineDuplicateDetector,
+  type DuplicateDecision,
+  type DuplicateHit,
+} from './rule-engine-duplicate-detector';
+import { detectBlockedLink, extractUrlsFromText } from './rule-engine-link-detector';
+import {
+  MIXED_CHAR_MAP,
+  normalizeForDetection,
+  normalizeMixedWriting,
+} from './rule-engine-normalization';
+import { detectTopicFilterMismatch } from './rule-engine-topic-filter';
+
+export type {
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateHit,
+} from './rule-engine-duplicate-detector';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
 export type CommercialSubtype =
@@ -36,23 +47,6 @@ export type RuleViolation = {
   metadata?: Record<string, unknown>;
 };
 
-export type DuplicateAction = 'WARN' | 'MUTE' | 'BAN';
-
-export type DuplicateDecision = {
-  action: DuplicateAction;
-  count: number;
-  threshold: number;
-  windowSec: number;
-  hash: string;
-  nextAction: DuplicateAction | null;
-};
-
-export type DuplicateHit = {
-  count: number;
-  windowSec: number;
-  hash: string;
-};
-
 export type DetectionResult = {
   violations: RuleViolation[];
   duplicateHit?: DuplicateHit;
@@ -66,10 +60,6 @@ type RuleEngineDetectProfile = {
   latestStage: string;
   stages: Map<string, number>;
   stageTimelineMs: Map<string, number>;
-};
-
-type DuplicateReactionStage = {
-  action: DuplicateAction | null;
 };
 
 type ProfanityCandidate = {
@@ -168,110 +158,14 @@ type CommercialSignalState = {
   hasStrongNegativeContext: boolean;
 };
 
-type AllowlistMatchers = {
-  exactLinks: Set<string>;
-  domains: Set<string>;
-};
-
 type CommercialMarkerContext = {
   normalizedTextWithoutUrls: string;
   rawLoweredTextWithoutUrls: string;
   normalizedTokensWithoutUrls: string[];
 };
 
-type TopicFilterDetection = {
-  mode: 'CODEWORD';
-  messageLength: number;
-  requiredCodeword: string;
-  messageFirstToken: string | null;
-};
-
-type BlockedWordDetection = {
-  blockedWord: string;
-};
-
-type ResolvedBlockedWord = {
-  blockedWord: string;
-  inflectionRoot: string | null;
-  prefilterToken: string;
-};
-
-type ResolvedBlockedWordTrieNode = {
-  children: Map<string, ResolvedBlockedWordTrieNode>;
-  terminalTokens?: string[];
-};
-
-type ResolvedBlockedWordIndex = {
-  maxPrefilterTokenLength: number;
-  prefilterRoot: ResolvedBlockedWordTrieNode;
-  words: readonly ResolvedBlockedWord[];
-  wordsByInflectionRoot: ReadonlyMap<string, readonly ResolvedBlockedWord[]>;
-  wordsByPrefilterToken: ReadonlyMap<string, readonly ResolvedBlockedWord[]>;
-};
-
-const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
 const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v2';
 const COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES = 4096;
-const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
-  'иями',
-  'ями',
-  'ами',
-  'иях',
-  'ях',
-  'ах',
-  'ого',
-  'ему',
-  'ому',
-  'ыми',
-  'ими',
-  'его',
-  'ией',
-  'ою',
-  'ею',
-  'ую',
-  'юю',
-  'ая',
-  'яя',
-  'ое',
-  'ее',
-  'ые',
-  'ие',
-  'ий',
-  'ый',
-  'ой',
-  'ов',
-  'ев',
-  'ей',
-  'ам',
-  'ям',
-  'ом',
-  'ем',
-  'ым',
-  'им',
-  'ию',
-  'ью',
-  'ия',
-  'ья',
-  'а',
-  'я',
-  'у',
-  'ю',
-  'ы',
-  'и',
-  'ь',
-  'й',
-] as const;
-const BLOCKED_WORD_LATIN_INFLECTION_SUFFIXES = [
-  'ings',
-  'ing',
-  'ies',
-  'ied',
-  'ed',
-  'es',
-  's',
-] as const;
-const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 3;
-const BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH = 4;
 
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
 // should come from the exact lexicon so names/surnames with the same prefix do not match.
@@ -1498,50 +1392,10 @@ const ADS_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const DUPLICATE_EXCLUDED_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
-const THEMATIC_CODEWORD_MIN_LENGTH = 90;
 const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
 const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
-const DUPLICATE_STATE_LOOKUP_TIMEOUT_MS = 250;
 const RULE_ENGINE_SLOW_LOG_THRESHOLD_MS = 3_000;
-const MIXED_CHAR_MAP: Record<string, string> = {
-  a: 'а',
-  b: 'б',
-  c: 'с',
-  d: 'д',
-  e: 'е',
-  f: 'ф',
-  g: 'г',
-  h: 'х',
-  i: 'и',
-  j: 'й',
-  k: 'к',
-  l: 'л',
-  m: 'м',
-  n: 'н',
-  o: 'о',
-  p: 'п',
-  q: 'к',
-  r: 'р',
-  s: 'с',
-  t: 'т',
-  u: 'у',
-  v: 'в',
-  w: 'в',
-  x: 'х',
-  y: 'у',
-  z: 'з',
-  '0': 'о',
-  '1': 'и',
-  '3': 'з',
-  '4': 'а',
-  '6': 'б',
-  '7': 'т',
-  '8': 'в',
-  '9': 'д',
-  '@': 'а',
-  $: 'с',
-};
 const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   ...MIXED_CHAR_MAP,
   '!': 'и',
@@ -1569,15 +1423,16 @@ const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
 
 @Injectable()
 export class RuleEngineService {
-  private duplicateTimeoutWarnAtMs = 0;
-  private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
-  private readonly blockedWordPatternCache = new Map<string, RegExp>();
+  private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
+  private readonly duplicateDetector: RuleEngineDuplicateDetector;
   private readonly commercialSecondStageCache = new Map<string, CommercialSecondStageDecision>();
 
   constructor(
     private readonly redisCounter: RedisCounterService,
     @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
-  ) {}
+  ) {
+    this.duplicateDetector = new RuleEngineDuplicateDetector(redisCounter);
+  }
 
   async detect(params: {
     chatId: string;
@@ -1663,7 +1518,7 @@ export class RuleEngineService {
     }
     this.markDetectStage(profile, 'commercial-ad');
 
-    const topicMismatch = this.detectTopicFilterMismatch({
+    const topicMismatch = detectTopicFilterMismatch({
       rawText: text,
       measuredLength,
       settings,
@@ -1683,7 +1538,7 @@ export class RuleEngineService {
     }
     this.markDetectStage(profile, 'topic-filter');
 
-    const linkViolation = this.hasBlockedLink(text, settings.linkPolicy, domainAllowlist);
+    const linkViolation = detectBlockedLink(text, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
@@ -1713,10 +1568,7 @@ export class RuleEngineService {
     }
     this.markDetectStage(profile, 'message-count-limit');
 
-    const blockedWord = this.detectMessageLimitsBlockedWord(
-      text,
-      settings.messageLimitsBlockedWords,
-    );
+    const blockedWord = this.blockedWordDetector.detect(text, settings.messageLimitsBlockedWords);
     if (blockedWord) {
       violations.push({
         ruleCode: 'MESSAGE_BLOCKED_WORD',
@@ -1764,7 +1616,7 @@ export class RuleEngineService {
     this.markDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
       duplicateCandidate && !skipDuplicateState
-        ? await this.detectDuplicateStateWithin({
+        ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
             compactText,
@@ -1935,31 +1787,6 @@ export class RuleEngineService {
         ),
       },
     });
-  }
-
-  private async detectDuplicateStateWithin(params: {
-    chatId: string;
-    userId: string;
-    compactText: string;
-    settings: ChatSettings;
-  }): Promise<
-    | {
-        hit?: DuplicateHit;
-        decision?: DuplicateDecision;
-      }
-    | undefined
-  > {
-    const operationPromise = this.detectDuplicateState(params);
-
-    const result = await raceWithTimeout({
-      operation: operationPromise,
-      timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
-      onTimeout: () => undefined,
-    });
-    if (typeof result === 'undefined') {
-      this.logDuplicateStateTimeout(params.chatId, params.userId);
-    }
-    return result;
   }
 
   hasCommercialSpamMarkers(text: string): boolean {
@@ -2203,123 +2030,6 @@ export class RuleEngineService {
       pattern.test(context.normalizedTextWithoutUrls) ||
       pattern.test(context.rawLoweredTextWithoutUrls)
     );
-  }
-
-  private async detectDuplicateState(params: {
-    chatId: string;
-    userId: string;
-    compactText: string;
-    settings: ChatSettings;
-  }): Promise<{
-    hit?: DuplicateHit;
-    decision?: DuplicateDecision;
-  }> {
-    const { chatId, userId, compactText, settings } = params;
-    const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
-    const flow = this.getDuplicateFlowConfig(settings);
-    const flowKey = buildDuplicateStageKey(chatId, userId, hash, 'flow');
-    const total = await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1);
-    const repeatCount = Math.max(0, total - 1);
-
-    if (repeatCount <= flow.allowedCount) {
-      return {};
-    }
-
-    const hit: DuplicateHit = {
-      count: repeatCount,
-      windowSec: flow.windowSec,
-      hash,
-    };
-
-    if (flow.reactions.length === 0) {
-      return {};
-    }
-
-    const reactionIndex = Math.min(flow.reactions.length - 1, repeatCount - flow.allowedCount - 1);
-    const reaction = flow.reactions[reactionIndex];
-
-    if (!reaction || reaction.action === null) {
-      return { hit };
-    }
-
-    return {
-      hit,
-      decision: {
-        action: reaction.action,
-        count: repeatCount,
-        threshold: flow.allowedCount + reactionIndex + 1,
-        windowSec: flow.windowSec,
-        hash,
-        nextAction: this.resolveNextDuplicateAction(flow.reactions, reactionIndex),
-      },
-    };
-  }
-
-  private getDuplicateFlowConfig(settings: ChatSettings): {
-    allowedCount: number;
-    windowSec: number;
-    reactions: DuplicateReactionStage[];
-  } {
-    const firstThreshold = settings.duplicateWarnEnabled
-      ? settings.duplicateWarnMaxCount
-      : settings.duplicateMuteEnabled
-        ? settings.duplicateMuteMaxCount
-        : settings.duplicateBanEnabled
-          ? settings.duplicateBanMaxCount
-          : settings.duplicateWarnMaxCount;
-    const windowSec = settings.duplicateWarnEnabled
-      ? settings.duplicateWarnWindowSec
-      : settings.duplicateMuteEnabled
-        ? settings.duplicateMuteWindowSec
-        : settings.duplicateBanEnabled
-          ? settings.duplicateBanWindowSec
-          : settings.duplicateWarnWindowSec;
-    const allowedCount = Math.max(
-      0,
-      firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1),
-    );
-
-    return {
-      allowedCount,
-      windowSec,
-      reactions: this.getEnabledDuplicateReactions(settings),
-    };
-  }
-
-  private getEnabledDuplicateReactions(settings: ChatSettings): DuplicateReactionStage[] {
-    const reactions: DuplicateReactionStage[] = [];
-
-    if (settings.duplicateBotMessageEnabled) {
-      reactions.push({ action: null });
-    }
-
-    if (settings.duplicateWarnEnabled) {
-      reactions.push({ action: 'WARN' });
-    }
-
-    if (settings.duplicateMuteEnabled) {
-      reactions.push({ action: 'MUTE' });
-    }
-
-    if (settings.duplicateBanEnabled) {
-      reactions.push({ action: 'BAN' });
-    }
-
-    return reactions;
-  }
-
-  private resolveNextDuplicateAction(
-    reactions: DuplicateReactionStage[],
-    currentIndex: number,
-  ): DuplicateAction | null {
-    for (let index = currentIndex + 1; index < reactions.length; index += 1) {
-      const nextAction = reactions[index]?.action;
-      if (nextAction) {
-        return nextAction;
-      }
-    }
-
-    return null;
   }
 
   private hasProfanity(text: string): boolean {
@@ -2624,15 +2334,11 @@ export class RuleEngineService {
     return false;
   }
 
-  private escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
   private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
     if (DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
       return false;
     }
-    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
+    const hasUrl = extractUrlsFromText(rawText).length > 0;
 
     const candidateText = hasUrl
       ? this.normalizeForDetection(stripUrlsFromText(rawText))
@@ -2659,114 +2365,6 @@ export class RuleEngineService {
 
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4)).size;
     return uniqueLongTokens >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS;
-  }
-
-  private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
-    if (policy === LinkPolicy.ALERT_ONLY) {
-      return null;
-    }
-
-    const links = this.extractUrlsFromText(text);
-
-    if (links.length === 0) {
-      return null;
-    }
-
-    if (policy === LinkPolicy.BLOCKLIST_ONLY) {
-      return 'Links are not allowed by policy';
-    }
-
-    const matchers = this.buildAllowlistMatchers(allowlist);
-
-    for (const link of links) {
-      if (policy === LinkPolicy.ALLOWLIST_ONLY && !this.shouldCheckExactAllowlistLink(link)) {
-        continue;
-      }
-
-      const linkMatch = this.resolveAllowlistMatch(link);
-      if (!linkMatch) {
-        continue;
-      }
-
-      if (!this.isAllowlistedLink(link, matchers, linkMatch)) {
-        return `Link ${linkMatch.normalizedLink} is not in allowlist`;
-      }
-    }
-
-    return null;
-  }
-
-  private buildAllowlistMatchers(allowlist: string[]): AllowlistMatchers {
-    const exactLinks = new Set<string>();
-    const domains = new Set<string>();
-
-    for (const entry of allowlist) {
-      const parsed = parseStoredAllowlistEntry(entry);
-      if (!parsed) {
-        continue;
-      }
-
-      if (parsed.matchType === 'DOMAIN') {
-        domains.add(parsed.domain);
-        continue;
-      }
-
-      exactLinks.add(parsed.domain);
-    }
-
-    return { exactLinks, domains };
-  }
-
-  private resolveAllowlistMatch(
-    value: string,
-  ): { normalizedLink: string; normalizedDomain: string | null } | null {
-    const normalizedLink = normalizeAllowlistLink(value);
-    if (!normalizedLink) {
-      return null;
-    }
-
-    return {
-      normalizedLink,
-      normalizedDomain: normalizeAllowlistDomain(value),
-    };
-  }
-
-  private isAllowlistedLink(
-    value: string,
-    matchers: AllowlistMatchers,
-    resolvedMatch: { normalizedLink: string; normalizedDomain: string | null } | null = null,
-  ): boolean {
-    const match = resolvedMatch ?? this.resolveAllowlistMatch(value);
-    if (!match) {
-      return false;
-    }
-
-    if (matchers.exactLinks.has(match.normalizedLink)) {
-      return true;
-    }
-
-    if (match.normalizedDomain && matchers.domains.has(match.normalizedDomain)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  private extractUrlsFromText(value: string): string[] {
-    return extractTextUrls(value);
-  }
-
-  private shouldCheckExactAllowlistLink(value: string): boolean {
-    const normalized = value.trim();
-    if (!normalized) {
-      return false;
-    }
-
-    if (/^https?:\/\//i.test(normalized)) {
-      return true;
-    }
-
-    return /[/?#]/.test(normalized);
   }
 
   private detectCommercialAd(params: {
@@ -3680,84 +3278,6 @@ export class RuleEngineService {
     };
   }
 
-  private detectTopicFilterMismatch(params: {
-    rawText: string;
-    measuredLength: number;
-    settings: ChatSettings;
-  }): TopicFilterDetection | null {
-    const { rawText, measuredLength, settings } = params;
-    const requiredCodeword = this.resolveRequiredThematicCodeword(settings);
-    if (!requiredCodeword || measuredLength < THEMATIC_CODEWORD_MIN_LENGTH) {
-      return null;
-    }
-
-    const messageFirstToken = this.extractFirstThematicCodewordToken(rawText);
-    if (messageFirstToken === requiredCodeword) {
-      return null;
-    }
-
-    return {
-      mode: 'CODEWORD',
-      messageLength: measuredLength,
-      requiredCodeword,
-      messageFirstToken,
-    };
-  }
-
-  private resolveRequiredThematicCodeword(settings: ChatSettings): string | null {
-    if (!settings.thematicCodewordEnabled) {
-      return null;
-    }
-
-    return this.normalizeThematicCodeword(settings.thematicCodeword);
-  }
-
-  private normalizeThematicCodeword(value: string | null | undefined): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е').trim();
-    if (!normalized) {
-      return null;
-    }
-
-    const parts = normalized.split(/\s+/u).filter(Boolean);
-    if (parts.length !== 1) {
-      return null;
-    }
-
-    const canonical = this.canonicalizeThematicCodewordToken(parts[0]);
-    if (!canonical || canonical.length < 2 || canonical.length > 32) {
-      return null;
-    }
-
-    return canonical;
-  }
-
-  private extractFirstThematicCodewordToken(value: string): string | null {
-    if (!value) {
-      return null;
-    }
-
-    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
-    const match = normalized.match(/[\p{L}\p{N}]+(?:[_-][\p{L}\p{N}]+)*/u);
-    if (!match) {
-      return null;
-    }
-
-    return this.canonicalizeThematicCodewordToken(match[0]);
-  }
-
-  private canonicalizeThematicCodewordToken(value: string): string | null {
-    const fragments = value.match(/[\p{L}\p{N}]+/gu);
-    if (!fragments || fragments.length === 0) {
-      return null;
-    }
-
-    return fragments.join('');
-  }
-
   private collectCommercialSignals(
     normalizedText: string,
     rawLoweredText: string,
@@ -4372,17 +3892,7 @@ export class RuleEngineService {
   }
 
   private normalizeForDetection(value: string): string {
-    if (!value) {
-      return '';
-    }
-
-    let normalized = value.toLowerCase();
-    normalized = this.normalizeMixedWriting(normalized);
-    normalized = normalized.replace(/([a-zа-яё0-9])\1{2,}/giu, '$1$1');
-    normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, ' ');
-    normalized = normalized.replace(/[^\p{L}\p{N}\s:/?.,&%+-]/gu, ' ');
-    normalized = normalized.replace(/\s+/g, ' ').trim();
-    return normalized;
+    return normalizeForDetection(value);
   }
 
   private extractProfanityCandidates(value: string): ProfanityCandidate[] {
@@ -4652,354 +4162,11 @@ export class RuleEngineService {
   }
 
   private normalizeMixedWriting(value: string): string {
-    let result = '';
-    for (const char of value) {
-      result += MIXED_CHAR_MAP[char] ?? char;
-    }
-    return result;
-  }
-
-  private logDuplicateStateTimeout(chatId: string, userId: string): void {
-    const now = Date.now();
-    if (now - this.duplicateTimeoutWarnAtMs < 30_000) {
-      return;
-    }
-
-    this.duplicateTimeoutWarnAtMs = now;
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
-        context: 'RuleEngineService',
-        chatId,
-        userId,
-        timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
-        msg: 'Duplicate state lookup timed out; skipping duplicate enforcement in hot path',
-      }),
-    );
+    return normalizeMixedWriting(value);
   }
 
   private extractTokens(value: string): string[] {
     const normalized = this.normalizeForDetection(value);
     return normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
-  }
-
-  private detectMessageLimitsBlockedWord(
-    text: string,
-    blockedWords: readonly string[],
-  ): BlockedWordDetection | null {
-    if (!text || !Array.isArray(blockedWords) || blockedWords.length === 0) {
-      return null;
-    }
-
-    const blockedWordIndex = this.resolveMessageLimitsBlockedWordList(blockedWords);
-    if (blockedWordIndex.words.length === 0) {
-      return null;
-    }
-
-    const normalizedText = this.normalizeMessageLimitsBlockedWordText(text);
-    if (!normalizedText) {
-      return null;
-    }
-
-    const compactText = normalizedText.replace(/[^\p{L}\p{N}]+/gu, '');
-    const normalizedTokens = normalizedText.match(/[a-zа-яё0-9]+/giu) ?? [];
-    const matchedPrefilterTokens = this.findMessageLimitsBlockedWordPrefilterTokens(
-      compactText,
-      blockedWordIndex.prefilterRoot,
-      blockedWordIndex.maxPrefilterTokenLength,
-    );
-    const tokenInflectionRoots =
-      this.resolveMessageLimitsBlockedWordInflectionRoots(normalizedTokens);
-    if (matchedPrefilterTokens.size === 0 && tokenInflectionRoots.size === 0) {
-      return null;
-    }
-
-    const candidateFlagsByBlockedWord = new Map<
-      string,
-      {
-        inflection: boolean;
-        prefilter: boolean;
-      }
-    >();
-
-    for (const inflectionRoot of tokenInflectionRoots) {
-      const words = blockedWordIndex.wordsByInflectionRoot.get(inflectionRoot);
-      if (!words) {
-        continue;
-      }
-
-      for (const word of words) {
-        const candidate = candidateFlagsByBlockedWord.get(word.blockedWord) ?? {
-          inflection: false,
-          prefilter: false,
-        };
-        candidate.inflection = true;
-        candidateFlagsByBlockedWord.set(word.blockedWord, candidate);
-      }
-    }
-
-    for (const prefilterToken of matchedPrefilterTokens) {
-      const words = blockedWordIndex.wordsByPrefilterToken.get(prefilterToken);
-      if (!words) {
-        continue;
-      }
-
-      for (const word of words) {
-        const candidate = candidateFlagsByBlockedWord.get(word.blockedWord) ?? {
-          inflection: false,
-          prefilter: false,
-        };
-        candidate.prefilter = true;
-        candidateFlagsByBlockedWord.set(word.blockedWord, candidate);
-      }
-    }
-
-    if (candidateFlagsByBlockedWord.size === 0) {
-      return null;
-    }
-
-    for (const blockedWord of blockedWordIndex.words) {
-      const candidate = candidateFlagsByBlockedWord.get(blockedWord.blockedWord);
-      if (!candidate) {
-        continue;
-      }
-
-      if (
-        candidate.prefilter &&
-        this.getMessageLimitsBlockedWordPattern(blockedWord.blockedWord).test(normalizedText)
-      ) {
-        return {
-          blockedWord: blockedWord.blockedWord,
-        };
-      }
-
-      if (candidate.inflection) {
-        return {
-          blockedWord: blockedWord.blockedWord,
-        };
-      }
-    }
-
-    return null;
-  }
-
-  private normalizeMessageLimitsBlockedWordText(value: string): string {
-    if (!value) {
-      return '';
-    }
-
-    let normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
-    normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
-    return normalized;
-  }
-
-  private resolveMessageLimitsBlockedWordList(
-    blockedWords: readonly string[],
-  ): ResolvedBlockedWordIndex {
-    const cacheKey = this.buildBlockedWordListCacheKey(blockedWords);
-    const cached = this.blockedWordListCache.get(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const words = [
-      ...new Set(
-        blockedWords
-          .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
-          .filter((item): item is string => Boolean(item)),
-      ),
-    ].map((blockedWord) => {
-      const inflectionRoot = this.resolveMessageLimitsBlockedWordInflectionRoot(blockedWord);
-      return {
-        blockedWord,
-        inflectionRoot,
-        prefilterToken: inflectionRoot ?? blockedWord,
-      };
-    });
-    const prefilterRoot: ResolvedBlockedWordTrieNode = {
-      children: new Map(),
-    };
-    const wordsByInflectionRoot = new Map<string, ResolvedBlockedWord[]>();
-    const wordsByPrefilterToken = new Map<string, ResolvedBlockedWord[]>();
-    let maxPrefilterTokenLength = 0;
-
-    for (const word of words) {
-      if (word.inflectionRoot) {
-        const existingByRoot = wordsByInflectionRoot.get(word.inflectionRoot) ?? [];
-        existingByRoot.push(word);
-        wordsByInflectionRoot.set(word.inflectionRoot, existingByRoot);
-      }
-
-      const existingByPrefilterToken = wordsByPrefilterToken.get(word.prefilterToken) ?? [];
-      existingByPrefilterToken.push(word);
-      wordsByPrefilterToken.set(word.prefilterToken, existingByPrefilterToken);
-      maxPrefilterTokenLength = Math.max(maxPrefilterTokenLength, word.prefilterToken.length);
-      this.insertMessageLimitsBlockedWordPrefilterToken(prefilterRoot, word.prefilterToken);
-    }
-
-    const resolved = {
-      maxPrefilterTokenLength,
-      prefilterRoot,
-      words,
-      wordsByInflectionRoot,
-      wordsByPrefilterToken,
-    };
-
-    this.blockedWordListCache.set(cacheKey, resolved);
-    if (this.blockedWordListCache.size > BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES) {
-      const oldestKey = this.blockedWordListCache.keys().next().value;
-      if (typeof oldestKey === 'string') {
-        this.blockedWordListCache.delete(oldestKey);
-      }
-    }
-    return resolved;
-  }
-
-  private buildBlockedWordListCacheKey(blockedWords: readonly string[]): string {
-    return blockedWords.join('\u001f');
-  }
-
-  private getMessageLimitsBlockedWordPattern(value: string): RegExp {
-    const cached = this.blockedWordPatternCache.get(value);
-    if (cached) {
-      return cached;
-    }
-
-    const pattern = this.buildMessageLimitsBlockedWordPattern(value);
-    this.blockedWordPatternCache.set(value, pattern);
-    return pattern;
-  }
-
-  private buildMessageLimitsBlockedWordPattern(value: string): RegExp {
-    const joinerPattern = String.raw`[^\p{L}\p{N}]*`;
-    const tokenPattern = [...value].map((char) => this.escapeRegExp(char)).join(joinerPattern);
-    return new RegExp(String.raw`(?<![\p{L}\p{N}])${tokenPattern}(?![\p{L}\p{N}])`, 'iu');
-  }
-
-  private insertMessageLimitsBlockedWordPrefilterToken(
-    root: ResolvedBlockedWordTrieNode,
-    token: string,
-  ): void {
-    let node = root;
-    for (const char of token) {
-      let nextNode = node.children.get(char);
-      if (!nextNode) {
-        nextNode = {
-          children: new Map(),
-        };
-        node.children.set(char, nextNode);
-      }
-
-      node = nextNode;
-    }
-
-    if (!node.terminalTokens) {
-      node.terminalTokens = [token];
-      return;
-    }
-
-    if (!node.terminalTokens.includes(token)) {
-      node.terminalTokens.push(token);
-    }
-  }
-
-  private findMessageLimitsBlockedWordPrefilterTokens(
-    compactText: string,
-    root: ResolvedBlockedWordTrieNode,
-    maxPrefilterTokenLength: number,
-  ): Set<string> {
-    const matches = new Set<string>();
-    if (!compactText || maxPrefilterTokenLength <= 0) {
-      return matches;
-    }
-
-    for (let start = 0; start < compactText.length; start += 1) {
-      let node = root;
-      const endLimit = Math.min(compactText.length, start + maxPrefilterTokenLength);
-      for (let end = start; end < endLimit; end += 1) {
-        const nextNode = node.children.get(compactText[end]);
-        if (!nextNode) {
-          break;
-        }
-
-        node = nextNode;
-        for (const token of node.terminalTokens ?? []) {
-          matches.add(token);
-        }
-      }
-    }
-
-    return matches;
-  }
-
-  private resolveMessageLimitsBlockedWordInflectionRoots(values: readonly string[]): Set<string> {
-    const roots = new Set<string>();
-    for (const value of values) {
-      const root = this.resolveMessageLimitsBlockedWordInflectionRoot(value);
-      if (root) {
-        roots.add(root);
-      }
-    }
-
-    return roots;
-  }
-
-  private resolveMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
-    if (!value) {
-      return null;
-    }
-
-    if (/^[а-яё]+$/iu.test(value)) {
-      return this.resolveCyrillicMessageLimitsBlockedWordInflectionRoot(value);
-    }
-
-    if (/^[a-z]+$/iu.test(value)) {
-      return this.resolveLatinMessageLimitsBlockedWordInflectionRoot(value);
-    }
-
-    return null;
-  }
-
-  private resolveCyrillicMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
-    for (const suffix of BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES) {
-      if (!value.endsWith(suffix)) {
-        continue;
-      }
-
-      const root = value.slice(0, -suffix.length);
-      if (root.length >= BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH) {
-        return root;
-      }
-    }
-
-    if (/[аеёиоуыэюя]$/iu.test(value)) {
-      return null;
-    }
-
-    return value.length >= BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH ? value : null;
-  }
-
-  private resolveLatinMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
-    for (const suffix of BLOCKED_WORD_LATIN_INFLECTION_SUFFIXES) {
-      if (!value.endsWith(suffix)) {
-        continue;
-      }
-
-      const root = value.slice(0, -suffix.length);
-      if (root.length >= BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH) {
-        return root;
-      }
-    }
-
-    if (/[aeiouy]$/iu.test(value)) {
-      return null;
-    }
-
-    return value.length >= BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH ? value : null;
-  }
-
-  private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
-    const candidate = normalizeMessageLimitsBlockedWordCandidate(value);
-    return candidate ? this.normalizeMixedWriting(candidate) : null;
   }
 }

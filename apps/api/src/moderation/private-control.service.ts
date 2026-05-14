@@ -1,7 +1,6 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  type BotSpeechPersona,
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
@@ -32,6 +31,7 @@ import {
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
+import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
@@ -6131,7 +6131,9 @@ export class PrivateControlService {
     const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
 
     if (imageSourceAttachment && videoSourceAttachment) {
-      throw new BadRequestException('В один автопостинг можно добавить либо фото, либо одно видео.');
+      throw new BadRequestException(
+        'В один автопостинг можно добавить либо фото, либо одно видео.',
+      );
     }
 
     if (!normalizedText && !imageSourceAttachment && !videoSourceAttachment) {

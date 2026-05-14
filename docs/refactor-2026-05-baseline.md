@@ -20,6 +20,12 @@ This document is the first safety baseline for the May 2026 reliability-first re
 - Miniapp: `apps/miniapp/src/pages/settings-page.tsx` is the largest interactive workspace and should be decomposed by lazy settings workspaces.
 - Miniapp: `apps/miniapp/src/styles/lazy-pages.css` is the largest CSS bundle and should lose route-specific styles over time.
 
+## First Boundaries
+
+- Rule engine extraction keeps `RuleEngineService.detect()` as the public facade and moves normalization, link checks, topic filter checks, blocked-word matching, and duplicate Redis state into focused modules under `apps/api/src/moderation/`.
+- Contract subpaths are available for high-churn domains: `settings`, `bot-speech`, `broadcast`, `managed-entities`, `giveaway`, and `system`.
+- Miniapp route/component CSS extraction has started with lazy handoff and broadcast button sheet styles, leaving `lazy-pages.css` as the compatibility bundle to shrink gradually.
+
 ## Runtime Invariants
 
 - Public HTTP routes, miniapp route semantics, MAX webhook behavior, and Prisma schema stay unchanged in the first tranche.

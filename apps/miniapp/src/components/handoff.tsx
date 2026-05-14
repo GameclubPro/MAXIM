@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { GlassCard } from './ui/glass-card';
+import './handoff.css';
 
 type SettingsHandoffStateProps = {
   entityType?: 'chat' | 'channel';

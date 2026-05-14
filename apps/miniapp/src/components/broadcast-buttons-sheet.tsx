@@ -6,6 +6,7 @@ import { BroadcastLinkButtonsEditor } from './broadcast-link-buttons-editor';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastLinkButtonFieldErrors } from '../lib/broadcast-link-buttons';
 import { cn } from '../lib/cn';
+import './broadcast-buttons-sheet.css';
 
 type BroadcastButtonsSheetProps = {
   open: boolean;
