@@ -1,6 +1,18 @@
-export type ProcessWebhookJob = {
+import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
+
+type WebhookQueueRetryPolicyName = Extract<
+  QueueRetryPolicyName,
+  'webhook-ingress' | 'webhook-repair'
+>;
+
+export type ProcessWebhookJob = QueueJobEnvelope<
+  {
   webhookEventId: string;
-};
+  },
+  {
+    retryPolicyName?: WebhookQueueRetryPolicyName;
+  }
+>;
 
 export const LEGACY_WEBHOOK_QUEUE = 'moderation';
 export const WEBHOOK_QUEUE_CRITICAL = 'moderation-critical';

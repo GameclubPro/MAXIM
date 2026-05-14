@@ -7,6 +7,7 @@ import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
+import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
@@ -232,24 +233,29 @@ export type MaxActionType =
   | 'UNBAN_MEMBER'
   | 'NOTIFY_MODERATORS';
 
-export type MaxActionJob = {
-  actionType: MaxActionType;
-  chatId: string;
-  botId?: string;
-  trafficClass?: MaxApiTrafficClass;
-  actionHealthLane?: ActionHealthLane;
-  sourceTag?: string;
-  timeoutMs?: number;
-  messageId?: string;
-  userId?: string;
-  text?: string;
-  options?: MaxSendMessageOptions;
-  autoDeleteDelayMs?: number;
-  ignoreFailureMetricStatuses?: number[];
-  attempt: number;
-  idempotencyKey: string;
-  createdAt: string;
-};
+export type MaxActionJob = QueueJobEnvelope<
+  {
+    actionType: MaxActionType;
+    chatId: string;
+    botId?: string;
+    trafficClass?: MaxApiTrafficClass;
+    actionHealthLane?: ActionHealthLane;
+    sourceTag?: string;
+    timeoutMs?: number;
+    messageId?: string;
+    userId?: string;
+    text?: string;
+    options?: MaxSendMessageOptions;
+    autoDeleteDelayMs?: number;
+    ignoreFailureMetricStatuses?: number[];
+    attempt: number;
+    idempotencyKey: string;
+    createdAt: string;
+  },
+  {
+    retryPolicyName?: Extract<QueueRetryPolicyName, 'max-action'>;
+  }
+>;
 
 export type MaxActionDispatchOptions = {
   delayMs?: number;

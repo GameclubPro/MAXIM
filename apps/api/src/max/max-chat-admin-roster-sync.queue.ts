@@ -1,18 +1,25 @@
+import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
+
 export const MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE = 'max-chat-admin-roster-sync';
 
-export type MaxChatAdminRosterSyncJob = {
-  chatId: string;
-  botIds?: string[];
-  title?: string | null;
-  entityType?: 'chat' | 'channel' | null;
-  source?:
-    | 'webhook_bot_added'
-    | 'webhook_bot_removed'
-    | 'webhook_chat_title_changed'
-    | 'webhook_membership_churn'
-    | 'moderation_destructive_path'
-    | 'admin_access_validation'
-    | 'discovery_snapshot'
-    | null;
-  retryUntilMs?: number | null;
-};
+export type MaxChatAdminRosterSyncJob = QueueJobEnvelope<
+  {
+    chatId: string;
+    botIds?: string[];
+    title?: string | null;
+    entityType?: 'chat' | 'channel' | null;
+    source?:
+      | 'webhook_bot_added'
+      | 'webhook_bot_removed'
+      | 'webhook_chat_title_changed'
+      | 'webhook_membership_churn'
+      | 'moderation_destructive_path'
+      | 'admin_access_validation'
+      | 'discovery_snapshot'
+      | null;
+    retryUntilMs?: number | null;
+  },
+  {
+    retryPolicyName?: Extract<QueueRetryPolicyName, 'chat-admin-roster-sync'>;
+  }
+>;

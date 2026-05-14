@@ -71,7 +71,6 @@ import {
   countManagedBroadcastHistoryFilters,
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
-  type BroadcastWorkspaceView,
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-delivery-meter';
@@ -185,6 +184,7 @@ import {
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
+import type { SettingsWorkspaceState } from '../lib/settings-workspace-state';
 import {
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
@@ -209,7 +209,7 @@ type BroadcastCountdownPresentation = {
   caption: string;
 };
 type ManagedBroadcastCardTone = 'active' | 'warning' | 'danger' | 'muted';
-type MailingWorkspaceView = BroadcastWorkspaceView;
+type MailingWorkspaceView = SettingsWorkspaceState['broadcastView'];
 type PendingBroadcastPublishReview = {
   broadcastId: string | null;
   payload: SendBroadcastPayload;
