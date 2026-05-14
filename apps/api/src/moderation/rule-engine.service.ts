@@ -7,6 +7,7 @@ import {
 } from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
@@ -1949,25 +1950,16 @@ export class RuleEngineService {
     | undefined
   > {
     const operationPromise = this.detectDuplicateState(params);
-    operationPromise.catch(() => undefined);
 
-    let timeout: NodeJS.Timeout | null = null;
-    const timeoutPromise = new Promise<undefined>((resolve) => {
-      timeout = setTimeout(() => resolve(undefined), DUPLICATE_STATE_LOOKUP_TIMEOUT_MS);
-      timeout.unref?.();
+    const result = await raceWithTimeout({
+      operation: operationPromise,
+      timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
+      onTimeout: () => undefined,
     });
-
-    try {
-      const result = await Promise.race([operationPromise, timeoutPromise]);
-      if (typeof result === 'undefined') {
-        this.logDuplicateStateTimeout(params.chatId, params.userId);
-      }
-      return result;
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
+    if (typeof result === 'undefined') {
+      this.logDuplicateStateTimeout(params.chatId, params.userId);
     }
+    return result;
   }
 
   hasCommercialSpamMarkers(text: string): boolean {

@@ -61,6 +61,7 @@ import {
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import {
@@ -12049,9 +12050,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const lookupPromise = this.getRemoteChatAdminAccess(chatId, userId);
     const maxWaitMs = Math.max(1, Math.ceil(options.maxWaitMs));
 
-    let timeout: NodeJS.Timeout | null = null;
-    const timeoutPromise = new Promise<null>((resolve) => {
-      timeout = setTimeout(() => {
+    return raceWithTimeout({
+      operation: lookupPromise,
+      timeoutMs: maxWaitMs,
+      onTimeout: () => {
         const softBackoffUntilMs = Date.now() + CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS;
         if ((this.chatAdminChatBackoffUntilMs.get(chatId) ?? 0) < softBackoffUntilMs) {
           this.chatAdminChatBackoffUntilMs.set(chatId, softBackoffUntilMs);
@@ -12059,18 +12061,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if ((this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0) < softBackoffUntilMs) {
           this.chatAdminLookupBackoffUntilMs.set(cacheKey, softBackoffUntilMs);
         }
-        resolve(null);
-      }, maxWaitMs);
-      timeout.unref();
+        return null;
+      },
     });
-
-    try {
-      return await Promise.race([lookupPromise, timeoutPromise]);
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-    }
   }
 
   private enqueueChatAdminLookupBatch(
@@ -12305,36 +12298,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const startedAtMs = Date.now();
     const timeoutMs = this.resolveChatAdminLookupGuardTimeoutMs();
     const operationPromise = operation();
-    operationPromise.catch(() => undefined);
 
-    let timeout: NodeJS.Timeout | null = null;
-    const guardPromise = new Promise<T>((_, reject) => {
-      timeout = setTimeout(() => {
-        reject(this.createChatAdminLookupTimeoutError(context, timeoutMs));
-      }, timeoutMs);
-      timeout.unref();
+    const result = await raceWithTimeout({
+      operation: operationPromise,
+      timeoutMs,
+      onTimeout: () => {
+        throw this.createChatAdminLookupTimeoutError(context, timeoutMs);
+      },
     });
-
-    try {
-      const result = await Promise.race([operationPromise, guardPromise]);
-      const durationMs = Date.now() - startedAtMs;
-      if (durationMs >= CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS) {
-        this.logger.warn(
-          {
-            chatId: context.chatId,
-            userIds: context.userIds,
-            botId: context.botId ?? null,
-            durationMs,
-          },
-          'Slow remote chat admin lookup completed close to the hot-path deadline',
-        );
-      }
-      return result;
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
+    const durationMs = Date.now() - startedAtMs;
+    if (durationMs >= CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS) {
+      this.logger.warn(
+        {
+          chatId: context.chatId,
+          userIds: context.userIds,
+          botId: context.botId ?? null,
+          durationMs,
+        },
+        'Slow remote chat admin lookup completed close to the hot-path deadline',
+      );
     }
+    return result;
   }
 
   private createChatAdminLookupTimeoutError(

@@ -9259,6 +9259,7 @@ describe('ModerationService', () => {
 
   it('caps ordinary remote admin lookup wait time when local admins are unknown', async () => {
     jest.useFakeTimers();
+    let loggerWarnSpy: jest.SpyInstance | undefined;
     try {
       const maxClient = {
         getChatMembersAccess: jest.fn().mockImplementation(
@@ -9278,6 +9279,12 @@ describe('ModerationService', () => {
           getAdminAccess: jest.fn().mockResolvedValue(null),
         } as never,
       );
+      loggerWarnSpy = jest
+        .spyOn(
+          (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
 
       const pendingCheck = (service as any).resolveSenderChatAdminCheck('chat-1', [], 'user-1', {
         allowRemoteLookup: true,
@@ -9301,13 +9308,17 @@ describe('ModerationService', () => {
           ignoreFailureMetricStatuses: [403, 404],
         }),
       );
+      await jest.advanceTimersByTimeAsync(3_000);
+      await Promise.resolve();
     } finally {
+      loggerWarnSpy?.mockRestore();
       jest.useRealTimers();
     }
   });
 
   it('adds provisional chat backoff after a soft-timed remote admin lookup', async () => {
     jest.useFakeTimers();
+    let loggerWarnSpy: jest.SpyInstance | undefined;
     try {
       const maxClient = {
         getChatMembersAccess: jest.fn().mockImplementation(
@@ -9336,6 +9347,12 @@ describe('ModerationService', () => {
           }),
         } as never,
       );
+      loggerWarnSpy = jest
+        .spyOn(
+          (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
       const options = {
         allowRemoteLookup: true,
         skipRemoteLookupWhenLocalAdminsKnown: true,
@@ -9367,7 +9384,10 @@ describe('ModerationService', () => {
         source: 'local_fallback',
       });
       expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(11_000);
+      await Promise.resolve();
     } finally {
+      loggerWarnSpy?.mockRestore();
       jest.useRealTimers();
     }
   });
