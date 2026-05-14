@@ -935,6 +935,46 @@ describe('RuleEngineService', () => {
     }
   });
 
+  it('detects PROFANITY when mat is split by punctuation, emoji, or latin chunks', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      'б . л . я . т . ь, хватит уже',
+      'п . и . з . д . @ чату',
+      'p i z d a v etom chate',
+      'b l y @ t, ostanovis',
+      'h u y tebe, a ne dostup',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
+  it('detects PROFANITY for additional high-confidence vulgar forms', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = ['да ну нахер это всё', 'полная херня в чате', 'епта, опять началось'];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
   it('still detects PROFANITY in digit-obfuscated russian mat token', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -1067,6 +1107,28 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY for safe words around newly covered roots', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      'Херсонская область упоминается в новости без оценок.',
+      'Гаврилов подтвердил запись на прием.',
+      'В английском примере her book starts the sentence.',
+      'Код заявки ПЗДЦ-2026 оставьте в таблице.',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+    }
   });
 
   it('detects PROFANITY for lexicon-only productive insult variants', async () => {

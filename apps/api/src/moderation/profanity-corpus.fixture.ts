@@ -35,6 +35,14 @@ export const PROFANITY_SHOULD_BLOCK_CASES = [
   'ты полный лошара, быдло и тупорылый недоумок',
   'опять этот уебок и пиздобол',
   'хуесосы и хуета полезли в чат',
+  'б . л . я . т . ь, хватит уже',
+  'п . и . з . д . @ чату',
+  'p i z d a v etom chate',
+  'b l y @ t, ostanovis',
+  'h u y tebe, a ne dostup',
+  'да ну нахер это всё',
+  'полная херня в чате',
+  'епта, опять началось',
   'ты полный дурак',
   'вы все бараны',
   'ты реально даун',
@@ -86,6 +94,10 @@ export const PROFANITY_SHOULD_ALLOW_CASES = [
   'В редакторе выбран жирный шрифт для заголовка.',
   'На ферме овцы, козлы, петухи и свиньи.',
   'Книга Идиот Достоевского есть в школьной программе.',
+  'Херсонская область упоминается в новости без оценок.',
+  'Гаврилов подтвердил запись на прием.',
+  'В английском примере her book starts the sentence.',
+  'Код заявки ПЗДЦ-2026 оставьте в таблице.',
 ] as const;
 
 const SAFE_REAL_WORLD_TERMS = [
@@ -168,6 +180,10 @@ const SAFE_REAL_WORLD_TERMS = [
   'хурма поступила на склад',
   'говядина охлажденная по акции',
   'село Лох указано в историческом архиве',
+  'Херсонская область в прогнозе погоды',
+  'Гаврилов подтвердил запись на прием',
+  'her book starts the sentence in the exercise',
+  'код заявки ПЗДЦ-2026 оставьте в таблице',
 ] as const;
 
 const SAFE_REAL_WORLD_DETAILS = [
@@ -245,6 +261,8 @@ const BLOCK_REAL_WORLD_TERMS = [
   'pidor',
   'suka',
   'blyat',
+  'naher',
+  'hernya',
 ] as const;
 
 const BLOCK_REAL_WORLD_TEMPLATES = [
@@ -292,6 +310,9 @@ function buildGeneratedBlockCases(): string[] {
   cases.add('б л я т ь, хватит уже');
   cases.add('х у й тебе, а не доступ');
   cases.add('п и з д а чату');
+  cases.add('п . и . з . д . @ чату');
+  cases.add('b l y @ t, хватит');
+  cases.add('h u y tebe, a ne dostup');
   cases.add('ну ты 6лять опять начал');
   cases.add('mne pohuy na vas');
   cases.add('zaebal uzhe spamit');

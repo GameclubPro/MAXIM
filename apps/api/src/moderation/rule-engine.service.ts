@@ -682,7 +682,63 @@ const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
   'про',
   'у',
 ]);
-const PROFANITY_JOIN_WINDOW_TOKENS = 8;
+const PROFANITY_LATIN_JOINABLE_TOKENS = new Set([
+  'b',
+  'bl',
+  'bly',
+  'l',
+  'y',
+  'ya',
+  'a',
+  't',
+  'd',
+  'p',
+  'pi',
+  'piz',
+  'pid',
+  'pido',
+  'pedo',
+  'ped',
+  'h',
+  'x',
+  'hu',
+  'hy',
+  'hui',
+  'u',
+  'e',
+  'eb',
+  'eba',
+  'eban',
+  'za',
+  'dol',
+  'dal',
+  'bo',
+  'ba',
+  'bol',
+  'bal',
+  'ras',
+  'raz',
+  'mud',
+  'muda',
+  'mraz',
+  'ub',
+  'ubl',
+  'blyu',
+  'yud',
+  'de',
+  'deb',
+  'di',
+  'dib',
+  'id',
+  'idi',
+  'ot',
+  'suk',
+  'su',
+  'ka',
+]);
+const PROFANITY_JOIN_WINDOW_SEGMENTS = 14;
+const PROFANITY_JOIN_MAX_FRAGMENTS = 8;
+const PROFANITY_JOIN_NOISE_BUDGET = 5;
 const PROFANITY_DIRECT_ADDRESS_MARKERS = new Set([
   'ты',
   'вы',
@@ -4246,33 +4302,60 @@ export class RuleEngineService {
     }
 
     const stripped = stripUrlsFromText(value.toLowerCase());
-    const segments = stripped
+    const whitespaceSegments = stripped
       .split(/\s+/u)
       .map((segment) => segment.trim())
       .filter(Boolean);
-    const candidates = segments.map((segment) => ({ value: segment, joined: false }));
+    const candidates: ProfanityCandidate[] = [];
+    const seenCandidates = new Set<string>();
+    const pushCandidate = (candidate: ProfanityCandidate) => {
+      const key = `${candidate.joined ? '1' : '0'}:${candidate.value}`;
+      if (seenCandidates.has(key)) {
+        return;
+      }
 
-    for (let index = 0; index < segments.length; index += 1) {
+      seenCandidates.add(key);
+      candidates.push(candidate);
+    };
+
+    for (const segment of whitespaceSegments) {
+      pushCandidate({ value: segment, joined: false });
+    }
+
+    const joinSegments =
+      stripped.match(/[\p{L}\p{N}@!|$]+|[^\s\p{L}\p{N}]+/gu)?.filter(Boolean) ?? [];
+
+    for (let index = 0; index < joinSegments.length; index += 1) {
       let joinedCandidate = '';
       let joinedCount = 0;
+      let noiseCount = 0;
 
       for (
         let cursor = index;
-        cursor < segments.length && cursor < index + PROFANITY_JOIN_WINDOW_TOKENS;
+        cursor < joinSegments.length && cursor < index + PROFANITY_JOIN_WINDOW_SEGMENTS;
         cursor += 1
       ) {
-        const normalizedToken = this.normalizeProfanityJoinToken(segments[cursor]);
-        if (
-          !normalizedToken ||
-          (normalizedToken.length === 2 && !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken))
-        ) {
+        const segment = joinSegments[cursor] ?? '';
+        const normalizedToken = this.normalizeProfanityJoinToken(segment);
+        if (normalizedToken) {
+          joinedCandidate += normalizedToken;
+          joinedCount += 1;
+          if (joinedCount >= 2) {
+            pushCandidate({ value: joinedCandidate, joined: true });
+          }
+          if (joinedCount >= PROFANITY_JOIN_MAX_FRAGMENTS) {
+            break;
+          }
+          continue;
+        }
+
+        if (joinedCount === 0 || !this.isProfanityJoinNoiseSegment(segment)) {
           break;
         }
 
-        joinedCandidate += normalizedToken;
-        joinedCount += 1;
-        if (joinedCount >= 2) {
-          candidates.push({ value: joinedCandidate, joined: true });
+        noiseCount += Array.from(segment).length;
+        if (noiseCount > PROFANITY_JOIN_NOISE_BUDGET) {
+          break;
         }
       }
     }
@@ -4418,17 +4501,37 @@ export class RuleEngineService {
   }
 
   private normalizeProfanityJoinToken(value: string): string {
+    if (!/[a-zа-яё0-9]/iu.test(value)) {
+      const symbolLeetNormalized = this.normalizeProfanityLatinLeetCandidate(value);
+      return this.isLatinProfanityJoinToken(symbolLeetNormalized) ? symbolLeetNormalized : '';
+    }
+
     for (const normalized of this.buildProfanityCyrillicCandidates(value)) {
-      if (
-        normalized.length > 0 &&
-        (normalized.length <= 2 || PROFANITY_SHORT_JOINABLE_TOKENS.has(normalized))
-      ) {
+      if (this.isCyrillicProfanityJoinToken(normalized)) {
         return normalized;
       }
     }
 
     const latinNormalized = this.normalizeProfanityLatinLeetCandidate(value);
-    return latinNormalized.length <= 2 ? latinNormalized : '';
+    return this.isLatinProfanityJoinToken(latinNormalized) ? latinNormalized : '';
+  }
+
+  private isCyrillicProfanityJoinToken(value: string): boolean {
+    return (
+      /^[а-яё0-9]+$/iu.test(value) &&
+      (value.length <= 2 || PROFANITY_SHORT_JOINABLE_TOKENS.has(value))
+    );
+  }
+
+  private isLatinProfanityJoinToken(value: string): boolean {
+    return (
+      /^[a-z0-9]+$/i.test(value) &&
+      (value.length <= 2 || PROFANITY_LATIN_JOINABLE_TOKENS.has(value))
+    );
+  }
+
+  private isProfanityJoinNoiseSegment(value: string): boolean {
+    return value.length > 0 && !/[\p{L}\p{N}@!|$]/u.test(value);
   }
 
   private normalizeMixedWritingForProfanity(value: string): string {
