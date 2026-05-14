@@ -52,6 +52,7 @@
   - `npm run typecheck --workspace @maxim/miniapp`
   - `npm run build --workspace @maxim/miniapp` for Vite build and bundle budgets
   - `npm test --workspace @maxim/api -- <spec-or-pattern>`
+  - `npm run check:refactor-guards` for hotspot line-count regression guards
 - Use `npm run check` for a full local CI-style pass before broad or risky changes.
 - If `apps/api/prisma/schema.prisma` changes, include a migration before push.
 

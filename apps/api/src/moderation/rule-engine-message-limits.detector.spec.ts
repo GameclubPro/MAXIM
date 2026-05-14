@@ -1,0 +1,145 @@
+import type { ChatSettings } from '@prisma/client';
+import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
+
+class MockRedisCounterService {
+  readonly calls: Array<{ key: string; ttlSec: number }> = [];
+  private readonly counters = new Map<string, number>();
+
+  async incrementWithTtl(key: string, ttlSec: number): Promise<number> {
+    this.calls.push({ key, ttlSec });
+    const next = (this.counters.get(key) ?? 0) + 1;
+    this.counters.set(key, next);
+    return next;
+  }
+}
+
+function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
+  return {
+    maxMessageLengthEnabled: false,
+    maxMessageLength: 1500,
+    messageCountLimitEnabled: false,
+    messageCountLimitMessages: 5,
+    messageCountLimitWindowHours: 1,
+    messageLimitsBlockedWords: [],
+    videoMessagesEnabled: true,
+    fileMessagesEnabled: true,
+    voiceMessagesEnabled: true,
+    photoMessageCooldownEnabled: false,
+    photoMessageCooldownHours: 1,
+    stickerMessageCooldownEnabled: false,
+    stickerMessageCooldownMinutes: 5,
+    updatedAt: new Date('2026-05-14T00:00:00.000Z'),
+    ...overrides,
+  } as ChatSettings;
+}
+
+describe('RuleEngineMessageLimitsDetector', () => {
+  it('detects text length, blocked words, and disabled attachment kinds', () => {
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      maxMessageLengthEnabled: true,
+      maxMessageLength: 10,
+      messageLimitsBlockedWords: ['спаммаркер'],
+      videoMessagesEnabled: false,
+      fileMessagesEnabled: false,
+      voiceMessagesEnabled: false,
+    });
+
+    expect(
+      detector.detectMessageLengthLimit({
+        measuredLength: 11,
+        settings,
+      })?.ruleCode,
+    ).toBe('MESSAGE_TOO_LONG');
+    expect(
+      detector.detectBlockedWordLimit({
+        text: 'тут спаммаркер внутри',
+        settings,
+      })?.ruleCode,
+    ).toBe('MESSAGE_BLOCKED_WORD');
+    expect(
+      detector.detectAttachmentLimits({
+        settings,
+        hasVideoAttachment: true,
+        hasFileAttachment: true,
+        hasVoiceAttachment: true,
+      }),
+    ).toEqual([
+      expect.objectContaining({ ruleCode: 'VIDEO_BLOCKED' }),
+      expect.objectContaining({ ruleCode: 'FILE_BLOCKED' }),
+      expect.objectContaining({ ruleCode: 'VOICE_BLOCKED' }),
+    ]);
+  });
+
+  it('uses clamped message-count windows and thresholds', async () => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const settings = buildSettings({
+      messageCountLimitEnabled: true,
+      messageCountLimitMessages: 99,
+      messageCountLimitWindowHours: 99,
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      await expect(
+        detector.detectMessageCountLimit({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          settings,
+        }),
+      ).resolves.toBeNull();
+    }
+
+    await expect(
+      detector.detectMessageCountLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        settings,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ ruleCode: 'MESSAGE_COUNT_LIMIT' }));
+    expect(redisCounter.calls[0]).toEqual({
+      key: 'message:count-limit:v1:chat-1:user-1:10:24',
+      ttlSec: 24 * 60 * 60 + 1,
+    });
+  });
+
+  it('scopes media cooldown state by media kind and settings update timestamp', async () => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const firstSettings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 2,
+      updatedAt: new Date('2026-05-14T00:00:00.000Z'),
+    });
+    const secondSettings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 2,
+      updatedAt: new Date('2026-05-14T01:00:00.000Z'),
+    });
+
+    await expect(
+      detector.detectMediaCooldownLimits({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        settings: firstSettings,
+        hasPhotoAttachment: true,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      detector.detectMediaCooldownLimits({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        settings: firstSettings,
+        hasPhotoAttachment: true,
+      }),
+    ).resolves.toEqual([expect.objectContaining({ ruleCode: 'PHOTO_RATE_LIMIT' })]);
+    await expect(
+      detector.detectMediaCooldownLimits({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        settings: secondSettings,
+        hasPhotoAttachment: true,
+      }),
+    ).resolves.toEqual([]);
+  });
+});

@@ -207,6 +207,10 @@ function createRuleEngine(): RuleEngineService {
   return new RuleEngineService(new MockRedisCounterService() as never);
 }
 
+function getBlockedWordDetector(service: RuleEngineService): unknown {
+  return (service as any).messageLimitsDetector.blockedWordDetector;
+}
+
 async function detectCommercialViolation(
   service: RuleEngineService,
   text: string,
@@ -2483,7 +2487,7 @@ describe('RuleEngineService', () => {
 
   it('avoids compiling blocked-word regexes for repeated non-matching detects on the same settings list', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const blockedWordDetector = (service as any).blockedWordDetector;
+    const blockedWordDetector = getBlockedWordDetector(service);
     const buildPatternSpy = jest.spyOn(
       blockedWordDetector as any,
       'buildMessageLimitsBlockedWordPattern',
@@ -2512,7 +2516,7 @@ describe('RuleEngineService', () => {
 
   it('reuses normalized blocked-word lists across cloned settings payloads', () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const blockedWordDetector = (service as any).blockedWordDetector;
+    const blockedWordDetector = getBlockedWordDetector(service);
     const normalizeTokenSpy = jest.spyOn(
       blockedWordDetector as any,
       'normalizeMessageLimitsBlockedWordToken',
@@ -2533,7 +2537,7 @@ describe('RuleEngineService', () => {
 
   it('compiles regexes only for blocked words that survive the compact-text prefilter', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const blockedWordDetector = (service as any).blockedWordDetector;
+    const blockedWordDetector = getBlockedWordDetector(service);
     const buildPatternSpy = jest.spyOn(
       blockedWordDetector as any,
       'buildMessageLimitsBlockedWordPattern',

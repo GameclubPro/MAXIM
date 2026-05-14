@@ -10,6 +10,7 @@ This document is the first safety baseline for the May 2026 reliability-first re
 - `npm run test --workspace @maxim/miniapp`
 - `npm run build --workspace @maxim/api`
 - `npm run build --workspace @maxim/miniapp`
+- `npm run check:refactor-guards`
 - For broader runtime slices, finish with `npm run check` before push/deploy.
 
 ## Hotspots
@@ -23,6 +24,7 @@ This document is the first safety baseline for the May 2026 reliability-first re
 ## First Boundaries
 
 - Rule engine extraction keeps `RuleEngineService.detect()` as the public facade and moves normalization, link checks, topic filter checks, blocked-word matching, and duplicate Redis state into focused modules under `apps/api/src/moderation/`.
+- The first rule-engine tranche extracted detection context, hot-path profiling, and message/media limits into focused modules with focused specs.
 - Contract subpaths are available for high-churn domains: `settings`, `bot-speech`, `broadcast`, `managed-entities`, `giveaway`, and `system`.
 - Miniapp route/component CSS extraction has started with lazy handoff and broadcast button sheet styles, leaving `lazy-pages.css` as the compatibility bundle to shrink gradually.
 

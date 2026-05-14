@@ -6,18 +6,25 @@ import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
-import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
+import { createRuleDetectionContext } from './rule-engine-detection-context';
 import {
   RuleEngineDuplicateDetector,
   type DuplicateDecision,
   type DuplicateHit,
 } from './rule-engine-duplicate-detector';
 import { detectBlockedLink, extractUrlsFromText } from './rule-engine-link-detector';
+import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
 import {
   MIXED_CHAR_MAP,
   normalizeForDetection,
   normalizeMixedWriting,
 } from './rule-engine-normalization';
+import {
+  createRuleEngineDetectProfile,
+  logSlowRuleEngineDetectIfNeeded,
+  markRuleEngineDetectStage,
+  recordRuleEngineDetectProfile,
+} from './rule-engine-profile';
 import { detectTopicFilterMismatch } from './rule-engine-topic-filter';
 
 export type {
@@ -52,14 +59,6 @@ export type DetectionResult = {
   duplicateHit?: DuplicateHit;
   duplicateDecision?: DuplicateDecision;
   duplicateStateSkipped?: boolean;
-};
-
-type RuleEngineDetectProfile = {
-  startedAtMs: number;
-  lastMarkedAtMs: number;
-  latestStage: string;
-  stages: Map<string, number>;
-  stageTimelineMs: Map<string, number>;
 };
 
 type ProfanityCandidate = {
@@ -1395,7 +1394,6 @@ const DUPLICATE_EXCLUDED_PHONE_PATTERN =
 const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
 const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
-const RULE_ENGINE_SLOW_LOG_THRESHOLD_MS = 3_000;
 const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   ...MIXED_CHAR_MAP,
   '!': 'и',
@@ -1423,8 +1421,8 @@ const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
 
 @Injectable()
 export class RuleEngineService {
-  private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
   private readonly duplicateDetector: RuleEngineDuplicateDetector;
+  private readonly messageLimitsDetector: RuleEngineMessageLimitsDetector;
   private readonly commercialSecondStageCache = new Map<string, CommercialSecondStageDecision>();
 
   constructor(
@@ -1432,6 +1430,7 @@ export class RuleEngineService {
     @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.duplicateDetector = new RuleEngineDuplicateDetector(redisCounter);
+    this.messageLimitsDetector = new RuleEngineMessageLimitsDetector(redisCounter);
   }
 
   async detect(params: {
@@ -1464,16 +1463,14 @@ export class RuleEngineService {
       skipDuplicateState,
       commercialCampaignContext,
     } = params;
-    const profile = this.createDetectProfile();
+    const profile = createRuleEngineDetectProfile();
     const violations: RuleViolation[] = [];
-    const needsNormalized =
-      settings.commercialAdsFilterEnabled ||
-      settings.thematicCodewordEnabled ||
-      settings.antiDuplicateEnabled;
-    const normalized = needsNormalized ? this.normalizeForDetection(text) : '';
-    this.markDetectStage(profile, 'normalize');
-    const lowered = settings.commercialAdsFilterEnabled ? text.toLowerCase() : '';
-    const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
+    const detectionContext = createRuleDetectionContext({
+      text,
+      settings,
+      effectiveLength,
+    });
+    markRuleEngineDetectStage(profile, 'normalize');
 
     if (settings.russianProfanityFilterEnabled && this.hasProfanity(text)) {
       violations.push({
@@ -1482,12 +1479,12 @@ export class RuleEngineService {
         reason: 'Detected profanity or abusive language pattern',
       });
     }
-    this.markDetectStage(profile, 'profanity');
+    markRuleEngineDetectStage(profile, 'profanity');
 
     if (settings.commercialAdsFilterEnabled) {
       const commercial = this.detectCommercialAd({
-        normalizedText: normalized,
-        rawLoweredText: lowered,
+        normalizedText: detectionContext.normalizedText,
+        rawLoweredText: detectionContext.rawLoweredText,
         settings,
         commercialCampaignContext,
       });
@@ -1516,11 +1513,11 @@ export class RuleEngineService {
         });
       }
     }
-    this.markDetectStage(profile, 'commercial-ad');
+    markRuleEngineDetectStage(profile, 'commercial-ad');
 
     const topicMismatch = detectTopicFilterMismatch({
       rawText: text,
-      measuredLength,
+      measuredLength: detectionContext.measuredLength,
       settings,
     });
     if (topicMismatch) {
@@ -1536,145 +1533,91 @@ export class RuleEngineService {
         },
       });
     }
-    this.markDetectStage(profile, 'topic-filter');
+    markRuleEngineDetectStage(profile, 'topic-filter');
 
     const linkViolation = detectBlockedLink(text, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
-    this.markDetectStage(profile, 'links');
+    markRuleEngineDetectStage(profile, 'links');
 
-    if (settings.maxMessageLengthEnabled && measuredLength > settings.maxMessageLength) {
-      violations.push({
-        ruleCode: 'MESSAGE_TOO_LONG',
-        score: 0.82,
-        reason: `Message length ${measuredLength} exceeds limit ${settings.maxMessageLength}`,
-      });
+    const messageLengthViolation = this.messageLimitsDetector.detectMessageLengthLimit({
+      measuredLength: detectionContext.measuredLength,
+      settings,
+    });
+    if (messageLengthViolation) {
+      violations.push(messageLengthViolation);
     }
-    this.markDetectStage(profile, 'message-length');
+    markRuleEngineDetectStage(profile, 'message-length');
 
-    if (settings.messageCountLimitEnabled) {
-      const windowHours = Math.min(24, Math.max(1, settings.messageCountLimitWindowHours));
-      const maxMessages = Math.min(10, Math.max(1, settings.messageCountLimitMessages));
-      const key = `message:count-limit:v1:${chatId}:${userId}:${maxMessages}:${windowHours}`;
-      const count = await this.redisCounter.incrementWithTtl(key, windowHours * 60 * 60 + 1);
-      if (count > maxMessages) {
-        violations.push({
-          ruleCode: 'MESSAGE_COUNT_LIMIT',
-          score: 0.87,
-          reason: `Messages are limited to ${maxMessages} per ${windowHours}h`,
-        });
-      }
+    const messageCountViolation = await this.messageLimitsDetector.detectMessageCountLimit({
+      chatId,
+      userId,
+      settings,
+    });
+    if (messageCountViolation) {
+      violations.push(messageCountViolation);
     }
-    this.markDetectStage(profile, 'message-count-limit');
+    markRuleEngineDetectStage(profile, 'message-count-limit');
 
-    const blockedWord = this.blockedWordDetector.detect(text, settings.messageLimitsBlockedWords);
-    if (blockedWord) {
-      violations.push({
-        ruleCode: 'MESSAGE_BLOCKED_WORD',
-        score: 0.89,
-        reason: `Blocked word detected: ${blockedWord.blockedWord}`,
-        metadata: {
-          blockedWord: blockedWord.blockedWord,
-        },
-      });
+    const blockedWordViolation = this.messageLimitsDetector.detectBlockedWordLimit({
+      text,
+      settings,
+    });
+    if (blockedWordViolation) {
+      violations.push(blockedWordViolation);
     }
-    this.markDetectStage(profile, 'blocked-words');
+    markRuleEngineDetectStage(profile, 'blocked-words');
 
-    if (hasVideoAttachment && !settings.videoMessagesEnabled) {
-      violations.push({
-        ruleCode: 'VIDEO_BLOCKED',
-        score: 0.88,
-        reason: 'Video messages are disabled by chat settings',
-      });
-    }
+    violations.push(
+      ...this.messageLimitsDetector.detectAttachmentLimits({
+        settings,
+        hasVideoAttachment,
+        hasFileAttachment,
+        hasVoiceAttachment,
+      }),
+    );
+    markRuleEngineDetectStage(profile, 'attachments');
 
-    if (hasFileAttachment && !settings.fileMessagesEnabled) {
-      violations.push({
-        ruleCode: 'FILE_BLOCKED',
-        score: 0.88,
-        reason: 'File messages are disabled by chat settings',
-      });
-    }
-
-    if (hasVoiceAttachment && !settings.voiceMessagesEnabled) {
-      violations.push({
-        ruleCode: 'VOICE_BLOCKED',
-        score: 0.88,
-        reason: 'Voice messages are disabled by chat settings',
-      });
-    }
-
-    this.markDetectStage(profile, 'attachments');
-
-    const compactText = settings.antiDuplicateEnabled ? normalized.replace(/\s+/g, ' ').trim() : '';
     const duplicateCandidate =
       settings.antiDuplicateEnabled &&
       violations.length === 0 &&
       !linkViolation &&
-      this.shouldTrackDuplicate(text, compactText);
-    this.markDetectStage(profile, 'duplicate-precheck');
+      this.shouldTrackDuplicate(text, detectionContext.compactText);
+    markRuleEngineDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
       duplicateCandidate && !skipDuplicateState
         ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
-            compactText,
+            compactText: detectionContext.compactText,
             settings,
           })
         : undefined;
-    this.markDetectStage(profile, 'duplicate-state');
+    markRuleEngineDetectStage(profile, 'duplicate-state');
 
     if (violations.length === 0 && !duplicateState?.hit && !duplicateState?.decision) {
-      if (hasPhotoAttachment && settings.photoMessageCooldownEnabled) {
-        const cooldownSec = settings.photoMessageCooldownHours * 60 * 60;
-        const key = this.buildMediaCooldownKey(
-          'photo',
+      violations.push(
+        ...(await this.messageLimitsDetector.detectMediaCooldownLimits({
           chatId,
           userId,
-          settings.photoMessageCooldownHours,
-          settings.updatedAt,
-        );
-        const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
-        if (count > 1) {
-          violations.push({
-            ruleCode: 'PHOTO_RATE_LIMIT',
-            score: 0.86,
-            reason: `Messages with photos are limited to one per ${settings.photoMessageCooldownHours}h`,
-          });
-        }
-      }
-
-      if (hasStickerAttachment && settings.stickerMessageCooldownEnabled) {
-        const cooldownSec = settings.stickerMessageCooldownMinutes * 60;
-        const key = this.buildMediaCooldownKey(
-          'sticker',
-          chatId,
-          userId,
-          settings.stickerMessageCooldownMinutes,
-          settings.updatedAt,
-        );
-        const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
-        if (count > 1) {
-          violations.push({
-            ruleCode: 'STICKER_RATE_LIMIT',
-            score: 0.86,
-            reason: `Stickers are limited to one per ${settings.stickerMessageCooldownMinutes}m`,
-          });
-        }
-      }
+          settings,
+          hasPhotoAttachment,
+          hasStickerAttachment,
+        })),
+      );
     }
 
-    this.logSlowDetectIfNeeded({
+    logSlowRuleEngineDetectIfNeeded({
       chatId,
       userId,
-      measuredLength,
+      measuredLength: detectionContext.measuredLength,
       settings,
       violationsCount: violations.length,
       duplicateCandidate,
       profile,
     });
-    this.recordDetectProfile(profile);
+    recordRuleEngineDetectProfile(profile, this.runtimeDiagnosticsService);
 
     return {
       violations,
@@ -1682,111 +1625,6 @@ export class RuleEngineService {
       ...(duplicateState?.decision ? { duplicateDecision: duplicateState.decision } : {}),
       ...(skipDuplicateState ? { duplicateStateSkipped: true } : {}),
     };
-  }
-
-  private createDetectProfile(): RuleEngineDetectProfile {
-    const now = Date.now();
-    return {
-      startedAtMs: now,
-      lastMarkedAtMs: now,
-      latestStage: 'start',
-      stages: new Map(),
-      stageTimelineMs: new Map(),
-    };
-  }
-
-  private buildMediaCooldownKey(
-    mediaKind: 'photo' | 'sticker',
-    chatId: string,
-    userId: string,
-    windowValue: number,
-    settingsUpdatedAt: Date | string,
-  ): string {
-    return `${mediaKind}:cooldown:v2:${chatId}:${userId}:${windowValue}:${this.normalizeSettingsUpdatedAt(settingsUpdatedAt)}`;
-  }
-
-  private normalizeSettingsUpdatedAt(value: Date | string): string {
-    if (value instanceof Date) {
-      const timestamp = value.getTime();
-      return Number.isFinite(timestamp) ? String(timestamp) : 'na';
-    }
-
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? String(parsed) : 'na';
-  }
-
-  private markDetectStage(profile: RuleEngineDetectProfile, stage: string): void {
-    const now = Date.now();
-    profile.latestStage = stage;
-    profile.stages.set(stage, Math.max(0, now - profile.lastMarkedAtMs));
-    profile.stageTimelineMs.set(stage, Math.max(0, now - profile.startedAtMs));
-    profile.lastMarkedAtMs = now;
-  }
-
-  private readDetectProfileSnapshot(profile: RuleEngineDetectProfile): {
-    latestStage: string;
-    elapsedMs: number;
-    stageDurations: Record<string, number>;
-    stageTimelineMs: Record<string, number>;
-  } {
-    return {
-      latestStage: profile.latestStage,
-      elapsedMs: Math.max(0, Date.now() - profile.startedAtMs),
-      stageDurations: Object.fromEntries(profile.stages.entries()),
-      stageTimelineMs: Object.fromEntries(profile.stageTimelineMs.entries()),
-    };
-  }
-
-  private logSlowDetectIfNeeded(params: {
-    chatId: string;
-    userId: string;
-    measuredLength: number;
-    settings: ChatSettings;
-    violationsCount: number;
-    duplicateCandidate: boolean;
-    profile: RuleEngineDetectProfile;
-  }): void {
-    const snapshot = this.readDetectProfileSnapshot(params.profile);
-    if (snapshot.elapsedMs < RULE_ENGINE_SLOW_LOG_THRESHOLD_MS) {
-      return;
-    }
-
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
-        context: 'RuleEngineService',
-        chatId: params.chatId,
-        userId: params.userId,
-        elapsedMs: snapshot.elapsedMs,
-        latestStage: snapshot.latestStage,
-        textLength: params.measuredLength,
-        linkPolicy: params.settings.linkPolicy,
-        antiDuplicateEnabled: params.settings.antiDuplicateEnabled,
-        commercialAdsFilterEnabled: params.settings.commercialAdsFilterEnabled,
-        thematicCodewordEnabled: params.settings.thematicCodewordEnabled,
-        messageCountLimitEnabled: params.settings.messageCountLimitEnabled,
-        russianProfanityFilterEnabled: params.settings.russianProfanityFilterEnabled,
-        violationsCount: params.violationsCount,
-        duplicateCandidate: params.duplicateCandidate,
-        stageDurations: snapshot.stageDurations,
-        stageTimelineMs: snapshot.stageTimelineMs,
-        msg: 'Slow rule-engine detect completed close to the hot-path deadline',
-      }),
-    );
-  }
-
-  private recordDetectProfile(profile: RuleEngineDetectProfile): void {
-    const snapshot = this.readDetectProfileSnapshot(profile);
-    void this.runtimeDiagnosticsService?.recordHotPathProfile({
-      snapshot: {
-        stageDurations: Object.fromEntries(
-          Object.entries(snapshot.stageDurations).map(([stage, elapsedMs]) => [
-            `rule-engine.${stage}`,
-            elapsedMs,
-          ]),
-        ),
-      },
-    });
   }
 
   hasCommercialSpamMarkers(text: string): boolean {
