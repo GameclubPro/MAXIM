@@ -1,0 +1,17 @@
+ALTER TABLE "chat_settings"
+ADD COLUMN IF NOT EXISTS "required_subscription_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "required_subscription_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "invitation_access_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "invitation_access_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "message_limits_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "message_limits_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "profanity_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "profanity_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "text_filters_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "text_filters_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "thematic_filters_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "thematic_filters_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "link_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "link_admin_contact_button_url" TEXT NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS "duplicate_admin_contact_button_enabled" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN IF NOT EXISTS "duplicate_admin_contact_button_url" TEXT NOT NULL DEFAULT '';

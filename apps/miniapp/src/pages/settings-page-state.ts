@@ -49,6 +49,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
+    'linkAdminContactButtonEnabled',
+    'linkAdminContactButtonUrl',
   ],
   greeting: [
     'greetingEnabled',
@@ -69,6 +71,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'profanityMuteEnabled',
     'profanityMuteDurationHours',
     'profanityBanEnabled',
+    'profanityAdminContactButtonEnabled',
+    'profanityAdminContactButtonUrl',
   ],
   commercialFilter: [
     'commercialAdsFilterEnabled',
@@ -86,6 +90,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
+    'textFiltersAdminContactButtonEnabled',
+    'textFiltersAdminContactButtonUrl',
   ],
   thematicFilters: [
     'thematicCodewordEnabled',
@@ -99,6 +105,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
+    'thematicFiltersAdminContactButtonEnabled',
+    'thematicFiltersAdminContactButtonUrl',
   ],
   duplicates: [
     'antiDuplicateEnabled',
@@ -118,6 +126,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
+    'duplicateAdminContactButtonEnabled',
+    'duplicateAdminContactButtonUrl',
   ],
   limits: [
     'antiSpamEnabled',
@@ -144,6 +154,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
+    'messageLimitsAdminContactButtonEnabled',
+    'messageLimitsAdminContactButtonUrl',
   ],
   night: [...NIGHT_SECTION_SETTING_KEYS],
   requiredSubscription: [
@@ -153,6 +165,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'requiredSubscriptionExpiresAt',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionAdminContactButtonEnabled',
+    'requiredSubscriptionAdminContactButtonUrl',
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionWarnMessageText',
     'requiredSubscriptionMuteEnabled',
@@ -164,6 +178,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'invitationAccessRequiredCount',
     'invitationAccessBotMessageEnabled',
     'invitationAccessBotMessageText',
+    'invitationAccessAdminContactButtonEnabled',
+    'invitationAccessAdminContactButtonUrl',
     'invitationAccessWarnEnabled',
     'invitationAccessWarnMessageText',
     'invitationAccessMuteEnabled',

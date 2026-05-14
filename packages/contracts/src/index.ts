@@ -508,23 +508,47 @@ export function normalizeMessageLimitsBlockedWordCandidate(value: string): strin
   return candidate.length >= 2 && candidate.length <= 32 ? candidate : null;
 }
 
-function isValidBotButtonUrl(value: string): boolean {
+function parseHttpButtonUrl(value: string): URL | null {
   const normalized = value.trim();
   if (!normalized) {
-    return false;
+    return null;
   }
 
   try {
     const parsed = new URL(normalized);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      return false;
+      return null;
     }
 
-    return !(parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
+    return parsed;
   } catch {
-    return false;
+    return null;
   }
 }
+
+function isValidAdminContactButtonUrl(value: string): boolean {
+  return parseHttpButtonUrl(value) !== null;
+}
+
+function isValidBotButtonUrl(value: string): boolean {
+  const parsed = parseHttpButtonUrl(value);
+  if (!parsed) {
+    return false;
+  }
+
+  return !(parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
+}
+
+const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [
+  ['requiredSubscriptionAdminContactButtonEnabled', 'requiredSubscriptionAdminContactButtonUrl'],
+  ['invitationAccessAdminContactButtonEnabled', 'invitationAccessAdminContactButtonUrl'],
+  ['messageLimitsAdminContactButtonEnabled', 'messageLimitsAdminContactButtonUrl'],
+  ['profanityAdminContactButtonEnabled', 'profanityAdminContactButtonUrl'],
+  ['textFiltersAdminContactButtonEnabled', 'textFiltersAdminContactButtonUrl'],
+  ['thematicFiltersAdminContactButtonEnabled', 'thematicFiltersAdminContactButtonUrl'],
+  ['linkAdminContactButtonEnabled', 'linkAdminContactButtonUrl'],
+  ['duplicateAdminContactButtonEnabled', 'duplicateAdminContactButtonUrl'],
+] as const;
 
 const ALLOWLIST_URL_CANDIDATE_PATTERN =
   /(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<>"'()[\]{}]*/i;
@@ -804,6 +828,8 @@ export const chatSettingsSchema = z
       requiredSubscriptionExpiresAt: requiredSubscriptionExpiresAtSchema,
       requiredSubscriptionBotMessageEnabled: z.boolean().default(true),
       requiredSubscriptionBotMessageText: botMessageTextSchema,
+      requiredSubscriptionAdminContactButtonEnabled: z.boolean().default(false),
+      requiredSubscriptionAdminContactButtonUrl: botButtonUrlSchema,
       requiredSubscriptionWarnEnabled: z.boolean().default(false),
       requiredSubscriptionWarnMessageText: botMessageTextSchema,
       requiredSubscriptionBanEnabled: z.boolean().default(false),
@@ -813,6 +839,8 @@ export const chatSettingsSchema = z
       invitationAccessRequiredCount: invitationAccessRequiredCountSchema,
       invitationAccessBotMessageEnabled: z.boolean().default(true),
       invitationAccessBotMessageText: botMessageTextSchema,
+      invitationAccessAdminContactButtonEnabled: z.boolean().default(false),
+      invitationAccessAdminContactButtonUrl: botButtonUrlSchema,
       invitationAccessWarnEnabled: z.boolean().default(false),
       invitationAccessWarnMessageText: botMessageTextSchema,
       invitationAccessBanEnabled: z.boolean().default(false),
@@ -846,6 +874,8 @@ export const chatSettingsSchema = z
       messageLimitsBanEnabled: z.boolean().default(false),
       messageLimitsMuteEnabled: z.boolean().default(false),
       messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,
+      messageLimitsAdminContactButtonEnabled: z.boolean().default(false),
+      messageLimitsAdminContactButtonUrl: botButtonUrlSchema,
       messageLimitsBotButtonEnabled: z.boolean().default(false),
       messageLimitsBotButtonUrl: botButtonUrlSchema,
       messageLimitsBotButtonText: botButtonTextSchema,
@@ -863,6 +893,8 @@ export const chatSettingsSchema = z
       profanityBanEnabled: z.boolean().default(false),
       profanityMuteEnabled: z.boolean().default(false),
       profanityMuteDurationHours: autoMuteDurationHoursSchema,
+      profanityAdminContactButtonEnabled: z.boolean().default(false),
+      profanityAdminContactButtonUrl: botButtonUrlSchema,
       textFiltersBotMessageEnabled: z.boolean().default(false),
       textFiltersBotMessageText: botMessageTextSchema,
       textFiltersWarnEnabled: z.boolean().default(false),
@@ -870,6 +902,8 @@ export const chatSettingsSchema = z
       textFiltersBanEnabled: z.boolean().default(false),
       textFiltersMuteEnabled: z.boolean().default(false),
       textFiltersMuteDurationHours: autoMuteDurationHoursSchema,
+      textFiltersAdminContactButtonEnabled: z.boolean().default(false),
+      textFiltersAdminContactButtonUrl: botButtonUrlSchema,
       textFiltersBotButtonEnabled: z.boolean().default(false),
       textFiltersBotButtonUrl: botButtonUrlSchema,
       textFiltersBotButtonText: botButtonTextSchema,
@@ -885,6 +919,8 @@ export const chatSettingsSchema = z
       thematicFiltersBanEnabled: z.boolean().default(false),
       thematicFiltersMuteEnabled: z.boolean().default(false),
       thematicFiltersMuteDurationHours: autoMuteDurationHoursSchema,
+      thematicFiltersAdminContactButtonEnabled: z.boolean().default(false),
+      thematicFiltersAdminContactButtonUrl: botButtonUrlSchema,
       thematicFiltersBotButtonEnabled: z.boolean().default(false),
       thematicFiltersBotButtonUrl: botButtonUrlSchema,
       thematicFiltersBotButtonText: botButtonTextSchema,
@@ -932,6 +968,8 @@ export const chatSettingsSchema = z
       linkBanEnabled: z.boolean().default(false),
       linkMuteEnabled: z.boolean().default(false),
       linkMuteDurationHours: autoMuteDurationHoursSchema,
+      linkAdminContactButtonEnabled: z.boolean().default(false),
+      linkAdminContactButtonUrl: botButtonUrlSchema,
       linkBotButtonEnabled: z.boolean().default(false),
       linkBotButtonUrl: botButtonUrlSchema,
       linkBotButtonText: botButtonTextSchema,
@@ -942,6 +980,8 @@ export const chatSettingsSchema = z
       linkRulesButtonEnabled: z.boolean().default(false),
       duplicateBotMessageEnabled: z.boolean().default(false),
       duplicateBotMessageText: botMessageTextSchema,
+      duplicateAdminContactButtonEnabled: z.boolean().default(false),
+      duplicateAdminContactButtonUrl: botButtonUrlSchema,
       duplicateBotButtonEnabled: z.boolean().default(false),
       duplicateBotButtonUrl: botButtonUrlSchema,
       duplicateBotButtonText: botButtonTextSchema,
@@ -1045,6 +1085,16 @@ export const chatSettingsSchema = z
         path: ['requiredSubscriptionChannelIds'],
         message: 'Выберите хотя бы один чат или канал для обязательной подписки.',
       });
+    }
+
+    for (const [enabledKey, urlKey] of CHAT_ADMIN_CONTACT_BUTTON_GROUPS) {
+      if (value[enabledKey] && !isValidAdminContactButtonUrl(value[urlKey])) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [urlKey],
+          message: 'Не удалось сохранить ссылку на администратора.',
+        });
+      }
     }
 
     const duplicateBotButtons = resolveStoredLinkButtons({

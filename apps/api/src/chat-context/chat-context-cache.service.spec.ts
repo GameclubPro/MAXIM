@@ -44,9 +44,9 @@ jest.mock('ioredis', () => {
       smembers: jest
         .fn()
         .mockImplementation(async (key: string) => Array.from(sets.get(key) ?? [])),
-      expire: jest.fn().mockImplementation(async (key: string) =>
-        store.has(key) || sets.has(key) ? 1 : 0,
-      ),
+      expire: jest
+        .fn()
+        .mockImplementation(async (key: string) => (store.has(key) || sets.has(key) ? 1 : 0)),
       publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
         for (const subscriber of subscribers) {
           subscriber(channel, payload);
@@ -197,6 +197,8 @@ function buildSettings(chatId: string): ChatSettings {
     messageLimitsBanEnabled: false,
     messageLimitsMuteEnabled: false,
     messageLimitsMuteDurationHours: 6,
+    messageLimitsAdminContactButtonEnabled: false,
+    messageLimitsAdminContactButtonUrl: '',
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
@@ -211,6 +213,8 @@ function buildSettings(chatId: string): ChatSettings {
     profanityBanEnabled: false,
     profanityMuteEnabled: false,
     profanityMuteDurationHours: 6,
+    profanityAdminContactButtonEnabled: false,
+    profanityAdminContactButtonUrl: '',
     textFiltersBotMessageEnabled: false,
     textFiltersBotMessageText: '',
     textFiltersWarnEnabled: false,
@@ -218,6 +222,8 @@ function buildSettings(chatId: string): ChatSettings {
     textFiltersBanEnabled: false,
     textFiltersMuteEnabled: false,
     textFiltersMuteDurationHours: 6,
+    textFiltersAdminContactButtonEnabled: false,
+    textFiltersAdminContactButtonUrl: '',
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
@@ -230,6 +236,8 @@ function buildSettings(chatId: string): ChatSettings {
     thematicFiltersBanEnabled: false,
     thematicFiltersMuteEnabled: false,
     thematicFiltersMuteDurationHours: 6,
+    thematicFiltersAdminContactButtonEnabled: false,
+    thematicFiltersAdminContactButtonUrl: '',
     thematicFiltersBotButtonEnabled: false,
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
@@ -258,6 +266,8 @@ function buildSettings(chatId: string): ChatSettings {
     requiredSubscriptionChannelIds: [],
     requiredSubscriptionBotMessageEnabled: true,
     requiredSubscriptionBotMessageText: '',
+    requiredSubscriptionAdminContactButtonEnabled: false,
+    requiredSubscriptionAdminContactButtonUrl: '',
     requiredSubscriptionWarnEnabled: false,
     requiredSubscriptionWarnMessageText: '',
     requiredSubscriptionBanEnabled: false,
@@ -269,6 +279,8 @@ function buildSettings(chatId: string): ChatSettings {
     invitationAccessRequiredCount: 1,
     invitationAccessBotMessageEnabled: true,
     invitationAccessBotMessageText: '',
+    invitationAccessAdminContactButtonEnabled: false,
+    invitationAccessAdminContactButtonUrl: '',
     invitationAccessWarnEnabled: false,
     invitationAccessWarnMessageText: '',
     invitationAccessBanEnabled: false,
@@ -285,6 +297,8 @@ function buildSettings(chatId: string): ChatSettings {
     linkBanEnabled: false,
     linkMuteEnabled: false,
     linkMuteDurationHours: 6,
+    linkAdminContactButtonEnabled: false,
+    linkAdminContactButtonUrl: '',
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
     linkBotButtonText: 'Открыть',
@@ -292,6 +306,8 @@ function buildSettings(chatId: string): ChatSettings {
     linkRulesButtonEnabled: false,
     duplicateBotMessageEnabled: false,
     duplicateBotMessageText: '',
+    duplicateAdminContactButtonEnabled: false,
+    duplicateAdminContactButtonUrl: '',
     duplicateBotButtonEnabled: false,
     duplicateBotButtonUrl: '',
     duplicateBotButtonText: 'Открыть',
@@ -1211,7 +1227,11 @@ describe('ChatContextCacheService', () => {
       maxBotLinkService as never,
     );
 
-    await service.upsertManagedEntitiesRecentBootstrap(buildChatSummary('chat-new'), 900, 'admin-1');
+    await service.upsertManagedEntitiesRecentBootstrap(
+      buildChatSummary('chat-new'),
+      900,
+      'admin-1',
+    );
 
     await expect(service.getManagedEntitiesRecentBootstrap('chat', 'admin-1')).resolves.toEqual([
       expect.objectContaining({

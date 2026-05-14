@@ -71,6 +71,25 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(result.textFiltersBotButtonUrl).toBe('https://max.ru/channel/rules');
     expect(result.textFiltersBotButtonText).toBe('Правила');
   });
+
+  it('allows profile handoff links only for the dedicated admin contact button', () => {
+    const profileHandoffUrl = 'https://max.ru/id613002203036_bot?start=pmh-chat-user';
+    const adminContactSettings = chatSettingsSchema.parse({
+      linkAdminContactButtonEnabled: true,
+      linkAdminContactButtonUrl: profileHandoffUrl,
+    });
+
+    expect(adminContactSettings.linkAdminContactButtonUrl).toBe(profileHandoffUrl);
+
+    const genericButtonResult = chatSettingsSchema.safeParse({
+      linkBotMessageEnabled: true,
+      linkBotButtonEnabled: true,
+      linkBotButtonUrl: profileHandoffUrl,
+      linkBotButtonText: 'Связь с админом',
+    });
+
+    expect(genericButtonResult.success).toBe(false);
+  });
 });
 
 describe('updateChatRulesRequestSchema button normalization', () => {

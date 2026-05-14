@@ -92,6 +92,25 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
 
+test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections', () => {
+  assert.ok(SECTION_SETTING_KEYS.links.includes('linkAdminContactButtonEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.profanityFilter.includes('profanityAdminContactButtonEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.commercialFilter.includes('textFiltersAdminContactButtonEnabled'));
+  assert.ok(
+    SECTION_SETTING_KEYS.thematicFilters.includes('thematicFiltersAdminContactButtonEnabled'),
+  );
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateAdminContactButtonEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsAdminContactButtonEnabled'));
+  assert.ok(
+    SECTION_SETTING_KEYS.requiredSubscription.includes(
+      'requiredSubscriptionAdminContactButtonEnabled',
+    ),
+  );
+  assert.ok(
+    SECTION_SETTING_KEYS.invitationAccess.includes('invitationAccessAdminContactButtonEnabled'),
+  );
+});
+
 test('mergeSectionSettings preserves multi-button arrays when saving a section', () => {
   const current = createSettings({
     deleteSpammersEnabled: true,

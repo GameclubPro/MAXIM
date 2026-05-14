@@ -62,10 +62,7 @@ import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import {
-  BroadcastLinkButtonsEditor,
-  type BroadcastLinkButtonPreset,
-} from '../components/broadcast-link-buttons-editor';
+import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -271,39 +268,14 @@ function normalizeAdminContactProfileUrl(profileUrl: string | null | undefined):
   return normalizedUrl;
 }
 
-function buildAdminContactButton(me: {
+function resolveAdminContactProfileUrl(me: {
   profileHandoffUrl?: string | null;
   profileUrl?: string | null;
-}): BroadcastLinkButton | null {
-  const normalizedUrl =
+}): string | null {
+  return (
     normalizeAdminContactProfileUrl(me.profileHandoffUrl) ??
-    normalizeAdminContactProfileUrl(me.profileUrl);
-  if (!normalizedUrl) {
-    return null;
-  }
-
-  return {
-    text: ADMIN_CONTACT_BUTTON_TEXT,
-    url: normalizedUrl,
-  };
-}
-
-function buildAdminContactButtonPreset(me: {
-  profileHandoffUrl?: string | null;
-  profileUrl?: string | null;
-}): BroadcastLinkButtonPreset[] {
-  const button = buildAdminContactButton(me);
-  if (!button) {
-    return [];
-  }
-
-  return [
-    {
-      label: ADMIN_CONTACT_BUTTON_TEXT,
-      text: button.text,
-      url: button.url,
-    },
-  ];
+    normalizeAdminContactProfileUrl(me.profileUrl)
+  );
 }
 
 type DeleteDelayStepperProps = {
@@ -348,6 +320,27 @@ type ChatSettingsButtonGroup = {
     | 'duplicateBotButtonText'
     | 'messageLimitsBotButtonText'
     | 'nightModeBotButtonText';
+};
+
+type AdminContactButtonGroup = {
+  enabledKey:
+    | 'linkAdminContactButtonEnabled'
+    | 'profanityAdminContactButtonEnabled'
+    | 'textFiltersAdminContactButtonEnabled'
+    | 'thematicFiltersAdminContactButtonEnabled'
+    | 'duplicateAdminContactButtonEnabled'
+    | 'messageLimitsAdminContactButtonEnabled'
+    | 'requiredSubscriptionAdminContactButtonEnabled'
+    | 'invitationAccessAdminContactButtonEnabled';
+  urlKey:
+    | 'linkAdminContactButtonUrl'
+    | 'profanityAdminContactButtonUrl'
+    | 'textFiltersAdminContactButtonUrl'
+    | 'thematicFiltersAdminContactButtonUrl'
+    | 'duplicateAdminContactButtonUrl'
+    | 'messageLimitsAdminContactButtonUrl'
+    | 'requiredSubscriptionAdminContactButtonUrl'
+    | 'invitationAccessAdminContactButtonUrl';
 };
 
 const LazyMessageLimitsBlockedWordPresets = lazy(
@@ -444,6 +437,38 @@ const NIGHT_MODE_BOT_BUTTON_GROUP = {
   urlKey: 'nightModeBotButtonUrl',
   textKey: 'nightModeBotButtonText',
 } as const satisfies ChatSettingsButtonGroup;
+const LINK_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'linkAdminContactButtonEnabled',
+  urlKey: 'linkAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const PROFANITY_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'profanityAdminContactButtonEnabled',
+  urlKey: 'profanityAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'textFiltersAdminContactButtonEnabled',
+  urlKey: 'textFiltersAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'thematicFiltersAdminContactButtonEnabled',
+  urlKey: 'thematicFiltersAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'duplicateAdminContactButtonEnabled',
+  urlKey: 'duplicateAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'messageLimitsAdminContactButtonEnabled',
+  urlKey: 'messageLimitsAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'requiredSubscriptionAdminContactButtonEnabled',
+  urlKey: 'requiredSubscriptionAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
+const INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'invitationAccessAdminContactButtonEnabled',
+  urlKey: 'invitationAccessAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT = 9;
 const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
@@ -2595,12 +2620,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const adminContactButtonPresets = useMemo(
-    () => buildAdminContactButtonPreset(meQuery.data ?? {}),
+  const adminContactProfileUrl = useMemo(
+    () => resolveAdminContactProfileUrl(meQuery.data ?? {}),
     [meQuery.data],
   );
-  const createInitialChatSettingsButton = () =>
-    buildAdminContactButton(meQuery.data ?? {}) ?? createEmptyBroadcastLinkButton();
 
   const shouldLoadRequiredSubscriptionChannels =
     Boolean(chatId) &&
@@ -3775,6 +3798,57 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       };
     });
     clearButtonGroupErrors(group);
+  }
+
+  function updateAdminContactButtonGroup(group: AdminContactButtonGroup, enabled: boolean) {
+    if (enabled && !adminContactProfileUrl) {
+      pushToast({
+        tone: 'info',
+        title: 'Ссылка на админа пока недоступна',
+        description: 'Бот сможет добавить кнопку после события, где видна ссылка на ваш профиль.',
+      });
+      return;
+    }
+
+    setDraft((current) =>
+      current
+        ? ({
+            ...current,
+            [group.enabledKey]: enabled,
+            [group.urlKey]: enabled ? adminContactProfileUrl : '',
+          } as ChatSettings)
+        : current,
+    );
+    clearFieldError(group.enabledKey);
+    clearFieldError(group.urlKey);
+  }
+
+  function renderAdminContactToggle(
+    group: AdminContactButtonGroup,
+    ariaLabel = 'Добавить связь с админом в сообщение бота',
+  ) {
+    if (!draft) {
+      return null;
+    }
+
+    return (
+      <div className="settings-native-toggle settings-native-toggle--nested">
+        <div className="settings-native-toggle__row">
+          <span className="settings-native-toggle__title">{ADMIN_CONTACT_BUTTON_TEXT}</span>
+
+          <label className="settings-native-switch" aria-label={ariaLabel}>
+            <input
+              type="checkbox"
+              checked={Boolean(draft[group.enabledKey])}
+              onChange={(event) => updateAdminContactButtonGroup(group, event.target.checked)}
+            />
+            <span className="toggle-switch" aria-hidden>
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </div>
+      </div>
+    );
   }
 
   function addRequiredSubscriptionChannel(channelId: string) {
@@ -7682,7 +7756,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
                                           enabled,
                                           ...(enabled && draft.linkBotButtons.length === 0
-                                            ? { buttons: [createInitialChatSettingsButton()] }
+                                            ? { buttons: [createEmptyBroadcastLinkButton()] }
                                             : {}),
                                         });
                                       }}
@@ -7705,7 +7779,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     api={api}
                                     buttons={draft.linkBotButtons}
                                     errors={linkBotButtonErrors}
-                                    presets={adminContactButtonPresets}
                                     onChange={(nextButtons) =>
                                       updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
                                         buttons: nextButtons,
@@ -7720,6 +7793,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ) : null}
                               </div>
                             ) : null}
+
+                            {renderAdminContactToggle(
+                              LINK_ADMIN_CONTACT_BUTTON_GROUP,
+                              'Добавить связь с админом в сообщения о ссылках',
+                            )}
                           </>
                         ) : (
                           <div className="policy-mode-hint" role="note">
@@ -8374,7 +8452,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.greetingBotButtons.length === 0
-                                          ? { buttons: [createInitialChatSettingsButton()] }
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
                                           : {}),
                                       });
                                     }}
@@ -8397,7 +8475,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.greetingBotButtons}
                                   errors={greetingBotButtonErrors}
-                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -8619,6 +8696,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </label>
                             </div>
                           </div>
+
+                          {renderAdminContactToggle(
+                            PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения о нецензурной лексике',
+                          )}
                         </>
                       ) : null}
                     </div>
@@ -9026,7 +9108,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.textFiltersBotButtons.length === 0
-                                          ? { buttons: [createInitialChatSettingsButton()] }
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
                                           : {}),
                                       });
                                     }}
@@ -9049,7 +9131,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.textFiltersBotButtons}
                                   errors={textFiltersBotButtonErrors}
-                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -9064,6 +9145,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ) : null}
                             </div>
                           ) : null}
+
+                          {renderAdminContactToggle(
+                            TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения о коммерческих объявлениях',
+                          )}
                         </>
                       ) : null}
                     </div>
@@ -9240,7 +9326,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.thematicFiltersBotButtons.length === 0
-                                          ? { buttons: [createInitialChatSettingsButton()] }
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
                                           : {}),
                                       });
                                     }}
@@ -9257,7 +9343,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 api={api}
                                 buttons={draft.thematicFiltersBotButtons}
                                 errors={thematicBotButtonErrors}
-                                presets={adminContactButtonPresets}
                                 onChange={(nextButtons) =>
                                   updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
                                     buttons: nextButtons,
@@ -9270,6 +9355,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 subtitle="До 8 кнопок"
                               />
                             ) : null}
+
+                            {renderAdminContactToggle(
+                              THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
+                              'Добавить связь с админом в сообщения тематического фильтра',
+                            )}
 
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
@@ -9457,58 +9547,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       ) : null}
 
                       {draft.antiDuplicateEnabled && draft.duplicateBotMessageEnabled ? (
-                        <div
-                          className={cn(
-                            'settings-native-toggle',
-                            'settings-native-toggle--nested',
-                            hasDuplicateBotButtonError && 'field--error',
-                          )}
-                        >
-                          <div className="settings-native-toggle__row">
-                            <span className="settings-native-toggle__title">Добавить кнопку</span>
+                        <>
+                          <div
+                            className={cn(
+                              'settings-native-toggle',
+                              'settings-native-toggle--nested',
+                              hasDuplicateBotButtonError && 'field--error',
+                            )}
+                          >
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">Добавить кнопку</span>
 
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Кнопка в сообщении о дублях"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={draft.duplicateBotButtonEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Кнопка в сообщении о дублях"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateBotButtonEnabled}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                      enabled,
+                                      ...(enabled && draft.duplicateBotButtons.length === 0
+                                        ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                        : {}),
+                                    });
+                                  }}
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            {draft.duplicateBotButtonEnabled ? (
+                              <BroadcastLinkButtonsEditor
+                                api={api}
+                                buttons={draft.duplicateBotButtons}
+                                errors={duplicateBotButtonErrors}
+                                onChange={(nextButtons) =>
                                   updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
-                                    enabled,
-                                    ...(enabled && draft.duplicateBotButtons.length === 0
-                                      ? { buttons: [createInitialChatSettingsButton()] }
-                                      : {}),
-                                  });
-                                }}
+                                    buttons: nextButtons,
+                                    enabled: nextButtons.length > 0,
+                                  })
+                                }
+                                urlPlaceholder="https://max.ru/profile/..."
+                                textPlaceholder="Открыть"
+                                title="Сетка кнопок"
+                                subtitle="До 8 кнопок"
                               />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
+                            ) : null}
                           </div>
 
-                          {draft.duplicateBotButtonEnabled ? (
-                            <BroadcastLinkButtonsEditor
-                              api={api}
-                              buttons={draft.duplicateBotButtons}
-                              errors={duplicateBotButtonErrors}
-                              presets={adminContactButtonPresets}
-                              onChange={(nextButtons) =>
-                                updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
-                                  buttons: nextButtons,
-                                  enabled: nextButtons.length > 0,
-                                })
-                              }
-                              urlPlaceholder="https://max.ru/profile/..."
-                              textPlaceholder="Открыть"
-                              title="Сетка кнопок"
-                              subtitle="До 8 кнопок"
-                            />
-                          ) : null}
-                        </div>
+                          {renderAdminContactToggle(
+                            DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения о дублях',
+                          )}
+                        </>
                       ) : null}
 
                       {draft.antiDuplicateEnabled ? (
@@ -10573,7 +10669,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
                                     enabled,
                                     ...(enabled && draft.messageLimitsBotButtons.length === 0
-                                      ? { buttons: [createInitialChatSettingsButton()] }
+                                      ? { buttons: [createEmptyBroadcastLinkButton()] }
                                       : {}),
                                   });
                                 }}
@@ -10596,7 +10692,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               api={api}
                               buttons={draft.messageLimitsBotButtons}
                               errors={messageLimitsBotButtonErrors}
-                              presets={adminContactButtonPresets}
                               onChange={(nextButtons) =>
                                 updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
                                   buttons: nextButtons,
@@ -10611,6 +10706,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </div>
                       ) : null}
+
+                      {draft.messageLimitsBotMessageEnabled
+                        ? renderAdminContactToggle(
+                            MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения об ограничениях',
+                          )
+                        : null}
                     </div>
                   ) : null}
                 </div>
@@ -11031,7 +11133,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.nightModeBotButtons.length === 0
-                                          ? { buttons: [createInitialChatSettingsButton()] }
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
                                           : {}),
                                       });
                                     }}
@@ -11054,7 +11156,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.nightModeBotButtons}
                                   errors={nightBotButtonErrors}
-                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -12486,6 +12587,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
+                      {draft.requiredSubscriptionBotMessageEnabled
+                        ? renderAdminContactToggle(
+                            REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения об обязательной подписке',
+                          )
+                        : null}
+
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
@@ -12846,6 +12954,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           />
                         ) : null}
                       </div>
+
+                      {draft.invitationAccessBotMessageEnabled
+                        ? renderAdminContactToggle(
+                            INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP,
+                            'Добавить связь с админом в сообщения о приглашениях',
+                          )
+                        : null}
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
@@ -13208,7 +13323,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           buttons={rulesDraft?.buttons ?? []}
           errors={rulesButtonErrors}
           revealNextStepSignal={rulesButtonRevealSignal}
-          presets={adminContactButtonPresets}
           disabled={isRulesBusy}
           statusLabel={rulesButtonEnabled ? rulesButtonStatus : 'Без кнопок'}
           urlPlaceholder="https://max.ru/channel/rules"
@@ -13242,7 +13356,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           buttons={mailingButtons}
           errors={mailingButtonErrors}
           revealNextStepSignal={mailingButtonRevealSignal}
-          presets={adminContactButtonPresets}
           disabled={isMailingBusy}
           statusLabel={
             mailingButtonEnabled

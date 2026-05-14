@@ -745,6 +745,8 @@ const SETTINGS_SECTION_KEYS = {
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
+    'linkAdminContactButtonEnabled',
+    'linkAdminContactButtonUrl',
   ],
   greeting: [
     'greetingEnabled',
@@ -765,6 +767,8 @@ const SETTINGS_SECTION_KEYS = {
     'profanityBanEnabled',
     'profanityMuteEnabled',
     'profanityMuteDurationHours',
+    'profanityAdminContactButtonEnabled',
+    'profanityAdminContactButtonUrl',
   ],
   commercialFilter: [
     'commercialAdsFilterEnabled',
@@ -782,6 +786,8 @@ const SETTINGS_SECTION_KEYS = {
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
+    'textFiltersAdminContactButtonEnabled',
+    'textFiltersAdminContactButtonUrl',
   ],
   thematicFilters: [
     'thematicCodewordEnabled',
@@ -795,6 +801,8 @@ const SETTINGS_SECTION_KEYS = {
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
+    'thematicFiltersAdminContactButtonEnabled',
+    'thematicFiltersAdminContactButtonUrl',
   ],
   duplicates: [
     'antiDuplicateEnabled',
@@ -814,6 +822,8 @@ const SETTINGS_SECTION_KEYS = {
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
+    'duplicateAdminContactButtonEnabled',
+    'duplicateAdminContactButtonUrl',
   ],
   limits: [
     'antiSpamEnabled',
@@ -840,6 +850,8 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
+    'messageLimitsAdminContactButtonEnabled',
+    'messageLimitsAdminContactButtonUrl',
   ],
   night: [
     'nightModeEnabled',
@@ -869,6 +881,8 @@ const SETTINGS_SECTION_KEYS = {
     'requiredSubscriptionExpiresAt',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionAdminContactButtonEnabled',
+    'requiredSubscriptionAdminContactButtonUrl',
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionWarnMessageText',
     'requiredSubscriptionBanEnabled',
@@ -880,6 +894,8 @@ const SETTINGS_SECTION_KEYS = {
     'invitationAccessRequiredCount',
     'invitationAccessBotMessageEnabled',
     'invitationAccessBotMessageText',
+    'invitationAccessAdminContactButtonEnabled',
+    'invitationAccessAdminContactButtonUrl',
     'invitationAccessWarnEnabled',
     'invitationAccessWarnMessageText',
     'invitationAccessBanEnabled',

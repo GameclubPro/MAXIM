@@ -6,10 +6,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
   MAX_BROADCAST_LINK_BUTTONS,
-  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
-  chunkBroadcastLinkButtons,
   createEmptyBroadcastLinkButton,
-  formatBroadcastButtonsStatus,
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 
@@ -52,7 +49,6 @@ export function BroadcastLinkButtonsEditor({
 }: BroadcastLinkButtonsEditorProps) {
   const addButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousCountRef = useRef(buttons.length);
-  const previewRows = chunkBroadcastLinkButtons(buttons);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
   const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
   const emptyButtonIndex = buttons.findIndex((button) => !button.url.trim());
@@ -213,42 +209,6 @@ export function BroadcastLinkButtonsEditor({
           ))}
         </div>
       ) : null}
-
-      <div className="broadcast-link-editor__preview" aria-label="Предпросмотр рядов кнопок">
-        {!compact ? (
-          <div className="broadcast-link-editor__preview-meta">
-            <span>{formatBroadcastButtonsStatus(buttons)}</span>
-            <small>{previewRows.length > 0 ? `${previewRows.length} ряда` : 'Пока пусто'}</small>
-          </div>
-        ) : null}
-        <div className="broadcast-link-editor__preview-board">
-          {previewRows.length > 0 ? (
-            previewRows.map((row, rowIndex) => (
-              <div key={`row-${rowIndex}`} className="broadcast-link-editor__preview-row">
-                {row.map((button, buttonIndex) => (
-                  <span
-                    key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
-                    className={cn(
-                      'broadcast-link-editor__preview-pill',
-                      !button.text.trim() && 'is-empty',
-                    )}
-                  >
-                    {button.text.trim() ||
-                      `Кнопка ${rowIndex * MAX_BROADCAST_LINK_BUTTONS_PER_ROW + buttonIndex + 1}`}
-                  </span>
-                ))}
-              </div>
-            ))
-          ) : (
-            <div className="broadcast-link-editor__empty" aria-hidden={compact}>
-              <strong>{compact ? '+' : 'Первая кнопка откроет ленту действий'}</strong>
-              {!compact ? (
-                <small>После этого снизу появится удобное добавление ещё кнопок.</small>
-              ) : null}
-            </div>
-          )}
-        </div>
-      </div>
 
       <div className="broadcast-link-editor__stack">
         {buttons.map((button, index) => {
