@@ -67,6 +67,26 @@ describe('InitDataService', () => {
     expect(user.avatarUrl).toBe('https://cdn.max.ru/u/42/avatar.jpg');
   });
 
+  it('builds display name from first and last name', () => {
+    const configService = createConfigMock();
+    const service = new InitDataService(createRegistryMock() as never, configService);
+    const params = new URLSearchParams();
+    params.set(
+      'user',
+      JSON.stringify({
+        id: '42',
+        username: 'mod',
+        first_name: 'Анна',
+        last_name: 'Каренина',
+      }),
+    );
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
+    params.set('hash', sign(params));
+
+    const user = service.validate(params.toString());
+    expect(user.displayName).toBe('Анна Каренина');
+  });
+
   it('extracts direct MAX profile url from user payload', () => {
     const configService = createConfigMock();
     const service = new InitDataService(createRegistryMock() as never, configService);

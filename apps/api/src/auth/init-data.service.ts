@@ -62,11 +62,7 @@ export class InitDataService {
     return {
       userId,
       username: parsedUser.username ? String(parsedUser.username) : null,
-      displayName: parsedUser.display_name
-        ? String(parsedUser.display_name)
-        : parsedUser.first_name
-          ? String(parsedUser.first_name)
-          : null,
+      displayName: this.resolveUserDisplayName(parsedUser),
       avatarUrl: parsedUser.photo_url
         ? String(parsedUser.photo_url)
         : parsedUser.photoUrl
@@ -280,6 +276,37 @@ export class InitDataService {
     }
 
     return null;
+  }
+
+  private resolveUserDisplayName(user: Record<string, unknown>): string | null {
+    const directCandidates = [
+      user.display_name,
+      user.displayName,
+      user.full_name,
+      user.fullName,
+      user.name,
+      user.nickname,
+    ];
+
+    for (const candidate of directCandidates) {
+      const value = this.readTrimmedString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    const firstName = this.readTrimmedString(
+      user.first_name ?? user.firstName ?? user.given_name ?? user.givenName,
+    );
+    const lastName = this.readTrimmedString(
+      user.last_name ?? user.lastName ?? user.family_name ?? user.familyName,
+    );
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    return fullName.length > 0 ? fullName : null;
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
 
   private readProfileUrl(...candidates: unknown[]): string | null {

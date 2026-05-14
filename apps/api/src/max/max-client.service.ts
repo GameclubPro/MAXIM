@@ -1784,9 +1784,7 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       userId:
         this.readTrimmedString(data.user_id ?? data.userId ?? data.id) ?? bot.contactId ?? bot.id,
-      displayName: this.readTrimmedString(
-        data.first_name ?? data.firstName ?? data.display_name ?? data.displayName ?? data.name,
-      ),
+      displayName: this.resolveProfileDisplayName(data),
       username: this.readTrimmedString(data.username),
       avatarUrl: this.readTrimmedString(
         data.full_avatar_url ?? data.fullAvatarUrl ?? data.avatar_url ?? data.avatarUrl,
@@ -2239,7 +2237,14 @@ export class MaxClientService implements OnModuleDestroy {
         ? (row.user as Record<string, unknown>)
         : null;
     const explicitDisplayName = this.readTrimmedString(
-      row.display_name ?? row.displayName ?? nestedUser?.display_name ?? nestedUser?.displayName,
+      row.display_name ??
+        row.displayName ??
+        row.full_name ??
+        row.fullName ??
+        nestedUser?.display_name ??
+        nestedUser?.displayName ??
+        nestedUser?.full_name ??
+        nestedUser?.fullName,
     );
     const firstName = this.readTrimmedString(
       row.first_name ?? row.firstName ?? nestedUser?.first_name ?? nestedUser?.firstName,
@@ -2275,6 +2280,24 @@ export class MaxClientService implements OnModuleDestroy {
         nestedUser?.link,
       ),
     };
+  }
+
+  private resolveProfileDisplayName(value: Record<string, unknown>): string | null {
+    const explicitDisplayName = this.readTrimmedString(
+      value.display_name ?? value.displayName ?? value.full_name ?? value.fullName ?? value.name,
+    );
+    if (explicitDisplayName) {
+      return explicitDisplayName;
+    }
+
+    const firstName = this.readTrimmedString(
+      value.first_name ?? value.firstName ?? value.given_name ?? value.givenName,
+    );
+    const lastName = this.readTrimmedString(
+      value.last_name ?? value.lastName ?? value.family_name ?? value.familyName,
+    );
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    return fullName.length > 0 ? fullName : null;
   }
 
   private parseChatMemberBot(

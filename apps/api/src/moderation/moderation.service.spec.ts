@@ -626,6 +626,40 @@ function createServiceUserJoinedUpdate(): MaxUpdate {
   };
 }
 
+function createServiceUserJoinedUpdateWithSplitName(): MaxUpdate {
+  return {
+    updateId: 'upd-service-user-join-split-name-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-service-user-join-split-name-1',
+      chatId: 'chat-1',
+      senderId: 'service-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        sender: {
+          id: 'service-1',
+          type: 'service',
+          is_service: true,
+        },
+        body: {
+          new_members: [
+            {
+              user_id: 'user-split-name-1',
+              type: 'user',
+              first_name: 'Анна',
+              last_name: 'Каренина',
+              username: 'anna',
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
 function createServiceUserJoinedUpdateInDataEnvelope(): MaxUpdate {
   return {
     updateId: 'upd-service-user-join-envelope-1',
@@ -3604,6 +3638,21 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('builds greeting mentions from first and last name when display_name is absent', () => {
+    const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
+
+    const members = (service as any).extractHumanServiceMembers(
+      createServiceUserJoinedUpdateWithSplitName(),
+    );
+
+    expect(members).toEqual([
+      {
+        userId: 'user-split-name-1',
+        userLabel: userMention('Анна Каренина', 'user-split-name-1'),
+      },
+    ]);
   });
 
   it('adds the rules button to greeting message when enabled', async () => {

@@ -2190,6 +2190,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               {
                 user_id: 'user-1',
                 first_name: 'Алексей',
+                last_name: 'Иванов',
                 username: 'aleksey',
                 avatar_url: 'https://cdn.max.ru/u/1/avatar-small.jpg',
                 full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
@@ -2198,6 +2199,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 user: {
                   user_id: 'user-2',
                   first_name: 'Марина',
+                  last_name: 'Соколова',
                   username: 'marina',
                   avatar_url: 'https://cdn.max.ru/u/2/avatar-small.jpg',
                 },
@@ -2219,14 +2221,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
     expect(result.get('user-1')).toEqual({
       userId: 'user-1',
-      displayName: 'Алексей',
+      displayName: 'Алексей Иванов',
       username: 'aleksey',
       avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
       profileUrl: null,
     });
     expect(result.get('user-2')).toEqual({
       userId: 'user-2',
-      displayName: 'Марина',
+      displayName: 'Марина Соколова',
       username: 'marina',
       avatarUrl: 'https://cdn.max.ru/u/2/avatar-small.jpg',
       profileUrl: null,
