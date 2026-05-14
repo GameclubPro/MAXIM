@@ -671,6 +671,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
+  it('does not detect PROFANITY for production ad reach typo "за суки" in metric context', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Размещение в канале: подписчиков 3800, охват 1к+- за суки, CPM 650.',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
   it('does not detect PROFANITY for livestock context around "скотина" in farm posts', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

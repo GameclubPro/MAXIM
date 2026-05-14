@@ -327,6 +327,18 @@ const PROFANITY_CANINE_CONTEXT_MARKERS = [
   'котят',
   'питомник',
 ];
+const PROFANITY_REACH_TYPO_CONTEXT_MARKERS = [
+  'охват',
+  'подписчик',
+  'подписчиков',
+  'размещен',
+  'размещение',
+  'канал',
+  'реклам',
+  'пост',
+  'спм',
+  'cpm',
+];
 const PROFANITY_LIVESTOCK_FORMS = new Set([
   'скотина',
   'скотины',
@@ -2334,6 +2346,7 @@ export class RuleEngineService {
     }
 
     return (
+      this.matchesProfanityReachTypoException(token, normalizedContext) ||
       this.matchesProfanityContextException(
         token,
         normalizedContext,
@@ -2421,6 +2434,29 @@ export class RuleEngineService {
 
       matchedMarkers += 1;
       if (matchedMarkers >= minimumMatchedMarkers) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private matchesProfanityReachTypoException(token: string, normalizedContext: string): boolean {
+    if (
+      token !== 'суки' ||
+      !/(?:^|[^\p{L}\p{N}_-])за\s+суки(?=$|[^\p{L}\p{N}_-])/u.test(normalizedContext)
+    ) {
+      return false;
+    }
+
+    let matchedMarkers = 0;
+    for (const marker of PROFANITY_REACH_TYPO_CONTEXT_MARKERS) {
+      if (!normalizedContext.includes(marker)) {
+        continue;
+      }
+
+      matchedMarkers += 1;
+      if (matchedMarkers >= 2) {
         return true;
       }
     }
