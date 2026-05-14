@@ -22,6 +22,7 @@ test('getMe parses the current admin profile from /me', async () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
+      profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
       canAccessSystem: true,
     },
     calls,
@@ -35,6 +36,7 @@ test('getMe parses the current admin profile from /me', async () => {
     displayName: 'Designer',
     avatarUrl: 'https://cdn.max/avatar.png',
     profileUrl: 'https://max.ru/designer',
+    profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_chat-1_h_admin-1_abcdef0123456789',
     canAccessSystem: true,
   });
   assert.deepEqual(calls, ['/me']);

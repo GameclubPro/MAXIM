@@ -1233,18 +1233,30 @@ export class AdminService implements OnModuleDestroy {
     const canAccessSystem =
       this.systemAccessConfig.requireSystemAdmin &&
       canUserAccessSystem(user.userId, this.systemAccessConfig);
+    const contextChatId =
+      this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
+    const contextEntityType: ManagedEntityType =
+      options.entityType ?? (user.chatType === 'channel' ? 'channel' : 'chat');
+    const fallbackDisplayName = this.readTrimmedString(user.displayName) ?? null;
+    const fallbackUsername = this.readTrimmedString(user.username) ?? null;
     const fallback: Me = {
       userId: user.userId,
-      username: this.readTrimmedString(user.username) ?? null,
-      displayName: this.readTrimmedString(user.displayName) ?? null,
+      username: fallbackUsername,
+      displayName: fallbackDisplayName,
       avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
       profileUrl:
         this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
-        this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
+        this.buildUserProfileUrl(fallbackUsername),
+      profileHandoffUrl: contextChatId
+        ? this.buildProfileMentionHandoffUrl(
+            contextChatId,
+            contextEntityType,
+            user.userId,
+            fallbackDisplayName ?? fallbackUsername,
+          )
+        : null,
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
     };
-    const contextChatId =
-      this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
     if (
@@ -1277,6 +1289,12 @@ export class AdminService implements OnModuleDestroy {
         displayName,
         avatarUrl,
         profileUrl,
+        profileHandoffUrl: this.buildProfileMentionHandoffUrl(
+          contextChatId,
+          contextEntityType,
+          user.userId,
+          displayName ?? username,
+        ),
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
@@ -5179,8 +5197,7 @@ export class AdminService implements OnModuleDestroy {
           this.chatContextCache.getManagedEntitiesRecentBootstrap?.(
             currentEntityType,
             normalizedUserId,
-          ) ??
-          Promise.resolve([]),
+          ) ?? Promise.resolve([]),
       ),
     );
 
@@ -17388,7 +17405,8 @@ export class AdminService implements OnModuleDestroy {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
+      message:
+        executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
     });
   }
 

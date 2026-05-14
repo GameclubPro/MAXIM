@@ -271,10 +271,13 @@ function normalizeAdminContactProfileUrl(profileUrl: string | null | undefined):
   return normalizedUrl;
 }
 
-function buildAdminContactButton(
-  profileUrl: string | null | undefined,
-): BroadcastLinkButton | null {
-  const normalizedUrl = normalizeAdminContactProfileUrl(profileUrl);
+function buildAdminContactButton(me: {
+  profileHandoffUrl?: string | null;
+  profileUrl?: string | null;
+}): BroadcastLinkButton | null {
+  const normalizedUrl =
+    normalizeAdminContactProfileUrl(me.profileHandoffUrl) ??
+    normalizeAdminContactProfileUrl(me.profileUrl);
   if (!normalizedUrl) {
     return null;
   }
@@ -285,10 +288,11 @@ function buildAdminContactButton(
   };
 }
 
-function buildAdminContactButtonPreset(
-  profileUrl: string | null | undefined,
-): BroadcastLinkButtonPreset[] {
-  const button = buildAdminContactButton(profileUrl);
+function buildAdminContactButtonPreset(me: {
+  profileHandoffUrl?: string | null;
+  profileUrl?: string | null;
+}): BroadcastLinkButtonPreset[] {
+  const button = buildAdminContactButton(me);
   if (!button) {
     return [];
   }
@@ -2592,11 +2596,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const adminContactButtonPresets = useMemo(
-    () => buildAdminContactButtonPreset(meQuery.data?.profileUrl),
-    [meQuery.data?.profileUrl],
+    () => buildAdminContactButtonPreset(meQuery.data ?? {}),
+    [meQuery.data],
   );
   const createInitialChatSettingsButton = () =>
-    buildAdminContactButton(meQuery.data?.profileUrl) ?? createEmptyBroadcastLinkButton();
+    buildAdminContactButton(meQuery.data ?? {}) ?? createEmptyBroadcastLinkButton();
 
   const shouldLoadRequiredSubscriptionChannels =
     Boolean(chatId) &&

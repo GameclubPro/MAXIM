@@ -2189,6 +2189,7 @@ export const meSchema = z.object({
   displayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().default(null),
   canAccessSystem: z.boolean().optional(),
 });
 export type Me = z.infer<typeof meSchema>;

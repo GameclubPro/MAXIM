@@ -2277,6 +2277,7 @@ function createInitialState(): PreviewState {
       displayName: 'Алексей',
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('preview-admin'),
       canAccessSystem: true,
     },
     systemModeSelection: 'auto',

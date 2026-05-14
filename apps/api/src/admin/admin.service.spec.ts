@@ -956,29 +956,28 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
       ),
     getManagedEntitiesRecentBootstrap: jest
       .fn()
-      .mockImplementation(
-        async (entityType: string, userId?: string | null) =>
-          (
-            (recentBootstrapByEntityType.get(entityType) ?? []) as Array<
-              ChatSummary & { bootstrapUserIds?: string[] }
-            >
-          ).map((entry) => {
-            const normalizedUserId =
-              typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
-            if (
-              normalizedUserId &&
-              Array.isArray(entry.bootstrapUserIds) &&
-              entry.bootstrapUserIds.includes(normalizedUserId)
-            ) {
-              return {
-                ...entry,
-                bootstrapUserIds: Array.from(
-                  new Set([normalizedUserId, ...(entry.bootstrapUserIds ?? [])]),
-                ),
-              };
-            }
-            return entry;
-          }),
+      .mockImplementation(async (entityType: string, userId?: string | null) =>
+        (
+          (recentBootstrapByEntityType.get(entityType) ?? []) as Array<
+            ChatSummary & { bootstrapUserIds?: string[] }
+          >
+        ).map((entry) => {
+          const normalizedUserId =
+            typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
+          if (
+            normalizedUserId &&
+            Array.isArray(entry.bootstrapUserIds) &&
+            entry.bootstrapUserIds.includes(normalizedUserId)
+          ) {
+            return {
+              ...entry,
+              bootstrapUserIds: Array.from(
+                new Set([normalizedUserId, ...(entry.bootstrapUserIds ?? [])]),
+              ),
+            };
+          }
+          return entry;
+        }),
       ),
     upsertManagedEntitiesRecentBootstrap: jest
       .fn()
@@ -1413,6 +1412,10 @@ describe('AdminService managed bot chat catalog', () => {
 });
 
 describe('AdminService getMe', () => {
+  const chatProfileHandoffUrl = expect.stringMatching(
+    /^https:\/\/max\.ru\/777000_bot\?start=pm2_chat-1_h_admin-1_[a-f0-9]{16}$/u,
+  );
+
   it('returns init data profile when username is already present', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -1442,6 +1445,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
+      profileHandoffUrl: chatProfileHandoffUrl,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -1487,6 +1491,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer',
+      profileHandoffUrl: chatProfileHandoffUrl,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1521,6 +1526,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer-direct',
+      profileHandoffUrl: null,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -1566,6 +1572,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: null,
+      profileHandoffUrl: chatProfileHandoffUrl,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1615,6 +1622,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer-direct',
+      profileHandoffUrl: chatProfileHandoffUrl,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1651,6 +1659,7 @@ describe('AdminService getMe', () => {
       displayName: null,
       avatarUrl: null,
       profileUrl: null,
+      profileHandoffUrl: chatProfileHandoffUrl,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -5577,8 +5586,7 @@ describe('AdminService.applyManualModerationAction', () => {
             userId: botId,
             isAdmin: true,
             isOwner: false,
-            permissions:
-              botId === 'standby-bot' ? ['add_remove_members'] : ['read_all_messages'],
+            permissions: botId === 'standby-bot' ? ['add_remove_members'] : ['read_all_messages'],
           };
         }),
       getChatMemberAccess: jest.fn().mockResolvedValue({
@@ -7467,7 +7475,9 @@ describe('AdminService.applyManualSystemBan', () => {
     );
     jest
       .spyOn(service, 'applyManualSystemBan')
-      .mockRejectedValue(new BadRequestException('Нельзя применять это действие к своему аккаунту.'));
+      .mockRejectedValue(
+        new BadRequestException('Нельзя применять это действие к своему аккаунту.'),
+      );
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_group_moderation_command',
