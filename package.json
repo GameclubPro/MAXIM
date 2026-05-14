@@ -2,6 +2,9 @@
   "name": "maxim",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -35,17 +38,17 @@
     "prod": "bash infra/scripts/vps-connect.sh"
   },
   "devDependencies": {
-    "@eslint/js": "^9.20.0",
-    "@types/node": "^22.13.4",
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^24.12.4",
     "concurrently": "^9.2.1",
-    "eslint": "^9.20.1",
+    "eslint": "^9.39.4",
     "globals": "^15.15.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.4.3",
-    "playwright": "^1.58.2",
-    "prettier": "^3.5.0",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.24.1"
+    "playwright": "^1.60.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.3"
   },
   "lint-staged": {
     "*.{ts,tsx,js,json,md,yml,yaml}": "prettier --write"

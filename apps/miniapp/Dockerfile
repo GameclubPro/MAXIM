@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 
 ARG MINIAPP_BASE_PATH=/app/
@@ -15,10 +15,10 @@ ENV VITE_APP_NAME=${VITE_APP_NAME}
 ENV VITE_APP_DESCRIPTION=${VITE_APP_DESCRIPTION}
 ENV VITE_APP_CANONICAL_URL=${VITE_APP_CANONICAL_URL}
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY apps/miniapp/package.json apps/miniapp/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-RUN npm install
+RUN npm ci
 
 COPY tsconfig.base.json ./
 COPY bot.webp frendly.webp joker.webp police.webp ./

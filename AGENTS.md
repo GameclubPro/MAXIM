@@ -56,6 +56,7 @@
 
 ## Local development
 
+- Use Node 24 LTS for local and container work. Root `.nvmrc` pins `24`, and Dockerfiles copy `package-lock.json` and run `npm ci`; keep Docker dependency layers lockfile-based when editing them.
 - Quick start:
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`
   - `npm run dev:all`
