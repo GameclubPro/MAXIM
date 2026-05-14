@@ -19,7 +19,11 @@ import {
   Xmark as IconoirXmark,
 } from 'iconoir-react';
 import { Link, useSearchParams } from 'react-router-dom';
-import type { ManagedEntitiesRefreshState, ManagedEntityFavoriteType } from '@maxim/contracts';
+import type {
+  ChatSummary,
+  ManagedEntitiesRefreshState,
+  ManagedEntityFavoriteType,
+} from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -73,11 +77,11 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
-type ManagedHomeEntity = {
-  id: string;
-  title: string;
-  link?: string | null;
-  avatarUrl?: string | null;
+type ManagedHomeEntity = ChatSummary;
+type EntitySignal = {
+  key: string;
+  value?: string;
+  Icon: ElementType<SVGProps<SVGSVGElement>>;
 };
 type ManagedEntitiesReloadRequest = {
   nonce: number;
@@ -93,7 +97,7 @@ const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
-const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 93;
+const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 104;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
 const FAVORITE_TYPE_ICONS = {
@@ -102,7 +106,7 @@ const FAVORITE_TYPE_ICONS = {
   broadcast: BroadcastGlyph,
   test: TestGlyph,
   partner: PartnerGlyph,
-  service: ServiceGlyph,
+  service: WrenchGlyph,
 } as const satisfies Record<ManagedEntityFavoriteType, ElementType<SVGProps<SVGSVGElement>>>;
 
 const LazySystemEntryCard = lazy(async () => {
@@ -179,6 +183,56 @@ function buildHomeSyncStatus(options: {
   return { label: 'Синк', tone: 'syncing' };
 }
 
+function formatCompactLinkLabel(link: string | null | undefined): string | null {
+  const rawLink = link?.trim();
+  if (!rawLink) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(rawLink);
+    const hostname = parsed.hostname.replace(/^www\./u, '');
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+    const lastPathPart = pathParts[pathParts.length - 1];
+
+    if (hostname === 'max.ru' && lastPathPart) {
+      return `@${decodeURIComponent(lastPathPart)}`;
+    }
+
+    return hostname || rawLink;
+  } catch {
+    return rawLink.length > 28 ? `${rawLink.slice(0, 25)}...` : rawLink;
+  }
+}
+
+function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): EntitySignal[] {
+  if (entityType !== 'channel' || !entity.channelOverview) {
+    return [];
+  }
+
+  const signals: EntitySignal[] = [];
+  const secondarySignals: EntitySignal[] = [];
+  if (entity.channelOverview.enabledScenariosCount > 0) {
+    signals.push({
+      key: 'scenarios',
+      value: String(entity.channelOverview.enabledScenariosCount),
+      Icon: SparksGlyph,
+    });
+  }
+  if (
+    entity.channelOverview.commentsEnabled ||
+    entity.channelOverview.postSuggestionsEnabled ||
+    entity.channelOverview.commentsModerationEnabled
+  ) {
+    secondarySignals.push({
+      key: 'live',
+      Icon: CommentsGlyph,
+    });
+  }
+
+  return [...signals, ...secondarySignals].slice(0, 2);
+}
+
 function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
   return entityType === 'channel' ? `/channel/${entityId}/settings` : `/chat/${entityId}/settings`;
 }
@@ -210,6 +264,25 @@ function ActivityGlyph() {
       <path d="M15 17v-4.6" />
       <path d="M20 17V5" />
       <path d="M4.5 19h15.8" />
+    </svg>
+  );
+}
+
+function SparksGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path d="M12 3.8l1.2 4.1 4 1.2-4 1.2-1.2 4.1-1.2-4.1-4-1.2 4-1.2L12 3.8Z" />
+      <path d="M18.2 13.8l.7 2.2 2.2.7-2.2.7-.7 2.2-.7-2.2-2.2-.7 2.2-.7.7-2.2Z" />
+      <path d="M5.8 14.5l.5 1.7 1.7.5-1.7.5-.5 1.7-.5-1.7-1.7-.5 1.7-.5.5-1.7Z" />
+    </svg>
+  );
+}
+
+function CommentsGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" {...props}>
+      <path d="M7 6h10a3 3 0 013 3v4.3a3 3 0 01-3 3h-4.6L8.6 19v-2.7H7a3 3 0 01-3-3V9a3 3 0 013-3Z" />
+      <path d="M8.5 10.2h7M8.5 13h4.8" />
     </svg>
   );
 }
@@ -304,16 +377,11 @@ function PartnerGlyph(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-function ServiceGlyph(props: SVGProps<SVGSVGElement>) {
+function WrenchGlyph(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M14.7 5.2l4.1 4.1-9.5 9.5H5.2v-4.1l9.5-9.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path d="M13.2 6.7l4.1 4.1" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M14.6 5.2a4.8 4.8 0 005.1 5.1l-8.9 8.9a3 3 0 01-4.2-4.2l8-9.8Z" />
+      <path d="M7.8 16.2l-1.2 1.2" />
     </svg>
   );
 }
@@ -506,6 +574,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     ).slice(0, FAVORITE_DOCK_LIMIT);
   }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites]);
   const hasSearchQuery = query.trim().length > 0;
+  const tabCounts = useMemo(
+    () => ({
+      chat: Array.isArray(chatsState.data) ? chatsState.data.length : null,
+      channel: Array.isArray(channelsState.data) ? channelsState.data.length : null,
+    }),
+    [channelsState.data, chatsState.data],
+  );
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
@@ -821,7 +896,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     );
     setHomeEntityFavorites(result.favorites);
     saveHomeEntityFavorites(favoriteStorageScope, result.favorites);
-    setFavoritePicker(null);
     setSavingFavoriteEntityKey(buildFavoriteEntityKey(entityType, entityId));
 
     try {
@@ -900,6 +974,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             .map((favoriteType) => HOME_ENTITY_FAVORITE_LABELS[favoriteType])
             .join(', ')}`
         : 'Добавить в избранное';
+    const compactLinkLabel = formatCompactLinkLabel(entity.link);
+    const entitySignals = buildEntitySignals(entity, activeTab);
 
     return (
       <GlassCard as="article" key={entity.id} className={className} style={style}>
@@ -926,6 +1002,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             />
             <div className="chat-card__title-wrap">
               <h3>{entity.title}</h3>
+              {compactLinkLabel || entitySignals.length > 0 ? (
+                <div className="chat-card__meta">
+                  {compactLinkLabel ? (
+                    <span className="chat-card__link-label">{compactLinkLabel}</span>
+                  ) : null}
+                  {entitySignals.map(({ key, value, Icon }) => (
+                    <span key={key} className="chat-card__signal">
+                      <Icon aria-hidden />
+                      {value ? <strong>{value}</strong> : null}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -945,12 +1034,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             disabled={favoriteEntitySaving}
           >
             <PrimaryFavoriteIcon aria-hidden />
+            {favoriteTypes.length > 1 ? (
+              <span className="chat-card__favorite-count">{favoriteTypes.length}</span>
+            ) : null}
           </button>
 
           <Link
             to={activityRoute}
             className="chat-card__action"
-            state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+            state={routeState}
             onClick={() => {
               rememberEntity(activeTab, entity);
               prefetchEntityActivity(activeTab, entity.id);
@@ -1067,16 +1159,24 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <h1 className="chats-command__sr">{tabLabel}</h1>
         <div className="chats-command__topline">
           <nav className="chats-command__tabs" aria-label="Раздел">
-            {(['chat', 'channel'] as const).map((tab) => (
-              <Link
-                key={tab}
-                to={buildManagedEntitiesRoute(tab)}
-                className={cn('chats-command__tab', activeTab === tab && 'is-active')}
-                aria-current={activeTab === tab ? 'page' : undefined}
-              >
-                {tab === 'chat' ? 'Чаты' : 'Каналы'}
-              </Link>
-            ))}
+            {(['chat', 'channel'] as const).map((tab) => {
+              const count = tabCounts[tab];
+              return (
+                <Link
+                  key={tab}
+                  to={buildManagedEntitiesRoute(tab)}
+                  className={cn('chats-command__tab', activeTab === tab && 'is-active')}
+                  aria-current={activeTab === tab ? 'page' : undefined}
+                >
+                  <span className="chats-command__tab-label">
+                    {tab === 'chat' ? 'Чаты' : 'Каналы'}
+                  </span>
+                  {count !== null ? (
+                    <strong className="chats-command__tab-count">{count}</strong>
+                  ) : null}
+                </Link>
+              );
+            })}
           </nav>
 
           <div className="chats-command__meta">
@@ -1120,6 +1220,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <input
                 id="chat-search"
                 type="search"
+                inputMode="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={searchPlaceholder}
@@ -1312,7 +1413,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="neutral"
             title="Каналы не найдены"
-            description="Добавьте бота в канал с правами администратора, затем откройте mini app из этого канала и дождитесь серверной проверки."
+            description="Добавьте бота в канал с правами администратора и обновите список."
             action={
               <button
                 type="button"
