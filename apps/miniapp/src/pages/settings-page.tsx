@@ -844,8 +844,8 @@ const LINK_POLICY_OPTIONS: Array<{
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
-    label: 'Удалять кроме...',
-    description: 'Ниже можно добавить точные ссылки и целые домены.',
+    label: 'По списку',
+    description: 'Только ссылки из списка ниже.',
   },
 ];
 
@@ -6665,7 +6665,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           >
             {isCurrentSectionApplying
               ? 'Сохраняем...'
-              : (options?.applyToAllLabel ?? 'Применить в...')}
+              : (options?.applyToAllLabel ?? 'Выбрать чаты')}
           </button>
         </div>
       </>
@@ -8267,7 +8267,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Открыть"
                                   title="Сетка кнопок"
-                                  subtitle="До 8 ссылочных кнопок. В приветствии они тоже покажутся рядами по 3."
+                                  subtitle="До 8 кнопок"
                                 />
                               ) : null}
                             </div>
@@ -8914,7 +8914,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Правила чата"
                                   title="Сетка кнопок"
-                                  subtitle="До 8 ссылочных кнопок. В сообщении о нарушении они покажутся рядами по 3."
+                                  subtitle="До 8 кнопок"
                                 />
                               ) : null}
                             </div>
@@ -8966,9 +8966,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {expandedSections.thematicFilters ? (
                       <div className="settings-section__collapse-inner">
                         <p className="settings-native-toggle__hint">
-                          Бот проверяет первое слово объявления длиной от 90 символов. Если оно не
-                          совпадает с кодовым словом, объявление удаляется и дальше работают ступени
-                          санкций.
+                          Проверка первого слова в длинных объявлениях.
                         </p>
 
                         <div className="settings-native-toggle text-filter-card">
@@ -9000,8 +8998,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </label>
                           </div>
                           <p className="settings-native-toggle__hint">
-                            Пример: <code>недвижимость продам квартиру...</code> или{' '}
-                            <code>#недвижимость: продам квартиру...</code>
+                            Пример: <code>#недвижимость: продам квартиру...</code>
                           </p>
                         </div>
 
@@ -9029,8 +9026,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <small className="field__hint">{thematicCodewordError}</small>
                               ) : (
                                 <small className="field__hint">
-                                  Одно слово без пробелов. Регистр, # и двоеточие не важны. Короткие
-                                  сообщения до 89 символов не проверяются.
+                                  Одно слово без пробелов. Регистр, # и двоеточие не важны.
                                 </small>
                               )}
                             </label>
@@ -9123,7 +9119,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 urlPlaceholder="https://max.ru/channel/..."
                                 textPlaceholder="Открыть"
                                 title="Сетка кнопок"
-                                subtitle="До 8 ссылочных кнопок. В тематическом фильтре они покажутся рядами по 3."
+                                subtitle="До 8 кнопок"
                               />
                             ) : null}
 
@@ -9358,7 +9354,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               urlPlaceholder="https://max.ru/profile/..."
                               textPlaceholder="Открыть"
                               title="Сетка кнопок"
-                              subtitle="До 8 ссылочных кнопок. В сообщении о дублях они покажутся рядами по 3."
+                              subtitle="До 8 кнопок"
                             />
                           ) : null}
                         </div>
@@ -10234,8 +10230,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         <small className="field__hint">
-                          {messageLimitsBlockedWordsError ??
-                            'Можно вводить обычное слово, +слово для добавления и -слово для удаления.'}
+                          {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
                         </small>
                       </div>
 
@@ -10457,7 +10452,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               urlPlaceholder="https://max.ru/channel/..."
                               textPlaceholder="Открыть"
                               title="Сетка кнопок"
-                              subtitle="До 8 ссылочных кнопок. В сообщении об ограничениях они покажутся рядами по 3."
+                              subtitle="До 8 кнопок"
                             />
                           ) : null}
                         </div>
@@ -10912,7 +10907,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   urlPlaceholder="https://max.ru/channel/..."
                                   textPlaceholder="Правила чата"
                                   title="Сетка кнопок"
-                                  subtitle="До 8 ссылочных кнопок. В ночном сообщении они покажутся рядами по 3."
+                                  subtitle="До 8 кнопок"
                                 />
                               ) : null}
                             </div>
