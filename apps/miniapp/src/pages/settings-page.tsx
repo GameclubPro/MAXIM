@@ -253,26 +253,51 @@ function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
   );
 }
 
-function buildAdminContactButtonPreset(profileUrl: string | null | undefined): BroadcastLinkButtonPreset[] {
+function normalizeAdminContactProfileUrl(profileUrl: string | null | undefined): string | null {
   const normalizedUrl = profileUrl?.trim() ?? '';
   if (!normalizedUrl) {
-    return [];
+    return null;
   }
 
   try {
     const parsed = new URL(normalizedUrl);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return [];
+      return null;
     }
   } catch {
+    return null;
+  }
+
+  return normalizedUrl;
+}
+
+function buildAdminContactButton(
+  profileUrl: string | null | undefined,
+): BroadcastLinkButton | null {
+  const normalizedUrl = normalizeAdminContactProfileUrl(profileUrl);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  return {
+    text: ADMIN_CONTACT_BUTTON_TEXT,
+    url: normalizedUrl,
+  };
+}
+
+function buildAdminContactButtonPreset(
+  profileUrl: string | null | undefined,
+): BroadcastLinkButtonPreset[] {
+  const button = buildAdminContactButton(profileUrl);
+  if (!button) {
     return [];
   }
 
   return [
     {
-      label: 'Админ',
-      text: ADMIN_CONTACT_BUTTON_TEXT,
-      url: normalizedUrl,
+      label: ADMIN_CONTACT_BUTTON_TEXT,
+      text: button.text,
+      url: button.url,
     },
   ];
 }
@@ -2570,6 +2595,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     () => buildAdminContactButtonPreset(meQuery.data?.profileUrl),
     [meQuery.data?.profileUrl],
   );
+  const createInitialChatSettingsButton = () =>
+    buildAdminContactButton(meQuery.data?.profileUrl) ?? createEmptyBroadcastLinkButton();
 
   const shouldLoadRequiredSubscriptionChannels =
     Boolean(chatId) &&
@@ -7651,7 +7678,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
                                           enabled,
                                           ...(enabled && draft.linkBotButtons.length === 0
-                                            ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                            ? { buttons: [createInitialChatSettingsButton()] }
                                             : {}),
                                         });
                                       }}
@@ -8343,7 +8370,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.greetingBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          ? { buttons: [createInitialChatSettingsButton()] }
                                           : {}),
                                       });
                                     }}
@@ -8995,7 +9022,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.textFiltersBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          ? { buttons: [createInitialChatSettingsButton()] }
                                           : {}),
                                       });
                                     }}
@@ -9209,7 +9236,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.thematicFiltersBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          ? { buttons: [createInitialChatSettingsButton()] }
                                           : {}),
                                       });
                                     }}
@@ -9448,7 +9475,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
                                     enabled,
                                     ...(enabled && draft.duplicateBotButtons.length === 0
-                                      ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                      ? { buttons: [createInitialChatSettingsButton()] }
                                       : {}),
                                   });
                                 }}
@@ -10542,7 +10569,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
                                     enabled,
                                     ...(enabled && draft.messageLimitsBotButtons.length === 0
-                                      ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                      ? { buttons: [createInitialChatSettingsButton()] }
                                       : {}),
                                   });
                                 }}
@@ -11000,7 +11027,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
                                         enabled,
                                         ...(enabled && draft.nightModeBotButtons.length === 0
-                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          ? { buttons: [createInitialChatSettingsButton()] }
                                           : {}),
                                       });
                                     }}
