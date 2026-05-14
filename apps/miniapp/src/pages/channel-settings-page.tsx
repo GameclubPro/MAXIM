@@ -75,6 +75,7 @@ import {
 } from '../lib/broadcast-link-buttons';
 import {
   createDefaultBroadcastCycleDraft,
+  findBroadcastSlotConflicts,
   formatBroadcastCycleSummary,
   getBroadcastCycleValidationError,
   normalizeBroadcastCycleDraft,
@@ -1817,12 +1818,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     postSuggestionsButtonText: draft.postSuggestionsButtonText,
   });
   const broadcastHasButton = normalizedBroadcastButtons.length > 0;
+  const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
+  const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
+  const broadcastVisibleButtonStatus = formatBroadcastButtonsStatus(broadcastVisibleButtons);
   const broadcastOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
   const pendingBroadcastConflictSlots = pendingBroadcastSlotConflict
-    ? pendingBroadcastSlotConflict.payload.scheduledSlots.filter((slot) =>
-        broadcastOccupiedSlots.includes(slot),
+    ? findBroadcastSlotConflicts(
+        pendingBroadcastSlotConflict.payload.scheduledSlots,
+        broadcastOccupiedSlots,
       )
     : [];
   const pendingBroadcastConflictPreviewSlot =
@@ -1834,8 +1839,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? [
         'Канал',
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingBroadcastReviewPayload)}`,
-        pendingBroadcastReviewPayload.buttonEnabled
-          ? `Кнопки · ${formatBroadcastButtonsStatus(pendingBroadcastReviewPayload.buttons)}`
+        pendingBroadcastReviewPayload.buttonEnabled || broadcastSystemButtons.length > 0
+          ? `Кнопки · ${formatBroadcastButtonsStatus([
+              ...pendingBroadcastReviewPayload.buttons,
+              ...broadcastSystemButtons,
+            ])}`
           : 'Кнопки · нет',
         pendingBroadcastReviewPayload.imageEnabled ||
         pendingBroadcastReviewPayload.mediaType === 'video'
@@ -1936,7 +1944,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showBroadcastResetAction =
     editingManagedBroadcast !== null ||
     duplicatedManagedBroadcast !== null ||
-    broadcastTimingMode !== 'scheduled' ||
+    broadcastTimingMode !== 'now' ||
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
@@ -1968,8 +1976,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Сейчас'
         : broadcastScheduledSlots.length > 0
           ? 'Календ'
-          : broadcastHasButton
-            ? formatBroadcastButtonsStatus(broadcastButtons)
+          : broadcastHasVisibleButtons
+            ? broadcastVisibleButtonStatus
             : broadcastHasPublishableContent
               ? 'Контент'
               : 'Пусто';
@@ -1989,7 +1997,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     'Текущий канал',
     broadcastImageLabel,
     editingBroadcastHasVideo ? 'Видео' : null,
-    broadcastHasButton ? formatBroadcastButtonsStatus(normalizedBroadcastButtons) : null,
+    broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -2036,10 +2044,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
     {
       label: 'Кнопки',
-      value: broadcastHasButton
-        ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
-        : 'Без кнопки',
-      tone: broadcastButtonDraftValid ? (broadcastHasButton ? 'ready' : 'neutral') : 'danger',
+      value: broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : 'Без кнопки',
+      tone: broadcastButtonDraftValid
+        ? broadcastHasVisibleButtons
+          ? 'ready'
+          : 'neutral'
+        : 'danger',
       icon: 'button',
     },
   ];
@@ -2118,6 +2128,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastImages([]);
     setBroadcastVideoCleared(false);
     setBroadcastTimingMode('now');
     setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
@@ -2132,6 +2143,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setBroadcastCycleCount(2);
     setBroadcastCycleError('');
+    setPendingBroadcastSlotConflict(null);
     setPendingBroadcastPublishReview(null);
     setBroadcastWorkspaceView('compose');
     resetBroadcastPlanner();
@@ -2358,7 +2370,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
     const hasConflictingSlots =
       payload.scheduleMode === 'calendar' &&
-      payload.scheduledSlots.some((slot) => broadcastOccupiedSlots.includes(slot));
+      findBroadcastSlotConflicts(payload.scheduledSlots, broadcastOccupiedSlots).length > 0;
     if (hasConflictingSlots) {
       setPendingBroadcastSlotConflict({ broadcastId, payload });
       return;
@@ -2975,10 +2987,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               }}
                               buttons={normalizedBroadcastButtons}
                               systemButtons={broadcastSystemButtons}
-                              buttonsStatusLabel={formatBroadcastButtonsStatus(
-                                normalizedBroadcastButtons,
-                              )}
-                              buttonsActive={broadcastHasButton}
+                              buttonsStatusLabel={broadcastVisibleButtonStatus}
+                              buttonsActive={broadcastHasVisibleButtons}
                               buttonsError={!broadcastButtonDraftValid}
                               onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
                             />
@@ -3167,9 +3177,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   'слота',
                                   'слотов',
                                 ),
-                                normalizedBroadcastButtons.length > 0
-                                  ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
-                                  : null,
+                                broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : null,
                                 editingManagedBroadcast.imageEnabled ? 'Фото' : null,
                               ]
                                 .filter((fact): fact is string => Boolean(fact))
@@ -3195,7 +3203,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           <div className="managed-broadcasts-list">
                             {filteredBroadcasts.length === 0 ? (
                               <div className="managed-broadcasts-list__empty">
-                                Автопостингов пока нет.
+                                {orderedManagedBroadcasts.length > 0
+                                  ? 'В этом фильтре пусто.'
+                                  : 'Автопостингов пока нет.'}
                               </div>
                             ) : null}
 

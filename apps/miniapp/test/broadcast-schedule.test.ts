@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  findBroadcastSlotConflicts,
   formatBroadcastCycleIntervalLabel,
   getBroadcastCycleValidationError,
   normalizeBroadcastCycleDraft,
@@ -109,4 +110,16 @@ test('formats cycle interval labels and calculates the last send time', () => {
     ),
     '2026-05-07T11:00:00.000Z',
   );
+});
+
+test('finds calendar slot conflicts by the same instant, not only exact strings', () => {
+  assert.deepEqual(
+    findBroadcastSlotConflicts(
+      ['2026-05-06T13:00:00+03:00', '2026-05-06T14:00:00+03:00'],
+      ['2026-05-06T10:00:00.000Z'],
+    ),
+    ['2026-05-06T13:00:00+03:00'],
+  );
+
+  assert.deepEqual(findBroadcastSlotConflicts(['broken-slot'], ['broken-slot']), ['broken-slot']);
 });

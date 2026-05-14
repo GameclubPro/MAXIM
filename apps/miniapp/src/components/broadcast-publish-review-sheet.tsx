@@ -33,12 +33,23 @@ export function BroadcastPublishReviewSheet({
   onConfirm,
 }: BroadcastPublishReviewSheetProps) {
   const hasAllAudience = facts.some((fact) => /все\s+чат/iu.test(fact));
+  const previewMeta =
+    facts.length > 0 ? (
+      <span className="broadcast-review-stack">
+        {hasAllAudience ? <span className="broadcast-review-alert">Массовая отправка</span> : null}
+        <span className="broadcast-review-facts">
+          {facts.map((fact) => (
+            <span key={`${id}-${fact}`}>{fact}</span>
+          ))}
+        </span>
+      </span>
+    ) : undefined;
 
   return (
     <ActionConfirmSheet
       id={id}
       open={open}
-      title="Проверка"
+      title={hasAllAudience ? 'Проверка охвата' : 'Проверка'}
       summary={hasAllAudience ? 'Все чаты' : undefined}
       previewTitle={
         text || hasMedia ? (
@@ -55,15 +66,7 @@ export function BroadcastPublishReviewSheet({
           </span>
         ) : undefined
       }
-      previewMeta={
-        facts.length > 0 ? (
-          <span className="broadcast-review-facts">
-            {facts.map((fact) => (
-              <span key={`${id}-${fact}`}>{fact}</span>
-            ))}
-          </span>
-        ) : undefined
-      }
+      previewMeta={previewMeta}
       confirmLabel={confirmLabel}
       confirmBusyLabel={confirmBusyLabel}
       cancelLabel="Назад"

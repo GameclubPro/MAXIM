@@ -191,6 +191,31 @@ export function sortAndUniqueBroadcastSlots(values: string[]): string[] {
   );
 }
 
+function parseBroadcastSlotTime(value: string): number | null {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function findBroadcastSlotConflicts(
+  selectedSlots: string[],
+  occupiedSlots: string[],
+): string[] {
+  const occupiedRawSlots = new Set(occupiedSlots.map((slot) => slot.trim()).filter(Boolean));
+  const occupiedTimes = new Set<number>();
+
+  for (const slot of occupiedRawSlots) {
+    const parsedTime = parseBroadcastSlotTime(slot);
+    if (parsedTime !== null) {
+      occupiedTimes.add(parsedTime);
+    }
+  }
+
+  return sortAndUniqueBroadcastSlots(selectedSlots).filter((slot) => {
+    const parsedTime = parseBroadcastSlotTime(slot);
+    return parsedTime !== null ? occupiedTimes.has(parsedTime) : occupiedRawSlots.has(slot);
+  });
+}
+
 export function getBroadcastScheduleDayKey(value: Date | string): string {
   const date = typeof value === 'string' ? new Date(value) : value;
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

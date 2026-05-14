@@ -114,6 +114,8 @@ export function BroadcastContentComposer({
   const previewButtonRows = buildBroadcastPreviewButtonRows(previewButtons, previewSystemButtons);
   const hasPreview = Boolean(normalizedText || imagePreviewItems.length > 0 || videoLabel);
   const remainingLength = maxLength - text.length;
+  const isNearTextLimit =
+    remainingLength >= 0 && remainingLength <= Math.min(120, maxLength * 0.08);
   const isPreparingImage = pendingImageSlots > 0;
   const isBusy = disabled || isPreparingImage;
 
@@ -210,14 +212,22 @@ export function BroadcastContentComposer({
         (textError || imageError) && 'field--error',
       )}
     >
-      <div className="broadcast-content-composer__workspace broadcast-content-composer__workspace--rich">
+      <div
+        className={cn(
+          'broadcast-content-composer__workspace',
+          'broadcast-content-composer__workspace--rich',
+          hasPreview && 'has-preview',
+        )}
+      >
         <div className="broadcast-content-composer__editor broadcast-content-composer__editor--rich">
           <div className="broadcast-content-composer__editor-head">
             <span
               className={cn(
                 'broadcast-content-composer__counter',
+                isNearTextLimit && 'is-warning',
                 remainingLength < 0 && 'is-limit',
               )}
+              aria-live="polite"
             >
               {text.length}/{maxLength}
             </span>

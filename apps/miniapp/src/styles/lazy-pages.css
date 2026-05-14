@@ -3740,6 +3740,10 @@
   white-space: nowrap;
 }
 
+.broadcast-content-composer__counter.is-warning {
+  color: #a46614;
+}
+
 .broadcast-content-composer__counter.is-limit {
   color: var(--danger);
 }
@@ -20664,6 +20668,26 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   min-height: 38px;
   padding: 7px 9px;
   font-size: 0.72rem;
+}
+
+.broadcast-review-stack {
+  display: grid;
+  gap: 7px;
+}
+
+.broadcast-review-alert {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid rgba(197, 122, 24, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 247, 230, 0.92);
+  color: #8c570f;
+  font-size: 0.68rem;
+  font-weight: 880;
+  line-height: 1;
+  padding: 0 10px;
 }
 
 .broadcast-review-facts {

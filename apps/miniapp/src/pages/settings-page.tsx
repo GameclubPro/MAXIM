@@ -145,6 +145,7 @@ import {
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import {
   createDefaultBroadcastCycleDraft,
+  findBroadcastSlotConflicts,
   formatBroadcastCycleSummary,
   getBroadcastCycleValidationError,
   normalizeBroadcastCycleDraft,
@@ -4523,6 +4524,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingImages([]);
     setMailingVideoCleared(false);
     setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());
@@ -4539,6 +4541,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    setPendingMailingSlotConflict(null);
     setPendingMailingPublishReview(null);
     setMailingButtonsSheetOpen(false);
     setMailingWorkspaceView('compose');
@@ -4853,7 +4856,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const hasConflictingSlots =
       payload.scheduleMode === 'calendar' &&
-      payload.scheduledSlots.some((slot) => mailingOccupiedSlots.includes(slot));
+      findBroadcastSlotConflicts(payload.scheduledSlots, mailingOccupiedSlots).length > 0;
     if (hasConflictingSlots) {
       setPendingMailingSlotConflict({ broadcastId, payload });
       return;
@@ -5866,8 +5869,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
   const pendingMailingConflictSlots = pendingMailingSlotConflict
-    ? pendingMailingSlotConflict.payload.scheduledSlots.filter((slot) =>
-        mailingOccupiedSlots.includes(slot),
+    ? findBroadcastSlotConflicts(
+        pendingMailingSlotConflict.payload.scheduledSlots,
+        mailingOccupiedSlots,
       )
     : [];
   const pendingMailingConflictPreviewSlot =
@@ -5884,6 +5888,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           avatarUrl: chatHeaderQuery.data?.avatarUrl ?? null,
         }
       : null;
+  const mailingSystemButtons = buildChatBroadcastSystemButtons({
+    commentsEnabled: draft?.commentsEnabled,
+    commentsChatBroadcastsEnabled: draft?.commentsChatBroadcastsEnabled,
+  });
   const pendingMailingReviewPayload = pendingMailingPublishReview?.payload ?? null;
   const pendingMailingReviewAudienceLabel = pendingMailingReviewPayload
     ? buildBroadcastAudiencePresentation({
@@ -5912,8 +5920,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? [
         `Кому · ${pendingMailingReviewAudienceLabel}`,
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingMailingReviewPayload)}`,
-        pendingMailingReviewPayload.buttonEnabled
-          ? `Кнопки · ${formatBroadcastButtonsStatus(pendingMailingReviewPayload.buttons)}`
+        pendingMailingReviewPayload.buttonEnabled || mailingSystemButtons.length > 0
+          ? `Кнопки · ${formatBroadcastButtonsStatus([
+              ...pendingMailingReviewPayload.buttons,
+              ...mailingSystemButtons,
+            ])}`
           : 'Кнопки · нет',
         pendingMailingReviewPayload.imageEnabled ||
         pendingMailingReviewPayload.mediaType === 'video'
@@ -5952,10 +5963,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingSystemButtons = buildChatBroadcastSystemButtons({
-    commentsEnabled: draft?.commentsEnabled,
-    commentsChatBroadcastsEnabled: draft?.commentsChatBroadcastsEnabled,
-  });
   const mailingAudiencePreviewBundle = buildBroadcastAudiencePreviewBundle({
     targetChatIds:
       mailingTargetMode === 'all'
@@ -5989,6 +5996,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const normalizedMailingText = mailingText.trim();
   const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
   const mailingButtonEnabled = normalizedMailingButtons.length > 0;
+  const mailingVisibleButtons = [...normalizedMailingButtons, ...mailingSystemButtons];
+  const mailingHasVisibleButtons = mailingVisibleButtons.length > 0;
+  const mailingVisibleButtonStatus = formatBroadcastButtonsStatus(mailingVisibleButtons);
   const mailingVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
@@ -6030,7 +6040,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     editingManagedBroadcast !== null ||
     duplicatedManagedBroadcast !== null ||
     mailingTargetMode !== 'current' ||
-    mailingTimingMode !== 'scheduled' ||
+    mailingTimingMode !== 'now' ||
     mailingScheduledSlots.length > 0 ||
     normalizedMailingText.length > 0 ||
     mailingImageEnabled ||
@@ -6092,7 +6102,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingHeaderTargetLabel,
     mailingImageLabel,
     editingMailingHasVideo ? 'Видео' : null,
-    mailingButtonEnabled ? formatBroadcastButtonsStatus(normalizedMailingButtons) : null,
+    mailingHasVisibleButtons ? mailingVisibleButtonStatus : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -6150,10 +6160,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
     {
       label: 'Кнопки',
-      value: mailingButtonEnabled
-        ? formatBroadcastButtonsStatus(normalizedMailingButtons)
-        : 'Без кнопки',
-      tone: mailingButtonDraftValid ? (mailingButtonEnabled ? 'ready' : 'neutral') : 'danger',
+      value: mailingHasVisibleButtons ? mailingVisibleButtonStatus : 'Без кнопки',
+      tone: mailingButtonDraftValid ? (mailingHasVisibleButtons ? 'ready' : 'neutral') : 'danger',
       icon: 'button',
     },
   ];
@@ -11230,10 +11238,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }}
                                     buttons={normalizedMailingButtons}
                                     systemButtons={mailingSystemButtons}
-                                    buttonsStatusLabel={formatBroadcastButtonsStatus(
-                                      normalizedMailingButtons,
-                                    )}
-                                    buttonsActive={mailingButtonEnabled}
+                                    buttonsStatusLabel={mailingVisibleButtonStatus}
+                                    buttonsActive={mailingHasVisibleButtons}
                                     buttonsError={!mailingButtonDraftValid}
                                     onOpenButtons={() => setMailingButtonsSheetOpen(true)}
                                   />
@@ -11413,7 +11419,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {filteredManagedBroadcasts.length === 0 &&
                                 !managedBroadcastsQuery.isLoading ? (
                                   <div className="managed-broadcasts-list__empty">
-                                    Автопостингов пока нет.
+                                    {orderedManagedBroadcasts.length > 0
+                                      ? 'В этом фильтре пусто.'
+                                      : 'Автопостингов пока нет.'}
                                   </div>
                                 ) : null}
 
