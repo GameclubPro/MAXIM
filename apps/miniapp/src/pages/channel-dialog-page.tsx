@@ -73,6 +73,7 @@ import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
 
 const COMMENT_REACTION_OPTIONS = [
@@ -479,11 +480,58 @@ function renderPlainTextParagraphs(text: string) {
       {paragraph.split('\n').map((line, lineIndex) => (
         <Fragment key={lineIndex}>
           {lineIndex > 0 ? <br /> : null}
-          {line}
+          {renderCommentTextLine(line, `paragraph-${paragraphIndex}-line-${lineIndex}`)}
         </Fragment>
       ))}
     </p>
   ));
+}
+
+function renderCommentTextLine(line: string, keyPrefix: string) {
+  return tokenizeTextLinks(line).map((segment, index) => {
+    if (segment.type === 'text') {
+      return <Fragment key={`${keyPrefix}-text-${index}`}>{segment.text}</Fragment>;
+    }
+
+    return (
+      <a
+        key={`${keyPrefix}-link-${index}`}
+        className="channel-dialog-message__link"
+        href={segment.href}
+        onClick={handleCommentLinkClick(segment.href)}
+        onContextMenu={stopCommentLinkMouseEvent}
+        onKeyDown={stopCommentLinkKeyboardEvent}
+        onPointerCancel={stopCommentLinkPointerEvent}
+        onPointerDown={stopCommentLinkPointerEvent}
+        onPointerMove={stopCommentLinkPointerEvent}
+        onPointerUp={stopCommentLinkPointerEvent}
+        rel="noreferrer"
+        target="_blank"
+      >
+        {segment.text}
+      </a>
+    );
+  });
+}
+
+function handleCommentLinkClick(url: string) {
+  return (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMaxBotLink(url);
+  };
+}
+
+function stopCommentLinkMouseEvent(event: ReactMouseEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
+}
+
+function stopCommentLinkKeyboardEvent(event: ReactKeyboardEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
+}
+
+function stopCommentLinkPointerEvent(event: ReactPointerEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
 }
 
 function buildSwipeReplyStyle(
