@@ -24335,3 +24335,203 @@ body.channel-settings-page-open {
     max-width: 100%;
   }
 }
+
+/* Compact stateful settings blocks without extra visible copy. */
+.settings-sections--chat-home,
+.channel-settings-screen {
+  gap: 8px;
+}
+
+.settings-sections-shell {
+  gap: 8px;
+  align-items: stretch;
+}
+
+.settings-home-group-head {
+  padding: 12px 4px 1px;
+}
+
+.settings-home-entry .settings-section__toggle,
+.channel-settings-card .settings-section__toggle {
+  grid-template-columns: 36px minmax(0, 1fr) minmax(38px, max-content) 26px;
+  min-height: 56px;
+  padding: 8px 9px;
+  gap: 8px;
+  border-radius: 16px;
+  border-color: rgba(203, 218, 231, 0.78);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 252, 255, 0.95)),
+    linear-gradient(110deg, var(--settings-entry-soft), transparent 48%);
+  box-shadow:
+    0 8px 20px rgba(24, 55, 83, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+}
+
+.settings-home-entry .settings-section__toggle::before,
+.channel-settings-card .settings-section__toggle::before {
+  background: linear-gradient(105deg, var(--settings-entry-soft), transparent 42%);
+  opacity: 0.54;
+}
+
+.settings-home-entry .settings-section__toggle::after,
+.channel-settings-card .settings-section__toggle::after {
+  top: 11px;
+  bottom: 11px;
+  width: 3px;
+  opacity: 0.48;
+}
+
+.settings-home-entry .settings-section__toggle[aria-expanded='true'],
+.channel-settings-card .settings-section__toggle[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--settings-entry-accent) 30%, rgba(203, 218, 231, 0.78));
+  box-shadow:
+    0 12px 26px color-mix(in srgb, var(--settings-entry-glow) 78%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.settings-home-entry--priority .settings-section__toggle {
+  min-height: 60px;
+}
+
+.settings-home-entry--list .settings-section__toggle,
+.channel-settings-card .settings-section__toggle {
+  min-height: 56px;
+}
+
+.settings-home-entry .settings-section__icon-badge,
+.channel-settings-card .settings-section__icon-badge {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  box-shadow:
+    0 8px 16px color-mix(in srgb, var(--settings-entry-glow) 72%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.settings-home-entry .settings-section__icon-badge svg,
+.channel-settings-card .settings-section__icon-badge svg {
+  width: 18px;
+  height: 18px;
+}
+
+.settings-home-entry .settings-section__toggle-main h3,
+.channel-settings-card .settings-section__toggle-main h3 {
+  font-size: 0.9rem;
+  line-height: 1.1;
+  font-weight: 840;
+}
+
+.settings-home-entry .settings-section__status-chip,
+.channel-settings-card .settings-section__status-chip {
+  justify-self: end;
+  max-width: 78px;
+  min-height: 23px;
+  padding-inline: 7px;
+  border-color: rgba(203, 218, 231, 0.74);
+  background: rgba(255, 255, 255, 0.78);
+  color: color-mix(in srgb, var(--settings-entry-accent) 62%, #263f56 38%);
+  box-shadow: none;
+  font-size: 0.6rem;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-home-entry .settings-section__chevron,
+.channel-settings-card .settings-section__chevron {
+  width: 26px;
+  height: 26px;
+  border-color: rgba(203, 218, 231, 0.72);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: none;
+}
+
+.settings-home-entry--speech {
+  border-radius: 16px;
+  border-color: rgba(203, 218, 231, 0.78);
+}
+
+.settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen) {
+  width: min(100%, 660px);
+}
+
+.settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
+  .settings-section__collapse-inner {
+  gap: 8px;
+}
+
+.settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
+  :is(.settings-native-toggle, .channel-settings-toggle-card, .field) {
+  border-radius: 15px;
+}
+
+.settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
+  .settings-native-toggle__title,
+.settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
+  .channel-settings-toggle-card__copy strong {
+  font-size: 0.89rem;
+}
+
+@media (max-width: 430px) {
+  .settings-home-entry .settings-section__toggle,
+  .channel-settings-card .settings-section__toggle {
+    grid-template-columns: 34px minmax(0, 1fr) minmax(36px, max-content) 25px;
+    min-height: 54px;
+    padding: 7px 8px;
+    gap: 7px;
+    border-radius: 15px;
+  }
+
+  .settings-home-entry .settings-section__icon-badge,
+  .channel-settings-card .settings-section__icon-badge {
+    width: 34px;
+    height: 34px;
+  }
+
+  .settings-home-entry .settings-section__toggle-main h3,
+  .channel-settings-card .settings-section__toggle-main h3 {
+    font-size: 0.86rem;
+  }
+
+  .settings-home-entry .settings-section__status-chip,
+  .channel-settings-card .settings-section__status-chip {
+    max-width: 66px;
+    min-height: 22px;
+    padding-inline: 6px;
+    font-size: 0.57rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .settings-home-entry .settings-section__toggle,
+  .channel-settings-card .settings-section__toggle {
+    grid-template-columns: 32px minmax(0, 1fr) minmax(34px, max-content) 25px;
+    grid-template-rows: none;
+    min-height: 52px;
+  }
+
+  .settings-home-entry .settings-section__icon-badge,
+  .channel-settings-card .settings-section__icon-badge {
+    grid-column: auto;
+    grid-row: auto;
+    width: 32px;
+    height: 32px;
+    border-radius: 11px;
+  }
+
+  .settings-home-entry .settings-section__toggle-main,
+  .channel-settings-card .settings-section__toggle-main,
+  .settings-home-entry .settings-section__chevron,
+  .channel-settings-card .settings-section__chevron {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .settings-home-entry .settings-section__status-chip,
+  .channel-settings-card .settings-section__status-chip {
+    grid-column: auto;
+    grid-row: auto;
+    justify-self: end;
+    max-width: 58px;
+  }
+}
