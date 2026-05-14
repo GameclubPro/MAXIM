@@ -625,8 +625,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
-          text: '<strong>Исходный</strong> пост админа',
-          format: 'html',
+          text: '**Исходный** пост админа',
+          format: 'markdown',
           link: {
             type: 'reply',
             mid: 'mid-parent-1',
@@ -828,8 +828,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: expect.objectContaining({
-          text: '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац',
-          format: 'html',
+          text: '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац',
+          format: 'markdown',
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves multi-paragraph MAX markup when reposting a source message copy', async () => {
+    const sourceText = 'Заголовок\n\nВторой абзац';
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-source-paragraphs-1',
+                    text: sourceText,
+                    markup: [
+                      {
+                        from: 0,
+                        type: 'strong',
+                        length: sourceText.length,
+                      },
+                    ],
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              mid: 'mid-copy-paragraphs-1',
+              url: 'https://max.ru/chats/chat-1/message/792',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-paragraphs-1',
+      sourceText,
+      {
+        button: {
+          text: '💬 Комментарии',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      messageId: 'mid-copy-paragraphs-1',
+      url: 'https://max.ru/chats/chat-1/message/792',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: expect.objectContaining({
+          text: '**Заголовок**\n\n**Второй абзац**',
+          format: 'markdown',
         }),
       }),
     );
@@ -892,8 +964,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
           message_id: 'mid-edit-markup-1',
         },
         data: expect.objectContaining({
-          text: '🔥<strong>Привет</strong> мир',
-          format: 'html',
+          text: '🔥**Привет** мир',
+          format: 'markdown',
         }),
       }),
     );

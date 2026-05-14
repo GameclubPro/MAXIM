@@ -2929,11 +2929,11 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (typeof sourceText === 'string' && typeof text === 'string' && text === sourceText) {
-      const html = this.renderMessageMarkupAsHtml(sourceText, source.markup);
-      if (html && html !== sourceText) {
+      const markdown = this.renderMessageMarkupAsMarkdown(sourceText, source.markup);
+      if (markdown && markdown !== sourceText) {
         return {
-          text: html,
-          textFormat: 'html',
+          text: markdown,
+          textFormat: 'markdown',
         };
       }
 
