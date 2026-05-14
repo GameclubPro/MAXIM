@@ -13,6 +13,12 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 
+export type BroadcastLinkButtonPreset = {
+  label: string;
+  text: string;
+  url?: string;
+};
+
 type BroadcastLinkButtonsEditorProps = {
   api: ApiTransport;
   buttons: BroadcastLinkButton[];
@@ -20,6 +26,7 @@ type BroadcastLinkButtonsEditorProps = {
   disabled?: boolean;
   revealNextStepSignal?: number;
   contextEntityType?: 'chat' | 'channel';
+  presets?: BroadcastLinkButtonPreset[];
   title?: string;
   subtitle?: string;
   compact?: boolean;
@@ -35,6 +42,7 @@ export function BroadcastLinkButtonsEditor({
   disabled = false,
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
+  presets = [],
   title = 'Сетка кнопок',
   subtitle = 'До 8 кнопок',
   compact = false,
@@ -47,7 +55,8 @@ export function BroadcastLinkButtonsEditor({
   const previewRows = chunkBroadcastLinkButtons(buttons);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
   const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
-  const compactPresets =
+  const emptyButtonIndex = buttons.findIndex((button) => !button.url.trim());
+  const compactPresets: BroadcastLinkButtonPreset[] =
     contextEntityType === 'channel'
       ? [
           { label: 'Канал', text: 'Открыть канал' },
@@ -59,6 +68,10 @@ export function BroadcastLinkButtonsEditor({
           { label: 'Канал', text: 'Открыть канал' },
           { label: 'URL', text: 'Открыть' },
         ];
+  const visiblePresets = compact ? [...compactPresets, ...presets] : presets;
+  const canShowPresets =
+    visiblePresets.length > 0 &&
+    visiblePresets.some((preset) => canApplyPreset(preset, buttons, canAddMore));
   const nextButtonLabel = compact
     ? buttons.length === 0
       ? 'Добавить'
@@ -132,13 +145,31 @@ export function BroadcastLinkButtonsEditor({
     onChange([...buttons, createEmptyBroadcastLinkButton()]);
   }
 
-  function applyPreset(text: string) {
-    const nextButton = { ...createEmptyBroadcastLinkButton(), text };
-    const emptyIndex = buttons.findIndex((button) => !button.url.trim());
+  function applyPreset(preset: BroadcastLinkButtonPreset) {
+    const emptyButton = createEmptyBroadcastLinkButton();
+    const nextButton = {
+      ...emptyButton,
+      text: preset.text.trim() || emptyButton.text,
+      url: preset.url?.trim() ?? '',
+    };
+    const matchingUrlIndex = nextButton.url
+      ? buttons.findIndex((button) => button.url.trim() === nextButton.url)
+      : -1;
 
-    if (emptyIndex >= 0) {
+    if (matchingUrlIndex >= 0) {
       onChange(
-        buttons.map((button, index) => (index === emptyIndex ? { ...button, text } : button)),
+        buttons.map((button, index) =>
+          index === matchingUrlIndex ? { ...button, ...nextButton } : button,
+        ),
+      );
+      return;
+    }
+
+    if (emptyButtonIndex >= 0) {
+      onChange(
+        buttons.map((button, index) =>
+          index === emptyButtonIndex ? { ...button, ...nextButton } : button,
+        ),
       );
       return;
     }
@@ -146,6 +177,10 @@ export function BroadcastLinkButtonsEditor({
     if (canAddMore) {
       onChange([...buttons, nextButton]);
     }
+  }
+
+  function isPresetDisabled(preset: BroadcastLinkButtonPreset): boolean {
+    return disabled || !canApplyPreset(preset, buttons, canAddMore);
   }
 
   return (
@@ -162,15 +197,15 @@ export function BroadcastLinkButtonsEditor({
         </span>
       </div>
 
-      {compact && canAddMore ? (
+      {canShowPresets ? (
         <div className="broadcast-link-editor__presets" aria-label="Быстрые кнопки">
-          {compactPresets.map((preset) => (
+          {visiblePresets.map((preset) => (
             <button
-              key={preset.label}
+              key={`${preset.label}-${preset.text}-${preset.url ?? ''}`}
               type="button"
               className="broadcast-link-editor__preset"
-              disabled={disabled}
-              onClick={() => applyPreset(preset.text)}
+              disabled={isPresetDisabled(preset)}
+              onClick={() => applyPreset(preset)}
               aria-label={preset.text}
             >
               {preset.label}
@@ -292,3 +327,16 @@ export function BroadcastLinkButtonsEditor({
 }
 
 export default BroadcastLinkButtonsEditor;
+
+function canApplyPreset(
+  preset: BroadcastLinkButtonPreset,
+  buttons: BroadcastLinkButton[],
+  canAddMore: boolean,
+): boolean {
+  const url = preset.url?.trim() ?? '';
+  if (url && buttons.some((button) => button.url.trim() === url)) {
+    return true;
+  }
+
+  return canAddMore || buttons.some((button) => !button.url.trim());
+}

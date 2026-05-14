@@ -62,7 +62,10 @@ import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import {
+  BroadcastLinkButtonsEditor,
+  type BroadcastLinkButtonPreset,
+} from '../components/broadcast-link-buttons-editor';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -250,6 +253,30 @@ function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
   );
 }
 
+function buildAdminContactButtonPreset(profileUrl: string | null | undefined): BroadcastLinkButtonPreset[] {
+  const normalizedUrl = profileUrl?.trim() ?? '';
+  if (!normalizedUrl) {
+    return [];
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return [];
+    }
+  } catch {
+    return [];
+  }
+
+  return [
+    {
+      label: 'Админ',
+      text: ADMIN_CONTACT_BUTTON_TEXT,
+      url: normalizedUrl,
+    },
+  ];
+}
+
 type DeleteDelayStepperProps = {
   title: string;
   value: number;
@@ -391,6 +418,7 @@ const NIGHT_MODE_BOT_BUTTON_GROUP = {
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT = 9;
 const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
+const ADMIN_CONTACT_BUTTON_TEXT = 'Связь с админом';
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   'a',
@@ -2538,6 +2566,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
+  const adminContactButtonPresets = useMemo(
+    () => buildAdminContactButtonPreset(meQuery.data?.profileUrl),
+    [meQuery.data?.profileUrl],
+  );
 
   const shouldLoadRequiredSubscriptionChannels =
     Boolean(chatId) &&
@@ -7642,6 +7674,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     api={api}
                                     buttons={draft.linkBotButtons}
                                     errors={linkBotButtonErrors}
+                                    presets={adminContactButtonPresets}
                                     onChange={(nextButtons) =>
                                       updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
                                         buttons: nextButtons,
@@ -8333,6 +8366,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.greetingBotButtons}
                                   errors={greetingBotButtonErrors}
+                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -8984,6 +9018,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.textFiltersBotButtons}
                                   errors={textFiltersBotButtonErrors}
+                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -9191,6 +9226,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 api={api}
                                 buttons={draft.thematicFiltersBotButtons}
                                 errors={thematicBotButtonErrors}
+                                presets={adminContactButtonPresets}
                                 onChange={(nextButtons) =>
                                   updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
                                     buttons: nextButtons,
@@ -9428,6 +9464,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               api={api}
                               buttons={draft.duplicateBotButtons}
                               errors={duplicateBotButtonErrors}
+                              presets={adminContactButtonPresets}
                               onChange={(nextButtons) =>
                                 updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
                                   buttons: nextButtons,
@@ -10528,6 +10565,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               api={api}
                               buttons={draft.messageLimitsBotButtons}
                               errors={messageLimitsBotButtonErrors}
+                              presets={adminContactButtonPresets}
                               onChange={(nextButtons) =>
                                 updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
                                   buttons: nextButtons,
@@ -10985,6 +11023,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   api={api}
                                   buttons={draft.nightModeBotButtons}
                                   errors={nightBotButtonErrors}
+                                  presets={adminContactButtonPresets}
                                   onChange={(nextButtons) =>
                                     updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
                                       buttons: nextButtons,
@@ -13138,6 +13177,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           buttons={rulesDraft?.buttons ?? []}
           errors={rulesButtonErrors}
           revealNextStepSignal={rulesButtonRevealSignal}
+          presets={adminContactButtonPresets}
           disabled={isRulesBusy}
           statusLabel={rulesButtonEnabled ? rulesButtonStatus : 'Без кнопок'}
           urlPlaceholder="https://max.ru/channel/rules"
@@ -13171,6 +13211,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           buttons={mailingButtons}
           errors={mailingButtonErrors}
           revealNextStepSignal={mailingButtonRevealSignal}
+          presets={adminContactButtonPresets}
           disabled={isMailingBusy}
           statusLabel={
             mailingButtonEnabled

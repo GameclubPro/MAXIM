@@ -33,6 +33,7 @@ export class AdminController {
     return this.adminService.getMe(user, {
       chatId,
       entityType: entityType === 'channel' ? 'channel' : entityType === 'chat' ? 'chat' : undefined,
+      enrichFromMax: Boolean(chatId?.trim()),
     });
   }
 
