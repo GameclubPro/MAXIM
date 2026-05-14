@@ -41,15 +41,6 @@ import {
   type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Community as IconoirCommunity,
-  Flask as IconoirFlask,
-  Megaphone as IconoirMegaphone,
-  ShieldAlert as IconoirShieldAlert,
-  Star as IconoirStar,
-  Wrench as IconoirWrench,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
 import '../styles/lazy-pages.css';
 import {
   Suspense,
@@ -87,6 +78,7 @@ import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-d
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import type { PublishedRulesButtonToggleProps } from '../components/published-rules-button-toggle';
+import { HOME_ENTITY_FAVORITE_ICONS, XmarkGlyph } from '../components/ui/compact-icons';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -681,14 +673,7 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   invitationAccess: 'Доступ по приглашениям',
   extra: 'Сервис',
 };
-const APPLY_TARGET_FAVORITE_ICONS = {
-  important: IconoirStar,
-  watch: IconoirShieldAlert,
-  broadcast: IconoirMegaphone,
-  test: IconoirFlask,
-  partner: IconoirCommunity,
-  service: IconoirWrench,
-} as const satisfies Record<ManagedEntityFavoriteType, typeof IconoirStar>;
+const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;
 
 function createDefaultApplySettingsTarget(): ApplySettingsTarget {
   return {
@@ -6536,7 +6521,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               title="Закрыть"
               onClick={() => setApplyTargetSheet(null)}
             >
-              <IconoirXmark aria-hidden />
+              <XmarkGlyph aria-hidden />
             </button>
           </div>
 

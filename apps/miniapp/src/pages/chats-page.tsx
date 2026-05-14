@@ -12,12 +12,6 @@ import {
   type SVGProps,
 } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  RefreshDouble as IconoirRefreshDouble,
-  Search as IconoirSearch,
-  Star as IconoirStar,
-  Xmark as IconoirXmark,
-} from 'iconoir-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type {
   ChatSummary,
@@ -26,6 +20,13 @@ import type {
 } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
+import {
+  HOME_ENTITY_FAVORITE_ICONS,
+  RefreshGlyph,
+  SearchGlyph,
+  StarGlyph,
+  XmarkGlyph,
+} from '../components/ui/compact-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
@@ -100,14 +101,6 @@ const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 104;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
-const FAVORITE_TYPE_ICONS = {
-  important: IconoirStar,
-  watch: WatchGlyph,
-  broadcast: BroadcastGlyph,
-  test: TestGlyph,
-  partner: PartnerGlyph,
-  service: WrenchGlyph,
-} as const satisfies Record<ManagedEntityFavoriteType, ElementType<SVGProps<SVGSVGElement>>>;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -305,83 +298,6 @@ function CheckGlyph(props: SVGProps<SVGSVGElement>) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-    </svg>
-  );
-}
-
-function WatchGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M12 3.5l7 2.7v5.1c0 4.2-2.7 7.4-7 9.2-4.3-1.8-7-5-7-9.2V6.2l7-2.7Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path d="M12 7.8v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M12 16.2h.01" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function BroadcastGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M5 13.5h3.4l7.6 4.2V6.3l-7.6 4.2H5v3Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M19 9a4.8 4.8 0 010 6"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path d="M8 13.5l1.2 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function TestGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M9 3.8h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path
-        d="M10 4v5.2l-4.1 7.2A2.6 2.6 0 008.2 20h7.6a2.6 2.6 0 002.3-3.6L14 9.2V4"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path d="M8 16h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function PartnerGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path
-        d="M7.5 11.5a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4ZM16.5 11.5a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M3.8 19.2c.7-2.7 2.4-4.2 4.8-4.2 1.4 0 2.5.5 3.4 1.4.9-.9 2-1.4 3.4-1.4 2.4 0 4.1 1.5 4.8 4.2"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function WrenchGlyph(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" {...props}>
-      <path d="M14.6 5.2a4.8 4.8 0 005.1 5.1l-8.9 8.9a3 3 0 01-4.2-4.2l8-9.8Z" />
-      <path d="M7.8 16.2l-1.2 1.2" />
     </svg>
   );
 }
@@ -942,7 +858,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
     const favoriteTypes = getHomeEntityFavoriteTypes(homeEntityFavorites, activeTab, entity.id);
     const PrimaryFavoriteIcon =
-      favoriteTypes.length > 0 ? FAVORITE_TYPE_ICONS[favoriteTypes[0]] : PlusGlyph;
+      favoriteTypes.length > 0 ? HOME_ENTITY_FAVORITE_ICONS[favoriteTypes[0]] : PlusGlyph;
     const favoriteEntitySaving =
       savingFavoriteEntityKey === buildFavoriteEntityKey(activeTab, entity.id);
     const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
@@ -1101,13 +1017,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               title="Закрыть"
               onClick={() => setFavoritePicker(null)}
             >
-              <IconoirXmark aria-hidden />
+              <XmarkGlyph aria-hidden />
             </button>
           </div>
 
           <div className="favorite-picker__grid">
             {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-              const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
               const active = selectedTypes.includes(favoriteType);
               return (
                 <button
@@ -1192,10 +1108,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               aria-label="Обновить"
               title="Обновить"
             >
-              <IconoirRefreshDouble
-                aria-hidden
-                className={isFetching ? 'is-spinning' : undefined}
-              />
+              <RefreshGlyph aria-hidden className={isFetching ? 'is-spinning' : undefined} />
             </button>
           </div>
         </div>
@@ -1216,7 +1129,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <label className="field field--search chats-command__field" htmlFor="chat-search">
             <span>{searchLabel}</span>
             <div className="chats-command__field-shell">
-              <IconoirSearch aria-hidden className="chats-command__search-icon" />
+              <SearchGlyph aria-hidden className="chats-command__search-icon" />
               <input
                 id="chat-search"
                 type="search"
@@ -1233,7 +1146,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   aria-label="Очистить поиск"
                   title="Очистить поиск"
                 >
-                  <IconoirXmark aria-hidden />
+                  <XmarkGlyph aria-hidden />
                 </button>
               ) : null}
             </div>
@@ -1244,7 +1157,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
             </span>
             <span className="chats-command__metric" title="Избранное">
-              <IconoirStar aria-hidden />
+              <StarGlyph aria-hidden />
               <strong>{favoriteEntitiesCount}</strong>
             </span>
           </div>
@@ -1263,7 +1176,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             Все
           </button>
           {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-            const FavoriteIcon = FAVORITE_TYPE_ICONS[favoriteType];
+            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
             return (
               <button
                 key={favoriteType}
