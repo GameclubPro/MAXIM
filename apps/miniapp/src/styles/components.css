@@ -3819,7 +3819,7 @@ body.chats-home-page-open::after {
 body.chats-home-page-open .app-shell {
   --bottom-nav-height: 76px;
   --bottom-nav-offset: 7px;
-  padding-top: calc(var(--app-safe-top) + 6px);
+  padding-top: var(--app-safe-top);
   padding-bottom: calc(
     var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
   );
@@ -3940,7 +3940,7 @@ body.chats-home-page-open .bottom-nav__label {
 
 .chats-command {
   position: sticky;
-  top: calc(var(--app-safe-top) + 6px);
+  top: var(--app-safe-top);
   z-index: 15;
   display: grid;
   gap: 8px;
