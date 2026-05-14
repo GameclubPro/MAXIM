@@ -1,15 +1,29 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to deploy
+        required: true
+        default: main
+      services:
+        description: Space-separated service names. Leave empty to deploy the default production set.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-
       - name: Setup SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -29,13 +43,36 @@ jobs:
           EOF
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Upload repository
-        run: |
-          SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
-          rsync -az --delete --exclude .git -e "ssh $SSH_OPTS" ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_PATH }}
-
       - name: Deploy on VPS
+        env:
+          DEPLOY_BRANCH: ${{ inputs.branch }}
+          DEPLOY_SERVICES: ${{ inputs.services }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
-          ssh $SSH_OPTS ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "cd ${{ secrets.VPS_PATH }} && ./infra/scripts/deploy.sh"
+          if [[ -z "$VPS_HOST" || -z "$VPS_PATH" || -z "$VPS_USER" ]]; then
+            echo "Missing one of the required VPS secrets: VPS_HOST, VPS_PATH, VPS_USER."
+            exit 1
+          fi
+
+          SSH_OPTS=(
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+            -o ConnectTimeout=30
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=3
+            -p "$VPS_SSH_PORT"
+          )
+
+          remote_args=(./infra/scripts/vps-pull-build-up.sh "$DEPLOY_BRANCH")
+          if [[ -n "$DEPLOY_SERVICES" ]]; then
+            read -r -a service_args <<<"$DEPLOY_SERVICES"
+            remote_args+=("${service_args[@]}")
+          fi
+
+          printf -v remote_command "%q " "${remote_args[@]}"
+          ssh "${SSH_OPTS[@]}" "$VPS_USER@$VPS_HOST" \
+            "cd $(printf '%q' "$VPS_PATH") && $remote_command"
