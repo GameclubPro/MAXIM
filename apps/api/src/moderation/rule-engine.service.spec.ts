@@ -1452,7 +1452,7 @@ describe('RuleEngineService', () => {
     expect(violation).toBeUndefined();
   });
 
-  it('detects COMMERCIAL_AD for private sale with phone only on strict sensitivity', async () => {
+  it('does not detect private baby gear listing with phone on strict sensitivity', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -1465,10 +1465,26 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('detects commercial baby goods retail when stock and delivery context are present', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаем детские коляски, новые модели в наличии, доставка по городу, цены от 12000 руб, звоните +7 (999) 123-45-67',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
+      domainAllowlist: [],
+    });
+
     const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
     expect(violation).toBeDefined();
     expect(violation?.metadata?.matchedSignals).toEqual(
-      expect.arrayContaining(['contact:phone', 'combo:strict-intent+direct-deal']),
+      expect.arrayContaining(['intent:продаем', 'promo:доставк', 'contact:phone']),
     );
   });
 
@@ -1575,6 +1591,25 @@ describe('RuleEngineService', () => {
   );
 
   it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect website developer recommendation request on %s sensitivity',
+    async (sensitivity) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'Подскажите разработчика сайтов, кто делал лендинг и сколько примерно стоит?',
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          commercialAdsSensitivity: sensitivity,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    },
+  );
+
+  it.each(['BALANCED', 'STRICT'] as const)(
     'does not detect household search for brigade even with reply CTA on %s sensitivity',
     async (sensitivity) => {
       const service = new RuleEngineService(new MockRedisCounterService() as never);
@@ -1614,7 +1649,7 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('detects strict resale ad with price and phone from production-style log', async () => {
+  it('does not detect private vehicle sale with price and phone from production-style log', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
       service,
@@ -1624,13 +1659,22 @@ describe('RuleEngineService', () => {
       },
     );
 
+    expect(violation).toBeUndefined();
+  });
+
+  it('detects commercial digital service ads with prices in private messages', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Разработка сайтов и чат-ботов для бизнеса. Портфолио и цены в лс.',
+    );
+
     expect(violation).toBeDefined();
     expect(violation?.metadata?.matchedSignals).toEqual(
       expect.arrayContaining([
-        'intent:продам',
-        'contact:phone',
-        'transaction:keywords',
-        'combo:strict-intent+direct-deal',
+        'service-specialty:разработк',
+        'service-specialty:digital-service',
+        'contact:в лс',
       ]),
     );
   });
@@ -1640,6 +1684,7 @@ describe('RuleEngineService', () => {
     'Электрик, звоните 8 999 123 45 67',
     'Маникюр, пишите в личку',
     'Клининг квартир, whatsapp 8 999 123 45 67',
+    'Настрою рекламу и сделаю лендинг, цены в лс',
   ])('detects bare service ad on balanced sensitivity: %s', async (text) => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

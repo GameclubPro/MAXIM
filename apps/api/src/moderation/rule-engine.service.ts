@@ -209,7 +209,7 @@ type ResolvedBlockedWordIndex = {
 };
 
 const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
-const COMMERCIAL_SECOND_STAGE_VERSION = '2026-goods-hybrid-v1';
+const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v2';
 const COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES = 4096;
 const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
   'иями',
@@ -846,6 +846,8 @@ const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
 const ADS_INTENT_MARKERS = [
   'продам',
   'продаю',
+  'продаем',
+  'продаём',
   'продажа',
   'продается',
   'продаётся',
@@ -1004,6 +1006,29 @@ const ADS_SERVICE_SPECIALTY_MARKERS = [
   'септик',
   'откачк',
   'ассениз',
+  'разработк',
+  'лендинг',
+  'чат-бот',
+  'дизайн',
+  'логотип',
+  'таргет',
+  'smm',
+  'продвижени',
+  'наращивани',
+  'депиляц',
+  'эпиляц',
+  'шугаринг',
+  'татуаж',
+  'перманент',
+  'фотограф',
+  'видеограф',
+  'кейтеринг',
+  'банкет',
+  'торт',
+  'выпечк',
+  'шиномонтаж',
+  'автомойк',
+  'химчистк',
 ];
 const ADS_RECRUITMENT_MARKERS = [
   'ваканси',
@@ -1261,10 +1286,20 @@ const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
   {
     label: 'сделаю',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:сделаю|изготовлю|построю|отремонтирую|починю|пробурю|сварю|сошью|свяжу|соберу)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:сделаю|сделаем|изготовлю|изготовим|построю|построим|отремонтирую|отремонтируем|починю|починим|пробурю|пробурим|сварю|сварим|сошью|сошьем|сошьём|свяжу|свяжем|соберу|соберем|соберём|выполню|выполним)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
 const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'digital-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:разработк[\p{L}\p{N}_-]*|создани[\p{L}\p{N}_-]*|сделаю|настрою)(?:[\p{L}\p{N}\s.,:;()/-]{0,28})(?:сайт[\p{L}\p{N}_-]*|лендинг[\p{L}\p{N}_-]*|бот[\p{L}\p{N}_-]*|чат[\s-]*бот[\p{L}\p{N}_-]*|дизайн[\p{L}\p{N}_-]*|логотип[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'promotion-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:smm|таргет[\p{L}\p{N}_-]*|настройк[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,18})реклам[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,28})(?:сайт[\p{L}\p{N}_-]*|соцсет[\p{L}\p{N}_-]*|канал[\p{L}\p{N}_-]*|групп[\p{L}\p{N}_-]*|бизнес[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
   {
     label: 'подъем-домов',
     pattern:
@@ -1328,6 +1363,18 @@ const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
     label: 'resale-condition',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:в\s+отличном\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|носил[аи]?|одевал[аи]?|надевал[аи]?|после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*|не\s+подошл[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
+const ADS_PRIVATE_SINGLE_LISTING_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'private-vehicle',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:продам|продаю|прода[её]тся)(?:[\p{L}\p{N}\s.,:;()/-]{0,55})(?:автомобил[\p{L}\p{N}_-]*|машин[ауые]?|опель|opel|лада|ваз|грант[\p{L}\p{N}_-]*|приор[\p{L}\p{N}_-]*|солярис|kia|киа|hyundai|хенда[ий]|toyota|тойот[\p{L}\p{N}_-]*|ford|форд|renault|рено|chevrolet|шевроле)(?:[\p{L}\p{N}\s.,:;()/-]{0,110})(?:пробег|мотор|двигател[\p{L}\p{N}_-]*|кузов|птс|стс|владельц[\p{L}\p{N}_-]*|штраф[\p{L}\p{N}_-]*|запрет[\p{L}\p{N}_-]*|резин[\p{L}\p{N}_-]*|ключ[\p{L}\p{N}_-]*|сел\s+и\s+поехал|цена|торг|звон)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'baby-gear',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:продам|продаю|отдам)(?:[\p{L}\p{N}\s.,:;()/-]{0,70})(?:детск[\p{L}\p{N}_-]*\s+)?(?:коляск[\p{L}\p{N}_-]*|автокресл[\p{L}\p{N}_-]*|кроватк[\p{L}\p{N}_-]*|стульчик[\p{L}\p{N}_-]*|манеж[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
@@ -2035,9 +2082,12 @@ export class RuleEngineService {
           hasMarker('каталог') ||
           hasMarker('ассортимент') ||
           hasMarker('заказывайте')));
-    const hasPrivateGoodsItemContext = ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) =>
+    const hasPrivateSingleListingContext = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.some(({ pattern }) =>
       matchesPattern(pattern),
     );
+    const hasPrivateGoodsItemContext =
+      hasPrivateSingleListingContext ||
+      ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasPropertyServiceCommercialOverride =
       hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
@@ -2051,7 +2101,9 @@ export class RuleEngineService {
       hasInfoProductContext ||
       hasPropertyServiceCommercialOverride ||
       hasGoodsRetailContext;
-    const hasPrivateContextMarker = ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
+    const hasPrivateContextMarker =
+      hasPrivateSingleListingContext ||
+      ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasSelfPromotionalContext =
       hasIntentContext ||
       hasPromoContext ||
@@ -3792,6 +3844,15 @@ export class RuleEngineService {
       addNegative('private:property-sale', 26, true);
       hasPrivateSaleContext = true;
       hasPropertyPrivateContext = true;
+    }
+
+    const privateSingleListingHits = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of privateSingleListingHits.slice(0, 2)) {
+      addNegative(`private-single:${label}`, 24, true);
+      hasPrivateGoodsItemContext = true;
+      hasPrivateSaleContext = true;
     }
 
     const intentHits = ADS_INTENT_MARKERS.filter((marker) => {
