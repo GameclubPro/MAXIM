@@ -116,6 +116,7 @@
 - Keep required webhook event coverage aligned with `apps/api/src/max/max-webhook-subscription.constants.ts`; current product flows depend on `message_created`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, and `bot_started`.
 - When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
 - Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
+- For `max://user/<id>` mentions, use the user's resolved display name, including `first_name + last_name` when MAX sends split fields. Username-only or first-name-only labels can render as plain text in MAX clients.
 - Treat `initDataUnsafe` as convenience only. Authentication and trust must rely on validated `initData` / `WebAppData` using the MAX HMAC flow with the correct bot token.
 - Keep bot tokens and webhook secrets only in VPS secrets or `.env`, never in git.
 - Treat MAX mini apps as bot-scoped entry points. Do not assume the launch context identifies a managed target chat or channel on home; user-facing discovery should rely on allowlist, published snapshots, and recent `bot_added` signals.
