@@ -45,6 +45,7 @@ type BroadcastContentComposerProps = {
   onTextChange: (value: string) => void;
   onImageChange?: (image: BroadcastContentComposerImage) => void;
   onImagesChange?: (images: BroadcastImage[]) => void;
+  onImagePreparationChange?: (preparing: boolean) => void;
   onOpenButtons?: () => void;
   onClearVideo?: () => void;
   onError?: (message: string) => void;
@@ -72,6 +73,7 @@ export function BroadcastContentComposer({
   onTextChange,
   onImageChange,
   onImagesChange,
+  onImagePreparationChange,
   onOpenButtons,
   onClearVideo,
   onError,
@@ -137,6 +139,11 @@ export function BroadcastContentComposer({
     return nextImages.reduce((total, item) => total + item.base64.length, 0);
   }
 
+  function updatePreparingImages(nextState: PreparingImagesState) {
+    setPreparingImages(nextState);
+    onImagePreparationChange?.(nextState.total > nextState.done);
+  }
+
   async function handleImageFiles(files: FileList | null) {
     const selectedFiles = Array.from(files ?? []);
     if (selectedFiles.length === 0) {
@@ -157,7 +164,7 @@ export function BroadcastContentComposer({
       onError?.(`Можно добавить до ${maxImageCount} фото.`);
     }
 
-    setPreparingImages({ done: 0, total: filesToPrepare.length });
+    updatePreparingImages({ done: 0, total: filesToPrepare.length });
     try {
       let nextImages = currentImages.slice(0, maxImageCount);
       for (const [index, file] of filesToPrepare.entries()) {
@@ -184,12 +191,12 @@ export function BroadcastContentComposer({
 
         nextImages = candidateImages;
         emitImages(nextImages);
-        setPreparingImages({ done: index + 1, total: filesToPrepare.length });
+        updatePreparingImages({ done: index + 1, total: filesToPrepare.length });
       }
     } catch (error) {
       onError?.(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
     } finally {
-      setPreparingImages({ done: 0, total: 0 });
+      updatePreparingImages({ done: 0, total: 0 });
       if (imageInputRef.current) {
         imageInputRef.current.value = '';
       }

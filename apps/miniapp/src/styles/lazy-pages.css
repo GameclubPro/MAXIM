@@ -20205,7 +20205,8 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   gap: 4px;
 }
 
-.broadcast-publish-bar__issues span {
+.broadcast-publish-bar__issues span,
+.broadcast-publish-bar__issue {
   min-height: 22px;
   display: inline-flex;
   align-items: center;
@@ -20217,6 +20218,16 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   font-weight: 850;
   line-height: 1;
   padding: 0 8px;
+}
+
+.broadcast-publish-bar__issue {
+  appearance: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.broadcast-publish-bar__issue:active {
+  transform: translateY(1px);
 }
 
 .broadcast-publish-bar__button:disabled {

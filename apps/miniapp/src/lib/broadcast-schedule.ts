@@ -185,34 +185,68 @@ export function parseLocalDateTimeInputValue(value: string): string | null {
   return date.toISOString();
 }
 
-export function sortAndUniqueBroadcastSlots(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b),
-  );
-}
-
 function parseBroadcastSlotTime(value: string): number | null {
   const parsed = new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function getBroadcastSlotInstantKey(value: string): string {
+  const trimmed = value.trim();
+  const parsedTime = parseBroadcastSlotTime(trimmed);
+  return parsedTime !== null ? `time:${parsedTime}` : `raw:${trimmed}`;
+}
+
+export function sortAndUniqueBroadcastSlots(values: string[]): string[] {
+  const slots: string[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const key = getBroadcastSlotInstantKey(trimmed);
+    if (seenKeys.has(key)) {
+      continue;
+    }
+
+    seenKeys.add(key);
+    slots.push(trimmed);
+  }
+
+  return slots.sort((left, right) => {
+    const leftTime = parseBroadcastSlotTime(left);
+    const rightTime = parseBroadcastSlotTime(right);
+    if (leftTime !== null && rightTime !== null && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    if (leftTime !== null && rightTime === null) {
+      return -1;
+    }
+
+    if (leftTime === null && rightTime !== null) {
+      return 1;
+    }
+
+    return left.localeCompare(right);
+  });
 }
 
 export function findBroadcastSlotConflicts(
   selectedSlots: string[],
   occupiedSlots: string[],
 ): string[] {
-  const occupiedRawSlots = new Set(occupiedSlots.map((slot) => slot.trim()).filter(Boolean));
-  const occupiedTimes = new Set<number>();
-
-  for (const slot of occupiedRawSlots) {
-    const parsedTime = parseBroadcastSlotTime(slot);
-    if (parsedTime !== null) {
-      occupiedTimes.add(parsedTime);
-    }
-  }
+  const occupiedKeys = new Set(
+    occupiedSlots
+      .map((slot) => slot.trim())
+      .filter(Boolean)
+      .map(getBroadcastSlotInstantKey),
+  );
 
   return sortAndUniqueBroadcastSlots(selectedSlots).filter((slot) => {
-    const parsedTime = parseBroadcastSlotTime(slot);
-    return parsedTime !== null ? occupiedTimes.has(parsedTime) : occupiedRawSlots.has(slot);
+    return occupiedKeys.has(getBroadcastSlotInstantKey(slot));
   });
 }
 

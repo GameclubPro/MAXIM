@@ -857,6 +857,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastImages, setBroadcastImages] = useState<BroadcastImage[]>([]);
+  const [broadcastImagesPreparing, setBroadcastImagesPreparing] = useState(false);
   const [broadcastVideoCleared, setBroadcastVideoCleared] = useState(false);
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
   const [broadcastTimingMode, setBroadcastTimingMode] = useState<BroadcastTimingMode>('now');
@@ -906,6 +907,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     const normalizedImages = normalizeBroadcastImageList(nextImages);
     const firstImage = normalizedImages[0];
     setBroadcastImages(normalizedImages);
+    setBroadcastImagesPreparing(false);
     setBroadcastImageEnabled(normalizedImages.length > 0);
     setBroadcastImageBase64(firstImage?.base64 ?? '');
     setBroadcastImageMimeType(firstImage?.mimeType ?? '');
@@ -1885,7 +1887,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastHasDirectContent = Boolean(
     normalizedBroadcastText || broadcastImageEnabled || editingBroadcastHasVideo,
   );
+  const broadcastImagesReady = !broadcastImageEnabled || areBroadcastImagesReady(broadcastImages);
+  const broadcastMediaReady = broadcastImagesReady && !broadcastImagesPreparing;
   const broadcastHasPublishableContent = broadcastHasDirectContent;
+  const broadcastContentReady = broadcastHasPublishableContent && broadcastMediaReady;
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
   );
@@ -1930,17 +1935,50 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
     broadcastCalendarScheduleReady;
   const broadcastPublishReady =
-    broadcastHasPublishableContent &&
+    broadcastContentReady &&
     broadcastScheduleReady &&
     broadcastButtonDraftValid &&
     broadcastHasFutureSlots;
-  const broadcastTestReady = broadcastHasPublishableContent && broadcastButtonDraftValid;
+  const broadcastTestReady = broadcastContentReady && broadcastButtonDraftValid;
   const broadcastSendDisabled = isBroadcastBusy || !broadcastPublishReady;
   const broadcastPublishIssueLabels = [
     !broadcastHasPublishableContent ? 'Контент' : null,
+    broadcastHasPublishableContent && !broadcastMediaReady ? 'Фото' : null,
     !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Время' : null,
     !broadcastButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
+  const broadcastPublishIssueActions = broadcastPublishIssueLabels.map((label) => ({
+    label,
+    onClick: () => {
+      setBroadcastWorkspaceView('compose');
+
+      if (label === 'Контент') {
+        setBroadcastTextError('Добавьте текст или фото.');
+        return;
+      }
+
+      if (label === 'Фото') {
+        setBroadcastImageError(
+          broadcastImagesPreparing ? 'Фото ещё готовится.' : 'Фото не готово.',
+        );
+        return;
+      }
+
+      if (label === 'Время') {
+        if (broadcastTimingMode === 'cycle') {
+          setBroadcastCycleError(broadcastCycleValidationError ?? 'Проверьте цикл публикаций.');
+          return;
+        }
+
+        setBroadcastScheduleError('Выберите время публикации.');
+        return;
+      }
+
+      if (label === 'Кнопки') {
+        setBroadcastButtonsSheetOpen(true);
+      }
+    },
+  }));
   const showBroadcastResetAction =
     editingManagedBroadcast !== null ||
     duplicatedManagedBroadcast !== null ||
@@ -2002,7 +2040,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     .filter(Boolean)
     .join(' · ');
   const broadcastStudioReadyCount = [
-    broadcastHasPublishableContent,
+    broadcastContentReady,
     true,
     broadcastScheduleReady && broadcastHasFutureSlots,
     broadcastButtonDraftValid,
@@ -2010,12 +2048,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastStudioSignals: BroadcastStudioSignal[] = [
     {
       label: 'Контент',
-      value: broadcastHasPublishableContent
-        ? broadcastImageLabel || editingBroadcastHasVideo
-          ? broadcastImageLabel || 'Видео'
-          : `${normalizedBroadcastText.length}/2000`
-        : 'Пусто',
-      tone: broadcastHasPublishableContent ? 'ready' : 'pending',
+      value: !broadcastHasPublishableContent
+        ? 'Пусто'
+        : !broadcastMediaReady
+          ? broadcastImagesPreparing
+            ? 'Фото...'
+            : 'Фото'
+          : broadcastImageLabel || editingBroadcastHasVideo
+            ? broadcastImageLabel || 'Видео'
+            : `${normalizedBroadcastText.length}/2000`,
+      tone: broadcastContentReady ? 'ready' : 'pending',
       icon: 'content',
     },
     {
@@ -2074,8 +2116,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <small>{broadcastFooterMeta || 'Черновик'}</small>
         {broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy ? (
           <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {broadcastPublishIssueLabels.map((label) => (
-              <span key={`channel-broadcast-publish-issue-${label}`}>{label}</span>
+            {broadcastPublishIssueActions.map((issue) => (
+              <button
+                key={`channel-broadcast-publish-issue-${issue.label}`}
+                type="button"
+                className="broadcast-publish-bar__issue"
+                onClick={issue.onClick}
+              >
+                {issue.label}
+              </button>
             ))}
           </span>
         ) : null}
@@ -2129,6 +2178,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastImages([]);
+    setBroadcastImagesPreparing(false);
     setBroadcastVideoCleared(false);
     setBroadcastTimingMode('now');
     setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
@@ -2445,7 +2495,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastImageEnabled) {
-      if (!broadcastImagesReady) {
+      if (broadcastImagesPreparing) {
+        setBroadcastImageError('Фото ещё готовится.');
+        hasError = true;
+      } else if (!broadcastImagesReady) {
         setBroadcastImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -2528,7 +2581,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (broadcastImageEnabled) {
-      if (!broadcastImagesReady) {
+      if (broadcastImagesPreparing) {
+        setBroadcastImageError('Фото ещё готовится.');
+        hasError = true;
+      } else if (!broadcastImagesReady) {
         setBroadcastImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -2940,10 +2996,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           <span
                             className={cn(
                               'broadcast-stage-card__status',
-                              broadcastHasPublishableContent ? 'is-ready' : 'is-pending',
+                              broadcastContentReady ? 'is-ready' : 'is-pending',
                             )}
                           >
-                            {broadcastHasDirectContent ? 'Готов' : 'Пусто'}
+                            {broadcastContentReady
+                              ? 'Готов'
+                              : broadcastImagesPreparing
+                                ? 'Фото...'
+                                : broadcastHasDirectContent
+                                  ? 'Проверка'
+                                  : 'Пусто'}
                           </span>
                         </div>
 
@@ -2973,6 +3035,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   setBroadcastTextError('');
                                 }
                               }}
+                              onImagePreparationChange={setBroadcastImagesPreparing}
                               onClearVideo={() => {
                                 setBroadcastVideoCleared(true);
                               }}

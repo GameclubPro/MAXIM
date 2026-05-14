@@ -7,6 +7,7 @@ import {
   normalizeBroadcastCycleDraft,
   resolveBroadcastCycleLastSendAt,
   resolveBroadcastCycleSendAt,
+  sortAndUniqueBroadcastSlots,
 } from '../src/lib/broadcast-schedule';
 
 const NOW_MS = Date.parse('2026-05-06T10:00:00.000Z');
@@ -122,4 +123,17 @@ test('finds calendar slot conflicts by the same instant, not only exact strings'
   );
 
   assert.deepEqual(findBroadcastSlotConflicts(['broken-slot'], ['broken-slot']), ['broken-slot']);
+});
+
+test('sorts and deduplicates calendar slots by instant', () => {
+  assert.deepEqual(
+    sortAndUniqueBroadcastSlots([
+      '2026-05-06T13:00:00+03:00',
+      '2026-05-06T14:00:00+03:00',
+      '2026-05-06T10:00:00.000Z',
+      'broken-slot',
+      'broken-slot',
+    ]),
+    ['2026-05-06T13:00:00+03:00', '2026-05-06T14:00:00+03:00', 'broken-slot'],
+  );
 });

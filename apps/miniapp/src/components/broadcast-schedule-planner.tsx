@@ -23,6 +23,7 @@ import {
   formatBroadcastScheduleDay,
   formatBroadcastScheduleSlot,
   formatLocalDateTimeInputValue,
+  getBroadcastSlotInstantKey,
   getBroadcastScheduleDayKey,
   normalizeBroadcastCycleDraft,
   parseLocalDateTimeInputValue,
@@ -595,7 +596,7 @@ export function BroadcastSchedulePlanner({
   );
   const occupiedSlotList =
     calendarSlots.length > 0 ? calendarBusySlots : sortAndUniqueBroadcastSlots(occupiedSlots);
-  const occupiedSet = new Set(occupiedSlotList);
+  const occupiedInstantSet = new Set(occupiedSlotList.map(getBroadcastSlotInstantKey));
   const occupiedSlotsByDay = new Map<string, string[]>();
   for (const slot of occupiedSlotList) {
     const dayKey = getBroadcastScheduleDayKey(slot);
@@ -603,7 +604,7 @@ export function BroadcastSchedulePlanner({
     current.push(slot);
     occupiedSlotsByDay.set(dayKey, current);
   }
-  const selectedSet = new Set(normalizedValue);
+  const selectedInstantSet = new Set(normalizedValue.map(getBroadcastSlotInstantKey));
   const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = liveNowMs + 30_000;
   const liveTodayKey = getBroadcastScheduleDayKey(new Date(liveNowMs));
@@ -678,7 +679,11 @@ export function BroadcastSchedulePlanner({
     (count, dayKey) => count + getSelectedDaySlots(dayKey, normalizedValue).length,
     0,
   );
-  const activeDayFreeWindows = buildFreeWindowsForDay(occupiedSlotsByDay.get(activeDayKey) ?? []);
+  const activeDayFreeWindows = buildFreeWindowsForDay(
+    (occupiedSlotsByDay.get(activeDayKey) ?? []).filter(
+      (slot) => !selectedInstantSet.has(getBroadcastSlotInstantKey(slot)),
+    ),
+  );
   const activeDayFreeWindowStartSet = new Set(
     activeDayFreeWindows.map((window) => window.startMinutes),
   );
@@ -914,12 +919,16 @@ export function BroadcastSchedulePlanner({
 
   function isSlotBusy(dayKey: string, minutes: number): boolean {
     const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
-    return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);
+    const slotKey = getBroadcastSlotInstantKey(slotIso);
+    return occupiedInstantSet.has(slotKey) && !selectedInstantSet.has(slotKey);
   }
 
   function isSlotSelectedForDay(dayKey: string, minutes: number): boolean {
     const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
-    return getSelectedDaySlots(dayKey, normalizedValue).includes(slotIso);
+    const slotKey = getBroadcastSlotInstantKey(slotIso);
+    return getSelectedDaySlots(dayKey, normalizedValue).some(
+      (slot) => getBroadcastSlotInstantKey(slot) === slotKey,
+    );
   }
 
   function openAgendaDay(dayKey: string) {
@@ -1250,7 +1259,7 @@ export function BroadcastSchedulePlanner({
                   const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
                   const agendaCount = (agendaEntriesByDay.get(dayKey) ?? []).length;
                   const dayBusySlots = (occupiedSlotsByDay.get(dayKey) ?? []).filter(
-                    (slot) => !selectedSet.has(slot),
+                    (slot) => !selectedInstantSet.has(getBroadcastSlotInstantKey(slot)),
                   );
                   const busyCount = dayBusySlots.length;
                   const freeWindowCount = buildFreeWindowsForDay(dayBusySlots).length;

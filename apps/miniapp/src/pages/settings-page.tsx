@@ -2254,6 +2254,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingImages, setMailingImages] = useState<BroadcastImage[]>([]);
+  const [mailingImagesPreparing, setMailingImagesPreparing] = useState(false);
   const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
   const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('now');
@@ -2287,6 +2288,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const normalizedImages = normalizeBroadcastImageList(nextImages);
     const firstImage = normalizedImages[0];
     setMailingImages(normalizedImages);
+    setMailingImagesPreparing(false);
     setMailingImageEnabled(normalizedImages.length > 0);
     setMailingImageBase64(firstImage?.base64 ?? '');
     setMailingImageMimeType(firstImage?.mimeType ?? '');
@@ -4525,6 +4527,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingImages([]);
+    setMailingImagesPreparing(false);
     setMailingVideoCleared(false);
     setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());
@@ -4923,7 +4926,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
 
       if (mailingImageEnabled) {
-        if (!mailingImagesReady) {
+        if (mailingImagesPreparing) {
+          setMailingImageError('Фото ещё готовится.');
+          hasError = true;
+        } else if (!mailingImagesReady) {
           setMailingImageError('В сохранённом автопостинге отсутствует фото.');
           hasError = true;
         } else {
@@ -4944,7 +4950,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
 
       if (mailingImageEnabled) {
-        if (!mailingImagesReady) {
+        if (mailingImagesPreparing) {
+          setMailingImageError('Фото ещё готовится.');
+          hasError = true;
+        } else if (!mailingImagesReady) {
           setMailingImageError('Фото не готово.');
           hasError = true;
         } else {
@@ -5039,7 +5048,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (mailingImageEnabled) {
-      if (!mailingImagesReady) {
+      if (mailingImagesPreparing) {
+        setMailingImageError('Фото ещё готовится.');
+        hasError = true;
+      } else if (!mailingImagesReady) {
         setMailingImageError('Фото не готово.');
         hasError = true;
       } else {
@@ -6009,7 +6021,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
+  const mailingImagesReady = !mailingImageEnabled || areBroadcastImagesReady(mailingImages);
+  const mailingMediaReady = mailingImagesReady && !mailingImagesPreparing;
   const mailingHasPublishableContent = mailingHasDirectContent;
+  const mailingContentReady = mailingHasPublishableContent && mailingMediaReady;
   const mailingNormalizedCycle = normalizeBroadcastCycleDraft(mailingCycleDraft, mailingNowMs);
   const mailingCycleValidationError =
     mailingTimingMode === 'cycle'
@@ -6065,19 +6080,55 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
     mailingCalendarScheduleReady;
   const mailingPublishReady =
-    mailingHasPublishableContent &&
+    mailingContentReady &&
     mailingAudienceReady &&
     mailingScheduleReady &&
     mailingButtonDraftValid &&
     mailingHasFutureSlots;
-  const mailingTestReady = mailingHasPublishableContent && mailingButtonDraftValid;
+  const mailingTestReady = mailingContentReady && mailingButtonDraftValid;
   const mailingSendDisabled = isMailingBusy || !mailingPublishReady;
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Контент' : null,
+    mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
     !mailingAudienceReady ? 'Кому' : null,
     !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
+  const mailingPublishIssueActions = mailingPublishIssueLabels.map((label) => ({
+    label,
+    onClick: () => {
+      setMailingWorkspaceView('compose');
+
+      if (label === 'Контент') {
+        setMailingTextError('Добавьте текст или фото.');
+        return;
+      }
+
+      if (label === 'Фото') {
+        setMailingImageError(mailingImagesPreparing ? 'Фото ещё готовится.' : 'Фото не готово.');
+        return;
+      }
+
+      if (label === 'Кому') {
+        setMailingAudienceError('Выберите хотя бы один чат.');
+        return;
+      }
+
+      if (label === 'Время') {
+        if (mailingTimingMode === 'cycle') {
+          setMailingCycleError(mailingCycleValidationError ?? 'Проверьте цикл публикаций.');
+          return;
+        }
+
+        setMailingScheduleError('Выберите время публикации.');
+        return;
+      }
+
+      if (label === 'Кнопки') {
+        setMailingButtonsSheetOpen(true);
+      }
+    },
+  }));
   const mailingPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : mailingTimingMode === 'now'
@@ -6118,7 +6169,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           )
         : 'Чат';
   const mailingStudioReadyCount = [
-    mailingHasPublishableContent,
+    mailingContentReady,
     mailingAudienceReady,
     mailingScheduleReady && mailingHasFutureSlots,
     mailingButtonDraftValid,
@@ -6126,12 +6177,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingStudioSignals: BroadcastStudioSignal[] = [
     {
       label: 'Контент',
-      value: mailingHasPublishableContent
-        ? mailingImageLabel || editingMailingHasVideo
-          ? mailingImageLabel || 'Видео'
-          : `${normalizedMailingText.length}/2000`
-        : 'Пусто',
-      tone: mailingHasPublishableContent ? 'ready' : 'pending',
+      value: !mailingHasPublishableContent
+        ? 'Пусто'
+        : !mailingMediaReady
+          ? mailingImagesPreparing
+            ? 'Фото...'
+            : 'Фото'
+          : mailingImageLabel || editingMailingHasVideo
+            ? mailingImageLabel || 'Видео'
+            : `${normalizedMailingText.length}/2000`,
+      tone: mailingContentReady ? 'ready' : 'pending',
       icon: 'content',
     },
     {
@@ -6175,8 +6230,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         <small>{mailingFooterMeta || 'Черновик'}</small>
         {mailingPublishIssueLabels.length > 0 && !isMailingBusy ? (
           <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {mailingPublishIssueLabels.map((label) => (
-              <span key={`mailing-publish-issue-${label}`}>{label}</span>
+            {mailingPublishIssueActions.map((issue) => (
+              <button
+                key={`mailing-publish-issue-${issue.label}`}
+                type="button"
+                className="broadcast-publish-bar__issue"
+                onClick={issue.onClick}
+              >
+                {issue.label}
+              </button>
             ))}
           </span>
         ) : null}
@@ -11191,10 +11253,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <span
                                   className={cn(
                                     'broadcast-stage-card__status',
-                                    mailingHasPublishableContent ? 'is-ready' : 'is-pending',
+                                    mailingContentReady ? 'is-ready' : 'is-pending',
                                   )}
                                 >
-                                  {mailingHasDirectContent ? 'Готов' : 'Пусто'}
+                                  {mailingContentReady
+                                    ? 'Готов'
+                                    : mailingImagesPreparing
+                                      ? 'Фото...'
+                                      : mailingHasDirectContent
+                                        ? 'Проверка'
+                                        : 'Пусто'}
                                 </span>
                               </div>
 
@@ -11224,6 +11292,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         setMailingTextError('');
                                       }
                                     }}
+                                    onImagePreparationChange={setMailingImagesPreparing}
                                     onClearVideo={() => {
                                       setMailingVideoCleared(true);
                                     }}
