@@ -1407,7 +1407,7 @@ describe('WebhookService', () => {
         sharedMode: 'owned',
         channelOverview: null,
       },
-      60,
+      15 * 60,
       'user-77',
     );
   });

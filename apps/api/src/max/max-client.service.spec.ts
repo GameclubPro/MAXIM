@@ -2470,6 +2470,47 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('applies stack-wide MAX API global limit before chat-scoped reads', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 4, 1]);
+
+    await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
+      'MAX API global rate limit exceeded across all bots',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('applies stack-wide MAX API class limit across all bots', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 5, 1]);
+
+    await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
+      'MAX API interactive rate limit exceeded across all bots',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('does not count interactive throttle errors in action health metrics', async () => {
     const httpService = {
       request: jest.fn(),

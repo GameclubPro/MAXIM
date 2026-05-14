@@ -164,6 +164,7 @@ describe('MaxChatAdminRosterSyncService', () => {
   });
 
   it('syncs admin allowlist from the first admin-capable bot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     const { service, prisma, maxClient, maxBotLinkService, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       { userId: 'user-1' },
@@ -177,14 +178,18 @@ describe('MaxChatAdminRosterSyncService', () => {
     });
     maxClient.getChatAdminIds.mockResolvedValue(['user-1', 'user-2']);
 
-    await expect(
-      service.processJob({
-        chatId: '-100123',
-        botIds: ['bot-1'],
-        title: 'Shared chat',
-        entityType: 'chat',
-      }),
-    ).resolves.toBe(true);
+    try {
+      await expect(
+        service.processJob({
+          chatId: '-100123',
+          botIds: ['bot-1'],
+          title: 'Shared chat',
+          entityType: 'chat',
+        }),
+      ).resolves.toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
 
     expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith({
       chatId: '-100123',
@@ -229,6 +234,7 @@ describe('MaxChatAdminRosterSyncService', () => {
           state: 'GRANTED',
           userRole: 'ADMIN',
           botRole: 'ADMIN',
+          expiresAt: new Date('2026-05-17T09:00:00.000Z'),
         }),
       }),
     );
@@ -245,6 +251,7 @@ describe('MaxChatAdminRosterSyncService', () => {
           state: 'GRANTED',
           userRole: 'ADMIN',
           botRole: 'ADMIN',
+          expiresAt: new Date('2026-05-17T09:00:00.000Z'),
         }),
       }),
     );

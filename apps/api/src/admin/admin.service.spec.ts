@@ -957,16 +957,50 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     getManagedEntitiesRecentBootstrap: jest
       .fn()
       .mockImplementation(
-        async (entityType: string) => recentBootstrapByEntityType.get(entityType) ?? [],
+        async (entityType: string, userId?: string | null) =>
+          (
+            (recentBootstrapByEntityType.get(entityType) ?? []) as Array<
+              ChatSummary & { bootstrapUserIds?: string[] }
+            >
+          ).map((entry) => {
+            const normalizedUserId =
+              typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
+            if (
+              normalizedUserId &&
+              Array.isArray(entry.bootstrapUserIds) &&
+              entry.bootstrapUserIds.includes(normalizedUserId)
+            ) {
+              return {
+                ...entry,
+                bootstrapUserIds: Array.from(
+                  new Set([normalizedUserId, ...(entry.bootstrapUserIds ?? [])]),
+                ),
+              };
+            }
+            return entry;
+          }),
       ),
     upsertManagedEntitiesRecentBootstrap: jest
       .fn()
-      .mockImplementation(async (item: ChatSummary) => {
+      .mockImplementation(async (item: ChatSummary, _ttlSec: number, userId?: string | null) => {
         const entityType = item.entityType;
+        const normalizedUserId =
+          typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
+        const nextItem = normalizedUserId
+          ? {
+              ...item,
+              bootstrapUserIds: Array.from(
+                new Set([
+                  normalizedUserId,
+                  ...((item as { bootstrapUserIds?: string[] }).bootstrapUserIds ?? []),
+                ]),
+              ),
+            }
+          : item;
         const current = (recentBootstrapByEntityType.get(entityType) ?? []) as ChatSummary[];
         recentBootstrapByEntityType.set(
           entityType,
-          [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 20),
+          [nextItem, ...current.filter((entry) => entry.id !== item.id)].slice(0, 500),
         );
       }),
     clearManagedEntitiesRecentBootstrapForChat: jest
@@ -8138,6 +8172,7 @@ describe('AdminService.listChannels', () => {
   });
 
   it('filters cached home entities through strict access edges when the edge table is available', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -8196,6 +8231,13 @@ describe('AdminService.listChannels', () => {
           userId: 'admin-1',
           state: 'GRANTED',
           chatId: { in: ['channel-1', 'channel-2'] },
+          OR: [
+            { expiresAt: { gt: new Date('2026-05-14T09:00:00.000Z') } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date('2026-05-07T09:00:00.000Z') },
+            },
+          ],
         }),
       }),
     );
@@ -11178,7 +11220,7 @@ describe('AdminService.listChats', () => {
       }),
     ).resolves.toEqual([]);
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(4);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(8);
     expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
       1,
       'chat-1',
@@ -11186,7 +11228,7 @@ describe('AdminService.listChats', () => {
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         sourceTag: 'managed_refresh',
-        timeoutMs: 250,
+        timeoutMs: 350,
       }),
     );
   });
@@ -11212,9 +11254,13 @@ describe('AdminService.listChats', () => {
       },
     ]);
 
+    let currentNowMs = 0;
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
-      getChatAdminIds: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn().mockImplementation(async () => {
+        currentNowMs = 2_600;
+        return [];
+      }),
       getChatTitle: jest.fn(),
     };
     const service = new AdminService(
@@ -11223,8 +11269,7 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    const nowValues = [0, 0, 0, 0, 1_700];
-    const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => nowValues.shift() ?? 1_700);
+    const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => currentNowMs);
 
     try {
       jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
@@ -11248,7 +11293,7 @@ describe('AdminService.listChats', () => {
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           sourceTag: 'managed_refresh',
-          timeoutMs: 250,
+          timeoutMs: 350,
         }),
       );
     } finally {
@@ -13037,6 +13082,47 @@ describe('AdminService.listChats', () => {
         title: 'Устойчивое имя чата',
       }),
     );
+  });
+
+  it('writes an expiry on granted managed entity access edges', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock({ botId: '777000_bot' }) as never,
+      );
+
+      await (service as any).upsertManagedEntityAccessEdge({
+        chatId: 'chat-1',
+        userId: 'admin-1',
+        botId: '777000_bot',
+        entityType: 'chat',
+        state: 'GRANTED',
+        userRole: 'ADMIN',
+        botRole: 'ADMIN',
+        source: 'remote_admin_access',
+      });
+
+      expect((prisma as any).managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+          }),
+          update: expect.objectContaining({
+            expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+          }),
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not overwrite a presentable title during local discovery when the candidate title is fallback', async () => {

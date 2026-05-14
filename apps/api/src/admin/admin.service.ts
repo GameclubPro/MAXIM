@@ -957,18 +957,20 @@ const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
-const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
-const RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT = 50;
-const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
-const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 1_500;
-const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 4;
-const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 250;
-const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 200;
+const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 30;
+const RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT = 100;
+const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 500;
+const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 2_500;
+const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 8;
+const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 350;
+const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 300;
 const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS = 350;
-const RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS = 45_000;
+const RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS = 120_000;
 const SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS = 1_500;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
+const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * TWENTY_FOUR_HOURS_MS;
+const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
   'message_created',
   'message_callback',
@@ -2123,7 +2125,13 @@ export class AdminService implements OnModuleDestroy {
           chatId: {
             in: chatIds,
           },
-          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
         },
         select: {
           chatId: true,
@@ -3632,13 +3640,17 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const now = new Date();
+    const expiresAt =
+      params.expiresAt === undefined && params.state === 'GRANTED'
+        ? new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS)
+        : (params.expiresAt ?? null);
     const data = {
       entityType: this.toPrismaEntityType(params.entityType),
       state: params.state,
       userRole: params.userRole ?? 'UNKNOWN',
       botRole: params.botRole ?? 'UNKNOWN',
       checkedAt: now,
-      expiresAt: params.expiresAt ?? null,
+      expiresAt,
       deniedReason: params.deniedReason ?? null,
       source: params.source,
     };
@@ -5164,7 +5176,10 @@ export class AdminService implements OnModuleDestroy {
     const groups = await Promise.all(
       entityTypes.map(
         (currentEntityType) =>
-          this.chatContextCache.getManagedEntitiesRecentBootstrap?.(currentEntityType) ??
+          this.chatContextCache.getManagedEntitiesRecentBootstrap?.(
+            currentEntityType,
+            normalizedUserId,
+          ) ??
           Promise.resolve([]),
       ),
     );

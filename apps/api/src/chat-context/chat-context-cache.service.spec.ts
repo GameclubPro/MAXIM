@@ -1,14 +1,17 @@
 jest.mock('ioredis', () => {
   const store = new Map<string, string>();
+  const sets = new Map<string, Set<string>>();
   const subscribers = new Set<(channel: string, payload: string) => void>();
 
   const createInstance = () => {
     const messageHandlers = new Set<(channel: string, payload: string) => void>();
     const instance = {
       get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+      exists: jest.fn().mockImplementation(async (key: string) => (store.has(key) ? 1 : 0)),
       mget: jest
         .fn()
         .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
+      ttl: jest.fn().mockImplementation(async (key: string) => (store.has(key) ? 60 : -2)),
       pttl: jest.fn().mockResolvedValue(-2),
       set: jest.fn().mockImplementation(async (key: string, value: string) => {
         store.set(key, value);
@@ -20,9 +23,30 @@ jest.mock('ioredis', () => {
           if (store.delete(key)) {
             deleted += 1;
           }
+          if (sets.delete(key)) {
+            deleted += 1;
+          }
         }
         return deleted;
       }),
+      sadd: jest.fn().mockImplementation(async (key: string, ...values: string[]) => {
+        const current = sets.get(key) ?? new Set<string>();
+        let added = 0;
+        for (const value of values) {
+          if (!current.has(value)) {
+            added += 1;
+          }
+          current.add(value);
+        }
+        sets.set(key, current);
+        return added;
+      }),
+      smembers: jest
+        .fn()
+        .mockImplementation(async (key: string) => Array.from(sets.get(key) ?? [])),
+      expire: jest.fn().mockImplementation(async (key: string) =>
+        store.has(key) || sets.has(key) ? 1 : 0,
+      ),
       publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
         for (const subscriber of subscribers) {
           subscriber(channel, payload);
@@ -39,7 +63,42 @@ jest.mock('ioredis', () => {
         return instance;
       }),
       duplicate: jest.fn().mockImplementation(() => createInstance()),
-      multi: jest.fn(),
+      multi: jest.fn().mockImplementation(() => {
+        const operations: Array<[keyof typeof instance, ...unknown[]]> = [];
+        const pipeline = {
+          set: (key: string, value: string, ...args: unknown[]) => {
+            operations.push(['set', key, value, ...args]);
+            return pipeline;
+          },
+          del: (...keys: string[]) => {
+            operations.push(['del', ...keys]);
+            return pipeline;
+          },
+          sadd: (key: string, ...values: string[]) => {
+            operations.push(['sadd', key, ...values]);
+            return pipeline;
+          },
+          expire: (key: string, ttlSec: number) => {
+            operations.push(['expire', key, ttlSec]);
+            return pipeline;
+          },
+          incr: (key: string) => {
+            operations.push(['set', key, String(Number(store.get(key) ?? '0') + 1)]);
+            return pipeline;
+          },
+          exec: jest.fn().mockImplementation(async () => {
+            const results: Array<[null, unknown]> = [];
+            for (const [method, ...args] of operations) {
+              results.push([
+                null,
+                await (instance[method] as (...values: unknown[]) => Promise<unknown>)(...args),
+              ]);
+            }
+            return results;
+          }),
+        };
+        return pipeline;
+      }),
       quit: jest.fn().mockImplementation(async () => {
         for (const handler of messageHandlers) {
           subscribers.delete(handler);
@@ -55,6 +114,7 @@ jest.mock('ioredis', () => {
     jest.fn().mockImplementation(() => createInstance()),
     {
       __store: store,
+      __sets: sets,
       __subscribers: subscribers,
     },
   );
@@ -263,6 +323,7 @@ describe('ChatContextCacheService', () => {
 
   beforeEach(() => {
     (Redis as unknown as { __store: Map<string, string> }).__store.clear();
+    (Redis as unknown as { __sets: Map<string, Set<string>> }).__sets.clear();
     (
       Redis as unknown as { __subscribers: Set<(channel: string, payload: string) => void> }
     ).__subscribers.clear();
@@ -1095,5 +1156,72 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.getManagedEntitiesPublishedDiff('admin-1', 'chat', 'snapshot-v1'),
     ).resolves.toEqual(diff);
+  });
+
+  it('returns user-scoped recent bootstrap entries before the larger global cache', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const store = (Redis as unknown as { __store: Map<string, string> }).__store;
+    const userScoped = {
+      ...buildChatSummary('chat-user'),
+      title: 'User scoped chat',
+    };
+    const global = [
+      ...Array.from({ length: 25 }, (_, index) => ({
+        ...buildChatSummary(`chat-global-${index + 1}`),
+        title: `Global chat ${index + 1}`,
+      })),
+      {
+        ...buildChatSummary('chat-user'),
+        title: 'Global stale title',
+      },
+    ];
+    store.set(
+      ChatContextCacheService.managedEntitiesRecentBootstrapKey('chat'),
+      JSON.stringify(global),
+    );
+    store.set(
+      ChatContextCacheService.managedEntitiesRecentBootstrapUserKey('chat', 'admin-1'),
+      JSON.stringify([userScoped]),
+    );
+
+    await expect(service.getManagedEntitiesRecentBootstrap('chat', ' admin-1 ')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'chat-user',
+        title: 'User scoped chat',
+        bootstrapUserIds: ['admin-1'],
+      }),
+      ...global.slice(0, 25),
+    ]);
+  });
+
+  it('stores and clears user-scoped recent bootstrap rows by chat id', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await service.upsertManagedEntitiesRecentBootstrap(buildChatSummary('chat-new'), 900, 'admin-1');
+
+    await expect(service.getManagedEntitiesRecentBootstrap('chat', 'admin-1')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'chat-new',
+        bootstrapUserIds: ['admin-1'],
+      }),
+    ]);
+
+    await service.clearManagedEntitiesRecentBootstrapForChat('chat-new', 'chat');
+
+    await expect(service.getManagedEntitiesRecentBootstrap('chat', 'admin-1')).resolves.toEqual([]);
   });
 });

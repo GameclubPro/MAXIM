@@ -33,6 +33,7 @@ const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
+const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * 24 * 60 * 60 * 1_000;
 
 type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
 type ManagedEntityAccessEdgeClient = {
@@ -696,6 +697,7 @@ export class MaxChatAdminRosterSyncService {
       ),
     );
     const now = new Date();
+    const expiresAt = new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS);
     await this.mapWithConcurrencyLimit(
       userIds,
       MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
@@ -717,7 +719,7 @@ export class MaxChatAdminRosterSyncService {
             userRole: params.userRole,
             botRole: params.botRole,
             checkedAt: now,
-            expiresAt: null,
+            expiresAt,
             deniedReason: null,
             source: params.source,
           },
@@ -727,7 +729,7 @@ export class MaxChatAdminRosterSyncService {
             userRole: params.userRole,
             botRole: params.botRole,
             checkedAt: now,
-            expiresAt: null,
+            expiresAt,
             deniedReason: null,
             source: params.source,
           },

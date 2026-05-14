@@ -4126,6 +4126,8 @@ export class MaxClientService implements OnModuleDestroy {
       `maxapi:rps:global:${botId}:${nowSec}`,
       `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
       ...(chatId ? [`maxapi:rps:chat:${botId}:${chatId}:${nowSec}`] : []),
+      `maxapi:rps:stack:${nowSec}`,
+      `maxapi:rps:stack:${trafficClass}:${nowSec}`,
     ];
     const raw = await this.limiterRedis.eval(
       MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
@@ -4134,6 +4136,8 @@ export class MaxClientService implements OnModuleDestroy {
       String(this.globalRpsLimit),
       String(this.resolveTrafficClassEffectiveRpsLimit(trafficClass)),
       ...(chatId ? [String(this.chatRpsLimit)] : []),
+      String(this.globalRpsLimit),
+      String(this.resolveTrafficClassEffectiveRpsLimit(trafficClass)),
       String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
     );
     const result = Array.isArray(raw) ? raw : null;
@@ -4273,7 +4277,13 @@ export class MaxClientService implements OnModuleDestroy {
       case 3:
         return chatId
           ? `MAX API per-chat rate limit exceeded for bot ${botId} chat ${chatId}`
-          : `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
+          : 'MAX API global rate limit exceeded across all bots';
+      case 4:
+        return chatId
+          ? 'MAX API global rate limit exceeded across all bots'
+          : `MAX API ${trafficClass} rate limit exceeded across all bots`;
+      case 5:
+        return `MAX API ${trafficClass} rate limit exceeded across all bots`;
       default:
         return `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
     }
