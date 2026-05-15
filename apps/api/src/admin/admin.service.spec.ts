@@ -22729,7 +22729,7 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Правила со связью.\n\n[Связь с админом](max://user/admin-1)',
+      `Правила со связью.\n\n[Связь с админом](${adminContactButtonUrl})`,
       {
         textFormat: 'markdown',
       },

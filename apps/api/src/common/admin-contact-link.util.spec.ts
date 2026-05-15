@@ -14,19 +14,18 @@ describe('admin contact markdown links', () => {
     );
   });
 
-  it('converts compact profile handoff links to max user mentions', () => {
+  it('keeps valid compact profile handoff links as clickable https urls', () => {
     const startPayload = buildCompactProfileMentionStartPayload(
       { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
       botToken,
     );
+    const handoffUrl = `https://max.ru/777000_bot?start=${startPayload}`;
 
     expect(startPayload).toBeTruthy();
-    expect(
-      resolveAdminContactMarkdownUrl(`https://max.ru/777000_bot?start=${startPayload}`, [botToken]),
-    ).toBe('max://user/admin-1');
+    expect(resolveAdminContactMarkdownUrl(handoffUrl, [botToken])).toBe(handoffUrl);
   });
 
-  it('converts legacy profile handoff links to max user mentions', () => {
+  it('keeps valid legacy profile handoff links as clickable https urls', () => {
     const startPayload = `pmh-${Buffer.from(
       JSON.stringify({
         v: 1,
@@ -38,10 +37,13 @@ describe('admin contact markdown links', () => {
       }),
       'utf8',
     ).toString('base64url')}`;
+    const handoffUrl = `https://max.ru/777000_bot?start=${startPayload}`;
 
-    expect(resolveAdminContactMarkdownUrl(`https://max.ru/777000_bot?start=${startPayload}`)).toBe(
-      'max://user/admin-2',
-    );
+    expect(resolveAdminContactMarkdownUrl(handoffUrl)).toBe(handoffUrl);
+  });
+
+  it('does not use max user mentions for fixed-label admin contact links', () => {
+    expect(resolveAdminContactMarkdownUrl('max://user/admin-1')).toBeNull();
   });
 
   it('does not fall back to a bot handoff link when the profile payload is invalid', () => {
