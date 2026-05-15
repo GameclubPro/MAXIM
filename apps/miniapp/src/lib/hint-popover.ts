@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 
 const HINT_MARGIN_PX = 12;
 
-function getViewportMetrics(anchor?: HTMLElement) {
+function getViewportMetrics(element?: HTMLElement) {
   if (typeof window === 'undefined') {
     return {
       left: 0,
@@ -27,7 +27,7 @@ function getViewportMetrics(anchor?: HTMLElement) {
         height: window.innerHeight,
       };
 
-  const clippingBody = anchor?.closest<HTMLElement>('.settings-drilldown__body');
+  const clippingBody = element?.closest<HTMLElement>('.settings-drilldown__body');
   if (!clippingBody) {
     return viewportMetrics;
   }
@@ -101,7 +101,7 @@ function repositionHintAnchor(anchor: HTMLElement) {
   }
 }
 
-function repositionOpenHintPopovers() {
+function updateOpenHints(scrollInlineHints: boolean | number = false) {
   if (typeof document === 'undefined') {
     return;
   }
@@ -118,6 +118,13 @@ function repositionOpenHintPopovers() {
     const anchor = button.closest<HTMLElement>('.channel-settings-hint-anchor');
     if (anchor) {
       repositionHintAnchor(anchor);
+      return;
+    }
+
+    if (scrollInlineHints === true) {
+      document.getElementById(button.getAttribute('aria-controls') ?? '')?.scrollIntoView({
+        block: 'nearest',
+      });
     }
   });
 }
@@ -128,10 +135,10 @@ export function useHintPopoverAutoPosition(active: boolean, updateKey?: unknown)
       return;
     }
 
-    let frameId = window.requestAnimationFrame(repositionOpenHintPopovers);
+    let frameId = window.requestAnimationFrame(() => updateOpenHints(true));
     const handleUpdate = () => {
       window.cancelAnimationFrame(frameId);
-      frameId = window.requestAnimationFrame(repositionOpenHintPopovers);
+      frameId = window.requestAnimationFrame(updateOpenHints);
     };
 
     window.addEventListener('resize', handleUpdate);
