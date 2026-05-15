@@ -173,6 +173,7 @@ import {
   applyMessageLimitsBlockedWordsInput,
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
+import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -248,34 +249,6 @@ function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
   return (
     images.length > 0 &&
     images.every((image) => image.base64 && image.mimeType.toLowerCase().startsWith('image/'))
-  );
-}
-
-function normalizeAdminContactProfileUrl(profileUrl: string | null | undefined): string | null {
-  const normalizedUrl = profileUrl?.trim() ?? '';
-  if (!normalizedUrl) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(normalizedUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-
-  return normalizedUrl;
-}
-
-function resolveAdminContactProfileUrl(me: {
-  profileHandoffUrl?: string | null;
-  profileUrl?: string | null;
-}): string | null {
-  return (
-    normalizeAdminContactProfileUrl(me.profileHandoffUrl) ??
-    normalizeAdminContactProfileUrl(me.profileUrl)
   );
 }
 
