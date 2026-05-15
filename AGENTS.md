@@ -127,14 +127,14 @@
 - When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
 - Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
 - For `max://user/<id>` mentions, use the user's resolved display name, including `first_name + last_name` when MAX sends split fields. Username-only or first-name-only labels can render as plain text in MAX clients.
-- For admin contact buttons, prefer a direct HTTP(S) `profileUrl` when MAX provides one, then fall back to `profileHandoffUrl`; most MAX users do not have a public username/profile URL.
+- For admin contact links, prefer a direct HTTP(S) `profileUrl` when MAX provides one, then fall back to `profileHandoffUrl`; most MAX users do not have a public username/profile URL.
 - Treat `initDataUnsafe` as convenience only. Authentication and trust must rely on validated `initData` / `WebAppData` using the MAX HMAC flow with the correct bot token.
 - Keep bot tokens and webhook secrets only in VPS secrets or `.env`, never in git.
 - Treat MAX mini apps as bot-scoped entry points. Do not assume the launch context identifies a managed target chat or channel on home; user-facing discovery should rely on allowlist, published snapshots, and recent `bot_added` signals.
 - For comment/dialog buttons that must open an internal mini app screen, prefer bot-scoped `https://max.ru/<bot>?startapp=...` links over direct `open_app` `webApp` URLs. Keep direct `webApp` launch only as a fallback.
 - In multi-bot flows, build internal mini app `startapp` links through the entry bot (`MAX_ENTRY_BOT_ID`, falling back to the default bot), not the bot currently executing the channel/chat action. Keep ordinary bot `start` links bot-specific.
 - MAX `startapp` payloads are limited to 512 chars and `[A-Za-z0-9_-]`. Use `MaxBotLinkService`, `max-deep-link.util.ts`, and `apps/miniapp/src/lib/launch-route.ts` patterns instead of hand-built payloads.
-- Sanction messages use dedicated `*AdminContactButtonEnabled` / `*AdminContactButtonUrl` settings for the fixed `Связь с админом` button. Keep profile handoff links out of generic custom button fields.
+- Sanction explanations, warnings, and published chat rules use dedicated `*AdminContactButtonEnabled` / `*AdminContactButtonUrl` settings to append the fixed `Связь с админом` markdown link; mute/ban notices do not include that admin-contact link. Keep profile handoff links out of generic custom button fields.
 - In mini app code, use `window.WebApp.openMaxLink` only for `https://max.ru/...` deep links; use `openLink` for external links.
 - In hot moderation paths, prefer targeted MAX access checks such as `getCurrentChatMemberAccess` or `getChatMembersAccess` over full admin-list fetches unless the feature truly needs the full roster.
 - For `GET /chats/{chatId}/members`, send multiple `user_ids` as one comma-separated query value. Repeated `user_ids` parameters can be treated by MAX as only the first user.

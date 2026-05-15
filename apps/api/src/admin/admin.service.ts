@@ -182,6 +182,7 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText } from '../common/admin-contact-link.util';
 import {
   buildCompactProfileMentionStartPayload,
   isValidMaxBotStartPayload,
@@ -305,7 +306,6 @@ type ManagedEntitiesPublishedDiffReadResult = {
 };
 
 const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
-const ADMIN_CONTACT_BUTTON_TEXT = 'Связь с админом';
 const ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS = 30_000;
 
 type ManagedEntitiesListOptions = {
@@ -8090,7 +8090,10 @@ export class AdminService implements OnModuleDestroy {
 
     let published: { messageId: string; url: string | null };
     const buttonRows = this.buildChatRulesButtonRows(rules);
-    const formattedMessage = this.buildFormattedRulesPublicationText(messageText);
+    const formattedMessage = this.buildFormattedRulesPublicationText(messageText, {
+      adminContactButtonEnabled: rules.adminContactButtonEnabled,
+      adminContactButtonUrl: rules.adminContactButtonUrl,
+    });
     try {
       published = await this.publishMessageWithRetry(
         chatId,
@@ -15665,8 +15668,6 @@ export class AdminService implements OnModuleDestroy {
     buttonEnabled: boolean;
     buttonUrl: string;
     buttonText: string;
-    adminContactButtonEnabled: boolean;
-    adminContactButtonUrl: string;
   }): MaxMessageButton[][] | null {
     const buttons = rules.buttonEnabled
       ? this.normalizeStoredLinkButtons(rules.buttons, {
@@ -15677,10 +15678,6 @@ export class AdminService implements OnModuleDestroy {
           url: this.normalizePublishedRulesUrl(button.url) ?? '',
         }))
       : [];
-    const adminContactButtonUrl = this.normalizePublishedRulesUrl(rules.adminContactButtonUrl);
-    if (rules.adminContactButtonEnabled && adminContactButtonUrl) {
-      buttons.push({ text: ADMIN_CONTACT_BUTTON_TEXT, url: adminContactButtonUrl });
-    }
     const normalizedButtons = buttons.filter((button) => button.url.length > 0);
     if (normalizedButtons.length === 0) {
       return null;
@@ -15689,12 +15686,22 @@ export class AdminService implements OnModuleDestroy {
     return this.buildBroadcastLinkButtonRows(normalizedButtons);
   }
 
-  private buildFormattedRulesPublicationText(sourceText: string): {
+  private buildFormattedRulesPublicationText(
+    sourceText: string,
+    options: {
+      adminContactButtonEnabled: boolean;
+      adminContactButtonUrl: string;
+    },
+  ): {
     text: string;
     textFormat: MaxSendMessageOptions['textFormat'];
   } {
     return {
-      text: sourceText,
+      text: appendAdminContactMarkdownLinkText(sourceText, {
+        enabled: options.adminContactButtonEnabled,
+        url: options.adminContactButtonUrl,
+        botTokens: this.maxBotTokenValidationSecrets,
+      }),
       textFormat: 'markdown',
     };
   }

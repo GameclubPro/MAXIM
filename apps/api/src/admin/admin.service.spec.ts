@@ -16,6 +16,7 @@ import {
 import { ChatBotMembershipStatus, ChatEntityType } from '@prisma/client';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
+import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { AdminService } from './admin.service';
 
 type ManagedEntityType = 'chat' | 'channel';
@@ -22669,9 +22670,13 @@ describe('AdminService chat rules', () => {
     );
   });
 
-  it('publishes rules with a dedicated admin contact button', async () => {
+  it('publishes rules with a dedicated admin contact text link', async () => {
     const prisma = createPrismaMock();
-    const adminContactButtonUrl = 'https://max.ru/id613002203036_bot?start=pmh-chat-user';
+    const adminContactStartPayload = buildCompactProfileMentionStartPayload(
+      { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
+      'test-max-bot-token',
+    );
+    const adminContactButtonUrl = `https://max.ru/id613002203036_bot?start=${adminContactStartPayload}`;
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
       chatId: 'chat-1',
@@ -22724,12 +22729,9 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      'Правила со связью.',
+      'Правила со связью.\n\n[Связь с админом](max://user/admin-1)',
       {
         textFormat: 'markdown',
-        buttons: [
-          [{ text: 'Связь с админом', type: 'link', url: adminContactButtonUrl }],
-        ],
       },
     );
   });

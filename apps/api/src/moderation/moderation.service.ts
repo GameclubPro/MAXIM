@@ -63,6 +63,7 @@ import {
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText } from '../common/admin-contact-link.util';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
@@ -368,7 +369,6 @@ const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
 ]);
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
-const ADMIN_CONTACT_BUTTON_TEXT = 'Связь с админом';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
@@ -1822,8 +1822,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               settings.rulesAttachViolationsEnabled,
               rulesPublishedUrl,
               rulesPublishedMessageId,
-              settings.linkAdminContactButtonEnabled,
-              settings.linkAdminContactButtonUrl,
             )
           : null;
       const linkViolationCount24h =
@@ -1847,8 +1845,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.rulesAttachViolationsEnabled,
             rulesPublishedUrl,
             rulesPublishedMessageId,
-            textFilterEscalationSettings?.adminContactButtonEnabled ?? false,
-            textFilterEscalationSettings?.adminContactButtonUrl ?? '',
           )
         : null;
       const limitsMessageOptions = isMessageLimitsHit
@@ -1861,8 +1857,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.rulesAttachViolationsEnabled,
             rulesPublishedUrl,
             rulesPublishedMessageId,
-            settings.messageLimitsAdminContactButtonEnabled,
-            settings.messageLimitsAdminContactButtonUrl,
           )
         : null;
       const topicMessageOptions = isTopicFilterHit
@@ -1875,8 +1869,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.rulesAttachViolationsEnabled,
             rulesPublishedUrl,
             rulesPublishedMessageId,
-            settings.thematicFiltersAdminContactButtonEnabled,
-            settings.thematicFiltersAdminContactButtonUrl,
           )
         : null;
       const textFilterViolationCount24h = isTextFilterHit
@@ -1953,11 +1945,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.buildLinkExplanation(
-                userLabel,
-                messageDeleted,
-                settings.linkBotMessageText,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildLinkExplanation(
+                  userLabel,
+                  messageDeleted,
+                  settings.linkBotMessageText,
+                  settings.botSpeechStyle,
+                ),
+                settings.linkAdminContactButtonEnabled,
+                settings.linkAdminContactButtonUrl,
               ),
               linkMessageOptions ?? undefined,
             );
@@ -1975,10 +1971,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.buildLinkWarnExplanation(
-                userLabel,
-                settings.linkWarnMessageText,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildLinkWarnExplanation(
+                  userLabel,
+                  settings.linkWarnMessageText,
+                  settings.botSpeechStyle,
+                ),
+                settings.linkAdminContactButtonEnabled,
+                settings.linkAdminContactButtonUrl,
               ),
               linkMessageOptions ?? undefined,
             );
@@ -2004,19 +2004,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.buildMessageLimitsExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                messageDeleted,
-                settings.messageCountLimitMessages,
-                settings.messageCountLimitWindowHours,
-                settings.photoMessageCooldownHours,
-                settings.stickerMessageCooldownMinutes,
-                effectiveMessageLength,
-                settings.maxMessageLength,
-                messageLimitsBlockedWord,
-                settings.messageLimitsBotMessageText,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildMessageLimitsExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  messageDeleted,
+                  settings.messageCountLimitMessages,
+                  settings.messageCountLimitWindowHours,
+                  settings.photoMessageCooldownHours,
+                  settings.stickerMessageCooldownMinutes,
+                  effectiveMessageLength,
+                  settings.maxMessageLength,
+                  messageLimitsBlockedWord,
+                  settings.messageLimitsBotMessageText,
+                  settings.botSpeechStyle,
+                ),
+                settings.messageLimitsAdminContactButtonEnabled,
+                settings.messageLimitsAdminContactButtonUrl,
               ),
               limitsMessageOptions ?? undefined,
             );
@@ -2035,11 +2039,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.buildMessageLimitsWarnExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                messageLimitsBlockedWord,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildMessageLimitsWarnExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  messageLimitsBlockedWord,
+                  settings.botSpeechStyle,
+                ),
+                settings.messageLimitsAdminContactButtonEnabled,
+                settings.messageLimitsAdminContactButtonUrl,
               ),
               limitsMessageOptions ?? undefined,
             );
@@ -2065,12 +2073,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.buildTextFilterExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                messageDeleted,
-                textFilterEscalationSettings.botMessageText,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildTextFilterExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  messageDeleted,
+                  textFilterEscalationSettings.botMessageText,
+                  settings.botSpeechStyle,
+                ),
+                textFilterEscalationSettings.adminContactButtonEnabled,
+                textFilterEscalationSettings.adminContactButtonUrl,
               ),
               textFilterMessageOptions ?? undefined,
             );
@@ -2089,12 +2101,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.buildTextFilterWarnExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                textFilterEscalationSettings?.warnMessageText ??
-                  settings.textFiltersWarnMessageText,
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildTextFilterWarnExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  textFilterEscalationSettings?.warnMessageText ??
+                    settings.textFiltersWarnMessageText,
+                  settings.botSpeechStyle,
+                ),
+                textFilterEscalationSettings?.adminContactButtonEnabled ?? false,
+                textFilterEscalationSettings?.adminContactButtonUrl ?? '',
               ),
               textFilterMessageOptions ?? undefined,
             );
@@ -2120,11 +2136,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.buildTopicFilterExplanation(
-                userLabel,
-                messageDeleted,
-                this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildTopicFilterExplanation(
+                  userLabel,
+                  messageDeleted,
+                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                  settings.botSpeechStyle,
+                ),
+                settings.thematicFiltersAdminContactButtonEnabled,
+                settings.thematicFiltersAdminContactButtonUrl,
               ),
               topicMessageOptions ?? undefined,
             );
@@ -2143,10 +2163,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.buildTopicFilterWarnExplanation(
-                userLabel,
-                this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildTopicFilterWarnExplanation(
+                  userLabel,
+                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                  settings.botSpeechStyle,
+                ),
+                settings.thematicFiltersAdminContactButtonEnabled,
+                settings.thematicFiltersAdminContactButtonUrl,
               ),
               topicMessageOptions ?? undefined,
             );
@@ -2452,22 +2476,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
-      duplicateAdminContactButtonEnabled,
-      duplicateAdminContactButtonUrl,
     );
 
     if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
+        const explanationText = this.buildDuplicateExplanation(
+          userLabel,
+          decision,
+          muteDurationHours,
+          messageDeleted,
+          duplicateBotMessageText,
+          botSpeechStyle,
+        );
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
-          text: this.buildDuplicateExplanation(
-            userLabel,
-            decision,
-            muteDurationHours,
-            messageDeleted,
-            duplicateBotMessageText,
-            botSpeechStyle,
-          ),
+          text:
+            decision.action === 'WARN'
+              ? this.appendAdminContactMarkdownLink(
+                  explanationText,
+                  duplicateAdminContactButtonEnabled,
+                  duplicateAdminContactButtonUrl,
+                )
+              : explanationText,
           messageOptions: duplicateMessageOptions ?? undefined,
           deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes,
@@ -2622,19 +2652,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
-      duplicateAdminContactButtonEnabled,
-      duplicateAdminContactButtonUrl,
     );
 
     if (!suppressNonEssentialMessages && duplicateBotMessageEnabled) {
       try {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
-          text: this.buildDuplicateHitExplanation(
-            userLabel,
-            messageDeleted,
-            duplicateBotMessageText,
-            botSpeechStyle,
+          text: this.appendAdminContactMarkdownLink(
+            this.buildDuplicateHitExplanation(
+              userLabel,
+              messageDeleted,
+              duplicateBotMessageText,
+              botSpeechStyle,
+            ),
+            duplicateAdminContactButtonEnabled,
+            duplicateAdminContactButtonUrl,
           ),
           messageOptions: duplicateMessageOptions ?? undefined,
           deleteBotMessagesEnabled,
@@ -3285,6 +3317,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private escapeMaxMarkdownText(value: string): string {
     return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
+  }
+
+  private appendAdminContactMarkdownLink(
+    text: string,
+    enabled: boolean,
+    url: string | null | undefined,
+  ): string {
+    return appendAdminContactMarkdownLinkText(text, {
+      enabled,
+      url,
+      botTokens: this.getAdminContactValidationTokens(),
+    });
+  }
+
+  private getAdminContactValidationTokens(): readonly string[] {
+    const tokens = this.maxBotLinkService?.getValidationTokens?.() ?? [this.getCurrentBotToken()];
+    return tokens
+      .map((token) => (typeof token === 'string' ? token.trim() : ''))
+      .filter((token) => token.length > 0);
   }
 
   private formatUserLabel(senderName?: string, userId?: string): string {
@@ -4499,8 +4550,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesButtonEnabled = false,
     rulesPublishedUrl: string | null = null,
     rulesPublishedMessageId: string | null = null,
-    adminContactButtonEnabled = false,
-    adminContactButtonUrl = '',
   ): MaxSendMessageOptions | null {
     const buttons: MaxMessageButton[] = [];
     const rulesMessageLink = this.buildRulesMessageLink(
@@ -4516,14 +4565,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           buttonText,
         }),
       );
-    }
-
-    const adminContactButton = this.buildAdminContactButton(
-      adminContactButtonEnabled,
-      adminContactButtonUrl,
-    );
-    if (adminContactButton) {
-      buttons.push(adminContactButton);
     }
 
     const rulesButton = this.buildRulesButton(
@@ -4618,8 +4659,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesButtonEnabled: boolean,
     rulesPublishedUrl: string | null,
     rulesPublishedMessageId: string | null,
-    adminContactButtonEnabled = false,
-    adminContactButtonUrl = '',
   ): MaxSendMessageOptions | null {
     const buttons = channels
       .map((channel) => {
@@ -4634,13 +4673,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } satisfies MaxLinkButton;
       })
       .filter((button): button is MaxLinkButton => button !== null);
-    const adminContactButton = this.buildAdminContactButton(
-      adminContactButtonEnabled,
-      adminContactButtonUrl,
-    );
-    if (adminContactButton) {
-      buttons.push(adminContactButton);
-    }
     const rulesMessageLink = this.buildRulesMessageLink(
       rulesButtonEnabled,
       rulesPublishedUrl,
@@ -4687,10 +4719,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text: this.normalizeBotButtonText(buttonText),
       url: normalizedUrl,
     };
-  }
-
-  private buildAdminContactButton(buttonEnabled: boolean, buttonUrl: string): MaxLinkButton | null {
-    return this.buildLinkButton(buttonEnabled, buttonUrl, ADMIN_CONTACT_BUTTON_TEXT);
   }
 
   private buildRulesButton(
@@ -8059,8 +8087,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.settings.rulesAttachViolationsEnabled,
         params.rulesPublishedUrl,
         params.rulesPublishedMessageId,
-        params.settings.requiredSubscriptionAdminContactButtonEnabled,
-        params.settings.requiredSubscriptionAdminContactButtonUrl,
       ) ?? undefined;
 
     const sendRequiredSubscriptionBotMessage = async (textValue: string) =>
@@ -8099,12 +8125,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!noticeOnCooldown) {
           try {
             await sendRequiredSubscriptionBotMessage(
-              this.buildRequiredSubscriptionExplanation(
-                params.userLabel,
-                messageDeleted,
-                missingChannelTitles,
-                params.settings.requiredSubscriptionBotMessageText,
-                params.settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildRequiredSubscriptionExplanation(
+                  params.userLabel,
+                  messageDeleted,
+                  missingChannelTitles,
+                  params.settings.requiredSubscriptionBotMessageText,
+                  params.settings.botSpeechStyle,
+                ),
+                params.settings.requiredSubscriptionAdminContactButtonEnabled,
+                params.settings.requiredSubscriptionAdminContactButtonUrl,
               ),
             );
             await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
@@ -8124,11 +8154,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
       try {
         await sendRequiredSubscriptionBotMessage(
-          this.buildRequiredSubscriptionWarnExplanation(
-            params.userLabel,
-            missingChannelTitles,
-            params.settings.requiredSubscriptionWarnMessageText,
-            params.settings.botSpeechStyle,
+          this.appendAdminContactMarkdownLink(
+            this.buildRequiredSubscriptionWarnExplanation(
+              params.userLabel,
+              missingChannelTitles,
+              params.settings.requiredSubscriptionWarnMessageText,
+              params.settings.botSpeechStyle,
+            ),
+            params.settings.requiredSubscriptionAdminContactButtonEnabled,
+            params.settings.requiredSubscriptionAdminContactButtonUrl,
           ),
         );
       } catch (error: unknown) {
@@ -8393,8 +8427,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.settings.rulesAttachViolationsEnabled,
         params.rulesPublishedUrl,
         params.rulesPublishedMessageId,
-        params.settings.invitationAccessAdminContactButtonEnabled,
-        params.settings.invitationAccessAdminContactButtonUrl,
       ) ?? undefined;
 
     const sendInvitationAccessBotMessage = async (textValue: string) =>
@@ -8433,13 +8465,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!noticeOnCooldown) {
           try {
             await sendInvitationAccessBotMessage(
-              this.buildInvitationAccessExplanation(
-                params.userLabel,
-                messageDeleted,
-                requiredCount,
-                progress.invitedCount,
-                params.settings.invitationAccessBotMessageText,
-                params.settings.botSpeechStyle,
+              this.appendAdminContactMarkdownLink(
+                this.buildInvitationAccessExplanation(
+                  params.userLabel,
+                  messageDeleted,
+                  requiredCount,
+                  progress.invitedCount,
+                  params.settings.invitationAccessBotMessageText,
+                  params.settings.botSpeechStyle,
+                ),
+                params.settings.invitationAccessAdminContactButtonEnabled,
+                params.settings.invitationAccessAdminContactButtonUrl,
               ),
             );
             await this.markInvitationAccessNoticeSent(params.chatId, params.userId);
@@ -8459,12 +8495,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } else if (action === SanctionAction.WARN && canSendInvitationAccessNotice) {
       try {
         await sendInvitationAccessBotMessage(
-          this.buildInvitationAccessWarnExplanation(
-            params.userLabel,
-            requiredCount,
-            progress.invitedCount,
-            params.settings.invitationAccessWarnMessageText,
-            params.settings.botSpeechStyle,
+          this.appendAdminContactMarkdownLink(
+            this.buildInvitationAccessWarnExplanation(
+              params.userLabel,
+              requiredCount,
+              progress.invitedCount,
+              params.settings.invitationAccessWarnMessageText,
+              params.settings.botSpeechStyle,
+            ),
+            params.settings.invitationAccessAdminContactButtonEnabled,
+            params.settings.invitationAccessAdminContactButtonUrl,
           ),
         );
       } catch (error: unknown) {

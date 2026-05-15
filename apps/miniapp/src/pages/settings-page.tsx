@@ -3779,7 +3779,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'info',
         title: 'Ссылка на админа пока недоступна',
-        description: 'Бот сможет добавить кнопку после события, где видна ссылка на ваш профиль.',
+        description: 'Бот сможет добавить ссылку после события, где виден ваш профиль.',
       });
       return;
     }
@@ -4849,7 +4849,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'info',
         title: 'Ссылка на админа пока недоступна',
-        description: 'Бот сможет добавить кнопку после события, где видна ссылка на ваш профиль.',
+        description: 'Бот сможет добавить ссылку после события, где виден ваш профиль.',
       });
       return;
     }

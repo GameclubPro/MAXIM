@@ -11716,6 +11716,67 @@ describe('ModerationService', () => {
     );
   });
 
+  it('adds admin contact as a markdown link to link explanations', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkAdminContactButtonEnabled: true,
+            linkAdminContactButtonUrl: 'https://max.ru/admin',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      `${majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'в этом чате ссылки не проходят, без ссылок',
+      )}\n\n[Связь с админом](https://max.ru/admin)`,
+      {
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('does not send repeated link explanation when warning stage is disabled', async () => {
     const prisma = {
       chat: {
@@ -12506,6 +12567,8 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: false,
             linkMuteEnabled: true,
+            linkAdminContactButtonEnabled: true,
+            linkAdminContactButtonUrl: 'https://max.ru/admin',
           }),
           domains: [],
         }),
@@ -12555,6 +12618,9 @@ describe('ModerationService', () => {
       'chat-1',
       muteNotice('Алексей', '6ч'),
     );
+    expect(
+      maxClient.sendMessage.mock.calls.some((call) => String(call[1]).includes('Связь с админом')),
+    ).toBe(false);
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
