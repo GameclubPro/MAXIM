@@ -890,7 +890,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             .map((favoriteType) => HOME_ENTITY_FAVORITE_LABELS[favoriteType])
             .join(', ')}`
         : 'Добавить в избранное';
-    const compactLinkLabel = formatCompactLinkLabel(entity.link);
+    const compactLinkLabel = activeTab === 'channel' ? formatCompactLinkLabel(entity.link) : null;
     const entitySignals = buildEntitySignals(entity, activeTab);
 
     return (
