@@ -13075,6 +13075,81 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
+  it('handles built-in MESSAGE_RATE_LIMIT as a message-limits violation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            antiSpamEnabled: true,
+            messageLimitsBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'MESSAGE_RATE_LIMIT',
+            score: 0.9,
+            reason: 'Messages are limited to 5 per 10s',
+            metadata: { count: 6, maxMessages: 5, windowSec: 10 },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'слишком частая отправка сообщений: не более 5 за 10с',
+      ),
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'MESSAGE_RATE_LIMIT',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
   it('includes blocked word in MESSAGE_BLOCKED_WORD bot explanation', async () => {
     const prisma = {
       chat: {

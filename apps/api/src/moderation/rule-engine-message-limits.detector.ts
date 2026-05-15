@@ -1,12 +1,53 @@
 import type { ChatSettings } from '@prisma/client';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import type { RuleViolation } from './rule-engine.service';
 import { RedisCounterService } from './redis-counter.service';
 import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
+
+export const ANTI_SPAM_BURST_LIMIT = 5;
+export const ANTI_SPAM_BURST_WINDOW_SEC = 10;
+const ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS = 120;
 
 export class RuleEngineMessageLimitsDetector {
   private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
 
   constructor(private readonly redisCounter: RedisCounterService) {}
+
+  async detectAntiSpamBurstLimit(params: {
+    chatId: string;
+    userId: string;
+    settings: ChatSettings;
+  }): Promise<RuleViolation | null> {
+    const { chatId, userId, settings } = params;
+    if (!settings.antiSpamEnabled) {
+      return null;
+    }
+
+    const key = `message:anti-spam-burst:v1:${chatId}:${userId}:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
+    const count = await raceWithTimeout<number | null>({
+      operation: this.redisCounter.incrementWithTtl(key, ANTI_SPAM_BURST_WINDOW_SEC + 1),
+      timeoutMs: ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS,
+      onTimeout: () => null,
+    });
+    if (count === null) {
+      return null;
+    }
+
+    if (count <= ANTI_SPAM_BURST_LIMIT) {
+      return null;
+    }
+
+    return {
+      ruleCode: 'MESSAGE_RATE_LIMIT',
+      score: 0.9,
+      reason: `Messages are limited to ${ANTI_SPAM_BURST_LIMIT} per ${ANTI_SPAM_BURST_WINDOW_SEC}s`,
+      metadata: {
+        count,
+        maxMessages: ANTI_SPAM_BURST_LIMIT,
+        windowSec: ANTI_SPAM_BURST_WINDOW_SEC,
+      },
+    };
+  }
 
   detectMessageLengthLimit(params: {
     measuredLength: number;

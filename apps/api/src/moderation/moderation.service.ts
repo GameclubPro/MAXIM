@@ -91,6 +91,10 @@ import {
 import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
+import {
+  ANTI_SPAM_BURST_LIMIT,
+  ANTI_SPAM_BURST_WINDOW_SEC,
+} from './rule-engine-message-limits.detector';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
 import {
@@ -528,6 +532,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'TOPIC_FILTER_MISMATCH',
   'MESSAGE_BLOCKED_WORD',
   'MESSAGE_TOO_LONG',
+  'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
@@ -538,6 +543,7 @@ const NON_SANCTION_RULE_CODES = new Set([
 const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_BLOCKED_WORD',
   'MESSAGE_TOO_LONG',
+  'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
@@ -1757,6 +1763,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
+        violations.find((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
         violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
@@ -3965,6 +3972,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (ruleCode === 'MESSAGE_RATE_LIMIT') {
+      const reason = `слишком частая отправка сообщений: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
+      return this.renderEditableBotSpeechTemplate({
+        style: botSpeechStyle ?? null,
+        fieldKey: 'messageLimitsBotMessageText',
+        overrideText: templateText ?? '',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+          message_limit_count: String(ANTI_SPAM_BURST_LIMIT),
+          message_limit_window_seconds: String(ANTI_SPAM_BURST_WINDOW_SEC),
+        },
+      });
+    }
+
     if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
       const maxMessages =
         Number.isInteger(messageCountLimitMessages) &&
@@ -4132,6 +4155,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (ruleCode === 'STICKER_RATE_LIMIT') {
       return 'слишком частая отправка стикеров';
+    }
+
+    if (ruleCode === 'MESSAGE_RATE_LIMIT') {
+      return 'слишком частая отправка сообщений';
     }
 
     if (ruleCode === 'MESSAGE_COUNT_LIMIT') {

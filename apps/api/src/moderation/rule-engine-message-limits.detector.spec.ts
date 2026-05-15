@@ -17,6 +17,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
+    antiSpamEnabled: true,
     messageCountLimitEnabled: false,
     messageCountLimitMessages: 5,
     messageCountLimitWindowHours: 1,
@@ -101,6 +102,61 @@ describe('RuleEngineMessageLimitsDetector', () => {
       key: 'message:count-limit:v1:chat-1:user-1:10:24',
       ttlSec: 24 * 60 * 60 + 1,
     });
+  });
+
+  it('enforces the built-in anti-spam burst window', async () => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const settings = buildSettings({ antiSpamEnabled: true });
+
+    for (let index = 0; index < 5; index += 1) {
+      await expect(
+        detector.detectAntiSpamBurstLimit({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          settings,
+        }),
+      ).resolves.toBeNull();
+    }
+
+    await expect(
+      detector.detectAntiSpamBurstLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        settings,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ruleCode: 'MESSAGE_RATE_LIMIT',
+        metadata: expect.objectContaining({
+          count: 6,
+          maxMessages: 5,
+          windowSec: 10,
+        }),
+      }),
+    );
+    expect(redisCounter.calls[0]).toEqual({
+      key: 'message:anti-spam-burst:v1:chat-1:user-1:5:10',
+      ttlSec: 11,
+    });
+  });
+
+  it('skips the built-in anti-spam burst window when disabled', async () => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const settings = buildSettings({ antiSpamEnabled: false });
+
+    for (let index = 0; index < 6; index += 1) {
+      await expect(
+        detector.detectAntiSpamBurstLimit({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          settings,
+        }),
+      ).resolves.toBeNull();
+    }
+
+    expect(redisCounter.calls).toEqual([]);
   });
 
   it('scopes media cooldown state by media kind and settings update timestamp', async () => {

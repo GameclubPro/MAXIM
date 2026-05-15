@@ -292,6 +292,7 @@ describe('RuleEngineService', () => {
         text: DUPLICATE_SPAM_TEXT,
         settings: buildSettings({
           antiDuplicateEnabled: true,
+          antiSpamEnabled: false,
           commercialAdsFilterEnabled: false,
           duplicateBotMessageEnabled: false,
         }),
@@ -306,6 +307,40 @@ describe('RuleEngineService', () => {
       expect(redisCounter.incrementWithTtl).toHaveBeenCalledTimes(1);
     } finally {
       consoleWarnSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails open when anti-spam burst lookup stalls', async () => {
+    jest.useFakeTimers();
+    try {
+      const redisCounter = {
+        incrementWithTtl: jest.fn().mockImplementation(
+          () =>
+            new Promise<number>(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      };
+      const service = new RuleEngineService(redisCounter as never);
+      const resultPromise = service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: '',
+        settings: buildSettings({
+          antiDuplicateEnabled: false,
+          antiSpamEnabled: true,
+          commercialAdsFilterEnabled: false,
+        }),
+        domainAllowlist: [],
+      });
+
+      await jest.advanceTimersByTimeAsync(150);
+      const result = await resultPromise;
+
+      expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(false);
+      expect(redisCounter.incrementWithTtl).toHaveBeenCalledTimes(1);
+    } finally {
       jest.useRealTimers();
     }
   });
@@ -2962,6 +2997,12 @@ describe('RuleEngineService', () => {
 
     expect(enabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
     expect(disabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
+    expect(enabledResult.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(
+      true,
+    );
+    expect(disabledResult.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(
+      false,
+    );
   });
 
   it('allows one duplicate, then escalates to WARN/MUTE/BAN in sequence', async () => {

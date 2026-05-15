@@ -1550,6 +1550,16 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'message-length');
 
+    const antiSpamViolation = await this.messageLimitsDetector.detectAntiSpamBurstLimit({
+      chatId,
+      userId,
+      settings,
+    });
+    if (antiSpamViolation) {
+      violations.push(antiSpamViolation);
+    }
+    markRuleEngineDetectStage(profile, 'anti-spam-burst');
+
     const messageCountViolation = await this.messageLimitsDetector.detectMessageCountLimit({
       chatId,
       userId,
