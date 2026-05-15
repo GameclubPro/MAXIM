@@ -21710,7 +21710,19 @@ export class AdminService implements OnModuleDestroy {
       userId: normalizedUserId,
       displayName: displayName?.trim() || 'Пользователь',
     });
-    return this.buildBotStartUrl(startPayload);
+    const handoffUrl = this.buildBotStartUrl(startPayload);
+    const normalizedDisplayName = this.readTrimmedString(displayName);
+    if (!handoffUrl || !normalizedDisplayName) {
+      return handoffUrl;
+    }
+
+    try {
+      const parsed = new URL(handoffUrl);
+      parsed.searchParams.set('profile_label', normalizedDisplayName);
+      return parsed.toString();
+    } catch {
+      return handoffUrl;
+    }
   }
 
   private activeDomainWhere(chatId: string) {

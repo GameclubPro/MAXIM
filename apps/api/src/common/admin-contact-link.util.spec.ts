@@ -25,6 +25,22 @@ describe('admin contact markdown links', () => {
     expect(resolveAdminContactMarkdownUrl(handoffUrl, [botToken])).toBe(handoffUrl);
   });
 
+  it('uses a direct user mention when a compact profile handoff has a display label', () => {
+    const startPayload = buildCompactProfileMentionStartPayload(
+      { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
+      botToken,
+    );
+    const handoffUrl = `https://max.ru/777000_bot?start=${startPayload}&profile_label=${encodeURIComponent('Админ [главный]')}`;
+
+    expect(
+      buildAdminContactMarkdownLink({
+        enabled: true,
+        url: handoffUrl,
+        botTokens: [botToken],
+      }),
+    ).toBe('Связь с админом: [Админ \\[главный\\]](max://user/admin-1)');
+  });
+
   it('keeps valid legacy profile handoff links as clickable https urls', () => {
     const startPayload = `pmh-${Buffer.from(
       JSON.stringify({
@@ -40,6 +56,27 @@ describe('admin contact markdown links', () => {
     const handoffUrl = `https://max.ru/777000_bot?start=${startPayload}`;
 
     expect(resolveAdminContactMarkdownUrl(handoffUrl)).toBe(handoffUrl);
+  });
+
+  it('uses the legacy profile handoff display name for direct user mentions', () => {
+    const startPayload = `pmh-${Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'profile-mention',
+        c: 'chat-1',
+        e: 'chat',
+        u: 'admin-2',
+        n: 'Админ',
+      }),
+      'utf8',
+    ).toString('base64url')}`;
+
+    expect(
+      buildAdminContactMarkdownLink({
+        enabled: true,
+        url: `https://max.ru/777000_bot?start=${startPayload}`,
+      }),
+    ).toBe('Связь с админом: [Админ](max://user/admin-2)');
   });
 
   it('does not use max user mentions for fixed-label admin contact links', () => {

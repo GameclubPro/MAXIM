@@ -1413,9 +1413,18 @@ describe('AdminService managed bot chat catalog', () => {
 });
 
 describe('AdminService getMe', () => {
-  const chatProfileHandoffUrl = expect.stringMatching(
-    /^https:\/\/max\.ru\/777000_bot\?start=pm2_chat-1_h_admin-1_[a-f0-9]{16}$/u,
-  );
+  const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const encodeProfileLabel = (value: string): string =>
+    new URLSearchParams({ profile_label: value }).toString().replace(/^profile_label=/u, '');
+  const chatProfileHandoffUrl = (profileLabel: string | null) =>
+    expect.stringMatching(
+      new RegExp(
+        `^https:\\/\\/max\\.ru\\/777000_bot\\?start=pm2_chat-1_h_admin-1_[a-f0-9]{16}${
+          profileLabel ? `&profile_label=${escapeRegex(encodeProfileLabel(profileLabel))}` : ''
+        }$`,
+        'u',
+      ),
+    );
 
   it('returns init data profile when username is already present', async () => {
     const prisma = createPrismaMock();
@@ -1446,7 +1455,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
-      profileHandoffUrl: chatProfileHandoffUrl,
+      profileHandoffUrl: chatProfileHandoffUrl('Designer'),
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -1492,7 +1501,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer',
-      profileHandoffUrl: chatProfileHandoffUrl,
+      profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1573,7 +1582,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: null,
-      profileHandoffUrl: chatProfileHandoffUrl,
+      profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1623,7 +1632,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer-direct',
-      profileHandoffUrl: chatProfileHandoffUrl,
+      profileHandoffUrl: chatProfileHandoffUrl('Designer Max'),
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1660,7 +1669,7 @@ describe('AdminService getMe', () => {
       displayName: null,
       avatarUrl: null,
       profileUrl: null,
-      profileHandoffUrl: chatProfileHandoffUrl,
+      profileHandoffUrl: chatProfileHandoffUrl(null),
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -22676,7 +22685,7 @@ describe('AdminService chat rules', () => {
       { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
       'test-max-bot-token',
     );
-    const adminContactButtonUrl = `https://max.ru/id613002203036_bot?start=${adminContactStartPayload}`;
+    const adminContactButtonUrl = `https://max.ru/id613002203036_bot?start=${adminContactStartPayload}&profile_label=${encodeURIComponent('Админ')}`;
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
       chatId: 'chat-1',
@@ -22729,7 +22738,7 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      `Правила со связью.\n\n[Связь с админом](${adminContactButtonUrl})`,
+      'Правила со связью.\n\nСвязь с админом: [Админ](max://user/admin-1)',
       {
         textFormat: 'markdown',
       },

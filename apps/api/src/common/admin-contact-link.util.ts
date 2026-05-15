@@ -8,16 +8,37 @@ const PROFILE_MENTION_COMPACT_PREFIX = 'pm2_';
 type LegacyProfileMentionPayload = {
   v?: unknown;
   k?: unknown;
+  u?: unknown;
+  n?: unknown;
 };
 
-function isLegacyProfileMentionStartPayload(startPayload: string): boolean {
+type ProfileMentionTarget = {
+  userId: string;
+  displayName: string | null;
+};
+
+function normalizeProfileMentionDisplayName(value: string | null | undefined): string | null {
+  const normalized = typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : '';
+  return normalized || null;
+}
+
+function escapeMaxMarkdownText(value: string): string {
+  return value.replace(/\\/gu, '\\\\').replace(/([*_`[\]()~+])/gu, '\\$1');
+}
+
+function normalizeUserMentionUrl(userId: string | null | undefined): string | null {
+  const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+  return normalizedUserId ? `max://user/${encodeURIComponent(normalizedUserId)}` : null;
+}
+
+function parseLegacyProfileMentionStartPayload(startPayload: string): ProfileMentionTarget | null {
   if (!startPayload.startsWith(PROFILE_MENTION_START_PREFIX)) {
-    return false;
+    return null;
   }
 
   const encodedPayload = startPayload.slice(PROFILE_MENTION_START_PREFIX.length);
   if (!encodedPayload) {
-    return false;
+    return null;
   }
 
   try {
@@ -25,31 +46,47 @@ function isLegacyProfileMentionStartPayload(startPayload: string): boolean {
       Buffer.from(encodedPayload, 'base64url').toString('utf8'),
     ) as LegacyProfileMentionPayload;
     if (parsed.v !== 1 || parsed.k !== 'profile-mention') {
-      return false;
+      return null;
     }
 
-    return true;
+    const userId = typeof parsed.u === 'string' ? parsed.u.trim() : '';
+    if (!userId) {
+      return null;
+    }
+
+    return {
+      userId,
+      displayName: normalizeProfileMentionDisplayName(
+        typeof parsed.n === 'string' ? parsed.n : null,
+      ),
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
-function isProfileMentionStartPayload(
+function parseProfileMentionStartPayload(
   startPayload: string,
   botTokens: readonly string[],
-): boolean {
+): ProfileMentionTarget | null {
   const compactPayload = parseCompactProfileMentionStartPayload(startPayload, botTokens);
   if (compactPayload) {
-    return true;
+    return {
+      userId: compactPayload.userId,
+      displayName: null,
+    };
   }
 
-  return isLegacyProfileMentionStartPayload(startPayload);
+  return parseLegacyProfileMentionStartPayload(startPayload);
 }
 
-export function resolveAdminContactMarkdownUrl(
+function parseProfileMentionUrl(
   url: string | null | undefined,
-  botTokens: readonly string[] = [],
-): string | null {
+  botTokens: readonly string[],
+): {
+  url: string;
+  target: ProfileMentionTarget | null;
+} | null {
   const normalizedUrl = typeof url === 'string' ? url.trim() : '';
   if (!normalizedUrl) {
     return null;
@@ -63,9 +100,18 @@ export function resolveAdminContactMarkdownUrl(
 
     const startPayload = parsed.searchParams.get('start')?.trim() ?? '';
     if (startPayload) {
-      if (isProfileMentionStartPayload(startPayload, botTokens)) {
+      const target = parseProfileMentionStartPayload(startPayload, botTokens);
+      if (target) {
         parsed.hash = '';
-        return parsed.toString();
+        return {
+          url: parsed.toString(),
+          target: {
+            ...target,
+            displayName:
+              normalizeProfileMentionDisplayName(parsed.searchParams.get('profile_label')) ??
+              target.displayName,
+          },
+        };
       }
 
       if (
@@ -77,10 +123,20 @@ export function resolveAdminContactMarkdownUrl(
     }
 
     parsed.hash = '';
-    return parsed.toString();
+    return {
+      url: parsed.toString(),
+      target: null,
+    };
   } catch {
     return null;
   }
+}
+
+export function resolveAdminContactMarkdownUrl(
+  url: string | null | undefined,
+  botTokens: readonly string[] = [],
+): string | null {
+  return parseProfileMentionUrl(url, botTokens)?.url ?? null;
 }
 
 export function buildAdminContactMarkdownLink(params: {
@@ -92,12 +148,19 @@ export function buildAdminContactMarkdownLink(params: {
     return null;
   }
 
-  const markdownUrl = resolveAdminContactMarkdownUrl(params.url, params.botTokens ?? []);
-  if (!markdownUrl) {
+  const resolved = parseProfileMentionUrl(params.url, params.botTokens ?? []);
+  if (!resolved) {
     return null;
   }
 
-  return `[${ADMIN_CONTACT_LINK_TEXT}](${markdownUrl.replace(/\)/g, '%29')})`;
+  const userMentionUrl = normalizeUserMentionUrl(resolved.target?.userId);
+  if (userMentionUrl && resolved.target?.displayName) {
+    return `${ADMIN_CONTACT_LINK_TEXT}: [${escapeMaxMarkdownText(
+      resolved.target.displayName,
+    )}](${userMentionUrl})`;
+  }
+
+  return `[${ADMIN_CONTACT_LINK_TEXT}](${resolved.url.replace(/\)/gu, '%29')})`;
 }
 
 export function appendAdminContactMarkdownLink(
