@@ -4648,6 +4648,11 @@ export class AdminService implements OnModuleDestroy {
       created_at: Date;
     }>
   > {
+    const trimmedUserId = normalizedUserId.trim();
+    if (!trimmedUserId) {
+      return [];
+    }
+
     return prisma.$queryRaw<
       Array<{
         chat_id: string | null;
@@ -4683,7 +4688,7 @@ export class AdminService implements OnModuleDestroy {
             ) AS chat_type,
             created_at
           FROM webhook_events
-          WHERE NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
+          WHERE normalized_payload->'message'->>'senderId' = ${trimmedUserId}
             AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
             AND normalized_payload->>'type' IN (${Prisma.join(
               MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
@@ -18618,6 +18623,12 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     targetUserId: string,
   ): Promise<string[]> {
+    const normalizedChatId = chatId.trim();
+    const normalizedTargetUserId = targetUserId.trim();
+    if (!normalizedChatId || !normalizedTargetUserId) {
+      return [];
+    }
+
     const since = new Date(Date.now() - TWENTY_FOUR_HOURS_MS);
     const rows = await this.prisma.$queryRaw<Array<{ message_id: string | null }>>`
       SELECT message_id
@@ -18634,8 +18645,9 @@ export class AdminService implements OnModuleDestroy {
             ) AS message_created_at
           FROM webhook_events
           WHERE normalized_payload->>'type' = 'message_created'
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') = ${chatId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${targetUserId}
+            AND normalized_payload->'message'->>'senderId' = ${normalizedTargetUserId}
+            AND normalized_payload->'message'->>'chatId' = ${normalizedChatId}
+            AND created_at >= ${since}
         ) AS source_rows
         WHERE message_id IS NOT NULL
           AND message_created_at >= ${since}
