@@ -37,4 +37,4 @@ export {
   type SystemMode,
   type SystemModeSnapshot,
   type WebhookSubscriptionSnapshot,
-} from './index.js';
+} from './core.js';

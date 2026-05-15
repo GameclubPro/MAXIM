@@ -33,4 +33,4 @@ export {
   type ManagedBroadcastSummary,
   type SendBroadcastRequest,
   type SendBroadcastResult,
-} from './index.js';
+} from './core.js';

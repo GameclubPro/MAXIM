@@ -38,4 +38,4 @@ export {
   type MarkManagedGiveawayWinnerDeliveredRequest,
   type RerollManagedGiveawayWinnerRequest,
   type UpdateManagedGiveawayRequest,
-} from './index.js';
+} from './core.js';

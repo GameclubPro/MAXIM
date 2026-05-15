@@ -21,6 +21,7 @@ export {
   applySettingsTargetModeSchema,
   applySettingsTargetSchema,
   chatRulesSchema,
+  chatSettingsScreenResponseSchema,
   chatSettingsSchema,
   domainAllowlistEntrySchema,
   formatDeleteBotMessagesDelayLabel,
@@ -49,6 +50,7 @@ export {
   type ApplySettingsTarget,
   type ApplySettingsTargetMode,
   type ChatRules,
+  type ChatSettingsScreenResponse,
   type ChatSettings,
   type DomainAllowlistEntry,
   type PublishChatRulesResult,
@@ -56,4 +58,4 @@ export {
   type ResolveRequiredSubscriptionChannelResponse,
   type SanctionAction,
   sanctionActionSchema,
-} from './index.js';
+} from './core.js';

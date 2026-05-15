@@ -43,4 +43,4 @@ export {
   type UpdateManagedEntityFavoritesRequest,
   type UpdateManagedEntityPartnerAssistRequest,
   type UpdateManagedEntityPrimaryBotRequest,
-} from './index.js';
+} from './core.js';
