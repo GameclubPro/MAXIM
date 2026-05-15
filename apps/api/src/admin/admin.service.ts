@@ -305,6 +305,7 @@ type ManagedEntitiesPublishedDiffReadResult = {
 };
 
 const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
+const ADMIN_CONTACT_BUTTON_TEXT = 'Связь с админом';
 const ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS = 30_000;
 
 type ManagedEntitiesListOptions = {
@@ -7881,6 +7882,7 @@ export class AdminService implements OnModuleDestroy {
         payload: {
           autoTextEnabled: normalizedDraft.autoTextEnabled,
           buttonEnabled: normalizedDraft.buttonEnabled,
+          adminContactButtonEnabled: normalizedDraft.adminContactButtonEnabled,
           hasImage: Boolean(normalizedDraft.imageBase64),
           textLength: normalizedDraft.text.length,
           source,
@@ -8148,6 +8150,7 @@ export class AdminService implements OnModuleDestroy {
           url: published.url,
           publishedAt: publishedAt.toISOString(),
           buttonEnabled: rules.buttonEnabled,
+          adminContactButtonEnabled: rules.adminContactButtonEnabled,
           hasImage: Boolean(imagePayload),
           autofilledTextApplied: autofilledText !== null,
           replacedPreviousPost: Boolean(
@@ -15513,9 +15516,18 @@ export class AdminService implements OnModuleDestroy {
       buttonEnabled: value.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
+      adminContactButtonEnabled: value.adminContactButtonEnabled,
+      adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',
     } satisfies Pick<
       UpdateChatRulesRequest,
-      'text' | 'autoTextEnabled' | 'buttons' | 'buttonEnabled' | 'buttonUrl' | 'buttonText'
+      | 'text'
+      | 'autoTextEnabled'
+      | 'buttons'
+      | 'buttonEnabled'
+      | 'buttonUrl'
+      | 'buttonText'
+      | 'adminContactButtonEnabled'
+      | 'adminContactButtonUrl'
     >;
     const normalizedImageBase64 = value.imageBase64.trim();
     if (!normalizedImageBase64) {
@@ -15571,6 +15583,8 @@ export class AdminService implements OnModuleDestroy {
       buttonEnabled: rules.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
+      adminContactButtonEnabled: rules.adminContactButtonEnabled,
+      adminContactButtonUrl: rules.adminContactButtonUrl,
       publishedMessageId: rules.publishedMessageId,
       publishedUrl: rules.publishedUrl,
       publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
@@ -15646,18 +15660,22 @@ export class AdminService implements OnModuleDestroy {
     buttonEnabled: boolean;
     buttonUrl: string;
     buttonText: string;
+    adminContactButtonEnabled: boolean;
+    adminContactButtonUrl: string;
   }): MaxMessageButton[][] | null {
-    if (!rules.buttonEnabled) {
-      return null;
+    const buttons = rules.buttonEnabled
+      ? this.normalizeStoredLinkButtons(rules.buttons, {
+          buttonUrl: rules.buttonUrl,
+          buttonText: rules.buttonText,
+        }).map((button) => ({
+          ...button,
+          url: this.normalizePublishedRulesUrl(button.url) ?? '',
+        }))
+      : [];
+    const adminContactButtonUrl = this.normalizePublishedRulesUrl(rules.adminContactButtonUrl);
+    if (rules.adminContactButtonEnabled && adminContactButtonUrl) {
+      buttons.push({ text: ADMIN_CONTACT_BUTTON_TEXT, url: adminContactButtonUrl });
     }
-
-    const buttons = this.normalizeStoredLinkButtons(rules.buttons, {
-      buttonUrl: rules.buttonUrl,
-      buttonText: rules.buttonText,
-    }).map((button) => ({
-      ...button,
-      url: this.normalizePublishedRulesUrl(button.url) ?? '',
-    }));
     const normalizedButtons = buttons.filter((button) => button.url.length > 0);
     if (normalizedButtons.length === 0) {
       return null;

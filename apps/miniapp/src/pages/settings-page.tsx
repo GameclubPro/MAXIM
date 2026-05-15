@@ -62,6 +62,7 @@ import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
+import { AdminContactToggle } from '../components/admin-contact-toggle';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
   BroadcastStudioHeader,
@@ -3832,22 +3833,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     return (
-      <div className="settings-native-toggle settings-native-toggle--nested">
-        <div className="settings-native-toggle__row">
-          <span className="settings-native-toggle__title">{ADMIN_CONTACT_BUTTON_TEXT}</span>
-
-          <label className="settings-native-switch" aria-label={ariaLabel}>
-            <input
-              type="checkbox"
-              checked={Boolean(draft[group.enabledKey])}
-              onChange={(event) => updateAdminContactButtonGroup(group, event.target.checked)}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </label>
-        </div>
-      </div>
+      <AdminContactToggle
+        title={ADMIN_CONTACT_BUTTON_TEXT}
+        checked={Boolean(draft[group.enabledKey])}
+        onChange={(enabled) => updateAdminContactButtonGroup(group, enabled)}
+        ariaLabel={ariaLabel}
+        nested
+      />
     );
   }
 
@@ -4097,6 +4089,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: value.buttonEnabled,
       buttonUrl: normalizedButtonState.buttonUrl,
       buttonText: normalizedButtonState.buttonText,
+      adminContactButtonEnabled: value.adminContactButtonEnabled,
+      adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',
     };
   }
 
@@ -4877,6 +4871,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function handleRulesAdminContactButtonChange(enabled: boolean) {
+    if (enabled && !adminContactProfileUrl) {
+      pushToast({
+        tone: 'info',
+        title: 'Ссылка на админа пока недоступна',
+        description: 'Бот сможет добавить кнопку после события, где видна ссылка на ваш профиль.',
+      });
+      return;
+    }
+
+    setRulesDraft((current) =>
+      current
+        ? {
+            ...current,
+            adminContactButtonEnabled: enabled,
+            adminContactButtonUrl: enabled ? (adminContactProfileUrl ?? '') : '',
+          }
+        : current,
+    );
+  }
+
   function validateMailingButtonDraft() {
     const nextErrors = validateBroadcastLinkButtons(normalizedMailingButtons);
     setMailingButtonErrors(nextErrors);
@@ -5633,6 +5648,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft?.autoTextEnabled ? 'Авто' : null,
     rulesHasImage ? 'Фото' : null,
     rulesButtonEnabled ? rulesButtonStatus : null,
+    rulesDraft?.adminContactButtonEnabled ? ADMIN_CONTACT_BUTTON_TEXT : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -5675,6 +5691,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const rulesStudioSubtitle =
     rulesFooterMeta ||
     (hasPublishedRules && rulesPublishedAtLabel ? rulesPublishedAtLabel : 'Черновик');
+  const rulesAdminContactButtonSummary = rulesDraft?.adminContactButtonEnabled
+    ? 'Включено'
+    : 'Выключено';
   const isRulesBusy =
     isSavingRules ||
     isPublishingRules ||
@@ -8039,6 +8058,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       </label>
                                     </div>
                                   </div>
+
+                                  <AdminContactToggle
+                                    title={ADMIN_CONTACT_BUTTON_TEXT}
+                                    checked={Boolean(rulesDraft.adminContactButtonEnabled)}
+                                    onChange={handleRulesAdminContactButtonChange}
+                                    ariaLabel="Добавить связь с админом в пост правил"
+                                    meta={rulesAdminContactButtonSummary}
+                                    className="rules-native-card"
+                                  />
 
                                   <div className="settings-native-toggle rules-native-card">
                                     <div className="settings-native-toggle__row">

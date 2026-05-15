@@ -12,6 +12,8 @@ type RulesDraftSerializable = Pick<
   | 'buttonEnabled'
   | 'buttonUrl'
   | 'buttonText'
+  | 'adminContactButtonEnabled'
+  | 'adminContactButtonUrl'
 > &
   Pick<
     UpdateChatRulesPayload,
@@ -24,6 +26,8 @@ type RulesDraftSerializable = Pick<
     | 'buttonEnabled'
     | 'buttonUrl'
     | 'buttonText'
+    | 'adminContactButtonEnabled'
+    | 'adminContactButtonUrl'
   >;
 
 type RulesTextScreenState = Pick<
@@ -58,6 +62,8 @@ export function serializeRulesDraftPayload(value: RulesDraftSerializable): strin
     buttonEnabled: value.buttonEnabled,
     buttonUrl: value.buttonUrl,
     buttonText: value.buttonText,
+    adminContactButtonEnabled: value.adminContactButtonEnabled,
+    adminContactButtonUrl: value.adminContactButtonUrl,
   });
 }
 

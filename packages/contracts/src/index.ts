@@ -1488,60 +1488,78 @@ const chatRulesObjectSchema = z.object({
   buttonEnabled: z.boolean().default(false),
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
+  adminContactButtonEnabled: z.boolean().default(false),
+  adminContactButtonUrl: botButtonUrlSchema,
   publishedMessageId: z.string().trim().min(1).nullable().default(null),
   publishedUrl: z.string().trim().max(2_048).nullable().default(null),
   publishedAt: z.string().datetime().nullable().default(null),
 });
 
+function addChatRulesDraftIssues(
+  value: Pick<
+    z.infer<typeof chatRulesObjectSchema>,
+    | 'imageBase64'
+    | 'imageMimeType'
+    | 'buttons'
+    | 'buttonEnabled'
+    | 'buttonUrl'
+    | 'buttonText'
+    | 'adminContactButtonEnabled'
+    | 'adminContactButtonUrl'
+  > & { publishedUrl?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  const buttons = resolveStoredLinkButtons(value);
+  if (value.imageBase64 && !value.imageMimeType.trim().toLowerCase().startsWith('image/')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['imageMimeType'],
+      message: 'Неверный формат фото.',
+    });
+  }
+  if (value.buttonEnabled && buttons.length > 0) {
+    addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
+  } else if (
+    value.buttonEnabled &&
+    value.buttons.length === 0 &&
+    !isValidBotButtonUrl(value.buttonUrl)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonUrl'],
+      message: 'Укажите корректную ссылку для кнопки (http/https).',
+    });
+  }
+  if (
+    !(value.buttonEnabled && buttons.length > 0) &&
+    value.buttonEnabled &&
+    value.buttons.length === 0 &&
+    !isValidBotButtonText(value.buttonText)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonText'],
+      message: 'Введите название кнопки.',
+    });
+  }
+  if (value.adminContactButtonEnabled && !isValidAdminContactButtonUrl(value.adminContactButtonUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adminContactButtonUrl'],
+      message: 'Ссылка на админа недоступна.',
+    });
+  }
+  if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['publishedUrl'],
+      message: 'Сохранена некорректная ссылка на пост правил.',
+    });
+  }
+}
+
 export const chatRulesSchema = chatRulesObjectSchema
-  .superRefine((value, ctx) => {
-    const buttons = resolveStoredLinkButtons(value);
-
-    if (value.imageBase64) {
-      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['imageMimeType'],
-          message: 'Неверный формат фото.',
-        });
-      }
-    }
-
-    if (value.buttonEnabled && buttons.length > 0) {
-      addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
-    } else if (
-      value.buttonEnabled &&
-      value.buttons.length === 0 &&
-      !isValidBotButtonUrl(value.buttonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      !(value.buttonEnabled && buttons.length > 0) &&
-      value.buttonEnabled &&
-      value.buttons.length === 0 &&
-      !isValidBotButtonText(value.buttonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
-
-    if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['publishedUrl'],
-        message: 'Сохранена некорректная ссылка на пост правил.',
-      });
-    }
-  })
+  .superRefine(addChatRulesDraftIssues)
   .transform((value) => {
     const buttonState = buildStoredLinkButtonState(value);
 
@@ -1566,47 +1584,10 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
     buttonEnabled: true,
     buttonUrl: true,
     buttonText: true,
+    adminContactButtonEnabled: true,
+    adminContactButtonUrl: true,
   })
-  .superRefine((value, ctx) => {
-    const buttons = resolveStoredLinkButtons(value);
-
-    if (value.imageBase64) {
-      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['imageMimeType'],
-          message: 'Неверный формат фото.',
-        });
-      }
-    }
-
-    if (value.buttonEnabled && buttons.length > 0) {
-      addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
-    } else if (
-      value.buttonEnabled &&
-      value.buttons.length === 0 &&
-      !isValidBotButtonUrl(value.buttonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      !(value.buttonEnabled && buttons.length > 0) &&
-      value.buttonEnabled &&
-      value.buttons.length === 0 &&
-      !isValidBotButtonText(value.buttonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
-  })
+  .superRefine(addChatRulesDraftIssues)
   .transform((value) => {
     const buttonState = buildStoredLinkButtonState(value);
 

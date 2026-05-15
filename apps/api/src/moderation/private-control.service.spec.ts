@@ -488,6 +488,8 @@ function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
     buttonEnabled: false,
     buttonUrl: '',
     buttonText: 'Открыть',
+    adminContactButtonEnabled: false,
+    adminContactButtonUrl: '',
     publishedMessageId: null,
     publishedUrl: null,
     publishedAt: null,

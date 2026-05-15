@@ -111,4 +111,6 @@ export type UpdateChatRulesPayload = Pick<
   | 'buttonEnabled'
   | 'buttonUrl'
   | 'buttonText'
+  | 'adminContactButtonEnabled'
+  | 'adminContactButtonUrl'
 >;

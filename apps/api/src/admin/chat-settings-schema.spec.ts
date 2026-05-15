@@ -114,4 +114,24 @@ describe('updateChatRulesRequestSchema button normalization', () => {
     expect(result.buttonUrl).toBe('https://max.ru/channel/team');
     expect(result.buttonText).toBe('Открыть чат');
   });
+
+  it('allows profile handoff links for the dedicated rules admin contact button', () => {
+    const profileHandoffUrl = 'https://max.ru/id613002203036_bot?start=pmh-chat-user';
+    const result = updateChatRulesRequestSchema.parse({
+      text: 'Правила чата',
+      adminContactButtonEnabled: true,
+      adminContactButtonUrl: profileHandoffUrl,
+    });
+
+    expect(result.adminContactButtonUrl).toBe(profileHandoffUrl);
+
+    const genericButtonResult = updateChatRulesRequestSchema.safeParse({
+      text: 'Правила чата',
+      buttonEnabled: true,
+      buttonUrl: profileHandoffUrl,
+      buttonText: 'Связь с админом',
+    });
+
+    expect(genericButtonResult.success).toBe(false);
+  });
 });
