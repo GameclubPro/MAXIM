@@ -1443,8 +1443,30 @@ export class MaxBotLinkService {
     }
 
     if (fallbackToPrimary !== false) {
-      pushCandidate(state.primaryBotId);
-      pushCandidate(state.activeActionableMemberships[0]?.botId ?? null);
+      const pushFallbackCandidate = (botId: string | null | undefined) => {
+        const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+        if (!normalizedBotId) {
+          return;
+        }
+
+        const membership =
+          state.activeActionableMemberships.find((item) => item.botId === normalizedBotId) ?? null;
+        if (
+          membership &&
+          this.membershipSnapshotMarksActionLimited(
+            membership.permissionsSnapshot,
+            action,
+            state.entityType,
+          )
+        ) {
+          return;
+        }
+
+        pushCandidate(normalizedBotId);
+      };
+
+      pushFallbackCandidate(state.primaryBotId);
+      pushFallbackCandidate(state.activeActionableMemberships[0]?.botId ?? null);
     }
 
     return candidateBotIds;
@@ -1678,6 +1700,24 @@ export class MaxBotLinkService {
     return !snapshot.permissions.some((permission) =>
       this.isModerationActionPermission(permission, action),
     );
+  }
+
+  private membershipSnapshotMarksActionLimited(
+    value: unknown,
+    action: ModerationActionPermission,
+    _entityType: ChatEntityType | null,
+  ): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    if (row.health !== 'action_limited') {
+      return false;
+    }
+
+    const missingActions = Array.isArray(row.missingActions) ? row.missingActions : [];
+    return missingActions.some((item) => item === action);
   }
 
   private isModerationActionPermission(

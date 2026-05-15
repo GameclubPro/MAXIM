@@ -814,6 +814,41 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBeNull();
   });
 
+  it('does not fall back to a bot whose refreshed snapshot marks delete as action-limited', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-action-limited', {
+      id: 'chat-action-limited',
+      title: 'Restricted chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push({
+      chatId: 'chat-action-limited',
+      botId: 'id613002203036_bot',
+      role: ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      permissionsSnapshot: {
+        checkedAt: '2026-05-15T00:23:29.333Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members', 'read_all_messages'],
+        health: 'action_limited',
+        missingActions: ['delete_message'],
+      },
+      createdAt: new Date('2026-05-15T00:23:29.333Z'),
+      updatedAt: new Date('2026-05-15T00:23:29.333Z'),
+      lastSeenAt: new Date('2026-05-15T00:23:29.333Z'),
+      lastWebhookAt: new Date('2026-05-15T00:23:28.984Z'),
+    });
+
+    await expect(
+      fixture.service.resolveBotIdsForModerationAction({
+        chatId: 'chat-action-limited',
+        action: 'delete_message',
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it('returns null for member moderation when every active bot explicitly lacks the permission', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-4', {
