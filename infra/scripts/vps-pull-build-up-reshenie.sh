@@ -160,7 +160,7 @@ wait_for_service_running() {
 run_migrations() {
   ensure_compose_env
   docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api \
-    npx prisma migrate deploy --config apps/api/prisma.config.ts
+    ./apps/api/node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 }
 
 if ! command -v docker >/dev/null 2>&1; then

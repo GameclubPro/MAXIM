@@ -104,7 +104,7 @@ git switch --detach "$ROLLBACK_REF"
 docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
 docker compose "${COMPOSE_FILES[@]}" build "${API_SERVICES[@]}"
 docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
-  npx prisma migrate deploy --config apps/api/prisma.config.ts
+  ./apps/api/node_modules/.bin/prisma migrate deploy --config apps/api/prisma.config.ts
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 for service in "${SERVICES[@]}"; do
