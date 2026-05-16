@@ -83,20 +83,16 @@ const scenarios = [
       await buttonToggle.scrollIntoViewIfNeeded();
       await buttonToggle.check();
       await page.waitForTimeout(450);
-      const picker = page.locator('.managed-link-picker').first();
-      await picker.waitFor({ state: 'visible' });
+      const editor = page.locator('.broadcast-link-editor').first();
+      await editor.waitFor({ state: 'visible' });
       await page.evaluate(() => {
-        document.querySelector('.managed-link-picker')?.scrollIntoView({
+        document.querySelector('.broadcast-link-editor')?.scrollIntoView({
           block: 'start',
           behavior: 'instant',
         });
         window.scrollBy({ top: -84, behavior: 'instant' });
       });
-      const quickAction = page
-        .locator('.managed-link-picker__quick-action')
-        .filter({ hasText: /Профиль/u })
-        .first();
-      await quickAction.click();
+      await page.locator('.broadcast-link-editor input[type="url"]').first().fill('https://max.ru/');
       await page.waitForTimeout(350);
     },
   },
@@ -114,12 +110,10 @@ const scenarios = [
       await buttonToggle.scrollIntoViewIfNeeded();
       await buttonToggle.check();
       await page.waitForTimeout(450);
-      const quickAction = page
-        .locator('.managed-link-picker__quick-action')
-        .filter({ hasText: /Каналы/u })
-        .first();
-      await quickAction.waitFor({ state: 'visible' });
-      await quickAction.click();
+      const editor = page.locator('.broadcast-link-editor').first();
+      await editor.waitFor({ state: 'visible' });
+      await editor.scrollIntoViewIfNeeded();
+      await page.locator('.broadcast-link-editor input[type="text"]').first().fill('Открыть канал');
       await page.waitForTimeout(350);
     },
   },
@@ -400,19 +394,25 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      const picker = page.locator('.managed-link-picker').first();
+      await page.getByRole('button', { name: /кноп/iu }).first().click();
+      await page.locator('.broadcast-buttons-sheet__panel').waitFor({ state: 'visible' });
+      if ((await page.locator('.broadcast-link-editor').count()) === 0) {
+        await page.locator('.broadcast-buttons-sheet__empty-action').first().click();
+      }
+      const picker = page.locator('.broadcast-link-editor').first();
       await picker.waitFor({ state: 'visible' });
       await page.evaluate(() => {
-        document.querySelector('.managed-link-picker')?.scrollIntoView({
+        document.querySelector('.broadcast-link-editor')?.scrollIntoView({
           block: 'start',
           behavior: 'instant',
         });
         window.scrollBy({ top: -84, behavior: 'instant' });
       });
       const quickAction = page
-        .locator('.managed-link-picker__quick-action')
-        .filter({ hasText: /Профиль/u })
+        .locator('.broadcast-link-editor__preset')
+        .filter({ hasText: /Канал/u })
         .first();
+      await quickAction.waitFor({ state: 'visible' });
       await quickAction.click();
       await page.waitForTimeout(350);
     },

@@ -7,6 +7,7 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
+import '../styles/dashboard-events.css';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';

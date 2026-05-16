@@ -25,11 +25,7 @@ import {
   type BroadcastTargetMode,
   type ManagedBroadcastDetails,
 } from '@maxim/contracts/broadcast';
-import {
-  type ChatSummary,
-  type ManagedEntityFavoriteType,
-  type ManagedEntityHeader,
-} from '@maxim/contracts/managed-entities';
+import { type ChatSummary, type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
@@ -39,6 +35,8 @@ import {
 } from '@maxim/contracts/bot-speech';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
+import '../styles/settings-drilldown-polish.css';
+import '../styles/settings-route-polish.css';
 import '../styles/broadcast-studio.css';
 import './settings-page.css';
 import {
@@ -51,7 +49,6 @@ import {
   type CSSProperties,
   type MouseEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { AdminContactToggle } from '../components/admin-contact-toggle';
@@ -69,7 +66,6 @@ import {
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-delivery-meter';
-import { XmarkGlyph } from '../components/ui/compact-icons';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -110,11 +106,6 @@ import type {
   SendBroadcastPayload,
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
-import {
-  HOME_ENTITY_FAVORITE_LABELS,
-  HOME_ENTITY_FAVORITE_TITLES,
-  HOME_ENTITY_FAVORITE_TYPES,
-} from '../lib/home-entity-favorites';
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
@@ -176,6 +167,8 @@ import {
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
+import { SettingsApplyTargetSheet } from './settings/settings-apply-target-sheet';
+import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
 import {
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
@@ -191,7 +184,150 @@ import {
   shouldHydrateRulesDraftFromServer,
 } from './settings-rules-state';
 import { buildRequiredSubscriptionChannelCollections } from './settings-required-subscription-state';
-import { FieldErrors, ManagedBroadcastListItem, MailingWorkspaceView, PendingBroadcastPublishReview, normalizeBroadcastImageList, resolveBroadcastImagesFromLegacyFields, areBroadcastImagesReady, ChatSettingsButtonGroup, AdminContactButtonGroup, LazyMessageLimitsBlockedWordPresets, LazyBroadcastAudienceControls, LazyBroadcastSchedulePlanner, LazyBroadcastContentComposer, LazyBroadcastButtonsSheet, LazyBroadcastPublishReviewSheet, LazySettingsHandoffState, LazyManagedPollCard, LazyManagedGiveawayCard, AUTO_SAVE_DELAY_MS, AUTO_MUTE_DURATION_MIN_HOURS, AUTO_MUTE_DURATION_MAX_HOURS, AUTO_MUTE_DURATION_PRESET_HOURS, DUPLICATE_ALLOWED_COUNT_MIN, DUPLICATE_ALLOWED_COUNT_MAX, MESSAGE_COUNT_LIMIT_MIN, MESSAGE_COUNT_LIMIT_MAX, MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS, MESSAGE_COUNT_LIMIT_WINDOW_MAX_HOURS, MESSAGE_LENGTH_MIN, MESSAGE_LENGTH_MAX, MESSAGE_LENGTH_STEP, PHOTO_COOLDOWN_MIN_HOURS, PHOTO_COOLDOWN_MAX_HOURS, STICKER_COOLDOWN_MIN_MINUTES, STICKER_COOLDOWN_MAX_MINUTES, NIGHT_FORCE_CLOSE_MIN_HOURS, NIGHT_FORCE_CLOSE_MAX_HOURS, NIGHT_FORCE_CLOSE_MIN_DAYS, NIGHT_FORCE_CLOSE_MAX_DAYS, COMMERCIAL_SENSITIVITY_MIN, COMMERCIAL_SENSITIVITY_MAX, DOMAIN_REMOVAL_MIN_FUTURE_MS, MAX_BROADCAST_TEXT_LENGTH, MIN_BROADCAST_CYCLE_HOURS, LINK_BOT_BUTTON_GROUP, GREETING_BOT_BUTTON_GROUP, TEXT_FILTERS_BOT_BUTTON_GROUP, THEMATIC_FILTERS_BOT_BUTTON_GROUP, DUPLICATE_BOT_BUTTON_GROUP, MESSAGE_LIMITS_BOT_BUTTON_GROUP, NIGHT_MODE_BOT_BUTTON_GROUP, LINK_ADMIN_CONTACT_BUTTON_GROUP, PROFANITY_ADMIN_CONTACT_BUTTON_GROUP, TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP, THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP, DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP, MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP, REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP, INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP, MAX_CHAT_RULES_TEXT_LENGTH, MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT, DEFAULT_RULES_POST_BUTTON_TEXT, ADMIN_CONTACT_BUTTON_TEXT, BROADCAST_HOUR_MS, MaxMessageLengthSlider, DeleteDelayStepper, PublishedRulesButtonToggleSlot, AutoMuteDurationKey, AutoMuteEnabledKey, HintKey, BotMessageEditorKey, WarnMessageEditorKey, SettingsSectionKey, INITIAL_EXPANDED_SECTIONS, SECTION_LABELS, APPLY_TARGET_FAVORITE_ICONS, createDefaultApplySettingsTarget, resolveDuplicateSharedWindowSec, resolveDuplicateAllowedCount, buildDuplicateFlowSettings, normalizeDuplicateFlowSettings, formatDuplicateAllowanceLabel, LINK_POLICY_OPTIONS, RUSSIAN_TIMEZONE_OPTIONS, BOT_SPEECH_SYNC_SETTING_KEYS, BOT_SPEECH_STYLE_SELECTOR_LABELS, resolveHeaderAssignedBots, getHeaderBotLoadSnapshots, resolveHeaderBotLoadLevel, resolveBotSpeechPreviewContext, mergeBotSpeechStyleSettings, buildSpeechStylePreviewSamples, formatApiError, normalizeDayMinutes, minutesToTimeInput, timeInputToMinutes, toLocalDateInputValue, toLocalTimeInputValue, parseIsoToLocalDateTime, formatRemovalDateTime, formatMiniappBroadcastResultDescription, formatAllowlistModeLabel, formatAllowlistMetaLabel, ALLOWLIST_MATCH_OPTIONS, formatCompactBroadcastDateTime, formatRussianCountLabel, formatBroadcastPayloadScheduleLabel, resolveBroadcastCountdown, resolveManagedBroadcastCardTone, resolveManagedBroadcastCardBadge, resolveManagedBroadcastCardTitle, resolveManagedBroadcastMetric, buildManagedBroadcastFactChips, formatNightForceCloseDuration, resolveCommercialSensitivityConfig, getCommercialSensitivityLabel, inferCommercialSensitivitySliderValue, normalizeLegacyChatCommentScope, formatRequiredSubscriptionCount, clampInvitationAccessRequiredCount, formatInvitationAccessCount, clampRequiredSubscriptionDurationDays, formatRequiredSubscriptionDurationDays, formatRequiredSubscriptionDurationDaysCompact, formatRequiredSubscriptionExpiryBadge, isRequiredSubscriptionExpired, formatRequiredSubscriptionEntityLabel, formatRequiredSubscriptionLinkPreview, getRouteChatTitle, getRouteChatAvatarUrl, resolveDesktopToggleRowLabel, CalendarIcon, ClockIcon, RequiredSubscriptionTimerIcon, TrashIcon, BotSpeechStyleIcon, StyleSelectedIcon, EditToggleButton, SettingsHintAnchor, BotMessageEditor, EMPTY_BROADCAST_PLANNER_STATE, areBroadcastPlannerStatesEqual, WarnMessageEditor } from './settings/settings-page-helpers';
+import {
+  FieldErrors,
+  ManagedBroadcastListItem,
+  MailingWorkspaceView,
+  PendingBroadcastPublishReview,
+  normalizeBroadcastImageList,
+  resolveBroadcastImagesFromLegacyFields,
+  areBroadcastImagesReady,
+  ChatSettingsButtonGroup,
+  AdminContactButtonGroup,
+  LazyMessageLimitsBlockedWordPresets,
+  LazyBroadcastAudienceControls,
+  LazyBroadcastSchedulePlanner,
+  LazyBroadcastContentComposer,
+  LazyBroadcastButtonsSheet,
+  LazyBroadcastPublishReviewSheet,
+  LazySettingsHandoffState,
+  LazyManagedPollCard,
+  LazyManagedGiveawayCard,
+  AUTO_SAVE_DELAY_MS,
+  AUTO_MUTE_DURATION_MIN_HOURS,
+  AUTO_MUTE_DURATION_MAX_HOURS,
+  AUTO_MUTE_DURATION_PRESET_HOURS,
+  DUPLICATE_ALLOWED_COUNT_MIN,
+  DUPLICATE_ALLOWED_COUNT_MAX,
+  MESSAGE_COUNT_LIMIT_MIN,
+  MESSAGE_COUNT_LIMIT_MAX,
+  MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS,
+  MESSAGE_COUNT_LIMIT_WINDOW_MAX_HOURS,
+  MESSAGE_LENGTH_MIN,
+  MESSAGE_LENGTH_MAX,
+  MESSAGE_LENGTH_STEP,
+  PHOTO_COOLDOWN_MIN_HOURS,
+  PHOTO_COOLDOWN_MAX_HOURS,
+  STICKER_COOLDOWN_MIN_MINUTES,
+  STICKER_COOLDOWN_MAX_MINUTES,
+  NIGHT_FORCE_CLOSE_MIN_HOURS,
+  NIGHT_FORCE_CLOSE_MAX_HOURS,
+  NIGHT_FORCE_CLOSE_MIN_DAYS,
+  NIGHT_FORCE_CLOSE_MAX_DAYS,
+  COMMERCIAL_SENSITIVITY_MIN,
+  COMMERCIAL_SENSITIVITY_MAX,
+  DOMAIN_REMOVAL_MIN_FUTURE_MS,
+  MAX_BROADCAST_TEXT_LENGTH,
+  MIN_BROADCAST_CYCLE_HOURS,
+  LINK_BOT_BUTTON_GROUP,
+  GREETING_BOT_BUTTON_GROUP,
+  TEXT_FILTERS_BOT_BUTTON_GROUP,
+  THEMATIC_FILTERS_BOT_BUTTON_GROUP,
+  DUPLICATE_BOT_BUTTON_GROUP,
+  MESSAGE_LIMITS_BOT_BUTTON_GROUP,
+  NIGHT_MODE_BOT_BUTTON_GROUP,
+  LINK_ADMIN_CONTACT_BUTTON_GROUP,
+  PROFANITY_ADMIN_CONTACT_BUTTON_GROUP,
+  TEXT_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
+  THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
+  DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
+  MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
+  REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
+  INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP,
+  MAX_CHAT_RULES_TEXT_LENGTH,
+  MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT,
+  DEFAULT_RULES_POST_BUTTON_TEXT,
+  ADMIN_CONTACT_BUTTON_TEXT,
+  BROADCAST_HOUR_MS,
+  MaxMessageLengthSlider,
+  DeleteDelayStepper,
+  PublishedRulesButtonToggleSlot,
+  AutoMuteDurationKey,
+  AutoMuteEnabledKey,
+  HintKey,
+  BotMessageEditorKey,
+  WarnMessageEditorKey,
+  SettingsSectionKey,
+  INITIAL_EXPANDED_SECTIONS,
+  SECTION_LABELS,
+  createDefaultApplySettingsTarget,
+  resolveDuplicateSharedWindowSec,
+  resolveDuplicateAllowedCount,
+  buildDuplicateFlowSettings,
+  normalizeDuplicateFlowSettings,
+  formatDuplicateAllowanceLabel,
+  LINK_POLICY_OPTIONS,
+  RUSSIAN_TIMEZONE_OPTIONS,
+  BOT_SPEECH_SYNC_SETTING_KEYS,
+  BOT_SPEECH_STYLE_SELECTOR_LABELS,
+  resolveHeaderAssignedBots,
+  getHeaderBotLoadSnapshots,
+  resolveHeaderBotLoadLevel,
+  resolveBotSpeechPreviewContext,
+  mergeBotSpeechStyleSettings,
+  buildSpeechStylePreviewSamples,
+  formatApiError,
+  normalizeDayMinutes,
+  minutesToTimeInput,
+  timeInputToMinutes,
+  toLocalDateInputValue,
+  toLocalTimeInputValue,
+  parseIsoToLocalDateTime,
+  formatRemovalDateTime,
+  formatMiniappBroadcastResultDescription,
+  formatAllowlistModeLabel,
+  formatAllowlistMetaLabel,
+  ALLOWLIST_MATCH_OPTIONS,
+  formatCompactBroadcastDateTime,
+  formatRussianCountLabel,
+  formatBroadcastPayloadScheduleLabel,
+  resolveBroadcastCountdown,
+  resolveManagedBroadcastCardTone,
+  resolveManagedBroadcastCardBadge,
+  resolveManagedBroadcastCardTitle,
+  resolveManagedBroadcastMetric,
+  buildManagedBroadcastFactChips,
+  formatNightForceCloseDuration,
+  resolveCommercialSensitivityConfig,
+  getCommercialSensitivityLabel,
+  inferCommercialSensitivitySliderValue,
+  normalizeLegacyChatCommentScope,
+  formatRequiredSubscriptionCount,
+  clampInvitationAccessRequiredCount,
+  formatInvitationAccessCount,
+  clampRequiredSubscriptionDurationDays,
+  formatRequiredSubscriptionDurationDays,
+  formatRequiredSubscriptionDurationDaysCompact,
+  formatRequiredSubscriptionExpiryBadge,
+  isRequiredSubscriptionExpired,
+  formatRequiredSubscriptionEntityLabel,
+  formatRequiredSubscriptionLinkPreview,
+  getRouteChatTitle,
+  getRouteChatAvatarUrl,
+  resolveDesktopToggleRowLabel,
+  CalendarIcon,
+  ClockIcon,
+  RequiredSubscriptionTimerIcon,
+  TrashIcon,
+  BotSpeechStyleIcon,
+  StyleSelectedIcon,
+  EditToggleButton,
+  SettingsHintAnchor,
+  BotMessageEditor,
+  EMPTY_BROADCAST_PLANNER_STATE,
+  areBroadcastPlannerStatesEqual,
+  WarnMessageEditor,
+} from './settings/settings-page-helpers';
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -4579,180 +4715,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }
 
-  function formatApplyTargetCountLabel(count: number): string {
-    const normalized = Math.abs(count) % 100;
-    const remainder = normalized % 10;
-    if (normalized > 10 && normalized < 20) {
-      return `${count} чатов`;
-    }
-    if (remainder === 1) {
-      return `${count} чат`;
-    }
-    if (remainder > 1 && remainder < 5) {
-      return `${count} чата`;
-    }
-    return `${count} чатов`;
-  }
-
-  function updateApplyTarget(target: ApplySettingsTarget) {
-    setApplyTargetSheet((current) => (current ? { ...current, target } : current));
-  }
-
-  function toggleApplyTargetFavoriteType(favoriteType: ManagedEntityFavoriteType) {
-    if (!applyTargetSheet) {
-      return;
-    }
-
-    const currentTypes = applyTargetSheet.target.favoriteTypes;
-    const nextTypes = currentTypes.includes(favoriteType)
-      ? currentTypes.filter((item) => item !== favoriteType)
-      : [...currentTypes, favoriteType];
-    updateApplyTarget({
-      mode: nextTypes.length > 0 ? 'favoriteTypes' : 'allFavorites',
-      favoriteTypes: nextTypes,
-      chatIds: [],
-    });
-  }
-
-  function renderApplyTargetSheet() {
-    if (!applyTargetSheet) {
-      return null;
-    }
-
-    const target = applyTargetSheet.target;
-    const canConfirm =
-      !applyTargetPreviewLoading &&
-      !applyTargetPreviewError &&
-      !isApplyingSectionToAll &&
-      (applyTargetPreview?.updatedChats ?? 0) > 0;
-
-    const sheet = (
-      <div
-        className="settings-apply-target"
-        style={applyTargetOverlayStyle}
-        role="dialog"
-        aria-modal="true"
-      >
-        <button
-          type="button"
-          className="settings-apply-target__backdrop"
-          aria-label="Закрыть выбор чатов"
-          onClick={() => setApplyTargetSheet(null)}
-        />
-        <div className="settings-apply-target__panel">
-          <div className="settings-apply-target__header">
-            <div>
-              <strong>{SECTION_LABELS[applyTargetSheet.section]}</strong>
-            </div>
-            <button
-              type="button"
-              className="settings-apply-target__close"
-              aria-label="Закрыть"
-              title="Закрыть"
-              onClick={() => setApplyTargetSheet(null)}
-            >
-              <XmarkGlyph aria-hidden />
-            </button>
-          </div>
-
-          <div
-            className="settings-apply-target__modes"
-            role="group"
-            aria-label="Область применения"
-          >
-            {[
-              { mode: 'current' as const, title: 'Текущий' },
-              { mode: 'all' as const, title: 'Все' },
-              { mode: 'allFavorites' as const, title: 'Избранные' },
-            ].map((item) => (
-              <button
-                key={item.mode}
-                type="button"
-                className={cn(
-                  'settings-apply-target__mode',
-                  target.mode === item.mode && 'is-active',
-                )}
-                aria-pressed={target.mode === item.mode}
-                onClick={() =>
-                  updateApplyTarget({
-                    mode: item.mode,
-                    favoriteTypes: [],
-                    chatIds: [],
-                  })
-                }
-              >
-                <strong>{item.title}</strong>
-              </button>
-            ))}
-          </div>
-
-          <div className="settings-apply-target__favorites">
-            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
-              const FavoriteIcon = APPLY_TARGET_FAVORITE_ICONS[favoriteType];
-              const active =
-                target.mode === 'favoriteTypes' && target.favoriteTypes.includes(favoriteType);
-              return (
-                <button
-                  key={favoriteType}
-                  type="button"
-                  className={cn(
-                    'settings-apply-target__favorite',
-                    `is-${favoriteType}`,
-                    active && 'is-active',
-                  )}
-                  aria-pressed={active}
-                  title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
-                  onClick={() => toggleApplyTargetFavoriteType(favoriteType)}
-                >
-                  <FavoriteIcon aria-hidden />
-                  <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="settings-apply-target__preview">
-            {applyTargetPreviewLoading ? (
-              <span>...</span>
-            ) : applyTargetPreviewError ? (
-              <span className="is-danger">{applyTargetPreviewError}</span>
-            ) : (
-              <strong>{formatApplyTargetCountLabel(applyTargetPreview?.updatedChats ?? 0)}</strong>
-            )}
-          </div>
-
-          <div className="settings-apply-target__actions">
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={() => setApplyTargetSheet(null)}
-              disabled={isApplyingSectionToAll}
-            >
-              Отмена
-            </button>
-            <button
-              type="button"
-              className="button button--accent"
-              onClick={() => void handleConfirmApplyTarget()}
-              disabled={!canConfirm}
-            >
-              {isApplyingSectionToAll ? '...' : 'Применить'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-
-    if (typeof document === 'undefined') {
-      return sheet;
-    }
-
-    return createPortal(
-      sheet,
-      document.querySelector('.design-preview__device-screen') ?? document.body,
-    );
-  }
-
   function renderSectionSaveFooter(
     section: ApplySectionKey,
     options?: {
@@ -4762,41 +4724,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       emphasize?: 'save' | 'apply';
     },
   ) {
-    const isCurrentSectionSaving = isSavingSettings && savingSection === section;
-    const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
-    const emphasize = options?.emphasize ?? 'apply';
-    const saveButtonClassName =
-      emphasize === 'save' ? 'button button--accent' : 'button button--ghost';
-    const applyToAllButtonClassName =
-      emphasize === 'save' ? 'button button--ghost' : 'button button--accent';
-    const footerNote = options?.note !== undefined ? options.note : null;
-
     return (
-      <>
-        {footerNote ? <p className="settings-drilldown__footer-note">{footerNote}</p> : null}
-        <div className="settings-drilldown__footer-actions">
-          <button
-            type="button"
-            className={saveButtonClassName}
-            onClick={() => void handleSaveSection(section)}
-            disabled={
-              isCurrentSectionSaving || isCurrentSectionApplying || !isSectionDirty(section)
-            }
-          >
-            {isCurrentSectionSaving ? 'Сохраняем...' : (options?.saveLabel ?? 'Сохранить')}
-          </button>
-          <button
-            type="button"
-            className={applyToAllButtonClassName}
-            onClick={() => openApplyTargetSheet(section)}
-            disabled={isCurrentSectionSaving || isCurrentSectionApplying || !canApplyToAllChats}
-          >
-            {isCurrentSectionApplying
-              ? 'Сохраняем...'
-              : (options?.applyToAllLabel ?? 'Выбрать чаты')}
-          </button>
-        </div>
-      </>
+      <SettingsSectionSaveFooter
+        section={section}
+        options={options}
+        isSavingSettings={isSavingSettings}
+        savingSection={savingSection}
+        isApplyingSectionToAll={isApplyingSectionToAll}
+        applyingSection={applyingSection}
+        canApplyToAllChats={canApplyToAllChats}
+        isSectionDirty={isSectionDirty}
+        onSaveSection={(targetSection) => void handleSaveSection(targetSection)}
+        onOpenApplyTarget={openApplyTargetSheet}
+      />
     );
   }
 
@@ -4812,7 +4752,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="page-stack page-enter">
-      {renderApplyTargetSheet()}
+      <SettingsApplyTargetSheet
+        sheet={applyTargetSheet}
+        preview={applyTargetPreview}
+        previewLoading={applyTargetPreviewLoading}
+        previewError={applyTargetPreviewError}
+        overlayStyle={applyTargetOverlayStyle}
+        isApplying={isApplyingSectionToAll}
+        onClose={() => setApplyTargetSheet(null)}
+        onTargetChange={(target) =>
+          setApplyTargetSheet((current) => (current ? { ...current, target } : current))
+        }
+        onConfirm={() => void handleConfirmApplyTarget()}
+      />
 
       {settingsHandoffMode ? (
         <Suspense fallback={null}>

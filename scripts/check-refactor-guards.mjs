@@ -35,8 +35,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 19025,
-    targetLines: 15500,
+    maxLines: 13000,
+    targetLines: 12000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {

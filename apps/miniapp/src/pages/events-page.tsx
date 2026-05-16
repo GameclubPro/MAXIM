@@ -9,6 +9,7 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
+import '../styles/dashboard-events.css';
 import {
   startTransition,
   type KeyboardEvent,
