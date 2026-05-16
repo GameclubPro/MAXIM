@@ -101,6 +101,12 @@ import {
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
 import {
+  calculateEffectiveMessageLength,
+  collectForwardedNodes,
+  detectMediaFlags,
+  extractRawMessageNode,
+} from './moderation-update-extractors';
+import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
   buildCommercialCampaignFingerprint,
   buildCommercialCampaignLinkChatsKey,
@@ -1437,7 +1443,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const mediaFlags = this.detectMediaFlags(update);
+      const mediaFlags = detectMediaFlags(update);
       if (!deferHotChatModerationSkipUntilAfterAccessGates) {
         const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
           ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
@@ -1542,7 +1548,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
+      const effectiveMessageLength = calculateEffectiveMessageLength(update);
       const duplicateStateSkipReason = this.resolveOptionalWebhookStageSkipReason({
         stage: 'rule-engine.duplicate-state',
         hotPathProfile,
@@ -4329,375 +4335,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       : null;
   }
 
-  private calculateEffectiveMessageLength(update: MaxUpdate): number {
-    const baseText = update.message?.text ?? '';
-    const baseLength = baseText.length;
-    const forwardedSnippets = this.collectForwardedTextSnippets(update.raw);
-
-    if (forwardedSnippets.length === 0) {
-      return baseLength;
-    }
-
-    const normalizedBaseText = baseText.toLowerCase();
-    let totalLength = baseLength;
-
-    for (const snippet of forwardedSnippets) {
-      if (!snippet) {
-        continue;
-      }
-
-      if (normalizedBaseText.includes(snippet.toLowerCase())) {
-        continue;
-      }
-
-      totalLength += snippet.length;
-    }
-
-    return totalLength;
-  }
-
-  private collectForwardedTextSnippets(raw: unknown): string[] {
-    const rawRecord = this.asRecord(raw);
-    if (!rawRecord) {
-      return [];
-    }
-
-    const messageNode = this.extractRawMessageNode(rawRecord) ?? rawRecord;
-    const forwardedNodes = this.collectForwardedNodes(messageNode);
-    if (forwardedNodes.length === 0) {
-      return [];
-    }
-
-    const snippets = new Set<string>();
-    for (const node of forwardedNodes) {
-      this.collectTextSnippets(node, snippets);
-    }
-
-    return [...snippets];
-  }
-
-  private extractRawMessageNode(raw: Record<string, unknown>): Record<string, unknown> | null {
-    const directMessage = this.asRecord(raw.message);
-    if (directMessage) {
-      return directMessage;
-    }
-
-    const envelopeKeys = ['message_created', 'data', 'event'];
-    if (typeof raw.update_type === 'string') {
-      envelopeKeys.push(raw.update_type);
-    }
-    if (typeof raw.type === 'string') {
-      envelopeKeys.push(raw.type);
-    }
-
-    for (const key of envelopeKeys) {
-      const envelope = this.asRecord(raw[key]);
-      if (!envelope) {
-        continue;
-      }
-
-      const nestedMessage = this.asRecord(envelope.message);
-      if (nestedMessage) {
-        return nestedMessage;
-      }
-
-      const nestedData = this.asRecord(envelope.data);
-      const nestedDataMessage = nestedData ? this.asRecord(nestedData.message) : null;
-      if (nestedDataMessage) {
-        return nestedDataMessage;
-      }
-    }
-
-    return null;
-  }
-
-  private collectForwardedNodes(node: unknown, depth = 0, acc: unknown[] = []): unknown[] {
-    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
-      return acc;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectForwardedNodes(item, depth + 1, acc);
-      }
-      return acc;
-    }
-
-    if (typeof node !== 'object') {
-      return acc;
-    }
-
-    const row = node as Record<string, unknown>;
-    for (const [key, value] of Object.entries(row)) {
-      if (/forward/i.test(key)) {
-        acc.push(value);
-      }
-
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedNodes(value, depth + 1, acc);
-      }
-    }
-
-    return acc;
-  }
-
-  private collectTextSnippets(node: unknown, acc: Set<string>, depth = 0) {
-    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
-      return;
-    }
-
-    if (typeof node === 'string') {
-      const normalized = node.trim();
-      if (normalized.length > 0) {
-        acc.add(normalized);
-      }
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectTextSnippets(item, acc, depth + 1);
-      }
-      return;
-    }
-
-    if (typeof node !== 'object') {
-      return;
-    }
-
-    const row = node as Record<string, unknown>;
-    for (const [key, value] of Object.entries(row)) {
-      if (
-        (key === 'text' ||
-          key === 'caption' ||
-          key === 'plain' ||
-          key === 'message_text' ||
-          key === 'messageText') &&
-        typeof value === 'string'
-      ) {
-        const normalized = value.trim();
-        if (normalized.length > 0) {
-          acc.add(normalized);
-        }
-        continue;
-      }
-
-      if (
-        value &&
-        (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')
-      ) {
-        this.collectTextSnippets(value, acc, depth + 1);
-      }
-    }
-  }
-
-  private detectMediaFlags(update: MaxUpdate): {
-    hasPhotoAttachment: boolean;
-    hasStickerAttachment: boolean;
-    hasVideoAttachment: boolean;
-    hasFileAttachment: boolean;
-    hasVoiceAttachment: boolean;
-  } {
-    const rawRecord = this.asRecord(update.raw);
-    if (!rawRecord) {
-      return {
-        hasPhotoAttachment: false,
-        hasStickerAttachment: false,
-        hasVideoAttachment: false,
-        hasFileAttachment: false,
-        hasVoiceAttachment: false,
-      };
-    }
-
-    const messageNode = this.extractRawMessageNode(rawRecord) ?? rawRecord;
-    const flags = {
-      hasPhotoAttachment: false,
-      hasStickerAttachment: false,
-      hasVideoAttachment: false,
-      hasFileAttachment: false,
-      hasVoiceAttachment: false,
-    };
-    this.collectMediaFlags(messageNode, flags);
-    return flags;
-  }
-
-  private collectMediaFlags(
-    node: unknown,
-    flags: {
-      hasPhotoAttachment: boolean;
-      hasStickerAttachment: boolean;
-      hasVideoAttachment: boolean;
-      hasFileAttachment: boolean;
-      hasVoiceAttachment: boolean;
-    },
-    depth = 0,
-    inStickerContext = false,
-    inFileContext = false,
-  ) {
-    if (
-      depth > MAX_FORWARD_SCAN_DEPTH ||
-      node === null ||
-      node === undefined ||
-      (flags.hasPhotoAttachment &&
-        flags.hasStickerAttachment &&
-        flags.hasVideoAttachment &&
-        flags.hasFileAttachment &&
-        flags.hasVoiceAttachment)
-    ) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectMediaFlags(item, flags, depth + 1, inStickerContext, inFileContext);
-      }
-      return;
-    }
-
-    if (typeof node !== 'object') {
-      return;
-    }
-
-    const row = node as Record<string, unknown>;
-    const payload =
-      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-        ? (row.payload as Record<string, unknown>)
-        : null;
-    const type = this.readLowerString(row.type);
-    const mimeType = this.readLowerString(
-      row.mime_type ?? row.mimeType ?? payload?.mime_type ?? payload?.mimeType,
-    );
-    const fileName = this.readLowerString(
-      row.file_name ??
-        row.fileName ??
-        row.filename ??
-        payload?.file_name ??
-        payload?.fileName ??
-        payload?.filename ??
-        payload?.url,
-    );
-    const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
-    const stickerContext = inStickerContext || type === 'sticker' || mediaType === 'sticker';
-    const imageLike =
-      !stickerContext &&
-      (type === 'photo' ||
-        type === 'image' ||
-        type === 'picture' ||
-        mimeType?.startsWith('image/') ||
-        mediaType === 'photo' ||
-        mediaType === 'image' ||
-        this.isLikelyImageFileName(fileName));
-    const fileContext =
-      !imageLike &&
-      (inFileContext ||
-        type === 'file' ||
-        type === 'document' ||
-        type === 'doc' ||
-        mediaType === 'file' ||
-        mediaType === 'document');
-
-    if (imageLike) {
-      flags.hasPhotoAttachment = true;
-    }
-
-    if (stickerContext) {
-      flags.hasStickerAttachment = true;
-    }
-
-    if (
-      type === 'video' ||
-      mimeType?.startsWith('video/') ||
-      mediaType === 'video' ||
-      this.isLikelyVideoFileName(fileName)
-    ) {
-      flags.hasVideoAttachment = true;
-    }
-
-    if (
-      type === 'voice' ||
-      type === 'audio' ||
-      type === 'audio_message' ||
-      type === 'ptt' ||
-      mimeType?.startsWith('audio/') ||
-      mediaType === 'voice' ||
-      mediaType === 'audio' ||
-      this.isLikelyVoiceFileName(fileName)
-    ) {
-      flags.hasVoiceAttachment = true;
-    }
-
-    if (fileContext) {
-      flags.hasFileAttachment = true;
-    }
-
-    for (const [key, value] of Object.entries(row)) {
-      const keyLower = key.toLowerCase();
-      if (
-        !stickerContext &&
-        !fileContext &&
-        (keyLower === 'photo' ||
-          keyLower === 'image' ||
-          keyLower === 'picture' ||
-          keyLower === 'images')
-      ) {
-        flags.hasPhotoAttachment = true;
-      }
-
-      if (keyLower === 'sticker' || keyLower === 'stickers') {
-        flags.hasStickerAttachment = true;
-      }
-
-      if (keyLower === 'video' || keyLower === 'videos') {
-        flags.hasVideoAttachment = true;
-      }
-
-      if (
-        keyLower === 'voice' ||
-        keyLower === 'voices' ||
-        keyLower === 'audio' ||
-        keyLower === 'audio_message'
-      ) {
-        flags.hasVoiceAttachment = true;
-      }
-
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        const childStickerContext =
-          stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
-        const childFileContext =
-          fileContext ||
-          keyLower === 'file' ||
-          keyLower === 'files' ||
-          keyLower === 'document' ||
-          keyLower === 'documents';
-        this.collectMediaFlags(value, flags, depth + 1, childStickerContext, childFileContext);
-      }
-    }
-  }
-
-  private isLikelyVideoFileName(value: string | null): boolean {
-    if (!value) {
-      return false;
-    }
-
-    return /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value);
-  }
-
-  private isLikelyImageFileName(value: string | null): boolean {
-    if (!value) {
-      return false;
-    }
-
-    return /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(value);
-  }
-
-  private isLikelyVoiceFileName(value: string | null): boolean {
-    if (!value) {
-      return false;
-    }
-
-    return /\.(ogg|opus|mp3|m4a|wav|flac)$/i.test(value);
-  }
-
   private buildBotMessageOptions(
     chatId: string,
     rawButtons: unknown,
@@ -5603,7 +5240,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return '';
     }
 
-    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const messageNode = extractRawMessageNode(raw) ?? raw;
     const body = this.asRecord(messageNode.body);
     const content = this.asRecord(messageNode.content);
     const payload = this.asRecord(messageNode.payload);
@@ -5639,7 +5276,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
-    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const messageNode = extractRawMessageNode(raw) ?? raw;
     const body = this.asRecord(messageNode.body);
     const content = this.asRecord(messageNode.content);
     const payload = this.asRecord(messageNode.payload);
@@ -5764,7 +5401,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
-    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const messageNode = extractRawMessageNode(raw) ?? raw;
     const body = this.asRecord(messageNode.body);
     const content = this.asRecord(messageNode.content);
     const payload = this.asRecord(messageNode.payload);
@@ -7114,8 +6751,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { text, update, mediaFlags } = params;
     const normalizedText = this.normalizeSpamText(text);
     const rawRecord = this.asRecord(update.raw);
-    const messageNode = rawRecord ? (this.extractRawMessageNode(rawRecord) ?? rawRecord) : null;
-    const forwardedNodes = messageNode ? this.collectForwardedNodes(messageNode) : [];
+    const messageNode = rawRecord ? (extractRawMessageNode(rawRecord) ?? rawRecord) : null;
+    const forwardedNodes = messageNode ? collectForwardedNodes(messageNode) : [];
 
     if (forwardedNodes.length > 0) {
       const forwardedTokens = new Set<string>();
@@ -13753,7 +13390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
-    const messageNode = this.extractRawMessageNode(raw);
+    const messageNode = extractRawMessageNode(raw);
     return [
       this.asRecord(messageNode?.sender),
       this.asRecord(messageNode?.from),
@@ -13806,7 +13443,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rows.push(directMembershipEntity);
     }
 
-    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const messageNode = extractRawMessageNode(raw) ?? raw;
     this.collectServiceMemberRows(messageNode, rows);
     return rows;
   }
@@ -14012,7 +13649,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const raw = this.asRecord(update.raw);
-    const rawMessage = raw ? (this.extractRawMessageNode(raw) ?? raw) : null;
+    const rawMessage = raw ? (extractRawMessageNode(raw) ?? raw) : null;
     const messageText = this.resolveChannelAutoPostMessageText(
       rawMessage,
       typeof text === 'string' ? text : null,
@@ -15455,7 +15092,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const message = this.extractRawMessageNode(raw) ?? raw;
+    const message = extractRawMessageNode(raw) ?? raw;
     const link = this.asRecord(message.link);
     return this.readLowerString(link?.type);
   }

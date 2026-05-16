@@ -1,0 +1,380 @@
+import type { MaxUpdate } from '@maxim/contracts';
+
+const MAX_FORWARD_SCAN_DEPTH = 8;
+
+export type ModerationMediaFlags = {
+  hasPhotoAttachment: boolean;
+  hasStickerAttachment: boolean;
+  hasVideoAttachment: boolean;
+  hasFileAttachment: boolean;
+  hasVoiceAttachment: boolean;
+};
+
+export function calculateEffectiveMessageLength(update: MaxUpdate): number {
+  const baseText = update.message?.text ?? '';
+  const baseLength = baseText.length;
+  const forwardedSnippets = collectForwardedTextSnippets(update.raw);
+
+  if (forwardedSnippets.length === 0) {
+    return baseLength;
+  }
+
+  const normalizedBaseText = baseText.toLowerCase();
+  let totalLength = baseLength;
+
+  for (const snippet of forwardedSnippets) {
+    if (!snippet) {
+      continue;
+    }
+
+    if (normalizedBaseText.includes(snippet.toLowerCase())) {
+      continue;
+    }
+
+    totalLength += snippet.length;
+  }
+
+  return totalLength;
+}
+
+export function collectForwardedTextSnippets(raw: unknown): string[] {
+  const rawRecord = asRecord(raw);
+  if (!rawRecord) {
+    return [];
+  }
+
+  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
+  const forwardedNodes = collectForwardedNodes(messageNode);
+  if (forwardedNodes.length === 0) {
+    return [];
+  }
+
+  const snippets = new Set<string>();
+  for (const node of forwardedNodes) {
+    collectTextSnippets(node, snippets);
+  }
+
+  return [...snippets];
+}
+
+export function extractRawMessageNode(raw: Record<string, unknown>): Record<string, unknown> | null {
+  const directMessage = asRecord(raw.message);
+  if (directMessage) {
+    return directMessage;
+  }
+
+  const envelopeKeys = ['message_created', 'data', 'event'];
+  if (typeof raw.update_type === 'string') {
+    envelopeKeys.push(raw.update_type);
+  }
+  if (typeof raw.type === 'string') {
+    envelopeKeys.push(raw.type);
+  }
+
+  for (const key of envelopeKeys) {
+    const envelope = asRecord(raw[key]);
+    if (!envelope) {
+      continue;
+    }
+
+    const nestedMessage = asRecord(envelope.message);
+    if (nestedMessage) {
+      return nestedMessage;
+    }
+
+    const nestedData = asRecord(envelope.data);
+    const nestedDataMessage = nestedData ? asRecord(nestedData.message) : null;
+    if (nestedDataMessage) {
+      return nestedDataMessage;
+    }
+  }
+
+  return null;
+}
+
+export function collectForwardedNodes(node: unknown, depth = 0, acc: unknown[] = []): unknown[] {
+  if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+    return acc;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      collectForwardedNodes(item, depth + 1, acc);
+    }
+    return acc;
+  }
+
+  if (typeof node !== 'object') {
+    return acc;
+  }
+
+  const row = node as Record<string, unknown>;
+  for (const [key, value] of Object.entries(row)) {
+    if (/forward/i.test(key)) {
+      acc.push(value);
+    }
+
+    if (value && (typeof value === 'object' || Array.isArray(value))) {
+      collectForwardedNodes(value, depth + 1, acc);
+    }
+  }
+
+  return acc;
+}
+
+export function detectMediaFlags(update: MaxUpdate): ModerationMediaFlags {
+  const rawRecord = asRecord(update.raw);
+  if (!rawRecord) {
+    return createEmptyMediaFlags();
+  }
+
+  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
+  const flags = createEmptyMediaFlags();
+  collectMediaFlags(messageNode, flags);
+  return flags;
+}
+
+function collectTextSnippets(node: unknown, acc: Set<string>, depth = 0): void {
+  if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+    return;
+  }
+
+  if (typeof node === 'string') {
+    const normalized = node.trim();
+    if (normalized.length > 0) {
+      acc.add(normalized);
+    }
+    return;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      collectTextSnippets(item, acc, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') {
+    return;
+  }
+
+  const row = node as Record<string, unknown>;
+  for (const [key, value] of Object.entries(row)) {
+    if (
+      (key === 'text' ||
+        key === 'caption' ||
+        key === 'plain' ||
+        key === 'message_text' ||
+        key === 'messageText') &&
+      typeof value === 'string'
+    ) {
+      const normalized = value.trim();
+      if (normalized.length > 0) {
+        acc.add(normalized);
+      }
+      continue;
+    }
+
+    if (value && (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')) {
+      collectTextSnippets(value, acc, depth + 1);
+    }
+  }
+}
+
+function collectMediaFlags(
+  node: unknown,
+  flags: ModerationMediaFlags,
+  depth = 0,
+  inStickerContext = false,
+  inFileContext = false,
+): void {
+  if (
+    depth > MAX_FORWARD_SCAN_DEPTH ||
+    node === null ||
+    node === undefined ||
+    (flags.hasPhotoAttachment &&
+      flags.hasStickerAttachment &&
+      flags.hasVideoAttachment &&
+      flags.hasFileAttachment &&
+      flags.hasVoiceAttachment)
+  ) {
+    return;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      collectMediaFlags(item, flags, depth + 1, inStickerContext, inFileContext);
+    }
+    return;
+  }
+
+  if (typeof node !== 'object') {
+    return;
+  }
+
+  const row = node as Record<string, unknown>;
+  const payload =
+    row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : null;
+  const type = readLowerString(row.type);
+  const mimeType = readLowerString(
+    row.mime_type ?? row.mimeType ?? payload?.mime_type ?? payload?.mimeType,
+  );
+  const fileName = readLowerString(
+    row.file_name ??
+      row.fileName ??
+      row.filename ??
+      payload?.file_name ??
+      payload?.fileName ??
+      payload?.filename ??
+      payload?.url,
+  );
+  const mediaType = readLowerString(row.media_type ?? row.mediaType);
+  const stickerContext = inStickerContext || type === 'sticker' || mediaType === 'sticker';
+  const imageLike =
+    !stickerContext &&
+    (type === 'photo' ||
+      type === 'image' ||
+      type === 'picture' ||
+      mimeType?.startsWith('image/') ||
+      mediaType === 'photo' ||
+      mediaType === 'image' ||
+      isLikelyImageFileName(fileName));
+  const fileContext =
+    !imageLike &&
+    (inFileContext ||
+      type === 'file' ||
+      type === 'document' ||
+      type === 'doc' ||
+      mediaType === 'file' ||
+      mediaType === 'document');
+
+  if (imageLike) {
+    flags.hasPhotoAttachment = true;
+  }
+
+  if (stickerContext) {
+    flags.hasStickerAttachment = true;
+  }
+
+  if (
+    type === 'video' ||
+    mimeType?.startsWith('video/') ||
+    mediaType === 'video' ||
+    isLikelyVideoFileName(fileName)
+  ) {
+    flags.hasVideoAttachment = true;
+  }
+
+  if (
+    type === 'voice' ||
+    type === 'audio' ||
+    type === 'audio_message' ||
+    type === 'ptt' ||
+    mimeType?.startsWith('audio/') ||
+    mediaType === 'voice' ||
+    mediaType === 'audio' ||
+    isLikelyVoiceFileName(fileName)
+  ) {
+    flags.hasVoiceAttachment = true;
+  }
+
+  if (fileContext) {
+    flags.hasFileAttachment = true;
+  }
+
+  for (const [key, value] of Object.entries(row)) {
+    const keyLower = key.toLowerCase();
+    if (
+      !stickerContext &&
+      !fileContext &&
+      (keyLower === 'photo' ||
+        keyLower === 'image' ||
+        keyLower === 'picture' ||
+        keyLower === 'images')
+    ) {
+      flags.hasPhotoAttachment = true;
+    }
+
+    if (keyLower === 'sticker' || keyLower === 'stickers') {
+      flags.hasStickerAttachment = true;
+    }
+
+    if (keyLower === 'video' || keyLower === 'videos') {
+      flags.hasVideoAttachment = true;
+    }
+
+    if (
+      keyLower === 'voice' ||
+      keyLower === 'voices' ||
+      keyLower === 'audio' ||
+      keyLower === 'audio_message'
+    ) {
+      flags.hasVoiceAttachment = true;
+    }
+
+    if (value && (typeof value === 'object' || Array.isArray(value))) {
+      const childStickerContext =
+        stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
+      const childFileContext =
+        fileContext ||
+        keyLower === 'file' ||
+        keyLower === 'files' ||
+        keyLower === 'document' ||
+        keyLower === 'documents';
+      collectMediaFlags(value, flags, depth + 1, childStickerContext, childFileContext);
+    }
+  }
+}
+
+function createEmptyMediaFlags(): ModerationMediaFlags {
+  return {
+    hasPhotoAttachment: false,
+    hasStickerAttachment: false,
+    hasVideoAttachment: false,
+    hasFileAttachment: false,
+    hasVoiceAttachment: false,
+  };
+}
+
+function isLikelyVideoFileName(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value);
+}
+
+function isLikelyImageFileName(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(value);
+}
+
+function isLikelyVoiceFileName(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+
+  return /\.(ogg|opus|mp3|m4a|wav|flac)$/i.test(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function readLowerString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}

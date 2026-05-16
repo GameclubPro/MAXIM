@@ -15,14 +15,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/moderation.service.legacy.ts',
-    maxLines: 18255,
+    maxLines: 17892,
     targetLines: 15500,
     reason:
       'ModerationService implementation is a legacy hotspot; explanation, access, global spammer, and night-mode helpers should keep moving to focused modules.',
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
-    maxLines: 13599,
+    maxLines: 13262,
     targetLines: 10500,
     reason:
       'PrivateControlService is a legacy hotspot; session, draft normalization, and render builders should keep moving to focused modules.',
