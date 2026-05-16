@@ -1,0 +1,399 @@
+import { z } from 'zod';
+
+export const queueCountersSchema = z.object({
+  waiting: z.number().int().min(0),
+  active: z.number().int().min(0),
+  delayed: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  completed: z.number().int().min(0),
+});
+export type QueueCounters = z.infer<typeof queueCountersSchema>;
+
+export const webhookStatusMetricsSchema = z.object({
+  count: z.number().int().min(0),
+  oldestEventId: z.string().nullable(),
+  oldestCreatedAt: z.string().datetime().nullable(),
+  oldestLagSec: z.number().min(0),
+});
+export type WebhookStatusMetrics = z.infer<typeof webhookStatusMetricsSchema>;
+
+export const actionHealthSnapshotSchema = z.object({
+  windowSec: z.number().int().min(1),
+  total: z.number().int().min(0),
+  success: z.number().int().min(0),
+  failure: z.number().int().min(0),
+  critical: z.number().int().min(0),
+  errorRate: z.number().min(0),
+  criticalRate: z.number().min(0),
+});
+export type ActionHealthSnapshot = z.infer<typeof actionHealthSnapshotSchema>;
+
+export const systemModeSchema = z.enum(['normal', 'degrade']);
+export type SystemMode = z.infer<typeof systemModeSchema>;
+
+export const systemModeSourceSchema = z.enum(['auto', 'manual']);
+export type SystemModeSource = z.infer<typeof systemModeSourceSchema>;
+
+export const systemModeSnapshotSchema = z.object({
+  mode: systemModeSchema,
+  source: systemModeSourceSchema,
+  reason: z.string(),
+  updatedAt: z.string().datetime(),
+  manualMode: systemModeSchema.nullable(),
+  queueLagSec: z.number().min(0),
+  action: actionHealthSnapshotSchema,
+});
+export type SystemModeSnapshot = z.infer<typeof systemModeSnapshotSchema>;
+
+export const queueMetricsSnapshotSchema = z.object({
+  moderation: queueCountersSchema,
+  webhookCritical: queueCountersSchema,
+  webhookDefault: queueCountersSchema,
+  webhookBackground: queueCountersSchema,
+  webhookLegacy: queueCountersSchema,
+  actions: queueCountersSchema,
+  webhookEvents: z.object({
+    received: webhookStatusMetricsSchema,
+    queued: webhookStatusMetricsSchema,
+    failed: webhookStatusMetricsSchema,
+  }),
+  actionHealth: actionHealthSnapshotSchema,
+  bots: z.record(
+    z.string(),
+    z.object({
+      webhookEvents: z.object({
+        received: webhookStatusMetricsSchema,
+        queued: webhookStatusMetricsSchema,
+        failed: webhookStatusMetricsSchema,
+      }),
+      queuedByQueue: z.record(z.string(), z.number().int().min(0)),
+      actionHealth: actionHealthSnapshotSchema,
+      oldestQueuedEventId: z.string().nullable(),
+      oldestQueuedCreatedAt: z.string().datetime().nullable(),
+      oldestQueuedLagSec: z.number().min(0),
+      oldestReceivedEventId: z.string().nullable(),
+      oldestReceivedCreatedAt: z.string().datetime().nullable(),
+      oldestReceivedLagSec: z.number().min(0),
+      effectiveLagSec: z.number().min(0),
+    }),
+  ),
+  oldestQueuedEventId: z.string().nullable(),
+  oldestQueuedCreatedAt: z.string().datetime().nullable(),
+  oldestQueuedLagSec: z.number().min(0),
+  oldestReceivedEventId: z.string().nullable(),
+  oldestReceivedCreatedAt: z.string().datetime().nullable(),
+  oldestReceivedLagSec: z.number().min(0),
+  effectiveLagSec: z.number().min(0),
+  generatedAt: z.string().datetime(),
+});
+export type QueueMetricsSnapshot = z.infer<typeof queueMetricsSnapshotSchema>;
+
+export const systemDashboardStatusSchema = z.enum(['healthy', 'warning', 'critical']);
+export type SystemDashboardStatus = z.infer<typeof systemDashboardStatusSchema>;
+
+export const systemDashboardAlertLevelSchema = z.enum(['info', 'warning', 'critical']);
+export type SystemDashboardAlertLevel = z.infer<typeof systemDashboardAlertLevelSchema>;
+
+export const systemDashboardAlertSchema = z.object({
+  code: z.string(),
+  level: systemDashboardAlertLevelSchema,
+  title: z.string(),
+  detail: z.string(),
+  recommendedAction: z.string(),
+});
+export type SystemDashboardAlert = z.infer<typeof systemDashboardAlertSchema>;
+
+export const webhookSubscriptionSnapshotStatusSchema = z.enum([
+  'healthy',
+  'warning',
+  'critical',
+  'disabled',
+]);
+export type WebhookSubscriptionSnapshotStatus = z.infer<
+  typeof webhookSubscriptionSnapshotStatusSchema
+>;
+
+export const botWebhookSubscriptionSnapshotSchema = z.object({
+  botId: z.string(),
+  status: webhookSubscriptionSnapshotStatusSchema,
+  configured: z.boolean(),
+  url: z.string().nullable(),
+  checkedAt: z.string().datetime().nullable(),
+  reconciledAt: z.string().datetime().nullable(),
+  requiredUpdateTypes: z.array(z.string()),
+  actualUpdateTypes: z.array(z.string()),
+  missingUpdateTypes: z.array(z.string()),
+  extraUpdateTypes: z.array(z.string()),
+  otherSubscriptionsCount: z.number().int().min(0),
+  lastError: z.string().nullable(),
+  note: z.string().nullable(),
+});
+export type BotWebhookSubscriptionSnapshot = z.infer<typeof botWebhookSubscriptionSnapshotSchema>;
+
+export const webhookSubscriptionSnapshotSchema = z.object({
+  status: webhookSubscriptionSnapshotStatusSchema,
+  configured: z.boolean(),
+  url: z.string().nullable(),
+  checkedAt: z.string().datetime().nullable(),
+  reconciledAt: z.string().datetime().nullable(),
+  requiredUpdateTypes: z.array(z.string()),
+  actualUpdateTypes: z.array(z.string()),
+  missingUpdateTypes: z.array(z.string()),
+  extraUpdateTypes: z.array(z.string()),
+  otherSubscriptionsCount: z.number().int().min(0),
+  lastError: z.string().nullable(),
+  note: z.string().nullable(),
+  botCount: z.number().int().min(0),
+  bots: z.record(z.string(), botWebhookSubscriptionSnapshotSchema),
+});
+export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
+
+export const systemDashboardSummarySchema = z.object({
+  status: systemDashboardStatusSchema,
+  title: z.string(),
+  detail: z.string(),
+  generatedAt: z.string().datetime(),
+  stabilizing: z.boolean(),
+});
+export type SystemDashboardSummary = z.infer<typeof systemDashboardSummarySchema>;
+
+export const botOwnershipCoverageSchema = z.object({
+  total: z.number().int().min(0),
+  withPrimary: z.number().int().min(0),
+  withoutPrimary: z.number().int().min(0),
+  coverageRatio: z.number().min(0).max(1),
+});
+export type BotOwnershipCoverage = z.infer<typeof botOwnershipCoverageSchema>;
+
+export const botOwnershipLifecycleStatsSchema = z.object({
+  configured: z.number().int().min(0),
+  adminVisible: z.number().int().min(0),
+  active: z.number().int().min(0),
+  dormant: z.number().int().min(0),
+  draining: z.number().int().min(0),
+  disabled: z.number().int().min(0),
+});
+export type BotOwnershipLifecycleStats = z.infer<typeof botOwnershipLifecycleStatsSchema>;
+
+export const botOwnershipAnomaliesSchema = z.object({
+  noPrimary: z.number().int().min(0),
+  recoverableLegacyOnly: z.number().int().min(0),
+  recoverableFromMemberships: z.number().int().min(0),
+  unbound: z.number().int().min(0),
+  primaryBotUnknown: z.number().int().min(0),
+  legacyBotUnknown: z.number().int().min(0),
+  activeMembershipBotUnknown: z.number().int().min(0),
+  primaryWithoutActiveMembership: z.number().int().min(0),
+  primaryWithoutAdminAccess: z.number().int().min(0),
+  sharedChats: z.number().int().min(0),
+});
+export type BotOwnershipAnomalies = z.infer<typeof botOwnershipAnomaliesSchema>;
+
+export const botOwnershipRepairSnapshotSchema = z.object({
+  enabled: z.boolean(),
+  activeOnThisRole: z.boolean(),
+  intervalMs: z.number().int().positive(),
+  lastRunAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable(),
+  lastError: z.string().nullable(),
+  lastAppliedChanges: z.number().int().min(0),
+  totalAppliedChanges: z.number().int().min(0),
+});
+export type BotOwnershipRepairSnapshot = z.infer<typeof botOwnershipRepairSnapshotSchema>;
+
+export const botOwnershipFoundationSnapshotSchema = z.object({
+  generatedAt: z.string().datetime(),
+  bots: botOwnershipLifecycleStatsSchema,
+  entities: z.object({
+    total: botOwnershipCoverageSchema,
+    chats: botOwnershipCoverageSchema,
+    channels: botOwnershipCoverageSchema,
+  }),
+  anomalies: botOwnershipAnomaliesSchema,
+  repair: botOwnershipRepairSnapshotSchema,
+});
+export type BotOwnershipFoundationSnapshot = z.infer<typeof botOwnershipFoundationSnapshotSchema>;
+
+export const systemDashboardBurstSchema = z.object({
+  active: z.boolean(),
+  peakLagSec: z.number().min(0),
+  peakBotId: z.string().nullable(),
+  startedAt: z.string().datetime().nullable(),
+  lastRecoveredAt: z.string().datetime().nullable(),
+  sampleAgeMs: z.number().int().min(0),
+});
+export type SystemDashboardBurst = z.infer<typeof systemDashboardBurstSchema>;
+
+export const systemDashboardHotPathStageSchema = z.object({
+  stage: z.string(),
+  count: z.number().int().min(0),
+  slowCount: z.number().int().min(0),
+  timeoutCount: z.number().int().min(0),
+  skipCount: z.number().int().min(0),
+  failOpenCount: z.number().int().min(0),
+  avgElapsedMs: z.number().min(0),
+  maxElapsedMs: z.number().int().min(0),
+  lastObservedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardHotPathStage = z.infer<typeof systemDashboardHotPathStageSchema>;
+
+export const systemDashboardHotPathSchema = z.object({
+  windowSec: z.number().int().positive(),
+  failOpenCount: z.number().int().min(0),
+  stages: z.array(systemDashboardHotPathStageSchema),
+});
+export type SystemDashboardHotPath = z.infer<typeof systemDashboardHotPathSchema>;
+
+export const systemDashboardHotChatSchema = z.object({
+  chatId: z.string(),
+  messageCreatedCount: z.number().int().min(0),
+  botsSeen: z.number().int().min(0),
+  lastSeenAt: z.string().datetime(),
+});
+export type SystemDashboardHotChat = z.infer<typeof systemDashboardHotChatSchema>;
+
+export const systemDashboardHotChatsSchema = z.object({
+  windowSec: z.number().int().positive(),
+  items: z.array(systemDashboardHotChatSchema),
+});
+export type SystemDashboardHotChats = z.infer<typeof systemDashboardHotChatsSchema>;
+
+export const systemDashboardBackgroundBudgetSourceSchema = z.object({
+  sourceTag: z.string(),
+  totalRequests: z.number().int().min(0),
+  avgRps: z.number().min(0),
+  peakRps: z.number().int().min(0),
+});
+export type SystemDashboardBackgroundBudgetSource = z.infer<
+  typeof systemDashboardBackgroundBudgetSourceSchema
+>;
+
+export const systemDashboardBackgroundBudgetPauseReasonSchema = z.object({
+  component: z.string(),
+  sourceTag: z.string(),
+  action: z.enum(['run', 'slow', 'pause']),
+  reason: z.string(),
+  count: z.number().int().min(0),
+  lastObservedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardBackgroundBudgetPauseReason = z.infer<
+  typeof systemDashboardBackgroundBudgetPauseReasonSchema
+>;
+
+export const systemDashboardBackgroundBudgetBotLoadSchema = z.object({
+  maxSmoothedLoad: z.number().min(0),
+  maxPeakLoad: z.number().min(0),
+  slowThreshold: z.number().min(0).max(1),
+  pauseThreshold: z.number().min(0).max(1),
+  topBots: z.array(
+    z.object({
+      botId: z.string(),
+      smoothedLoad: z.number().min(0),
+      peakLoad: z.number().min(0),
+      avgLoad: z.number().min(0),
+    }),
+  ),
+});
+export type SystemDashboardBackgroundBudgetBotLoad = z.infer<
+  typeof systemDashboardBackgroundBudgetBotLoadSchema
+>;
+
+export const systemDashboardBackgroundBudgetSchema = z.object({
+  windowSec: z.number().int().positive(),
+  backgroundShare: z.number().min(0).max(1),
+  topSources: z.array(systemDashboardBackgroundBudgetSourceSchema),
+  pauseReasons: z.array(systemDashboardBackgroundBudgetPauseReasonSchema),
+  botLoad: systemDashboardBackgroundBudgetBotLoadSchema.optional(),
+});
+export type SystemDashboardBackgroundBudget = z.infer<typeof systemDashboardBackgroundBudgetSchema>;
+
+export const systemDashboardMembershipLookupSampleSchema = z.object({
+  chatId: z.string(),
+  policyName: z.string(),
+  lastObservedAt: z.string().datetime(),
+  retryAfterMs: z.number().int().min(0).nullable(),
+});
+export type SystemDashboardMembershipLookupSample = z.infer<
+  typeof systemDashboardMembershipLookupSampleSchema
+>;
+
+export const systemDashboardMembershipLookupIssueSampleSchema =
+  systemDashboardMembershipLookupSampleSchema.extend({
+    kind: z.enum(['transient', 'terminal']),
+  });
+export type SystemDashboardMembershipLookupIssueSample = z.infer<
+  typeof systemDashboardMembershipLookupIssueSampleSchema
+>;
+
+export const systemDashboardMembershipLookupSchema = z.object({
+  windowSec: z.number().int().positive(),
+  hotChannels: z.number().int().min(0),
+  backoffActiveChats: z.number().int().min(0),
+  transientIssues: z.number().int().min(0),
+  terminalIssues: z.number().int().min(0),
+  hotChannelsSample: z.array(systemDashboardMembershipLookupSampleSchema),
+  backoffSample: z.array(systemDashboardMembershipLookupSampleSchema),
+  issueSample: z.array(systemDashboardMembershipLookupIssueSampleSchema),
+});
+export type SystemDashboardMembershipLookup = z.infer<typeof systemDashboardMembershipLookupSchema>;
+
+export const systemDashboardProblemChatSeveritySchema = z.enum(['info', 'warning', 'critical']);
+export type SystemDashboardProblemChatSeverity = z.infer<
+  typeof systemDashboardProblemChatSeveritySchema
+>;
+
+export const systemDashboardProblemChatSchema = z.object({
+  chatId: z.string(),
+  botId: z.string().nullable(),
+  category: z.string(),
+  severity: systemDashboardProblemChatSeveritySchema,
+  action: z.string().nullable(),
+  statusCode: z.number().int().positive().nullable(),
+  reason: z.string(),
+  count: z.number().int().min(0),
+  lastObservedAt: z.string().datetime(),
+});
+export type SystemDashboardProblemChat = z.infer<typeof systemDashboardProblemChatSchema>;
+
+export const systemDashboardProblemChatsSchema = z.object({
+  windowSec: z.number().int().positive(),
+  items: z.array(systemDashboardProblemChatSchema),
+});
+export type SystemDashboardProblemChats = z.infer<typeof systemDashboardProblemChatsSchema>;
+
+export const systemDashboardWebhookSloStatusSchema = z.enum(['healthy', 'warning', 'critical']);
+export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebhookSloStatusSchema>;
+
+export const systemDashboardWebhookSloSchema = z.object({
+  status: systemDashboardWebhookSloStatusSchema,
+  windowSec: z.number().int().positive(),
+  targetProcessingMs: z.number().int().positive(),
+  totalEvents: z.number().int().min(0),
+  processedEvents: z.number().int().min(0),
+  failedEvents: z.number().int().min(0),
+  sampledProcessedEvents: z.number().int().min(0),
+  p95ProcessingMs: z.number().min(0).nullable(),
+  underTargetRatio: z.number().min(0).max(1).nullable(),
+  oldestUnprocessedLagSec: z.number().min(0),
+  oldestUnprocessedEventId: z.string().nullable(),
+  lastProcessedAt: z.string().datetime().nullable(),
+  generatedAt: z.string().datetime(),
+});
+export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;
+
+export const systemDashboardResponseSchema = z.object({
+  summary: systemDashboardSummarySchema,
+  alerts: z.array(systemDashboardAlertSchema),
+  queues: queueMetricsSnapshotSchema,
+  mode: systemModeSnapshotSchema,
+  webhookSubscription: webhookSubscriptionSnapshotSchema,
+  ownership: botOwnershipFoundationSnapshotSchema,
+  burst: systemDashboardBurstSchema.optional(),
+  hotPath: systemDashboardHotPathSchema.optional(),
+  hotChats: systemDashboardHotChatsSchema.optional(),
+  backgroundBudget: systemDashboardBackgroundBudgetSchema.optional(),
+  membershipLookup: systemDashboardMembershipLookupSchema.optional(),
+  problemChats: systemDashboardProblemChatsSchema.optional(),
+  webhookSlo: systemDashboardWebhookSloSchema.optional(),
+});
+export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;

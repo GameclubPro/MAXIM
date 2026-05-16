@@ -41,7 +41,7 @@ const guardedFiles = [
   },
   {
     path: 'packages/contracts/src/core.ts',
-    maxLines: 3842,
+    maxLines: 3445,
     targetLines: 3400,
     reason: 'Contracts should continue moving to existing subpath exports.',
   },
