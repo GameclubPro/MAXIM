@@ -1,11 +1,19 @@
 import { Injectable, Optional } from '@nestjs/common';
-import { CommercialAdsSensitivity, type ChatSettings } from '@prisma/client';
-import { createHash } from 'node:crypto';
+import type { ChatSettings } from '@prisma/client';
 import { stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { isExactProfanityVariant, isTargetedInsultVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
+import {
+  CommercialSecondStageDecisionCache,
+  COMMERCIAL_SECOND_STAGE_VERSION,
+  type CommercialSecondStageDecision,
+} from './rule-engine-commercial-second-stage-cache';
+import {
+  resolveCommercialThresholds,
+  type CommercialThresholdProfile,
+} from './rule-engine-commercial-thresholds';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
 import {
   RuleEngineDuplicateDetector,
@@ -89,31 +97,12 @@ type CommercialDetection = {
   classifierReasons: string[];
 };
 
-type CommercialThresholdProfile = {
-  warnThreshold: number;
-  deleteThreshold: number;
-  sensitivity: 'BALANCED' | 'STRICT';
-  strictness: number;
-};
-
 type CommercialClassification = {
   primarySubtype: CommercialSubtype;
   supportingSubtypes: CommercialSubtype[];
   evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
   reviewRecommended: boolean;
   reviewReasons: string[];
-};
-
-type CommercialSecondStageDecision = {
-  adjustedConfidenceScore: number;
-  primarySubtype: CommercialSubtype;
-  supportingSubtypes: CommercialSubtype[];
-  reviewRecommended: boolean;
-  reviewReasons: string[];
-  classifierVersion: string;
-  commercialProbability: number;
-  reviewProbability: number;
-  classifierReasons: string[];
 };
 
 type LabeledPattern = {
@@ -162,9 +151,6 @@ type CommercialMarkerContext = {
   rawLoweredTextWithoutUrls: string;
   normalizedTokensWithoutUrls: string[];
 };
-
-const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v2';
-const COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES = 4096;
 
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
 // should come from the exact lexicon so names/surnames with the same prefix do not match.
@@ -1423,7 +1409,7 @@ const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
 export class RuleEngineService {
   private readonly duplicateDetector: RuleEngineDuplicateDetector;
   private readonly messageLimitsDetector: RuleEngineMessageLimitsDetector;
-  private readonly commercialSecondStageCache = new Map<string, CommercialSecondStageDecision>();
+  private readonly commercialSecondStageCache = new CommercialSecondStageDecisionCache();
 
   constructor(
     private readonly redisCounter: RedisCounterService,
@@ -2227,7 +2213,7 @@ export class RuleEngineService {
       return null;
     }
 
-    const appliedThresholds = this.resolveCommercialThresholds(settings);
+    const appliedThresholds = resolveCommercialThresholds(settings);
     const state = this.collectCommercialSignals(
       normalizedText,
       rawLoweredText,
@@ -2400,32 +2386,6 @@ export class RuleEngineService {
     };
   }
 
-  private resolveCommercialThresholds(settings: ChatSettings): {
-    warnThreshold: number;
-    deleteThreshold: number;
-    sensitivity: 'BALANCED' | 'STRICT';
-    strictness: number;
-  } {
-    const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
-    const warnBase = Number.isFinite(settings.commercialAdsWarnThreshold)
-      ? settings.commercialAdsWarnThreshold
-      : 45;
-    const deleteBase = Number.isFinite(settings.commercialAdsDeleteThreshold)
-      ? settings.commercialAdsDeleteThreshold
-      : 65;
-    const warnThreshold = Math.max(10, Math.min(90, warnBase));
-    const deleteThreshold = Math.max(warnThreshold + 5, Math.min(100, deleteBase));
-    const thresholdStrictness = ((60 - warnThreshold) / 22 + (82 - deleteThreshold) / 27) / 2;
-    const strictness = Math.max(0, Math.min(1, thresholdStrictness + (strict ? 0.04 : -0.02)));
-
-    return {
-      warnThreshold,
-      deleteThreshold,
-      sensitivity: strict ? 'STRICT' : 'BALANCED',
-      strictness,
-    };
-  }
-
   private evaluateCommercialSecondStage(params: {
     normalizedText: string;
     rawLoweredText: string;
@@ -2459,7 +2419,7 @@ export class RuleEngineService {
       return null;
     }
 
-    const cacheKey = this.buildCommercialSecondStageCacheKey({
+    const cacheKey = this.commercialSecondStageCache.buildKey({
       normalizedText,
       confidenceScore,
       decisionBand,
@@ -2467,10 +2427,8 @@ export class RuleEngineService {
       classification,
       commercialCampaignContext,
     });
-    const cached = this.commercialSecondStageCache.get(cacheKey);
+    const cached = this.commercialSecondStageCache.read(cacheKey);
     if (cached) {
-      this.commercialSecondStageCache.delete(cacheKey);
-      this.commercialSecondStageCache.set(cacheKey, cached);
       return cached;
     }
 
@@ -2857,7 +2815,7 @@ export class RuleEngineService {
       reviewProbability: Number(reviewProbability.toFixed(4)),
       classifierReasons,
     };
-    this.rememberCommercialSecondStageDecision(cacheKey, decision);
+    this.commercialSecondStageCache.remember(cacheKey, decision);
     return decision;
   }
 
@@ -2885,53 +2843,6 @@ export class RuleEngineService {
       (state.hasCommercialPropertyContext &&
         classification.primarySubtype !== 'PROPERTY_COMMERCIAL')
     );
-  }
-
-  private buildCommercialSecondStageCacheKey(params: {
-    normalizedText: string;
-    confidenceScore: number;
-    decisionBand: CommercialDecisionBand;
-    appliedThresholds: CommercialThresholdProfile;
-    classification: CommercialClassification;
-    commercialCampaignContext?: CommercialCampaignContext | null;
-  }): string {
-    const {
-      normalizedText,
-      confidenceScore,
-      decisionBand,
-      appliedThresholds,
-      classification,
-      commercialCampaignContext,
-    } = params;
-    const textHash = createHash('sha1').update(normalizedText).digest('hex').slice(0, 16);
-    return [
-      COMMERCIAL_SECOND_STAGE_VERSION,
-      textHash,
-      classification.primarySubtype,
-      decisionBand,
-      Math.round(confidenceScore),
-      appliedThresholds.warnThreshold,
-      appliedThresholds.deleteThreshold,
-      commercialCampaignContext?.sameTextDistinctChatCount ?? 0,
-      commercialCampaignContext?.repeatedPhoneDistinctChatCount ?? 0,
-      commercialCampaignContext?.repeatedLinkDistinctChatCount ?? 0,
-      commercialCampaignContext?.senderDistinctChatCount ?? 0,
-    ].join('|');
-  }
-
-  private rememberCommercialSecondStageDecision(
-    cacheKey: string,
-    decision: CommercialSecondStageDecision,
-  ): void {
-    this.commercialSecondStageCache.set(cacheKey, decision);
-    if (this.commercialSecondStageCache.size <= COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES) {
-      return;
-    }
-
-    const oldestKey = this.commercialSecondStageCache.keys().next().value;
-    if (typeof oldestKey === 'string') {
-      this.commercialSecondStageCache.delete(oldestKey);
-    }
   }
 
   private sigmoid(value: number): number {
