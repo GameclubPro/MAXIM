@@ -1,4 +1,5 @@
 import { cn } from '../../lib/cn';
+import './settings-section-toggle.css';
 
 export type SettingsSectionIconName =
   | 'links'
