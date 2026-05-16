@@ -1,26 +1,5 @@
 import { z } from 'zod';
-export {
-  BOT_SPEECH_EDITABLE_FIELD_KEYS,
-  BOT_SPEECH_PERSONA_VALUES,
-  BOT_SPEECH_PRESETS,
-  BOT_SPEECH_STYLE_METADATA,
-  BOT_SPEECH_STYLE_OPTIONS,
-  BOT_SPEECH_STYLE_VALUES,
-  BOT_SPEECH_SYSTEM_TEMPLATE_KEYS,
-  applyBotSpeechStylePreset,
-  botSpeechPersonaSchema,
-  botSpeechStyleSchema,
-  getBotSpeechEditableTemplate,
-  getBotSpeechSystemTemplate,
-  hasBotSpeechEditableOverrides,
-  resolveBotSpeechPersona,
-  resolveBotSpeechStyle,
-  type BotSpeechEditableFieldKey,
-  type BotSpeechPersona,
-  type BotSpeechSettingsSubset,
-  type BotSpeechStyle,
-  type BotSpeechSystemTemplateKey,
-} from './bot-speech.js';
+export * from './bot-speech.js';
 import { botSpeechPersonaSchema, botSpeechStyleSchema } from './bot-speech.js';
 import {
   DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
@@ -31,24 +10,7 @@ import {
   normalizeAllowlistDomain,
   normalizeAllowlistLink,
 } from './settings-utils.js';
-export {
-  ALLOWLIST_DOMAIN_RULE_PREFIX,
-  DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
-  DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
-  DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
-  DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
-  allowlistMatchTypeSchema,
-  formatDeleteBotMessagesDelayLabel,
-  inferAllowlistMatchType,
-  isValidDeleteBotMessagesDelayMinutes,
-  normalizeAllowlistDomain,
-  normalizeAllowlistLink,
-  normalizeDeleteBotMessagesDelayMinutes,
-  normalizeStoredAllowlistEntry,
-  parseStoredAllowlistEntry,
-  stepDeleteBotMessagesDelayMinutes,
-  type AllowlistMatchType,
-} from './settings-utils.js';
+export * from './settings-utils.js';
 export * from './system-core.js';
 
 export const sanctionActionSchema = z.enum([

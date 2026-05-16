@@ -8,6 +8,7 @@ import type {
   MembershipActivityItem,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import '../styles/settings-drilldown-core.css';
 import '../styles/lazy-pages.css';
 import '../styles/dashboard-events.css';
 import {
