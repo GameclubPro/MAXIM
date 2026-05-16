@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
-import { AdminService } from './admin.service';
+import { ManagedBroadcastService } from './managed-broadcast.service';
 
 const MANAGED_BROADCAST_POLL_INTERVAL_MS = 15_000;
 
@@ -11,7 +11,7 @@ export class ManagedBroadcastRunnerService implements OnModuleInit, OnModuleDest
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
-  constructor(private readonly adminService: AdminService) {}
+  constructor(private readonly managedBroadcastService: ManagedBroadcastService) {}
 
   onModuleInit() {
     if (!this.backgroundEnabled) {
@@ -40,7 +40,7 @@ export class ManagedBroadcastRunnerService implements OnModuleInit, OnModuleDest
 
     this.inFlight = true;
     try {
-      await this.adminService.processDueManagedBroadcasts(reason);
+      await this.managedBroadcastService.processDueManagedBroadcasts(reason);
     } catch (error: unknown) {
       this.logger.warn(
         {

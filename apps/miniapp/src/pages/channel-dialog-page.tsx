@@ -73,6 +73,7 @@ import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
 
@@ -1327,7 +1328,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const useNativeTapFileInputs = fileInputActivationMode === 'native-tap';
 
   const currentUserId = useMemo(() => getInitDataUserId(), []);
-  const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
+  const dialogQueryKey = queryKeys.entityDialog(entityType, chatId, dialogType, token);
   const shouldLoadDialog = Boolean(chatId && token) && terminalDialogError === null;
 
   useEffect(() => {

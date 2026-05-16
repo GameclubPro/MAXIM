@@ -33,6 +33,7 @@ import {
 } from '@maxim/contracts';
 import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { AdminService } from '../admin/admin.service';
+import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import {
@@ -1194,6 +1195,7 @@ export class PrivateControlService {
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional() private readonly managedBroadcastService?: ManagedBroadcastService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -6368,19 +6370,16 @@ export class PrivateControlService {
       applyToAllChats: targetState.applyToAllChats,
     };
 
+    const broadcaster = this.managedBroadcastService ?? this.adminService;
+
     return params.selectedEntityType === 'channel'
-      ? this.adminService.sendChannelBroadcast(
+      ? broadcaster.sendChannelBroadcast(
           params.selectedChatId,
           params.actor,
           payload,
           'private_bot',
         )
-      : this.adminService.sendBroadcast(
-          params.selectedChatId,
-          params.actor,
-          payload,
-          'private_bot',
-        );
+      : broadcaster.sendBroadcast(params.selectedChatId, params.actor, payload, 'private_bot');
   }
 
   private async finishConfirmedBroadcastPublish(params: {

@@ -9,11 +9,17 @@ import {
   Post,
   Put,
   Query,
+  Optional,
   UseGuards,
 } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
+import { AdminSettingsService } from './admin-settings.service';
 import { AdminService } from './admin.service';
+import { ChannelDialogService } from './channel-dialog.service';
+import { ManualModerationService } from './manual-moderation.service';
+import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 
 @Controller('v1')
@@ -22,6 +28,11 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly managedGiveawayService: ManagedGiveawayService,
+    @Optional() private readonly managedBroadcastService?: ManagedBroadcastService,
+    @Optional() private readonly managedEntitiesService?: ManagedEntitiesService,
+    @Optional() private readonly adminSettingsService?: AdminSettingsService,
+    @Optional() private readonly manualModerationService?: ManualModerationService,
+    @Optional() private readonly channelDialogService?: ChannelDialogService,
   ) {}
 
   @Get('me')
@@ -30,7 +41,7 @@ export class AdminController {
     @Query('chatId') chatId: string | undefined,
     @Query('entityType') entityType: string | undefined,
   ) {
-    return this.adminService.getMe(user, {
+    return this.entitiesService.getMe(user, {
       chatId,
       entityType: entityType === 'channel' ? 'channel' : entityType === 'chat' ? 'chat' : undefined,
       enrichFromMax: Boolean(chatId?.trim()),
@@ -55,15 +66,15 @@ export class AdminController {
       sinceVersion,
     };
     if (includeRefreshState === '1') {
-      return this.adminService.listChatsWithRefreshState(user, options);
+      return this.entitiesService.listChatsWithRefreshState(user, options);
     }
 
-    return this.adminService.listChats(user, options);
+    return this.entitiesService.listChats(user, options);
   }
 
   @Get('chats/:chatId/header')
   getChatHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChatHeader(chatId, user);
+    return this.entitiesService.getChatHeader(chatId, user);
   }
 
   @Get('chats/:chatId/bots/plan')
@@ -72,7 +83,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('refresh') refresh: string | undefined,
   ) {
-    return this.adminService.getChatBotExecutionPlan(chatId, user, {
+    return this.entitiesService.getChatBotExecutionPlan(chatId, user, {
       refresh: refresh === '1',
     });
   }
@@ -83,7 +94,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChatPrimaryBot(chatId, user, body);
+    return this.entitiesService.updateChatPrimaryBot(chatId, user, body);
   }
 
   @Post('chats/:chatId/bots/partner-assist')
@@ -92,7 +103,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChatPartnerAssist(chatId, user, body);
+    return this.entitiesService.updateChatPartnerAssist(chatId, user, body);
   }
 
   @Post('chats/:chatId/bots/promote-standby')
@@ -101,7 +112,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.promoteChatStandbyBot(chatId, user, body);
+    return this.entitiesService.promoteChatStandbyBot(chatId, user, body);
   }
 
   @Get('channels')
@@ -122,15 +133,15 @@ export class AdminController {
       sinceVersion,
     };
     if (includeRefreshState === '1') {
-      return this.adminService.listChannelsWithRefreshState(user, options);
+      return this.entitiesService.listChannelsWithRefreshState(user, options);
     }
 
-    return this.adminService.listChannels(user, options);
+    return this.entitiesService.listChannels(user, options);
   }
 
   @Get('channels/:chatId/header')
   getChannelHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChannelHeader(chatId, user);
+    return this.entitiesService.getChannelHeader(chatId, user);
   }
 
   @Put('managed-entities/:entityType/:entityId/favorites')
@@ -140,7 +151,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateManagedEntityFavorites(entityType, entityId, user, body);
+    return this.entitiesService.updateManagedEntityFavorites(entityType, entityId, user, body);
   }
 
   @Get('channels/:chatId/bots/plan')
@@ -149,7 +160,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('refresh') refresh: string | undefined,
   ) {
-    return this.adminService.getChannelBotExecutionPlan(chatId, user, {
+    return this.entitiesService.getChannelBotExecutionPlan(chatId, user, {
       refresh: refresh === '1',
     });
   }
@@ -160,7 +171,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelPrimaryBot(chatId, user, body);
+    return this.entitiesService.updateChannelPrimaryBot(chatId, user, body);
   }
 
   @Post('channels/:chatId/bots/partner-assist')
@@ -169,7 +180,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelPartnerAssist(chatId, user, body);
+    return this.entitiesService.updateChannelPartnerAssist(chatId, user, body);
   }
 
   @Post('channels/:chatId/bots/promote-standby')
@@ -178,7 +189,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.promoteChannelStandbyBot(chatId, user, body);
+    return this.entitiesService.promoteChannelStandbyBot(chatId, user, body);
   }
 
   @Get('channels/:chatId/stats')
@@ -187,7 +198,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChannelStats(chatId, user, query);
+    return this.moderationService.getChannelStats(chatId, user, query);
   }
 
   @Get('channels/:chatId/activity-feed')
@@ -196,12 +207,12 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChannelActivityFeed(chatId, user, query);
+    return this.moderationService.getChannelActivityFeed(chatId, user, query);
   }
 
   @Get('chats/:chatId/settings')
   getSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getSettings(chatId, user);
+    return this.settingsService.getSettings(chatId, user);
   }
 
   @Get('chats/:chatId/settings-screen')
@@ -210,7 +221,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('prefetch') prefetch?: string,
   ) {
-    return this.adminService.getChatSettingsScreen(chatId, user, {
+    return this.settingsService.getChatSettingsScreen(chatId, user, {
       liveAdminCheck: prefetch !== '1',
     });
   }
@@ -221,7 +232,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.resolveRequiredSubscriptionChannel(chatId, user, body);
+    return this.settingsService.resolveRequiredSubscriptionChannel(chatId, user, body);
   }
 
   @Put('chats/:chatId/settings')
@@ -230,12 +241,12 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateSettings(chatId, user, body);
+    return this.settingsService.updateSettings(chatId, user, body);
   }
 
   @Get('chats/:chatId/rules')
   getRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getRules(chatId, user);
+    return this.settingsService.getRules(chatId, user);
   }
 
   @Get('chats/:chatId/activity-feed')
@@ -244,7 +255,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChatActivityFeed(chatId, user, query);
+    return this.moderationService.getChatActivityFeed(chatId, user, query);
   }
 
   @Get('chats/:chatId/moderation-feed')
@@ -253,7 +264,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChatModerationFeed(chatId, user, query);
+    return this.moderationService.getChatModerationFeed(chatId, user, query);
   }
 
   @Get('chats/:chatId/members')
@@ -262,7 +273,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChatParticipantsPage(chatId, user, query);
+    return this.moderationService.getChatParticipantsPage(chatId, user, query);
   }
 
   @Put('chats/:chatId/members/:userId/immunity')
@@ -272,7 +283,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChatParticipantImmunity(chatId, targetUserId, user, body);
+    return this.moderationService.updateChatParticipantImmunity(chatId, targetUserId, user, body);
   }
 
   @Put('chats/:chatId/rules')
@@ -281,22 +292,22 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateRules(chatId, user, body);
+    return this.settingsService.updateRules(chatId, user, body);
   }
 
   @Post('chats/:chatId/rules/publish')
   publishRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.publishRules(chatId, user);
+    return this.settingsService.publishRules(chatId, user);
   }
 
   @Delete('chats/:chatId/rules/publish')
   resetPublishedRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.resetPublishedRules(chatId, user);
+    return this.settingsService.resetPublishedRules(chatId, user);
   }
 
   @Get('chats/:chatId/poll')
   getChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChatPoll(chatId, user);
+    return this.settingsService.getChatPoll(chatId, user);
   }
 
   @Put('chats/:chatId/poll')
@@ -305,22 +316,22 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChatPoll(chatId, user, body);
+    return this.settingsService.updateChatPoll(chatId, user, body);
   }
 
   @Post('chats/:chatId/poll/publish')
   publishChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.publishChatPoll(chatId, user);
+    return this.settingsService.publishChatPoll(chatId, user);
   }
 
   @Post('chats/:chatId/poll/close')
   closeChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.closeChatPoll(chatId, user);
+    return this.settingsService.closeChatPoll(chatId, user);
   }
 
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChannelSettings(chatId, user);
+    return this.settingsService.getChannelSettings(chatId, user);
   }
 
   @Get('channels/:chatId/settings-screen')
@@ -329,7 +340,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('prefetch') prefetch?: string,
   ) {
-    return this.adminService.getChannelSettingsScreen(chatId, user, {
+    return this.settingsService.getChannelSettingsScreen(chatId, user, {
       liveAdminCheck: prefetch !== '1',
     });
   }
@@ -340,7 +351,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelSettings(chatId, user, body);
+    return this.settingsService.updateChannelSettings(chatId, user, body);
   }
 
   @Post('channels/:chatId/engagement-publish')
@@ -349,7 +360,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.publishChannelEngagementMessage(chatId, user, body);
+    return this.settingsService.publishChannelEngagementMessage(chatId, user, body);
   }
 
   @Post('channels/:chatId/broadcast')
@@ -358,7 +369,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.sendChannelBroadcast(chatId, user, body);
+    return this.broadcastService.sendChannelBroadcast(chatId, user, body);
   }
 
   @Post('channels/:chatId/broadcast/test')
@@ -367,7 +378,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.sendChannelBroadcastTest(chatId, user, body);
+    return this.broadcastService.sendChannelBroadcastTest(chatId, user, body);
   }
 
   @Get('channels/:chatId/broadcast-calendar')
@@ -376,12 +387,12 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getChannelManagedBroadcastCalendar(chatId, user, query);
+    return this.broadcastService.getChannelManagedBroadcastCalendar(chatId, user, query);
   }
 
   @Get('channels/:chatId/broadcasts')
   getChannelManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.listChannelManagedBroadcasts(chatId, user);
+    return this.broadcastService.listChannelManagedBroadcasts(chatId, user);
   }
 
   @Get('channels/:chatId/broadcasts/:broadcastId')
@@ -390,7 +401,7 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.getChannelManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.getChannelManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Put('channels/:chatId/broadcasts/:broadcastId')
@@ -400,7 +411,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelManagedBroadcast(chatId, broadcastId, user, body);
+    return this.broadcastService.updateChannelManagedBroadcast(chatId, broadcastId, user, body);
   }
 
   @Delete('channels/:chatId/broadcasts/:broadcastId')
@@ -409,7 +420,7 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.cancelChannelManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.cancelChannelManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Post('channels/:chatId/broadcasts/:broadcastId/retry')
@@ -418,12 +429,12 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.retryChannelManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.retryChannelManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Get('channels/:chatId/poll')
   getChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChannelPoll(chatId, user);
+    return this.settingsService.getChannelPoll(chatId, user);
   }
 
   @Put('channels/:chatId/poll')
@@ -432,17 +443,17 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelPoll(chatId, user, body);
+    return this.settingsService.updateChannelPoll(chatId, user, body);
   }
 
   @Post('channels/:chatId/poll/publish')
   publishChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.publishChannelPoll(chatId, user);
+    return this.settingsService.publishChannelPoll(chatId, user);
   }
 
   @Post('channels/:chatId/poll/close')
   closeChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.closeChannelPoll(chatId, user);
+    return this.settingsService.closeChannelPoll(chatId, user);
   }
 
   @Get('channels/:chatId/dialog/suggest/redirect')
@@ -451,7 +462,7 @@ export class AdminController {
     @CurrentUser() _user: AuthUser,
     @Query('token') token: string | undefined,
   ) {
-    return this.adminService.getChannelSuggestionRedirect(chatId, token ?? null);
+    return this.dialogService.getChannelSuggestionRedirect(chatId, token ?? null);
   }
 
   @Get('channels/:chatId/dialog/:dialogType')
@@ -461,7 +472,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('token') token: string | undefined,
   ) {
-    return this.adminService.getChannelDialog(chatId, user, dialogType, token ?? null);
+    return this.dialogService.getChannelDialog(chatId, user, dialogType, token ?? null);
   }
 
   @Post('channels/:chatId/dialog/:dialogType/messages')
@@ -471,7 +482,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.createChannelDialogMessage(chatId, user, dialogType, body);
+    return this.dialogService.createChannelDialogMessage(chatId, user, dialogType, body);
   }
 
   @Patch('channels/:chatId/dialog/:dialogType/messages/:messageId')
@@ -482,7 +493,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChannelDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.updateChannelDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Delete('channels/:chatId/dialog/:dialogType/messages/:messageId')
@@ -493,7 +504,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.deleteChannelDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.deleteChannelDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Post('channels/:chatId/dialog/:dialogType/messages/:messageId/reactions')
@@ -504,7 +515,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.toggleChannelDialogReaction(chatId, user, dialogType, messageId, body);
+    return this.dialogService.toggleChannelDialogReaction(chatId, user, dialogType, messageId, body);
   }
 
   @Get('chats/:chatId/dialog/:dialogType')
@@ -514,7 +525,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('token') token: string | undefined,
   ) {
-    return this.adminService.getChatDialog(chatId, user, dialogType, token ?? null);
+    return this.dialogService.getChatDialog(chatId, user, dialogType, token ?? null);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages')
@@ -524,7 +535,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.createChatDialogMessage(chatId, user, dialogType, body);
+    return this.dialogService.createChatDialogMessage(chatId, user, dialogType, body);
   }
 
   @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')
@@ -535,7 +546,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateChatDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.updateChatDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Delete('chats/:chatId/dialog/:dialogType/messages/:messageId')
@@ -546,7 +557,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.deleteChatDialogMessage(chatId, user, dialogType, messageId, body);
+    return this.dialogService.deleteChatDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages/:messageId/reactions')
@@ -557,7 +568,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.toggleChatDialogReaction(chatId, user, dialogType, messageId, body);
+    return this.dialogService.toggleChatDialogReaction(chatId, user, dialogType, messageId, body);
   }
 
   @Post('chats/:chatId/settings/apply-to-all')
@@ -566,7 +577,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.applySettingsToAllChats(chatId, user, body);
+    return this.settingsService.applySettingsToAllChats(chatId, user, body);
   }
 
   @Post('chats/:chatId/settings/apply-section-to-all')
@@ -575,7 +586,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.applySettingsSectionToAllChats(chatId, user, body);
+    return this.settingsService.applySettingsSectionToAllChats(chatId, user, body);
   }
 
   @Post('chats/:chatId/settings/apply-section-preview')
@@ -584,7 +595,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.previewApplySettingsSectionTarget(chatId, user, body);
+    return this.settingsService.previewApplySettingsSectionTarget(chatId, user, body);
   }
 
   @Post('chats/:chatId/broadcast')
@@ -593,7 +604,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.sendBroadcast(chatId, user, body);
+    return this.broadcastService.sendBroadcast(chatId, user, body);
   }
 
   @Post('chats/:chatId/broadcast/test')
@@ -602,7 +613,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.sendBroadcastTest(chatId, user, body);
+    return this.broadcastService.sendBroadcastTest(chatId, user, body);
   }
 
   @Get('chats/:chatId/broadcast-calendar')
@@ -611,12 +622,12 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getManagedBroadcastCalendar(chatId, user, query);
+    return this.broadcastService.getManagedBroadcastCalendar(chatId, user, query);
   }
 
   @Get('chats/:chatId/broadcasts')
   getManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.listManagedBroadcasts(chatId, user);
+    return this.broadcastService.listManagedBroadcasts(chatId, user);
   }
 
   @Get('chats/:chatId/broadcasts/:broadcastId')
@@ -625,7 +636,7 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.getManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.getManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Put('chats/:chatId/broadcasts/:broadcastId')
@@ -635,7 +646,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.updateManagedBroadcast(chatId, broadcastId, user, body);
+    return this.broadcastService.updateManagedBroadcast(chatId, broadcastId, user, body);
   }
 
   @Delete('chats/:chatId/broadcasts/:broadcastId')
@@ -644,7 +655,7 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.cancelManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.cancelManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Post('chats/:chatId/broadcasts/:broadcastId/retry')
@@ -653,7 +664,7 @@ export class AdminController {
     @Param('broadcastId') broadcastId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.retryManagedBroadcast(chatId, broadcastId, user);
+    return this.broadcastService.retryManagedBroadcast(chatId, broadcastId, user);
   }
 
   @Get('chats/:chatId/giveaways')
@@ -783,7 +794,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getEvents(chatId, user, query);
+    return this.moderationService.getEvents(chatId, user, query);
   }
 
   @Get('channels/:chatId/giveaways')
@@ -933,7 +944,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query() query: unknown,
   ) {
-    return this.adminService.getLogsDashboard(chatId, user, query);
+    return this.moderationService.getLogsDashboard(chatId, user, query);
   }
 
   @Post('chats/:chatId/members/:userId/moderation-action')
@@ -943,12 +954,12 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.applyManualModerationAction(chatId, targetUserId, user, body);
+    return this.moderationService.applyManualModerationAction(chatId, targetUserId, user, body);
   }
 
   @Post('chats/:chatId/admin-allowlist')
   addAdmin(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser, @Body() body: unknown) {
-    return this.adminService.addAdmin(chatId, user, body);
+    return this.moderationService.addAdmin(chatId, user, body);
   }
 
   @Delete('chats/:chatId/admin-allowlist/:userId')
@@ -957,22 +968,22 @@ export class AdminController {
     @Param('userId') targetUserId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.removeAdmin(chatId, user, targetUserId);
+    return this.moderationService.removeAdmin(chatId, user, targetUserId);
   }
 
   @Post('chats/:chatId/domain-allowlist')
   addDomain(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser, @Body() body: unknown) {
-    return this.adminService.addDomain(chatId, user, body);
+    return this.moderationService.addDomain(chatId, user, body);
   }
 
   @Get('chats/:chatId/domain-allowlist')
   getDomainAllowlist(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getDomainAllowlist(chatId, user);
+    return this.moderationService.getDomainAllowlist(chatId, user);
   }
 
   @Get('chats/:chatId/domain-allowlist/details')
   getDomainAllowlistDetails(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getDomainAllowlistDetails(chatId, user);
+    return this.moderationService.getDomainAllowlistDetails(chatId, user);
   }
 
   @Delete('chats/:chatId/domain-allowlist')
@@ -981,7 +992,11 @@ export class AdminController {
     @Query('domain') domainQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.removeDomain(chatId, user, this.resolveAllowlistDomain(domainQuery));
+    return this.moderationService.removeDomain(
+      chatId,
+      user,
+      this.resolveAllowlistDomain(domainQuery),
+    );
   }
 
   @Delete('chats/:chatId/domain-allowlist/:domain')
@@ -991,7 +1006,7 @@ export class AdminController {
     @Query('domain') domainQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.removeDomain(
+    return this.moderationService.removeDomain(
       chatId,
       user,
       this.resolveAllowlistDomain(domainQuery, domain),
@@ -1005,7 +1020,7 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.scheduleDomainRemoval(
+    return this.moderationService.scheduleDomainRemoval(
       chatId,
       user,
       this.resolveAllowlistDomain(domainQuery),
@@ -1021,12 +1036,32 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.scheduleDomainRemoval(
+    return this.moderationService.scheduleDomainRemoval(
       chatId,
       user,
       this.resolveAllowlistDomain(domainQuery, domain),
       body,
     );
+  }
+
+  private get broadcastService(): ManagedBroadcastService | AdminService {
+    return this.managedBroadcastService ?? this.adminService;
+  }
+
+  private get entitiesService(): ManagedEntitiesService | AdminService {
+    return this.managedEntitiesService ?? this.adminService;
+  }
+
+  private get settingsService(): AdminSettingsService | AdminService {
+    return this.adminSettingsService ?? this.adminService;
+  }
+
+  private get moderationService(): ManualModerationService | AdminService {
+    return this.manualModerationService ?? this.adminService;
+  }
+
+  private get dialogService(): ChannelDialogService | AdminService {
+    return this.channelDialogService ?? this.adminService;
   }
 
   private resolveAllowlistDomain(

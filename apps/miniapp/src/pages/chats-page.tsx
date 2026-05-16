@@ -62,6 +62,7 @@ import {
   saveLastEntityId,
   saveLastEntityType,
 } from '../lib/last-chat';
+import { queryKeys } from '../lib/query-keys';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
   MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
@@ -755,7 +756,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: ['logs-dashboard', chatId, DEFAULT_DASHBOARD_RANGE, false, true],
+        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
         queryFn: () =>
           api.request(
             `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(
@@ -840,7 +841,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadChannelStatsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: ['channel-stats', chatId, DEFAULT_CHANNEL_STATS_RANGE],
+        queryKey: queryKeys.channelStats(chatId, DEFAULT_CHANNEL_STATS_RANGE),
         queryFn: () =>
           api.request(
             `/channels/${chatId}/stats?range=${encodeURIComponent(DEFAULT_CHANNEL_STATS_RANGE)}`,

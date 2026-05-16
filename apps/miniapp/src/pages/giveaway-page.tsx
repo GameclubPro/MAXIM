@@ -27,6 +27,7 @@ import {
   maxSelectionChanged,
   openMaxBotLink,
 } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 
 type GiveawayTone = 'success' | 'warning' | 'muted' | 'danger';
 type GiveawayGlyph = 'spark' | 'check' | 'gift' | 'lock' | 'clock' | 'cross';
@@ -453,7 +454,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const participantQueryKey = useMemo(
-    () => ['public-giveaway-participant', giveawayId] as const,
+    () => queryKeys.giveawayParticipant(giveawayId),
     [giveawayId],
   );
   const subscriptionCheckInFlightRef = useRef(false);
@@ -508,7 +509,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   }, [giveawayId, participantQueryKey, queryClient]);
 
   const giveawayQuery = useQuery({
-    queryKey: ['public-giveaway', giveawayId] as const,
+    queryKey: queryKeys.publicGiveaway(giveawayId),
     queryFn: ({ signal }) => getPublicGiveaway(api, giveawayId, { signal }),
     enabled: Boolean(giveawayId),
     refetchOnWindowFocus: false,
@@ -552,7 +553,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             : 'warning',
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.publicGiveaway(giveawayId) }),
         queryClient.invalidateQueries({ queryKey: participantQueryKey }),
       ]);
     },
@@ -574,7 +575,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
         title: 'Приз подтверждён',
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.publicGiveaway(giveawayId) }),
         queryClient.invalidateQueries({ queryKey: participantQueryKey }),
       ]);
     },
@@ -670,7 +671,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const syncParticipantState = async (nextParticipant: ManagedGiveawayParticipantState) => {
     queryClient.setQueryData(participantQueryKey, nextParticipant);
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.publicGiveaway(giveawayId) }),
       queryClient.invalidateQueries({ queryKey: participantQueryKey }),
     ]);
     return nextParticipant;

@@ -30,6 +30,7 @@ import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -623,7 +624,7 @@ export function ManagedGiveawayCard({
   >({});
 
   const listQueryKey = useMemo(
-    () => ['managed-giveaways', entityType, entityId] as const,
+    () => queryKeys.managedGiveaways(entityType, entityId),
     [entityId, entityType],
   );
 
@@ -657,7 +658,7 @@ export function ManagedGiveawayCard({
   const featuredGiveawayId = featuredItem?.id ?? null;
 
   const draftDetailsQuery = useQuery({
-    queryKey: ['managed-giveaway-details', entityType, entityId, editingGiveawayId] as const,
+    queryKey: queryKeys.managedGiveawayDetails(entityType, entityId, editingGiveawayId),
     queryFn: () => {
       if (!editingGiveawayId) {
         throw new Error('Черновик не выбран.');
@@ -669,7 +670,7 @@ export function ManagedGiveawayCard({
   });
 
   const featuredDetailsQuery = useQuery({
-    queryKey: ['managed-giveaway-details', entityType, entityId, featuredGiveawayId] as const,
+    queryKey: queryKeys.managedGiveawayDetails(entityType, entityId, featuredGiveawayId),
     queryFn: () => {
       if (!featuredGiveawayId) {
         throw new Error('Розыгрыш не выбран.');
@@ -681,7 +682,7 @@ export function ManagedGiveawayCard({
   });
 
   const channelsQuery = useQuery({
-    queryKey: ['giveaway-owned-channels'] as const,
+    queryKey: queryKeys.giveawayOwnedChannels,
     queryFn: () => getChannels(api),
     enabled: editorMode !== 'closed',
     refetchOnWindowFocus: false,
@@ -1291,7 +1292,7 @@ export function ManagedGiveawayCard({
     await Promise.all([
       listQuery.refetch(),
       queryClient.invalidateQueries({
-        queryKey: ['managed-giveaway-details', entityType, entityId],
+        queryKey: queryKeys.managedGiveawayDetailsScope(entityType, entityId),
       }),
     ]);
   };

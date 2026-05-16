@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import '../styles/lazy-pages.css';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
@@ -7,6 +6,7 @@ import { useToast } from '../components/ui/toast';
 import { describeApiError } from '../lib/api-error';
 import { getSystemDashboard, setSystemMode } from '../lib/api/system-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { queryKeys } from '../lib/query-keys';
 import '../styles/system-page.css';
 
 type SystemModeSelection = 'auto' | 'normal' | 'degrade';
@@ -113,7 +113,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const dashboardQuery = useQuery({
-    queryKey: ['system-dashboard'],
+    queryKey: queryKeys.systemDashboard,
     queryFn: () => getSystemDashboard(api),
     staleTime: 5_000,
     refetchInterval: 5_000,
@@ -122,7 +122,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const modeMutation = useMutation({
     mutationFn: (mode: SystemModeSelection) => setSystemMode(api, mode),
     onSuccess: async (_, mode) => {
-      await queryClient.invalidateQueries({ queryKey: ['system-dashboard'] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.systemDashboard });
       pushToast({
         tone: 'success',
         title: 'Режим обновлён',

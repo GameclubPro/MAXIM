@@ -12,8 +12,13 @@ import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
+import { AdminSettingsService } from './admin-settings.service';
 import { AdminController } from './admin.controller';
+import { ChannelDialogService } from './channel-dialog.service';
+import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
+import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { AdminService } from './admin.service';
@@ -32,8 +37,13 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
   controllers: [AdminController],
   providers: [
     AdminService,
+    AdminSettingsService,
+    ChannelDialogService,
     ChannelStatsCollectorService,
+    ManualModerationService,
     RedisCounterService,
+    ManagedBroadcastService,
+    ManagedEntitiesService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
@@ -41,6 +51,14 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
   ],
-  exports: [AdminService, ManagedGiveawayService],
+  exports: [
+    AdminService,
+    AdminSettingsService,
+    ChannelDialogService,
+    ManualModerationService,
+    ManagedBroadcastService,
+    ManagedEntitiesService,
+    ManagedGiveawayService,
+  ],
 })
 export class AdminModule {}

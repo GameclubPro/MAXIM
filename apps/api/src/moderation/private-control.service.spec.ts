@@ -565,6 +565,7 @@ function createHarness(
     settings?: typeof defaultSettings;
     channelSettings?: typeof defaultChannelSettings;
     adminService?: Record<string, unknown>;
+    managedBroadcastService?: Record<string, unknown>;
     managedGiveaway?: ManagedGiveawayDetails | null;
     rules?: ChatRules;
     maxBotLinkService?: Record<string, unknown>;
@@ -1026,6 +1027,7 @@ function createHarness(
       }),
     } as never,
     overrides.maxBotLinkService as never,
+    overrides.managedBroadcastService as never,
   );
 
   return { service, maxClient, adminService, managedGiveawayService, chats, channels };
@@ -2259,6 +2261,37 @@ describe('PrivateControlService', () => {
     );
     expect(getLastEditedText(maxClient)).toContain('Автопостинг запускается.');
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
+    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
+  });
+
+  it('uses the managed broadcast domain service when publishing from private control', async () => {
+    const managedBroadcastService = {
+      sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
+      sendChannelBroadcast: jest
+        .fn()
+        .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
+    };
+    const { service, adminService, maxClient, chats } = createHarness({
+      managedBroadcastService,
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Новости для чата'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
+
+    expect(managedBroadcastService.sendBroadcast).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Новости для чата',
+        applyToAllChats: false,
+      }),
+      'private_bot',
+    );
+    expect(adminService.sendBroadcast).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
   });
 

@@ -46,6 +46,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
@@ -843,7 +844,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   const dashboardQuery = useQuery({
-    queryKey: ['logs-dashboard', chatId, range],
+    queryKey: queryKeys.logsDashboard(chatId ?? '', range),
     queryFn: ({ signal }) =>
       getLogsDashboard(
         api,

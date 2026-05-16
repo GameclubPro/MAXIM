@@ -3,13 +3,14 @@ import { Link } from 'react-router-dom';
 import { describeApiError } from '../lib/api-error';
 import { getSystemDashboard } from '../lib/api/system-client';
 import type { ApiTransport } from '../lib/api/transport';
+import { queryKeys } from '../lib/query-keys';
 import { preloadSystemPage } from '../pages/lazy-pages';
 import { GlassCard } from './ui/glass-card';
 
 export function SystemEntryCard({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const systemPreviewQuery = useQuery({
-    queryKey: ['system-dashboard'],
+    queryKey: queryKeys.systemDashboard,
     queryFn: () => getSystemDashboard(api),
     staleTime: 5_000,
     refetchInterval: 15_000,
@@ -34,7 +35,7 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
     preloadSystemPage();
     void queryClient
       .prefetchQuery({
-        queryKey: ['system-dashboard'],
+        queryKey: queryKeys.systemDashboard,
         queryFn: () => getSystemDashboard(api),
       })
       .catch(() => undefined);

@@ -28,6 +28,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -1377,7 +1378,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   });
 
   const statsQuery = useQuery({
-    queryKey: ['channel-stats', chatId, range],
+    queryKey: queryKeys.channelStats(chatId, range),
     queryFn: ({ signal }) => getChannelStats(api, chatId, range, { signal }),
     enabled: Boolean(chatId),
   });

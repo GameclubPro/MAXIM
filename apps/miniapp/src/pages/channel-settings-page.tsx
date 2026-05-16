@@ -102,6 +102,7 @@ import { maxNotify, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 
 type ChannelRouteState = {
@@ -919,7 +920,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   const settingsScreenQuery = useQuery({
-    queryKey: ['channel-settings-screen', chatId],
+    queryKey: queryKeys.channelSettingsScreen(chatId),
     queryFn: ({ signal }) => getChannelSettingsScreen(api, chatId, { signal }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
@@ -931,7 +932,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : {}),
   });
   const broadcastHandoffStateQuery = useQuery({
-    queryKey: ['channel-broadcast-handoff', chatId],
+    queryKey: queryKeys.channelBroadcastHandoff(chatId),
     queryFn: () => getChannelBroadcastHandoffState(api, chatId ?? ''),
     enabled:
       Boolean(chatId) &&
@@ -985,7 +986,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({
-    queryKey: ['channel-managed-broadcast-calendar', chatId],
+    queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
     queryFn: () =>
       getChannelManagedBroadcastCalendar(api, chatId ?? '', {
         targetChatIds: chatId ? [chatId] : [],
@@ -1428,11 +1429,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       if (chatId) {
         void clearChannelBroadcastHandoffState(api, chatId).catch(() => undefined);
       }
-      void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
       void queryClient.invalidateQueries({
-        queryKey: ['channel-managed-broadcast-calendar', chatId],
+        queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
       });
-      void queryClient.invalidateQueries({ queryKey: ['channel-broadcast-handoff', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelBroadcastHandoff(chatId) });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
         title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Автопостинг готов',
@@ -1448,9 +1449,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
-        void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
-          queryKey: ['channel-managed-broadcast-calendar', chatId],
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
         });
       }
       pushToast({
@@ -1486,7 +1487,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: () => clearChannelBroadcastHandoffState(api, chatId ?? ''),
     onSuccess: () => {
       resetBroadcastComposer();
-      void queryClient.invalidateQueries({ queryKey: ['channel-broadcast-handoff', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelBroadcastHandoff(chatId) });
       pushToast({
         tone: 'success',
         title: 'Черновик очищен',
@@ -1511,9 +1512,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       payload: SendBroadcastPayload;
     }) => updateChannelManagedBroadcast(api, chatId ?? '', broadcastId, payload),
     onSuccess: (broadcast) => {
-      void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
       void queryClient.invalidateQueries({
-        queryKey: ['channel-managed-broadcast-calendar', chatId],
+        queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
       });
       resetBroadcastComposer();
       pushToast({
@@ -1535,9 +1536,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         description.includes('BROADCAST_TARGET_SLOT_CONFLICT')
       ) {
         setBroadcastScheduleError('Календарь обновился. Выберите свободный слот.');
-        void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
         void queryClient.invalidateQueries({
-          queryKey: ['channel-managed-broadcast-calendar', chatId],
+          queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
         });
       }
       pushToast({
@@ -1553,9 +1554,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) =>
       cancelChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
-      void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
       void queryClient.invalidateQueries({
-        queryKey: ['channel-managed-broadcast-calendar', chatId],
+        queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
       });
       setManagedBroadcastDeleteTarget(null);
       if (editingManagedBroadcast?.id === broadcast.id) {
@@ -1580,9 +1581,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) =>
       retryChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
-      void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
       void queryClient.invalidateQueries({
-        queryKey: ['channel-managed-broadcast-calendar', chatId],
+        queryKey: queryKeys.channelManagedBroadcastCalendar(chatId),
       });
       pushToast({
         tone: broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL' ? 'info' : 'success',

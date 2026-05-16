@@ -22,6 +22,10 @@
       "types": "./dist/broadcast.d.ts",
       "default": "./dist/broadcast.js"
     },
+    "./channel-dialog": {
+      "types": "./dist/channel-dialog.d.ts",
+      "default": "./dist/channel-dialog.js"
+    },
     "./managed-entities": {
       "types": "./dist/managed-entities.d.ts",
       "default": "./dist/managed-entities.js"
