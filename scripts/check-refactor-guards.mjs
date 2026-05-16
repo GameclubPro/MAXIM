@@ -3,35 +3,46 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 
+const targetDate = '2026-06-26';
+
 const guardedFiles = [
   {
-    path: 'apps/api/src/moderation/rule-engine.service.ts',
-    maxLines: 4100,
-    reason: 'RuleEngineService should stay a facade while detectors move out.',
+    path: 'apps/api/src/admin/admin.service.impl.ts',
+    maxLines: 28534,
+    targetLines: 23000,
+    reason:
+      'AdminService implementation is a legacy hotspot; managed entities, broadcasts, settings, and rules should keep moving to focused services.',
   },
   {
-    path: 'apps/api/src/moderation/moderation.service.ts',
-    maxLines: 18350,
-    reason: 'ModerationService is a legacy hotspot; new behavior should move to focused modules.',
+    path: 'apps/api/src/moderation/moderation.service.impl.ts',
+    maxLines: 18121,
+    targetLines: 15500,
+    reason:
+      'ModerationService implementation is a legacy hotspot; explanation, access, global spammer, and night-mode helpers should keep moving to focused modules.',
   },
   {
-    path: 'apps/api/src/admin/admin.service.ts',
-    maxLines: 29000,
-    reason: 'AdminService is a legacy hotspot; new admin domains should live in focused services.',
+    path: 'apps/api/src/moderation/private-control.service.ts',
+    maxLines: 13599,
+    targetLines: 10500,
+    reason:
+      'PrivateControlService is a legacy hotspot; session, draft normalization, and render builders should keep moving to focused modules.',
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.tsx',
-    maxLines: 13500,
+    maxLines: 11405,
+    targetLines: 8500,
     reason: 'SettingsPage should shrink into route shell, hooks, and workspaces.',
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 24000,
+    maxLines: 19844,
+    targetLines: 15500,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
-    path: 'packages/contracts/src/index.ts',
-    maxLines: 4100,
+    path: 'packages/contracts/src/core.ts',
+    maxLines: 4067,
+    targetLines: 3400,
     reason: 'Contracts should continue moving to existing subpath exports.',
   },
 ];
@@ -50,6 +61,7 @@ for (const guard of guardedFiles) {
     [
       `${guard.path} has ${lines} lines, over the ${guard.maxLines} refactor guard.`,
       guard.reason,
+      `Target by ${targetDate}: ${guard.targetLines} lines or fewer.`,
       'If this growth is intentional, update the guard in the same change with the architectural reason.',
     ].join('\n'),
   );
