@@ -18,6 +18,7 @@ import { ChannelDialogService } from './channel-dialog.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
@@ -44,6 +45,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     RedisCounterService,
     ManagedBroadcastService,
     ManagedEntitiesService,
+    ManagedEntitiesDiscoveryService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
@@ -58,6 +60,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ManualModerationService,
     ManagedBroadcastService,
     ManagedEntitiesService,
+    ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
   ],
 })

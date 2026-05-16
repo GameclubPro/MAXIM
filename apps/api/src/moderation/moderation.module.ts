@@ -8,6 +8,10 @@ import {
   getEnabledModerationProcessorQueues,
   getWebhookDynamicLeasesWorkerGroup,
 } from '../runtime/moderation-runtime';
+import {
+  MODERATION_EXECUTION_LEGACY,
+  ModerationExecutionService,
+} from './moderation-execution.service';
 import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
@@ -36,6 +40,11 @@ const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
 const moderationProviders = [
   ModerationService,
+  {
+    provide: MODERATION_EXECUTION_LEGACY,
+    useExisting: ModerationService,
+  },
+  ModerationExecutionService,
   PrivateControlService,
   RedisCounterService,
   RuleEngineService,
@@ -72,6 +81,6 @@ const moderationProviders = [
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,
-  exports: [ModerationService],
+  exports: [ModerationExecutionService, ModerationService],
 })
 export class ModerationModule {}

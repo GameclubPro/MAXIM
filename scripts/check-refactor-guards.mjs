@@ -66,6 +66,69 @@ const ignoredDirectoryNames = new Set([
 const legacyImportPattern =
   /\b(?:import|export)\b[\s\S]*?\bfrom\s+['"][^'"]*\.legacy(?:\.[^'"]+)?['"]|import\s*\(\s*['"][^'"]*\.legacy(?:\.[^'"]+)?['"]\s*\)/u;
 
+const runtimeEntrypointBoundaryGuards = [
+  {
+    path: 'apps/api/src/webhook/webhook.controller.ts',
+    boundary: 'WebhookIngestionService',
+    patterns: [
+      {
+        pattern: /\bWebhookService\b/u,
+        reason: 'Controllers should keep webhook signature, parsing, rate-limit, and outbox ingestion behind WebhookIngestionService.',
+      },
+      {
+        pattern: /\bWebhookParser\b/u,
+        reason: 'Webhook parsing belongs inside the ingestion boundary, not the public controller.',
+      },
+    ],
+  },
+  {
+    path: 'apps/api/src/max/max-action.processor.ts',
+    boundary: 'MaxActionDispatchService',
+    patterns: [
+      {
+        pattern: /\bMaxClientService\b/u,
+        reason: 'Action workers should dispatch through MaxActionDispatchService so MAX API execution can be isolated from processor topology.',
+      },
+      {
+        pattern: /\bexecuteActionJob\s*\(/u,
+        reason: 'Action workers should not call MaxClientService.executeActionJob directly.',
+      },
+    ],
+  },
+  {
+    path: 'apps/api/src/moderation/default-webhook-lease-manager.service.ts',
+    boundary: 'ModerationExecutionService',
+    patterns: [
+      {
+        pattern: /\bModerationService\b/u,
+        reason: 'Dynamic moderation workers should execute through ModerationExecutionService instead of depending on the legacy moderation service.',
+      },
+      {
+        pattern: /\bmoderationService\.processWebhookEvent\s*\(/u,
+        reason: 'Dynamic moderation workers should call ModerationExecutionService.processWebhookEvent.',
+      },
+    ],
+  },
+  {
+    path: 'apps/api/src/admin/admin-managed-entities-refresh.processor.ts',
+    boundary: 'ManagedEntitiesDiscoveryService',
+    patterns: [
+      {
+        pattern: /\bAdminService\b/u,
+        reason: 'Managed-entities refresh workers should stay behind the discovery boundary instead of reaching legacy admin directly.',
+      },
+      {
+        pattern: /\bManagedEntitiesService\b/u,
+        reason: 'Managed-entities refresh workers should use ManagedEntitiesDiscoveryService as the runtime discovery boundary.',
+      },
+      {
+        pattern: /\b(?:adminService|managedEntitiesService)\.processManagedEntitiesRefreshJob\s*\(/u,
+        reason: 'Managed-entities refresh workers should dispatch through ManagedEntitiesDiscoveryService.',
+      },
+    ],
+  },
+];
+
 let failed = false;
 
 for (const guard of guardedFiles) {
@@ -97,6 +160,17 @@ for (const violation of findLegacyImportViolations(root)) {
   );
 }
 
+for (const violation of findRuntimeEntrypointBoundaryViolations(root)) {
+  failed = true;
+  console.error(
+    [
+      `${violation.path} bypasses ${violation.boundary}.`,
+      violation.reason,
+      'Route new runtime/admin hot-path code through the focused boundary service before touching legacy implementations.',
+    ].join('\n'),
+  );
+}
+
 if (failed) {
   process.exitCode = 1;
 }
@@ -121,6 +195,26 @@ function findLegacyImportViolations(directory) {
     const contents = readFileSync(filePath, 'utf8');
     if (legacyImportPattern.test(contents)) {
       violations.push({ path: repoPath });
+    }
+  }
+
+  return violations;
+}
+
+function findRuntimeEntrypointBoundaryViolations(directory) {
+  const violations = [];
+
+  for (const guard of runtimeEntrypointBoundaryGuards) {
+    const filePath = resolve(directory, guard.path);
+    const contents = readFileSync(filePath, 'utf8');
+    for (const item of guard.patterns) {
+      if (item.pattern.test(contents)) {
+        violations.push({
+          path: guard.path,
+          boundary: guard.boundary,
+          reason: item.reason,
+        });
+      }
     }
   }
 

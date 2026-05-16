@@ -31,7 +31,7 @@ import {
   type DefaultWebhookQueueName,
   type ProcessWebhookJob,
 } from '../webhook/webhook-queues';
-import { ModerationService } from './moderation.service';
+import { ModerationExecutionService } from './moderation-execution.service';
 import type { QueueCounters } from '../system/queue-metrics.service';
 
 type WorkerHeartbeat = {
@@ -69,7 +69,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
 
   constructor(
     configService: ConfigService,
-    private readonly moderationService: ModerationService,
+    private readonly moderationExecutionService: ModerationExecutionService,
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
   ) {
@@ -674,7 +674,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     const worker = new BullWorker<ProcessWebhookJob>(
       queueName,
       async (job: Job<ProcessWebhookJob>) => {
-        await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+        await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
       },
       {
         connection: {

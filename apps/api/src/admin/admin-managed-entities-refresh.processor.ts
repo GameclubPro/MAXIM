@@ -5,13 +5,13 @@ import {
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
-import { ManagedEntitiesService } from './managed-entities.service';
+import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 
 @Processor(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE, {
   concurrency: 1,
 })
 export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
-  constructor(private readonly managedEntitiesService: ManagedEntitiesService) {
+  constructor(private readonly managedEntitiesDiscoveryService: ManagedEntitiesDiscoveryService) {
     super();
   }
 
@@ -20,7 +20,8 @@ export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
       return;
     }
 
-    const outcome = await this.managedEntitiesService.processManagedEntitiesRefreshJob(job.data);
+    const outcome =
+      await this.managedEntitiesDiscoveryService.processManagedEntitiesRefreshJob(job.data);
     if (!outcome) {
       return;
     }

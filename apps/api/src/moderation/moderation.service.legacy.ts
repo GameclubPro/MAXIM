@@ -83,6 +83,7 @@ import {
   type SystemModeSnapshot,
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { ModerationExecutionService } from './moderation-execution.service';
 import { PrivateControlService } from './private-control.service';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
@@ -17779,7 +17780,7 @@ function createWebhookProcessor(
     concurrency,
   })
   class QueueWebhookProcessor extends WorkerHost {
-    constructor(private readonly moderationService: ModerationService) {
+    constructor(private readonly moderationExecutionService: ModerationExecutionService) {
       super();
     }
 
@@ -17787,10 +17788,9 @@ function createWebhookProcessor(
       if (!roleRunsModeration(getAppRole())) {
         return;
       }
-      await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+      await this.moderationExecutionService.processWebhookEvent(job.data.webhookEventId);
     }
   }
-
   Object.defineProperty(QueueWebhookProcessor, 'name', {
     value: className,
   });

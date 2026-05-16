@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
+import { MaxActionDispatchService } from './max-action-dispatch.service';
 import { MaxActionProcessor } from './max-action.processor';
 import { MaxChatAdminRosterSyncProcessor } from './max-chat-admin-roster-sync.processor';
 import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from './max-chat-admin-roster-sync.queue';
@@ -15,6 +16,7 @@ import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscript
 
 const maxProviders = [
   MaxClientService,
+  MaxActionDispatchService,
   MaxChatAdminRosterSyncService,
   MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
@@ -37,6 +39,7 @@ const maxProviders = [
   providers: maxProviders,
   exports: [
     MaxClientService,
+    MaxActionDispatchService,
     MaxChatAdminRosterSyncService,
     MaxBotExecutionPlannerService,
     MaxMembershipLookupService,

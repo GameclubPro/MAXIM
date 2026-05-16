@@ -4,6 +4,7 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { SystemModule } from '../system/system.module';
 import { WebhookController } from './webhook.controller';
+import { WebhookIngestionService } from './webhook-ingestion.service';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { WebhookParser } from './webhook.parser';
 import { ALL_WEBHOOK_QUEUE_NAMES } from './webhook-queues';
@@ -21,11 +22,12 @@ import { WebhookService } from './webhook.service';
   controllers: [WebhookController],
   providers: [
     WebhookParser,
+    WebhookIngestionService,
     WebhookService,
     WebhookRateLimitService,
     WebhookRoutingService,
     WebhookOutboxService,
   ],
-  exports: [WebhookService],
+  exports: [WebhookIngestionService, WebhookService],
 })
 export class WebhookModule {}

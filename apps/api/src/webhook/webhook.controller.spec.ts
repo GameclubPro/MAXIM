@@ -2,35 +2,11 @@ import { ForbiddenException } from '@nestjs/common';
 import { WebhookController } from './webhook.controller';
 
 describe('WebhookController', () => {
-  const botRegistry = {
-    resolveWebhookBot: jest.fn(({ botId, secretPath, providedHeaderSecret }) => {
-      if (
-        botId === 'bot-1' &&
-        secretPath === 'secret-path' &&
-        (providedHeaderSecret === 'secret-header' || providedHeaderSecret === 'secret-header-prev')
-      ) {
-        return { id: 'bot-1' };
-      }
-      return null;
-    }),
-  };
-
-  const parser = {
-    parse: jest.fn().mockReturnValue({ updateId: '1', type: 'message_created' }),
-  };
-
-  const webhookService = {
-    ingest: jest.fn().mockResolvedValue({ duplicate: false }),
-  };
-
-  it('rejects invalid route signature', async () => {
-    const controller = new WebhookController(
-      botRegistry as never,
-      parser as never,
-      webhookService as never,
-      { isAllowed: jest.fn().mockResolvedValue(true) } as never,
-      { markIncomingWebhook: jest.fn() } as never,
-    );
+  it('delegates invalid route signatures to the ingestion boundary', async () => {
+    const webhookIngestionService = {
+      ingest: jest.fn().mockRejectedValue(new ForbiddenException('Invalid webhook bot signature')),
+    };
+    const controller = new WebhookController(webhookIngestionService as never);
 
     await expect(
       controller.receive({ botId: 'wrong', secretPath: 'bad' }, {}, {
@@ -38,16 +14,18 @@ describe('WebhookController', () => {
         ip: '127.0.0.1',
       } as never),
     ).rejects.toThrow(ForbiddenException);
+    expect(webhookIngestionService.ingest).toHaveBeenCalled();
   });
 
-  it('accepts valid signed webhook even when local rate limit is exceeded', async () => {
-    const controller = new WebhookController(
-      botRegistry as never,
-      parser as never,
-      webhookService as never,
-      { isAllowed: jest.fn().mockResolvedValue(false) } as never,
-      { markIncomingWebhook: jest.fn() } as never,
-    );
+  it('returns the ingestion result for accepted signed webhooks', async () => {
+    const webhookIngestionService = {
+      ingest: jest.fn().mockResolvedValue({
+        ok: true,
+        duplicate: false,
+        acceptedAt: '2026-05-16T20:00:00.000Z',
+      }),
+    };
+    const controller = new WebhookController(webhookIngestionService as never);
 
     await expect(
       controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
@@ -60,21 +38,22 @@ describe('WebhookController', () => {
         duplicate: false,
       }),
     );
-    expect(parser.parse).toHaveBeenCalled();
-    expect(webhookService.ingest).toHaveBeenCalled();
+    expect(webhookIngestionService.ingest).toHaveBeenCalledWith(
+      { botId: 'bot-1', secretPath: 'secret-path' },
+      {},
+      expect.objectContaining({ ip: '127.0.0.1' }),
+    );
   });
 
-  it('accepts the previous webhook header secret during rotation', async () => {
-    const webhookSubscriptionStatusService = {
-      markIncomingWebhook: jest.fn().mockResolvedValue(undefined),
+  it('keeps header secret rotation inside the ingestion boundary', async () => {
+    const webhookIngestionService = {
+      ingest: jest.fn().mockResolvedValue({
+        ok: true,
+        duplicate: false,
+        acceptedAt: '2026-05-16T20:00:00.000Z',
+      }),
     };
-    const controller = new WebhookController(
-      botRegistry as never,
-      parser as never,
-      webhookService as never,
-      { isAllowed: jest.fn().mockResolvedValue(true) } as never,
-      webhookSubscriptionStatusService as never,
-    );
+    const controller = new WebhookController(webhookIngestionService as never);
 
     await expect(
       controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
@@ -87,6 +66,12 @@ describe('WebhookController', () => {
         duplicate: false,
       }),
     );
-    expect(webhookSubscriptionStatusService.markIncomingWebhook).toHaveBeenCalledWith('bot-1');
+    expect(webhookIngestionService.ingest).toHaveBeenCalledWith(
+      { botId: 'bot-1', secretPath: 'secret-path' },
+      {},
+      expect.objectContaining({
+        headers: { 'x-max-bot-api-secret': 'secret-header-prev' },
+      }),
+    );
   });
 });
