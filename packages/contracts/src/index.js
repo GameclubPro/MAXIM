@@ -324,5 +324,5 @@ export const maxUpdateSchema = z.object({
   updateId: z.string(),
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
-  raw: z.record(z.any()).optional(),
+  raw: z.record(z.string(), z.any()).optional(),
 });

@@ -53,6 +53,7 @@ This document is the first safety baseline for the May 2026 reliability-first re
 - Patch/minor dependency updates can proceed inside current majors after fitness gates pass.
 - Jest 30 is complete; keep it behind the API test gate when touching test runtime.
 - Vite 8 is complete; keep it behind the miniapp typecheck, test, build, and bundle-budget gates.
-- Zod 4 and Prisma 7 remain separate upgrade tracks after decomposition.
+- Zod 4 is complete; keep contract changes behind contracts, API, and miniapp gates.
+- Prisma 7 remains a separate upgrade track after decomposition.
 - Prisma 7 needs its own generated-client/import-path/driver-adapter plan.
 - React Compiler and Nest SWC are opt-in experiments after component and service boundaries are stable.

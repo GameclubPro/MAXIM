@@ -1684,7 +1684,7 @@ export const moderationEventSchema = z.object({
   action: sanctionActionSchema,
   maskedExcerpt: z.string().nullable(),
   score: z.number(),
-  metadata: z.record(z.unknown()).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
   createdAt: z.string().datetime(),
   operator: z.enum(['BOT', 'ADMIN']),
 });
@@ -1919,7 +1919,7 @@ export type ApplySettingsTarget = z.infer<typeof applySettingsTargetSchema>;
 
 export const applySectionToAllRequestSchema = z.object({
   section: applySettingsSectionSchema,
-  target: applySettingsTargetSchema.optional().default({ mode: 'all' }),
+  target: applySettingsTargetSchema.optional().default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
@@ -1934,7 +1934,7 @@ export const applySectionToAllResponseSchema = z.object({
 export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
 
 export const applySectionTargetPreviewRequestSchema = z.object({
-  target: applySettingsTargetSchema.optional().default({ mode: 'all' }),
+  target: applySettingsTargetSchema.optional().default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionTargetPreviewRequest = z.infer<
   typeof applySectionTargetPreviewRequestSchema
@@ -2263,7 +2263,7 @@ export const logsDashboardViolationSchema = z.object({
   profileHandoffUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
   maskedExcerpt: z.string().nullable(),
-  metadata: z.record(z.unknown()).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 export type LogsDashboardViolation = z.infer<typeof logsDashboardViolationSchema>;
 
@@ -2498,7 +2498,7 @@ export const sendBroadcastRequestSchema = z
     imageFileName: z.string().trim().max(128).default(''),
     images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
     mediaType: broadcastMediaTypeSchema.nullable().default(null),
-    mediaPayload: z.record(z.unknown()).nullable().default(null),
+    mediaPayload: z.record(z.string(), z.unknown()).nullable().default(null),
     mediaMimeType: z.string().trim().max(128).default(''),
     mediaFileName: z.string().trim().max(128).default(''),
     scheduleMode: broadcastScheduleModeSchema.default('legacy'),
@@ -2936,7 +2936,7 @@ export const managedBroadcastDetailsSchema = z.object({
   imageFileName: z.string(),
   images: z.array(broadcastImageSchema).max(MAX_BROADCAST_IMAGES).default([]),
   mediaType: broadcastMediaTypeSchema.nullable().default(null),
-  mediaPayload: z.record(z.unknown()).nullable().default(null),
+  mediaPayload: z.record(z.string(), z.unknown()).nullable().default(null),
   mediaMimeType: z.string().default(''),
   mediaFileName: z.string().default(''),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
@@ -3401,7 +3401,7 @@ export const maxUpdateSchema = z.object({
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
   membership: maxMembershipChangeSchema.optional(),
-  raw: z.record(z.any()).optional(),
+  raw: z.record(z.string(), z.any()).optional(),
 });
 
 export type MaxUpdate = z.infer<typeof maxUpdateSchema>;
