@@ -139,10 +139,18 @@ export function resolveAdminContactMarkdownUrl(
   return parseProfileMentionUrl(url, botTokens)?.url ?? null;
 }
 
+export function resolveAdminContactMentionTarget(
+  url: string | null | undefined,
+  botTokens: readonly string[] = [],
+): ProfileMentionTarget | null {
+  return parseProfileMentionUrl(url, botTokens)?.target ?? null;
+}
+
 export function buildAdminContactMarkdownLink(params: {
   enabled: boolean;
   url: string | null | undefined;
   botTokens?: readonly string[];
+  fallbackDisplayName?: string | null;
 }): string | null {
   if (!params.enabled) {
     return null;
@@ -154,10 +162,10 @@ export function buildAdminContactMarkdownLink(params: {
   }
 
   const userMentionUrl = normalizeUserMentionUrl(resolved.target?.userId);
-  if (userMentionUrl && resolved.target?.displayName) {
-    return `${ADMIN_CONTACT_LINK_TEXT}: [${escapeMaxMarkdownText(
-      resolved.target.displayName,
-    )}](${userMentionUrl})`;
+  const displayName =
+    resolved.target?.displayName ?? normalizeProfileMentionDisplayName(params.fallbackDisplayName);
+  if (userMentionUrl && displayName) {
+    return `${ADMIN_CONTACT_LINK_TEXT}: [${escapeMaxMarkdownText(displayName)}](${userMentionUrl})`;
   }
 
   return `[${ADMIN_CONTACT_LINK_TEXT}](${resolved.url.replace(/\)/gu, '%29')})`;
@@ -169,6 +177,7 @@ export function appendAdminContactMarkdownLink(
     enabled: boolean;
     url: string | null | undefined;
     botTokens?: readonly string[];
+    fallbackDisplayName?: string | null;
   },
 ): string {
   const link = buildAdminContactMarkdownLink(params);

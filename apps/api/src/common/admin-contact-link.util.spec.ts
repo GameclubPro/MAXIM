@@ -2,6 +2,7 @@ import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.uti
 import {
   appendAdminContactMarkdownLink,
   buildAdminContactMarkdownLink,
+  resolveAdminContactMentionTarget,
   resolveAdminContactMarkdownUrl,
 } from './admin-contact-link.util';
 
@@ -39,6 +40,27 @@ describe('admin contact markdown links', () => {
         botTokens: [botToken],
       }),
     ).toBe('Связь с админом: [Админ \\[главный\\]](max://user/admin-1)');
+  });
+
+  it('uses a fallback display name for old compact profile handoff links', () => {
+    const startPayload = buildCompactProfileMentionStartPayload(
+      { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
+      botToken,
+    );
+    const handoffUrl = `https://max.ru/777000_bot?start=${startPayload}`;
+
+    expect(resolveAdminContactMentionTarget(handoffUrl, [botToken])).toEqual({
+      userId: 'admin-1',
+      displayName: null,
+    });
+    expect(
+      buildAdminContactMarkdownLink({
+        enabled: true,
+        url: handoffUrl,
+        botTokens: [botToken],
+        fallbackDisplayName: 'Админ',
+      }),
+    ).toBe('Связь с админом: [Админ](max://user/admin-1)');
   });
 
   it('keeps valid legacy profile handoff links as clickable https urls', () => {

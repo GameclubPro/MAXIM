@@ -182,7 +182,10 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText } from '../common/admin-contact-link.util';
+import {
+  appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
+  resolveAdminContactMentionTarget,
+} from '../common/admin-contact-link.util';
 import {
   buildCompactProfileMentionStartPayload,
   isValidMaxBotStartPayload,
@@ -8090,7 +8093,7 @@ export class AdminService implements OnModuleDestroy {
 
     let published: { messageId: string; url: string | null };
     const buttonRows = this.buildChatRulesButtonRows(rules);
-    const formattedMessage = this.buildFormattedRulesPublicationText(messageText, {
+    const formattedMessage = await this.buildFormattedRulesPublicationText(chatId, messageText, {
       adminContactButtonEnabled: rules.adminContactButtonEnabled,
       adminContactButtonUrl: rules.adminContactButtonUrl,
     });
@@ -15686,24 +15689,69 @@ export class AdminService implements OnModuleDestroy {
     return this.buildBroadcastLinkButtonRows(normalizedButtons);
   }
 
-  private buildFormattedRulesPublicationText(
+  private async buildFormattedRulesPublicationText(
+    chatId: string,
     sourceText: string,
     options: {
       adminContactButtonEnabled: boolean;
       adminContactButtonUrl: string;
     },
-  ): {
+  ): Promise<{
     text: string;
     textFormat: MaxSendMessageOptions['textFormat'];
-  } {
+  }> {
+    const fallbackDisplayName = options.adminContactButtonEnabled
+      ? await this.resolveAdminContactFallbackDisplayName(chatId, options.adminContactButtonUrl)
+      : null;
+
     return {
       text: appendAdminContactMarkdownLinkText(sourceText, {
         enabled: options.adminContactButtonEnabled,
         url: options.adminContactButtonUrl,
         botTokens: this.maxBotTokenValidationSecrets,
+        fallbackDisplayName,
       }),
       textFormat: 'markdown',
     };
+  }
+
+  private async resolveAdminContactFallbackDisplayName(
+    chatId: string,
+    url: string | null | undefined,
+  ): Promise<string | null> {
+    const target = resolveAdminContactMentionTarget(url, this.maxBotTokenValidationSecrets);
+    if (!target?.userId || target.displayName) {
+      return null;
+    }
+
+    const localDisplayNames = await this.resolveUserDisplayNames(chatId, [target.userId]);
+    const localDisplayName = this.readTrimmedString(localDisplayNames.get(target.userId));
+    if (localDisplayName) {
+      return localDisplayName;
+    }
+
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    if (!loadProfiles) {
+      return null;
+    }
+
+    try {
+      const profiles = await loadProfiles(chatId, [target.userId], {
+        trafficClass: 'interactive',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      });
+      return this.readTrimmedString(profiles.get(target.userId)?.displayName) ?? null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: target.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve admin contact display name for rules publication',
+      );
+      return null;
+    }
   }
 
   private async buildAutofilledRulesTextFromCurrentSettings(

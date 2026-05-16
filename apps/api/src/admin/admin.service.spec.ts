@@ -22745,6 +22745,90 @@ describe('AdminService chat rules', () => {
     );
   });
 
+  it('publishes rules with a direct admin contact link for old unlabeled handoff urls', async () => {
+    const prisma = createPrismaMock();
+    const adminContactStartPayload = buildCompactProfileMentionStartPayload(
+      { chatId: 'chat-1', entityType: 'chat', userId: 'admin-1' },
+      'test-max-bot-token',
+    );
+    const adminContactButtonUrl = `https://max.ru/id613002203036_bot?start=${adminContactStartPayload}`;
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила со старой связью.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttons: [],
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      adminContactButtonEnabled: true,
+      adminContactButtonUrl,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'admin-1',
+            {
+              userId: 'admin-1',
+              displayName: 'Админ',
+              username: null,
+              avatarUrl: null,
+              profileUrl: null,
+            },
+          ],
+        ]),
+      ),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-contact-2',
+        url: 'https://max.ru/chats/chat-1/message/508',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+    });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Правила со старой связью.\n\nСвязь с админом: [Админ](max://user/admin-1)',
+      {
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('publishes rules with multiple custom post buttons grouped into rows', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({

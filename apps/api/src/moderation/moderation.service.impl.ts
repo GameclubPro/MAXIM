@@ -63,7 +63,10 @@ import {
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText } from '../common/admin-contact-link.util';
+import {
+  appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
+  resolveAdminContactMentionTarget,
+} from '../common/admin-contact-link.util';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
@@ -406,6 +409,8 @@ const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
 const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
+const ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS = 10 * 60_000;
+const ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS = 450;
 const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
 const DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS = 30_000;
 const CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS = 5_000;
@@ -691,6 +696,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
   private readonly nightModeSessionMemoryMarkers = new Map<string, number>();
   private readonly nightModeDeliveryTerminalMemoryMarkers = new Map<string, number>();
+  private readonly adminContactDisplayNameCache = new Map<
+    string,
+    { value: string | null; expiresAtMs: number }
+  >();
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
@@ -1952,7 +1961,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildLinkExplanation(
                   userLabel,
                   messageDeleted,
@@ -1978,7 +1988,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildLinkWarnExplanation(
                   userLabel,
                   settings.linkWarnMessageText,
@@ -2011,7 +2022,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildMessageLimitsExplanation(
                   userLabel,
                   topViolation.ruleCode,
@@ -2046,7 +2058,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildMessageLimitsWarnExplanation(
                   userLabel,
                   topViolation.ruleCode,
@@ -2080,7 +2093,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildTextFilterExplanation(
                   userLabel,
                   topViolation.ruleCode,
@@ -2108,7 +2122,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildTextFilterWarnExplanation(
                   userLabel,
                   topViolation.ruleCode,
@@ -2143,7 +2158,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildTopicFilterExplanation(
                   userLabel,
                   messageDeleted,
@@ -2170,7 +2186,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } else if (action === SanctionAction.WARN) {
           try {
             await sendChatBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
                 this.buildTopicFilterWarnExplanation(
                   userLabel,
                   this.extractTopicFilterRequiredCodeword(topViolation.metadata),
@@ -2499,7 +2516,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           text:
             decision.action === 'WARN'
-              ? this.appendAdminContactMarkdownLink(
+              ? await this.appendAdminContactMarkdownLink(
+                  chatId,
                   explanationText,
                   duplicateAdminContactButtonEnabled,
                   duplicateAdminContactButtonUrl,
@@ -2665,7 +2683,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
-          text: this.appendAdminContactMarkdownLink(
+          text: await this.appendAdminContactMarkdownLink(
+            chatId,
             this.buildDuplicateHitExplanation(
               userLabel,
               messageDeleted,
@@ -3326,16 +3345,127 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
   }
 
-  private appendAdminContactMarkdownLink(
+  private async appendAdminContactMarkdownLink(
+    chatId: string,
     text: string,
     enabled: boolean,
     url: string | null | undefined,
-  ): string {
+  ): Promise<string> {
+    const fallbackDisplayName = enabled
+      ? await this.resolveAdminContactFallbackDisplayName(chatId, url)
+      : null;
     return appendAdminContactMarkdownLinkText(text, {
       enabled,
       url,
       botTokens: this.getAdminContactValidationTokens(),
+      fallbackDisplayName,
     });
+  }
+
+  private async resolveAdminContactFallbackDisplayName(
+    chatId: string,
+    url: string | null | undefined,
+  ): Promise<string | null> {
+    const target = resolveAdminContactMentionTarget(url, this.getAdminContactValidationTokens());
+    if (!target?.userId || target.displayName) {
+      return null;
+    }
+
+    const cacheKey = `${chatId}:${target.userId}`;
+    const cached = this.adminContactDisplayNameCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.value;
+    }
+
+    const resolved =
+      (await this.resolveLocalAdminContactDisplayName(chatId, target.userId)) ??
+      (await this.resolveRemoteAdminContactDisplayName(chatId, target.userId));
+    this.adminContactDisplayNameCache.set(cacheKey, {
+      value: resolved,
+      expiresAtMs: Date.now() + ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
+    });
+    return resolved;
+  }
+
+  private async resolveLocalAdminContactDisplayName(
+    chatId: string,
+    userId: string,
+  ): Promise<string | null> {
+    if (typeof this.prisma.$queryRaw !== 'function') {
+      return null;
+    }
+
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ sender_name: string | null }>>`
+        SELECT sender_name
+        FROM (
+          SELECT
+            sender_name,
+            event_at
+          FROM chat_membership_activity_events
+          WHERE chat_id = ${chatId}
+            AND user_id = ${userId}
+            AND sender_name IS NOT NULL
+
+          UNION ALL
+
+          SELECT
+            NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name,
+            created_at AS event_at
+          FROM webhook_events
+          WHERE NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') = ${chatId}
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${userId}
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') IS NOT NULL
+        ) local_name_events
+        ORDER BY event_at DESC
+        LIMIT 1
+      `;
+      const senderName = Array.isArray(rows) ? rows[0]?.sender_name?.trim() : '';
+      return senderName || null;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve local admin contact display name',
+      );
+      return null;
+    }
+  }
+
+  private async resolveRemoteAdminContactDisplayName(
+    chatId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    if (!loadProfiles) {
+      return null;
+    }
+
+    try {
+      const profiles = await raceWithTimeout({
+        operation: loadProfiles(chatId, [userId], {
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+        }),
+        timeoutMs: ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
+        onTimeout: () => new Map(),
+      });
+      const displayName = profiles.get(userId)?.displayName?.trim() ?? '';
+      return displayName || null;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve remote admin contact display name',
+      );
+      return null;
+    }
   }
 
   private getAdminContactValidationTokens(): readonly string[] {
@@ -8152,7 +8282,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!noticeOnCooldown) {
           try {
             await sendRequiredSubscriptionBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                params.chatId,
                 this.buildRequiredSubscriptionExplanation(
                   params.userLabel,
                   messageDeleted,
@@ -8181,7 +8312,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
       try {
         await sendRequiredSubscriptionBotMessage(
-          this.appendAdminContactMarkdownLink(
+          await this.appendAdminContactMarkdownLink(
+            params.chatId,
             this.buildRequiredSubscriptionWarnExplanation(
               params.userLabel,
               missingChannelTitles,
@@ -8492,7 +8624,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (!noticeOnCooldown) {
           try {
             await sendInvitationAccessBotMessage(
-              this.appendAdminContactMarkdownLink(
+              await this.appendAdminContactMarkdownLink(
+                params.chatId,
                 this.buildInvitationAccessExplanation(
                   params.userLabel,
                   messageDeleted,
@@ -8522,7 +8655,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } else if (action === SanctionAction.WARN && canSendInvitationAccessNotice) {
       try {
         await sendInvitationAccessBotMessage(
-          this.appendAdminContactMarkdownLink(
+          await this.appendAdminContactMarkdownLink(
+            params.chatId,
             this.buildInvitationAccessWarnExplanation(
               params.userLabel,
               requiredCount,
