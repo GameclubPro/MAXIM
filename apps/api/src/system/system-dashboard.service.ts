@@ -6,7 +6,7 @@ import type {
   SystemDashboardResponse,
   SystemDashboardStatus,
   WebhookSubscriptionSnapshot,
-} from '@maxim/contracts';
+} from '@maxim/contracts/system';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
 import {
   DEFAULT_WEBHOOK_P95_TARGET_MS,

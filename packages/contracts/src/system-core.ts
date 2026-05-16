@@ -391,11 +391,36 @@ export const systemRuntimeRoleSchema = z.enum([
 ]);
 export type SystemRuntimeRole = z.infer<typeof systemRuntimeRoleSchema>;
 
+export const systemRuntimeTopologySourceSchema = z.enum([
+  'declared-service',
+  'role-inference',
+  'queue-inference',
+  'fallback',
+]);
+export type SystemRuntimeTopologySource = z.infer<typeof systemRuntimeTopologySourceSchema>;
+
+export const systemRuntimeQueuePrioritySchema = z.enum([
+  'all',
+  'http-ingress',
+  'admin-heavy-read',
+  'webhook-enqueue',
+  'user-facing-critical',
+  'user-facing-realtime',
+  'background',
+  'action-dispatch',
+]);
+export type SystemRuntimeQueuePriority = z.infer<typeof systemRuntimeQueuePrioritySchema>;
+
 export const systemDynamicLeasesModeSchema = z.enum(['off', 'shadow', 'canary', 'on']);
 export type SystemDynamicLeasesMode = z.infer<typeof systemDynamicLeasesModeSchema>;
 
 export const systemRuntimeProfileSchema = z.object({
   appRole: systemRuntimeRoleSchema,
+  serviceName: z.string().optional(),
+  serviceTitle: z.string().optional(),
+  queueProfile: z.string().optional(),
+  queuePriority: systemRuntimeQueuePrioritySchema.optional(),
+  topologySource: systemRuntimeTopologySourceSchema.optional(),
   httpEnabled: z.boolean(),
   ingressEnabled: z.boolean(),
   adminEnabled: z.boolean(),

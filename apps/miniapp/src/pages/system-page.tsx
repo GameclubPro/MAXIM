@@ -393,11 +393,15 @@ export function SystemPage({ api }: { api: ApiTransport }) {
               </small>
             </article>
             <article className="system-runtime-card">
-              <span>Runtime role</span>
-              <strong>{dashboard.runtimeProfile?.appRole ?? 'n/a'}</strong>
+              <span>Runtime profile</span>
+              <strong>
+                {dashboard.runtimeProfile?.serviceName ??
+                  dashboard.runtimeProfile?.appRole ??
+                  'n/a'}
+              </strong>
               <small>
                 {dashboard.runtimeProfile
-                  ? `queues ${dashboard.runtimeProfile.enabledQueues.length}, leases ${dashboard.runtimeProfile.dynamicLeasesMode}`
+                  ? `${dashboard.runtimeProfile.queuePriority ?? dashboard.runtimeProfile.queueProfile ?? 'role'} · queues ${dashboard.runtimeProfile.enabledQueues.length} · leases ${dashboard.runtimeProfile.dynamicLeasesMode}`
                   : 'runtime profile unavailable'}
               </small>
             </article>

@@ -579,6 +579,11 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
     },
     runtimeProfile: {
       appRole: 'all',
+      serviceName: 'api-all',
+      serviceTitle: 'All-in-one API runtime',
+      queueProfile: 'all-in-one',
+      queuePriority: 'all',
+      topologySource: 'fallback',
       httpEnabled: true,
       ingressEnabled: true,
       adminEnabled: true,

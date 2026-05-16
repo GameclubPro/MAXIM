@@ -21,6 +21,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-ingress
       APP_ROLE: ingress
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 12
@@ -44,6 +45,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-admin
       APP_ROLE: admin
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 8
@@ -67,6 +69,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-enqueue
       APP_ROLE: enqueue
       ENQUEUE_POLL_INTERVAL_MS: 200
       ENQUEUE_BATCH_SIZE: 400
@@ -91,6 +94,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation
@@ -128,6 +132,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-critical
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: legacy,critical
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
@@ -164,6 +169,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-join
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: join
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
@@ -199,6 +205,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-b
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-b
@@ -236,6 +243,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-c
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-c
@@ -273,6 +281,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-d
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-d
@@ -310,6 +319,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-background
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: background
       MODERATION_BACKGROUND_TASKS_ENABLED: 'true'
@@ -352,6 +362,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-action
       APP_ROLE: action
       ACTION_CONCURRENCY: 12
       CHANNEL_STATS_STARTUP_SYNC_ENABLED: false

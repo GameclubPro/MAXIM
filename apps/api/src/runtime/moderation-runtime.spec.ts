@@ -30,6 +30,54 @@ describe('moderation-runtime', () => {
     );
   });
 
+  it('falls back to the declared service queue profile when queue env is unset', () => {
+    const originalServiceName = process.env.APP_SERVICE_NAME;
+    try {
+      process.env.APP_SERVICE_NAME = 'api-moderation-background';
+      expect(getEnabledModerationProcessorQueues(undefined)).toEqual(
+        new Set([WEBHOOK_QUEUE_BACKGROUND]),
+      );
+    } finally {
+      if (originalServiceName === undefined) {
+        delete process.env.APP_SERVICE_NAME;
+      } else {
+        process.env.APP_SERVICE_NAME = originalServiceName;
+      }
+    }
+  });
+
+  it('keeps legacy all-queue behavior for APP_ROLE=moderation without a declared service', () => {
+    const originalRole = process.env.APP_ROLE;
+    const originalServiceName = process.env.APP_SERVICE_NAME;
+    try {
+      process.env.APP_ROLE = 'moderation';
+      delete process.env.APP_SERVICE_NAME;
+      expect(getEnabledModerationProcessorQueues(undefined)).toEqual(
+        new Set([
+          LEGACY_WEBHOOK_QUEUE,
+          WEBHOOK_QUEUE_CRITICAL,
+          ...JOIN_WEBHOOK_QUEUE_NAMES,
+          ...DEFAULT_WEBHOOK_QUEUE_NAMES,
+          WEBHOOK_QUEUE_BACKGROUND,
+        ]),
+      );
+      expect(getWebhookDynamicLeasesMode(undefined)).toBe('off');
+      expect(getWebhookDynamicLeasesWorkerGroup(undefined)).toBeNull();
+      expect(getWebhookDynamicLeaseCanaryQueues(undefined)).toEqual(new Set());
+    } finally {
+      if (originalRole === undefined) {
+        delete process.env.APP_ROLE;
+      } else {
+        process.env.APP_ROLE = originalRole;
+      }
+      if (originalServiceName === undefined) {
+        delete process.env.APP_SERVICE_NAME;
+      } else {
+        process.env.APP_SERVICE_NAME = originalServiceName;
+      }
+    }
+  });
+
   it('accepts short queue aliases in MODERATION_ENABLED_QUEUES', () => {
     expect(getEnabledModerationProcessorQueues('critical,background')).toEqual(
       new Set([WEBHOOK_QUEUE_CRITICAL, WEBHOOK_QUEUE_BACKGROUND]),

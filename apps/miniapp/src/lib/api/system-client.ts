@@ -433,6 +433,27 @@ function parseSystemRuntimeProfile(value: unknown): SystemRuntimeProfile {
 
   return {
     appRole: value.appRole,
+    serviceName: typeof value.serviceName === 'string' ? value.serviceName : undefined,
+    serviceTitle: typeof value.serviceTitle === 'string' ? value.serviceTitle : undefined,
+    queueProfile: typeof value.queueProfile === 'string' ? value.queueProfile : undefined,
+    queuePriority:
+      value.queuePriority === 'all' ||
+      value.queuePriority === 'http-ingress' ||
+      value.queuePriority === 'admin-heavy-read' ||
+      value.queuePriority === 'webhook-enqueue' ||
+      value.queuePriority === 'user-facing-critical' ||
+      value.queuePriority === 'user-facing-realtime' ||
+      value.queuePriority === 'background' ||
+      value.queuePriority === 'action-dispatch'
+        ? value.queuePriority
+        : undefined,
+    topologySource:
+      value.topologySource === 'declared-service' ||
+      value.topologySource === 'role-inference' ||
+      value.topologySource === 'queue-inference' ||
+      value.topologySource === 'fallback'
+        ? value.topologySource
+        : undefined,
     httpEnabled: value.httpEnabled,
     ingressEnabled: value.ingressEnabled,
     adminEnabled: value.adminEnabled,

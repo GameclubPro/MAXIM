@@ -8,22 +8,23 @@ import {
   type AnyWebhookQueueName,
   type DefaultWebhookQueueName,
 } from '../webhook/webhook-queues';
+import {
+  ALL_MODERATION_QUEUE_NAMES,
+  DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES,
+  WEBHOOK_DYNAMIC_LEASES_MODES,
+  normalizeDefaultWorkerGroupName,
+  resolveRuntimeServiceProfile,
+  type DefaultWebhookWorkerGroupName,
+  type WebhookDynamicLeasesMode,
+} from './runtime-topology';
 
 export type ModerationQueueAlias = 'legacy' | 'critical' | 'join' | 'default' | 'background';
-export type DefaultWebhookWorkerGroupName =
-  | 'api-moderation'
-  | 'api-moderation-realtime-b'
-  | 'api-moderation-realtime-c'
-  | 'api-moderation-realtime-d';
-export type WebhookDynamicLeasesMode = 'off' | 'shadow' | 'canary' | 'on';
-
-const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
-  LEGACY_WEBHOOK_QUEUE,
-  WEBHOOK_QUEUE_CRITICAL,
-  ...JOIN_WEBHOOK_QUEUE_NAMES,
-  ...DEFAULT_WEBHOOK_QUEUE_NAMES,
-  WEBHOOK_QUEUE_BACKGROUND,
-];
+export {
+  DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  type DefaultWebhookWorkerGroupName,
+  type WebhookDynamicLeasesMode,
+} from './runtime-topology';
 
 const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyWebhookQueueName[]> =
   {
@@ -34,31 +35,8 @@ const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyW
     background: [WEBHOOK_QUEUE_BACKGROUND],
   };
 
-export const DEFAULT_WEBHOOK_WORKER_GROUP_NAMES = Object.freeze([
-  'api-moderation',
-  'api-moderation-realtime-b',
-  'api-moderation-realtime-c',
-  'api-moderation-realtime-d',
-] as const satisfies readonly DefaultWebhookWorkerGroupName[]);
-const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze(
-  Object.fromEntries(
-    DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName, groupIndex) => [
-      groupName,
-      DEFAULT_WEBHOOK_QUEUE_NAMES.filter(
-        (_, shardIndex) => shardIndex % DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.length === groupIndex,
-      ),
-    ]),
-  ) as unknown as Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>,
-);
-
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
-const DEFAULT_WEBHOOK_DYNAMIC_LEASES_MODES = new Set<WebhookDynamicLeasesMode>([
-  'off',
-  'shadow',
-  'canary',
-  'on',
-]);
 
 function normalizeBooleanEnv(rawValue: unknown, fallback: boolean): boolean {
   if (typeof rawValue === 'boolean') {
@@ -160,6 +138,10 @@ export function getEnabledModerationProcessorQueues(
   rawValue = process.env.MODERATION_ENABLED_QUEUES,
 ): Set<AnyWebhookQueueName> {
   if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+    const runtimeService = resolveRuntimeServiceProfile();
+    if (runtimeService.source === 'declared-service') {
+      return new Set(runtimeService.service.moderationQueues);
+    }
     return new Set(ALL_MODERATION_QUEUE_NAMES);
   }
 
@@ -202,32 +184,37 @@ export function getWebhookDynamicLeasesMode(
 ): WebhookDynamicLeasesMode {
   if (typeof rawValue === 'string') {
     const normalized = rawValue.trim().toLowerCase();
-    if (DEFAULT_WEBHOOK_DYNAMIC_LEASES_MODES.has(normalized as WebhookDynamicLeasesMode)) {
+    if (WEBHOOK_DYNAMIC_LEASES_MODES.includes(normalized as WebhookDynamicLeasesMode)) {
       return normalized as WebhookDynamicLeasesMode;
     }
   }
 
-  return 'off';
+  const runtimeService = resolveRuntimeServiceProfile();
+  return runtimeService.source === 'declared-service'
+    ? runtimeService.service.dynamicLeasesMode
+    : 'off';
 }
 
 export function getWebhookDynamicLeasesWorkerGroup(
   rawValue: unknown = process.env.WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP,
 ): DefaultWebhookWorkerGroupName | null {
-  if (typeof rawValue !== 'string') {
-    return null;
-  }
-
-  const normalized = rawValue.trim();
-  return DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.includes(normalized as DefaultWebhookWorkerGroupName)
-    ? (normalized as DefaultWebhookWorkerGroupName)
-    : null;
+  const runtimeService = resolveRuntimeServiceProfile();
+  return (
+    normalizeDefaultWorkerGroupName(rawValue) ??
+    (runtimeService.source === 'declared-service'
+      ? runtimeService.service.dynamicLeasesWorkerGroup
+      : null)
+  );
 }
 
 export function getWebhookDynamicLeaseCanaryQueues(
   rawValue: unknown = process.env.WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS,
 ): Set<DefaultWebhookQueueName> {
   if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
-    return new Set();
+    const runtimeService = resolveRuntimeServiceProfile();
+    return new Set(
+      runtimeService.source === 'declared-service' ? runtimeService.service.canaryShardIds : [],
+    );
   }
 
   const queues = new Set<DefaultWebhookQueueName>();

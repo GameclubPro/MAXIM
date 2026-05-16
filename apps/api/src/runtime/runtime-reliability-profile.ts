@@ -9,78 +9,19 @@ import type {
   SystemRollbackReadiness,
   SystemRuntimeProfile,
 } from '@maxim/contracts/system';
-import { type AppRole, getAppRole } from './app-role';
 import {
   getEnabledModerationProcessorQueues,
   getWebhookDynamicLeasesMode,
   getWebhookDynamicLeasesWorkerGroup,
 } from './moderation-runtime';
+import { resolveRuntimeServiceProfile, type RuntimeRoleCapabilities } from './runtime-topology';
 import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
 
 export const DEFAULT_WEBHOOK_P95_TARGET_MS = 1_000;
 const QUEUE_GROUP_WAITING_WARNING = 1;
 const QUEUE_GROUP_WAITING_CRITICAL = 50;
 
-export type RuntimeRoleProfile = Pick<
-  SystemRuntimeProfile,
-  | 'httpEnabled'
-  | 'ingressEnabled'
-  | 'adminEnabled'
-  | 'enqueueEnabled'
-  | 'moderationEnabled'
-  | 'actionEnabled'
->;
-
-export const RUNTIME_ROLE_PROFILES = Object.freeze({
-  all: {
-    httpEnabled: true,
-    ingressEnabled: true,
-    adminEnabled: true,
-    enqueueEnabled: true,
-    moderationEnabled: true,
-    actionEnabled: true,
-  },
-  ingress: {
-    httpEnabled: true,
-    ingressEnabled: true,
-    adminEnabled: false,
-    enqueueEnabled: false,
-    moderationEnabled: false,
-    actionEnabled: false,
-  },
-  admin: {
-    httpEnabled: true,
-    ingressEnabled: false,
-    adminEnabled: true,
-    enqueueEnabled: false,
-    moderationEnabled: false,
-    actionEnabled: false,
-  },
-  enqueue: {
-    httpEnabled: false,
-    ingressEnabled: false,
-    adminEnabled: false,
-    enqueueEnabled: true,
-    moderationEnabled: false,
-    actionEnabled: false,
-  },
-  moderation: {
-    httpEnabled: false,
-    ingressEnabled: false,
-    adminEnabled: false,
-    enqueueEnabled: false,
-    moderationEnabled: true,
-    actionEnabled: false,
-  },
-  action: {
-    httpEnabled: false,
-    ingressEnabled: false,
-    adminEnabled: false,
-    enqueueEnabled: false,
-    moderationEnabled: false,
-    actionEnabled: true,
-  },
-} as const satisfies Record<AppRole, RuntimeRoleProfile>);
+export type RuntimeRoleProfile = RuntimeRoleCapabilities;
 
 type RuntimeReliabilityInput = {
   queues: QueueMetricsSnapshot;
@@ -94,17 +35,22 @@ type RuntimeReliabilityInput = {
 export function buildSystemRuntimeProfile(
   targetWebhookP95Ms = DEFAULT_WEBHOOK_P95_TARGET_MS,
 ): SystemRuntimeProfile {
-  const appRole = getAppRole();
-  const roleProfile = RUNTIME_ROLE_PROFILES[appRole];
+  const runtimeService = resolveRuntimeServiceProfile();
+  const service = runtimeService.service;
   const workerGroup = getWebhookDynamicLeasesWorkerGroup();
 
   return {
-    appRole,
-    ...roleProfile,
+    appRole: service.appRole,
+    serviceName: service.serviceName,
+    serviceTitle: service.serviceTitle,
+    queueProfile: service.queueProfile,
+    queuePriority: service.queuePriority,
+    topologySource: runtimeService.source,
+    ...service.capabilities,
     enabledQueues: Array.from(getEnabledModerationProcessorQueues()).sort(),
     dynamicLeasesMode: getWebhookDynamicLeasesMode(),
     dynamicLeasesWorkerGroup: workerGroup,
-    canaryShardIds: readCsvEnv('WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS'),
+    canaryShardIds: readCsvEnv('WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS', service.canaryShardIds),
     targetWebhookP95Ms,
     generatedAt: new Date().toISOString(),
   };
@@ -342,10 +288,10 @@ function buildCanaryReason(
   return `Dynamic leases mode is ${mode}; keep observing SLO and queue group health.`;
 }
 
-function readCsvEnv(key: string): string[] {
+function readCsvEnv(key: string, fallback: readonly string[] = []): string[] {
   const rawValue = process.env[key];
   if (typeof rawValue !== 'string') {
-    return [];
+    return [...fallback].sort();
   }
 
   return rawValue

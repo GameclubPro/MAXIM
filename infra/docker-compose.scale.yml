@@ -21,6 +21,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-ingress
       APP_ROLE: ingress
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 12
@@ -44,6 +45,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-admin
       APP_ROLE: admin
       MAX_API_GLOBAL_RPS: 30
       MAX_API_GLOBAL_RPS_CRITICAL: 8
@@ -67,6 +69,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-enqueue
       APP_ROLE: enqueue
       ENQUEUE_POLL_INTERVAL_MS: 200
       ENQUEUE_BATCH_SIZE: 400
@@ -91,6 +94,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation
       MODERATION_ENABLED_QUEUES: moderation-default-0,moderation-default-4,moderation-default-8,moderation-default-12
@@ -126,6 +130,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-critical
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: legacy,critical
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
@@ -162,6 +167,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-join
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: join
       MODERATION_BACKGROUND_TASKS_ENABLED: 'false'
@@ -197,6 +203,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-b
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-b
       MODERATION_ENABLED_QUEUES: moderation-default-1,moderation-default-5,moderation-default-9,moderation-default-13
@@ -232,6 +239,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-c
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-c
       MODERATION_ENABLED_QUEUES: moderation-default-2,moderation-default-6,moderation-default-10,moderation-default-14
@@ -267,6 +275,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-realtime-d
       APP_ROLE: moderation
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-d
       MODERATION_ENABLED_QUEUES: moderation-default-3,moderation-default-7,moderation-default-11,moderation-default-15
@@ -302,6 +311,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-moderation-background
       APP_ROLE: moderation
       MODERATION_ENABLED_QUEUES: background
       MODERATION_BACKGROUND_TASKS_ENABLED: 'true'
@@ -339,6 +349,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE_NAME: api-action
       APP_ROLE: action
       ACTION_CONCURRENCY: 12
       MAX_API_GLOBAL_RPS: 30

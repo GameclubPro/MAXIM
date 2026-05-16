@@ -14,6 +14,7 @@
   - `packages/contracts`: shared Zod/API contracts. Contract changes normally require matching API, mini app, tests, and typechecks.
 - Keep `packages/contracts` subpath exports, root `tsconfig.base.json` paths, and `apps/api/jest.config.cjs` mappers in sync so API Jest resolves ESM contract sources correctly.
 - Production API uses one shared API image split by `APP_ROLE`; `api-ingress` is the public API role, `api-admin` is the local admin/API role, and moderation/action/enqueue roles process queues.
+- Split API services also declare `APP_SERVICE_NAME`; keep the typed service/queue topology in `apps/api/src/runtime/runtime-topology.ts` aligned with compose service env.
 - Production mini app is served under `/app/`. Standalone bot stacks can use their own prefixed app/API paths, for example `/reshenie/app/` and `/reshenie/api/`.
 
 ## Core workflow

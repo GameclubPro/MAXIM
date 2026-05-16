@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   webhookSubscriptionSnapshotSchema,
   type WebhookSubscriptionSnapshot,
-} from '@maxim/contracts';
+} from '@maxim/contracts/system';
 import Redis from 'ioredis';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 

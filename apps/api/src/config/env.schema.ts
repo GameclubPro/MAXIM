@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema } from '@maxim/contracts/bot-speech';
 import { parseAdditionalMaxBotsJson } from '../max/max-bot-config.util';
+import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -176,6 +177,7 @@ const envSchema = z.object({
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
   MAX_ACTION_DISPATCH_ENABLED: envBoolean(true),
   APP_ROLE: z.enum(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']).default('all'),
+  APP_SERVICE_NAME: z.enum(RUNTIME_SERVICE_NAMES).optional(),
   BOT_OWNERSHIP_FOUNDATION_ENABLED: envBoolean(true),
   BOT_OWNERSHIP_REPAIR_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   BOT_OWNERSHIP_REPAIR_LOCK_TTL_MS: z.coerce.number().int().positive().default(60_000),

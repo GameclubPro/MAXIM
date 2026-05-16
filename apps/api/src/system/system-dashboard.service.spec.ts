@@ -176,6 +176,9 @@ describe('SystemDashboardService', () => {
       alerts: [],
       runtimeProfile: {
         appRole: 'all',
+        serviceName: 'api-all',
+        queueProfile: 'all-in-one',
+        topologySource: 'fallback',
         targetWebhookP95Ms: 1000,
       },
       canaryState: {
