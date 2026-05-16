@@ -4,6 +4,7 @@ import {
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from '../lib/max-markdown';
+import './max-markdown-preview.css';
 
 export function MaxMarkdownPreview({
   value,

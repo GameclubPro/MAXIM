@@ -9,6 +9,7 @@ import {
   createEmptyBroadcastLinkButton,
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
+import './broadcast-link-buttons-editor.css';
 
 export type BroadcastLinkButtonPreset = {
   label: string;
