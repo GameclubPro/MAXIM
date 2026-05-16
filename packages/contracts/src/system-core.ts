@@ -381,6 +381,105 @@ export const systemDashboardWebhookSloSchema = z.object({
 });
 export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;
 
+export const systemRuntimeRoleSchema = z.enum([
+  'all',
+  'ingress',
+  'admin',
+  'enqueue',
+  'moderation',
+  'action',
+]);
+export type SystemRuntimeRole = z.infer<typeof systemRuntimeRoleSchema>;
+
+export const systemDynamicLeasesModeSchema = z.enum(['off', 'shadow', 'canary', 'on']);
+export type SystemDynamicLeasesMode = z.infer<typeof systemDynamicLeasesModeSchema>;
+
+export const systemRuntimeProfileSchema = z.object({
+  appRole: systemRuntimeRoleSchema,
+  httpEnabled: z.boolean(),
+  ingressEnabled: z.boolean(),
+  adminEnabled: z.boolean(),
+  enqueueEnabled: z.boolean(),
+  moderationEnabled: z.boolean(),
+  actionEnabled: z.boolean(),
+  enabledQueues: z.array(z.string()),
+  dynamicLeasesMode: systemDynamicLeasesModeSchema,
+  dynamicLeasesWorkerGroup: z.string().nullable(),
+  canaryShardIds: z.array(z.string()),
+  targetWebhookP95Ms: z.number().int().positive(),
+  generatedAt: z.string().datetime(),
+});
+export type SystemRuntimeProfile = z.infer<typeof systemRuntimeProfileSchema>;
+
+export const systemCanaryStateStatusSchema = z.enum([
+  'disabled',
+  'shadow',
+  'canary',
+  'active',
+  'degraded',
+]);
+export type SystemCanaryStateStatus = z.infer<typeof systemCanaryStateStatusSchema>;
+
+export const systemCanaryRecommendationSchema = z.enum(['observe', 'expand', 'hold', 'rollback']);
+export type SystemCanaryRecommendation = z.infer<typeof systemCanaryRecommendationSchema>;
+
+export const systemCanaryStateSchema = z.object({
+  enabled: z.boolean(),
+  mode: systemDynamicLeasesModeSchema,
+  status: systemCanaryStateStatusSchema,
+  recommendation: systemCanaryRecommendationSchema,
+  workerGroup: z.string().nullable(),
+  canaryShardIds: z.array(z.string()),
+  liveWorkerGroups: z.array(z.string()),
+  handoffPendingQueues: z.array(z.string()),
+  unhealthyQueues: z.array(z.string()),
+  reason: z.string(),
+});
+export type SystemCanaryState = z.infer<typeof systemCanaryStateSchema>;
+
+export const systemRollbackReadinessStatusSchema = z.enum([
+  'ready',
+  'blocked',
+  'rollback-recommended',
+]);
+export type SystemRollbackReadinessStatus = z.infer<typeof systemRollbackReadinessStatusSchema>;
+
+export const systemRollbackReadinessSchema = z.object({
+  status: systemRollbackReadinessStatusSchema,
+  canRollbackRuntime: z.boolean(),
+  liveOk: z.boolean(),
+  readyOk: z.boolean(),
+  webhookSloOk: z.boolean(),
+  queueLagOk: z.boolean(),
+  failedWebhookOk: z.boolean(),
+  reasons: z.array(z.string()),
+  command: z.string(),
+});
+export type SystemRollbackReadiness = z.infer<typeof systemRollbackReadinessSchema>;
+
+export const systemQueueGroupStatusSchema = z.enum(['healthy', 'warning', 'critical']);
+export type SystemQueueGroupStatus = z.infer<typeof systemQueueGroupStatusSchema>;
+
+export const systemQueueGroupSchema = z.object({
+  name: z.string(),
+  queues: z.array(z.string()),
+  waiting: z.number().int().min(0),
+  active: z.number().int().min(0),
+  delayed: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  completed: z.number().int().min(0),
+  pressure: z.number().int().min(0),
+  status: systemQueueGroupStatusSchema,
+});
+export type SystemQueueGroup = z.infer<typeof systemQueueGroupSchema>;
+
+export const systemQueueGroupHealthSchema = z.object({
+  status: systemQueueGroupStatusSchema,
+  groups: z.array(systemQueueGroupSchema),
+  generatedAt: z.string().datetime(),
+});
+export type SystemQueueGroupHealth = z.infer<typeof systemQueueGroupHealthSchema>;
+
 export const systemDashboardResponseSchema = z.object({
   summary: systemDashboardSummarySchema,
   alerts: z.array(systemDashboardAlertSchema),
@@ -395,5 +494,10 @@ export const systemDashboardResponseSchema = z.object({
   membershipLookup: systemDashboardMembershipLookupSchema.optional(),
   problemChats: systemDashboardProblemChatsSchema.optional(),
   webhookSlo: systemDashboardWebhookSloSchema.optional(),
+  slo: systemDashboardWebhookSloSchema.optional(),
+  runtimeProfile: systemRuntimeProfileSchema.optional(),
+  canaryState: systemCanaryStateSchema.optional(),
+  rollbackReadiness: systemRollbackReadinessSchema.optional(),
+  queueGroupHealth: systemQueueGroupHealthSchema.optional(),
 });
 export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;

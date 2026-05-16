@@ -1,11 +1,16 @@
 import type {
   BotOwnershipFoundationSnapshot,
   BotWebhookSubscriptionSnapshot,
+  SystemCanaryState,
   SystemDashboardAlert,
   SystemDashboardResponse,
+  SystemDashboardWebhookSlo,
   SystemModeSnapshot,
+  SystemQueueGroupHealth,
+  SystemRollbackReadiness,
+  SystemRuntimeProfile,
   WebhookSubscriptionSnapshot,
-} from '@maxim/contracts';
+} from '@maxim/contracts/system';
 import type { ApiTransport } from './transport';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -304,6 +309,265 @@ function parseSystemDashboardMembershipLookup(value: unknown) {
       return {
         ...parsed,
         kind: kind as 'transient' | 'terminal',
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardProblemChats(value: unknown) {
+  if (!isRecord(value) || typeof value.windowSec !== 'number' || !Array.isArray(value.items)) {
+    throw new Error('Invalid system dashboard problem chats');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    items: value.items.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.chatId !== 'string' ||
+        (item.botId !== null && item.botId !== undefined && typeof item.botId !== 'string') ||
+        typeof item.category !== 'string' ||
+        (item.severity !== 'info' && item.severity !== 'warning' && item.severity !== 'critical') ||
+        (item.action !== null && item.action !== undefined && typeof item.action !== 'string') ||
+        (item.statusCode !== null &&
+          item.statusCode !== undefined &&
+          typeof item.statusCode !== 'number') ||
+        typeof item.reason !== 'string' ||
+        typeof item.count !== 'number' ||
+        typeof item.lastObservedAt !== 'string'
+      ) {
+        throw new Error('Invalid system dashboard problem chat');
+      }
+
+      const severity = item.severity as 'info' | 'warning' | 'critical';
+      return {
+        chatId: item.chatId,
+        botId: typeof item.botId === 'string' ? item.botId : null,
+        category: item.category,
+        severity,
+        action: typeof item.action === 'string' ? item.action : null,
+        statusCode: typeof item.statusCode === 'number' ? item.statusCode : null,
+        reason: item.reason,
+        count: item.count,
+        lastObservedAt: item.lastObservedAt,
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardWebhookSlo(value: unknown): SystemDashboardWebhookSlo {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'healthy' && value.status !== 'warning' && value.status !== 'critical') ||
+    typeof value.windowSec !== 'number' ||
+    typeof value.targetProcessingMs !== 'number' ||
+    typeof value.totalEvents !== 'number' ||
+    typeof value.processedEvents !== 'number' ||
+    typeof value.failedEvents !== 'number' ||
+    typeof value.sampledProcessedEvents !== 'number' ||
+    (value.p95ProcessingMs !== null &&
+      value.p95ProcessingMs !== undefined &&
+      typeof value.p95ProcessingMs !== 'number') ||
+    (value.underTargetRatio !== null &&
+      value.underTargetRatio !== undefined &&
+      typeof value.underTargetRatio !== 'number') ||
+    typeof value.oldestUnprocessedLagSec !== 'number' ||
+    (value.oldestUnprocessedEventId !== null &&
+      value.oldestUnprocessedEventId !== undefined &&
+      typeof value.oldestUnprocessedEventId !== 'string') ||
+    (value.lastProcessedAt !== null &&
+      value.lastProcessedAt !== undefined &&
+      typeof value.lastProcessedAt !== 'string') ||
+    typeof value.generatedAt !== 'string'
+  ) {
+    throw new Error('Invalid system dashboard webhook SLO');
+  }
+
+  return {
+    status: value.status,
+    windowSec: value.windowSec,
+    targetProcessingMs: value.targetProcessingMs,
+    totalEvents: value.totalEvents,
+    processedEvents: value.processedEvents,
+    failedEvents: value.failedEvents,
+    sampledProcessedEvents: value.sampledProcessedEvents,
+    p95ProcessingMs: typeof value.p95ProcessingMs === 'number' ? value.p95ProcessingMs : null,
+    underTargetRatio: typeof value.underTargetRatio === 'number' ? value.underTargetRatio : null,
+    oldestUnprocessedLagSec: value.oldestUnprocessedLagSec,
+    oldestUnprocessedEventId:
+      typeof value.oldestUnprocessedEventId === 'string' ? value.oldestUnprocessedEventId : null,
+    lastProcessedAt: typeof value.lastProcessedAt === 'string' ? value.lastProcessedAt : null,
+    generatedAt: value.generatedAt,
+  };
+}
+
+function parseSystemRuntimeProfile(value: unknown): SystemRuntimeProfile {
+  if (
+    !isRecord(value) ||
+    (value.appRole !== 'all' &&
+      value.appRole !== 'ingress' &&
+      value.appRole !== 'admin' &&
+      value.appRole !== 'enqueue' &&
+      value.appRole !== 'moderation' &&
+      value.appRole !== 'action') ||
+    typeof value.httpEnabled !== 'boolean' ||
+    typeof value.ingressEnabled !== 'boolean' ||
+    typeof value.adminEnabled !== 'boolean' ||
+    typeof value.enqueueEnabled !== 'boolean' ||
+    typeof value.moderationEnabled !== 'boolean' ||
+    typeof value.actionEnabled !== 'boolean' ||
+    !Array.isArray(value.enabledQueues) ||
+    (value.dynamicLeasesMode !== 'off' &&
+      value.dynamicLeasesMode !== 'shadow' &&
+      value.dynamicLeasesMode !== 'canary' &&
+      value.dynamicLeasesMode !== 'on') ||
+    (value.dynamicLeasesWorkerGroup !== null &&
+      value.dynamicLeasesWorkerGroup !== undefined &&
+      typeof value.dynamicLeasesWorkerGroup !== 'string') ||
+    !Array.isArray(value.canaryShardIds) ||
+    typeof value.targetWebhookP95Ms !== 'number' ||
+    typeof value.generatedAt !== 'string'
+  ) {
+    throw new Error('Invalid system runtime profile');
+  }
+
+  return {
+    appRole: value.appRole,
+    httpEnabled: value.httpEnabled,
+    ingressEnabled: value.ingressEnabled,
+    adminEnabled: value.adminEnabled,
+    enqueueEnabled: value.enqueueEnabled,
+    moderationEnabled: value.moderationEnabled,
+    actionEnabled: value.actionEnabled,
+    enabledQueues: value.enabledQueues.filter((item): item is string => typeof item === 'string'),
+    dynamicLeasesMode: value.dynamicLeasesMode,
+    dynamicLeasesWorkerGroup:
+      typeof value.dynamicLeasesWorkerGroup === 'string' ? value.dynamicLeasesWorkerGroup : null,
+    canaryShardIds: value.canaryShardIds.filter((item): item is string => typeof item === 'string'),
+    targetWebhookP95Ms: value.targetWebhookP95Ms,
+    generatedAt: value.generatedAt,
+  };
+}
+
+function parseSystemCanaryState(value: unknown): SystemCanaryState {
+  if (
+    !isRecord(value) ||
+    typeof value.enabled !== 'boolean' ||
+    (value.mode !== 'off' &&
+      value.mode !== 'shadow' &&
+      value.mode !== 'canary' &&
+      value.mode !== 'on') ||
+    (value.status !== 'disabled' &&
+      value.status !== 'shadow' &&
+      value.status !== 'canary' &&
+      value.status !== 'active' &&
+      value.status !== 'degraded') ||
+    (value.recommendation !== 'observe' &&
+      value.recommendation !== 'expand' &&
+      value.recommendation !== 'hold' &&
+      value.recommendation !== 'rollback') ||
+    (value.workerGroup !== null &&
+      value.workerGroup !== undefined &&
+      typeof value.workerGroup !== 'string') ||
+    !Array.isArray(value.canaryShardIds) ||
+    !Array.isArray(value.liveWorkerGroups) ||
+    !Array.isArray(value.handoffPendingQueues) ||
+    !Array.isArray(value.unhealthyQueues) ||
+    typeof value.reason !== 'string'
+  ) {
+    throw new Error('Invalid system canary state');
+  }
+
+  return {
+    enabled: value.enabled,
+    mode: value.mode,
+    status: value.status,
+    recommendation: value.recommendation,
+    workerGroup: typeof value.workerGroup === 'string' ? value.workerGroup : null,
+    canaryShardIds: value.canaryShardIds.filter((item): item is string => typeof item === 'string'),
+    liveWorkerGroups: value.liveWorkerGroups.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    handoffPendingQueues: value.handoffPendingQueues.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    unhealthyQueues: value.unhealthyQueues.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    reason: value.reason,
+  };
+}
+
+function parseSystemRollbackReadiness(value: unknown): SystemRollbackReadiness {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'ready' &&
+      value.status !== 'blocked' &&
+      value.status !== 'rollback-recommended') ||
+    typeof value.canRollbackRuntime !== 'boolean' ||
+    typeof value.liveOk !== 'boolean' ||
+    typeof value.readyOk !== 'boolean' ||
+    typeof value.webhookSloOk !== 'boolean' ||
+    typeof value.queueLagOk !== 'boolean' ||
+    typeof value.failedWebhookOk !== 'boolean' ||
+    !Array.isArray(value.reasons) ||
+    typeof value.command !== 'string'
+  ) {
+    throw new Error('Invalid system rollback readiness');
+  }
+
+  return {
+    status: value.status,
+    canRollbackRuntime: value.canRollbackRuntime,
+    liveOk: value.liveOk,
+    readyOk: value.readyOk,
+    webhookSloOk: value.webhookSloOk,
+    queueLagOk: value.queueLagOk,
+    failedWebhookOk: value.failedWebhookOk,
+    reasons: value.reasons.filter((item): item is string => typeof item === 'string'),
+    command: value.command,
+  };
+}
+
+function parseSystemQueueGroupHealth(value: unknown): SystemQueueGroupHealth {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'healthy' && value.status !== 'warning' && value.status !== 'critical') ||
+    !Array.isArray(value.groups) ||
+    typeof value.generatedAt !== 'string'
+  ) {
+    throw new Error('Invalid system queue group health');
+  }
+
+  return {
+    status: value.status,
+    generatedAt: value.generatedAt,
+    groups: value.groups.map((group) => {
+      if (
+        !isRecord(group) ||
+        typeof group.name !== 'string' ||
+        !Array.isArray(group.queues) ||
+        typeof group.waiting !== 'number' ||
+        typeof group.active !== 'number' ||
+        typeof group.delayed !== 'number' ||
+        typeof group.failed !== 'number' ||
+        typeof group.completed !== 'number' ||
+        typeof group.pressure !== 'number' ||
+        (group.status !== 'healthy' && group.status !== 'warning' && group.status !== 'critical')
+      ) {
+        throw new Error('Invalid system queue group');
+      }
+
+      return {
+        name: group.name,
+        queues: group.queues.filter((item): item is string => typeof item === 'string'),
+        waiting: group.waiting,
+        active: group.active,
+        delayed: group.delayed,
+        failed: group.failed,
+        completed: group.completed,
+        pressure: group.pressure,
+        status: group.status,
       };
     }),
   };
@@ -709,6 +973,16 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     mode: parseSystemModeSnapshot(value.mode),
     webhookSubscription: parseWebhookSubscriptionSnapshot(value.webhookSubscription),
     ownership: parseBotOwnershipFoundation(value.ownership),
+    ...(value.runtimeProfile
+      ? { runtimeProfile: parseSystemRuntimeProfile(value.runtimeProfile) }
+      : {}),
+    ...(value.canaryState ? { canaryState: parseSystemCanaryState(value.canaryState) } : {}),
+    ...(value.rollbackReadiness
+      ? { rollbackReadiness: parseSystemRollbackReadiness(value.rollbackReadiness) }
+      : {}),
+    ...(value.queueGroupHealth
+      ? { queueGroupHealth: parseSystemQueueGroupHealth(value.queueGroupHealth) }
+      : {}),
     ...(value.burst ? { burst: parseSystemDashboardBurst(value.burst) } : {}),
     ...(value.hotPath ? { hotPath: parseSystemDashboardHotPath(value.hotPath) } : {}),
     ...(value.hotChats ? { hotChats: parseSystemDashboardHotChats(value.hotChats) } : {}),
@@ -718,6 +992,11 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     ...(value.membershipLookup
       ? { membershipLookup: parseSystemDashboardMembershipLookup(value.membershipLookup) }
       : {}),
+    ...(value.problemChats
+      ? { problemChats: parseSystemDashboardProblemChats(value.problemChats) }
+      : {}),
+    ...(value.webhookSlo ? { webhookSlo: parseSystemDashboardWebhookSlo(value.webhookSlo) } : {}),
+    ...(value.slo ? { slo: parseSystemDashboardWebhookSlo(value.slo) } : {}),
   };
 }
 

@@ -35,6 +35,18 @@ function formatLag(seconds: number): string {
   return `${minutes} мин ${remainder} c`;
 }
 
+function formatMs(value: number | null | undefined): string {
+  if (typeof value !== 'number') {
+    return 'n/a';
+  }
+
+  if (value < 1_000) {
+    return `${Math.round(value)} мс`;
+  }
+
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} c`;
+}
+
 function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString('ru-RU', {
     hour: '2-digit',
@@ -107,6 +119,30 @@ function alertCardClass(level: 'info' | 'warning' | 'critical') {
   }
 
   return 'system-alert-card is-info';
+}
+
+function canaryChipStatus(status: string): 'healthy' | 'warning' | 'critical' {
+  if (status === 'degraded') {
+    return 'critical';
+  }
+
+  if (status === 'canary' || status === 'shadow') {
+    return 'warning';
+  }
+
+  return 'healthy';
+}
+
+function rollbackChipStatus(status: string): 'healthy' | 'warning' | 'critical' {
+  if (status === 'rollback-recommended') {
+    return 'critical';
+  }
+
+  if (status === 'blocked') {
+    return 'warning';
+  }
+
+  return 'healthy';
 }
 
 export function SystemPage({ api }: { api: ApiTransport }) {
@@ -207,6 +243,8 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const backgroundSources = dashboard.backgroundBudget?.topSources.slice(0, 5) ?? [];
   const backgroundPauses = dashboard.backgroundBudget?.pauseReasons.slice(0, 5) ?? [];
   const membershipIssues = dashboard.membershipLookup?.issueSample.slice(0, 5) ?? [];
+  const slo = dashboard.slo ?? dashboard.webhookSlo;
+  const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 8) ?? [];
   return (
     <div className="page-stack page-enter">
       <GlassCard className="system-hero" elevated>
@@ -316,6 +354,113 @@ export function SystemPage({ api }: { api: ApiTransport }) {
               <small>{dashboard.mode.action.failure} failures за 60 сек</small>
             </article>
           </div>
+        </GlassCard>
+      </section>
+
+      <section className="system-grid" aria-label="Reliability gates">
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>SLO и runtime profile</h2>
+              <p>Квартальный reliability gate: p95 webhook-path должен оставаться ниже цели.</p>
+            </div>
+            {slo ? (
+              <span className={summaryChipClass(slo.status)}>{slo.status}</span>
+            ) : (
+              <span className="chip">SLO n/a</span>
+            )}
+          </div>
+          <div className="system-runtime-grid">
+            <article className="system-runtime-card">
+              <span>Webhook p95</span>
+              <strong>{formatMs(slo?.p95ProcessingMs)}</strong>
+              <small>
+                target{' '}
+                {formatMs(slo?.targetProcessingMs ?? dashboard.runtimeProfile?.targetWebhookP95Ms)}
+              </small>
+            </article>
+            <article className="system-runtime-card">
+              <span>Under target</span>
+              <strong>
+                {slo?.underTargetRatio === null || !slo
+                  ? 'n/a'
+                  : formatPercent(slo.underTargetRatio)}
+              </strong>
+              <small>
+                {slo
+                  ? `${slo.sampledProcessedEvents} sampled / ${formatWindow(slo.windowSec)}`
+                  : 'no SLO sample'}
+              </small>
+            </article>
+            <article className="system-runtime-card">
+              <span>Runtime role</span>
+              <strong>{dashboard.runtimeProfile?.appRole ?? 'n/a'}</strong>
+              <small>
+                {dashboard.runtimeProfile
+                  ? `queues ${dashboard.runtimeProfile.enabledQueues.length}, leases ${dashboard.runtimeProfile.dynamicLeasesMode}`
+                  : 'runtime profile unavailable'}
+              </small>
+            </article>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Canary и rollback</h2>
+              <p>Решение: расширять canary, держать окно или откатывать runtime-пакет.</p>
+            </div>
+            {dashboard.canaryState ? (
+              <span className={summaryChipClass(canaryChipStatus(dashboard.canaryState.status))}>
+                {dashboard.canaryState.recommendation}
+              </span>
+            ) : null}
+          </div>
+          <div className="system-runtime-grid">
+            <article className="system-runtime-card">
+              <span>Canary state</span>
+              <strong>{dashboard.canaryState?.status ?? 'n/a'}</strong>
+              <small>{dashboard.canaryState?.workerGroup ?? 'worker group n/a'}</small>
+            </article>
+            <article className="system-runtime-card">
+              <span>Rollback</span>
+              <strong>{dashboard.rollbackReadiness?.status ?? 'n/a'}</strong>
+              <small>
+                {dashboard.rollbackReadiness?.canRollbackRuntime
+                  ? 'runtime rollback command ready'
+                  : 'rollback metadata unavailable'}
+              </small>
+            </article>
+            <article className="system-runtime-card">
+              <span>Queue groups</span>
+              <strong>{dashboard.queueGroupHealth?.status ?? 'n/a'}</strong>
+              <small>
+                {dashboard.queueGroupHealth
+                  ? `${dashboard.queueGroupHealth.groups.length} groups tracked`
+                  : 'group health unavailable'}
+              </small>
+            </article>
+          </div>
+          {dashboard.canaryState ? (
+            <p className="system-panel__hint">{dashboard.canaryState.reason}</p>
+          ) : null}
+          {dashboard.rollbackReadiness?.reasons.length ? (
+            <div className="system-chip-list">
+              {dashboard.rollbackReadiness.reasons.slice(0, 3).map((reason) => (
+                <span key={reason} className="chip chip--warning">
+                  {reason}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span
+              className={summaryChipClass(
+                rollbackChipStatus(dashboard.rollbackReadiness?.status ?? 'ready'),
+              )}
+            >
+              rollback gate clear
+            </span>
+          )}
         </GlassCard>
       </section>
 
@@ -590,6 +735,36 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           ))}
         </div>
       </GlassCard>
+
+      {queueGroups.length > 0 ? (
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Queue group health</h2>
+              <p>Worker-group разрез для canary и default-shard leases.</p>
+            </div>
+            <span className={summaryChipClass(dashboard.queueGroupHealth?.status ?? 'healthy')}>
+              {dashboard.queueGroupHealth?.status ?? 'healthy'}
+            </span>
+          </div>
+          <div className="system-data-list">
+            {queueGroups.map((group) => (
+              <article key={group.name} className="system-data-list__item">
+                <div>
+                  <strong>{group.name}</strong>
+                  <small>{group.queues.join(', ') || 'no queues assigned'}</small>
+                </div>
+                <div className="system-data-list__meta">
+                  <span className={summaryChipClass(group.status)}>{group.status}</span>
+                  <span>
+                    wait {group.waiting}, active {group.active}, failed {group.failed}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </GlassCard>
+      ) : null}
 
       <GlassCard className="system-panel system-panel--compact" elevated>
         <div className="system-panel__head">

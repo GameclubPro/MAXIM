@@ -29,6 +29,7 @@ Commands:
   deploy [branch] [services]  Run the main production deploy script on the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS
   deploy-reshenie [branch]    Run the standalone Reshenie deploy script on the VPS
+  rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
   health                      Check local-on-VPS and public health endpoints
   ps [services...]            Show main production docker compose status
   logs <service> [tail]       Show main production service logs, default tail=200
@@ -143,6 +144,15 @@ deploy_reshenie() {
   remote_exec "$(shell_quote_args ./infra/scripts/vps-pull-build-up-reshenie.sh "$branch")"
 }
 
+rollback_runtime() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 rollback-runtime <git-ref> [services...]"
+    exit 1
+  fi
+
+  remote_exec "$(shell_quote_args ./infra/scripts/vps-runtime-rollback.sh "$@")"
+}
+
 health() {
   remote_exec 'curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/live && printf "\n" && curl -fsS --max-time 15 http://127.0.0.1:3001/api/health/ready && printf "\n"'
   curl -fsS --max-time 15 "$MAXIM_VPS_PUBLIC_URL/api/health/live"
@@ -227,6 +237,9 @@ case "$command" in
     ;;
   deploy-reshenie)
     deploy_reshenie "$@"
+    ;;
+  rollback-runtime)
+    rollback_runtime "$@"
     ;;
   health)
     health

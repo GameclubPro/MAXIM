@@ -174,6 +174,22 @@ describe('SystemDashboardService', () => {
         stabilizing: false,
       },
       alerts: [],
+      runtimeProfile: {
+        appRole: 'all',
+        targetWebhookP95Ms: 1000,
+      },
+      canaryState: {
+        status: 'disabled',
+        recommendation: 'observe',
+      },
+      rollbackReadiness: {
+        status: 'ready',
+        webhookSloOk: true,
+        queueLagOk: true,
+      },
+      queueGroupHealth: {
+        status: 'healthy',
+      },
     });
   });
 

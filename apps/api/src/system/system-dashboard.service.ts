@@ -8,6 +8,13 @@ import type {
   WebhookSubscriptionSnapshot,
 } from '@maxim/contracts';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
+import {
+  DEFAULT_WEBHOOK_P95_TARGET_MS,
+  buildSystemCanaryState,
+  buildSystemQueueGroupHealth,
+  buildSystemRollbackReadiness,
+  buildSystemRuntimeProfile,
+} from '../runtime/runtime-reliability-profile';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
@@ -30,6 +37,7 @@ const JOIN_BURST_CRITICAL_PRESSURE = 16;
 @Injectable()
 export class SystemDashboardService {
   private readonly queueLagCriticalThresholdSec: number;
+  private readonly webhookSloTargetMs: number;
 
   constructor(
     private readonly queueMetricsService: QueueMetricsService,
@@ -47,6 +55,10 @@ export class SystemDashboardService {
     private readonly webhookSloService?: WebhookSloService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
+    this.webhookSloTargetMs = configService.get<number>(
+      'SYSTEM_WEBHOOK_SLO_TARGET_MS',
+      DEFAULT_WEBHOOK_P95_TARGET_MS,
+    );
   }
 
   async getSnapshot(): Promise<SystemDashboardResponse> {
@@ -239,6 +251,26 @@ export class SystemDashboardService {
       hotPathTimeoutWarning: hotPathTimeoutCount > 0,
       webhookSloStatus: webhookSlo?.status ?? null,
     });
+    const queueGroupHealth = buildSystemQueueGroupHealth(queues);
+    const runtimeProfile = buildSystemRuntimeProfile(
+      webhookSlo?.targetProcessingMs ?? this.webhookSloTargetMs,
+    );
+    const canaryState = buildSystemCanaryState({
+      queues,
+      dashboardStatus: status,
+      queueLagSec,
+      queueLagCriticalThresholdSec: this.queueLagCriticalThresholdSec,
+      activeFailedWebhooks: failedCount,
+      webhookSlo: webhookSlo ?? null,
+    });
+    const rollbackReadiness = buildSystemRollbackReadiness({
+      queues,
+      dashboardStatus: status,
+      queueLagSec,
+      queueLagCriticalThresholdSec: this.queueLagCriticalThresholdSec,
+      activeFailedWebhooks: failedCount,
+      webhookSlo: webhookSlo ?? null,
+    });
 
     return {
       summary: {
@@ -261,6 +293,10 @@ export class SystemDashboardService {
       mode,
       webhookSubscription,
       ownership,
+      runtimeProfile,
+      canaryState,
+      rollbackReadiness,
+      queueGroupHealth,
       ...(runtimeDiagnostics
         ? {
             burst: runtimeDiagnostics.burst,
@@ -273,7 +309,7 @@ export class SystemDashboardService {
           }
         : {}),
       ...(backgroundBudget ? { backgroundBudget } : {}),
-      ...(webhookSlo ? { webhookSlo } : {}),
+      ...(webhookSlo ? { webhookSlo, slo: webhookSlo } : {}),
     };
   }
 
