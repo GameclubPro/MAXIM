@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { SanctionAction } from '@prisma/client';
+import { SanctionAction } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const DEFAULT_REPEAT_BAN_WINDOW_DAYS = 7;

@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ChatSummary } from '@maxim/contracts';
-import { ChatEntityType, Prisma, WebhookStatus } from '@prisma/client';
+import { ChatEntityType, Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';

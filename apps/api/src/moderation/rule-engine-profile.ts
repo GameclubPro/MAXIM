@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import type { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 
 const RULE_ENGINE_SLOW_LOG_THRESHOLD_MS = 3_000;

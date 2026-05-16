@@ -1,4 +1,4 @@
-import { ChatBotMembershipRole, ChatBotMembershipStatus, ChatEntityType } from '@prisma/client';
+import { ChatBotMembershipRole, ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
 
 const redisStore = new Map<string, string>();

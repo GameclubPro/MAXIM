@@ -1,5 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { Prisma, PrismaClient, type ChatSettings } from '@prisma/client';
+import { createPrismaClient, Prisma, PrismaClient, type ChatSettings } from '../prisma/prisma-client';
 import { config as loadEnv } from 'dotenv';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -697,7 +697,7 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
 
 async function main() {
   const options = readCliOptions(process.argv.slice(2));
-  const prisma = new PrismaClient();
+  const prisma = createPrismaClient();
   const ruleEngine = new RuleEngineService(NOOP_REDIS_COUNTER as never);
 
   try {

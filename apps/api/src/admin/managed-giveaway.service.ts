@@ -29,7 +29,7 @@ import {
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
   Prisma,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import {
   BadRequestException,
   Injectable,
@@ -90,7 +90,7 @@ const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS = 60 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS = 2 * 60 * 60_000;
-const MANAGED_GIVEAWAY_INCLUDE = Prisma.validator<Prisma.ManagedGiveawayInclude>()({
+const MANAGED_GIVEAWAY_INCLUDE = {
   prizes: {
     orderBy: { position: 'asc' },
   },
@@ -104,7 +104,7 @@ const MANAGED_GIVEAWAY_INCLUDE = Prisma.validator<Prisma.ManagedGiveawayInclude>
     },
     orderBy: [{ selectedAt: 'asc' }],
   },
-});
+} as const satisfies Prisma.ManagedGiveawayInclude;
 
 type PersistedGiveawayWithRelations = Prisma.ManagedGiveawayGetPayload<{
   include: typeof MANAGED_GIVEAWAY_INCLUDE;

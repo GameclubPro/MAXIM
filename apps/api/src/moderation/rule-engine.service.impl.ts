@@ -1,5 +1,5 @@
 import { Injectable, Optional } from '@nestjs/common';
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import type { CommercialCampaignContext } from './commercial-campaign.util';

@@ -157,12 +157,13 @@ import {
   Prisma,
   PrismaClient,
   SanctionAction,
+  createPrismaClient,
   type ManagedBroadcast as PersistedManagedBroadcast,
   type ManagedBroadcastDelivery as PersistedManagedBroadcastDelivery,
   type ManagedBroadcastOccurrence as PersistedManagedBroadcastOccurrence,
   type ChatRules as PersistedChatRules,
   type ManagedPoll as PersistedManagedPoll,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
@@ -1215,13 +1216,7 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
-    return new PrismaClient({
-      datasources: {
-        db: {
-          url: dedicatedUrl,
-        },
-      },
-    });
+    return createPrismaClient(dedicatedUrl);
   }
 
   private buildManagedEntitiesReadDatabaseUrl(databaseUrl?: string | null): string | null {

@@ -1,4 +1,4 @@
-import { WebhookStatus } from '@prisma/client';
+import { WebhookStatus } from '../prisma/prisma-client';
 import { getQueueToken } from '@nestjs/bullmq';
 import { QueueMetricsService } from './queue-metrics.service';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';

@@ -2,7 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
-import { ChatBotMembershipStatus, ChatEntityType, Prisma } from '@prisma/client';
+import { ChatBotMembershipStatus, ChatEntityType, Prisma } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import {
   ChatContextCacheService,

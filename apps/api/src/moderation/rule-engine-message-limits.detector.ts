@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import type { RuleViolation } from './rule-engine.service';
 import { RedisCounterService } from './redis-counter.service';

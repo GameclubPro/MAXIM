@@ -13,7 +13,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ChatBotMembershipStatus, ChatEntityType } from '@prisma/client';
+import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';

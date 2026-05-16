@@ -4,7 +4,7 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   Prisma,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import type {
   ManagedEntityAssignedBot,
   ManagedEntityBotCapability,

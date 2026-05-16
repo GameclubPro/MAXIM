@@ -1,4 +1,4 @@
-import { LinkPolicy, type ChatSettings } from '@prisma/client';
+import { LinkPolicy, type ChatSettings } from '../prisma/prisma-client';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
 
 function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {

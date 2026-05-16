@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import Redis from 'ioredis';
 import {
   MaxBotLinkService,

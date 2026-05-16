@@ -1,4 +1,4 @@
-import { ChatBotMembershipRole, ChatBotMembershipStatus } from '@prisma/client';
+import { ChatBotMembershipRole, ChatBotMembershipStatus } from '../prisma/prisma-client';
 import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
 
 type MutableChat = {

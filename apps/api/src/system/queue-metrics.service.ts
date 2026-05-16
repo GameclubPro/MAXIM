@@ -1,7 +1,7 @@
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { Prisma, WebhookStatus } from '@prisma/client';
+import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';

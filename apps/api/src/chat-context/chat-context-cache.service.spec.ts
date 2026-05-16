@@ -127,7 +127,7 @@ jest.mock('ioredis', () => {
 
 import Redis from 'ioredis';
 import type { ChatSummary } from '@maxim/contracts';
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { ChatContextCacheService } from './chat-context-cache.service';
 
 function buildChatSummary(chatId: string): ChatSummary {

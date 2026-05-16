@@ -1,4 +1,4 @@
-import { ChatEntityType, Prisma } from '@prisma/client';
+import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';

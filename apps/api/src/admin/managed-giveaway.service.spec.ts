@@ -3,7 +3,7 @@ import {
   GiveawayEligibilityState,
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   ManagedGiveawayMembershipLookupUnavailableError,

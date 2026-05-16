@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
 
 class MockRedisCounterService {

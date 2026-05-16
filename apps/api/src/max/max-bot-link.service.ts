@@ -4,7 +4,7 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   Prisma,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import type { ManagedEntityBotCapability } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';

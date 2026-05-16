@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeForDetection } from './rule-engine-normalization';
 
 export type RuleDetectionContext = {

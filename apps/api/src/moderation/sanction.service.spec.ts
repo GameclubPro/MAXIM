@@ -1,4 +1,4 @@
-import { SanctionAction } from '@prisma/client';
+import { SanctionAction } from '../prisma/prisma-client';
 import { SanctionService } from './sanction.service';
 
 describe('SanctionService', () => {

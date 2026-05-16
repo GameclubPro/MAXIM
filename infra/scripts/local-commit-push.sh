@@ -60,6 +60,34 @@ ensure_migration_for_schema_change() {
   staged="$(git diff --cached --name-only)"
 
   if printf '%s\n' "$staged" | grep -qx 'apps/api/prisma/schema.prisma'; then
+    if node <<'NODE'
+const { execFileSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+
+const schemaPath = 'apps/api/prisma/schema.prisma';
+const current = readFileSync(schemaPath, 'utf8');
+let previous = '';
+
+try {
+  previous = execFileSync('git', ['show', `HEAD:${schemaPath}`], { encoding: 'utf8' });
+} catch {
+  process.exit(1);
+}
+
+function stripRuntimeOnlyBlocks(source) {
+  return source
+    .replace(/generator\s+client\s*\{[\s\S]*?\n\}/g, '')
+    .replace(/datasource\s+db\s*\{[\s\S]*?\n\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+process.exit(stripRuntimeOnlyBlocks(previous) === stripRuntimeOnlyBlocks(current) ? 0 : 1);
+NODE
+    then
+      return
+    fi
+
     if ! printf '%s\n' "$staged" | grep -Eq '^apps/api/prisma/migrations/[^/]+/migration\.sql$'; then
       echo "schema.prisma changed, but no migration.sql is staged."
       echo "Create migration before push, then rerun this script."

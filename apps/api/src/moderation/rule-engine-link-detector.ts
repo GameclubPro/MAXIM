@@ -3,7 +3,7 @@ import {
   normalizeAllowlistLink,
   parseStoredAllowlistEntry,
 } from '@maxim/contracts/settings';
-import { LinkPolicy } from '@prisma/client';
+import { LinkPolicy } from '../prisma/prisma-client';
 import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
 
 type AllowlistMatchers = {

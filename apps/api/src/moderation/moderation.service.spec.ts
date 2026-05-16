@@ -1,5 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { ChatEntityType, EventType, Operator, SanctionAction } from '@prisma/client';
+import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import { ModerationService } from './moderation.service';
 

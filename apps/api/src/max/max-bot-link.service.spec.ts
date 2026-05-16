@@ -2,7 +2,7 @@ import {
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   type ChatEntityType,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import { MaxBotLinkService } from './max-bot-link.service';
 
 type MutableChat = {

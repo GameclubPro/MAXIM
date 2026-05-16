@@ -1,4 +1,4 @@
-import { EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
+import { EventType, Operator, Prisma, SanctionAction } from '../prisma/prisma-client';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from '../app.module';

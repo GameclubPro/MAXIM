@@ -2,7 +2,7 @@ import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { Prisma, WebhookStatus } from '@prisma/client';
+import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';

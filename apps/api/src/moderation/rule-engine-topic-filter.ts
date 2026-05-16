@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { normalizeMixedWriting } from './rule-engine-normalization';
 
 const THEMATIC_CODEWORD_MIN_LENGTH = 90;

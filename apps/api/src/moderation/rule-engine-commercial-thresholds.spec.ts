@@ -1,4 +1,4 @@
-import { CommercialAdsSensitivity } from '@prisma/client';
+import { CommercialAdsSensitivity } from '../prisma/prisma-client';
 import { resolveCommercialThresholds } from './rule-engine-commercial-thresholds';
 
 describe('resolveCommercialThresholds', () => {

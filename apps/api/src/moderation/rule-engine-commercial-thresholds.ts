@@ -1,4 +1,4 @@
-import { CommercialAdsSensitivity, type ChatSettings } from '@prisma/client';
+import { CommercialAdsSensitivity, type ChatSettings } from '../prisma/prisma-client';
 
 type CommercialThresholdSettings = Pick<
   ChatSettings,

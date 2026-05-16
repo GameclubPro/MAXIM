@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WebhookStatus } from '@prisma/client';
+import { WebhookStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type WebhookSloSnapshot = {

@@ -1,4 +1,4 @@
-import { ChatBotMembershipStatus } from '@prisma/client';
+import { ChatBotMembershipStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ModerationService } from './moderation.service';
 

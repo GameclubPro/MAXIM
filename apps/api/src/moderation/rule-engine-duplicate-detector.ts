@@ -1,4 +1,4 @@
-import type { ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { createHash } from 'node:crypto';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { buildDuplicateStageKey } from './duplicate-state';

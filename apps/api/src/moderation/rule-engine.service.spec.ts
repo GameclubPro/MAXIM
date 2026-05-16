@@ -1,4 +1,4 @@
-import { LinkPolicy, type ChatSettings } from '@prisma/client';
+import { LinkPolicy, type ChatSettings } from '../prisma/prisma-client';
 import {
   COMMERCIAL_REAL_WORLD_NEGATIVE_CASES,
   COMMERCIAL_REAL_WORLD_POSITIVE_CASES,

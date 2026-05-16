@@ -36,7 +36,7 @@ import {
   WebhookStatus,
   type ChannelSettings as PersistedChannelSettings,
   type ChatSettings,
-} from '@prisma/client';
+} from '../prisma/prisma-client';
 import type { Job } from 'bullmq';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
