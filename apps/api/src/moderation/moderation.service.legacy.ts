@@ -5138,11 +5138,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to enqueue forwarded admin moderation command',
         );
-        await this.sendGroupAdminCommandNotice({
-          chatId,
-          settings,
-          text: `Не удалось поставить команду \`${command.action === 'BAN' ? 'бан' : 'мут'}\` в очередь. Повторите через несколько секунд.`,
-        });
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -5155,11 +5150,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to enqueue forwarded admin moderation command',
       );
 
-      await this.sendGroupAdminCommandNotice({
-        chatId,
-        settings,
-        text: `Не удалось поставить команду \`${command.action === 'BAN' ? 'бан' : 'мут'}\` в очередь. Повторите через несколько секунд.`,
-      });
       return true;
     }
 

@@ -8591,7 +8591,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('notifies chat admins when a reply moderation command cannot be queued', async () => {
+  it('keeps reply moderation command enqueue failures silent in chat', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8651,14 +8651,7 @@ describe('ModerationService', () => {
 
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
-    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(
-      sentTexts.some((text) =>
-        text.includes(
-          'Не удалось поставить команду `мут` в очередь. Повторите через несколько секунд.',
-        ),
-      ),
-    ).toBe(true);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('uses the current chat for MAX reply moderation commands without recipient in the reply link', async () => {
