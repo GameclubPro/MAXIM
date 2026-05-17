@@ -80,6 +80,7 @@ function majorExplanation(
     reason.includes('видео в этом чате отключены') ||
     reason.includes('файлы в этом чате отключены') ||
     reason.includes('голосовые сообщения в этом чате отключены') ||
+    reason.includes('телефонные номера') ||
     reason.includes('слишком частая отправка')
   ) {
     return `Товарищ ${userMention(name)}, это прикрыл 📏 Причина: ${reason}. Подправьте и снова в эфир.`;
@@ -195,6 +196,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    phoneNumbersEnabled: true,
     messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
@@ -13283,6 +13285,88 @@ describe('ModerationService', () => {
       data: expect.objectContaining({
         ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE',
         metadata: expect.objectContaining({ blockedWord: 'казино' }),
+      }),
+    });
+  });
+
+  it('deletes phone-number messages when phone numbers are disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            phoneNumbersEnabled: false,
+            messageLimitsBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'PHONE_NUMBER_BLOCKED',
+            score: 0.88,
+            reason: 'Phone numbers are disabled',
+            metadata: { phoneCount: 1 },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'телефонные номера в этом чате запрещены',
+      ),
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        ruleCode: 'PHONE_NUMBER_BLOCKED_DELETE',
+        metadata: expect.objectContaining({ phoneCount: 1 }),
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PHONE_NUMBER_BLOCKED',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({ phoneCount: 1 }),
       }),
     });
   });

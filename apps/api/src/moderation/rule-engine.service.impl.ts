@@ -1565,6 +1565,15 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'blocked-words');
 
+    const phoneNumberViolation = this.messageLimitsDetector.detectPhoneNumberLimit({
+      text,
+      settings,
+    });
+    if (phoneNumberViolation) {
+      violations.push(phoneNumberViolation);
+    }
+    markRuleEngineDetectStage(profile, 'phone-numbers');
+
     violations.push(
       ...this.messageLimitsDetector.detectAttachmentLimits({
         settings,

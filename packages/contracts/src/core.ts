@@ -605,6 +605,7 @@ export const chatSettingsSchema = z
       videoMessagesEnabled: z.boolean().default(true),
       fileMessagesEnabled: z.boolean().default(true),
       voiceMessagesEnabled: z.boolean().default(true),
+      phoneNumbersEnabled: z.boolean().default(true),
       messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
       messageLimitsBotMessageEnabled: z.boolean().default(false),
       messageLimitsBotMessageText: botMessageTextSchema,

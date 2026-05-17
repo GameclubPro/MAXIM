@@ -25,6 +25,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    phoneNumbersEnabled: true,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
     stickerMessageCooldownEnabled: false,
@@ -44,6 +45,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
       videoMessagesEnabled: false,
       fileMessagesEnabled: false,
       voiceMessagesEnabled: false,
+      phoneNumbersEnabled: false,
     });
 
     expect(
@@ -58,6 +60,12 @@ describe('RuleEngineMessageLimitsDetector', () => {
         settings,
       })?.ruleCode,
     ).toBe('MESSAGE_BLOCKED_WORD');
+    expect(
+      detector.detectPhoneNumberLimit({
+        text: 'Связь: +7 900 000 00 01',
+        settings,
+      })?.ruleCode,
+    ).toBe('PHONE_NUMBER_BLOCKED');
     expect(
       detector.detectAttachmentLimits({
         settings,

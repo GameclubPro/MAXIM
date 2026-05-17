@@ -7,6 +7,7 @@ import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.de
 export const ANTI_SPAM_BURST_LIMIT = 5;
 export const ANTI_SPAM_BURST_WINDOW_SEC = 10;
 const ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS = 120;
+const PHONE_NUMBER_CANDIDATE_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 
 export class RuleEngineMessageLimitsDetector {
   private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
@@ -108,6 +109,29 @@ export class RuleEngineMessageLimitsDetector {
       reason: `Blocked word detected: ${blockedWord.blockedWord}`,
       metadata: {
         blockedWord: blockedWord.blockedWord,
+      },
+    };
+  }
+
+  detectPhoneNumberLimit(params: {
+    text: string;
+    settings: ChatSettings;
+  }): RuleViolation | null {
+    if (params.settings.phoneNumbersEnabled) {
+      return null;
+    }
+
+    const phoneCount = countDetectedPhoneNumbers(params.text);
+    if (phoneCount === 0) {
+      return null;
+    }
+
+    return {
+      ruleCode: 'PHONE_NUMBER_BLOCKED',
+      score: 0.88,
+      reason: 'Phone numbers are disabled by chat settings',
+      metadata: {
+        phoneCount,
       },
     };
   }
@@ -218,4 +242,44 @@ function normalizeSettingsUpdatedAt(value: Date | string): string {
 
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? String(parsed) : 'na';
+}
+
+function countDetectedPhoneNumbers(text: string): number {
+  let count = 0;
+  for (const match of text.matchAll(PHONE_NUMBER_CANDIDATE_PATTERN)) {
+    const candidate = match[1];
+    if (candidate && isPhoneNumberCandidate(candidate)) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function isPhoneNumberCandidate(candidate: string): boolean {
+  const digits = candidate.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) {
+    return false;
+  }
+
+  const trimmed = candidate.trim();
+  if (trimmed.startsWith('+')) {
+    return true;
+  }
+
+  if (digits.length === 11 && (digits.startsWith('7') || digits.startsWith('8'))) {
+    return true;
+  }
+
+  if (digits.length !== 10) {
+    return false;
+  }
+
+  if (digits.startsWith('9')) {
+    return true;
+  }
+
+  return /\(\s*\d{3}\s*\)|\d{3}[\s.-]+\d{3}[\s.-]+\d{2}[\s.-]+\d{2}/u.test(
+    candidate,
+  );
 }

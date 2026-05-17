@@ -62,6 +62,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    phoneNumbersEnabled: true,
     messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
@@ -2684,6 +2685,39 @@ describe('RuleEngineService', () => {
         }),
       ]),
     );
+  });
+
+  it('detects PHONE_NUMBER_BLOCKED when phone numbers are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Звоните: +7 (900) 000-00-01',
+      settings: buildSettings({ phoneNumbersEnabled: false }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'PHONE_NUMBER_BLOCKED',
+          metadata: expect.objectContaining({ phoneCount: 1 }),
+        }),
+      ]),
+    );
+  });
+
+  it('allows phone numbers while the phone toggle is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Звоните: +7 (900) 000-00-01',
+      settings: buildSettings({ phoneNumbersEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PHONE_NUMBER_BLOCKED')).toBe(false);
   });
 
   it('detects VIDEO_BLOCKED when video messages are disabled', async () => {

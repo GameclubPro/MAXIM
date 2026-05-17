@@ -299,6 +299,7 @@ model ChatSettings {
   videoMessagesEnabled                          Boolean                  @default(true) @map("video_messages_enabled")
   fileMessagesEnabled                           Boolean                  @default(true) @map("file_messages_enabled")
   voiceMessagesEnabled                          Boolean                  @default(true) @map("voice_messages_enabled")
+  phoneNumbersEnabled                           Boolean                  @default(true) @map("phone_numbers_enabled")
   messageLimitsBlockedWords                     String[]                 @default([]) @map("message_limits_blocked_words")
   messageLimitsBotMessageEnabled                Boolean                  @default(false) @map("message_limits_bot_message_enabled")
   messageLimitsBotMessageText                   String                   @default("") @map("message_limits_bot_message_text")

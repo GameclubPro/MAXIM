@@ -896,6 +896,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'videoMessagesEnabled', label: 'Разрешить видео', type: 'boolean' },
     { key: 'fileMessagesEnabled', label: 'Разрешить файлы', type: 'boolean' },
     { key: 'voiceMessagesEnabled', label: 'Разрешить голосовые', type: 'boolean' },
+    { key: 'phoneNumbersEnabled', label: 'Разрешить телефоны', type: 'boolean' },
     { key: 'messageLimitsBlockedWords', label: 'Стоп-слова', type: 'text' },
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
@@ -1089,6 +1090,7 @@ const SECTION_CARD_FIELDS: Record<
       'videoMessagesEnabled',
       'fileMessagesEnabled',
       'voiceMessagesEnabled',
+      'phoneNumbersEnabled',
       'messageLimitsBlockedWords',
     ],
     advanced: [
@@ -7350,6 +7352,10 @@ export class PrivateControlService {
       items.push('Голосовые сообщения сюда отправлять нельзя.');
     }
 
+    if (!settings.phoneNumbersEnabled) {
+      items.push('Телефонные номера в сообщениях запрещены.');
+    }
+
     if (settings.nightModeEnabled) {
       items.push(
         `Ночью чат работает тише: ограничения действуют с ${this.formatTime(settings.nightModeStartTimeMinutes)} до ${this.formatTime(settings.nightModeEndTimeMinutes)}.`,
@@ -8668,7 +8674,7 @@ export class PrivateControlService {
         return [
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
-          `Медиа: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)}`,
+          `Контент: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
           `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,

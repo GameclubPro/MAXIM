@@ -1755,6 +1755,7 @@ describe('PrivateControlService', () => {
       maxMessageLength: 500,
       messageLimitsBlockedWords: ['спам', 'капс'],
       videoMessagesEnabled: false,
+      phoneNumbersEnabled: false,
       nightModeEnabled: true,
       nightModeStartTimeMinutes: 23 * 60,
       nightModeEndTimeMinutes: 8 * 60,
@@ -1839,6 +1840,7 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain(
       'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
     );
+    expect(String(updatePayload?.text ?? '')).toContain('Телефонные номера в сообщениях запрещены.');
     expect(getLastUiText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 

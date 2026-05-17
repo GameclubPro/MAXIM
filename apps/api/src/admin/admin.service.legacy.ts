@@ -853,6 +853,7 @@ const SETTINGS_SECTION_KEYS = {
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
+    'phoneNumbersEnabled',
     'messageLimitsBlockedWords',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
@@ -15905,6 +15906,10 @@ export class AdminService implements OnModuleDestroy {
 
     if (!settings.voiceMessagesEnabled) {
       items.push('Голосовые сообщения сюда отправлять нельзя.');
+    }
+
+    if (!settings.phoneNumbersEnabled) {
+      items.push('Телефонные номера в сообщениях запрещены.');
     }
 
     if (settings.nightModeEnabled) {

@@ -190,6 +190,7 @@ function buildSettings(chatId: string): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    phoneNumbersEnabled: true,
     messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',

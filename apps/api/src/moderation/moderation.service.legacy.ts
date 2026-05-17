@@ -543,6 +543,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'COMMERCIAL_AD',
   'TOPIC_FILTER_MISMATCH',
   'MESSAGE_BLOCKED_WORD',
+  'PHONE_NUMBER_BLOCKED',
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
@@ -554,6 +555,7 @@ const NON_SANCTION_RULE_CODES = new Set([
 ]);
 const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_BLOCKED_WORD',
+  'PHONE_NUMBER_BLOCKED',
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
@@ -1778,6 +1780,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'PROFANITY') ??
         violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
+        violations.find((item) => item.ruleCode === 'PHONE_NUMBER_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
@@ -4080,6 +4083,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
+      const reason = 'телефонные номера в этом чате запрещены';
+      return this.renderEditableBotSpeechTemplate({
+        style: botSpeechStyle ?? null,
+        fieldKey: 'messageLimitsBotMessageText',
+        overrideText: templateText ?? '',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+        },
+      });
+    }
+
     if (ruleCode === 'MESSAGE_TOO_LONG') {
       const actualLength =
         typeof messageLength === 'number' && Number.isFinite(messageLength) && messageLength > 0
@@ -4308,6 +4325,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
       return blockedWord ? `стоп-слово: ${blockedWord}` : 'слово из стоп-листа';
+    }
+
+    if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
+      return 'телефонные номера запрещены';
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {

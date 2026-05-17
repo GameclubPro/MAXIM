@@ -202,6 +202,10 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push('Голосовые сообщения сюда отправлять нельзя.');
   }
 
+  if (!settings.phoneNumbersEnabled) {
+    items.push('Телефонные номера в сообщениях запрещены.');
+  }
+
   if (settings.nightModeEnabled) {
     items.push(
       `Ночью чат работает тише: ограничения действуют с ${formatTime(settings.nightModeStartTimeMinutes)} до ${formatTime(settings.nightModeEndTimeMinutes)}.`,

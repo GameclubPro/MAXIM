@@ -3849,6 +3849,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
+    draft ? !draft.phoneNumbersEnabled : false,
     draft ? draft.messageLimitsBlockedWords.length > 0 : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
@@ -8260,6 +8261,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               onChange={(event) => {
                                 const enabled = event.target.checked;
                                 setFieldValue('voiceMessagesEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('messageLimitsBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            Разрешить номера телефонов
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Разрешить отправку номеров телефонов"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.phoneNumbersEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('phoneNumbersEnabled', enabled);
                                 if (!enabled) {
                                   setFieldValue('messageLimitsBotMessageEnabled', true);
                                 }
