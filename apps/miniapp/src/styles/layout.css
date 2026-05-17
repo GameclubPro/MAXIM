@@ -494,6 +494,9 @@ body.settings-drilldown-open .bottom-nav {
 .design-preview .app-shell.app-shell--immersive {
   min-height: 100%;
   height: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
 }
 
 .page-stack {

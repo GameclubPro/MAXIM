@@ -1117,7 +1117,7 @@
   --channel-dialog-compose-fade-start: rgba(199, 239, 253, 0);
   --channel-dialog-compose-fade-mid: rgba(199, 239, 253, 0.68);
   --channel-dialog-compose-fade-end: rgba(199, 239, 253, 0.92);
-  padding: 2px clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
+  padding: 0 clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 48px), 37rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 54px), 33rem);
   --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 66px), 26rem);
@@ -1126,7 +1126,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-shell {
-  gap: 6px;
+  gap: 4px;
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
@@ -1213,7 +1213,7 @@
 .channel-dialog-screen--comments .channel-dialog-thread-context--summary {
   position: relative;
   z-index: 1;
-  padding: 2px 2px 0;
+  padding: 0 2px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1333,7 +1333,7 @@
   gap: 9px;
   min-height: auto;
   align-content: start;
-  padding: 7px 0 12px;
+  padding: 3px 0 12px;
   position: relative;
 }
 
@@ -3663,7 +3663,7 @@
   }
 
   .channel-dialog-screen--comments {
-    padding: 2px 7px max(2px, var(--safe-bottom));
+    padding: 0 7px max(2px, var(--safe-bottom));
     --channel-dialog-comments-bubble-max-width: min(calc(100% - 38px), 100%);
     --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 46px), 100%);
     --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 58px), 100%);
@@ -3792,7 +3792,7 @@
   }
 
   .channel-dialog-screen--comments {
-    padding-top: 2px;
+    padding-top: 0;
     padding-bottom: max(2px, var(--safe-bottom));
   }
 }
