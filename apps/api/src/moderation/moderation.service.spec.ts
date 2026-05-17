@@ -8591,6 +8591,76 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('notifies chat admins when a reply moderation command cannot be queued', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(false),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminReplyModerationUpdate('мут'));
+
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(
+      sentTexts.some((text) =>
+        text.includes(
+          'Не удалось поставить команду `мут` в очередь. Повторите через несколько секунд.',
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('uses the current chat for MAX reply moderation commands without recipient in the reply link', async () => {
     const prisma = {
       chat: {
@@ -8647,7 +8717,12 @@ describe('ModerationService', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createAdminReplyModerationUpdate());
+    const update = createAdminReplyModerationUpdate();
+    delete (((update.raw as Record<string, unknown>).message as Record<string, unknown>).body as {
+      text?: string;
+    }).text;
+
+    await service.handleUpdate(update);
 
     expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -431,6 +431,15 @@ type ManualMemberManageMembersAction = ManualMemberModerationAction | 'UNBAN';
 type ManualModerationBotAction = 'delete_message' | 'moderate_member';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
 type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
+type ManualModerationExecutionOptions = {
+  actorAlreadyVerified?: boolean;
+  preferredBotId?: string | null;
+  targetDisplayNameHint?: string | null;
+  allowTargetDisplayNameRemoteLookup?: boolean;
+};
+type ResolveManualModerationActionBotAssignmentOptions = {
+  preferredBotId?: string | null;
+};
 
 type ResolvedUserProfile = {
   displayName: string | null;
@@ -16965,8 +16974,11 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
+    options: ManualModerationExecutionOptions = {},
   ): Promise<ManualModerationActionResult> {
-    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
+    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user, {
+      skipActorAdminCheck: options.actorAlreadyVerified === true,
+    });
 
     const parsed = manualModerationActionRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -16975,15 +16987,17 @@ export class AdminService implements OnModuleDestroy {
     const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
       chatId,
       this.resolveManualModerationBotAction(parsed.data.action),
-    );
-    const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
-      chatId,
-      targetUserId,
       {
-        botId: resolvedBotId,
-        allowRemoteLookup: parsed.data.action !== 'UNBAN',
+        preferredBotId: options.preferredBotId,
       },
     );
+    const targetDisplayName =
+      this.readTrimmedString(options.targetDisplayNameHint) ??
+      (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
+        botId: resolvedBotId,
+        allowRemoteLookup:
+          options.allowTargetDisplayNameRemoteLookup ?? parsed.data.action !== 'UNBAN',
+      }));
 
     const metadataBase = {
       source,
@@ -17356,19 +17370,24 @@ export class AdminService implements OnModuleDestroy {
     targetUserIdRaw: string,
     user: AuthUser,
     source: Extract<AdminActionSource, 'group_command' | 'private_command'> = 'group_command',
+    options: ManualModerationExecutionOptions = {},
   ): Promise<ManualModerationActionResult> {
-    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
+    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user, {
+      skipActorAdminCheck: options.actorAlreadyVerified === true,
+    });
     const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
       chatId,
       'moderate_member',
-    );
-    const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
-      chatId,
-      targetUserId,
       {
-        botId: resolvedBotId,
+        preferredBotId: options.preferredBotId,
       },
     );
+    const targetDisplayName =
+      this.readTrimmedString(options.targetDisplayNameHint) ??
+      (await this.resolveManualModerationTargetDisplayName(chatId, targetUserId, {
+        botId: resolvedBotId,
+        allowRemoteLookup: options.allowTargetDisplayNameRemoteLookup,
+      }));
     let executionMode: ManualBanExecutionMode = 'MAX_BLOCK';
     try {
       await this.assertManualMemberModerationPreconditions(
@@ -17617,6 +17636,12 @@ export class AdminService implements OnModuleDestroy {
     job: AdminManualGroupModerationCommandJob,
   ): Promise<void> {
     const actor = this.buildManualFanoutActor(job.actor);
+    const commandOptions: ManualModerationExecutionOptions = {
+      actorAlreadyVerified: true,
+      preferredBotId: job.commandBotId ?? null,
+      targetDisplayNameHint: job.targetSenderName ?? null,
+      allowTargetDisplayNameRemoteLookup: false,
+    };
     let result: ManualModerationActionResult;
     try {
       result =
@@ -17626,6 +17651,7 @@ export class AdminService implements OnModuleDestroy {
               job.targetUserId,
               actor,
               'group_command',
+              commandOptions,
             )
           : await this.applyManualModerationAction(
               job.sourceChatId,
@@ -17641,6 +17667,7 @@ export class AdminService implements OnModuleDestroy {
                     }),
               },
               'group_command',
+              commandOptions,
             );
     } catch (error: unknown) {
       this.logger.warn(
@@ -18766,10 +18793,13 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     targetUserIdRaw: string,
     user: AuthUser,
+    options: { skipActorAdminCheck?: boolean } = {},
   ): Promise<string> {
-    await this.assertChatAdmin(chatId, user.userId, null, {
-      trafficClass: 'critical',
-    });
+    if (options.skipActorAdminCheck !== true) {
+      await this.assertChatAdmin(chatId, user.userId, null, {
+        trafficClass: 'critical',
+      });
+    }
     const targetUserId = targetUserIdRaw.trim();
     if (!targetUserId) {
       throw new BadRequestException('User ID is required');
@@ -25624,6 +25654,7 @@ export class AdminService implements OnModuleDestroy {
   private async resolveManualModerationActionBotAssignment(
     chatId: string,
     action: ManualModerationBotAction | null,
+    options: ResolveManualModerationActionBotAssignmentOptions = {},
   ): Promise<string | undefined> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
@@ -25632,6 +25663,52 @@ export class AdminService implements OnModuleDestroy {
 
     if (!action) {
       return this.resolveManualActionBotAssignment(normalizedChatId);
+    }
+
+    const preferredBotId = this.normalizeManualModerationBotId(options.preferredBotId);
+    const maxClientWithAccess = this.maxClient as MaxClientService & {
+      getCurrentChatMemberAccess?: MaxClientService['getCurrentChatMemberAccess'];
+    };
+    if (preferredBotId) {
+      if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
+        return preferredBotId;
+      }
+
+      try {
+        const access = await maxClientWithAccess.getCurrentChatMemberAccess(normalizedChatId, {
+          trafficClass: 'critical',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          botId: preferredBotId,
+        });
+        if (this.hasManualModerationBotActionAccess(access, action)) {
+          return preferredBotId;
+        }
+      } catch (error: unknown) {
+        if (this.isBotAdminLookupDeniedError(error)) {
+          // Try the regular route below; another runtime bot may still be able to act.
+        } else if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+          this.logger.debug(
+            {
+              chatId: normalizedChatId,
+              action,
+              botId: preferredBotId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Using preferred manual moderation bot after transient MAX API pressure',
+          );
+          return preferredBotId;
+        } else {
+          this.logger.debug(
+            {
+              chatId: normalizedChatId,
+              action,
+              botId: preferredBotId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to verify preferred manual moderation bot candidate',
+          );
+        }
+      }
     }
 
     const candidateBotIds: string[] = [];
@@ -25693,9 +25770,6 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const fallbackBotId = candidateBotIds[0];
-    const maxClientWithAccess = this.maxClient as MaxClientService & {
-      getCurrentChatMemberAccess?: MaxClientService['getCurrentChatMemberAccess'];
-    };
     if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
       return fallbackBotId;
     }

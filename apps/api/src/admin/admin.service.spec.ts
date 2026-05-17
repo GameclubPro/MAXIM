@@ -7390,6 +7390,12 @@ describe('AdminService.applyManualSystemBan', () => {
         chatTitle: 'Chat 1',
       }),
       'group_command',
+      {
+        actorAlreadyVerified: true,
+        preferredBotId: 'bot-2',
+        targetDisplayNameHint: 'Нарушитель',
+        allowTargetDisplayNameRemoteLookup: false,
+      },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
       immediate: true,
@@ -7626,6 +7632,12 @@ describe('AdminService.applyManualSystemBan', () => {
         mutePermanent: true,
       },
       'group_command',
+      {
+        actorAlreadyVerified: true,
+        preferredBotId: null,
+        targetDisplayNameHint: 'Нарушитель',
+        allowTargetDisplayNameRemoteLookup: false,
+      },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
       immediate: true,

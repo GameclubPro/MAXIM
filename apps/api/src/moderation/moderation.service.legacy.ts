@@ -5138,6 +5138,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to enqueue forwarded admin moderation command',
         );
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: `Не удалось поставить команду \`${command.action === 'BAN' ? 'бан' : 'мут'}\` в очередь. Повторите через несколько секунд.`,
+        });
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -5150,6 +5155,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to enqueue forwarded admin moderation command',
       );
 
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: `Не удалось поставить команду \`${command.action === 'BAN' ? 'бан' : 'мут'}\` в очередь. Повторите через несколько секунд.`,
+      });
       return true;
     }
 
@@ -5236,6 +5246,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractDirectIncomingMessageText(update: MaxUpdate): string {
+    const normalizedText = this.readString(update.message?.text);
+    if (normalizedText) {
+      return normalizedText;
+    }
+
     const raw = this.asRecord(update.raw);
     if (!raw) {
       return '';
