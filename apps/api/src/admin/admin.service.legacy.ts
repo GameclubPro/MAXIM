@@ -9836,10 +9836,7 @@ export class AdminService implements OnModuleDestroy {
       ),
     );
 
-    return {
-      ...settings,
-      invitationAccessRequiredCount,
-    };
+    return { ...settings, invitationAccessEnabled: false, invitationAccessRequiredCount };
   }
 
   private normalizeRequiredSubscriptionExpiresAt(value: unknown): string {

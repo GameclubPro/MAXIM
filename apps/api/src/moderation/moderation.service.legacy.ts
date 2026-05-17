@@ -626,9 +626,9 @@ function isRequiredSubscriptionCurrentlyActive(
 }
 
 function isInvitationAccessCurrentlyActive(
-  settings: Pick<ChatSettings, 'invitationAccessEnabled' | 'invitationAccessRequiredCount'>,
+  _settings: Pick<ChatSettings, 'invitationAccessEnabled' | 'invitationAccessRequiredCount'>,
 ): boolean {
-  return settings.invitationAccessEnabled && settings.invitationAccessRequiredCount >= 1;
+  return false;
 }
 
 @Injectable()

@@ -4079,7 +4079,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('tracks invitation access progress from user_added inviter id', async () => {
+  it('does not track invitation access progress while the invite gate is disabled', async () => {
     const progressRows = new Map<string, { invitedUserIds: string[]; completedAt: Date | null }>();
     const prismaRef: { current: unknown } = { current: null };
     const prisma = {
@@ -4175,24 +4175,8 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(update);
 
-    expect(prisma.chatInvitationAccessProgress.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          chatId: 'chat-1',
-          userId: 'inviter-1',
-          invitedUserIds: ['user-added-1'],
-        }),
-      }),
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        chatId: 'chat-1',
-        userId: 'inviter-1',
-        messageId: 'user_added:upd-user-added-1',
-        ruleCode: 'INVITATION_ACCESS_REQUIRED_PROGRESS',
-        action: SanctionAction.NONE,
-      }),
-    });
+    expect(prisma.chatInvitationAccessProgress.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 

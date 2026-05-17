@@ -1,6 +1,4 @@
 import {
-  INVITATION_ACCESS_REQUIRED_COUNT_MAX,
-  INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
@@ -244,7 +242,6 @@ import {
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
   MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
   REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
-  INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP,
   MAX_CHAT_RULES_TEXT_LENGTH,
   MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT,
   DEFAULT_RULES_POST_BUTTON_TEXT,
@@ -304,8 +301,6 @@ import {
   inferCommercialSensitivitySliderValue,
   normalizeLegacyChatCommentScope,
   formatRequiredSubscriptionCount,
-  clampInvitationAccessRequiredCount,
-  formatInvitationAccessCount,
   clampRequiredSubscriptionDurationDays,
   formatRequiredSubscriptionDurationDays,
   formatRequiredSubscriptionDurationDaysCompact,
@@ -329,6 +324,10 @@ import {
   areBroadcastPlannerStatesEqual,
   WarnMessageEditor,
 } from './settings/settings-page-helpers';
+
+const INVITATION_ACCESS_PLATFORM_LIMIT_NOTE =
+  'MAX ограничил приглашение участников в группы, поэтому доступ по приглашениям временно отключен.';
+
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -517,8 +516,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'poll' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'broadcast' &&
-      focusSection !== 'requiredSubscription' &&
-      focusSection !== 'invitationAccess'
+      focusSection !== 'requiredSubscription'
     ) {
       return;
     }
@@ -537,9 +535,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 ? { giveaway: true }
                 : focusSection === 'requiredSubscription'
                   ? { requiredSubscription: true }
-                  : focusSection === 'invitationAccess'
-                    ? { invitationAccess: true }
-                    : { mailing: true }),
+                  : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -2304,15 +2300,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function setInvitationAccessRequiredCountValue(nextValue: number) {
-    setFieldValue(
-      'invitationAccessRequiredCount',
-      clampInvitationAccessRequiredCount(
-        nextValue,
-      ) as ChatSettings['invitationAccessRequiredCount'],
-    );
-  }
-
   function adjustDeleteBotMessagesDelayValue(
     key: 'deleteBotMessagesDelayMinutes' | 'greetingDeleteBotMessageDelayMinutes',
     direction: number,
@@ -3442,8 +3429,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (
       (section === 'mailing' && focusSection === 'broadcast') ||
       (section === 'giveaway' && focusSection === 'giveaway') ||
-      (section === 'requiredSubscription' && focusSection === 'requiredSubscription') ||
-      (section === 'invitationAccess' && focusSection === 'invitationAccess')
+      (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
       nextSearchParams.delete('focus');
@@ -3925,21 +3911,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? requiredSubscriptionTimerExpired
       ? 'Срок'
       : `${requiredSubscriptionSelectedCount}`
-    : 'Выкл';
-  const invitationAccessRequiredCount = clampInvitationAccessRequiredCount(
-    Number(draft?.invitationAccessRequiredCount ?? INVITATION_ACCESS_REQUIRED_COUNT_MIN),
-  );
-  const invitationAccessStagesEnabledCount = [
-    draft?.invitationAccessBotMessageEnabled,
-    draft?.invitationAccessWarnEnabled,
-    draft?.invitationAccessMuteEnabled,
-    draft?.invitationAccessBanEnabled,
-  ].filter(Boolean).length;
-  const invitationAccessHeaderSummary = draft?.invitationAccessEnabled
-    ? `${formatInvitationAccessCount(invitationAccessRequiredCount)} · ${invitationAccessStagesEnabledCount}/4 ступени`
-    : 'Выключено';
-  const invitationAccessCardStatus = draft?.invitationAccessEnabled
-    ? `${invitationAccessRequiredCount}`
     : 'Выкл';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
@@ -10632,370 +10603,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              className="settings-section settings-home-entry settings-home-entry--platform-note stagger-in"
               style={{ animationDelay: '366ms', order: 5 }}
-              aria-label="Доступ по приглашениям"
+              role="note"
+              aria-label="Приглашения недоступны"
             >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Приглашения"
-                  summary={invitationAccessHeaderSummary}
-                  status={invitationAccessCardStatus}
-                  icon="spark"
-                  tone="mint"
-                  open={expandedSections.invitationAccess}
-                  controls="settings-invitation-access-content"
-                  onClick={() => toggleSection('invitationAccess')}
-                />
+              <span className="settings-platform-note__mark" aria-hidden>
+                i
+              </span>
+              <div className="settings-platform-note__copy">
+                <strong>Приглашения отключены</strong>
+                <span>{INVITATION_ACCESS_PLATFORM_LIMIT_NOTE}</span>
               </div>
-
-              <SettingsDrilldownPanel
-                id="settings-invitation-access-content"
-                open={expandedSections.invitationAccess}
-                title="Доступ по приглашениям"
-                summary={invitationAccessHeaderSummary}
-                tone="mint"
-                className="settings-drilldown__panel--ladder settings-drilldown__panel--invitation-access"
-                onClose={() => toggleSection('invitationAccess')}
-                footer={renderSectionSaveFooter('invitationAccess', {
-                  applyToAllLabel: 'Применить в...',
-                  emphasize: 'save',
-                })}
-              >
-                <div
-                  id="settings-invitation-access-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.invitationAccess && 'is-open',
-                  )}
-                >
-                  {expandedSections.invitationAccess ? (
-                    <div className="settings-section__collapse-inner managed-giveaway">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Требовать приглашения перед сообщением
-                            </span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'invitationAccessEnabled' && 'is-open',
-                              )}
-                              aria-label="Пояснение для доступа по приглашениям"
-                              aria-controls="invitation-access-enabled-hint"
-                              aria-expanded={openHintKey === 'invitationAccessEnabled'}
-                              onClick={() => toggleHint('invitationAccessEnabled')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить доступ по приглашениям перед отправкой сообщений"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.invitationAccessEnabled}
-                              onChange={(event) =>
-                                setFieldValue('invitationAccessEnabled', event.target.checked)
-                              }
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'invitationAccessEnabled' ? (
-                          <p
-                            id="invitation-access-enabled-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Новые сообщения удаляются, пока участник не пригласит нужное число
-                            людей. Администраторы чата проходят без ограничения.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div className="managed-giveaway__section">
-                        <div className="managed-giveaway__title-row">
-                          <div className="managed-giveaway__section-copy">
-                            <strong>Порог доступа</strong>
-                            <small>
-                              {formatInvitationAccessCount(invitationAccessRequiredCount)}
-                            </small>
-                          </div>
-                        </div>
-
-                        <div className="ban-duration-stepper" aria-label="Порог приглашений">
-                          <button
-                            type="button"
-                            className="ban-duration-stepper__button"
-                            onClick={() =>
-                              setInvitationAccessRequiredCountValue(
-                                invitationAccessRequiredCount - 1,
-                              )
-                            }
-                            disabled={
-                              invitationAccessRequiredCount <= INVITATION_ACCESS_REQUIRED_COUNT_MIN
-                            }
-                            aria-label="Уменьшить порог приглашений"
-                          >
-                            -
-                          </button>
-
-                          <output className="ban-duration-stepper__value" aria-live="polite">
-                            {formatInvitationAccessCount(invitationAccessRequiredCount)}
-                          </output>
-
-                          <button
-                            type="button"
-                            className="ban-duration-stepper__button"
-                            onClick={() =>
-                              setInvitationAccessRequiredCountValue(
-                                invitationAccessRequiredCount + 1,
-                              )
-                            }
-                            disabled={
-                              invitationAccessRequiredCount >= INVITATION_ACCESS_REQUIRED_COUNT_MAX
-                            }
-                            aria-label="Увеличить порог приглашений"
-                          >
-                            +
-                          </button>
-                        </div>
-
-                        <div className="required-subscription__timer-slider-wrap">
-                          <input
-                            className="required-subscription__timer-slider"
-                            type="range"
-                            min={INVITATION_ACCESS_REQUIRED_COUNT_MIN}
-                            max={INVITATION_ACCESS_REQUIRED_COUNT_MAX}
-                            step={1}
-                            value={invitationAccessRequiredCount}
-                            onChange={(event) =>
-                              setInvitationAccessRequiredCountValue(Number(event.target.value))
-                            }
-                            style={
-                              {
-                                '--required-subscription-slider-progress': `${
-                                  ((invitationAccessRequiredCount -
-                                    INVITATION_ACCESS_REQUIRED_COUNT_MIN) /
-                                    (INVITATION_ACCESS_REQUIRED_COUNT_MAX -
-                                      INVITATION_ACCESS_REQUIRED_COUNT_MIN)) *
-                                  100
-                                }%`,
-                              } as CSSProperties
-                            }
-                            aria-label="Сколько друзей нужно пригласить"
-                          />
-                        </div>
-                      </div>
-
-                      <div
-                        className="settings-subsection-divider"
-                        role="separator"
-                        aria-label="Действия бота для доступа по приглашениям"
-                      >
-                        <span>Санкции</span>
-                      </div>
-
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">1. Объяснение</span>
-                            <div className="settings-native-toggle__title-actions">
-                              <EditToggleButton
-                                label="Редактировать объяснение для доступа по приглашениям"
-                                onClick={() => toggleBotMessageEditor('invitationAccess')}
-                                isOpen={openBotEditorKey === 'invitationAccess'}
-                              />
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'invitationAccessBotMessage' && 'is-open',
-                                )}
-                                aria-label="Пояснение для объяснения о приглашениях"
-                                aria-controls="invitation-access-bot-message-hint"
-                                aria-expanded={openHintKey === 'invitationAccessBotMessage'}
-                                onClick={() => toggleHint('invitationAccessBotMessage')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить объяснение для доступа по приглашениям"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.invitationAccessBotMessageEnabled}
-                              onChange={(event) =>
-                                setFieldValue(
-                                  'invitationAccessBotMessageEnabled',
-                                  event.target.checked,
-                                )
-                              }
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'invitationAccessBotMessage' ? (
-                          <p
-                            id="invitation-access-bot-message-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Бот пишет причину удаления и показывает прогресс приглашений.
-                          </p>
-                        ) : null}
-
-                        {draft.invitationAccessBotMessageEnabled &&
-                        openBotEditorKey === 'invitationAccess' ? (
-                          <BotMessageEditor
-                            editorKey="invitationAccess"
-                            botSpeechStyle={draft.botSpeechStyle}
-                            botSpeechPreviewContext={botSpeechPreviewContext}
-                            value={draft.invitationAccessBotMessageText}
-                            onChange={(nextValue) =>
-                              setFieldValue(
-                                'invitationAccessBotMessageText',
-                                nextValue as ChatSettings['invitationAccessBotMessageText'],
-                              )
-                            }
-                            onReset={() => setFieldValue('invitationAccessBotMessageText', '')}
-                          />
-                        ) : null}
-                      </div>
-
-                      {draft.invitationAccessBotMessageEnabled
-                        ? renderAdminContactToggle(
-                            INVITATION_ACCESS_ADMIN_CONTACT_BUTTON_GROUP,
-                            'Добавить связь с админом в сообщения о приглашениях',
-                          )
-                        : null}
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">2. Предупреждение</span>
-                            <div className="settings-native-toggle__title-actions">
-                              <EditToggleButton
-                                label="Редактировать предупреждение для доступа по приглашениям"
-                                onClick={() => toggleWarnMessageEditor('invitationAccessWarn')}
-                                isOpen={openWarnEditorKey === 'invitationAccessWarn'}
-                              />
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'invitationAccessWarnMessage' && 'is-open',
-                                )}
-                                aria-label="Пояснение для предупреждения о приглашениях"
-                                aria-controls="invitation-access-warn-message-hint"
-                                aria-expanded={openHintKey === 'invitationAccessWarnMessage'}
-                                onClick={() => toggleHint('invitationAccessWarnMessage')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
-                            </div>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить предупреждение за повторное сообщение без приглашений"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.invitationAccessWarnEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('invitationAccessWarnEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('invitationAccessBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'invitationAccessWarnMessage' ? (
-                          <p
-                            id="invitation-access-warn-message-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Текст отправляется при 2-м сообщении за 24 часа, если ступень включена.
-                          </p>
-                        ) : null}
-
-                        {openWarnEditorKey === 'invitationAccessWarn' ? (
-                          <WarnMessageEditor
-                            editorKey="invitationAccessWarn"
-                            botSpeechStyle={draft.botSpeechStyle}
-                            botSpeechPreviewContext={botSpeechPreviewContext}
-                            value={draft.invitationAccessWarnMessageText}
-                            onChange={(nextValue) =>
-                              setFieldValue(
-                                'invitationAccessWarnMessageText',
-                                nextValue as ChatSettings['invitationAccessWarnMessageText'],
-                              )
-                            }
-                            onReset={() => setFieldValue('invitationAccessWarnMessageText', '')}
-                          />
-                        ) : null}
-                      </div>
-
-                      {renderMuteStageToggle({
-                        enabledKey: 'invitationAccessMuteEnabled',
-                        durationKey: 'invitationAccessMuteDurationHours',
-                        title: '3. Мут',
-                        onEnable: () => {
-                          setFieldValue('invitationAccessWarnEnabled', true);
-                          setFieldValue('invitationAccessBotMessageEnabled', true);
-                        },
-                      })}
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">4. Бан</span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить бан за повторные сообщения без приглашений"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.invitationAccessBanEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('invitationAccessBanEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('invitationAccessWarnEnabled', true);
-                                  setFieldValue('invitationAccessBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard

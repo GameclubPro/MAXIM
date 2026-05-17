@@ -1824,6 +1824,56 @@ describe('AdminService night mode settings normalization', () => {
     );
   });
 
+  it('forces invitation access off when chat settings are updated', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      chatSettingsSchema.parse({
+        invitationAccessEnabled: true,
+        invitationAccessRequiredCount: 4,
+        invitationAccessWarnEnabled: true,
+        invitationAccessMuteEnabled: true,
+        invitationAccessBanEnabled: true,
+      }),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        invitationAccessEnabled: false,
+        invitationAccessRequiredCount: 4,
+      }),
+    );
+    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
+            upsert: expect.objectContaining({
+              update: expect.objectContaining({
+                invitationAccessEnabled: false,
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('persists primaryBotId when channel settings upsert resolves a bot assignment', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
