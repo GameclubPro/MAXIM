@@ -29,7 +29,6 @@ const STARTUP_JS_BUDGET_GZIP = 112 * 1024;
 // the compact send-now/scheduled/cycle timing selector,
 // favorite-audience quick selection and local text template entry points,
 // bidirectional stop-word preset actions and inline +/- parsing,
-// the platform-limit note replacing the invitation access gate,
 // the new-chat/channel handoff loading state,
 // plus 10-photo broadcast gallery preparation and preview
 // plus rich paste parity for headings and code blocks in broadcast/suggestion previews

@@ -325,9 +325,6 @@ import {
   WarnMessageEditor,
 } from './settings/settings-page-helpers';
 
-const INVITATION_ACCESS_PLATFORM_LIMIT_NOTE =
-  'MAX ограничил приглашение участников в группы, поэтому доступ по приглашениям временно отключен.';
-
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -10600,21 +10597,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
                 </div>
               </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--platform-note stagger-in"
-              style={{ animationDelay: '366ms', order: 5 }}
-              role="note"
-              aria-label="Приглашения недоступны"
-            >
-              <span className="settings-platform-note__mark" aria-hidden>
-                i
-              </span>
-              <div className="settings-platform-note__copy">
-                <strong>Приглашения отключены</strong>
-                <span>{INVITATION_ACCESS_PLATFORM_LIMIT_NOTE}</span>
-              </div>
             </GlassCard>
 
             <GlassCard

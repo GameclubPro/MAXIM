@@ -578,7 +578,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   limits: 'Ограничения',
   night: 'Ночной режим',
   requiredSubscription: 'Подписка на канал',
-  invitationAccess: 'Доступ по приглашениям',
+  invitationAccess: 'Настройки',
   extra: 'Сервис',
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;
