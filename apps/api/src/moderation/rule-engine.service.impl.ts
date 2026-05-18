@@ -1577,6 +1577,7 @@ export class RuleEngineService {
     violations.push(
       ...this.messageLimitsDetector.detectAttachmentLimits({
         settings,
+        hasPhotoAttachment,
         hasVideoAttachment,
         hasFileAttachment,
         hasVoiceAttachment,

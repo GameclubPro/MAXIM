@@ -850,6 +850,7 @@ const SETTINGS_SECTION_KEYS = {
     'photoMessageCooldownHours',
     'stickerMessageCooldownEnabled',
     'stickerMessageCooldownMinutes',
+    'photoMessagesEnabled',
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
@@ -15891,6 +15892,10 @@ export class AdminService implements OnModuleDestroy {
       items.push(
         `Стикеры можно отправлять не чаще одного раза в ${settings.stickerMessageCooldownMinutes} ${this.formatRulesMinutesLabel(settings.stickerMessageCooldownMinutes)}.`,
       );
+    }
+
+    if (!settings.photoMessagesEnabled) {
+      items.push('Фото сюда отправлять нельзя.');
     }
 
     if (!settings.videoMessagesEnabled) {

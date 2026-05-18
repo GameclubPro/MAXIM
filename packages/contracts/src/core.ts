@@ -602,6 +602,7 @@ export const chatSettingsSchema = z
       photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
       stickerMessageCooldownEnabled: z.boolean().default(false),
       stickerMessageCooldownMinutes: z.number().int().min(1).max(60).default(5),
+      photoMessagesEnabled: z.boolean().default(true),
       videoMessagesEnabled: z.boolean().default(true),
       fileMessagesEnabled: z.boolean().default(true),
       voiceMessagesEnabled: z.boolean().default(true),

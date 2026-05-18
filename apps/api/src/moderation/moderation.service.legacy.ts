@@ -547,6 +547,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
+  'PHOTO_BLOCKED',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
@@ -559,6 +560,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
   'MESSAGE_COUNT_LIMIT',
+  'PHOTO_BLOCKED',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
@@ -1784,6 +1786,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
+        violations.find((item) => item.ruleCode === 'PHOTO_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
@@ -4170,6 +4173,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (ruleCode === 'PHOTO_BLOCKED') {
+      const reason = 'фото в этом чате отключены';
+      return this.renderEditableBotSpeechTemplate({
+        style: botSpeechStyle ?? null,
+        fieldKey: 'messageLimitsBotMessageText',
+        overrideText: templateText ?? '',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+        },
+      });
+    }
+
     if (ruleCode === 'VIDEO_BLOCKED') {
       const reason = 'видео в этом чате отключены';
       return this.renderEditableBotSpeechTemplate({
@@ -4305,6 +4322,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
       return 'слишком частая отправка фото';
+    }
+
+    if (ruleCode === 'PHOTO_BLOCKED') {
+      return 'фото в этом чате отключены';
     }
 
     if (ruleCode === 'STICKER_RATE_LIMIT') {

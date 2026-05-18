@@ -59,6 +59,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     photoMessageCooldownHours: 1,
     stickerMessageCooldownEnabled: false,
     stickerMessageCooldownMinutes: 5,
+    photoMessagesEnabled: true,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
@@ -2732,6 +2733,20 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'VIDEO_BLOCKED')).toBe(true);
+  });
+
+  it('detects PHOTO_BLOCKED when photo messages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ photoMessagesEnabled: false }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PHOTO_BLOCKED')).toBe(true);
   });
 
   it('detects FILE_BLOCKED when file messages are disabled', async () => {

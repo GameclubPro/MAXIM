@@ -3829,6 +3829,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
     draft?.stickerMessageCooldownEnabled,
+    draft ? !draft.photoMessagesEnabled : false,
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
@@ -8161,6 +8162,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             Стикеры считаются отдельно и не попадают в лимит фото.
                           </p>
                         ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">Разрешить фото</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Разрешить отправку фото"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.photoMessagesEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('photoMessagesEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('messageLimitsBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
                       </div>
 
                       <div className="settings-native-toggle">

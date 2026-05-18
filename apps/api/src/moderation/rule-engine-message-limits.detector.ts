@@ -138,12 +138,27 @@ export class RuleEngineMessageLimitsDetector {
 
   detectAttachmentLimits(params: {
     settings: ChatSettings;
+    hasPhotoAttachment?: boolean;
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
   }): RuleViolation[] {
     const violations: RuleViolation[] = [];
-    const { settings, hasVideoAttachment, hasFileAttachment, hasVoiceAttachment } = params;
+    const {
+      settings,
+      hasPhotoAttachment,
+      hasVideoAttachment,
+      hasFileAttachment,
+      hasVoiceAttachment,
+    } = params;
+
+    if (hasPhotoAttachment && !settings.photoMessagesEnabled) {
+      violations.push({
+        ruleCode: 'PHOTO_BLOCKED',
+        score: 0.88,
+        reason: 'Photo messages are disabled by chat settings',
+      });
+    }
 
     if (hasVideoAttachment && !settings.videoMessagesEnabled) {
       violations.push({

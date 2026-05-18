@@ -22,6 +22,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageCountLimitMessages: 5,
     messageCountLimitWindowHours: 1,
     messageLimitsBlockedWords: [],
+    photoMessagesEnabled: true,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
@@ -42,6 +43,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
       maxMessageLengthEnabled: true,
       maxMessageLength: 10,
       messageLimitsBlockedWords: ['спаммаркер'],
+      photoMessagesEnabled: false,
       videoMessagesEnabled: false,
       fileMessagesEnabled: false,
       voiceMessagesEnabled: false,
@@ -69,11 +71,13 @@ describe('RuleEngineMessageLimitsDetector', () => {
     expect(
       detector.detectAttachmentLimits({
         settings,
+        hasPhotoAttachment: true,
         hasVideoAttachment: true,
         hasFileAttachment: true,
         hasVoiceAttachment: true,
       }),
     ).toEqual([
+      expect.objectContaining({ ruleCode: 'PHOTO_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'VIDEO_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'FILE_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'VOICE_BLOCKED' }),

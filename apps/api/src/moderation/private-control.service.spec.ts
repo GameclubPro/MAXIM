@@ -1754,6 +1754,7 @@ describe('PrivateControlService', () => {
       maxMessageLengthEnabled: true,
       maxMessageLength: 500,
       messageLimitsBlockedWords: ['спам', 'капс'],
+      photoMessagesEnabled: false,
       videoMessagesEnabled: false,
       phoneNumbersEnabled: false,
       nightModeEnabled: true,
@@ -1832,6 +1833,7 @@ describe('PrivateControlService', () => {
       'Старайтесь писать короче: до 500 символов в одном сообщении.',
     );
     expect(String(updatePayload?.text ?? '')).not.toContain('спам, капс');
+    expect(String(updatePayload?.text ?? '')).toContain('Фото сюда отправлять нельзя.');
     expect(String(updatePayload?.text ?? '')).toContain('Видео сюда отправлять нельзя.');
     expect(String(updatePayload?.text ?? '')).toContain(
       'Ночью чат работает тише: ограничения действуют с 23:00 до 08:00.',

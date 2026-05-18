@@ -1,8 +1,9 @@
 import { chatSettingsSchema, updateChatRulesRequestSchema } from '@maxim/contracts';
 
 describe('chatSettingsSchema duplicate flow validation', () => {
-  it('allows phone numbers by default', () => {
+  it('allows phone numbers and photos by default', () => {
     expect(chatSettingsSchema.parse({}).phoneNumbersEnabled).toBe(true);
+    expect(chatSettingsSchema.parse({}).photoMessagesEnabled).toBe(true);
   });
 
   it('allows duplicate thresholds to start from the first duplicate', () => {

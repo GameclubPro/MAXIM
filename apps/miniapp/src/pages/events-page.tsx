@@ -204,6 +204,7 @@ function formatViolationRule(ruleCode: string): string {
     MESSAGE_TOO_LONG: 'Слишком длинное сообщение',
     MESSAGE_RATE_LIMIT: 'Флуд сообщениями',
     MESSAGE_COUNT_LIMIT: 'Лимит сообщений',
+    PHOTO_BLOCKED: 'Фото запрещены',
     VIDEO_BLOCKED: 'Видео запрещено',
     FILE_BLOCKED: 'Файлы запрещены',
     VOICE_BLOCKED: 'Голосовые запрещены',

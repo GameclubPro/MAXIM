@@ -140,6 +140,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'photoMessageCooldownHours',
     'stickerMessageCooldownEnabled',
     'stickerMessageCooldownMinutes',
+    'photoMessagesEnabled',
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',

@@ -187,6 +187,7 @@ function buildSettings(chatId: string): ChatSettings {
     photoMessageCooldownHours: 1,
     stickerMessageCooldownEnabled: false,
     stickerMessageCooldownMinutes: 5,
+    photoMessagesEnabled: true,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,

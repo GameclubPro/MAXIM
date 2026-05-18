@@ -190,6 +190,10 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     );
   }
 
+  if (!settings.photoMessagesEnabled) {
+    items.push('Фото сюда отправлять нельзя.');
+  }
+
   if (!settings.videoMessagesEnabled) {
     items.push('Видео сюда отправлять нельзя.');
   }

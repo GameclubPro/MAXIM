@@ -893,6 +893,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       step: 5,
       presets: [5, 15, 60],
     },
+    { key: 'photoMessagesEnabled', label: 'Разрешить фото', type: 'boolean' },
     { key: 'videoMessagesEnabled', label: 'Разрешить видео', type: 'boolean' },
     { key: 'fileMessagesEnabled', label: 'Разрешить файлы', type: 'boolean' },
     { key: 'voiceMessagesEnabled', label: 'Разрешить голосовые', type: 'boolean' },
@@ -1087,6 +1088,7 @@ const SECTION_CARD_FIELDS: Record<
       'messageCountLimitWindowHours',
       'maxMessageLengthEnabled',
       'maxMessageLength',
+      'photoMessagesEnabled',
       'videoMessagesEnabled',
       'fileMessagesEnabled',
       'voiceMessagesEnabled',
@@ -7340,6 +7342,10 @@ export class PrivateControlService {
       );
     }
 
+    if (!settings.photoMessagesEnabled) {
+      items.push('Фото сюда отправлять нельзя.');
+    }
+
     if (!settings.videoMessagesEnabled) {
       items.push('Видео сюда отправлять нельзя.');
     }
@@ -8674,7 +8680,7 @@ export class PrivateControlService {
         return [
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
-          `Контент: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
+          `Контент: фото ${this.describeBooleanCompact(settings.photoMessagesEnabled)} • видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
           `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,

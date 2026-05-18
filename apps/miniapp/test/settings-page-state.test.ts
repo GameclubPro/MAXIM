@@ -88,6 +88,7 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.commercialFilter.includes('textFiltersBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.thematicFilters.includes('thematicFiltersBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateBotButtons'));
+  assert.ok(SECTION_SETTING_KEYS.limits.includes('photoMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
