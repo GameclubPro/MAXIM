@@ -3971,22 +3971,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       )} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
     : 'Выключено';
   const duplicatesCardStatus = draft?.antiDuplicateEnabled ? duplicateDetectionLabel : 'Выкл';
-  const phoneStagesEnabledCount =
-    draft && !draft.phoneNumbersEnabled
-      ? [
-          draft.phoneNumbersBotMessageEnabled,
-          draft.phoneNumbersWarnEnabled,
-          draft.phoneNumbersMuteEnabled,
-          draft.phoneNumbersBanEnabled,
-        ].filter(Boolean).length
-      : 0;
-  const phonesHeaderSummary = !draft
-    ? 'Номера разрешены'
-    : draft.phoneNumbersEnabled
-      ? 'Номера разрешены'
-      : `${phoneStagesEnabledCount}/4 ступени • ${draft.phoneNumbersEscalationWindowHours}ч`;
-  const phonesCardStatus =
-    !draft || draft.phoneNumbersEnabled ? 'Выкл' : `${phoneStagesEnabledCount}/4`;
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -4028,6 +4012,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
+    draft ? !draft.phoneNumbersEnabled : false,
     draft ? draft.messageLimitsBlockedWords.length > 0 : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
@@ -8481,6 +8466,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
 
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">Разрешить телефоны</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Разрешить номера телефонов"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.phoneNumbersEnabled}
+                              onChange={(event) =>
+                                setFieldValue('phoneNumbersEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
                       <div
                         className={cn(
                           'settings-word-banlist',
@@ -8823,218 +8830,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '250ms', order: 15 }}
-              aria-label="Телефоны"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Телефоны"
-                  summary={phonesHeaderSummary}
-                  status={phonesCardStatus}
-                  icon="phone"
-                  tone="amber"
-                  open={expandedSections.phones}
-                  controls="settings-phones-content"
-                  onClick={() => toggleSection('phones')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-phones-content"
-                open={expandedSections.phones}
-                title="Телефоны"
-                summary={phonesHeaderSummary}
-                tone="amber"
-                className="settings-drilldown__panel--ladder settings-drilldown__panel--phones"
-                onClose={() => toggleSection('phones')}
-                footer={renderSectionSaveFooter('phones')}
-              >
-                <div
-                  id="settings-phones-content"
-                  className={cn('settings-section__collapse', expandedSections.phones && 'is-open')}
-                >
-                  {expandedSections.phones ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">
-                            Блокировать телефоны
-                          </span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Блокировать номера телефонов"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!draft.phoneNumbersEnabled}
-                              onChange={(event) => {
-                                const blocked = event.target.checked;
-                                setFieldValue('phoneNumbersEnabled', !blocked);
-                                if (blocked) {
-                                  setFieldValue('phoneNumbersBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
-                      {!draft.phoneNumbersEnabled ? (
-                        <>
-                          {renderEscalationTuning({
-                            title: 'Пороги телефонов',
-                            ariaLabelPrefix: 'Пороги телефонов',
-                            windowKey: 'phoneNumbersEscalationWindowHours',
-                            warnKey: 'phoneNumbersWarnMaxCount',
-                            muteKey: 'phoneNumbersMuteMaxCount',
-                            banKey: 'phoneNumbersBanMaxCount',
-                          })}
-
-                          <div
-                            className="settings-subsection-divider"
-                            role="separator"
-                            aria-label="Блок действий бота"
-                          >
-                            <span>Действия бота</span>
-                          </div>
-
-                          <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">1. Объяснение</span>
-                                <div className="settings-native-toggle__title-actions">
-                                  <EditToggleButton
-                                    label="Редактировать текст сообщения о телефонах"
-                                    onClick={() => toggleBotMessageEditor('phoneNumbers')}
-                                    disabled={!draft.phoneNumbersBotMessageEnabled}
-                                    isOpen={openBotEditorKey === 'phoneNumbers'}
-                                  />
-                                </div>
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить объяснение для телефонов"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.phoneNumbersBotMessageEnabled}
-                                  onChange={(event) =>
-                                    setFieldValue(
-                                      'phoneNumbersBotMessageEnabled',
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-
-                            {draft.phoneNumbersBotMessageEnabled &&
-                            openBotEditorKey === 'phoneNumbers' ? (
-                              <BotMessageEditor
-                                editorKey="phoneNumbers"
-                                botSpeechStyle={draft.botSpeechStyle}
-                                botSpeechPreviewContext={botSpeechPreviewContext}
-                                value={draft.phoneNumbersBotMessageText}
-                                onChange={(nextValue) =>
-                                  setFieldValue(
-                                    'phoneNumbersBotMessageText',
-                                    nextValue as ChatSettings['phoneNumbersBotMessageText'],
-                                  )
-                                }
-                                onReset={() => setFieldValue('phoneNumbersBotMessageText', '')}
-                              />
-                            ) : null}
-                          </div>
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                2. Предупреждение
-                              </span>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label={`Включить предупреждение за ${draft.phoneNumbersWarnMaxCount}-й телефон`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.phoneNumbersWarnEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('phoneNumbersWarnEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('phoneNumbersBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          {renderMuteStageToggle({
-                            enabledKey: 'phoneNumbersMuteEnabled',
-                            durationKey: 'phoneNumbersMuteDurationHours',
-                            title: '3. Мут',
-                            onEnable: () => {
-                              setFieldValue('phoneNumbersWarnEnabled', true);
-                              setFieldValue('phoneNumbersBotMessageEnabled', true);
-                            },
-                          })}
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Бан</span>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить бан за повторные телефоны"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.phoneNumbersBanEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('phoneNumbersBanEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('phoneNumbersWarnEnabled', true);
-                                      setFieldValue('phoneNumbersBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          {draft.phoneNumbersBotMessageEnabled
-                            ? renderAdminContactToggle(
-                                PHONE_NUMBERS_ADMIN_CONTACT_BUTTON_GROUP,
-                                'Добавить связь с админом в сообщения о телефонах',
-                              )
-                            : null}
-                        </>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
-
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '270ms', order: 16 }}
               aria-label="Ночной режим"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

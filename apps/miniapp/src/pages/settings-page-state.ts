@@ -166,6 +166,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsBotButtonText',
     'messageLimitsAdminContactButtonEnabled',
     'messageLimitsAdminContactButtonUrl',
+    'phoneNumbersEnabled',
   ],
   phones: [
     'phoneNumbersEnabled',

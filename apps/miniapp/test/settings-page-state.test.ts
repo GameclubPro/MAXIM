@@ -93,7 +93,7 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
 
-test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates', () => {
+test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates plus phone allow toggle', () => {
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkEscalationWindowHours'));
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkWarnMaxCount'));
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkMuteMaxCount'));
@@ -102,6 +102,8 @@ test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates', (
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnoreLinksEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnorePhonesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateNearMatchEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.limits.includes('phoneNumbersEnabled'));
+  assert.ok(!SECTION_SETTING_KEYS.limits.includes('phoneNumbersEscalationWindowHours'));
 });
 
 test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections', () => {
@@ -145,7 +147,7 @@ test('mergeSectionSettings preserves multi-button arrays when saving a section',
   assert.equal(merged.deleteSpammersEnabled, true);
 });
 
-test('mergeSectionSettings preserves advanced duplicate and link tuning', () => {
+test('mergeSectionSettings preserves advanced duplicate and link tuning plus phone allow toggle', () => {
   const current = createSettings({
     duplicateDetectionPreset: 'STANDARD',
     duplicateIgnoreLinksEnabled: false,
@@ -155,6 +157,7 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning', () => 
     linkWarnMaxCount: 2,
     linkMuteMaxCount: 3,
     linkBanMaxCount: 4,
+    phoneNumbersEnabled: true,
     phoneNumbersEscalationWindowHours: 12,
   });
   const saved = createSettings({
@@ -166,6 +169,7 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning', () => 
     linkWarnMaxCount: 1,
     linkMuteMaxCount: 2,
     linkBanMaxCount: 3,
+    phoneNumbersEnabled: false,
     phoneNumbersEscalationWindowHours: 72,
   });
 
@@ -182,4 +186,8 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning', () => 
   assert.equal(linkMerged.linkMuteMaxCount, 2);
   assert.equal(linkMerged.linkBanMaxCount, 3);
   assert.equal(linkMerged.phoneNumbersEscalationWindowHours, 12);
+
+  const limitsMerged = mergeSectionSettings(current, saved, 'limits');
+  assert.equal(limitsMerged.phoneNumbersEnabled, false);
+  assert.equal(limitsMerged.phoneNumbersEscalationWindowHours, 12);
 });

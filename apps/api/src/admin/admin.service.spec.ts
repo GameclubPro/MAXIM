@@ -15780,6 +15780,33 @@ describe('AdminService settings screen endpoints', () => {
       updatedChats: 2,
       appliedChatIds: ['chat-1', 'chat-2'],
     });
+
+    const limitsResult = await service.applySettingsSectionToAllChats(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { section: 'limits' },
+    );
+
+    expect(applySpy).toHaveBeenLastCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      settings,
+      'miniapp',
+      { mode: 'all', favoriteTypes: [], chatIds: [] },
+      expect.arrayContaining([
+        'antiSpamEnabled',
+        'messageLimitsBotMessageEnabled',
+        'phoneNumbersEnabled',
+      ]),
+    );
+    const limitsSettingKeys = applySpy.mock.calls.at(-1)?.[5] as string[];
+    expect(limitsSettingKeys).not.toContain('phoneNumbersEscalationWindowHours');
+    expect(limitsResult.section).toBe('limits');
   });
 
   it('syncs allowlist entries when applying links section to all chats', async () => {

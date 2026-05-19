@@ -890,6 +890,7 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsBotButtonText',
     'messageLimitsAdminContactButtonEnabled',
     'messageLimitsAdminContactButtonUrl',
+    'phoneNumbersEnabled',
   ],
   phones: [
     'phoneNumbersEnabled',
