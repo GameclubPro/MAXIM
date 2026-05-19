@@ -217,6 +217,9 @@ export function BroadcastContentComposer({
       className={cn(
         'broadcast-content-composer',
         className,
+        hasPreview && 'has-preview',
+        !hasPreview && 'is-empty',
+        previewButtonRows.length > 0 && 'has-buttons',
         (textError || imageError) && 'field--error',
       )}
     >
