@@ -4692,3 +4692,610 @@
     --max-markdown-format-tray-bottom: calc(106px + env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* Autoposting workspace refresh: compact, factual, low-chrome UI. */
+.settings-drilldown__panel--broadcast-screen {
+  --broadcast-studio-ink: #102233;
+  --broadcast-studio-muted: #667684;
+  --broadcast-studio-line: rgba(118, 140, 158, 0.2);
+  --broadcast-studio-soft: #edf2f5;
+  --broadcast-studio-accent: #0a82a0;
+  --broadcast-studio-ready: #158762;
+}
+
+.settings-drilldown__panel--broadcast-screen .settings-drilldown__body {
+  background: #f5f7f8;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__chrome {
+  gap: 5px;
+  border-bottom-color: rgba(118, 140, 158, 0.16);
+  background: rgba(245, 247, 248, 0.94);
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy small,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy strong {
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signals {
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal {
+  min-height: 30px;
+  max-width: none;
+  border-radius: 8px;
+  background: #fff;
+  padding: 5px 7px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
+  color: #183044;
+  font-size: 0.6rem;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-shell__tabs,
+.settings-drilldown__panel--broadcast-screen .broadcast-history-filters {
+  border-radius: 9px;
+  background: #e9eff2;
+  padding: 3px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-shell__tabs .segmented-control__item,
+.settings-drilldown__panel--broadcast-screen .broadcast-history-filters .segmented-control__item {
+  min-height: 32px;
+  border-radius: 7px;
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-compose-flow--screen {
+  gap: 8px;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-stage-card,
+.settings-drilldown__panel--broadcast-screen .broadcast-stage-card::before,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card::after {
+  box-shadow: none;
+  background: transparent;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-stage-card::before,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card::after {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-stage-card--feed
+  > .broadcast-stage-card__head {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__editor,
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-card,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__cycle-field,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__dock,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__schedule-card,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card {
+  border-radius: 10px;
+  border-color: var(--broadcast-studio-line);
+  background: #fff;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__editor {
+  padding: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-message-card {
+  min-height: clamp(132px, 24dvh, 230px);
+  border-radius: 10px;
+  border-color: var(--broadcast-studio-line);
+  background: #e8eef2;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-message-card__phone {
+  min-height: 108px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-message-card__bubble {
+  width: min(100%, 430px);
+  border-radius: 14px 14px 5px 14px;
+  background: #dff3fb;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__modifier {
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 8px;
+  background: #f5f8fa;
+  padding: 0 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__bar {
+  min-height: 36px;
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__tool {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__media-label,
+.settings-drilldown__panel--broadcast-screen .broadcast-content-composer__button-label {
+  min-height: 26px;
+  max-width: 112px;
+  border-radius: 999px;
+  padding-inline: 8px;
+  font-size: 0.62rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card__mode-grid {
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card__mode,
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card__trigger,
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-confirm {
+  min-height: 44px;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card__mode strong {
+  font-size: 0.68rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-audience-card__mode small {
+  font-size: 0.58rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__smart-head {
+  min-height: 52px;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__smart-copy strong {
+  font-size: 0.88rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__smart-copy small,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__target-chip {
+  font-size: 0.62rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__smart-badge {
+  width: 10px;
+  min-width: 10px;
+  height: 10px;
+  min-height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 0;
+  color: transparent;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-row {
+  border-radius: 9px;
+  background: #e9eff2;
+  padding: 3px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-chip {
+  min-height: 42px;
+  border-radius: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'title'
+    'meta';
+  justify-items: center;
+  padding: 7px 6px;
+  text-align: center;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-chip::before {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__schedule-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__schedule-list--compact {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-planner__schedule-list--compact::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-planner__schedule-list--compact
+  .broadcast-planner__schedule-card {
+  min-width: 128px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-toggle {
+  min-width: 88px;
+  border: 1px solid var(--broadcast-studio-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--broadcast-studio-accent);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-head {
+  min-height: 34px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__month-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__grid {
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__day {
+  min-height: 42px;
+  border-radius: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcasts-list {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcasts-list__empty {
+  min-height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #fff;
+  padding: 0;
+  color: var(--broadcast-studio-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card {
+  overflow: visible;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__surface {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__top {
+  padding: 0;
+  gap: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__main {
+  gap: 5px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__headline {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__headline > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--broadcast-studio-ink);
+  font-size: 0.78rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__badge {
+  width: 8px;
+  min-width: 8px;
+  height: 8px;
+  min-height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: transparent;
+  font-size: 0;
+  line-height: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__badge.is-active {
+  background: #1487d4;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__badge.is-warning {
+  background: #c1842c;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__badge.is-danger {
+  background: #c75142;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__badge.is-muted {
+  background: #8b9cac;
+}
+
+.settings-drilldown
+  .settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card
+  .managed-broadcast-card__badge {
+  display: block;
+  width: 8px;
+  min-width: 8px;
+  max-width: 8px;
+  height: 8px;
+  min-height: 8px;
+  padding: 0;
+  font-size: 0;
+  line-height: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__preview {
+  color: #526575;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__metric {
+  min-width: 78px;
+  border-radius: 8px;
+  background: #f5f8fa;
+  padding: 6px 7px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__metric small {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__metric strong {
+  font-size: 0.88rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__metric span {
+  max-width: 92px;
+  overflow: hidden;
+  font-size: 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__facts {
+  gap: 4px;
+  padding: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__facts span {
+  min-height: 20px;
+  max-width: 142px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #f1f5f7;
+  padding: 0 7px;
+  color: #637587;
+  font-size: 0.58rem;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-delivery-meter {
+  gap: 5px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-delivery-meter__breakdown {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__error {
+  display: -webkit-box;
+  max-height: 2.4em;
+  overflow: hidden;
+  color: #b84235;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__actions {
+  position: relative;
+  z-index: 3;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__quick-action,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-trigger {
+  height: 32px;
+  min-height: 32px;
+  border: 1px solid var(--broadcast-studio-line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--broadcast-studio-ink);
+  box-shadow: 0 8px 18px rgba(24, 55, 83, 0.08);
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__quick-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: #0a7f58;
+  font-size: 0.66rem;
+  font-weight: 900;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__quick-action svg,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-trigger svg,
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-popover svg {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu {
+  position: relative;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu.is-disabled {
+  opacity: 0.55;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-trigger {
+  width: 34px;
+  display: inline-grid;
+  place-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__menu-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 10;
+  min-width: 158px;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--broadcast-studio-line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 5px;
+  box-shadow: 0 18px 42px rgba(18, 32, 45, 0.18);
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-popover button {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--broadcast-studio-ink);
+  padding: 0 8px;
+  font-size: 0.7rem;
+  font-weight: 850;
+  text-align: left;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-popover button:hover {
+  background: #f2f6f8;
+}
+
+.settings-drilldown__panel--broadcast-screen
+  .managed-broadcast-card__menu-popover
+  button.is-danger {
+  color: #b84235;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__copy small {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issue {
+  border-radius: 999px;
+  font-size: 0.58rem;
+}
+
+@media (min-width: 820px) {
+  .settings-drilldown__panel--broadcast-screen .broadcast-compose-flow--screen {
+    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .settings-drilldown__panel--broadcast-screen .broadcast-compose-flow--screen {
+    padding: 6px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal {
+    min-width: 72px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-planner__schedule-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-planner__calendar-toggle {
+    min-height: 34px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .managed-broadcast-card__aside {
+    display: none;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .managed-broadcast-card {
+    padding-bottom: 8px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .managed-broadcast-card__actions {
+    justify-content: flex-end;
+  }
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__chrome {
+  padding-top: 6px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__nav {
+  position: static;
+  top: auto;
+}

@@ -56,6 +56,7 @@ import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
+import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import {
   BroadcastHistoryFilterTabs,
   BroadcastWorkspaceTabs,
@@ -64,7 +65,6 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
-import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-delivery-meter';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -9645,11 +9645,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="managed-broadcasts-list">
                                 {filteredManagedBroadcasts.length === 0 &&
                                 !managedBroadcastsQuery.isLoading ? (
-                                  <div className="managed-broadcasts-list__empty">
-                                    {orderedManagedBroadcasts.length > 0
-                                      ? 'В этом фильтре пусто.'
-                                      : 'Автопостингов пока нет.'}
-                                  </div>
+                                  <div className="managed-broadcasts-list__empty">Пусто</div>
                                 ) : null}
 
                                 {filteredManagedBroadcasts.map((broadcast) => {
@@ -9681,120 +9677,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   const cardBadge = isOpeningBroadcastEditor
                                     ? 'Открываем'
                                     : resolveManagedBroadcastCardBadge(broadcast);
-                                  const content = (
-                                    <>
-                                      <div className="managed-broadcast-card__top">
-                                        <span className="managed-broadcast-card__main">
-                                          <span
-                                            className={cn(
-                                              'managed-broadcast-card__badge',
-                                              `is-${cardTone}`,
-                                            )}
-                                          >
-                                            {cardBadge}
-                                          </span>
-                                          <strong>
-                                            {resolveManagedBroadcastCardTitle(broadcast)}
-                                          </strong>
-                                          <MaxMarkdownPreview
-                                            value={broadcast.textPreview}
-                                            className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
-                                            normalizeWhitespace
-                                            fallback={broadcast.hasImage ? 'Фото без текста' : null}
-                                          />
-                                        </span>
-                                        <span className="managed-broadcast-card__aside">
-                                          <span
-                                            className={cn(
-                                              'managed-broadcast-card__metric',
-                                              `is-${cardMetric.tone}`,
-                                            )}
-                                          >
-                                            <small>{cardMetric.label}</small>
-                                            <strong>{cardMetric.value}</strong>
-                                            <span>{cardMetric.caption}</span>
-                                          </span>
-                                        </span>
-                                      </div>
-
-                                      <div className="managed-broadcast-card__facts">
-                                        {cardFacts.map((fact) => (
-                                          <span key={`${broadcast.id}-${fact}`}>{fact}</span>
-                                        ))}
-                                      </div>
-
-                                      <ManagedBroadcastDeliveryMeter broadcast={broadcast} />
-
-                                      {broadcast.lastError ? (
-                                        <small className="managed-broadcast-card__error">
-                                          {broadcast.lastError}
-                                        </small>
-                                      ) : null}
-                                    </>
-                                  );
 
                                   return (
-                                    <div
+                                    <ManagedBroadcastHistoryCard
                                       key={broadcast.id}
-                                      className={cn(
-                                        'managed-broadcast-card',
-                                        `is-${cardTone}`,
-                                        canEditBroadcastSchedule && 'is-editable',
-                                      )}
-                                    >
-                                      {canEditBroadcastSchedule ? (
-                                        <button
-                                          type="button"
-                                          className="managed-broadcast-card__surface"
-                                          onClick={() => handleEditManagedBroadcast(broadcast)}
-                                          disabled={isMailingBusy || isDeletingBroadcast}
-                                        >
-                                          {content}
-                                        </button>
-                                      ) : (
-                                        <div
-                                          className={cn(
-                                            'managed-broadcast-card__surface',
-                                            'is-static',
-                                          )}
-                                        >
-                                          {content}
-                                        </div>
-                                      )}
-
-                                      <div className="managed-broadcast-card__actions">
-                                        <button
-                                          type="button"
-                                          className="button button--ghost"
-                                          onClick={() => handleDuplicateManagedBroadcast(broadcast)}
-                                          disabled={isMailingBusy}
-                                        >
-                                          {isDuplicatingBroadcast ? 'Копируем...' : 'Дублировать'}
-                                        </button>
-                                        {broadcast.canRetry ? (
-                                          <button
-                                            type="button"
-                                            className="button button--accent"
-                                            onClick={() =>
-                                              retryManagedBroadcastMutation.mutate(broadcast.id)
-                                            }
-                                            disabled={isMailingBusy}
-                                          >
-                                            {isRetryingBroadcast ? 'Повторяем...' : 'Повторить'}
-                                          </button>
-                                        ) : null}
-                                        {canCancelBroadcast ? (
-                                          <button
-                                            type="button"
-                                            className="button button--danger"
-                                            onClick={() => handleDeleteManagedBroadcast(broadcast)}
-                                            disabled={isMailingBusy}
-                                          >
-                                            {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
-                                          </button>
-                                        ) : null}
-                                      </div>
-                                    </div>
+                                      broadcast={broadcast}
+                                      tone={cardTone}
+                                      badge={cardBadge}
+                                      title={resolveManagedBroadcastCardTitle(broadcast)}
+                                      metric={cardMetric}
+                                      facts={cardFacts}
+                                      canEdit={canEditBroadcastSchedule}
+                                      canCancel={canCancelBroadcast}
+                                      isBusy={isMailingBusy}
+                                      isDeleting={isDeletingBroadcast}
+                                      isDuplicating={isDuplicatingBroadcast}
+                                      isRetrying={isRetryingBroadcast}
+                                      onEdit={() => handleEditManagedBroadcast(broadcast)}
+                                      onDuplicate={() => handleDuplicateManagedBroadcast(broadcast)}
+                                      onRetry={() =>
+                                        retryManagedBroadcastMutation.mutate(broadcast.id)
+                                      }
+                                      onDelete={() => handleDeleteManagedBroadcast(broadcast)}
+                                    />
                                   );
                                 })}
                               </div>

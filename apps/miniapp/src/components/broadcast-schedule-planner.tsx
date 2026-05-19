@@ -782,8 +782,8 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    setCalendarExpanded(true);
-  }, [normalizedValue.length]);
+    setCalendarExpanded((current) => current || pickedDayKeys.length > 0);
+  }, [normalizedValue.length, pickedDayKeys.length]);
 
   useEffect(() => {
     if (sheetMode !== 'time') {
@@ -796,7 +796,7 @@ export function BroadcastSchedulePlanner({
 
   useEffect(() => {
     if (timingMode === 'scheduled') {
-      setCalendarExpanded(true);
+      setCalendarExpanded((current) => (normalizedValue.length > 0 ? current : true));
       return;
     }
 
@@ -806,7 +806,7 @@ export function BroadcastSchedulePlanner({
     setApplyToAllPickedDays(false);
     setIsConfirmed(timingMode === 'now' || timingMode === 'cycle');
     setCalendarExpanded(false);
-  }, [timingMode]);
+  }, [normalizedValue.length, timingMode]);
 
   useEffect(() => {
     if (calendarOnly) {
@@ -881,7 +881,7 @@ export function BroadcastSchedulePlanner({
     setApplyToAllPickedDays(false);
 
     if (nextMode === 'scheduled') {
-      setCalendarExpanded(true);
+      setCalendarExpanded(normalizedValue.length === 0);
       return;
     }
 
@@ -1189,6 +1189,49 @@ export function BroadcastSchedulePlanner({
                   <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
                 </button>
               </div>
+
+              {timingMode === 'scheduled' && scheduledDayCards.length > 0 ? (
+                <div className="broadcast-planner__schedule-toolbar">
+                  <div className="broadcast-planner__schedule-list broadcast-planner__schedule-list--compact">
+                    {scheduledDayCards.map(({ dayKey, slots }) => (
+                      <button
+                        key={`summary-${dayKey}`}
+                        type="button"
+                        className="broadcast-planner__schedule-card"
+                        onClick={() => openScheduledDay(dayKey)}
+                        disabled={disabled}
+                      >
+                        <div className="broadcast-planner__schedule-card-head">
+                          <strong>{formatDayChipLabel(dayKey)}</strong>
+                          <span>{formatCountLabel(slots.length, 'слот', 'слота', 'слотов')}</span>
+                        </div>
+                        <div className="broadcast-planner__schedule-card-times">
+                          {slots.slice(0, 4).map((slot) => (
+                            <span key={slot} className="broadcast-planner__schedule-time">
+                              {formatAgendaTime(slot)}
+                            </span>
+                          ))}
+                          {slots.length > 4 ? (
+                            <span className="broadcast-planner__schedule-time is-more">
+                              +{slots.length - 4}
+                            </span>
+                          ) : null}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    className="broadcast-planner__calendar-toggle"
+                    onClick={() => setCalendarExpanded((current) => !current)}
+                    disabled={disabled}
+                    aria-expanded={calendarExpanded}
+                  >
+                    {calendarExpanded ? 'Свернуть' : 'Календарь'}
+                  </button>
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -1585,35 +1628,6 @@ export function BroadcastSchedulePlanner({
                   Время
                 </button>
               </div>
-            </div>
-          ) : showCalendar && scheduledDayCards.length > 0 ? (
-            <div className="broadcast-planner__schedule-list">
-              {scheduledDayCards.map(({ dayKey, slots }) => (
-                <button
-                  key={dayKey}
-                  type="button"
-                  className="broadcast-planner__schedule-card"
-                  onClick={() => openScheduledDay(dayKey)}
-                  disabled={disabled}
-                >
-                  <div className="broadcast-planner__schedule-card-head">
-                    <strong>{formatDayChipLabel(dayKey)}</strong>
-                    <span>{formatCountLabel(slots.length, 'слот', 'слота', 'слотов')}</span>
-                  </div>
-                  <div className="broadcast-planner__schedule-card-times">
-                    {slots.slice(0, 4).map((slot) => (
-                      <span key={slot} className="broadcast-planner__schedule-time">
-                        {formatAgendaTime(slot)}
-                      </span>
-                    ))}
-                    {slots.length > 4 ? (
-                      <span className="broadcast-planner__schedule-time is-more">
-                        +{slots.length - 4}
-                      </span>
-                    ) : null}
-                  </div>
-                </button>
-              ))}
             </div>
           ) : null}
         </div>

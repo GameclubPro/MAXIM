@@ -97,7 +97,7 @@ export function BroadcastButtonsSheet({
 
           <span className="broadcast-buttons-sheet__copy">
             <strong id="broadcast-buttons-sheet-title">Кнопки</strong>
-            <small>{statusLabel}</small>
+            {enabled ? <small>{statusLabel}</small> : null}
           </span>
 
           <button
@@ -112,8 +112,8 @@ export function BroadcastButtonsSheet({
 
         <label className="broadcast-buttons-sheet__toggle">
           <span>
-            <strong>{enabled ? 'Включены' : 'Без кнопок'}</strong>
-            <small>{enabled ? `${buttons.length}/8` : 'Можно добавить позже'}</small>
+            <strong>{enabled ? 'Включены' : 'Выключены'}</strong>
+            {enabled ? <small>{buttons.length}/8</small> : null}
           </span>
           <span className="settings-native-switch" aria-label="Добавить кнопки">
             <input

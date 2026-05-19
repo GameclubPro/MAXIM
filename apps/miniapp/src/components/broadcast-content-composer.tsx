@@ -68,7 +68,7 @@ export function BroadcastContentComposer({
   textError = '',
   imageError = '',
   messageAriaLabel = 'Сообщение автопостинга',
-  textPlaceholder = 'Текст автопостинга',
+  textPlaceholder = 'Текст',
   textAriaLabel = textPlaceholder,
   onTextChange,
   onImageChange,
@@ -114,6 +114,7 @@ export function BroadcastContentComposer({
   const previewButtons = buttons.filter((button) => button.text.trim());
   const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
   const previewButtonRows = buildBroadcastPreviewButtonRows(previewButtons, previewSystemButtons);
+  const previewButtonCount = previewButtons.length + previewSystemButtons.length;
   const hasPreview = Boolean(normalizedText || imagePreviewItems.length > 0 || videoLabel);
   const remainingLength = maxLength - text.length;
   const isNearTextLimit =
@@ -413,11 +414,11 @@ export function BroadcastContentComposer({
               {isPreparingImage || imagePreviewItems.length > 0 || videoLabel ? (
                 <span className="broadcast-content-composer__media-label">
                   {isPreparingImage
-                    ? `Готовим ${preparingImages.done}/${preparingImages.total}`
+                    ? `${preparingImages.done}/${preparingImages.total}`
                     : imagePreviewItems.length > 1
-                      ? `${imagePreviewItems.length}/${maxImageCount} фото`
+                      ? `${imagePreviewItems.length} фото`
                       : imagePreviewItems.length === 1
-                        ? imagePreviewItems[0]?.fileName || 'Фото'
+                        ? '1 фото'
                         : videoLabel}
                 </span>
               ) : null}
@@ -430,8 +431,9 @@ export function BroadcastContentComposer({
                   )}
                   onClick={onOpenButtons}
                   disabled={isBusy}
+                  title={buttonsStatusLabel}
                 >
-                  {buttonsStatusLabel}
+                  {previewButtonCount > 0 ? `${previewButtonCount} кноп.` : buttonsStatusLabel}
                 </button>
               ) : null}
             </span>

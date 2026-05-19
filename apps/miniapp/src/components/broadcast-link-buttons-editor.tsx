@@ -226,9 +226,9 @@ export function BroadcastLinkButtonsEditor({
               <div className="broadcast-link-editor__card-top">
                 <div className="broadcast-link-editor__card-copy">
                   <span className="broadcast-link-editor__badge">
-                    {index === 0 ? 'Основная' : `Доп. ${index}`}
+                    {compact ? index + 1 : index === 0 ? 'Основная' : `Доп. ${index}`}
                   </span>
-                  <strong>Кнопка {index + 1}</strong>
+                  {compact ? null : <strong>Кнопка {index + 1}</strong>}
                 </div>
                 <button
                   type="button"
@@ -279,9 +279,7 @@ export function BroadcastLinkButtonsEditor({
           </span>
         </button>
       ) : (
-        <div className="broadcast-link-editor__limit">
-          Лимит достигнут. Можно оставить до {MAX_BROADCAST_LINK_BUTTONS} кнопок в одном посте.
-        </div>
+        <div className="broadcast-link-editor__limit">Лимит {MAX_BROADCAST_LINK_BUTTONS}.</div>
       )}
     </div>
   );

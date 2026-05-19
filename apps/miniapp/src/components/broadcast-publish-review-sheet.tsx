@@ -36,8 +36,8 @@ export function BroadcastPublishReviewSheet({
   const previewMeta =
     facts.length > 0 ? (
       <span className="broadcast-review-stack">
-        {hasAllAudience ? <span className="broadcast-review-alert">Массовая отправка</span> : null}
         <span className="broadcast-review-facts">
+          {hasAllAudience ? <span className="broadcast-review-alert">Все чаты</span> : null}
           {facts.map((fact) => (
             <span key={`${id}-${fact}`}>{fact}</span>
           ))}
@@ -49,8 +49,7 @@ export function BroadcastPublishReviewSheet({
     <ActionConfirmSheet
       id={id}
       open={open}
-      title={hasAllAudience ? 'Проверка охвата' : 'Проверка'}
-      summary={hasAllAudience ? 'Все чаты' : undefined}
+      title="Проверка"
       previewTitle={
         text || hasMedia ? (
           <span className="broadcast-review-card">

@@ -126,7 +126,7 @@ export function BroadcastWorkspaceTabs({
       options={[
         { value: 'compose', label: 'Создать' },
         { value: 'calendar', label: 'План' },
-        { value: 'history', label: 'Архив', count: historyCount },
+        { value: 'history', label: 'История', count: historyCount },
       ]}
     />
   );
@@ -144,11 +144,11 @@ export function BroadcastHistoryFilterTabs({
       onChange={onChange}
       ariaLabel="История автопостинга"
       options={[
-        { value: 'future', label: 'Будущие', count: counts.future },
-        { value: 'active', label: 'В процессе', count: counts.active },
+        { value: 'future', label: 'План', count: counts.future },
+        { value: 'active', label: 'Идут', count: counts.active },
         { value: 'error', label: 'Ошибки', count: counts.error },
-        { value: 'sent', label: 'Отправленные', count: counts.sent },
-        { value: 'canceled', label: 'Отмененные', count: counts.canceled },
+        { value: 'sent', label: 'Готово', count: counts.sent },
+        { value: 'canceled', label: 'Стоп', count: counts.canceled },
       ]}
     />
   );
