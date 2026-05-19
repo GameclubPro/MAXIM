@@ -1,7 +1,9 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { createHash } from 'node:crypto';
 import { raceWithTimeout } from '../common/promise-timeout.util';
+import { stripUrlsFromText } from '../common/url-text.util';
 import { buildDuplicateStageKey } from './duplicate-state';
+import { normalizeForDetection } from './rule-engine-normalization';
 import { RedisCounterService } from './redis-counter.service';
 
 export type DuplicateAction = 'WARN' | 'MUTE' | 'BAN';
@@ -12,6 +14,7 @@ export type DuplicateDecision = {
   threshold: number;
   windowSec: number;
   hash: string;
+  fingerprintType: DuplicateFingerprintType;
   nextAction: DuplicateAction | null;
 };
 
@@ -19,13 +22,24 @@ export type DuplicateHit = {
   count: number;
   windowSec: number;
   hash: string;
+  fingerprintType: DuplicateFingerprintType;
 };
 
 type DuplicateReactionStage = {
   action: DuplicateAction | null;
 };
 
+export type DuplicateFingerprintType = 'exact' | 'content' | 'near';
+
+type DuplicateFingerprint = {
+  type: DuplicateFingerprintType;
+  value: string;
+};
+
 const DUPLICATE_STATE_LOOKUP_TIMEOUT_MS = 250;
+const PHONE_NUMBER_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
+const NEAR_DUPLICATE_MIN_TOKEN_COUNT = 6;
+const NEAR_DUPLICATE_MIN_UNIQUE_TOKENS = 5;
 
 export class RuleEngineDuplicateDetector {
   private duplicateTimeoutWarnAtMs = 0;
@@ -35,6 +49,7 @@ export class RuleEngineDuplicateDetector {
   async detectWithin(params: {
     chatId: string;
     userId: string;
+    rawText: string;
     compactText: string;
     settings: ChatSettings;
   }): Promise<
@@ -60,6 +75,7 @@ export class RuleEngineDuplicateDetector {
   private async detectState(params: {
     chatId: string;
     userId: string;
+    rawText: string;
     compactText: string;
     settings: ChatSettings;
   }): Promise<{
@@ -67,44 +83,57 @@ export class RuleEngineDuplicateDetector {
     decision?: DuplicateDecision;
   }> {
     const { chatId, userId, compactText, settings } = params;
-    const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
     const flow = this.getFlowConfig(settings);
-    const flowKey = buildDuplicateStageKey(chatId, userId, hash, 'flow');
-    const total = await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1);
-    const repeatCount = Math.max(0, total - 1);
+    const fingerprints = this.buildFingerprints(compactText, params.rawText, settings);
+    let strongestHit: DuplicateHit | undefined;
 
-    if (repeatCount <= flow.allowedCount) {
-      return {};
-    }
+    for (const fingerprint of fingerprints) {
+      const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
+      const flowKey = buildDuplicateStageKey(chatId, userId, hash, `flow:${fingerprint.type}`);
+      const total = await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1);
+      const repeatCount = Math.max(0, total - 1);
 
-    const hit: DuplicateHit = {
-      count: repeatCount,
-      windowSec: flow.windowSec,
-      hash,
-    };
+      if (repeatCount <= flow.allowedCount) {
+        continue;
+      }
 
-    if (flow.reactions.length === 0) {
-      return {};
-    }
+      if (flow.reactions.length === 0) {
+        continue;
+      }
 
-    const reactionIndex = Math.min(flow.reactions.length - 1, repeatCount - flow.allowedCount - 1);
-    const reaction = flow.reactions[reactionIndex];
-
-    if (!reaction || reaction.action === null) {
-      return { hit };
-    }
-
-    return {
-      hit,
-      decision: {
-        action: reaction.action,
+      const hit: DuplicateHit = {
         count: repeatCount,
-        threshold: flow.allowedCount + reactionIndex + 1,
         windowSec: flow.windowSec,
         hash,
-        nextAction: this.resolveNextAction(flow.reactions, reactionIndex),
-      },
-    };
+        fingerprintType: fingerprint.type,
+      };
+      strongestHit = this.pickStrongerHit(strongestHit, hit);
+
+      const reactionIndex = Math.min(
+        flow.reactions.length - 1,
+        repeatCount - flow.allowedCount - 1,
+      );
+      const reaction = flow.reactions[reactionIndex];
+
+      if (!reaction || reaction.action === null) {
+        continue;
+      }
+
+      return {
+        hit,
+        decision: {
+          action: reaction.action,
+          count: repeatCount,
+          threshold: flow.allowedCount + reactionIndex + 1,
+          windowSec: flow.windowSec,
+          hash,
+          fingerprintType: fingerprint.type,
+          nextAction: this.resolveNextAction(flow.reactions, reactionIndex),
+        },
+      };
+    }
+
+    return strongestHit ? { hit: strongestHit } : {};
   }
 
   private getFlowConfig(settings: ChatSettings): {
@@ -160,6 +189,111 @@ export class RuleEngineDuplicateDetector {
     return reactions;
   }
 
+  private buildFingerprints(
+    compactText: string,
+    rawText: string,
+    settings: ChatSettings,
+  ): DuplicateFingerprint[] {
+    const fingerprints: DuplicateFingerprint[] = [];
+    const seen = new Set<string>();
+    const push = (type: DuplicateFingerprintType, value: string) => {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      fingerprints.push({ type, value: normalized });
+    };
+
+    push('exact', compactText);
+
+    const config = this.resolveFingerprintConfig(settings);
+    if (config.ignoreLinks || config.ignorePhones) {
+      const content = this.normalizeContentFingerprint(rawText, config);
+      push('content', content);
+    }
+
+    if (config.nearMatch) {
+      const near = this.buildNearDuplicateFingerprint(rawText, config);
+      if (near) {
+        push('near', near);
+      }
+    }
+
+    return fingerprints;
+  }
+
+  private resolveFingerprintConfig(settings: ChatSettings): {
+    ignoreLinks: boolean;
+    ignorePhones: boolean;
+    nearMatch: boolean;
+  } {
+    if (settings.duplicateDetectionPreset === 'STRICT') {
+      return {
+        ignoreLinks: true,
+        ignorePhones: true,
+        nearMatch: true,
+      };
+    }
+
+    if (settings.duplicateDetectionPreset === 'CUSTOM') {
+      return {
+        ignoreLinks: settings.duplicateIgnoreLinksEnabled,
+        ignorePhones: settings.duplicateIgnorePhonesEnabled,
+        nearMatch: settings.duplicateNearMatchEnabled,
+      };
+    }
+
+    return {
+      ignoreLinks: false,
+      ignorePhones: false,
+      nearMatch: false,
+    };
+  }
+
+  private normalizeContentFingerprint(
+    compactText: string,
+    config: { ignoreLinks: boolean; ignorePhones: boolean },
+  ): string {
+    let value = compactText;
+    if (config.ignoreLinks) {
+      value = stripUrlsFromText(value);
+    }
+    if (config.ignorePhones) {
+      value = stripPhoneNumbersFromText(value);
+    }
+    return normalizeForDetection(value).replace(/\s+/g, ' ').trim();
+  }
+
+  private buildNearDuplicateFingerprint(
+    compactText: string,
+    config: { ignoreLinks: boolean; ignorePhones: boolean },
+  ): string | null {
+    const normalized = this.normalizeContentFingerprint(compactText, config);
+    const tokens = normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
+    const meaningfulTokens = tokens.filter((token) => token.length >= 4);
+    const uniqueTokens = Array.from(new Set(meaningfulTokens)).sort();
+    if (
+      tokens.length < NEAR_DUPLICATE_MIN_TOKEN_COUNT ||
+      uniqueTokens.length < NEAR_DUPLICATE_MIN_UNIQUE_TOKENS
+    ) {
+      return null;
+    }
+
+    return uniqueTokens.join(' ');
+  }
+
+  private pickStrongerHit(
+    current: DuplicateHit | undefined,
+    candidate: DuplicateHit,
+  ): DuplicateHit {
+    if (!current || candidate.count > current.count) {
+      return candidate;
+    }
+
+    return current;
+  }
+
   private resolveNextAction(
     reactions: DuplicateReactionStage[],
     currentIndex: number,
@@ -192,4 +326,8 @@ export class RuleEngineDuplicateDetector {
       }),
     );
   }
+}
+
+function stripPhoneNumbersFromText(value: string): string {
+  return value.replace(PHONE_NUMBER_PATTERN, ' ').replace(/\s+/g, ' ').trim();
 }

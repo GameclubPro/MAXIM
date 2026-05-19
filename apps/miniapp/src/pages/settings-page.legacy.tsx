@@ -242,6 +242,7 @@ import {
   THEMATIC_FILTERS_ADMIN_CONTACT_BUTTON_GROUP,
   DUPLICATE_ADMIN_CONTACT_BUTTON_GROUP,
   MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP,
+  PHONE_NUMBERS_ADMIN_CONTACT_BUTTON_GROUP,
   REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP,
   MAX_CHAT_RULES_TEXT_LENGTH,
   MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT,
@@ -325,6 +326,54 @@ import {
   areBroadcastPlannerStatesEqual,
   WarnMessageEditor,
 } from './settings/settings-page-helpers';
+
+type DuplicateDetectionPreset = ChatSettings['duplicateDetectionPreset'];
+
+const DUPLICATE_DETECTION_OPTIONS: Array<{
+  value: DuplicateDetectionPreset;
+  eyebrow: string;
+  label: string;
+  description: string;
+  toneClass: 'policy-card--alert' | 'policy-card--allowlist' | 'policy-card--blocklist';
+}> = [
+  {
+    value: 'STANDARD',
+    eyebrow: 'База',
+    label: 'Точный дубль',
+    description: 'Классическое сравнение текста без дополнительных эвристик.',
+    toneClass: 'policy-card--alert',
+  },
+  {
+    value: 'STRICT',
+    eyebrow: 'Максимум',
+    label: 'Строгая защита',
+    description: 'Ловит повторы с заменой ссылок, телефонов и порядка слов.',
+    toneClass: 'policy-card--blocklist',
+  },
+  {
+    value: 'CUSTOM',
+    eyebrow: 'Ручной',
+    label: 'Своя схема',
+    description: 'Отдельные тумблеры для ссылок, телефонов и близких совпадений.',
+    toneClass: 'policy-card--allowlist',
+  },
+];
+
+const DUPLICATE_DETECTION_LABELS: Record<DuplicateDetectionPreset, string> = {
+  STANDARD: 'Точный',
+  STRICT: 'Строгий',
+  CUSTOM: 'Свой',
+};
+
+type NumericChatSettingKey =
+  | 'linkEscalationWindowHours'
+  | 'linkWarnMaxCount'
+  | 'linkMuteMaxCount'
+  | 'linkBanMaxCount'
+  | 'phoneNumbersEscalationWindowHours'
+  | 'phoneNumbersWarnMaxCount'
+  | 'phoneNumbersMuteMaxCount'
+  | 'phoneNumbersBanMaxCount';
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -2341,6 +2390,51 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     applyDuplicateFlowConfig({ allowedCount: next });
   }
 
+  function setIntegerChatFieldValue<K extends NumericChatSettingKey>(
+    key: K,
+    rawValue: string,
+    min: number,
+    max: number,
+  ) {
+    const parsed = Number.parseInt(rawValue, 10);
+    if (Number.isNaN(parsed)) {
+      return;
+    }
+
+    const safeValue = Math.min(max, Math.max(min, parsed));
+    setFieldValue(key, safeValue as ChatSettings[K]);
+  }
+
+  function applyDuplicateDetectionPreset(preset: DuplicateDetectionPreset) {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        duplicateDetectionPreset: preset,
+        ...(preset === 'STANDARD'
+          ? {
+              duplicateIgnoreLinksEnabled: false,
+              duplicateIgnorePhonesEnabled: false,
+              duplicateNearMatchEnabled: false,
+            }
+          : preset === 'STRICT'
+            ? {
+                duplicateIgnoreLinksEnabled: true,
+                duplicateIgnorePhonesEnabled: true,
+                duplicateNearMatchEnabled: true,
+              }
+            : {}),
+      };
+    });
+    clearFieldError('duplicateDetectionPreset');
+    clearFieldError('duplicateIgnoreLinksEnabled');
+    clearFieldError('duplicateIgnorePhonesEnabled');
+    clearFieldError('duplicateNearMatchEnabled');
+  }
+
   function addMessageLimitsBlockedWords() {
     if (!draft) {
       return;
@@ -3410,6 +3504,104 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function renderEscalationTuning(params: {
+    title: string;
+    ariaLabelPrefix: string;
+    windowKey: Extract<NumericChatSettingKey, `${string}EscalationWindowHours`>;
+    warnKey: Extract<NumericChatSettingKey, `${string}WarnMaxCount`>;
+    muteKey: Extract<NumericChatSettingKey, `${string}MuteMaxCount`>;
+    banKey: Extract<NumericChatSettingKey, `${string}BanMaxCount`>;
+  }) {
+    if (!draft) {
+      return null;
+    }
+
+    const fields: Array<{
+      key: NumericChatSettingKey;
+      label: string;
+      suffix: string;
+      min: number;
+      max: number;
+    }> = [
+      {
+        key: params.windowKey,
+        label: 'Окно',
+        suffix: 'ч',
+        min: 1,
+        max: 168,
+      },
+      {
+        key: params.warnKey,
+        label: 'Предупреждение',
+        suffix: 'раз',
+        min: 1,
+        max: 20,
+      },
+      {
+        key: params.muteKey,
+        label: 'Мут',
+        suffix: 'раз',
+        min: 1,
+        max: 20,
+      },
+      {
+        key: params.banKey,
+        label: 'Бан',
+        suffix: 'раз',
+        min: 1,
+        max: 20,
+      },
+    ];
+    const errors = fields
+      .map((field) => fieldErrors[field.key])
+      .filter((error): error is string => Boolean(error));
+
+    return (
+      <article className={cn('duplicate-stage', errors.length > 0 && 'field--error')}>
+        <div className="duplicate-stage__top">
+          <span className="duplicate-stage__title">{params.title}</span>
+        </div>
+
+        <div className="duplicate-stage__controls">
+          {fields.map((field) => (
+            <label
+              key={field.key}
+              className={cn('duplicate-stage__field', fieldErrors[field.key] && 'field--error')}
+            >
+              <span className="duplicate-stage__field-label">{field.label}</span>
+              <div className="duplicate-stage__input-wrap">
+                <input
+                  type="number"
+                  min={field.min}
+                  max={field.max}
+                  step={1}
+                  value={Number(draft[field.key])}
+                  onChange={(event) =>
+                    setIntegerChatFieldValue(field.key, event.target.value, field.min, field.max)
+                  }
+                  aria-label={`${params.ariaLabelPrefix}: ${field.label.toLowerCase()}`}
+                />
+                <span className="duplicate-stage__suffix" aria-hidden>
+                  {field.suffix}
+                </span>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        {errors.length > 0 ? (
+          <div className="duplicate-stage__errors">
+            {errors.map((error) => (
+              <small key={error} className="field__hint">
+                {error}
+              </small>
+            ))}
+          </div>
+        ) : null}
+      </article>
+    );
+  }
+
   function toggleBotMessageEditor(key: BotMessageEditorKey) {
     setOpenBotEditorKey((current) => (current === key ? null : key));
   }
@@ -3782,12 +3974,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.duplicateMuteEnabled,
     draft?.duplicateBanEnabled,
   ].filter(Boolean).length;
+  const duplicateDetectionLabel = draft
+    ? DUPLICATE_DETECTION_LABELS[draft.duplicateDetectionPreset]
+    : DUPLICATE_DETECTION_LABELS.STANDARD;
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
-    ? `${formatDuplicateAllowanceLabel(duplicateAllowedCount)} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
+    ? `${duplicateDetectionLabel} • ${formatDuplicateAllowanceLabel(
+        duplicateAllowedCount,
+      )} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
     : 'Выключено';
-  const duplicatesCardStatus = draft?.antiDuplicateEnabled
-    ? `${duplicateStagesEnabledCount}/4`
-    : 'Выкл';
+  const duplicatesCardStatus = draft?.antiDuplicateEnabled ? duplicateDetectionLabel : 'Выкл';
+  const phoneStagesEnabledCount =
+    draft && !draft.phoneNumbersEnabled
+      ? [
+          draft.phoneNumbersBotMessageEnabled,
+          draft.phoneNumbersWarnEnabled,
+          draft.phoneNumbersMuteEnabled,
+          draft.phoneNumbersBanEnabled,
+        ].filter(Boolean).length
+      : 0;
+  const phonesHeaderSummary = !draft
+    ? 'Номера разрешены'
+    : draft.phoneNumbersEnabled
+      ? 'Номера разрешены'
+      : `${phoneStagesEnabledCount}/4 ступени • ${draft.phoneNumbersEscalationWindowHours}ч`;
+  const phonesCardStatus =
+    !draft || draft.phoneNumbersEnabled ? 'Выкл' : `${phoneStagesEnabledCount}/4`;
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -3829,7 +4040,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
-    draft ? !draft.phoneNumbersEnabled : false,
     draft ? draft.messageLimitsBlockedWords.length > 0 : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
@@ -5371,6 +5581,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {shouldShowLinkStages ? (
                           <>
+                            {renderEscalationTuning({
+                              title: 'Пороги ссылок',
+                              ariaLabelPrefix: 'Пороги ссылок',
+                              windowKey: 'linkEscalationWindowHours',
+                              warnKey: 'linkWarnMaxCount',
+                              muteKey: 'linkMuteMaxCount',
+                              banKey: 'linkBanMaxCount',
+                            })}
+
                             <div
                               className="settings-subsection-divider"
                               role="separator"
@@ -5436,8 +5655,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   className="settings-native-toggle__hint"
                                 >
                                   Санкции усиливаются по ступеням, если пользователь повторно
-                                  отправляет ссылки в течение 24 часов: сначала объяснение, затем
-                                  предупреждение, потом мут и далее бан.
+                                  отправляет ссылки в течение {draft.linkEscalationWindowHours}ч:
+                                  сначала объяснение, затем предупреждение, потом мут и далее бан.
                                 </p>
                               ) : null}
 
@@ -5488,7 +5707,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить предупреждение за вторую ссылку в 24 часа"
+                                  aria-label={`Включить предупреждение за ${draft.linkWarnMaxCount}-ю ссылку`}
                                 >
                                   <input
                                     type="checkbox"
@@ -5512,8 +5731,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   id="link-warn-message-hint"
                                   className="settings-native-toggle__hint"
                                 >
-                                  Текст отправляется при 2-й ссылке за 24 часа, если ступень
-                                  включена.
+                                  Текст отправляется при {draft.linkWarnMaxCount}-м нарушении за
+                                  {draft.linkEscalationWindowHours}ч, если ступень включена.
                                 </p>
                               ) : null}
 
@@ -7358,6 +7577,129 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       {draft.antiDuplicateEnabled ? (
+                        <div className="settings-policy">
+                          <span className="field__label">Режим распознавания</span>
+                          <div
+                            className="policy-grid"
+                            role="radiogroup"
+                            aria-label="Режим распознавания дублей"
+                          >
+                            {DUPLICATE_DETECTION_OPTIONS.map((option) => {
+                              const isActive = draft.duplicateDetectionPreset === option.value;
+
+                              return (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={isActive}
+                                  className={cn(
+                                    'policy-card',
+                                    option.toneClass,
+                                    isActive && 'is-active',
+                                  )}
+                                  onClick={() => applyDuplicateDetectionPreset(option.value)}
+                                >
+                                  <span className="policy-card__content">
+                                    <span className="policy-card__eyebrow">{option.eyebrow}</span>
+                                    <span className="policy-card__text">
+                                      <span className="policy-card__title">{option.label}</span>
+                                      <small className="policy-card__description">
+                                        {option.description}
+                                      </small>
+                                    </span>
+                                  </span>
+                                  <span className="policy-card__selection" aria-hidden />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {draft.antiDuplicateEnabled && draft.duplicateDetectionPreset === 'CUSTOM' ? (
+                        <>
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                Не учитывать ссылки
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Не учитывать ссылки при сравнении дублей"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateIgnoreLinksEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue(
+                                      'duplicateIgnoreLinksEnabled',
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                Не учитывать телефоны
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Не учитывать телефоны при сравнении дублей"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateIgnorePhonesEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue(
+                                      'duplicateIgnorePhonesEnabled',
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                Близкие совпадения
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить близкие совпадения дублей"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateNearMatchEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue('duplicateNearMatchEnabled', event.target.checked)
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+                        </>
+                      ) : null}
+
+                      {draft.antiDuplicateEnabled ? (
                         <div className="settings-native-toggle">
                           <div className="settings-native-toggle__row">
                             <div className="settings-native-toggle__title-wrap">
@@ -8274,34 +8616,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
 
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">
-                            Разрешить номера телефонов
-                          </span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Разрешить отправку номеров телефонов"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.phoneNumbersEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('phoneNumbersEnabled', enabled);
-                                if (!enabled) {
-                                  setFieldValue('messageLimitsBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
                       <div
                         className={cn(
                           'settings-word-banlist',
@@ -8643,7 +8957,246 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '270ms', order: 15 }}
+              style={{ animationDelay: '250ms', order: 15 }}
+              aria-label="Телефоны"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <SettingsSectionToggle
+                  title="Телефоны"
+                  summary={phonesHeaderSummary}
+                  status={phonesCardStatus}
+                  icon="phone"
+                  tone="amber"
+                  open={expandedSections.phones}
+                  controls="settings-phones-content"
+                  onClick={() => toggleSection('phones')}
+                />
+              </div>
+
+              <SettingsDrilldownPanel
+                id="settings-phones-content"
+                open={expandedSections.phones}
+                title="Телефоны"
+                summary={phonesHeaderSummary}
+                tone="amber"
+                className="settings-drilldown__panel--ladder settings-drilldown__panel--phones"
+                onClose={() => toggleSection('phones')}
+                footer={renderSectionSaveFooter('phones')}
+              >
+                <div
+                  id="settings-phones-content"
+                  className={cn('settings-section__collapse', expandedSections.phones && 'is-open')}
+                >
+                  {expandedSections.phones ? (
+                    <div className="settings-section__collapse-inner">
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            Блокировать телефоны
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Блокировать номера телефонов"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!draft.phoneNumbersEnabled}
+                              onChange={(event) => {
+                                const blocked = event.target.checked;
+                                setFieldValue('phoneNumbersEnabled', !blocked);
+                                if (blocked) {
+                                  setFieldValue('phoneNumbersBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {!draft.phoneNumbersEnabled ? (
+                        <>
+                          {renderEscalationTuning({
+                            title: 'Пороги телефонов',
+                            ariaLabelPrefix: 'Пороги телефонов',
+                            windowKey: 'phoneNumbersEscalationWindowHours',
+                            warnKey: 'phoneNumbersWarnMaxCount',
+                            muteKey: 'phoneNumbersMuteMaxCount',
+                            banKey: 'phoneNumbersBanMaxCount',
+                          })}
+
+                          <div
+                            className="settings-subsection-divider"
+                            role="separator"
+                            aria-label="Блок действий бота"
+                          >
+                            <span>Действия бота</span>
+                          </div>
+
+                          <div className="settings-native-toggle">
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">1. Объяснение</span>
+                                <div className="settings-native-toggle__title-actions">
+                                  <EditToggleButton
+                                    label="Редактировать текст сообщения о телефонах"
+                                    onClick={() => toggleBotMessageEditor('phoneNumbers')}
+                                    disabled={!draft.phoneNumbersBotMessageEnabled}
+                                    isOpen={openBotEditorKey === 'phoneNumbers'}
+                                  />
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      'settings-info-button',
+                                      openHintKey === 'phoneNumbersBotMessage' && 'is-open',
+                                    )}
+                                    aria-label="Пояснение для сообщения о телефонах"
+                                    aria-controls="phone-numbers-bot-message-hint"
+                                    aria-expanded={openHintKey === 'phoneNumbersBotMessage'}
+                                    onClick={() => toggleHint('phoneNumbersBotMessage')}
+                                  >
+                                    <span aria-hidden>i</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить объяснение для телефонов"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.phoneNumbersBotMessageEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue(
+                                      'phoneNumbersBotMessageEnabled',
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            {openHintKey === 'phoneNumbersBotMessage' ? (
+                              <p
+                                id="phone-numbers-bot-message-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Бот отправляет отдельное пояснение при удалении телефона. Ступени
+                                считаются за {draft.phoneNumbersEscalationWindowHours}ч.
+                              </p>
+                            ) : null}
+
+                            {draft.phoneNumbersBotMessageEnabled &&
+                            openBotEditorKey === 'phoneNumbers' ? (
+                              <BotMessageEditor
+                                editorKey="phoneNumbers"
+                                botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
+                                value={draft.phoneNumbersBotMessageText}
+                                onChange={(nextValue) =>
+                                  setFieldValue(
+                                    'phoneNumbersBotMessageText',
+                                    nextValue as ChatSettings['phoneNumbersBotMessageText'],
+                                  )
+                                }
+                                onReset={() => setFieldValue('phoneNumbersBotMessageText', '')}
+                              />
+                            ) : null}
+                          </div>
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                2. Предупреждение
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label={`Включить предупреждение за ${draft.phoneNumbersWarnMaxCount}-й телефон`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.phoneNumbersWarnEnabled}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    setFieldValue('phoneNumbersWarnEnabled', enabled);
+                                    if (enabled) {
+                                      setFieldValue('phoneNumbersBotMessageEnabled', true);
+                                    }
+                                  }}
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          {renderMuteStageToggle({
+                            enabledKey: 'phoneNumbersMuteEnabled',
+                            durationKey: 'phoneNumbersMuteDurationHours',
+                            title: '3. Мут',
+                            onEnable: () => {
+                              setFieldValue('phoneNumbersWarnEnabled', true);
+                              setFieldValue('phoneNumbersBotMessageEnabled', true);
+                            },
+                          })}
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">4. Бан</span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить бан за повторные телефоны"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.phoneNumbersBanEnabled}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    setFieldValue('phoneNumbersBanEnabled', enabled);
+                                    if (enabled) {
+                                      setFieldValue('phoneNumbersWarnEnabled', true);
+                                      setFieldValue('phoneNumbersBotMessageEnabled', true);
+                                    }
+                                  }}
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          {draft.phoneNumbersBotMessageEnabled
+                            ? renderAdminContactToggle(
+                                PHONE_NUMBERS_ADMIN_CONTACT_BUTTON_GROUP,
+                                'Добавить связь с админом в сообщения о телефонах',
+                              )
+                            : null}
+                        </>
+                      ) : (
+                        <div className="policy-mode-hint" role="note">
+                          Номера телефонов разрешены: тумблеры санкций скрыты.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              </SettingsDrilldownPanel>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '270ms', order: 16 }}
               aria-label="Ночной режим"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

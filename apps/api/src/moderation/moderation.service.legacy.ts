@@ -1855,11 +1855,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : null;
       const linkViolationCount24h =
         topViolation.ruleCode === 'LINK_BLOCKED'
-          ? await this.countRecentLinkViolations(chatId, senderId)
+          ? await this.countRecentLinkViolations(
+              chatId,
+              senderId,
+              settings.linkEscalationWindowHours,
+            )
           : null;
+      const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
       const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
       const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
-      const isMessageLimitsHit = this.isMessageLimitsViolation(topViolation.ruleCode);
+      const isMessageLimitsHit =
+        this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
       const messageLimitsBlockedWord = this.extractMessageLimitsBlockedWord(topViolation.metadata);
       const textFilterEscalationSettings = isTextFilterHit
         ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
@@ -1888,6 +1894,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             rulesPublishedMessageId,
           )
         : null;
+      const phoneNumbersMessageOptions = isPhoneNumberHit
+        ? this.buildBotMessageOptions(
+            chatId,
+            [],
+            false,
+            '',
+            '',
+            settings.rulesAttachViolationsEnabled,
+            rulesPublishedUrl,
+            rulesPublishedMessageId,
+          )
+        : null;
       const topicMessageOptions = isTopicFilterHit
         ? this.buildBotMessageOptions(
             chatId,
@@ -1908,6 +1926,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null;
       const messageLimitsViolationCount12h = isMessageLimitsHit
         ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
+        : null;
+      const phoneNumbersViolationCount = isPhoneNumberHit
+        ? await this.countRecentPhoneNumberViolations(
+            chatId,
+            senderId,
+            settings.phoneNumbersEscalationWindowHours,
+          )
         : null;
       const sendChatBotMessage = async (
         textValue: string,
@@ -1932,6 +1957,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           warnEnabled: settings.linkWarnEnabled,
           banEnabled: settings.linkBanEnabled,
           muteEnabled: settings.linkMuteEnabled,
+          warnMaxCount: settings.linkWarnMaxCount,
+          muteMaxCount: settings.linkMuteMaxCount,
+          banMaxCount: settings.linkBanMaxCount,
+        });
+      } else if (isPhoneNumberHit) {
+        action = this.resolveConfiguredEscalationAction(phoneNumbersViolationCount ?? 1, {
+          warnEnabled: settings.phoneNumbersWarnEnabled,
+          banEnabled: settings.phoneNumbersBanEnabled,
+          muteEnabled: settings.phoneNumbersMuteEnabled,
+          warnMaxCount: settings.phoneNumbersWarnMaxCount,
+          muteMaxCount: settings.phoneNumbersMuteMaxCount,
+          banMaxCount: settings.phoneNumbersBanMaxCount,
         });
       } else if (isTextFilterHit) {
         action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
@@ -1965,6 +2002,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
       const isFirstMessageLimitsViolation =
         isMessageLimitsHit && messageLimitsViolationCount12h === 1;
+      const isFirstPhoneNumberViolation = isPhoneNumberHit && phoneNumbersViolationCount === 1;
 
       if (topViolation.ruleCode === 'LINK_BLOCKED') {
         if (
@@ -2022,6 +2060,68 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 error: error instanceof Error ? error.message : 'Unknown error',
               },
               'Failed to send link warning message',
+            );
+          }
+        }
+      }
+
+      if (isPhoneNumberHit) {
+        if (
+          action === SanctionAction.NONE &&
+          isFirstPhoneNumberViolation &&
+          settings.phoneNumbersBotMessageEnabled
+        ) {
+          try {
+            await sendChatBotMessage(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
+                this.buildPhoneNumbersExplanation(
+                  userLabel,
+                  messageDeleted,
+                  settings.phoneNumbersBotMessageText,
+                  settings.botSpeechStyle,
+                ),
+                settings.phoneNumbersAdminContactButtonEnabled,
+                settings.phoneNumbersAdminContactButtonUrl,
+              ),
+              phoneNumbersMessageOptions ?? undefined,
+            );
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                userId: senderId,
+                messageId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send phone number explanation message',
+            );
+          }
+        } else if (action === SanctionAction.WARN) {
+          try {
+            await sendChatBotMessage(
+              await this.appendAdminContactMarkdownLink(
+                chatId,
+                this.buildMessageLimitsWarnExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  null,
+                  settings.botSpeechStyle,
+                ),
+                settings.phoneNumbersAdminContactButtonEnabled,
+                settings.phoneNumbersAdminContactButtonUrl,
+              ),
+              phoneNumbersMessageOptions ?? undefined,
+            );
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                userId: senderId,
+                messageId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send phone number warning message',
             );
           }
         }
@@ -2240,28 +2340,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ? (linkMessageOptions ?? undefined)
               : isTopicFilterHit
                 ? (topicMessageOptions ?? undefined)
-                : isMessageLimitsHit
-                  ? (limitsMessageOptions ?? undefined)
-                  : isTextFilterHit
-                    ? (textFilterMessageOptions ?? undefined)
-                    : undefined,
+                : isPhoneNumberHit
+                  ? (phoneNumbersMessageOptions ?? undefined)
+                  : isMessageLimitsHit
+                    ? (limitsMessageOptions ?? undefined)
+                    : isTextFilterHit
+                      ? (textFilterMessageOptions ?? undefined)
+                      : undefined,
           sanctionNoticeText:
-            isMessageLimitsHit && action === SanctionAction.BAN
+            isPhoneNumberHit && action === SanctionAction.BAN
               ? this.buildMessageLimitsBanExplanation(
                   userLabel,
                   topViolation.ruleCode,
                   actionMuteDurationHours,
-                  messageLimitsBlockedWord,
+                  null,
                   settings.botSpeechStyle,
                 )
-              : isTopicFilterHit && action === SanctionAction.BAN
-                ? this.buildTopicFilterBanExplanation(
+              : isMessageLimitsHit && action === SanctionAction.BAN
+                ? this.buildMessageLimitsBanExplanation(
                     userLabel,
-                    this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                    topViolation.ruleCode,
                     actionMuteDurationHours,
+                    messageLimitsBlockedWord,
                     settings.botSpeechStyle,
                   )
-                : undefined,
+                : isTopicFilterHit && action === SanctionAction.BAN
+                  ? this.buildTopicFilterBanExplanation(
+                      userLabel,
+                      this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                      actionMuteDurationHours,
+                      settings.botSpeechStyle,
+                    )
+                  : undefined,
           botSpeechStyle: settings.botSpeechStyle,
         });
 
@@ -2355,6 +2465,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             );
           }
         }
+
+        if (isPhoneNumberHit && action === SanctionAction.MUTE) {
+          try {
+            await sendChatBotMessage(
+              this.buildMessageLimitsMuteExplanation(
+                userLabel,
+                topViolation.ruleCode,
+                null,
+                settings.botSpeechStyle,
+              ),
+              phoneNumbersMessageOptions ?? undefined,
+            );
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                userId: senderId,
+                messageId,
+                ruleCode: topViolation.ruleCode,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send phone number mute message',
+            );
+          }
+        }
       }
 
       await this.createBotModerationEvent({
@@ -2377,7 +2512,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
               ? {
                   linkViolationCount24h,
-                  linkEscalationWindowHours: LINK_ESCALATION_WINDOW_HOURS,
+                  linkEscalationWindowHours: settings.linkEscalationWindowHours,
+                }
+              : {}),
+            ...(isPhoneNumberHit && phoneNumbersViolationCount !== null
+              ? {
+                  phoneNumbersViolationCount,
+                  phoneNumbersEscalationWindowHours: settings.phoneNumbersEscalationWindowHours,
                 }
               : {}),
             ...(isTextFilterHit && textFilterViolationCount24h !== null
@@ -3825,41 +3966,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveLinkEscalationAction(
     linkViolationCount24h: number,
-    settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
+    settings: {
+      warnEnabled: boolean;
+      banEnabled: boolean;
+      muteEnabled: boolean;
+      warnMaxCount?: number;
+      muteMaxCount?: number;
+      banMaxCount?: number;
+    },
   ): SanctionAction {
-    const count = Number.isInteger(linkViolationCount24h) ? Math.max(1, linkViolationCount24h) : 1;
+    const warnMaxCount = settings.warnMaxCount ?? 2;
+    const muteMaxCount = settings.muteMaxCount ?? (settings.warnEnabled ? warnMaxCount + 1 : 2);
+    const banMaxCount =
+      settings.banMaxCount ??
+      (settings.muteEnabled ? muteMaxCount + 1 : settings.warnEnabled ? warnMaxCount + 1 : 2);
 
-    if (count >= 4) {
-      if (settings.banEnabled) {
-        return SanctionAction.BAN;
-      }
-      if (settings.muteEnabled) {
-        return SanctionAction.MUTE;
-      }
-      if (settings.warnEnabled) {
-        return SanctionAction.WARN;
-      }
-      return SanctionAction.NONE;
-    }
-
-    if (count === 3) {
-      if (settings.muteEnabled) {
-        return SanctionAction.MUTE;
-      }
-      if (settings.banEnabled) {
-        return SanctionAction.BAN;
-      }
-      if (settings.warnEnabled) {
-        return SanctionAction.WARN;
-      }
-      return SanctionAction.NONE;
-    }
-
-    if (count === 2 && settings.warnEnabled) {
-      return SanctionAction.WARN;
-    }
-
-    return SanctionAction.NONE;
+    return this.resolveConfiguredEscalationAction(linkViolationCount24h, {
+      ...settings,
+      warnMaxCount,
+      muteMaxCount,
+      banMaxCount,
+    });
   }
 
   private resolveRequiredSubscriptionEscalationAction(
@@ -3908,6 +4035,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return SanctionAction.NONE;
+  }
+
+  private resolveConfiguredEscalationAction(
+    violationCount: number,
+    settings: {
+      warnEnabled: boolean;
+      banEnabled: boolean;
+      muteEnabled: boolean;
+      warnMaxCount: number;
+      muteMaxCount: number;
+      banMaxCount: number;
+    },
+  ): SanctionAction {
+    const count = Number.isInteger(violationCount) ? Math.max(1, violationCount) : 1;
+    const thresholds = [
+      {
+        action: SanctionAction.BAN,
+        enabled: settings.banEnabled,
+        count: this.normalizeEscalationThreshold(settings.banMaxCount, 4),
+      },
+      {
+        action: SanctionAction.MUTE,
+        enabled: settings.muteEnabled,
+        count: this.normalizeEscalationThreshold(settings.muteMaxCount, 3),
+      },
+      {
+        action: SanctionAction.WARN,
+        enabled: settings.warnEnabled,
+        count: this.normalizeEscalationThreshold(settings.warnMaxCount, 2),
+      },
+    ];
+
+    for (const threshold of thresholds) {
+      if (threshold.enabled && count >= threshold.count) {
+        return threshold.action;
+      }
+    }
+
+    return SanctionAction.NONE;
+  }
+
+  private normalizeEscalationThreshold(value: number, fallback: number): number {
+    return Number.isInteger(value) ? Math.min(20, Math.max(1, value)) : fallback;
   }
 
   private resolveMessageLimitsEscalationAction(
@@ -3990,6 +4160,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private resolveAutomaticMuteDurationHours(ruleCode: string, settings: ChatSettings): number {
     if (ruleCode === 'LINK_BLOCKED') {
       return settings.linkMuteDurationHours;
+    }
+
+    if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
+      return settings.phoneNumbersMuteDurationHours;
     }
 
     if (ruleCode === REQUIRED_SUBSCRIPTION_RULE_CODE) {
@@ -4263,6 +4437,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         message_status: messageStatus,
         reason,
         photo_cooldown_hours: String(hours),
+      },
+    });
+  }
+
+  private buildPhoneNumbersExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    templateText: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+    const reason = 'телефонные номера в этом чате запрещены';
+    return this.renderEditableBotSpeechTemplate({
+      style: botSpeechStyle ?? null,
+      fieldKey: 'phoneNumbersBotMessageText',
+      overrideText: templateText,
+      replacements: {
+        user: userLabel,
+        message_status: messageStatus,
+        reason,
       },
     });
   }
@@ -4635,7 +4829,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalized.slice(0, 32);
   }
 
-  private async countRecentLinkViolations(chatId: string, userId: string): Promise<number> {
+  private async countRecentLinkViolations(
+    chatId: string,
+    userId: string,
+    windowHours: number,
+  ): Promise<number> {
     const violationModel = this.prisma.violation as unknown as {
       count?: (args: {
         where: {
@@ -4654,7 +4852,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const since = await this.resolveViolationResetSince(
       chatId,
       userId,
-      LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+      this.normalizeEscalationWindowHours(windowHours, LINK_ESCALATION_WINDOW_HOURS) *
+        60 *
+        60 *
+        1000,
     );
     const count = await violationModel.count({
       where: {
@@ -4666,6 +4867,50 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async countRecentPhoneNumberViolations(
+    chatId: string,
+    userId: string,
+    windowHours: number,
+  ): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      this.normalizeEscalationWindowHours(windowHours, MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS) *
+        60 *
+        60 *
+        1000,
+    );
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: 'PHONE_NUMBER_BLOCKED',
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private normalizeEscalationWindowHours(value: number, fallback: number): number {
+    return Number.isInteger(value) ? Math.min(168, Math.max(1, value)) : fallback;
   }
 
   private async countRecentRequiredSubscriptionViolations(

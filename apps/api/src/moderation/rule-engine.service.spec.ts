@@ -25,6 +25,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
+    duplicateDetectionPreset: 'STANDARD',
+    duplicateIgnoreLinksEnabled: false,
+    duplicateIgnorePhonesEnabled: false,
+    duplicateNearMatchEnabled: false,
     duplicateWarnWindowSec: 12 * 60 * 60,
     duplicateWarnMaxCount: 2,
     duplicateMuteWindowSec: 24 * 60 * 60,
@@ -33,6 +37,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    linkEscalationWindowHours: 24,
+    linkWarnMaxCount: 2,
+    linkMuteMaxCount: 3,
+    linkBanMaxCount: 4,
     botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
@@ -64,6 +72,18 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
     phoneNumbersEnabled: true,
+    phoneNumbersBotMessageEnabled: false,
+    phoneNumbersBotMessageText: '',
+    phoneNumbersWarnEnabled: false,
+    phoneNumbersMuteEnabled: false,
+    phoneNumbersMuteDurationHours: 6,
+    phoneNumbersBanEnabled: false,
+    phoneNumbersEscalationWindowHours: 12,
+    phoneNumbersWarnMaxCount: 2,
+    phoneNumbersMuteMaxCount: 3,
+    phoneNumbersBanMaxCount: 4,
+    phoneNumbersAdminContactButtonEnabled: false,
+    phoneNumbersAdminContactButtonUrl: '',
     messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
@@ -3419,6 +3439,128 @@ describe('RuleEngineService', () => {
 
     expect(second.duplicateHit).toBeUndefined();
     expect(second.duplicateDecision).toBeUndefined();
+  });
+
+  it('keeps standard duplicate detection exact when links change', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      linkPolicy: LinkPolicy.ALERT_ONLY,
+      duplicateDetectionPreset: 'STANDARD',
+    });
+    const textBase =
+      'Подробная инструкция для участников встречи сохранена здесь, проверьте детали и подтвердите участие';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/one`,
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/two`,
+      settings,
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/three`,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(third.duplicateHit).toBeUndefined();
+    expect(third.duplicateDecision).toBeUndefined();
+    expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('detects strict duplicates when links and phones are rotated', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      linkPolicy: LinkPolicy.ALERT_ONLY,
+      duplicateDetectionPreset: 'STRICT',
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+    const textBase =
+      'Подробная инструкция для участников встречи сохранена здесь, проверьте детали и подтвердите участие';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/one связь +7 (900) 111-22-33`,
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/two связь +7 (900) 222-33-44`,
+      settings,
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: `${textBase} https://example.com/three связь +7 (900) 333-44-55`,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(third.duplicateDecision).toEqual(
+      expect.objectContaining({
+        action: 'WARN',
+        fingerprintType: 'content',
+      }),
+    );
+    expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('detects strict near duplicates when meaningful words are reordered', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'STRICT',
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+    const first =
+      'Пожалуйста проверьте расписание встречи завтра утром команда собирается возле главного входа';
+    const second =
+      'Команда завтра утром пожалуйста проверьте расписание встречи собирается возле главного входа';
+    const third =
+      'Возле главного входа команда собирается завтра утром пожалуйста проверьте расписание встречи';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: first,
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: second,
+      settings,
+      domainAllowlist: [],
+    });
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: third,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(result.duplicateDecision).toEqual(
+      expect.objectContaining({
+        action: 'WARN',
+        fingerprintType: 'near',
+      }),
+    );
   });
 
   it('does not track duplicates for short everyday phrases', async () => {

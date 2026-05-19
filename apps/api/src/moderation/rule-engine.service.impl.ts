@@ -1589,13 +1589,14 @@ export class RuleEngineService {
       settings.antiDuplicateEnabled &&
       violations.length === 0 &&
       !linkViolation &&
-      this.shouldTrackDuplicate(text, detectionContext.compactText);
+      this.shouldTrackDuplicate(text, detectionContext.compactText, settings);
     markRuleEngineDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
       duplicateCandidate && !skipDuplicateState
         ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
+            rawText: text,
             compactText: detectionContext.compactText,
             settings,
           })
@@ -2178,15 +2179,34 @@ export class RuleEngineService {
     return false;
   }
 
-  private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
-    if (DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
+  private shouldTrackDuplicate(
+    rawText: string,
+    compactText: string,
+    settings: ChatSettings,
+  ): boolean {
+    const hasPhone = DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText);
+    const duplicateIgnoresPhones =
+      settings.duplicateDetectionPreset === 'STRICT' ||
+      (settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled);
+    if (hasPhone && !duplicateIgnoresPhones) {
       return false;
     }
-    const hasUrl = extractUrlsFromText(rawText).length > 0;
 
-    const candidateText = hasUrl
-      ? this.normalizeForDetection(stripUrlsFromText(rawText))
-      : compactText;
+    const hasUrl = extractUrlsFromText(rawText).length > 0;
+    const shouldBuildContentCandidate = hasUrl || (hasPhone && duplicateIgnoresPhones);
+    let candidateText = compactText;
+
+    if (shouldBuildContentCandidate) {
+      let rawCandidate = rawText;
+      if (hasUrl) {
+        rawCandidate = stripUrlsFromText(rawCandidate);
+      }
+      if (hasPhone && duplicateIgnoresPhones) {
+        rawCandidate = rawCandidate.replace(DUPLICATE_EXCLUDED_PHONE_PATTERN, ' ');
+      }
+      candidateText = this.normalizeForDetection(rawCandidate);
+    }
+
     if (!candidateText) {
       return false;
     }

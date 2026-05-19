@@ -17,6 +17,7 @@ export {
   chatRulesSchema,
   chatSettingsScreenResponseSchema,
   chatSettingsSchema,
+  duplicateDetectionPresetSchema,
   domainAllowlistEntrySchema,
   linkPolicySchema,
   normalizeMessageLimitsBlockedWordCandidate,

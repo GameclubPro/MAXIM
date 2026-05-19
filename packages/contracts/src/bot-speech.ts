@@ -19,6 +19,7 @@ export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'textFiltersWarnMessageText',
   'duplicateBotMessageText',
   'messageLimitsBotMessageText',
+  'phoneNumbersBotMessageText',
   'nightModeBotMessageText',
   'nightModeOpenMessageText',
 ] as const;
@@ -112,6 +113,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersWarnMessageText: '⚠️ {user}, это предупреждение. Причина: {reason}.',
       duplicateBotMessageText: '♻️ {user}, дубль найден. {sanction}',
       messageLimitsBotMessageText: '📏 {user}, сообщение {message_status}. Причина: {reason}.',
+      phoneNumbersBotMessageText: '☎️ {user}, сообщение {message_status}. Причина: {reason}.',
       nightModeBotMessageText:
         '🌙 Ночной режим активен: {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText: '☀️ Ночной режим завершен. {opening_status}',
@@ -164,6 +166,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '⚠️ {user}, это предупреждение. Причина: {reason}. Давайте дальше без этого 🙌',
       duplicateBotMessageText: '♻️ {user}, это уже повтор. {sanction}',
       messageLimitsBotMessageText: '📏 {user}, сообщение не прошло. Причина: {reason}.',
+      phoneNumbersBotMessageText: '☎️ {user}, номер телефона убрал. Причина: {reason}.',
       nightModeBotMessageText:
         '🌙 Сейчас тихий режим: {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText: '☀️ Доброе утро. {opening_status} Можно снова писать ✨',
@@ -220,6 +223,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateBotMessageText: 'Товарищ {user}, вижу повтор 👀 {sanction}',
       messageLimitsBotMessageText:
         'Товарищ {user}, это прикрыл 📏 Причина: {reason}. Подправьте и снова в эфир.',
+      phoneNumbersBotMessageText: 'Товарищ {user}, телефон снял с линии ☎️ Причина: {reason}.',
       nightModeBotMessageText:
         '🌙 Ночной патруль на линии. Чат прикрыт на {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText:
@@ -277,6 +281,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       duplicateBotMessageText: '{user}, это уже было 👀 {sanction}',
       messageLimitsBotMessageText:
         '{user}, это не прошло 📏 Причина: {reason}. Лимиты скучные, зато считают без эмоций.',
+      phoneNumbersBotMessageText:
+        '{user}, номер телефона убрал ☎️ Причина: {reason}. Тут контакты проходят через правила.',
       nightModeBotMessageText:
         '🌙 Ночной режим: {night_window} ({night_timezone}). {night_status} Чату тоже иногда нужен режим потише.',
       nightModeOpenMessageText:
@@ -339,6 +345,7 @@ const BOT_SPEECH_POLICE_FEMALE_PRESET: BotSpeechPreset = {
     duplicateBotMessageText: 'Товарищ {user}, вижу повтор 👀 {sanction}',
     messageLimitsBotMessageText:
       'Товарищ {user}, это прикрыла 📏 Причина: {reason}. Подправьте и снова в эфир.',
+    phoneNumbersBotMessageText: 'Товарищ {user}, телефон сняла с линии ☎️ Причина: {reason}.',
     nightModeBotMessageText:
       '🌙 Ночной патруль на линии. Чат прикрыт на {night_window} ({night_timezone}). {night_status}',
     nightModeOpenMessageText:

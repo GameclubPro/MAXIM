@@ -1,5 +1,8 @@
 import type { ChatSettings } from '../prisma/prisma-client';
-import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
+import {
+  RuleEngineMessageLimitsDetector,
+  extractDetectedPhoneNumbers,
+} from './rule-engine-message-limits.detector';
 
 class MockRedisCounterService {
   readonly calls: Array<{ key: string; ttlSec: number }> = [];
@@ -82,6 +85,21 @@ describe('RuleEngineMessageLimitsDetector', () => {
       expect.objectContaining({ ruleCode: 'FILE_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'VOICE_BLOCKED' }),
     ]);
+  });
+
+  it('extracts formatted and contextual phone numbers without duplicates', () => {
+    expect(
+      extractDetectedPhoneNumbers('Связь: +7 (900) 123-45-67, запасной телефон 8 900 123 45 67'),
+    ).toEqual(['79001234567']);
+    expect(extractDetectedPhoneNumbers('телефон офиса 495 123 45 67')).toEqual(['4951234567']);
+  });
+
+  it('does not treat dates and numeric ranges as phones', () => {
+    expect(
+      extractDetectedPhoneNumbers(
+        'Периоды 2024-2025-2026 и 12.05.2026 не контакты, диапазон 100-200-300 тоже.',
+      ),
+    ).toEqual([]);
   });
 
   it('uses clamped message-count windows and thresholds', async () => {

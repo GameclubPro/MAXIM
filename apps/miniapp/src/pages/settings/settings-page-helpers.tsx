@@ -11,10 +11,7 @@ import {
   type DomainAllowlistEntry,
   formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
-import {
-  type BroadcastImage,
-  type SendBroadcastResult,
-} from '@maxim/contracts/broadcast';
+import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
 import {
   type ManagedEntityAssignedBot,
   type ManagedEntityHeader,
@@ -144,6 +141,7 @@ export type AdminContactButtonGroup = {
     | 'thematicFiltersAdminContactButtonEnabled'
     | 'duplicateAdminContactButtonEnabled'
     | 'messageLimitsAdminContactButtonEnabled'
+    | 'phoneNumbersAdminContactButtonEnabled'
     | 'requiredSubscriptionAdminContactButtonEnabled'
     | 'invitationAccessAdminContactButtonEnabled';
   urlKey:
@@ -153,6 +151,7 @@ export type AdminContactButtonGroup = {
     | 'thematicFiltersAdminContactButtonUrl'
     | 'duplicateAdminContactButtonUrl'
     | 'messageLimitsAdminContactButtonUrl'
+    | 'phoneNumbersAdminContactButtonUrl'
     | 'requiredSubscriptionAdminContactButtonUrl'
     | 'invitationAccessAdminContactButtonUrl';
 };
@@ -173,8 +172,12 @@ export const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
-export const LazyBroadcastContentComposer = lazy(() => import('../../components/broadcast-content-composer'));
-export const LazyBroadcastButtonsSheet = lazy(() => import('../../components/broadcast-buttons-sheet'));
+export const LazyBroadcastContentComposer = lazy(
+  () => import('../../components/broadcast-content-composer'),
+);
+export const LazyBroadcastButtonsSheet = lazy(
+  () => import('../../components/broadcast-buttons-sheet'),
+);
 export const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../../components/broadcast-publish-review-sheet'),
 );
@@ -285,6 +288,10 @@ export const MESSAGE_LIMITS_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'messageLimitsAdminContactButtonEnabled',
   urlKey: 'messageLimitsAdminContactButtonUrl',
 } as const satisfies AdminContactButtonGroup;
+export const PHONE_NUMBERS_ADMIN_CONTACT_BUTTON_GROUP = {
+  enabledKey: 'phoneNumbersAdminContactButtonEnabled',
+  urlKey: 'phoneNumbersAdminContactButtonUrl',
+} as const satisfies AdminContactButtonGroup;
 export const REQUIRED_SUBSCRIPTION_ADMIN_CONTACT_BUTTON_GROUP = {
   enabledKey: 'requiredSubscriptionAdminContactButtonEnabled',
   urlKey: 'requiredSubscriptionAdminContactButtonUrl',
@@ -322,7 +329,13 @@ export type MaxMessageLengthSliderProps = {
   onCommit: (value: ChatSettings['maxMessageLength']) => void;
 };
 
-export function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageLengthSliderProps) {
+export function MaxMessageLengthSlider({
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+}: MaxMessageLengthSliderProps) {
   const [localValue, setLocalValue] = useState(value);
   const [isDragging, setIsDragging] = useState(false);
   const isDraggingRef = useRef(false);
@@ -466,6 +479,7 @@ export type AutoMuteDurationKey =
   | 'duplicateMuteDurationHours'
   | 'linkMuteDurationHours'
   | 'messageLimitsMuteDurationHours'
+  | 'phoneNumbersMuteDurationHours'
   | 'profanityMuteDurationHours'
   | 'requiredSubscriptionMuteDurationHours'
   | 'invitationAccessMuteDurationHours'
@@ -475,6 +489,7 @@ export type AutoMuteEnabledKey =
   | 'duplicateMuteEnabled'
   | 'linkMuteEnabled'
   | 'messageLimitsMuteEnabled'
+  | 'phoneNumbersMuteEnabled'
   | 'profanityMuteEnabled'
   | 'requiredSubscriptionMuteEnabled'
   | 'invitationAccessMuteEnabled'
@@ -509,6 +524,7 @@ export type HintKey =
   | 'stickerCooldown'
   | 'messageLimitsBotMessage'
   | 'messageLimitsBotButton'
+  | 'phoneNumbersBotMessage'
   | 'nightModeEnabled'
   | 'nightForceClose'
   | 'nightBotMessage'
@@ -540,6 +556,7 @@ export type BotMessageEditorKey =
   | 'textFilters'
   | 'duplicate'
   | 'messageLimits'
+  | 'phoneNumbers'
   | 'night'
   | 'nightOpen';
 export type WarnMessageEditorKey =
@@ -547,7 +564,13 @@ export type WarnMessageEditorKey =
   | 'requiredSubscriptionWarn'
   | 'invitationAccessWarn'
   | 'textFiltersWarn';
-export type SettingsSectionKey = ApplySectionKey | 'rules' | 'poll' | 'giveaway' | 'comments' | 'mailing';
+export type SettingsSectionKey =
+  | ApplySectionKey
+  | 'rules'
+  | 'poll'
+  | 'giveaway'
+  | 'comments'
+  | 'mailing';
 
 export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -560,6 +583,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   thematicFilters: false,
   duplicates: false,
   limits: false,
+  phones: false,
   night: false,
   requiredSubscription: false,
   invitationAccess: false,
@@ -576,6 +600,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   thematicFilters: 'Кодовые слова',
   duplicates: 'Повторы',
   limits: 'Ограничения',
+  phones: 'Телефоны',
   night: 'Ночной режим',
   requiredSubscription: 'Подписка на канал',
   invitationAccess: 'Настройки',
@@ -769,19 +794,24 @@ export const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
 ] as const;
 
-export const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditableFieldKey> = {
-  link: 'linkBotMessageText',
-  greeting: 'greetingBotMessageText',
-  requiredSubscription: 'requiredSubscriptionBotMessageText',
-  invitationAccess: 'invitationAccessBotMessageText',
-  textFilters: 'textFiltersBotMessageText',
-  duplicate: 'duplicateBotMessageText',
-  messageLimits: 'messageLimitsBotMessageText',
-  night: 'nightModeBotMessageText',
-  nightOpen: 'nightModeOpenMessageText',
-};
+export const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditableFieldKey> =
+  {
+    link: 'linkBotMessageText',
+    greeting: 'greetingBotMessageText',
+    requiredSubscription: 'requiredSubscriptionBotMessageText',
+    invitationAccess: 'invitationAccessBotMessageText',
+    textFilters: 'textFiltersBotMessageText',
+    duplicate: 'duplicateBotMessageText',
+    messageLimits: 'messageLimitsBotMessageText',
+    phoneNumbers: 'phoneNumbersBotMessageText',
+    night: 'nightModeBotMessageText',
+    nightOpen: 'nightModeOpenMessageText',
+  };
 
-export const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<WarnMessageEditorKey, BotSpeechEditableFieldKey> = {
+export const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<
+  WarnMessageEditorKey,
+  BotSpeechEditableFieldKey
+> = {
   linkWarn: 'linkWarnMessageText',
   requiredSubscriptionWarn: 'requiredSubscriptionWarnMessageText',
   invitationAccessWarn: 'invitationAccessWarnMessageText',
@@ -819,6 +849,7 @@ export const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
     'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {mute_duration}. Старый {ban_duration} тоже поддерживается. Поддерживается Markdown MAX.',
   messageLimits:
     'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}, {message_limit_count}, {message_limit_window_hours}. Поддерживается Markdown MAX.',
+  phoneNumbers: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   night:
     'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}. Поддерживается Markdown MAX.',
   nightOpen:
@@ -1024,7 +1055,10 @@ export function renderBotMessageTemplatePreview(
   return rendered.trim();
 }
 
-export function mergeBotSpeechStyleSettings(target: ChatSettings, source: ChatSettings): ChatSettings {
+export function mergeBotSpeechStyleSettings(
+  target: ChatSettings,
+  source: ChatSettings,
+): ChatSettings {
   const nextSettings: ChatSettings = {
     ...target,
   };
@@ -1288,7 +1322,10 @@ export function formatAllowlistModeLabel(matchType: AllowlistMatchType): string 
   return matchType === 'DOMAIN' ? 'Весь домен' : 'Точная ссылка';
 }
 
-export function formatAllowlistMetaLabel(entry: DomainAllowlistEntry, scheduledAtLabel: string): string {
+export function formatAllowlistMetaLabel(
+  entry: DomainAllowlistEntry,
+  scheduledAtLabel: string,
+): string {
   const targetLabel =
     entry.matchType === 'DOMAIN'
       ? 'Домен разрешен без срока удаления.'
@@ -1306,7 +1343,10 @@ export const ALLOWLIST_MATCH_OPTIONS: Array<{ value: AllowlistMatchType; label: 
   { value: 'DOMAIN', label: 'Весь домен' },
 ];
 
-export function formatCompactBroadcastDateTime(value: string | null, timeZone?: string | null): string {
+export function formatCompactBroadcastDateTime(
+  value: string | null,
+  timeZone?: string | null,
+): string {
   return formatDateTimeInTimeZone(
     value,
     {
@@ -1713,7 +1753,9 @@ export function formatRequiredSubscriptionEntityLabel(entityType: 'chat' | 'chan
   return entityType === 'chat' ? 'Чат' : 'Канал';
 }
 
-export function formatRequiredSubscriptionLinkPreview(value: string | null | undefined): string | null {
+export function formatRequiredSubscriptionLinkPreview(
+  value: string | null | undefined,
+): string | null {
   if (typeof value !== 'string') {
     return null;
   }

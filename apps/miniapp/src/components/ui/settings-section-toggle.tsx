@@ -10,6 +10,7 @@ export type SettingsSectionIconName =
   | 'keywords'
   | 'repeat'
   | 'shield'
+  | 'phone'
   | 'subscription'
   | 'moon'
   | 'send'
@@ -205,6 +206,20 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
         />
         <path
           d="M9.1 10.2h5.8M9.1 13.2h5.8"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
+  if (name === 'phone') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <path
+          d="M8.2 4.6 6.1 6.7c-.6.6-.8 1.5-.5 2.3 1.5 4.3 4.9 7.7 9.2 9.2.8.3 1.7.1 2.3-.5l2.1-2.1c.5-.5.5-1.4-.1-1.9l-2.2-1.7c-.5-.4-1.2-.4-1.7 0l-1 .8a11 11 0 0 1-3-3l.8-1c.4-.5.4-1.2 0-1.7L10.1 4.7c-.5-.6-1.4-.6-1.9-.1Z"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"

@@ -168,6 +168,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    linkEscalationWindowHours: 24,
     botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
@@ -8698,9 +8699,11 @@ describe('ModerationService', () => {
     );
 
     const update = createAdminReplyModerationUpdate();
-    delete (((update.raw as Record<string, unknown>).message as Record<string, unknown>).body as {
-      text?: string;
-    }).text;
+    delete (
+      ((update.raw as Record<string, unknown>).message as Record<string, unknown>).body as {
+        text?: string;
+      }
+    ).text;
 
     await service.handleUpdate(update);
 
@@ -13282,7 +13285,7 @@ describe('ModerationService', () => {
           title: 'Chat 1',
           settings: createSettings({
             phoneNumbersEnabled: false,
-            messageLimitsBotMessageEnabled: true,
+            phoneNumbersBotMessageEnabled: true,
           }),
           domains: [],
         }),
@@ -13334,11 +13337,7 @@ describe('ModerationService', () => {
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation(
-        'Алексей',
-        'снято с линии',
-        'телефонные номера в этом чате запрещены',
-      ),
+      'Товарищ [Алексей](max://user/user-1), телефон снял с линии ☎️ Причина: телефонные номера в этом чате запрещены.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {

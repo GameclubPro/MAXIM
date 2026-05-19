@@ -8,6 +8,8 @@ export const ANTI_SPAM_BURST_LIMIT = 5;
 export const ANTI_SPAM_BURST_WINDOW_SEC = 10;
 const ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS = 120;
 const PHONE_NUMBER_CANDIDATE_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
+const PHONE_CONTEXT_WORD_PATTERN =
+  /(?:тел|телефон|номер|звон|звонить|связь|связаться|whatsapp|ватсап|wa|вайбер|viber|личк|лс)/iu;
 
 export class RuleEngineMessageLimitsDetector {
   private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
@@ -91,10 +93,7 @@ export class RuleEngineMessageLimitsDetector {
     };
   }
 
-  detectBlockedWordLimit(params: {
-    text: string;
-    settings: ChatSettings;
-  }): RuleViolation | null {
+  detectBlockedWordLimit(params: { text: string; settings: ChatSettings }): RuleViolation | null {
     const blockedWord = this.blockedWordDetector.detect(
       params.text,
       params.settings.messageLimitsBlockedWords,
@@ -113,15 +112,12 @@ export class RuleEngineMessageLimitsDetector {
     };
   }
 
-  detectPhoneNumberLimit(params: {
-    text: string;
-    settings: ChatSettings;
-  }): RuleViolation | null {
+  detectPhoneNumberLimit(params: { text: string; settings: ChatSettings }): RuleViolation | null {
     if (params.settings.phoneNumbersEnabled) {
       return null;
     }
 
-    const phoneCount = countDetectedPhoneNumbers(params.text);
+    const phoneCount = extractDetectedPhoneNumbers(params.text).length;
     if (phoneCount === 0) {
       return null;
     }
@@ -259,21 +255,29 @@ function normalizeSettingsUpdatedAt(value: Date | string): string {
   return Number.isFinite(parsed) ? String(parsed) : 'na';
 }
 
-function countDetectedPhoneNumbers(text: string): number {
-  let count = 0;
+export function extractDetectedPhoneNumbers(text: string): string[] {
+  const phones: string[] = [];
   for (const match of text.matchAll(PHONE_NUMBER_CANDIDATE_PATTERN)) {
     const candidate = match[1];
-    if (candidate && isPhoneNumberCandidate(candidate)) {
-      count += 1;
+    if (candidate && isPhoneNumberCandidate(candidate, text, match.index ?? 0)) {
+      phones.push(normalizePhoneNumberCandidate(candidate));
     }
   }
 
-  return count;
+  return Array.from(new Set(phones));
 }
 
-function isPhoneNumberCandidate(candidate: string): boolean {
+function isPhoneNumberCandidate(
+  candidate: string,
+  sourceText: string,
+  matchIndex: number,
+): boolean {
   const digits = candidate.replace(/\D/g, '');
   if (digits.length < 10 || digits.length > 15) {
+    return false;
+  }
+
+  if (isLikelyDateOrNumberRange(candidate)) {
     return false;
   }
 
@@ -294,7 +298,42 @@ function isPhoneNumberCandidate(candidate: string): boolean {
     return true;
   }
 
-  return /\(\s*\d{3}\s*\)|\d{3}[\s.-]+\d{3}[\s.-]+\d{2}[\s.-]+\d{2}/u.test(
-    candidate,
+  return (
+    /\(\s*\d{3}\s*\)|\d{3}[\s.-]+\d{3}[\s.-]+\d{2}[\s.-]+\d{2}/u.test(candidate) ||
+    hasPhoneContext(sourceText, matchIndex)
   );
+}
+
+function normalizePhoneNumberCandidate(candidate: string): string {
+  const digits = candidate.replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('8')) {
+    return `7${digits.slice(1)}`;
+  }
+  if (digits.length === 10 && digits.startsWith('9')) {
+    return `7${digits}`;
+  }
+  return digits;
+}
+
+function isLikelyDateOrNumberRange(candidate: string): boolean {
+  const normalized = candidate.trim();
+  if (
+    normalized.startsWith('+') ||
+    /\(\s*\d{3}\s*\)/u.test(normalized) ||
+    /(?:^|\D)(?:\d[\s-]*)?\d{3}[\s.-]+\d{3}[\s.-]+\d{2}[\s.-]+\d{2}(?:\D|$)/u.test(normalized)
+  ) {
+    return false;
+  }
+
+  if (/\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/u.test(normalized)) {
+    return true;
+  }
+
+  return /^\d{1,4}(?:[.,]\d+)?(?:\s*[-–]\s*\d{1,4}(?:[.,]\d+)?){2,}$/u.test(normalized);
+}
+
+function hasPhoneContext(sourceText: string, matchIndex: number): boolean {
+  const start = Math.max(0, matchIndex - 40);
+  const end = Math.min(sourceText.length, matchIndex + 80);
+  return PHONE_CONTEXT_WORD_PATTERN.test(sourceText.slice(start, end));
 }

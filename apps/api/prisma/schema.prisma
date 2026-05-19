@@ -20,6 +20,12 @@ enum LinkPolicy {
   ALERT_ONLY
 }
 
+enum DuplicateDetectionPreset {
+  STANDARD
+  STRICT
+  CUSTOM
+}
+
 enum CommercialAdsSensitivity {
   BALANCED
   STRICT
@@ -236,6 +242,10 @@ model ChatSettings {
   duplicateMuteEnabled                          Boolean                  @default(true) @map("duplicate_mute_enabled")
   duplicateBanEnabled                           Boolean                  @default(true) @map("duplicate_ban_enabled")
   antiDuplicateEnabled                          Boolean                  @default(true) @map("anti_duplicate_enabled")
+  duplicateDetectionPreset                      DuplicateDetectionPreset @default(STANDARD) @map("duplicate_detection_preset")
+  duplicateIgnoreLinksEnabled                   Boolean                  @default(false) @map("duplicate_ignore_links_enabled")
+  duplicateIgnorePhonesEnabled                  Boolean                  @default(false) @map("duplicate_ignore_phones_enabled")
+  duplicateNearMatchEnabled                     Boolean                  @default(false) @map("duplicate_near_match_enabled")
   duplicateWarnWindowSec                        Int                      @default(43200) @map("duplicate_warn_window_sec")
   duplicateWarnMaxCount                         Int                      @default(2) @map("duplicate_warn_max_count")
   duplicateMuteWindowSec                        Int                      @default(86400) @map("duplicate_mute_window_sec")
@@ -243,6 +253,10 @@ model ChatSettings {
   duplicateBanWindowSec                         Int                      @default(172800) @map("duplicate_ban_window_sec")
   duplicateBanMaxCount                          Int                      @default(4) @map("duplicate_ban_max_count")
   linkPolicy                                    LinkPolicy               @default(ALLOWLIST_ONLY) @map("link_policy")
+  linkEscalationWindowHours                     Int                      @default(24) @map("link_escalation_window_hours")
+  linkWarnMaxCount                              Int                      @default(2) @map("link_warn_max_count")
+  linkMuteMaxCount                              Int                      @default(3) @map("link_mute_max_count")
+  linkBanMaxCount                               Int                      @default(4) @map("link_ban_max_count")
   botSpeechStyle                                BotSpeechStyle?          @default(FRIENDLY) @map("bot_speech_style")
   greetingEnabled                               Boolean                  @default(false) @map("greeting_enabled")
   greetingBotMessageEnabled                     Boolean                  @default(false) @map("greeting_bot_message_enabled")
@@ -301,6 +315,18 @@ model ChatSettings {
   fileMessagesEnabled                           Boolean                  @default(true) @map("file_messages_enabled")
   voiceMessagesEnabled                          Boolean                  @default(true) @map("voice_messages_enabled")
   phoneNumbersEnabled                           Boolean                  @default(true) @map("phone_numbers_enabled")
+  phoneNumbersBotMessageEnabled                 Boolean                  @default(false) @map("phone_numbers_bot_message_enabled")
+  phoneNumbersBotMessageText                    String                   @default("") @map("phone_numbers_bot_message_text")
+  phoneNumbersWarnEnabled                       Boolean                  @default(false) @map("phone_numbers_warn_enabled")
+  phoneNumbersMuteEnabled                       Boolean                  @default(false) @map("phone_numbers_mute_enabled")
+  phoneNumbersMuteDurationHours                 Int                      @default(6) @map("phone_numbers_mute_duration_hours")
+  phoneNumbersBanEnabled                        Boolean                  @default(false) @map("phone_numbers_ban_enabled")
+  phoneNumbersEscalationWindowHours             Int                      @default(12) @map("phone_numbers_escalation_window_hours")
+  phoneNumbersWarnMaxCount                      Int                      @default(2) @map("phone_numbers_warn_max_count")
+  phoneNumbersMuteMaxCount                      Int                      @default(3) @map("phone_numbers_mute_max_count")
+  phoneNumbersBanMaxCount                       Int                      @default(4) @map("phone_numbers_ban_max_count")
+  phoneNumbersAdminContactButtonEnabled         Boolean                  @default(false) @map("phone_numbers_admin_contact_button_enabled")
+  phoneNumbersAdminContactButtonUrl             String                   @default("") @map("phone_numbers_admin_contact_button_url")
   messageLimitsBlockedWords                     String[]                 @default([]) @map("message_limits_blocked_words")
   messageLimitsBotMessageEnabled                Boolean                  @default(false) @map("message_limits_bot_message_enabled")
   messageLimitsBotMessageText                   String                   @default("") @map("message_limits_bot_message_text")

@@ -24,6 +24,7 @@ export const sanctionActionSchema = z.enum([
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
+export const duplicateDetectionPresetSchema = z.enum(['STANDARD', 'STRICT', 'CUSTOM']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
 export const managedEntityBotRoleSchema = z.enum(['primary', 'standby']);
@@ -63,6 +64,7 @@ export const applySettingsSectionSchema = z.enum([
   'thematicFilters',
   'duplicates',
   'limits',
+  'phones',
   'night',
   'requiredSubscription',
   'invitationAccess',
@@ -134,6 +136,8 @@ export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
+const escalationWindowHoursSchema = z.number().int().min(1).max(168);
+const escalationMaxCountSchema = z.number().int().min(1).max(20);
 const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
 const requiredSubscriptionMuteDurationHoursSchema = z.number().int().min(1).max(336).default(6);
 const requiredSubscriptionDurationDaysSchema = z
@@ -470,6 +474,7 @@ const CHAT_ADMIN_CONTACT_BUTTON_GROUPS = [
   ['requiredSubscriptionAdminContactButtonEnabled', 'requiredSubscriptionAdminContactButtonUrl'],
   ['invitationAccessAdminContactButtonEnabled', 'invitationAccessAdminContactButtonUrl'],
   ['messageLimitsAdminContactButtonEnabled', 'messageLimitsAdminContactButtonUrl'],
+  ['phoneNumbersAdminContactButtonEnabled', 'phoneNumbersAdminContactButtonUrl'],
   ['profanityAdminContactButtonEnabled', 'profanityAdminContactButtonUrl'],
   ['textFiltersAdminContactButtonEnabled', 'textFiltersAdminContactButtonUrl'],
   ['thematicFiltersAdminContactButtonEnabled', 'thematicFiltersAdminContactButtonUrl'],
@@ -500,6 +505,7 @@ const AUTO_MUTE_DURATION_FIELD_KEYS = [
   'duplicateMuteDurationHours',
   'linkMuteDurationHours',
   'messageLimitsMuteDurationHours',
+  'phoneNumbersMuteDurationHours',
   'profanityMuteDurationHours',
   'requiredSubscriptionMuteDurationHours',
   'invitationAccessMuteDurationHours',
@@ -538,6 +544,10 @@ export const chatSettingsSchema = z
       duplicateMuteEnabled: z.boolean().default(true),
       duplicateBanEnabled: z.boolean().default(true),
       antiDuplicateEnabled: z.boolean().default(true),
+      duplicateDetectionPreset: duplicateDetectionPresetSchema.default('STANDARD'),
+      duplicateIgnoreLinksEnabled: z.boolean().default(false),
+      duplicateIgnorePhonesEnabled: z.boolean().default(false),
+      duplicateNearMatchEnabled: z.boolean().default(false),
       duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
       duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
       duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
@@ -546,6 +556,10 @@ export const chatSettingsSchema = z
       duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
       duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
       linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+      linkEscalationWindowHours: escalationWindowHoursSchema.default(24),
+      linkWarnMaxCount: escalationMaxCountSchema.default(2),
+      linkMuteMaxCount: escalationMaxCountSchema.default(3),
+      linkBanMaxCount: escalationMaxCountSchema.default(4),
       botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
       greetingEnabled: z.boolean().default(false),
       greetingBotMessageEnabled: z.boolean().default(false),
@@ -607,6 +621,18 @@ export const chatSettingsSchema = z
       fileMessagesEnabled: z.boolean().default(true),
       voiceMessagesEnabled: z.boolean().default(true),
       phoneNumbersEnabled: z.boolean().default(true),
+      phoneNumbersBotMessageEnabled: z.boolean().default(false),
+      phoneNumbersBotMessageText: botMessageTextSchema,
+      phoneNumbersWarnEnabled: z.boolean().default(false),
+      phoneNumbersMuteEnabled: z.boolean().default(false),
+      phoneNumbersMuteDurationHours: autoMuteDurationHoursSchema,
+      phoneNumbersBanEnabled: z.boolean().default(false),
+      phoneNumbersEscalationWindowHours: escalationWindowHoursSchema.default(12),
+      phoneNumbersWarnMaxCount: escalationMaxCountSchema.default(2),
+      phoneNumbersMuteMaxCount: escalationMaxCountSchema.default(3),
+      phoneNumbersBanMaxCount: escalationMaxCountSchema.default(4),
+      phoneNumbersAdminContactButtonEnabled: z.boolean().default(false),
+      phoneNumbersAdminContactButtonUrl: botButtonUrlSchema,
       messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
       messageLimitsBotMessageEnabled: z.boolean().default(false),
       messageLimitsBotMessageText: botMessageTextSchema,
@@ -1282,7 +1308,10 @@ function addChatRulesDraftIssues(
       message: 'Введите название кнопки.',
     });
   }
-  if (value.adminContactButtonEnabled && !isValidAdminContactButtonUrl(value.adminContactButtonUrl)) {
+  if (
+    value.adminContactButtonEnabled &&
+    !isValidAdminContactButtonUrl(value.adminContactButtonUrl)
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['adminContactButtonUrl'],
@@ -1921,7 +1950,9 @@ export type ApplySettingsTarget = z.infer<typeof applySettingsTargetSchema>;
 
 export const applySectionToAllRequestSchema = z.object({
   section: applySettingsSectionSchema,
-  target: applySettingsTargetSchema.optional().default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
+  target: applySettingsTargetSchema
+    .optional()
+    .default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
 
@@ -1936,7 +1967,9 @@ export const applySectionToAllResponseSchema = z.object({
 export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
 
 export const applySectionTargetPreviewRequestSchema = z.object({
-  target: applySettingsTargetSchema.optional().default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
+  target: applySettingsTargetSchema
+    .optional()
+    .default({ mode: 'all', favoriteTypes: [], chatIds: [] }),
 });
 export type ApplySectionTargetPreviewRequest = z.infer<
   typeof applySectionTargetPreviewRequestSchema
