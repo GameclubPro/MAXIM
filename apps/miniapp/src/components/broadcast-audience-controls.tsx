@@ -89,8 +89,6 @@ export function BroadcastAudienceControls({
     getHomeEntityFavoriteIds(readHomeEntityFavorites(favoriteStorageScope), 'chat'),
   );
   const favoriteStorageScopeRef = useRef(favoriteStorageScope);
-  const scopedTargetMode: BroadcastScopedTargetMode =
-    targetMode === 'selected' ? 'selected' : 'current';
   const effectiveFavoriteChatIds = favoriteChatIds ?? storedFavoriteChatIds;
   const selectedAudienceLabel = resolveBroadcastAudienceTargetLabel({
     targetMode: 'selected',
@@ -101,7 +99,6 @@ export function BroadcastAudienceControls({
     : remoteError
       ? 'Обновить список'
       : selectedAudienceLabel;
-  const currentModeActive = targetMode === 'current';
   const selectedModeActive = targetMode === 'selected';
   const allModeActive = targetMode === 'all';
   const allChoicesLabel =
@@ -145,6 +142,46 @@ export function BroadcastAudienceControls({
     targetChats: choices.length,
     allLabel,
   });
+  const currentTabLabel = currentLabel.startsWith('Текущий') ? 'Текущий' : currentLabel;
+  const allTabLabel = allLabel.startsWith('Все') ? 'Все' : allLabel;
+  const audienceSummary =
+    targetMode === 'all'
+      ? allAudiencePresentation.label
+      : targetMode === 'selected'
+        ? selectedAudiencePresentation.label
+        : currentAudiencePresentation.label;
+  const audienceSummaryMeta =
+    targetMode === 'all'
+      ? allChoicesLabel
+      : targetMode === 'selected'
+        ? selectedAudiencePresentation.compactLabel
+        : currentAudiencePresentation.compactLabel;
+
+  function handleTargetModeChange(nextMode: BroadcastTargetMode) {
+    if (disabled) {
+      return;
+    }
+
+    if (nextMode === 'current') {
+      onToggleAllChats(false);
+      setAllConfirmOpen(false);
+      onChangeScopedMode('current');
+      return;
+    }
+
+    if (nextMode === 'selected') {
+      onToggleAllChats(false);
+      setAllConfirmOpen(false);
+      onChangeScopedMode('selected');
+      onClearValidationError();
+      setSheetOpen(true);
+      return;
+    }
+
+    if (!allModeActive) {
+      setAllConfirmOpen(true);
+    }
+  }
 
   useEffect(() => {
     if (targetMode !== 'selected') {
@@ -191,64 +228,17 @@ export function BroadcastAudienceControls({
   return (
     <>
       <div className="broadcast-audience-card">
-        <div
-          className="broadcast-audience-card__mode-grid"
-          role="group"
-          aria-label="Кому отправить"
-        >
-          <button
-            type="button"
-            className={cn('broadcast-audience-card__mode', currentModeActive && 'is-active')}
-            aria-pressed={currentModeActive}
-            disabled={disabled}
-            onClick={() => {
-              onToggleAllChats(false);
-              setAllConfirmOpen(false);
-              onChangeScopedMode('current');
-            }}
-          >
-            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>{currentLabel}</strong>
-            <small>{currentAudiencePresentation.compactLabel}</small>
-          </button>
-
-          <button
-            type="button"
-            className={cn('broadcast-audience-card__mode', selectedModeActive && 'is-active')}
-            aria-pressed={selectedModeActive}
-            disabled={disabled}
-            onClick={() => {
-              onToggleAllChats(false);
-              setAllConfirmOpen(false);
-              onChangeScopedMode('selected');
-              onClearValidationError();
-              setSheetOpen(true);
-            }}
-          >
-            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>{selectedLabel}</strong>
-            <small>
-              {selectedModeActive ? selectedAudiencePresentation.label : selectedAudienceLabel}
-            </small>
-          </button>
-
-          <button
-            type="button"
-            className={cn('broadcast-audience-card__mode', allModeActive && 'is-active')}
-            aria-pressed={allModeActive}
-            disabled={disabled}
-            onClick={() => {
-              if (allModeActive) {
-                return;
-              }
-              setAllConfirmOpen(true);
-            }}
-          >
-            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>{allLabel}</strong>
-            <small>{allModeActive ? allAudiencePresentation.compactLabel : allChoicesLabel}</small>
-          </button>
-        </div>
+        <SegmentedControl<BroadcastTargetMode>
+          className="broadcast-audience-card__mode-tabs"
+          ariaLabel="Кому отправить"
+          value={targetMode}
+          onChange={handleTargetModeChange}
+          options={[
+            { value: 'current', label: currentTabLabel },
+            { value: 'selected', label: selectedLabel },
+            { value: 'all', label: allTabLabel },
+          ]}
+        />
 
         {allConfirmOpen ? (
           <div className="broadcast-audience-confirm" role="alertdialog" aria-label="Все чаты">
@@ -280,36 +270,46 @@ export function BroadcastAudienceControls({
           </div>
         ) : null}
 
-        {selectedModeActive ? (
+        {targetMode ? (
           <button
             type="button"
-            className="broadcast-audience-card__trigger"
+            className={cn(
+              'broadcast-audience-card__trigger',
+              !selectedModeActive && 'is-static',
+              remoteError && 'is-warning',
+            )}
             onClick={() => {
+              if (!selectedModeActive) {
+                return;
+              }
               onClearValidationError();
               setSheetOpen(true);
             }}
-            disabled={disabled}
+            disabled={disabled || !selectedModeActive}
           >
             <span className="broadcast-audience-card__trigger-copy">
-              <strong>Чаты</strong>
+              <strong>
+                {targetMode === 'all'
+                  ? 'Все чаты'
+                  : targetMode === 'selected'
+                    ? 'Чаты'
+                    : 'Получатель'}
+              </strong>
               <small>
-                {remoteError || loading ? triggerLabel : selectedAudiencePresentation.label}
+                {remoteError || loading
+                  ? triggerLabel
+                  : audienceSummary || audienceSummaryMeta || selectedAudienceLabel}
               </small>
             </span>
-            <span className="broadcast-audience-card__trigger-badge">{targetChatIds.length}</span>
+            <span className="broadcast-audience-card__trigger-badge">
+              {targetMode === 'all'
+                ? choices.length
+                : targetMode === 'selected'
+                  ? targetChatIds.length
+                  : 1}
+            </span>
           </button>
         ) : null}
-
-        <SegmentedControl
-          className="broadcast-scope-control broadcast-scope-control--legacy"
-          ariaLabel="Кому отправить"
-          value={scopedTargetMode}
-          onChange={(value) => onChangeScopedMode(value === 'selected' ? 'selected' : 'current')}
-          options={[
-            { value: 'current', label: 'Текущий' },
-            { value: 'selected', label: 'Выбрать' },
-          ]}
-        />
 
         {validationError ? <small className="field__hint">{validationError}</small> : null}
       </div>

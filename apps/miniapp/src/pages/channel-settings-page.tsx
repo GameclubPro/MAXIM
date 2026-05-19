@@ -2111,7 +2111,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? broadcastWorkspaceView
     : 'compose';
   const broadcastDrilldownFooter = (
-    <div className="broadcast-publish-bar">
+    <div
+      className={cn(
+        'broadcast-publish-bar',
+        broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy && 'has-issues',
+      )}
+    >
       <div
         className={cn(
           'broadcast-publish-bar__copy',

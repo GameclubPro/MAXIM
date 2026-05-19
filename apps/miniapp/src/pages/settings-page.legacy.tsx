@@ -4442,7 +4442,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Редактирование'
     : mailingFooterMeta || mailingHeaderSummary || 'Черновик';
   const mailingDrilldownFooter = (
-    <div className="broadcast-publish-bar">
+    <div
+      className={cn(
+        'broadcast-publish-bar',
+        mailingPublishIssueLabels.length > 0 && !isMailingBusy && 'has-issues',
+      )}
+    >
       <div
         className={cn(
           'broadcast-publish-bar__copy',

@@ -454,19 +454,26 @@ function formatDayDensityLabel(slotCount: number): string {
 function getSuggestedMinutes(dayKey: string, minimumTimeMs: number): number[] {
   const minimumDate = new Date(minimumTimeMs);
   const minimumDayKey = getBroadcastScheduleDayKey(minimumDate);
+  const minimumMinutes = snapMinutesToStep(minimumDate.getHours() * 60 + minimumDate.getMinutes());
   const baseCandidates =
     dayKey === minimumDayKey
-      ? [
-          snapMinutesToStep(minimumDate.getHours() * 60 + minimumDate.getMinutes()),
-          snapMinutesToStep(minimumDate.getHours() * 60 + minimumDate.getMinutes()) + 60,
-          18 * 60,
-          21 * 60,
-        ]
+      ? [minimumMinutes, minimumMinutes + 60, 18 * 60, 21 * 60]
       : [9 * 60, 13 * 60, 18 * 60, 21 * 60];
+  const fallbackStart =
+    dayKey === minimumDayKey ? Math.max(FREE_WINDOW_START_MINUTES, minimumMinutes) : 9 * 60;
+  const fallbackCandidates: number[] = [];
+
+  for (
+    let minute = fallbackStart;
+    minute < FREE_WINDOW_END_MINUTES;
+    minute += BROADCAST_SCHEDULE_STEP_MINUTES
+  ) {
+    fallbackCandidates.push(minute);
+  }
 
   return Array.from(
     new Set(
-      baseCandidates.filter((minutes) => {
+      [...baseCandidates, ...fallbackCandidates].filter((minutes) => {
         if (minutes < 0 || minutes >= 24 * 60) {
           return false;
         }
@@ -685,17 +692,23 @@ export function BroadcastSchedulePlanner({
     ),
   );
   const activeDayFreeWindowStartSet = new Set(
-    activeDayFreeWindows.map((window) => window.startMinutes),
+    activeDayFreeWindows.map((window) => snapMinutesToStep(window.startMinutes)),
   );
   const suggestedMinutes =
     sheetMode === 'time'
       ? Array.from(
           new Set([
-            ...activeDayFreeWindows.map((window) => window.startMinutes),
+            ...activeDayFreeWindows.map((window) => snapMinutesToStep(window.startMinutes)),
             ...getSuggestedMinutes(activeDayKey, minimumTime),
           ]),
-        ).slice(0, 4)
+        )
+          .filter((minutes) => minutes >= 0 && minutes < 24 * 60)
+          .slice(0, 4)
       : [];
+  const hasAnyAvailableTimeSlot =
+    sheetMode === 'time' && targetDayKeys.every((dayKey) => hasAvailableTimeSlotForDay(dayKey));
+  const nextAvailableDayKey =
+    sheetMode === 'time' && !hasAnyAvailableTimeSlot ? findNextAvailableDayKey(activeDayKey) : null;
   const normalizedTargetContextLabel =
     targetContextLabel?.trim() || currentTargetLabel.trim() || 'Текущий чат';
   const normalizedTargetContextMeta = targetContextMeta?.trim() ?? '';
@@ -791,7 +804,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    setShowFullTimeGrid(suggestedMinutes.length === 0);
+    setShowFullTimeGrid(false);
   }, [activeDayKey, applyToAllPickedDays, sheetMode, suggestedMinutes.length]);
 
   useEffect(() => {
@@ -929,6 +942,30 @@ export function BroadcastSchedulePlanner({
     return getSelectedDaySlots(dayKey, normalizedValue).some(
       (slot) => getBroadcastSlotInstantKey(slot) === slotKey,
     );
+  }
+
+  function hasAvailableTimeSlotForDay(dayKey: string): boolean {
+    return SLOT_GROUPS.some((group) =>
+      getMinutesList(group).some(
+        (minutes) =>
+          (!isSlotInPast(dayKey, minutes) || isSlotSelectedForDay(dayKey, minutes)) &&
+          (!isSlotBusy(dayKey, minutes) || isSlotSelectedForDay(dayKey, minutes)),
+      ),
+    );
+  }
+
+  function findNextAvailableDayKey(dayKey: string): string | null {
+    const cursor = new Date(`${dayKey}T12:00:00`);
+    for (let offset = 1; offset <= BROADCAST_SCHEDULE_MAX_DAYS; offset += 1) {
+      const candidateKey = getBroadcastScheduleDayKey(addDays(cursor, offset));
+      if (startOfDay(new Date(`${candidateKey}T12:00:00`)).getTime() > windowEnd.getTime()) {
+        return null;
+      }
+      if (hasAvailableTimeSlotForDay(candidateKey)) {
+        return candidateKey;
+      }
+    }
+    return null;
   }
 
   function openAgendaDay(dayKey: string) {
@@ -1125,15 +1162,53 @@ export function BroadcastSchedulePlanner({
             <>
               <div
                 className={cn(
-                  'broadcast-planner__smart-head',
+                  'broadcast-planner__mode-card',
                   calendarRefreshing && 'is-refreshing',
                 )}
               >
-                <span className="broadcast-planner__smart-copy">
-                  <strong>{scheduleStatusLabel}</strong>
-                  {scheduleStatusSummary ? <small>{scheduleStatusSummary}</small> : null}
-                </span>
-                <span className="broadcast-planner__smart-side">
+                <div className="broadcast-planner__intent-row" aria-label="Режим отправки">
+                  <button
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__intent-chip',
+                      timingMode === 'now' && 'is-active',
+                    )}
+                    onClick={() => selectTimingMode('now')}
+                    disabled={disabled}
+                    aria-pressed={timingMode === 'now'}
+                  >
+                    <strong>Сейчас</strong>
+                    <small>сразу</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__intent-chip',
+                      timingMode === 'scheduled' && 'is-active',
+                    )}
+                    onClick={() => selectTimingMode('scheduled')}
+                    disabled={disabled}
+                    aria-pressed={timingMode === 'scheduled'}
+                  >
+                    <strong>План</strong>
+                    <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__intent-chip',
+                      timingMode === 'cycle' && 'is-active',
+                    )}
+                    onClick={() => selectTimingMode('cycle')}
+                    disabled={disabled}
+                    aria-pressed={timingMode === 'cycle'}
+                  >
+                    <strong>Цикл</strong>
+                    <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
+                  </button>
+                </div>
+
+                <div className="broadcast-planner__mode-meta">
                   <span
                     className="broadcast-planner__target-chip"
                     title={normalizedTargetContextLabel}
@@ -1141,53 +1216,11 @@ export function BroadcastSchedulePlanner({
                     {normalizedTargetContextLabel}
                   </span>
                   <span
-                    className={cn('broadcast-planner__smart-badge', scheduleReady && 'is-ready')}
+                    className={cn('broadcast-planner__mode-state', scheduleReady && 'is-ready')}
                   >
-                    {scheduleReady ? 'OK' : ''}
+                    {scheduleStatusSummary || scheduleStatusLabel}
                   </span>
-                </span>
-              </div>
-
-              <div className="broadcast-planner__intent-row" aria-label="Режим отправки">
-                <button
-                  type="button"
-                  className={cn(
-                    'broadcast-planner__intent-chip',
-                    timingMode === 'now' && 'is-active',
-                  )}
-                  onClick={() => selectTimingMode('now')}
-                  disabled={disabled}
-                  aria-pressed={timingMode === 'now'}
-                >
-                  <strong>Сейчас</strong>
-                  <small>сразу</small>
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    'broadcast-planner__intent-chip',
-                    timingMode === 'scheduled' && 'is-active',
-                  )}
-                  onClick={() => selectTimingMode('scheduled')}
-                  disabled={disabled}
-                  aria-pressed={timingMode === 'scheduled'}
-                >
-                  <strong>План</strong>
-                  <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    'broadcast-planner__intent-chip',
-                    timingMode === 'cycle' && 'is-active',
-                  )}
-                  onClick={() => selectTimingMode('cycle')}
-                  disabled={disabled}
-                  aria-pressed={timingMode === 'cycle'}
-                >
-                  <strong>Цикл</strong>
-                  <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
-                </button>
+                </div>
               </div>
 
               {timingMode === 'scheduled' && scheduledDayCards.length > 0 ? (
@@ -1950,6 +1983,27 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : null}
 
+                      {suggestedMinutes.length === 0 && !hasAnyAvailableTimeSlot ? (
+                        <div className="broadcast-planner__time-empty" role="status">
+                          <strong>Нет времени</strong>
+                          <small>Выберите другой день</small>
+                          {nextAvailableDayKey ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPickedDayKeys([nextAvailableDayKey]);
+                                setActiveDayKey(nextAvailableDayKey);
+                                setApplyToAllPickedDays(false);
+                                maxSelectionChanged();
+                              }}
+                              disabled={disabled}
+                            >
+                              {formatDayChipLabel(nextAvailableDayKey)}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       {!applyToAllPickedDays && activeDaySlots.length > 0 ? (
                         <div
                           className="broadcast-planner__selected-strip"
@@ -1970,11 +2024,11 @@ export function BroadcastSchedulePlanner({
                           onClick={revealFullTimeGrid}
                           disabled={disabled}
                         >
-                          Ещё время
+                          Все время
                         </button>
                       ) : null}
 
-                      {showFullTimeGrid || suggestedMinutes.length === 0
+                      {showFullTimeGrid
                         ? SLOT_GROUPS.map((group) => (
                             <div key={group.label} className="broadcast-planner__time-group">
                               <div className="broadcast-planner__time-group-head">
