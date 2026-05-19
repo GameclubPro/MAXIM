@@ -544,7 +544,7 @@ export const chatSettingsSchema = z
       duplicateMuteEnabled: z.boolean().default(true),
       duplicateBanEnabled: z.boolean().default(true),
       antiDuplicateEnabled: z.boolean().default(true),
-      duplicateDetectionPreset: duplicateDetectionPresetSchema.default('STANDARD'),
+      duplicateDetectionPreset: duplicateDetectionPresetSchema.default('STRICT'),
       duplicateIgnoreLinksEnabled: z.boolean().default(false),
       duplicateIgnorePhonesEnabled: z.boolean().default(false),
       duplicateNearMatchEnabled: z.boolean().default(false),

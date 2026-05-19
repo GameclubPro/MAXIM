@@ -2,8 +2,11 @@ import { chatSettingsSchema, updateChatRulesRequestSchema } from '@maxim/contrac
 
 describe('chatSettingsSchema duplicate flow validation', () => {
   it('allows phone numbers and photos by default', () => {
-    expect(chatSettingsSchema.parse({}).phoneNumbersEnabled).toBe(true);
-    expect(chatSettingsSchema.parse({}).photoMessagesEnabled).toBe(true);
+    const settings = chatSettingsSchema.parse({});
+
+    expect(settings.phoneNumbersEnabled).toBe(true);
+    expect(settings.photoMessagesEnabled).toBe(true);
+    expect(settings.duplicateDetectionPreset).toBe('STRICT');
   });
 
   it('allows duplicate thresholds to start from the first duplicate', () => {

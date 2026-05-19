@@ -331,31 +331,19 @@ type DuplicateDetectionPreset = ChatSettings['duplicateDetectionPreset'];
 
 const DUPLICATE_DETECTION_OPTIONS: Array<{
   value: DuplicateDetectionPreset;
-  eyebrow: string;
   label: string;
-  description: string;
-  toneClass: 'policy-card--alert' | 'policy-card--allowlist' | 'policy-card--blocklist';
 }> = [
   {
-    value: 'STANDARD',
-    eyebrow: 'База',
-    label: 'Точный дубль',
-    description: 'Классическое сравнение текста без дополнительных эвристик.',
-    toneClass: 'policy-card--alert',
+    value: 'STRICT',
+    label: 'Строгий',
   },
   {
-    value: 'STRICT',
-    eyebrow: 'Максимум',
-    label: 'Строгая защита',
-    description: 'Ловит повторы с заменой ссылок, телефонов и порядка слов.',
-    toneClass: 'policy-card--blocklist',
+    value: 'STANDARD',
+    label: 'Точный',
   },
   {
     value: 'CUSTOM',
-    eyebrow: 'Ручной',
-    label: 'Своя схема',
-    description: 'Отдельные тумблеры для ссылок, телефонов и близких совпадений.',
-    toneClass: 'policy-card--allowlist',
+    label: 'Свой',
   },
 ];
 
@@ -5213,43 +5201,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-grid settings-grid--single">
                         <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
                           <span className="field__label">Режим</span>
-                          <div
-                            className={cn('policy-grid', linkPolicyError && 'policy-grid--error')}
-                            role="radiogroup"
-                            aria-label="Режим модерации ссылок"
-                          >
-                            {LINK_POLICY_OPTIONS.map((option) => {
-                              const isActive = draft.linkPolicy === option.value;
-
-                              return (
-                                <button
-                                  key={option.value}
-                                  type="button"
-                                  role="radio"
-                                  aria-checked={isActive}
-                                  className={cn(
-                                    'policy-card',
-                                    option.value === 'ALERT_ONLY' && 'policy-card--alert',
-                                    option.value === 'ALLOWLIST_ONLY' && 'policy-card--allowlist',
-                                    option.value === 'BLOCKLIST_ONLY' && 'policy-card--blocklist',
-                                    isActive && 'is-active',
-                                  )}
-                                  onClick={() => setFieldValue('linkPolicy', option.value)}
-                                >
-                                  <span className="policy-card__content">
-                                    <span className="policy-card__eyebrow">{option.eyebrow}</span>
-                                    <span className="policy-card__text">
-                                      <span className="policy-card__title">{option.label}</span>
-                                      <small className="policy-card__description">
-                                        {option.description}
-                                      </small>
-                                    </span>
-                                  </span>
-                                  <span className="policy-card__selection" aria-hidden />
-                                </button>
-                              );
-                            })}
-                          </div>
+                          <SegmentedControl
+                            value={draft.linkPolicy}
+                            options={LINK_POLICY_OPTIONS.map((option) => ({
+                              value: option.value,
+                              label: option.label,
+                            }))}
+                            onChange={(value) => setFieldValue('linkPolicy', value)}
+                            className={cn(
+                              'settings-mode-segments',
+                              linkPolicyError && 'settings-mode-segments--error',
+                            )}
+                            ariaLabel="Режим модерации ссылок"
+                          />
                           {linkPolicyError ? (
                             <small className="field__hint">{linkPolicyError}</small>
                           ) : null}
@@ -5611,19 +5575,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       disabled={!draft.linkBotMessageEnabled}
                                       isOpen={openBotEditorKey === 'link'}
                                     />
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        'settings-info-button',
-                                        openHintKey === 'linkBotMessage' && 'is-open',
-                                      )}
-                                      aria-label="Пояснение для тумблера сообщений о ссылках"
-                                      aria-controls="link-bot-message-hint"
-                                      aria-expanded={openHintKey === 'linkBotMessage'}
-                                      onClick={() => toggleHint('linkBotMessage')}
-                                    >
-                                      <span aria-hidden>i</span>
-                                    </button>
                                   </div>
                                 </div>
 
@@ -5648,17 +5599,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </span>
                                 </label>
                               </div>
-
-                              {openHintKey === 'linkBotMessage' ? (
-                                <p
-                                  id="link-bot-message-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Санкции усиливаются по ступеням, если пользователь повторно
-                                  отправляет ссылки в течение {draft.linkEscalationWindowHours}ч:
-                                  сначала объяснение, затем предупреждение, потом мут и далее бан.
-                                </p>
-                              ) : null}
 
                               {draft.linkBotMessageEnabled && openBotEditorKey === 'link' ? (
                                 <BotMessageEditor
@@ -5689,19 +5629,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       onClick={() => toggleWarnMessageEditor('linkWarn')}
                                       isOpen={openWarnEditorKey === 'linkWarn'}
                                     />
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        'settings-info-button',
-                                        openHintKey === 'linkWarnMessage' && 'is-open',
-                                      )}
-                                      aria-label="Пояснение для предупреждения за ссылки"
-                                      aria-controls="link-warn-message-hint"
-                                      aria-expanded={openHintKey === 'linkWarnMessage'}
-                                      onClick={() => toggleHint('linkWarnMessage')}
-                                    >
-                                      <span aria-hidden>i</span>
-                                    </button>
                                   </div>
                                 </div>
 
@@ -5725,16 +5652,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </span>
                                 </label>
                               </div>
-
-                              {openHintKey === 'linkWarnMessage' ? (
-                                <p
-                                  id="link-warn-message-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Текст отправляется при {draft.linkWarnMaxCount}-м нарушении за
-                                  {draft.linkEscalationWindowHours}ч, если ступень включена.
-                                </p>
-                              ) : null}
 
                               {openWarnEditorKey === 'linkWarn' ? (
                                 <WarnMessageEditor
@@ -5803,19 +5720,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     <span className="settings-native-toggle__title">
                                       Добавить кнопку
                                     </span>
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        'settings-info-button',
-                                        openHintKey === 'linkBotButton' && 'is-open',
-                                      )}
-                                      aria-label="Пояснение для кнопки в сообщении о ссылках"
-                                      aria-controls="link-bot-button-hint"
-                                      aria-expanded={openHintKey === 'linkBotButton'}
-                                      onClick={() => toggleHint('linkBotButton')}
-                                    >
-                                      <span aria-hidden>i</span>
-                                    </button>
                                   </div>
 
                                   <label
@@ -5840,13 +5744,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </span>
                                   </label>
                                 </div>
-
-                                {renderInlineHint(
-                                  'linkBotButton',
-                                  'link-bot-button-hint',
-                                  'Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или профиль.',
-                                  hasLinkBotButtonError,
-                                )}
 
                                 {draft.linkBotButtonEnabled ? (
                                   <BroadcastLinkButtonsEditor
@@ -5873,11 +5770,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               'Добавить связь с админом в сообщения о ссылках',
                             )}
                           </>
-                        ) : (
-                          <div className="policy-mode-hint" role="note">
-                            Режим без удаления включен: тумблеры санкций скрыты.
-                          </div>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
@@ -7579,41 +7472,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-policy">
                           <span className="field__label">Режим распознавания</span>
-                          <div
-                            className="policy-grid"
-                            role="radiogroup"
-                            aria-label="Режим распознавания дублей"
-                          >
-                            {DUPLICATE_DETECTION_OPTIONS.map((option) => {
-                              const isActive = draft.duplicateDetectionPreset === option.value;
-
-                              return (
-                                <button
-                                  key={option.value}
-                                  type="button"
-                                  role="radio"
-                                  aria-checked={isActive}
-                                  className={cn(
-                                    'policy-card',
-                                    option.toneClass,
-                                    isActive && 'is-active',
-                                  )}
-                                  onClick={() => applyDuplicateDetectionPreset(option.value)}
-                                >
-                                  <span className="policy-card__content">
-                                    <span className="policy-card__eyebrow">{option.eyebrow}</span>
-                                    <span className="policy-card__text">
-                                      <span className="policy-card__title">{option.label}</span>
-                                      <small className="policy-card__description">
-                                        {option.description}
-                                      </small>
-                                    </span>
-                                  </span>
-                                  <span className="policy-card__selection" aria-hidden />
-                                </button>
-                              );
-                            })}
-                          </div>
+                          <SegmentedControl
+                            value={draft.duplicateDetectionPreset}
+                            options={DUPLICATE_DETECTION_OPTIONS}
+                            onChange={applyDuplicateDetectionPreset}
+                            className="settings-mode-segments"
+                            ariaLabel="Режим распознавания дублей"
+                          />
                         </div>
                       ) : null}
 
@@ -9047,19 +8912,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     disabled={!draft.phoneNumbersBotMessageEnabled}
                                     isOpen={openBotEditorKey === 'phoneNumbers'}
                                   />
-                                  <button
-                                    type="button"
-                                    className={cn(
-                                      'settings-info-button',
-                                      openHintKey === 'phoneNumbersBotMessage' && 'is-open',
-                                    )}
-                                    aria-label="Пояснение для сообщения о телефонах"
-                                    aria-controls="phone-numbers-bot-message-hint"
-                                    aria-expanded={openHintKey === 'phoneNumbersBotMessage'}
-                                    onClick={() => toggleHint('phoneNumbersBotMessage')}
-                                  >
-                                    <span aria-hidden>i</span>
-                                  </button>
                                 </div>
                               </div>
 
@@ -9082,16 +8934,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
-
-                            {openHintKey === 'phoneNumbersBotMessage' ? (
-                              <p
-                                id="phone-numbers-bot-message-hint"
-                                className="settings-native-toggle__hint"
-                              >
-                                Бот отправляет отдельное пояснение при удалении телефона. Ступени
-                                считаются за {draft.phoneNumbersEscalationWindowHours}ч.
-                              </p>
-                            ) : null}
 
                             {draft.phoneNumbersBotMessageEnabled &&
                             openBotEditorKey === 'phoneNumbers' ? (
@@ -9183,11 +9025,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )
                             : null}
                         </>
-                      ) : (
-                        <div className="policy-mode-hint" role="note">
-                          Номера телефонов разрешены: тумблеры санкций скрыты.
-                        </div>
-                      )}
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

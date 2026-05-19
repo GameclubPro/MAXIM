@@ -242,7 +242,7 @@ model ChatSettings {
   duplicateMuteEnabled                          Boolean                  @default(true) @map("duplicate_mute_enabled")
   duplicateBanEnabled                           Boolean                  @default(true) @map("duplicate_ban_enabled")
   antiDuplicateEnabled                          Boolean                  @default(true) @map("anti_duplicate_enabled")
-  duplicateDetectionPreset                      DuplicateDetectionPreset @default(STANDARD) @map("duplicate_detection_preset")
+  duplicateDetectionPreset                      DuplicateDetectionPreset @default(STRICT) @map("duplicate_detection_preset")
   duplicateIgnoreLinksEnabled                   Boolean                  @default(false) @map("duplicate_ignore_links_enabled")
   duplicateIgnorePhonesEnabled                  Boolean                  @default(false) @map("duplicate_ignore_phones_enabled")
   duplicateNearMatchEnabled                     Boolean                  @default(false) @map("duplicate_near_match_enabled")

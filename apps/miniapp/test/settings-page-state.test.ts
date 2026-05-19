@@ -93,6 +93,17 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
 
+test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates', () => {
+  assert.ok(SECTION_SETTING_KEYS.links.includes('linkEscalationWindowHours'));
+  assert.ok(SECTION_SETTING_KEYS.links.includes('linkWarnMaxCount'));
+  assert.ok(SECTION_SETTING_KEYS.links.includes('linkMuteMaxCount'));
+  assert.ok(SECTION_SETTING_KEYS.links.includes('linkBanMaxCount'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateDetectionPreset'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnoreLinksEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnorePhonesEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateNearMatchEnabled'));
+});
+
 test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections', () => {
   assert.ok(SECTION_SETTING_KEYS.links.includes('linkAdminContactButtonEnabled'));
   assert.ok(SECTION_SETTING_KEYS.profanityFilter.includes('profanityAdminContactButtonEnabled'));
@@ -132,4 +143,43 @@ test('mergeSectionSettings preserves multi-button arrays when saving a section',
   assert.deepEqual(merged.linkBotButtons, saved.linkBotButtons);
   assert.equal(merged.linkBotButtonEnabled, true);
   assert.equal(merged.deleteSpammersEnabled, true);
+});
+
+test('mergeSectionSettings preserves advanced duplicate and link tuning', () => {
+  const current = createSettings({
+    duplicateDetectionPreset: 'STANDARD',
+    duplicateIgnoreLinksEnabled: false,
+    duplicateIgnorePhonesEnabled: false,
+    duplicateNearMatchEnabled: false,
+    linkEscalationWindowHours: 24,
+    linkWarnMaxCount: 2,
+    linkMuteMaxCount: 3,
+    linkBanMaxCount: 4,
+    phoneNumbersEscalationWindowHours: 12,
+  });
+  const saved = createSettings({
+    duplicateDetectionPreset: 'CUSTOM',
+    duplicateIgnoreLinksEnabled: true,
+    duplicateIgnorePhonesEnabled: true,
+    duplicateNearMatchEnabled: true,
+    linkEscalationWindowHours: 48,
+    linkWarnMaxCount: 1,
+    linkMuteMaxCount: 2,
+    linkBanMaxCount: 3,
+    phoneNumbersEscalationWindowHours: 72,
+  });
+
+  const duplicateMerged = mergeSectionSettings(current, saved, 'duplicates');
+  assert.equal(duplicateMerged.duplicateDetectionPreset, 'CUSTOM');
+  assert.equal(duplicateMerged.duplicateIgnoreLinksEnabled, true);
+  assert.equal(duplicateMerged.duplicateIgnorePhonesEnabled, true);
+  assert.equal(duplicateMerged.duplicateNearMatchEnabled, true);
+  assert.equal(duplicateMerged.linkEscalationWindowHours, 24);
+
+  const linkMerged = mergeSectionSettings(current, saved, 'links');
+  assert.equal(linkMerged.linkEscalationWindowHours, 48);
+  assert.equal(linkMerged.linkWarnMaxCount, 1);
+  assert.equal(linkMerged.linkMuteMaxCount, 2);
+  assert.equal(linkMerged.linkBanMaxCount, 3);
+  assert.equal(linkMerged.phoneNumbersEscalationWindowHours, 12);
 });

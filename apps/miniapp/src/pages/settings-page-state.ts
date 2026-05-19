@@ -39,6 +39,10 @@ export const NIGHT_SECTION_SETTING_KEYS = [
 export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
   links: [
     'linkPolicy',
+    'linkEscalationWindowHours',
+    'linkWarnMaxCount',
+    'linkMuteMaxCount',
+    'linkBanMaxCount',
     'linkBotMessageEnabled',
     'linkBotMessageText',
     'linkWarnEnabled',
@@ -111,6 +115,10 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   ],
   duplicates: [
     'antiDuplicateEnabled',
+    'duplicateDetectionPreset',
+    'duplicateIgnoreLinksEnabled',
+    'duplicateIgnorePhonesEnabled',
+    'duplicateNearMatchEnabled',
     'duplicateWarnEnabled',
     'duplicateMuteEnabled',
     'duplicateBanEnabled',

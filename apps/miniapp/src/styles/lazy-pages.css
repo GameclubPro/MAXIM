@@ -11,6 +11,27 @@
   gap: 10px;
 }
 
+.settings-mode-segments {
+  overflow: visible;
+}
+
+.settings-mode-segments .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+  padding-inline: 10px;
+}
+
+.settings-mode-segments .segmented-control__item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.settings-mode-segments--error {
+  border-color: rgba(228, 83, 99, 0.28);
+}
+
 .policy-card {
   --policy-accent: #0b84ff;
   --policy-accent-soft: rgba(11, 132, 255, 0.14);
