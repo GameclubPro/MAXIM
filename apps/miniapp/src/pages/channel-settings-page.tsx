@@ -14,6 +14,7 @@ import '../styles/lazy-pages.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-route-polish.css';
 import '../styles/broadcast-studio.css';
+import '../styles/broadcast-autopost-polish.css';
 import {
   Suspense,
   lazy,
@@ -1091,12 +1092,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     resetBroadcastPlanner();
     setBroadcastWorkspaceView('compose');
     setExpandedSections((current) => ({ ...current, broadcast: true }));
-    pushToast({
-      tone: 'success',
-      title: 'Параметры восстановлены',
-      description: 'Кнопки и календарь перенесены в мини-аппу.',
-    });
-  }, [broadcastHandoffStateQuery.data, handoffRequested, pushToast]);
+  }, [broadcastHandoffStateQuery.data, handoffRequested]);
 
   useEffect(() => {
     setBroadcastText('');
@@ -2030,7 +2026,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastFooterTitle = editingManagedBroadcast
     ? 'Сохранить автопостинг'
     : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
-      ? `Нужно: ${broadcastPublishIssueLabels.join(' · ')}`
+      ? broadcastPublishIssueLabels.join(' · ')
       : broadcastTimingMode === 'now'
         ? 'Сразу'
         : broadcastTimingMode === 'cycle'
@@ -2116,7 +2112,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : 'compose';
   const broadcastDrilldownFooter = (
     <div className="broadcast-publish-bar">
-      <div className="broadcast-publish-bar__copy">
+      <div
+        className={cn(
+          'broadcast-publish-bar__copy',
+          broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy && 'has-issues',
+        )}
+      >
         <strong>{broadcastFooterTitle}</strong>
         <small>{broadcastFooterMeta || 'Черновик'}</small>
         {broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy ? (
@@ -3422,11 +3423,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           revealNextStepSignal={broadcastButtonRevealSignal}
           contextEntityType="channel"
           disabled={isBroadcastBusy}
-          statusLabel={
-            broadcastHasButton
-              ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
-              : 'Без кнопок'
-          }
           urlPlaceholder="https://max.ru/channel/..."
           textPlaceholder="Открыть"
           onEnabledChange={handleBroadcastButtonsEnabledChange}

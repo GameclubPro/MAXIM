@@ -232,6 +232,7 @@ export function BroadcastContentComposer({
             <span
               className={cn(
                 'broadcast-content-composer__counter',
+                text.length === 0 && 'is-empty',
                 isNearTextLimit && 'is-warning',
                 remainingLength < 0 && 'is-limit',
               )}

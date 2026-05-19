@@ -21,7 +21,6 @@ type BroadcastButtonsSheetProps = {
   revealNextStepSignal?: number;
   contextEntityType?: 'chat' | 'channel';
   presets?: BroadcastLinkButtonPreset[];
-  statusLabel: string;
   closeAriaLabel?: string;
   urlPlaceholder?: string;
   textPlaceholder?: string;
@@ -48,7 +47,6 @@ export function BroadcastButtonsSheet({
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
   presets = [],
-  statusLabel,
   closeAriaLabel = 'Закрыть кнопки',
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
@@ -96,8 +94,9 @@ export function BroadcastButtonsSheet({
           </span>
 
           <span className="broadcast-buttons-sheet__copy">
-            <strong id="broadcast-buttons-sheet-title">Кнопки</strong>
-            {enabled ? <small>{statusLabel}</small> : null}
+            <strong id="broadcast-buttons-sheet-title">
+              {enabled ? `Кнопки · ${buttons.length}/8` : 'Кнопки'}
+            </strong>
           </span>
 
           <button
@@ -112,8 +111,7 @@ export function BroadcastButtonsSheet({
 
         <label className="broadcast-buttons-sheet__toggle">
           <span>
-            <strong>{enabled ? 'Включены' : 'Выключены'}</strong>
-            {enabled ? <small>{buttons.length}/8</small> : null}
+            <strong>{enabled ? 'Активны' : 'Выключены'}</strong>
           </span>
           <span className="settings-native-switch" aria-label="Добавить кнопки">
             <input

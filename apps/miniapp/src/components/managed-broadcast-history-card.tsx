@@ -56,6 +56,13 @@ export function ManagedBroadcastHistoryCard({
   onDelete,
 }: ManagedBroadcastHistoryCardProps) {
   const disablePrimary = isBusy || isDeleting;
+  const hasDeliveryMeter =
+    broadcast.status === 'COMPLETED' ||
+    broadcast.status === 'FAILED' ||
+    broadcast.status === 'PARTIAL' ||
+    broadcast.deliveredChats > 0 ||
+    broadcast.failedChats > 0 ||
+    broadcast.blockedChats > 0;
   const content = (
     <>
       <div className="managed-broadcast-card__top">
@@ -92,7 +99,7 @@ export function ManagedBroadcastHistoryCard({
         </div>
       ) : null}
 
-      <ManagedBroadcastDeliveryMeter broadcast={broadcast} />
+      {hasDeliveryMeter ? <ManagedBroadcastDeliveryMeter broadcast={broadcast} /> : null}
 
       {broadcast.lastError ? (
         <small className="managed-broadcast-card__error" title={broadcast.lastError}>

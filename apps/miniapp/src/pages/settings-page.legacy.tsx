@@ -38,6 +38,7 @@ import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-route-polish.css';
 import '../styles/broadcast-studio.css';
 import './settings-page.css';
+import '../styles/broadcast-autopost-polish.css';
 import {
   Suspense,
   startTransition,
@@ -993,12 +994,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setExpandedSections((current) => ({ ...current, mailing: true }));
     setMailingWorkspaceView('compose');
-    pushToast({
-      title: 'Параметры восстановлены',
-      description: 'Охват, кнопки и календарь перенесены в мини-аппу.',
-      tone: 'success',
-    });
-  }, [broadcastHandoffStateQuery.data, chatId, handoffRequested, pushToast]);
+  }, [broadcastHandoffStateQuery.data, chatId, handoffRequested]);
 
   useEffect(() => {
     if (!chatId || editingManagedBroadcast) {
@@ -4365,7 +4361,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingFooterTitle = editingManagedBroadcast
     ? 'Сохранить автопостинг'
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
-      ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
+      ? mailingPublishIssueLabels.join(' · ')
       : mailingTimingMode === 'now'
         ? 'Сразу'
         : mailingTimingMode === 'cycle'
@@ -4447,7 +4443,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingFooterMeta || mailingHeaderSummary || 'Черновик';
   const mailingDrilldownFooter = (
     <div className="broadcast-publish-bar">
-      <div className="broadcast-publish-bar__copy">
+      <div
+        className={cn(
+          'broadcast-publish-bar__copy',
+          mailingPublishIssueLabels.length > 0 && !isMailingBusy && 'has-issues',
+        )}
+      >
         <strong>{mailingFooterTitle}</strong>
         <small>{mailingFooterMeta || 'Черновик'}</small>
         {mailingPublishIssueLabels.length > 0 && !isMailingBusy ? (
@@ -10778,7 +10779,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           errors={rulesButtonErrors}
           revealNextStepSignal={rulesButtonRevealSignal}
           disabled={isRulesBusy}
-          statusLabel={rulesButtonEnabled ? rulesButtonStatus : 'Без кнопок'}
           urlPlaceholder="https://max.ru/channel/rules"
           textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
           onEnabledChange={handleRulesButtonsEnabledChange}
@@ -10811,11 +10811,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           errors={mailingButtonErrors}
           revealNextStepSignal={mailingButtonRevealSignal}
           disabled={isMailingBusy}
-          statusLabel={
-            mailingButtonEnabled
-              ? formatBroadcastButtonsStatus(normalizedMailingButtons)
-              : 'Без кнопок'
-          }
           urlPlaceholder="https://max.ru/channel/..."
           textPlaceholder="Открыть"
           onEnabledChange={handleMailingButtonsEnabledChange}
