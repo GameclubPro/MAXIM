@@ -18319,6 +18319,107 @@ describe('AdminService.sendBroadcast', () => {
     ]);
   });
 
+  it('pauses due managed broadcasts when the background governor reports runtime pressure', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedBroadcast.findMany.mockResolvedValue([{ id: 'broadcast-1' }]);
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'pause',
+        reason: 'user-facing queue lag 3.5s',
+        retryAfterMs: 60_000,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedBroadcasts('scheduled');
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'managed-broadcast',
+      sourceTag: 'managed_broadcast',
+    });
+    expect(prisma.managedBroadcast.findMany).not.toHaveBeenCalled();
+    expect(processSpy).not.toHaveBeenCalled();
+  });
+
+  it('does a small single pass for due managed broadcasts when the governor asks to slow down', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedBroadcast.findMany.mockImplementation(
+      async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
+        if (where?.status === 'ACTIVE') {
+          return Array.from({ length: 10 }, (_, index) => ({
+            id: `active-${index + 1}`,
+          }));
+        }
+
+        const statusFilter = where?.status as { in?: string[] } | undefined;
+        if (Array.isArray(statusFilter?.in) && statusFilter.in.includes('FAILED')) {
+          return [{ id: 'recovery-1' }];
+        }
+
+        return [];
+      },
+    );
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'background share 60.0%',
+        retryAfterMs: 20_000,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedBroadcasts('scheduled');
+
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    expect(processSpy).toHaveBeenNthCalledWith(1, 'active-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+    expect(processSpy).toHaveBeenNthCalledWith(2, 'recovery-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledTimes(1);
+  });
+
   it('stores future chat broadcast in managed schedules', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 

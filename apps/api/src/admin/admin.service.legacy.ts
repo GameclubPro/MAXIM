@@ -541,6 +541,12 @@ type ManagedBroadcastSchedulePlan = {
   sentCount: number;
 };
 
+type ManagedBroadcastBackgroundDecision = {
+  action: 'run' | 'slow' | 'pause';
+  reason: string;
+  retryAfterMs: number;
+};
+
 type ParsedManagedBroadcastCalendarSlots = {
   upcomingSlots: Date[];
   sentCount: number;
@@ -600,7 +606,9 @@ const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 const BROADCAST_TIMEOUT_RETRY_DELAYS_MS = [1_500, 4_000, 10_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
+const MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE = 2;
 const MANAGED_BROADCAST_RECOVERY_BATCH_SIZE = 2;
+const MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE = 1;
 const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
@@ -609,6 +617,8 @@ const MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES = 3;
 const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS = MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
 const MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX =
   'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки';
+const MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS = 15_000;
+const MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT = 3;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
@@ -1140,6 +1150,7 @@ export class AdminService implements OnModuleDestroy {
     string,
     TimedPromiseCacheEntry<ResolvedUserProfile>
   >();
+  private managedBroadcastDegradePauseLogAtMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -10977,6 +10988,19 @@ export class AdminService implements OnModuleDestroy {
 
   async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
     for (let pass = 0; pass < MANAGED_BROADCAST_DUE_MAX_PASSES; pass += 1) {
+      const governorDecision = await this.resolveManagedBroadcastBackgroundDecision(reason);
+      if (governorDecision.action === 'pause') {
+        return;
+      }
+
+      const dueBatchSize =
+        governorDecision.action === 'slow'
+          ? MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE
+          : MANAGED_BROADCAST_DUE_BATCH_SIZE;
+      const recoveryBatchSize =
+        governorDecision.action === 'slow'
+          ? MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE
+          : MANAGED_BROADCAST_RECOVERY_BATCH_SIZE;
       const now = new Date();
       const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
       const autoRetryBefore = new Date(now.getTime() - MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS);
@@ -10987,7 +11011,7 @@ export class AdminService implements OnModuleDestroy {
           OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
         },
         orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+        take: dueBatchSize,
         select: { id: true },
       });
       const retryableDueRows = await this.prisma.managedBroadcast.findMany({
@@ -11000,26 +11024,26 @@ export class AdminService implements OnModuleDestroy {
           OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
         },
         orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+        take: dueBatchSize,
         select: { id: true },
       });
       const reservedRecoveryCount = Math.min(
         retryableDueRows.length,
-        Math.min(MANAGED_BROADCAST_RECOVERY_BATCH_SIZE, MANAGED_BROADCAST_DUE_BATCH_SIZE),
+        Math.min(recoveryBatchSize, dueBatchSize),
       );
       const dueRows = [
-        ...activeDueRows.slice(0, MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount),
+        ...activeDueRows.slice(0, dueBatchSize - reservedRecoveryCount),
         ...retryableDueRows.slice(0, reservedRecoveryCount),
       ];
-      if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
-        const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
-        const activeOverflowOffset = MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount;
+      if (dueRows.length < dueBatchSize) {
+        const remainingSlots = dueBatchSize - dueRows.length;
+        const activeOverflowOffset = dueBatchSize - reservedRecoveryCount;
         dueRows.push(
           ...activeDueRows.slice(activeOverflowOffset, activeOverflowOffset + remainingSlots),
         );
       }
-      if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
-        const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
+      if (dueRows.length < dueBatchSize) {
+        const remainingSlots = dueBatchSize - dueRows.length;
         dueRows.push(
           ...retryableDueRows.slice(reservedRecoveryCount, reservedRecoveryCount + remainingSlots),
         );
@@ -11036,11 +11060,94 @@ export class AdminService implements OnModuleDestroy {
           PrismaManagedBroadcastStatus.FAILED,
         ]);
       }
+
+      if (governorDecision.action === 'slow') {
+        return;
+      }
     }
 
     this.logger.warn(
       `Managed broadcast due backlog was not fully drained after ${MANAGED_BROADCAST_DUE_MAX_PASSES} passes.`,
     );
+  }
+
+  private async resolveManagedBroadcastBackgroundDecision(
+    reason: 'startup' | 'scheduled',
+  ): Promise<ManagedBroadcastBackgroundDecision> {
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'managed-broadcast',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+      });
+      if (decision.action !== 'run') {
+        return this.logManagedBroadcastBackgroundThrottleDecision(reason, decision);
+      }
+
+      return decision;
+    }
+
+    const snapshot = await this.resolveSystemModeSnapshot();
+    if (snapshot.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot)) {
+      return this.logManagedBroadcastSystemModePauseDecision(reason, snapshot);
+    }
+
+    return {
+      action: 'run',
+      reason: 'background headroom available',
+      retryAfterMs: 0,
+    };
+  }
+
+  private logManagedBroadcastBackgroundThrottleDecision(
+    reason: 'startup' | 'scheduled',
+    decision: ManagedBroadcastBackgroundDecision,
+  ): ManagedBroadcastBackgroundDecision {
+    const now = Date.now();
+    if (
+      now - this.managedBroadcastDegradePauseLogAtMs >=
+      MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS
+    ) {
+      this.managedBroadcastDegradePauseLogAtMs = now;
+      this.logger.log(
+        {
+          reason,
+          action: decision.action,
+          details: decision.reason,
+          retryAfterMs: decision.retryAfterMs,
+        },
+        'Throttled managed broadcast background delivery because the runtime governor detected pressure',
+      );
+    }
+
+    return decision;
+  }
+
+  private logManagedBroadcastSystemModePauseDecision(
+    reason: 'startup' | 'scheduled',
+    snapshot: Pick<SystemModeSnapshot, 'mode' | 'source' | 'reason'>,
+  ): ManagedBroadcastBackgroundDecision {
+    const now = Date.now();
+    if (
+      now - this.managedBroadcastDegradePauseLogAtMs >=
+      MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS
+    ) {
+      this.managedBroadcastDegradePauseLogAtMs = now;
+      this.logger.log(
+        {
+          reason,
+          mode: snapshot.mode,
+          source: snapshot.source,
+          details: snapshot.reason,
+        },
+        'Paused managed broadcast background delivery because the system is degraded',
+      );
+    }
+
+    return {
+      action: 'pause',
+      reason: snapshot.reason,
+      retryAfterMs: MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS,
+    };
   }
 
   private async listManagedBroadcastsForEntity(
