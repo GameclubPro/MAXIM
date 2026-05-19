@@ -524,6 +524,11 @@ type ManagedBroadcastResolvedMedia = {
   attachments?: MaxAttachmentPayload[];
 };
 
+type ManagedBroadcastMaxApiOptions = Pick<
+  MaxActionDispatchOptions,
+  'trafficClass' | 'actionHealthLane' | 'sourceTag'
+>;
+
 type ManagedBroadcastSchedulePlan = {
   scheduleMode: BroadcastScheduleMode;
   scheduleTimezone: string;
@@ -11804,12 +11809,14 @@ export class AdminService implements OnModuleDestroy {
     const deliveryBotId =
       (await this.resolveDeliveryBotAssignment(sourceChatId)) ?? this.resolvePrivateDeliveryBotId();
     const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
+    const maxApiOptions = this.buildManagedBroadcastMaxApiOptions('interactive');
     const media = await this.resolveManagedBroadcastMedia(
       request.payload,
       entityType,
       sourceChatId,
       user.userId,
       deliveryBotId,
+      maxApiOptions,
     );
     const message = await this.buildManagedBroadcastMessage(
       sourceChatId,
@@ -11887,6 +11894,7 @@ export class AdminService implements OnModuleDestroy {
               params.options,
               {
                 trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             )
@@ -11896,6 +11904,7 @@ export class AdminService implements OnModuleDestroy {
               params.options,
               {
                 trafficClass: 'interactive',
+                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             );
@@ -12008,6 +12017,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Все циклы должны укладываться в 31 день от текущего момента.');
     }
 
+    const maxApiOptions = this.resolveManagedBroadcastSourceMaxApiOptions(source);
     const resolvedBotIdsByChatId = new Map<string, string | undefined>();
     const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
     const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
@@ -12029,6 +12039,7 @@ export class AdminService implements OnModuleDestroy {
             sourceChatId,
             user.userId,
             botId,
+            maxApiOptions,
           ),
         );
       }
@@ -12060,6 +12071,7 @@ export class AdminService implements OnModuleDestroy {
               message.messageText,
               message.messageOptions,
               resolvedBotId,
+              maxApiOptions,
             );
           } else {
             await this.maxClient.sendMessage(
@@ -12069,10 +12081,12 @@ export class AdminService implements OnModuleDestroy {
               occurrenceDelayMs > 0
                 ? {
                     delayMs: occurrenceDelayMs,
+                    ...maxApiOptions,
                     ...(resolvedBotId ? { botId: resolvedBotId } : {}),
                   }
                 : {
                     immediate: true,
+                    ...maxApiOptions,
                     ...(resolvedBotId ? { botId: resolvedBotId } : {}),
                   },
             );
@@ -12420,6 +12434,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+    const maxApiOptions = this.resolveManagedBroadcastProcessingMaxApiOptions(reason);
 
     try {
       await this.reconcileStaleManagedBroadcastDeliveries(
@@ -12541,6 +12556,7 @@ export class AdminService implements OnModuleDestroy {
               row.sourceChatId,
               row.actorUserId,
               botId,
+              maxApiOptions,
             ),
           );
         }
@@ -12585,6 +12601,7 @@ export class AdminService implements OnModuleDestroy {
             message.messageText,
             message.messageOptions,
             resolvedBotId,
+            maxApiOptions,
           );
         } catch (error: unknown) {
           const deliveryFailureMessage =
@@ -12867,6 +12884,7 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string,
     actorUserId: string,
     botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
   ): Promise<ManagedBroadcastResolvedMedia> {
     const images = this.resolveManagedBroadcastRequestImages(payload);
     if (images.length === 1) {
@@ -12876,6 +12894,7 @@ export class AdminService implements OnModuleDestroy {
         sourceChatId,
         actorUserId,
         botId,
+        maxApiOptions,
       );
       return imagePayload ? { imagePayload } : {};
     }
@@ -12889,6 +12908,7 @@ export class AdminService implements OnModuleDestroy {
           sourceChatId,
           actorUserId,
           botId,
+          maxApiOptions,
         );
         if (imagePayload) {
           attachments.push({
@@ -13031,6 +13051,7 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string,
     actorUserId: string,
     botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
   ): Promise<Record<string, unknown> | undefined> {
     const imageMimeType = image.mimeType.trim().toLowerCase();
     const imageBuffer = this.validateManagedBroadcastImagePayload(image);
@@ -13050,12 +13071,16 @@ export class AdminService implements OnModuleDestroy {
                 imageBuffer,
                 this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
                 imageMimeType,
-                { botId },
+                {
+                  ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+                  botId,
+                },
               )
             : await this.maxClient.uploadImage(
                 imageBuffer,
                 this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
                 imageMimeType,
+                this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
               );
         } catch (error: unknown) {
           lastError = error;
@@ -13101,6 +13126,36 @@ export class AdminService implements OnModuleDestroy {
   private readManagedBroadcastMediaType(value: unknown): BroadcastMediaType | null {
     const normalized = this.readLowerString(value);
     return normalized === 'image' || normalized === 'video' ? normalized : null;
+  }
+
+  private buildManagedBroadcastMaxApiOptions(
+    trafficClass: NonNullable<ManagedBroadcastMaxApiOptions['trafficClass']>,
+  ): ManagedBroadcastMaxApiOptions {
+    return {
+      trafficClass,
+      actionHealthLane: trafficClass,
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
+    };
+  }
+
+  private buildManagedBroadcastMaxApiRequestOptions(
+    options?: ManagedBroadcastMaxApiOptions,
+  ): ManagedBroadcastMaxApiOptions {
+    return options ?? this.buildManagedBroadcastMaxApiOptions('interactive');
+  }
+
+  private resolveManagedBroadcastSourceMaxApiOptions(
+    _source: AdminActionSource,
+  ): ManagedBroadcastMaxApiOptions {
+    return this.buildManagedBroadcastMaxApiOptions('interactive');
+  }
+
+  private resolveManagedBroadcastProcessingMaxApiOptions(
+    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
+  ): ManagedBroadcastMaxApiOptions {
+    return this.buildManagedBroadcastMaxApiOptions(
+      reason === 'startup' || reason === 'scheduled' ? 'background' : 'interactive',
+    );
   }
 
   private async planManagedBroadcastSchedule(
@@ -14916,6 +14971,7 @@ export class AdminService implements OnModuleDestroy {
         >
       | undefined,
     botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
   ): Promise<string> {
     let lastError: unknown = null;
     const attempts =
@@ -14928,8 +14984,16 @@ export class AdminService implements OnModuleDestroy {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const published = botId
-          ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, { botId })
-          : await this.maxClient.sendMessageImmediateWithId(chatId, text, options);
+          ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, {
+              ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+              botId,
+            })
+          : await this.maxClient.sendMessageImmediateWithId(
+              chatId,
+              text,
+              options,
+              this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+            );
         return published.messageId;
       } catch (error: unknown) {
         lastError = error;
@@ -14957,6 +15021,7 @@ export class AdminService implements OnModuleDestroy {
         >
       | undefined,
     botId?: string,
+    maxApiOptions?: ManagedBroadcastMaxApiOptions,
   ): Promise<void> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
@@ -14967,7 +15032,16 @@ export class AdminService implements OnModuleDestroy {
           chatId,
           text,
           options,
-          botId ? { immediate: true, botId } : { immediate: true },
+          botId
+            ? {
+                immediate: true,
+                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+                botId,
+              }
+            : {
+                immediate: true,
+                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
+              },
         );
         return;
       } catch (error: unknown) {

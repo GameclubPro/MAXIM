@@ -18444,6 +18444,11 @@ describe('AdminService.sendBroadcast', () => {
       'chat-1',
       'Локальное объявление',
       undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(result.targetChats).toBe(1);
     expect(result.sentChats).toBe(1);
@@ -18857,6 +18862,11 @@ describe('AdminService.sendBroadcast', () => {
       'chat-1',
       'Напоминание',
       undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -19104,6 +19114,16 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
     expect(deliveries[0]).toEqual(
       expect.objectContaining({
         status: 'SENT',
@@ -20201,12 +20221,22 @@ describe('AdminService.sendBroadcast', () => {
       'chat-1',
       'Напоминание',
       undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       2,
       'chat-2',
       'Напоминание',
       undefined,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(result.targetChats).toBe(2);
     expect(result.sentChats).toBe(2);
@@ -21115,6 +21145,16 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
 
     expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'cover.jpg',
+      'image/jpeg',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
       '<strong>Новый выпуск</strong> уже в канале.',
@@ -21123,7 +21163,12 @@ describe('AdminService.sendChannelBroadcast', () => {
         buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
         imagePayload: { token: 'upload-token-channel-1' },
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
@@ -21230,7 +21275,12 @@ describe('AdminService.sendChannelBroadcast', () => {
           },
         ],
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
@@ -21307,7 +21357,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       {
         attachments: [{ type: 'video', payload: { token: 'video-token-1' } }],
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
@@ -21385,7 +21440,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       {
         textFormat: 'html',
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
   });
 
@@ -21461,7 +21521,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       {
         textFormat: 'html',
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
   });
 
@@ -21594,7 +21659,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       {
         textFormat: 'html',
       },
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
     );
   });
 
@@ -21695,7 +21765,15 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
     expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
-    expect(dispatch).toEqual({ immediate: true, botId: 'channel-bot-2' });
+    expect(dispatch).toEqual(
+      expect.objectContaining({
+        immediate: true,
+        botId: 'channel-bot-2',
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
     expect(options).toMatchObject({
       textFormat: 'html',
       buttons: [
@@ -21785,7 +21863,14 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
     expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
-    expect(dispatch).toEqual({ immediate: true });
+    expect(dispatch).toEqual(
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
     expect(options).toMatchObject({
       textFormat: 'html',
       buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],

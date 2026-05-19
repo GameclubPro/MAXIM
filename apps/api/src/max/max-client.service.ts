@@ -284,6 +284,7 @@ export const MAX_API_SOURCE_TAGS = {
   PARTICIPANT_SEARCH: 'participant_search',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
+  MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',
   MANUAL_GROUP_CLOSE_SCAN: 'manual_group_close_scan',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
@@ -1179,7 +1180,10 @@ export class MaxClientService implements OnModuleDestroy {
           },
         }),
       {
-        trafficClass: 'critical',
+        trafficClass: requestOptions.trafficClass ?? 'critical',
+        actionHealthLane: requestOptions.actionHealthLane,
+        sourceTag: requestOptions.sourceTag,
+        timeoutMs: requestOptions.timeoutMs,
         ...(requestOptions.botId ? { botId: requestOptions.botId } : {}),
       },
     );
