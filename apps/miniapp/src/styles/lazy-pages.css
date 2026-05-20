@@ -11626,3 +11626,228 @@
     font-size: 0.62rem;
   }
 }
+
+/* Route clarity pass: compact settings and stats without explanatory chrome. */
+.settings-home-sticky-header.compact-page-header,
+.channel-settings-screen__sticky-header,
+.channel-insights__sticky-header.compact-page-header {
+  --compact-page-header-height: 50px;
+  --compact-page-header-radius: 20px;
+}
+
+.settings-home-sticky-header .compact-page-header__bar,
+.channel-settings-screen__sticky-header .compact-page-header__bar,
+.channel-insights__sticky-header .compact-page-header__bar {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.settings-home-entry .settings-section__toggle,
+.channel-settings-card .settings-section__toggle {
+  min-height: 54px;
+  padding: 7px 8px;
+  gap: 8px;
+  border-radius: 16px;
+  box-shadow:
+    0 6px 14px rgba(24, 55, 83, 0.035),
+    0 1px 0 rgba(255, 255, 255, 0.76) inset;
+}
+
+.channel-settings-card .settings-section__toggle {
+  min-height: 56px;
+}
+
+.settings-home-entry--priority .settings-section__toggle,
+.settings-home-entry--list .settings-section__toggle {
+  min-height: 54px;
+  padding: 7px 8px;
+  border-radius: 16px;
+}
+
+.settings-home-entry .settings-section__icon-badge,
+.channel-settings-card .settings-section__icon-badge,
+.settings-home-entry--priority .settings-section__icon-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+.settings-home-entry .settings-section__icon-badge svg,
+.channel-settings-card .settings-section__icon-badge svg {
+  width: 17px;
+  height: 17px;
+}
+
+.settings-home-entry .settings-section__toggle-main h3,
+.settings-home-entry--list .settings-section__toggle-main h3,
+.channel-settings-card .settings-section__toggle-main h3 {
+  font-size: 0.88rem;
+}
+
+.settings-home-entry .settings-section__status-chip,
+.channel-settings-card .settings-section__status-chip {
+  max-width: 74px;
+  min-height: 22px;
+  padding-inline: 7px;
+  font-size: 0.56rem;
+}
+
+.settings-home-entry .settings-section__chevron,
+.channel-settings-card .settings-section__chevron {
+  width: 28px;
+  height: 28px;
+}
+
+.channel-insights__body {
+  gap: 8px;
+  padding-inline: 10px;
+}
+
+.channel-insights__summary,
+.channel-insights__panel {
+  border-radius: 18px;
+  box-shadow:
+    0 8px 18px rgba(22, 44, 67, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.76) inset;
+}
+
+.channel-insights__summary {
+  gap: 8px;
+  padding: 10px;
+}
+
+.channel-insights__summary--command {
+  padding-top: 24px;
+}
+
+.channel-insights__summary-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(164px, auto);
+  align-items: end;
+  gap: 8px;
+}
+
+.channel-insights__summary-copy h2 {
+  font-size: 1rem;
+}
+
+.channel-insights__summary-copy p {
+  overflow: hidden;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-insights__range {
+  justify-self: end;
+  width: min(180px, 100%);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.channel-insights__range .segmented-control__item,
+.channel-insights__switch .segmented-control__item {
+  min-height: 30px;
+  padding: 4px 5px;
+  border-radius: 13px;
+  font-size: 0.68rem;
+}
+
+.channel-insights__kpi-grid {
+  gap: 6px;
+}
+
+.channel-insights__kpi-card {
+  min-height: 70px;
+  padding: 9px 8px 8px;
+  border-radius: 16px;
+}
+
+.channel-insights__kpi-card small {
+  font-size: 0.52rem;
+}
+
+.channel-insights__kpi-card strong {
+  font-size: 1.04rem;
+}
+
+.channel-insights__kpi-card span {
+  font-size: 0.6rem;
+  line-height: 1.16;
+}
+
+.channel-insights__chart-card {
+  gap: 9px;
+  padding: 10px;
+  border-radius: 18px;
+}
+
+.channel-insights__chart-card .channel-insights__panel-copy small {
+  display: none;
+}
+
+.channel-stats-graph {
+  gap: 8px;
+}
+
+.channel-stats-graph__insights {
+  gap: 5px;
+}
+
+.channel-stats-graph__insight {
+  padding: 7px 8px;
+  border-radius: 12px;
+}
+
+.channel-stats-graph__canvas {
+  padding: 5px;
+  border-radius: 15px;
+}
+
+@media (max-width: 430px) {
+  .settings-home-entry .settings-section__toggle,
+  .settings-home-entry--priority .settings-section__toggle,
+  .settings-home-entry--list .settings-section__toggle,
+  .channel-settings-card .settings-section__toggle {
+    min-height: 52px;
+    padding: 7px;
+  }
+
+  .channel-settings-card .settings-section__toggle {
+    min-height: 56px;
+  }
+
+  .channel-insights__summary-head {
+    grid-template-columns: minmax(0, 1fr) minmax(156px, auto);
+    gap: 7px;
+  }
+
+  .channel-insights__range {
+    width: min(168px, 100%);
+  }
+
+  .channel-insights__kpi-grid {
+    gap: 6px;
+  }
+
+  .channel-insights__chart-card {
+    padding: 10px;
+  }
+
+  .channel-stats-graph__insights {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .channel-insights__summary-head {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .channel-insights__range {
+    justify-self: stretch;
+    width: 100%;
+  }
+}

@@ -1313,9 +1313,6 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
     <div className="channel-posts-chart">
       <div className="channel-posts-chart__summary">
         <strong>Лучшие публикации</strong>
-        <small>
-          По приросту просмотров. Реакции показаны рядом, чтобы не смешивать два разных сигнала.
-        </small>
       </div>
 
       <div className="channel-posts-chart__list">

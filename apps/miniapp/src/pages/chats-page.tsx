@@ -464,6 +464,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {} as Record<ManagedEntityFavoriteType, number>,
     );
   }, [activeEntities, activeTab, homeEntityFavorites]);
+  const visibleFavoriteFilterTypes = useMemo(
+    () =>
+      HOME_ENTITY_FAVORITE_TYPES.filter(
+        (favoriteType) => favoriteCounts[favoriteType] > 0 || favoriteFilter === favoriteType,
+      ),
+    [favoriteCounts, favoriteFilter],
+  );
   const favoriteEntitiesCount = useMemo(() => {
     if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
       return 0;
@@ -1097,9 +1104,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           </nav>
 
           <div className="chats-command__meta">
-            <span className={cn('chats-command__sync-chip', `is-${homeSyncStatus.tone}`)}>
+            <span
+              className={cn('chats-command__sync-chip', `is-${homeSyncStatus.tone}`)}
+              aria-label={`Статус списка: ${homeSyncStatus.label}`}
+              title={homeSyncStatus.label}
+            >
               <span className="chats-command__sync-dot" aria-hidden />
-              {homeSyncStatus.label}
             </span>
             <button
               type="button"
@@ -1176,7 +1186,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           >
             Все
           </button>
-          {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+          {visibleFavoriteFilterTypes.map((favoriteType) => {
             const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
             return (
               <button
