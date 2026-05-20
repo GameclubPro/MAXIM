@@ -60,6 +60,9 @@
 - Runtime hot-path entry points should route through focused boundary services: `WebhookIngestionService`, `ModerationExecutionService`, `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`. Keep controllers/processors/lease managers from calling legacy webhook, moderation, action, or admin refresh implementations directly.
 - Admin runtime entry points should route through focused admin domain facades where available: `ManagedEntitiesService`, `AdminSettingsService`, `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`, and `ManagedGiveawayService`. These facades are the stable extraction boundary around legacy `AdminService`; avoid adding new controller/runner/private-bot calls directly to `AdminService` when a facade exists.
 - Use `npm run check` for a full local CI-style pass before broad or risky changes.
+- Do not run API validation commands that invoke `prisma generate` in parallel with each other
+  (for example API typecheck and API Jest); concurrent generation can corrupt the ignored
+  generated client and cause a false Prisma output-path failure.
 - If `apps/api/prisma/schema.prisma` model/enum/database mappings change, include a migration before push; generator/datasource config-only changes do not need a migration.
 - Prisma 7 CLI commands must use `apps/api/prisma.config.ts` from repo root or `prisma.config.ts` inside `apps/api`; in API containers call the workspace binary at `./apps/api/node_modules/.bin/prisma` from repo root. Runtime code should import Prisma through `apps/api/src/prisma/prisma-client.ts`, not `@prisma/client`, because the generated client lives in ignored `apps/api/src/generated/prisma/`.
 

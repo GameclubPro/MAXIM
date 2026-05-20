@@ -187,6 +187,7 @@ import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
+import { buildChannelStatsIntelligence } from './channel-stats-intelligence';
 import {
   buildCompactProfileMentionStartPayload,
   isValidMaxBotStartPayload,
@@ -7603,6 +7604,24 @@ export class AdminService implements OnModuleDestroy {
       suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
       suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
     });
+    const intelligence = buildChannelStatsIntelligence({
+      totals: currentTotals,
+      previousTotals,
+      comparison,
+      signals,
+      membershipRows,
+      participantSeries,
+      postViewMetrics: periodPostViewMetrics,
+      secondary: {
+        commentAuthors: this.toSafeInteger(secondary.comment_authors),
+        suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
+        comments: this.toSafeInteger(secondary.comments),
+        suggestions: this.toSafeInteger(secondary.suggestions),
+        postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
+      },
+      maxSnapshotAvailable,
+      range: parsed.data.range,
+    });
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -7671,6 +7690,7 @@ export class AdminService implements OnModuleDestroy {
       comparison,
       health,
       signals,
+      intelligence,
       activityFeed,
     };
 

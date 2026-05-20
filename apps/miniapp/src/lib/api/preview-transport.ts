@@ -2782,6 +2782,56 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
           : null
         : Math.round(((current - previous) / previous) * 1000) / 10,
   });
+  const buildBenchmark = (current: number, baseline: number) => ({
+    current: Math.round(current * 10) / 10,
+    baseline: Math.round(baseline * 10) / 10,
+    deltaPercent: baseline > 0 ? Math.round(((current - baseline) / baseline) * 1000) / 10 : null,
+  });
+  const currentReactionsPerPost = posts > 0 ? reactions / posts : 0;
+  const previousReactionsPerPost = previousPosts > 0 ? previousReactions / previousPosts : 0;
+  const currentEngagementRate = views > 0 ? (reactions / views) * 100 : 0;
+  const previousEngagementRate = previousViews > 0 ? (previousReactions / previousViews) * 100 : 0;
+  const hotWindows = [
+    { dayOfWeek: 4, hour: 18, posts: 3, averageViews: 5800, averageReactions: 310 },
+    { dayOfWeek: 2, hour: 12, posts: 2, averageViews: 4900, averageReactions: 250 },
+    { dayOfWeek: 6, hour: 11, posts: 2, averageViews: 4400, averageReactions: 220 },
+    { dayOfWeek: 1, hour: 20, posts: 1, averageViews: 3600, averageReactions: 180 },
+    { dayOfWeek: 5, hour: 9, posts: 1, averageViews: 2800, averageReactions: 120 },
+  ].map((item) => ({
+    ...item,
+    score: item.averageViews + item.averageReactions * 12 + item.posts * 4,
+  }));
+  const hotWindowByKey = new Map(
+    hotWindows.map((item) => [`${item.dayOfWeek}:${item.hour}`, item]),
+  );
+  const maxWindowScore = Math.max(...hotWindows.map((item) => item.score), 0);
+  const publishingHeatmap = Array.from({ length: 7 * 24 }, (_, index) => {
+    const dayOfWeek = Math.floor(index / 24);
+    const hour = index % 24;
+    const window = hotWindowByKey.get(`${dayOfWeek}:${hour}`);
+    const ratio = maxWindowScore > 0 && window ? window.score / maxWindowScore : 0;
+    const tone =
+      ratio >= 0.72 ? 'success' : ratio >= 0.42 ? 'accent' : ratio >= 0.18 ? 'warning' : 'neutral';
+    return {
+      dayOfWeek,
+      hour,
+      score: window?.score ?? 0,
+      posts: window?.posts ?? 0,
+      averageViews: window?.averageViews ?? 0,
+      averageReactions: window?.averageReactions ?? 0,
+      tone,
+    };
+  });
+  const cohortJoined = Math.max(0, joined);
+  const cohortRetained = Math.max(0, joined - left);
+  const cohortParticipated = Math.min(
+    cohortJoined,
+    range === '24h' ? 18 : range === '7d' ? 52 : 140,
+  );
+  const forecastNet = Math.round(
+    (joined - left) * (range === '24h' ? 18 : range === '7d' ? 4.2 : 1),
+  );
+  const forecastParticipants = Math.max(0, state.channelHeaderParticipantsCount + forecastNet);
 
   return channelStatsResponseSchema.parse({
     channel: {
@@ -2928,6 +2978,52 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
           averageViews: 4400,
           averageReactions: 220,
         },
+      ],
+    },
+    intelligence: {
+      headline: {
+        primary: {
+          code: 'headline-growth',
+          label: 'Рост',
+          value: `+${joined - left}`,
+          tone: 'success',
+          at: null,
+        },
+        secondary: [
+          { code: 'headline-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
+          { code: 'headline-views', label: 'Посты', value: '+34%', tone: 'accent', at: null },
+        ],
+      },
+      benchmarks: {
+        viewsPerPost: buildBenchmark(currentAverageViewsPerPost, previousAverageViewsPerPost),
+        reactionsPerPost: buildBenchmark(currentReactionsPerPost, previousReactionsPerPost),
+        engagementRate: buildBenchmark(currentEngagementRate, previousEngagementRate),
+      },
+      forecast: {
+        horizonDays: 30,
+        participants: forecastParticipants,
+        net: forecastNet,
+        confidence: range === '24h' ? 'medium' : 'high',
+      },
+      cohort: {
+        joined: cohortJoined,
+        retained: cohortRetained,
+        participated: cohortParticipated,
+        reactions,
+        retentionRate:
+          cohortJoined > 0 ? Math.round((cohortRetained / cohortJoined) * 1000) / 10 : null,
+        participationRate:
+          cohortJoined > 0 ? Math.round((cohortParticipated / cohortJoined) * 1000) / 10 : null,
+        reactionsPerJoined:
+          cohortJoined > 0 ? Math.round((reactions / cohortJoined) * 10) / 10 : null,
+        sampleSize: cohortJoined,
+      },
+      publishingHeatmap,
+      patterns: [
+        { code: 'best-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
+        { code: 'views-norm-up', label: 'Посты', value: '+34%', tone: 'success', at: null },
+        { code: 'buttons-app-actions', label: 'Кнопки', value: '+298', tone: 'accent', at: null },
+        { code: 'forecast', label: 'Прогноз', value: `+${forecastNet}`, tone: 'success', at: null },
       ],
     },
     activityFeed: buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
