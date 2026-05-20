@@ -1765,3 +1765,40 @@ body.settings-drilldown-open .toast__close {
     gap: 6px;
   }
 }
+
+/* Rules reuse broadcast composer internals; keep hidden chrome from leaking into the UI. */
+.settings-drilldown__panel--rules-screen .broadcast-studio-screen__chrome {
+  display: none;
+}
+
+.settings-drilldown__panel--rules-screen .rules-publish-bar--with-reset {
+  grid-template-columns: 38px minmax(74px, 0.48fr) minmax(116px, 1fr);
+}
+
+.settings-drilldown__panel--rules-screen
+  .rules-publish-bar--with-reset
+  .broadcast-publish-bar__test:not(.rules-publish-bar__reset) {
+  order: 2;
+}
+
+.settings-drilldown__panel--rules-screen
+  .rules-publish-bar--with-reset
+  .broadcast-publish-bar__button {
+  order: 3;
+}
+
+.settings-drilldown__panel--rules-screen .rules-publish-bar__reset {
+  order: 1;
+  min-width: 0;
+  width: 38px;
+  padding: 0;
+}
+
+.settings-drilldown__panel--rules-screen .rules-publish-bar__reset::before {
+  content: none;
+}
+
+.settings-drilldown__panel--rules-screen .rules-publish-bar__reset svg {
+  width: 17px;
+  height: 17px;
+}

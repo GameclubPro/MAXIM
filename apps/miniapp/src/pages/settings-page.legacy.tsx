@@ -3903,7 +3903,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isResettingPublishedRules ||
     updateRulesAttachMutation.isPending;
   const rulesDrilldownFooter = rulesDraft ? (
-    <div className="broadcast-publish-bar rules-publish-bar">
+    <div
+      className={cn(
+        'broadcast-publish-bar rules-publish-bar',
+        hasPublishedRules && 'rules-publish-bar--with-reset',
+      )}
+    >
       <div className="broadcast-publish-bar__copy">
         <strong>{rulesFooterTitle}</strong>
         <small>{rulesFooterMeta || 'Черновик'}</small>
@@ -3923,6 +3928,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           onClick={(event) => handleManagedPostLinkClick(event, rulesPublishedUrl)}
         >
           <span>Пост</span>
+        </button>
+      ) : null}
+
+      {hasPublishedRules ? (
+        <button
+          type="button"
+          className="button button--ghost broadcast-publish-bar__test rules-publish-bar__reset"
+          onClick={handleResetPublishedRules}
+          disabled={isResettingPublishedRules}
+          aria-label="Сбросить публикацию"
+          title="Сбросить публикацию"
+        >
+          <ResetIcon />
         </button>
       ) : null}
 
@@ -5820,20 +5838,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ariaLabel="Сводка правил"
                               />
 
-                              {hasPublishedRules ? (
-                                <div className="rules-studio-screen__actions">
-                                  <button
-                                    type="button"
-                                    className="broadcast-shell-reset"
-                                    onClick={handleResetPublishedRules}
-                                    disabled={isResettingPublishedRules}
-                                    aria-label="Сбросить публикацию"
-                                    title="Сбросить публикацию"
-                                  >
-                                    <ResetIcon />
-                                  </button>
-                                </div>
-                              ) : null}
                             </div>
 
                             <div className="broadcast-compose-flow broadcast-compose-flow--screen rules-compose-flow">
