@@ -6757,6 +6757,24 @@
   padding-block: 12px;
 }
 
+.managed-giveaway__file-field {
+  position: relative;
+}
+
+.managed-giveaway__file-picker {
+  width: 100%;
+  justify-content: center;
+  min-height: 46px;
+}
+
+.managed-giveaway__file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .managed-giveaway .field > span {
   font-size: 0.71rem;
   line-height: 1.25;
@@ -8314,7 +8332,17 @@
 
   .managed-giveaway--step-conditions .managed-giveaway__action-dock-actions,
   .managed-giveaway--step-prizes .managed-giveaway__action-dock-actions {
-    grid-template-columns: minmax(102px, 0.4fr) minmax(0, 1fr);
+    grid-template-columns: minmax(82px, 0.36fr) minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .managed-giveaway__action-dock-actions .button {
+    min-width: 0;
+    padding-inline: 8px;
+    font-size: 0.8rem;
+    line-height: 1.08;
+    white-space: nowrap;
+    overflow-wrap: normal;
   }
 }
 

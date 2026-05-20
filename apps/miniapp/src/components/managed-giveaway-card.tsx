@@ -9,7 +9,7 @@ import {
   type ManagedGiveawayWinner,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { getChannels } from '../lib/api/root-client';
 import {
@@ -28,6 +28,7 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
+import { openFileInputPicker } from '../lib/file-input-picker';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
@@ -622,6 +623,7 @@ export function ManagedGiveawayCard({
   const [resolvedExternalChannels, setResolvedExternalChannels] = useState<
     Record<string, { title: string; link: string | null }>
   >({});
+  const publicationImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const listQueryKey = useMemo(
     () => queryKeys.managedGiveaways(entityType, entityId),
@@ -2590,15 +2592,26 @@ export function ManagedGiveawayCard({
                 </label>
 
                 <div className="managed-giveaway__editor-grid managed-giveaway__editor-grid--align-end">
-                  <label className="field">
+                  <div className="field managed-giveaway__file-field">
                     <span>Фото публикации</span>
+                    <button
+                      type="button"
+                      className="button button--ghost managed-giveaway__file-picker"
+                      onClick={() => openFileInputPicker(publicationImageInputRef.current)}
+                      disabled={isBusy}
+                    >
+                      {draft.imageEnabled ? 'Заменить фото' : 'Добавить фото'}
+                    </button>
                     <input
+                      ref={publicationImageInputRef}
+                      className="managed-giveaway__file-input"
                       type="file"
                       accept="image/*"
                       onChange={handlePublicationImageChange}
                       disabled={isBusy}
+                      tabIndex={-1}
                     />
-                  </label>
+                  </div>
                   {draft.imageEnabled ? (
                     <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
                       <button
