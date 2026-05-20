@@ -772,19 +772,19 @@ export const LINK_POLICY_OPTIONS: Array<{
   {
     value: 'ALERT_ONLY',
     eyebrow: 'Наблюдение',
-    label: 'Не удалять ссылки',
+    label: 'Не удалять',
     description: 'Ссылки остаются в чате, а блок санкций скрыт.',
   },
   {
     value: 'BLOCKLIST_ONLY',
     eyebrow: 'Жёсткий режим',
-    label: 'Удалять все ссылки',
+    label: 'Удалять',
     description: 'Любая ссылка удаляется сразу.',
   },
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
-    label: 'По списку',
+    label: 'Список',
     description: 'Только ссылки из списка ниже.',
   },
 ];

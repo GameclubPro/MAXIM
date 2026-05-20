@@ -9997,6 +9997,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="mint"
                 className="settings-drilldown__panel--board settings-drilldown__panel--comments"
                 onClose={() => toggleSection('comments')}
+                footer={
+                  <div className="settings-drilldown__footer-actions is-single-action">
+                    <button
+                      type="button"
+                      className="button button--accent"
+                      onClick={() => void handleSaveComments()}
+                      disabled={isSavingComments || !isCommentsDirty()}
+                    >
+                      {isSavingComments ? 'Сохраняем...' : 'Сохранить'}
+                    </button>
+                  </div>
+                }
               >
                 <div
                   id="settings-comments-content"
@@ -10145,19 +10157,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </>
                       ) : null}
 
-                      <p className="settings-drilldown__footer-note">
-                        Сохраняется после переключения. Кнопка ниже сохраняет сразу.
-                      </p>
-                      <div className="settings-drilldown__footer-actions">
-                        <button
-                          type="button"
-                          className="button button--accent"
-                          onClick={() => void handleSaveComments()}
-                          disabled={isSavingComments || !isCommentsDirty()}
-                        >
-                          {isSavingComments ? 'Сохраняем...' : 'Сохранить сейчас'}
-                        </button>
-                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -10191,7 +10190,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  applyToAllLabel: 'Применить в...',
+                  applyToAllLabel: 'Выбрать чаты',
                   emphasize: 'save',
                 })}
               >

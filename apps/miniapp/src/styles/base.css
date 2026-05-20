@@ -72,7 +72,8 @@ a {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
   -webkit-tap-highlight-color: transparent;
