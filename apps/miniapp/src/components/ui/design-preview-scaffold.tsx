@@ -27,7 +27,7 @@ const previewLinks = [
     path: '/',
   },
   {
-    label: 'События',
+    label: 'Статистика',
     description: 'Чат',
     path: `/chat/${PREVIEW_CHAT_ID}/events`,
   },

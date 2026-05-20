@@ -858,7 +858,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
     const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
     const routeState = buildEntityRouteState(activeTab, entity);
-    const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
+    const activityLabel = 'Статистика';
     const favoriteLabel =
       favoriteTypes.length > 0
         ? `Избранное: ${favoriteTypes

@@ -167,7 +167,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 
   return {
     title: 'Ваши чаты',
-    subtitle: 'Управляйте правилами и смотрите события в одном месте.',
+    subtitle: 'Управляйте правилами и смотрите статистику в одном месте.',
   };
 }
 
@@ -251,7 +251,7 @@ export function Shell() {
       ? `/channel/${resolvedChatId}/stats`
       : `/chat/${resolvedChatId}/events`
     : '';
-  const activityNavLabel = resolvedEntityType === 'channel' ? 'Статистика' : 'События';
+  const activityNavLabel = 'Статистика';
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');

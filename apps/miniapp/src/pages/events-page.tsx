@@ -1192,7 +1192,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     tone: 'accent' as const,
   };
   const moderationHeroMetric = {
-    label: 'События',
+    label: 'Нарушения',
     value: String(violationsSummary.total),
     note:
       violationsSummary.total > 0 ? 'Зафиксировано за период' : 'За период нарушений не найдено',
@@ -1276,7 +1276,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 className="events-stage__entity-avatar"
               />
               <div className="events-stage__appbar-copy">
-                <strong>События</strong>
+                <strong>Статистика</strong>
                 <span className="events-stage__appbar-label">{chatTitle}</span>
               </div>
             </div>
@@ -1295,7 +1295,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="events-stage__panel stagger-in">
-          <div className="events-primary-tabs" role="tablist" aria-label="Раздел событий">
+          <div className="events-primary-tabs" role="tablist" aria-label="Раздел статистики">
             <div className="events-primary-tabs__track">
               <button
                 type="button"
