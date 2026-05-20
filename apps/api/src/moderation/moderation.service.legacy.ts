@@ -16366,8 +16366,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     mode: SystemModeSnapshot,
     hotChatBackoffActive: boolean,
   ): boolean {
-    void mode;
-    return hotChatBackoffActive;
+    if (!hotChatBackoffActive) {
+      return false;
+    }
+
+    if (mode.mode === 'degrade' && !isSystemModeRecoveryWindow(mode)) {
+      return true;
+    }
+
+    return mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC;
   }
 
   private logHotChatModerationSkip(chatId: string, userId: string, mode: SystemModeSnapshot): void {

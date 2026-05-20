@@ -10263,7 +10263,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('skips duplicate moderation entirely while the chat is in webhook hot-timeout backoff', async () => {
+  it('keeps duplicate moderation active during chat hot-timeout backoff while the system is healthy', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -10313,7 +10313,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -16413,7 +16413,7 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('skips ordinary message moderation for a hot chat even before global pressure', async () => {
+    it('keeps ordinary message moderation active for a hot chat while the system is healthy', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -16458,14 +16458,14 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
-    it('skips known-spammer fanout checks for a hot chat before rule evaluation', async () => {
+    it('skips known-spammer fanout checks for a hot chat while the system is under pressure', async () => {
       const prisma = {
         chat: {
           upsert: jest.fn().mockResolvedValue({
@@ -16506,6 +16506,25 @@ describe('ModerationService', () => {
         addToSetWithTtl: jest.fn(),
         incrementWithTtl: jest.fn(),
       };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 18.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 18,
+          action: {
+            windowSec: 60,
+            total: 20,
+            success: 16,
+            failure: 4,
+            critical: 0,
+            errorRate: 0.2,
+            criticalRate: 0,
+          },
+        }),
+      };
 
       const service = new ModerationService(
         prisma as never,
@@ -16513,7 +16532,7 @@ describe('ModerationService', () => {
         { resolveAction: jest.fn() } as never,
         maxClient as never,
         undefined,
-        undefined,
+        systemModeService as never,
         undefined,
         redisCounter as never,
       );
@@ -16521,6 +16540,7 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
+      expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
       expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
       expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.findFirst).toHaveBeenCalled();
