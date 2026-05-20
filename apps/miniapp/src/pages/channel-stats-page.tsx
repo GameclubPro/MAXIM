@@ -225,6 +225,77 @@ function formatPercent(value: number | null): string {
   }).format(value)}%`;
 }
 
+function formatDeltaMetric(
+  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined,
+): string {
+  if (!metric) {
+    return '0';
+  }
+
+  if (typeof metric.percent === 'number' && Number.isFinite(metric.percent)) {
+    const rounded = Math.round(metric.percent);
+    if (rounded !== 0) {
+      return `${rounded > 0 ? '+' : ''}${rounded}%`;
+    }
+  }
+
+  return formatSignedCount(metric.absolute);
+}
+
+function resolveDeltaTone(
+  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined,
+  inverse = false,
+): ChartInsightTone {
+  if (!metric || metric.absolute === 0) {
+    return 'neutral';
+  }
+
+  const positive = inverse ? metric.absolute < 0 : metric.absolute > 0;
+  return positive ? 'success' : 'warning';
+}
+
+function formatPostTime(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function formatPerHour(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0/ч';
+  }
+
+  return `${formatCount(Math.round(value))}/ч`;
+}
+
+function formatBestWindow(window: ChannelStatsResponse['signals']['bestWindows'][number]): string {
+  const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  const day = days[window.dayOfWeek] ?? '';
+  return `${day} ${String(window.hour).padStart(2, '0')}:00`;
+}
+
+function DeltaBadge({
+  metric,
+  inverse = false,
+}: {
+  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined;
+  inverse?: boolean;
+}) {
+  const tone = resolveDeltaTone(metric, inverse);
+
+  return (
+    <span className={`channel-insights__delta channel-insights__delta--${tone}`}>
+      {formatDeltaMetric(metric)}
+    </span>
+  );
+}
+
 function resolveChannelStateLabel(stats: ChannelStatsResponse): string {
   if (!stats.meta.maxSnapshotAvailable) {
     return 'Снимок MAX недоступен';
@@ -233,7 +304,12 @@ function resolveChannelStateLabel(stats: ChannelStatsResponse): string {
   const parts: string[] = [];
 
   if (stats.channel.status) {
-    parts.push(stats.channel.status === 'active' ? 'Активен' : 'Неактивен');
+    const normalizedStatus = stats.channel.status.trim().toLowerCase();
+    if (normalizedStatus === 'active') {
+      parts.push('Активен');
+    } else if (['inactive', 'left', 'removed', 'deleted'].includes(normalizedStatus)) {
+      parts.push('Неактивен');
+    }
   }
 
   if (stats.channel.isPublic !== null) {
@@ -498,6 +574,89 @@ function ChartInsightStrip({ insights }: { insights: ChartInsight[] }) {
   );
 }
 
+function SignalStrip({
+  signals,
+  variant = 'insights',
+}: {
+  signals: ChannelStatsResponse['signals']['insights'];
+  variant?: 'insights' | 'alerts';
+}) {
+  if (signals.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={`channel-insights__signal-strip channel-insights__signal-strip--${variant}`}>
+      {signals.map((signal) => (
+        <span
+          key={`${signal.code}-${signal.value}-${signal.at ?? 'now'}`}
+          className={`channel-insights__signal channel-insights__signal--${signal.tone}`}
+        >
+          <small>{signal.label}</small>
+          <strong>{signal.value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function BestWindowsStrip({ stats }: { stats: ChannelStatsResponse }) {
+  const windows = stats.signals.bestWindows;
+  if (windows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="channel-insights__windows" aria-label="Лучшие окна публикаций">
+      {windows.map((window) => (
+        <span key={`${window.dayOfWeek}-${window.hour}`} className="channel-insights__window">
+          <strong>{formatBestWindow(window)}</strong>
+          <small>{formatCount(window.averageViews)}</small>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function resolveGraphMarkerPositions(
+  markers: ChannelStatsResponse['signals']['markers'],
+  anchors: Array<{ at: string; x: number }>,
+  filter: (marker: ChannelStatsResponse['signals']['markers'][number]) => boolean,
+) {
+  if (anchors.length === 0) {
+    return [];
+  }
+
+  return markers
+    .filter(filter)
+    .map((marker) => {
+      const markerTime = new Date(marker.at).getTime();
+      if (!Number.isFinite(markerTime)) {
+        return null;
+      }
+
+      let bestAnchor = anchors[0]!;
+      let bestDistance = Math.abs(new Date(bestAnchor.at).getTime() - markerTime);
+      for (const anchor of anchors.slice(1)) {
+        const distance = Math.abs(new Date(anchor.at).getTime() - markerTime);
+        if (distance < bestDistance) {
+          bestAnchor = anchor;
+          bestDistance = distance;
+        }
+      }
+
+      return {
+        ...marker,
+        x: bestAnchor.x,
+      };
+    })
+    .filter(
+      (marker): marker is ChannelStatsResponse['signals']['markers'][number] & { x: number } =>
+        marker !== null,
+    )
+    .slice(0, 5);
+}
+
 function buildAudienceChart(stats: ChannelStatsResponse): {
   points: AudienceChartPoint[];
   linePath: string;
@@ -722,6 +881,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const maxMembershipActivity = Math.max(
     ...chart.points.map((point) => point.joined + point.left),
     0,
+  );
+  const graphMarkers = resolveGraphMarkerPositions(
+    stats.signals.markers,
+    chart.points.map((point) => ({ at: point.at, x: point.x })),
+    (marker) => marker.type !== 'post',
   );
   const activeGuideLabel = activePoint
     ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
@@ -956,6 +1120,16 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   />
                 );
               })}
+              {graphMarkers.map((marker) => (
+                <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
+                  <path
+                    d={`M ${marker.x.toFixed(2)} 101 l 5 5 l -5 5 l -5 -5 Z`}
+                    className={`channel-stats-graph__marker channel-stats-graph__marker--${marker.tone}`}
+                  >
+                    <title>{`${marker.label} ${marker.value}`}</title>
+                  </path>
+                </g>
+              ))}
               {chart.hasLine ? (
                 <path
                   d={chart.linePath}
@@ -1043,6 +1217,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const totalViews = labels.reduce((sum, item) => sum + item.views, 0);
   const averageViews = labels.length > 0 ? Math.round(totalViews / labels.length) : 0;
   const viewInsights = buildViewsInsights(stats, chart.bars, averageViews);
+  const graphMarkers = resolveGraphMarkerPositions(
+    stats.signals.markers,
+    chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
+    (marker) => marker.type === 'post' || marker.type === 'peak',
+  );
   const slotWidth =
     chart.bars.length > 1
       ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
@@ -1252,6 +1431,16 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__dot channel-stats-graph__dot--views is-active"
                 />
               ) : null}
+              {graphMarkers.map((marker) => (
+                <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
+                  <path
+                    d={`M ${marker.x.toFixed(2)} 170 l 4.8 -8.4 l 4.8 8.4 Z`}
+                    className={`channel-stats-graph__marker channel-stats-graph__marker--${marker.tone}`}
+                  >
+                    <title>{`${marker.label} ${marker.value}`}</title>
+                  </path>
+                </g>
+              ))}
               {activeBar ? (
                 <g>
                   <rect
@@ -1300,6 +1489,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const posts = stats.official.content.topPosts;
   const maxViews = Math.max(...posts.map((post) => post.viewsDelta || post.views), 0);
+  const averageViewsPerPost =
+    stats.official.content.posts > 0
+      ? Math.round(stats.official.content.viewsTotal / stats.official.content.posts)
+      : 0;
+  const periodEndMs = new Date(stats.period.to).getTime();
 
   if (posts.length === 0) {
     return (
@@ -1319,20 +1513,41 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
         {posts.map((post, index) => {
           const value = post.viewsDelta || post.views;
           const width = maxViews > 0 ? Math.max(8, Math.round((value / maxViews) * 100)) : 8;
-          const title = `Пост ${index + 1}`;
+          const publishedAtMs = new Date(post.publishedAt).getTime();
+          const ageHours =
+            Number.isFinite(periodEndMs) && Number.isFinite(publishedAtMs)
+              ? Math.max(1, (periodEndMs - publishedAtMs) / (60 * 60 * 1000))
+              : 1;
+          const relativePercent =
+            averageViewsPerPost > 0
+              ? Math.round(((value - averageViewsPerPost) / averageViewsPerPost) * 100)
+              : null;
           const row = (
             <>
               <div className="channel-posts-chart__row-head">
                 <span className="channel-posts-chart__rank">#{index + 1}</span>
-                <span className="channel-posts-chart__title">{title}</span>
+                <span className="channel-posts-chart__title">
+                  {formatPostTime(post.publishedAt)}
+                </span>
                 <strong>{formatCount(value)}</strong>
               </div>
               <div className="channel-posts-chart__bar" aria-hidden="true">
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
-                <small>Прирост {formatCount(post.viewsDelta)}</small>
-                <small>{formatDateTime(post.publishedAt)}</small>
+                <small>{formatPerHour(value / ageHours)}</small>
+                {relativePercent !== null ? (
+                  <small
+                    className={
+                      relativePercent >= 0
+                        ? 'channel-posts-chart__row-meta-positive'
+                        : 'channel-posts-chart__row-meta-negative'
+                    }
+                  >
+                    {relativePercent > 0 ? '+' : ''}
+                    {relativePercent}%
+                  </small>
+                ) : null}
                 <small>{formatCount(post.reactions)} реакций</small>
                 <small>{formatCount(post.views)} всего</small>
               </div>
@@ -1565,6 +1780,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       : stats.channel.isPublic === false
         ? 'Канал приватный'
         : 'Нет данных';
+  const commandSignals =
+    stats.signals.alerts.length > 0
+      ? stats.signals.alerts.slice(0, 2)
+      : stats.signals.insights.slice(0, 2);
   const activateProfile = (
     userId: string,
     displayName: string,
@@ -1629,7 +1848,15 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
               <h2>Обзор</h2>
-              <p>{resolveChannelStateLabel(stats)}</p>
+              <div className="channel-insights__status-row">
+                <p>{resolveChannelStateLabel(stats)}</p>
+                <span
+                  className={`channel-insights__score channel-insights__score--${stats.health.tone}`}
+                  aria-label={`Оценка канала ${stats.health.score} из 100`}
+                >
+                  {stats.health.score}
+                </span>
+              </div>
             </div>
 
             <SegmentedControl
@@ -1653,7 +1880,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <small>Прирост</small>
               <strong>{formatSignedCount(audienceNet)}</strong>
               <span>
-                {formatCount(audienceJoined)} вошли · {formatCount(audienceLeft)} вышли
+                <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
+                <b>
+                  {formatCount(audienceJoined)} / {formatCount(audienceLeft)}
+                </b>
               </span>
             </article>
 
@@ -1665,11 +1895,18 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                   : formatCount(stats.official.content.posts)}
               </strong>
               <span>
-                {stats.meta.viewsAvailable
-                  ? averageViewsPerPost !== null
-                    ? `${formatCount(averageViewsPerPost)} в среднем`
-                    : 'Без публикаций'
-                  : `${formatCount(stats.official.content.posts)} постов`}
+                {stats.meta.viewsAvailable ? (
+                  <>
+                    <DeltaBadge metric={stats.comparison.deltas.views} />
+                    <b>
+                      {averageViewsPerPost !== null
+                        ? `${formatCount(averageViewsPerPost)} ср.`
+                        : '0 ср.'}
+                    </b>
+                  </>
+                ) : (
+                  `${formatCount(stats.official.content.posts)} постов`
+                )}
               </span>
             </article>
 
@@ -1677,14 +1914,22 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <small>Реакции</small>
               <strong>{formatCount(stats.official.content.reactions)}</strong>
               <span>
-                {engagementRate !== null
-                  ? `${formatPercent(engagementRate)} от просмотров`
-                  : reactionsPerPost !== null
-                    ? `${formatCount(reactionsPerPost)} на пост`
-                    : 'Нет данных'}
+                <DeltaBadge metric={stats.comparison.deltas.reactions} />
+                <b>
+                  {engagementRate !== null
+                    ? formatPercent(engagementRate)
+                    : reactionsPerPost !== null
+                      ? `${formatCount(reactionsPerPost)}/пост`
+                      : '0'}
+                </b>
               </span>
             </article>
           </div>
+
+          <SignalStrip
+            signals={commandSignals}
+            variant={stats.signals.alerts.length > 0 ? 'alerts' : 'insights'}
+          />
 
           <article className="channel-insights__chart-card">
             <div className="channel-insights__panel-head">
@@ -1708,6 +1953,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             ) : (
               <TopPostsChart stats={stats} />
             )}
+
+            <BestWindowsStrip stats={stats} />
           </article>
         </section>
 

@@ -1023,6 +1023,21 @@ type ChannelStatsPostViewMetric = {
   viewsCurrent: number;
   hasObservedDelta: boolean;
 };
+type ChannelStatsPeriodTotals = {
+  joined: number;
+  left: number;
+  net: number;
+  posts: number;
+  views: number;
+  viewsTotal: number;
+  averageViewsPerPost: number;
+  reactions: number;
+};
+type ChannelStatsDeltaMetric = ChannelStatsResponse['comparison']['deltas']['views'];
+type ChannelStatsSignalTone = ChannelStatsResponse['signals']['insights'][number]['tone'];
+type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
+type ChannelStatsGraphMarker = ChannelStatsResponse['signals']['markers'][number];
+type ChannelStatsBestWindow = ChannelStatsResponse['signals']['bestWindows'][number];
 const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
@@ -7269,6 +7284,8 @@ export class AdminService implements OnModuleDestroy {
     const now = new Date();
     const from = this.resolveChannelStatsFrom(parsed.data.range, now);
     const bucket = this.resolveChannelStatsBucket(parsed.data.range);
+    const previousFrom = new Date(from.getTime() - (now.getTime() - from.getTime()));
+    const previousTo = new Date(Math.max(previousFrom.getTime(), from.getTime() - 1));
 
     try {
       await this.channelStatsCollector?.syncChannelIfStale(chatId, {
@@ -7522,6 +7539,14 @@ export class AdminService implements OnModuleDestroy {
       0,
     );
     const topReactions = this.buildTopReactions(periodPosts);
+    const topPosts = this.buildTopPosts(periodPostViewMetrics);
+    const participantSeries = this.buildParticipantSeries(
+      bucketStarts,
+      bucket,
+      previousAudienceSnapshot?.participantsCount ?? null,
+      audienceSnapshots,
+    );
+    const membershipSeries = this.buildMembershipSeries(bucketStarts, bucket, membershipRows);
     const activityFeed = await this.getMembershipActivityFeedPage(
       chatId,
       from,
@@ -7533,6 +7558,51 @@ export class AdminService implements OnModuleDestroy {
       },
       'channel',
     );
+    const previousTotals = await this.buildPreviousChannelStatsPeriodTotals(
+      chatId,
+      previousFrom,
+      previousTo,
+      bucket,
+    );
+    const currentTotals: ChannelStatsPeriodTotals = {
+      joined,
+      left,
+      net: joined - left,
+      posts: periodPosts.length,
+      views: periodViews,
+      viewsTotal: periodViewsTotal,
+      averageViewsPerPost:
+        periodPosts.length > 0 ? Math.round(periodViewsTotal / periodPosts.length) : 0,
+      reactions: periodPosts.reduce(
+        (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
+        0,
+      ),
+    };
+    const comparison = this.buildChannelStatsComparison(currentTotals, previousTotals, {
+      from: previousFrom,
+      to: previousTo,
+    });
+    const health = this.buildChannelStatsHealth({
+      totals: currentTotals,
+      comparison,
+      maxSnapshotAvailable,
+      viewsAvailable: Boolean(anyPost),
+      churnAvailable,
+      suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
+      suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
+    });
+    const signals = this.buildChannelStatsSignals({
+      totals: currentTotals,
+      comparison,
+      topPosts,
+      membershipSeries,
+      viewsSeries,
+      postViewMetrics: periodPostViewMetrics,
+      range: parsed.data.range,
+      maxSnapshotAvailable,
+      suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
+      suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
+    });
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -7566,20 +7636,15 @@ export class AdminService implements OnModuleDestroy {
             0,
           ),
           topReactions,
-          topPosts: this.buildTopPosts(periodPostViewMetrics),
+          topPosts,
           lastPublishedAt:
             periodPosts.length > 0
               ? periodPosts[periodPosts.length - 1].publishedAt.toISOString()
               : null,
         },
         series: {
-          participants: this.buildParticipantSeries(
-            bucketStarts,
-            bucket,
-            previousAudienceSnapshot?.participantsCount ?? null,
-            audienceSnapshots,
-          ),
-          membership: this.buildMembershipSeries(bucketStarts, bucket, membershipRows),
+          participants: participantSeries,
+          membership: membershipSeries,
           views: viewsSeries,
         },
       },
@@ -7603,6 +7668,9 @@ export class AdminService implements OnModuleDestroy {
         ),
         missingOfficialMetrics: [...CHANNEL_STATS_MISSING_METRICS],
       },
+      comparison,
+      health,
+      signals,
       activityFeed,
     };
 
@@ -21227,6 +21295,505 @@ export class AdminService implements OnModuleDestroy {
       ORDER BY created_at ${orderDirectionSql}, id ${orderDirectionSql}
       ${limitClause}
     `;
+  }
+
+  private async buildPreviousChannelStatsPeriodTotals(
+    chatId: string,
+    from: Date,
+    to: Date,
+    bucket: ChannelStatsBucket,
+  ): Promise<ChannelStatsPeriodTotals> {
+    const [membershipRows, trackedPosts] = await Promise.all([
+      this.getMembershipEventRows(chatId, from, to, ['user_added', 'user_removed'], {
+        order: 'asc',
+      }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          OR: [
+            { publishedAt: { gte: from, lte: to } },
+            { latestSnapshotAt: { gte: from, lte: to } },
+          ],
+        },
+        orderBy: { publishedAt: 'asc' },
+        select: {
+          id: true,
+          messageId: true,
+          publishedAt: true,
+          url: true,
+          latestViews: true,
+          latestReactions: true,
+          latestReactionsTotal: true,
+          latestSnapshotAt: true,
+        },
+      }),
+    ]);
+
+    const viewSnapshots =
+      trackedPosts.length > 0
+        ? await this.prisma.channelPostViewSnapshot.findMany({
+            where: {
+              channelPostId: {
+                in: trackedPosts.map((post) => post.id),
+              },
+              capturedAt: { gte: from, lte: to },
+            },
+            orderBy: [{ channelPostId: 'asc' }, { capturedAt: 'asc' }],
+            select: {
+              channelPostId: true,
+              views: true,
+              capturedAt: true,
+            },
+          })
+        : [];
+
+    let joined = 0;
+    let left = 0;
+    for (const row of membershipRows) {
+      if (row.event_type === 'user_added') {
+        joined += 1;
+      } else if (row.event_type === 'user_removed') {
+        left += 1;
+      }
+    }
+
+    const periodPosts = trackedPosts.filter(
+      (post) =>
+        post.publishedAt.getTime() >= from.getTime() && post.publishedAt.getTime() <= to.getTime(),
+    );
+    const postViewMetrics = this.buildPostViewMetrics(trackedPosts, viewSnapshots, from);
+    const periodPostViewMetrics = postViewMetrics.filter(
+      (metric) =>
+        metric.post.publishedAt.getTime() >= from.getTime() &&
+        metric.post.publishedAt.getTime() <= to.getTime(),
+    );
+    const viewsMode: ChannelStatsViewMode =
+      viewSnapshots.length > 0 || periodPostViewMetrics.some((metric) => metric.hasObservedDelta)
+        ? 'observedDelta'
+        : 'latestTotal';
+    const viewsSeries = this.buildViewsSeries(
+      this.buildChannelStatsBucketStarts(from, to, bucket),
+      bucket,
+      trackedPosts,
+      viewSnapshots,
+      from,
+      viewsMode,
+    );
+    const views = viewsSeries.reduce((total, item) => total + item.views, 0);
+    const viewsTotal = periodPosts.reduce(
+      (total, item) => total + Math.max(0, item.latestViews),
+      0,
+    );
+    const reactions = periodPosts.reduce(
+      (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
+      0,
+    );
+
+    return {
+      joined,
+      left,
+      net: joined - left,
+      posts: periodPosts.length,
+      views,
+      viewsTotal,
+      averageViewsPerPost: periodPosts.length > 0 ? Math.round(viewsTotal / periodPosts.length) : 0,
+      reactions,
+    };
+  }
+
+  private buildChannelStatsComparison(
+    current: ChannelStatsPeriodTotals,
+    previous: ChannelStatsPeriodTotals,
+    period: { from: Date; to: Date },
+  ): ChannelStatsResponse['comparison'] {
+    return {
+      period: {
+        from: period.from.toISOString(),
+        to: period.to.toISOString(),
+      },
+      deltas: {
+        audienceNet: this.buildChannelStatsDeltaMetric(current.net, previous.net),
+        joined: this.buildChannelStatsDeltaMetric(current.joined, previous.joined),
+        left: this.buildChannelStatsDeltaMetric(current.left, previous.left),
+        posts: this.buildChannelStatsDeltaMetric(current.posts, previous.posts),
+        views: this.buildChannelStatsDeltaMetric(current.views, previous.views),
+        averageViewsPerPost: this.buildChannelStatsDeltaMetric(
+          current.averageViewsPerPost,
+          previous.averageViewsPerPost,
+        ),
+        reactions: this.buildChannelStatsDeltaMetric(current.reactions, previous.reactions),
+      },
+    };
+  }
+
+  private buildChannelStatsDeltaMetric(current: number, previous: number): ChannelStatsDeltaMetric {
+    const normalizedCurrent = this.toSafeInteger(current);
+    const normalizedPrevious = this.toSafeInteger(previous);
+    const absolute = normalizedCurrent - normalizedPrevious;
+    const percent =
+      normalizedPrevious === 0
+        ? normalizedCurrent === 0
+          ? 0
+          : null
+        : Math.round((absolute / Math.abs(normalizedPrevious)) * 1000) / 10;
+
+    return {
+      current: normalizedCurrent,
+      previous: normalizedPrevious,
+      absolute,
+      percent,
+    };
+  }
+
+  private buildChannelStatsHealth(params: {
+    totals: ChannelStatsPeriodTotals;
+    comparison: ChannelStatsResponse['comparison'];
+    maxSnapshotAvailable: boolean;
+    viewsAvailable: boolean;
+    churnAvailable: boolean;
+    suggestionsDelivered: number;
+    suggestionsFailed: number;
+  }): ChannelStatsResponse['health'] {
+    let score = 72;
+    const factors: ChannelStatsResponse['health']['factors'] = [];
+    const addFactor = (
+      code: string,
+      label: string,
+      tone: ChannelStatsSignalTone,
+      impact: number,
+    ) => {
+      score += impact;
+      factors.push({ code, label, tone, impact });
+    };
+
+    if (params.totals.net > 0) {
+      addFactor('growth', 'Рост', 'success', Math.min(12, 4 + Math.round(params.totals.net / 12)));
+    } else if (params.totals.net < 0) {
+      addFactor(
+        'negative-growth',
+        'Отток',
+        'danger',
+        -Math.min(18, 6 + Math.round(Math.abs(params.totals.net) / 10)),
+      );
+    }
+
+    if (params.churnAvailable && params.totals.left > Math.max(2, params.totals.joined)) {
+      addFactor('churn', 'Отток', 'warning', -10);
+    }
+
+    const viewsDelta = params.comparison.deltas.views;
+    if (params.viewsAvailable && viewsDelta.previous > 0) {
+      if (typeof viewsDelta.percent === 'number' && viewsDelta.percent >= 20) {
+        addFactor('views-up', 'Просмотры', 'success', 8);
+      } else if (typeof viewsDelta.percent === 'number' && viewsDelta.percent <= -20) {
+        addFactor('views-down', 'Просмотры', 'warning', -10);
+      }
+    }
+
+    const engagementRate =
+      params.totals.views > 0 ? (params.totals.reactions / params.totals.views) * 100 : null;
+    if (engagementRate !== null) {
+      if (engagementRate >= 4) {
+        addFactor('engagement', 'Реакции', 'success', 7);
+      } else if (engagementRate < 0.4) {
+        addFactor('low-engagement', 'Реакции', 'warning', -6);
+      }
+    }
+
+    if (params.viewsAvailable && params.totals.posts === 0) {
+      addFactor('no-posts', 'Пауза', 'warning', -8);
+    }
+
+    const deliveryTotal = params.suggestionsDelivered + params.suggestionsFailed;
+    if (deliveryTotal > 0 && params.suggestionsFailed / deliveryTotal >= 0.25) {
+      addFactor('delivery', 'Доставка', 'warning', -6);
+    }
+
+    if (!params.maxSnapshotAvailable) {
+      addFactor('max-snapshot', 'MAX', 'warning', -8);
+    }
+
+    const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
+    return {
+      score: normalizedScore,
+      tone: this.resolveChannelStatsScoreTone(normalizedScore),
+      factors: factors
+        .sort((left, right) => Math.abs(right.impact) - Math.abs(left.impact))
+        .slice(0, 4),
+    };
+  }
+
+  private resolveChannelStatsScoreTone(score: number): ChannelStatsSignalTone {
+    if (score >= 85) {
+      return 'success';
+    }
+
+    if (score >= 70) {
+      return 'accent';
+    }
+
+    if (score >= 50) {
+      return 'warning';
+    }
+
+    return 'danger';
+  }
+
+  private buildChannelStatsSignals(params: {
+    totals: ChannelStatsPeriodTotals;
+    comparison: ChannelStatsResponse['comparison'];
+    topPosts: ChannelStatsResponse['official']['content']['topPosts'];
+    membershipSeries: ChannelStatsResponse['official']['series']['membership'];
+    viewsSeries: ChannelStatsResponse['official']['series']['views'];
+    postViewMetrics: ChannelStatsPostViewMetric[];
+    range: ChannelStatsRange;
+    maxSnapshotAvailable: boolean;
+    suggestionsDelivered: number;
+    suggestionsFailed: number;
+  }): ChannelStatsResponse['signals'] {
+    const insights: ChannelStatsSignal[] = [];
+    const alerts: ChannelStatsSignal[] = [];
+    const markers: ChannelStatsGraphMarker[] = [];
+    const bestWindows = this.buildChannelStatsBestWindows(params.postViewMetrics);
+
+    const addInsight = (
+      code: string,
+      label: string,
+      value: string,
+      tone: ChannelStatsSignalTone,
+      at: string | null = null,
+    ) => {
+      insights.push({ code, label, value, tone, at });
+    };
+    const addAlert = (
+      code: string,
+      label: string,
+      value: string,
+      tone: ChannelStatsSignalTone,
+      at: string | null = null,
+    ) => {
+      alerts.push({ code, label, value, tone, at });
+    };
+
+    const viewsDelta = params.comparison.deltas.views;
+    if (viewsDelta.current > 0 || viewsDelta.previous > 0) {
+      addInsight(
+        'views-delta',
+        'Просмотры',
+        this.formatChannelStatsDeltaValue(viewsDelta),
+        this.resolveChannelStatsDeltaTone(viewsDelta, false),
+      );
+    }
+
+    const audienceDelta = params.comparison.deltas.audienceNet;
+    if (params.totals.net !== 0 || audienceDelta.previous !== 0) {
+      addInsight(
+        params.totals.net >= 0 ? 'audience-growth' : 'audience-loss',
+        params.totals.net >= 0 ? 'Рост' : 'Отток',
+        this.formatChannelStatsSignedInteger(params.totals.net),
+        params.totals.net >= 0 ? 'success' : 'danger',
+      );
+    }
+
+    const topPost = params.topPosts[0] ?? null;
+    if (topPost) {
+      const topPostValue = topPost.viewsDelta || topPost.views;
+      addInsight(
+        'top-post',
+        'Лучший пост',
+        this.formatChannelStatsCompactCount(topPostValue),
+        'accent',
+        topPost.publishedAt,
+      );
+      markers.push({
+        code: 'top-post',
+        type: 'post',
+        label: '#1',
+        value: this.formatChannelStatsCompactCount(topPostValue),
+        tone: 'accent',
+        at: topPost.publishedAt,
+      });
+    }
+
+    const bestWindow = bestWindows[0] ?? null;
+    if (bestWindow) {
+      addInsight('best-window', 'Окно', this.formatChannelStatsWindowValue(bestWindow), 'success');
+    }
+
+    const peakView = params.viewsSeries.reduce<(typeof params.viewsSeries)[number] | null>(
+      (peak, item) => (!peak || item.views > peak.views ? item : peak),
+      null,
+    );
+    if (peakView && peakView.views > 0) {
+      markers.push({
+        code: 'views-peak',
+        type: 'peak',
+        label: 'Пик',
+        value: this.formatChannelStatsCompactCount(peakView.views),
+        tone: 'success',
+        at: peakView.at,
+      });
+    }
+
+    const peakLeft = params.membershipSeries.reduce<
+      (typeof params.membershipSeries)[number] | null
+    >((peak, item) => (!peak || (item.left ?? 0) > (peak.left ?? 0) ? item : peak), null);
+    if (peakLeft && (peakLeft.left ?? 0) > Math.max(0, peakLeft.joined)) {
+      markers.push({
+        code: 'audience-left-peak',
+        type: 'anomaly',
+        label: 'Отток',
+        value: this.formatChannelStatsSignedInteger(-Math.max(0, peakLeft.left ?? 0)),
+        tone: 'danger',
+        at: peakLeft.at,
+      });
+    }
+
+    if (
+      typeof viewsDelta.percent === 'number' &&
+      viewsDelta.previous >= 100 &&
+      viewsDelta.percent <= -25
+    ) {
+      addAlert('views-drop', 'Просмотры', this.formatChannelStatsDeltaValue(viewsDelta), 'warning');
+    }
+
+    if (params.totals.net < 0) {
+      addAlert(
+        'audience-drop',
+        'Отток',
+        this.formatChannelStatsSignedInteger(params.totals.net),
+        'danger',
+      );
+    }
+
+    if (params.range !== '24h' && params.totals.posts === 0) {
+      addAlert('no-posts', 'Пауза', '0 постов', 'warning');
+    }
+
+    const deliveryTotal = params.suggestionsDelivered + params.suggestionsFailed;
+    if (deliveryTotal > 0 && params.suggestionsFailed / deliveryTotal >= 0.25) {
+      addAlert('delivery-errors', 'Доставка', `${params.suggestionsFailed}`, 'warning');
+    }
+
+    if (!params.maxSnapshotAvailable) {
+      addAlert('max-snapshot', 'MAX', 'нет снимка', 'warning');
+    }
+
+    return {
+      insights: insights.slice(0, 4),
+      alerts: alerts.slice(0, 4),
+      markers: markers.slice(0, 8),
+      bestWindows,
+    };
+  }
+
+  private buildChannelStatsBestWindows(
+    postViewMetrics: ChannelStatsPostViewMetric[],
+  ): ChannelStatsBestWindow[] {
+    const grouped = new Map<
+      string,
+      {
+        dayOfWeek: number;
+        hour: number;
+        posts: number;
+        views: number;
+        reactions: number;
+      }
+    >();
+
+    for (const metric of postViewMetrics) {
+      const views = Math.max(0, metric.viewsDelta || metric.viewsCurrent);
+      if (views <= 0) {
+        continue;
+      }
+
+      const { dayOfWeek, hour } = this.resolveChannelStatsMoscowWindow(metric.post.publishedAt);
+      const key = `${dayOfWeek}:${hour}`;
+      const current = grouped.get(key) ?? {
+        dayOfWeek,
+        hour,
+        posts: 0,
+        views: 0,
+        reactions: 0,
+      };
+      current.posts += 1;
+      current.views += views;
+      current.reactions += this.toSafeInteger(metric.post.latestReactionsTotal);
+      grouped.set(key, current);
+    }
+
+    return Array.from(grouped.values())
+      .map((item) => {
+        const averageViews = item.posts > 0 ? Math.round(item.views / item.posts) : 0;
+        const averageReactions = item.posts > 0 ? Math.round(item.reactions / item.posts) : 0;
+        return {
+          dayOfWeek: item.dayOfWeek,
+          hour: item.hour,
+          score: averageViews + averageReactions * 12 + item.posts * 4,
+          posts: item.posts,
+          averageViews,
+          averageReactions,
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.posts - left.posts ||
+          left.dayOfWeek - right.dayOfWeek ||
+          left.hour - right.hour,
+      )
+      .slice(0, 3);
+  }
+
+  private resolveChannelStatsMoscowWindow(date: Date): { dayOfWeek: number; hour: number } {
+    const moscowDate = new Date(date.getTime() + 3 * ONE_HOUR_MS);
+    return {
+      dayOfWeek: moscowDate.getUTCDay(),
+      hour: moscowDate.getUTCHours(),
+    };
+  }
+
+  private resolveChannelStatsDeltaTone(
+    metric: ChannelStatsDeltaMetric,
+    inverse: boolean,
+  ): ChannelStatsSignalTone {
+    if (metric.absolute === 0) {
+      return 'neutral';
+    }
+
+    const positive = inverse ? metric.absolute < 0 : metric.absolute > 0;
+    return positive ? 'success' : 'warning';
+  }
+
+  private formatChannelStatsDeltaValue(metric: ChannelStatsDeltaMetric): string {
+    if (typeof metric.percent === 'number' && Math.abs(metric.percent) >= 1) {
+      const rounded = Math.round(metric.percent);
+      return `${rounded > 0 ? '+' : ''}${rounded}%`;
+    }
+
+    if (metric.absolute !== 0) {
+      return this.formatChannelStatsSignedInteger(metric.absolute);
+    }
+
+    return '0';
+  }
+
+  private formatChannelStatsSignedInteger(value: number): string {
+    const normalized = this.toSafeInteger(value);
+    return normalized > 0 ? `+${normalized}` : String(normalized);
+  }
+
+  private formatChannelStatsCompactCount(value: number): string {
+    return new Intl.NumberFormat('ru-RU', {
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    }).format(Math.max(0, this.toSafeInteger(value)));
+  }
+
+  private formatChannelStatsWindowValue(window: ChannelStatsBestWindow): string {
+    const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+    const day = days[window.dayOfWeek] ?? '';
+    return `${day} ${String(window.hour).padStart(2, '0')}:00`;
   }
 
   private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {

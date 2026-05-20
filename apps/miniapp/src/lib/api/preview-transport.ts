@@ -2752,6 +2752,14 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
   const views = viewsSeries.reduce((sum, item) => sum + item.views, 0);
   let cumulativeViews = 0;
   const reactions = Math.round(views * 0.06);
+  const previousFrom = new Date(from.getTime() - (to.getTime() - from.getTime()));
+  const previousTo = new Date(from.getTime() - 1);
+  const previousViews = Math.round(views * 0.84);
+  const previousPosts = Math.max(1, Math.round(posts * 0.88));
+  const previousReactions = Math.round(reactions * 0.76);
+  const previousNet = Math.round((joined - left) * 0.62);
+  const currentAverageViewsPerPost = Math.round((views * 1.24) / Math.max(1, posts));
+  const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
     return {
@@ -2762,6 +2770,17 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
       reactions: Math.round(postViews * 0.055),
     };
+  });
+  const buildDelta = (current: number, previous: number) => ({
+    current,
+    previous,
+    absolute: current - previous,
+    percent:
+      previous === 0
+        ? current === 0
+          ? 0
+          : null
+        : Math.round(((current - previous) / previous) * 1000) / 10,
   });
 
   return channelStatsResponseSchema.parse({
@@ -2829,6 +2848,87 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       churnAvailable: true,
       officialCoverageFrom: addDays(now, -30).toISOString(),
       missingOfficialMetrics: [],
+    },
+    comparison: {
+      period: {
+        from: previousFrom.toISOString(),
+        to: previousTo.toISOString(),
+      },
+      deltas: {
+        audienceNet: buildDelta(joined - left, previousNet),
+        joined: buildDelta(joined, Math.round(joined * 0.78)),
+        left: buildDelta(left, Math.round(left * 1.18)),
+        posts: buildDelta(posts, previousPosts),
+        views: buildDelta(views, previousViews),
+        averageViewsPerPost: buildDelta(currentAverageViewsPerPost, previousAverageViewsPerPost),
+        reactions: buildDelta(reactions, previousReactions),
+      },
+    },
+    health: {
+      score: 88,
+      tone: 'success',
+      factors: [
+        { code: 'growth', label: 'Рост', tone: 'success', impact: 10 },
+        { code: 'views-up', label: 'Просмотры', tone: 'success', impact: 8 },
+      ],
+    },
+    signals: {
+      insights: [
+        { code: 'views-delta', label: 'Просмотры', value: '+19%', tone: 'success', at: null },
+        {
+          code: 'top-post',
+          label: 'Лучший пост',
+          value: '4,8 тыс.',
+          tone: 'accent',
+          at: topPosts[0]?.publishedAt ?? null,
+        },
+        { code: 'best-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
+      ],
+      alerts: [],
+      markers: [
+        {
+          code: 'top-post',
+          type: 'post',
+          label: '#1',
+          value: '4,8 тыс.',
+          tone: 'accent',
+          at: topPosts[0]?.publishedAt ?? addHours(now, -4).toISOString(),
+        },
+        {
+          code: 'views-peak',
+          type: 'peak',
+          label: 'Пик',
+          value: '18 тыс.',
+          tone: 'success',
+          at: viewsSeries[Math.floor(viewsSeries.length * 0.62)]?.at ?? now.toISOString(),
+        },
+      ],
+      bestWindows: [
+        {
+          dayOfWeek: 4,
+          hour: 18,
+          score: 6200,
+          posts: 3,
+          averageViews: 5800,
+          averageReactions: 310,
+        },
+        {
+          dayOfWeek: 2,
+          hour: 12,
+          score: 5200,
+          posts: 2,
+          averageViews: 4900,
+          averageReactions: 250,
+        },
+        {
+          dayOfWeek: 6,
+          hour: 11,
+          score: 4700,
+          posts: 2,
+          averageViews: 4400,
+          averageReactions: 220,
+        },
+      ],
     },
     activityFeed: buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
   });
