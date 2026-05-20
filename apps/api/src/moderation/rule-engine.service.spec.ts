@@ -3477,6 +3477,86 @@ describe('RuleEngineService', () => {
     expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('detects the same link as a custom duplicate regardless of surrounding text', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      linkPolicy: LinkPolicy.ALERT_ONLY,
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnoreLinksEnabled: false,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Первое объявление: все детали тут https://example.com/sale?id=15',
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Совсем другой текст, но ссылка та же https://example.com/sale?id=15',
+      settings,
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Еще одна подводка вокруг той же ссылки https://example.com/sale?id=15',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(third.duplicateDecision).toEqual(
+      expect.objectContaining({
+        action: 'WARN',
+        fingerprintType: 'link',
+      }),
+    );
+    expect(third.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('detects the same phone as a custom duplicate regardless of surrounding text', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateDetectionPreset: 'CUSTOM',
+      duplicateIgnorePhonesEnabled: false,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Первое сообщение с номером +7 (999) 123-45-67',
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Другой текст и та же связь 8 999 123 45 67',
+      settings,
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'Третья вариация с телефоном 999-123-45-67',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(third.duplicateDecision).toEqual(
+      expect.objectContaining({
+        action: 'WARN',
+        fingerprintType: 'phone',
+      }),
+    );
+  });
+
   it('detects strict duplicates when links and phones are rotated', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({

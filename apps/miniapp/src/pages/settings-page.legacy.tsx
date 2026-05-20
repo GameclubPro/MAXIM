@@ -7438,7 +7438,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner">
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">Антидубль</span>
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Антидубль</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'antiDuplicate' && 'is-open',
+                              )}
+                              aria-label="Пояснение для антидубля"
+                              aria-controls="anti-duplicate-hint"
+                              aria-expanded={openHintKey === 'antiDuplicate'}
+                              onClick={() => toggleHint('antiDuplicate')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
                           <label className="settings-native-switch" aria-label="Включить антидубль">
                             <input
                               type="checkbox"
@@ -7452,11 +7467,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
+
+                        {openHintKey === 'antiDuplicate' ? (
+                          <p id="anti-duplicate-hint" className="settings-native-toggle__hint">
+                            Бот сравнивает новые сообщения пользователя с его недавними повторами,
+                            удаляет дубль и дальше ведет по выбранным ступеням.
+                          </p>
+                        ) : null}
                       </div>
 
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-policy">
-                          <span className="field__label">Режим распознавания</span>
+                          <div className="settings-policy__label-row">
+                            <span className="field__label">Режим распознавания</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'duplicateDetectionMode' && 'is-open',
+                              )}
+                              aria-label="Пояснение для режима распознавания дублей"
+                              aria-controls="duplicate-detection-mode-hint"
+                              aria-expanded={openHintKey === 'duplicateDetectionMode'}
+                              onClick={() => toggleHint('duplicateDetectionMode')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
                           <SegmentedControl
                             value={draft.duplicateDetectionPreset}
                             options={DUPLICATE_DETECTION_OPTIONS}
@@ -7464,6 +7501,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             className="settings-mode-segments"
                             ariaLabel="Режим распознавания дублей"
                           />
+                          {openHintKey === 'duplicateDetectionMode' ? (
+                            <p
+                              id="duplicate-detection-mode-hint"
+                              className="settings-native-toggle__hint settings-native-toggle__hint--inline"
+                            >
+                              Точный режим сравнивает сообщение целиком. Строгий убирает ссылки и
+                              телефоны из сравнения и ловит близкие тексты. Свой позволяет собрать
+                              эти правила вручную.
+                            </p>
+                          ) : null}
                         </div>
                       ) : null}
 
@@ -7471,9 +7518,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <>
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                Не учитывать ссылки
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Не учитывать ссылки
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateIgnoreLinks' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для учета ссылок в дублях"
+                                  aria-controls="duplicate-ignore-links-hint"
+                                  aria-expanded={openHintKey === 'duplicateIgnoreLinks'}
+                                  onClick={() => toggleHint('duplicateIgnoreLinks')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7494,13 +7556,39 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {openHintKey === 'duplicateIgnoreLinks' ? (
+                              <p
+                                id="duplicate-ignore-links-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Если включено, ссылки вырезаются перед сравнением текста. Если
+                                выключено, одна и та же ссылка в режиме «Свой» считается повтором
+                                даже при разном тексте вокруг нее.
+                              </p>
+                            ) : null}
                           </div>
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                Не учитывать телефоны
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Не учитывать телефоны
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateIgnorePhones' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для учета телефонов в дублях"
+                                  aria-controls="duplicate-ignore-phones-hint"
+                                  aria-expanded={openHintKey === 'duplicateIgnorePhones'}
+                                  onClick={() => toggleHint('duplicateIgnorePhones')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7521,13 +7609,39 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {openHintKey === 'duplicateIgnorePhones' ? (
+                              <p
+                                id="duplicate-ignore-phones-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Если включено, номера вырезаются перед сравнением. Если выключено,
+                                один и тот же номер в режиме «Свой» считается повтором независимо от
+                                остального текста.
+                              </p>
+                            ) : null}
                           </div>
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                Близкие совпадения
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Близкие совпадения
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateNearMatch' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для близких совпадений дублей"
+                                  aria-controls="duplicate-near-match-hint"
+                                  aria-expanded={openHintKey === 'duplicateNearMatch'}
+                                  onClick={() => toggleHint('duplicateNearMatch')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7545,6 +7659,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {openHintKey === 'duplicateNearMatch' ? (
+                              <p
+                                id="duplicate-near-match-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Ловит похожие сообщения по набору значимых слов, даже если порядок
+                                слов или часть деталей изменились.
+                              </p>
+                            ) : null}
                           </div>
                         </>
                       ) : null}
@@ -7561,6 +7685,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   disabled={!draft.duplicateBotMessageEnabled}
                                   isOpen={openBotEditorKey === 'duplicate'}
                                 />
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateBotMessage' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для объяснения о дублях"
+                                  aria-controls="duplicate-bot-message-hint"
+                                  aria-expanded={openHintKey === 'duplicateBotMessage'}
+                                  onClick={() => toggleHint('duplicateBotMessage')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
                               </div>
                             </div>
 
@@ -7587,6 +7724,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </span>
                             </label>
                           </div>
+
+                          {openHintKey === 'duplicateBotMessage' ? (
+                            <p
+                              id="duplicate-bot-message-hint"
+                              className="settings-native-toggle__hint"
+                            >
+                              На первой ступени бот удаляет дубль и может отправить мягкое
+                              объяснение без предупреждения, мута или бана.
+                            </p>
+                          ) : null}
 
                           {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
                             <BotMessageEditor
@@ -7616,7 +7763,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">Добавить кнопку</span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Добавить кнопку
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateBotButton' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для кнопки в сообщении о дублях"
+                                  aria-controls="duplicate-bot-button-hint"
+                                  aria-expanded={openHintKey === 'duplicateBotButton'}
+                                  onClick={() => toggleHint('duplicateBotButton')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7640,6 +7804,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {renderInlineHint(
+                              'duplicateBotButton',
+                              'duplicate-bot-button-hint',
+                              'Добавляет кнопку в сообщение о дубле, например на правила или связь с админом.',
+                              hasDuplicateBotButtonError,
+                            )}
 
                             {draft.duplicateBotButtonEnabled ? (
                               <BroadcastLinkButtonsEditor
@@ -7678,9 +7849,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             <div className="duplicate-stage__top">
-                              <span className="duplicate-stage__title">
-                                Когда включать модерацию
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="duplicate-stage__title">
+                                  Когда включать модерацию
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateModerationStart' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для порога дублей"
+                                  aria-controls="duplicate-moderation-start-hint"
+                                  aria-expanded={openHintKey === 'duplicateModerationStart'}
+                                  onClick={() => toggleHint('duplicateModerationStart')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
                             </div>
 
                             <div className="duplicate-stage__controls">
@@ -7776,13 +7962,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ) : null}
                               </div>
                             ) : null}
+
+                            {openHintKey === 'duplicateModerationStart' ? (
+                              <p
+                                id="duplicate-moderation-start-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Интервал задает окно поиска повторов. Разрешено дублей показывает,
+                                сколько повторов пропустить до первой активной ступени.
+                              </p>
+                            ) : null}
                           </article>
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                2. Предупреждение
-                              </span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  2. Предупреждение
+                                </span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateWarnStage' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для предупреждения за повторы"
+                                  aria-controls="duplicate-warn-stage-hint"
+                                  aria-expanded={openHintKey === 'duplicateWarnStage'}
+                                  onClick={() => toggleHint('duplicateWarnStage')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7802,6 +8013,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {openHintKey === 'duplicateWarnStage' ? (
+                              <p
+                                id="duplicate-warn-stage-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                На этой ступени дубль удаляется, а пользователь получает
+                                предупреждение по текущей лестнице санкций.
+                              </p>
+                            ) : null}
                           </div>
 
                           <div
@@ -7815,6 +8036,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="settings-native-toggle__title-wrap">
                                 <span className="settings-native-toggle__title">3. Мут</span>
                                 <div className="settings-native-toggle__title-actions">
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      'settings-info-button',
+                                      openHintKey === 'duplicateMuteStage' && 'is-open',
+                                    )}
+                                    aria-label="Пояснение для мута за повторы"
+                                    aria-controls="duplicate-mute-stage-hint"
+                                    aria-expanded={openHintKey === 'duplicateMuteStage'}
+                                    onClick={() => toggleHint('duplicateMuteStage')}
+                                  >
+                                    <span aria-hidden>i</span>
+                                  </button>
                                   <button
                                     type="button"
                                     className={cn(
@@ -7857,6 +8091,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             {renderMuteDurationEditor('duplicateMuteDurationHours', 'Срок мута')}
 
+                            {openHintKey === 'duplicateMuteStage' ? (
+                              <p
+                                id="duplicate-mute-stage-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                После предупреждения следующий повтор удаляется и включает мут на
+                                выбранный срок.
+                              </p>
+                            ) : null}
+
                             {fieldErrors.duplicateMuteDurationHours ? (
                               <small className="field__hint">
                                 {fieldErrors.duplicateMuteDurationHours}
@@ -7866,7 +8110,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">4. Бан</span>
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">4. Бан</span>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'duplicateBanStage' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для бана за повторы"
+                                  aria-controls="duplicate-ban-stage-hint"
+                                  aria-expanded={openHintKey === 'duplicateBanStage'}
+                                  onClick={() => toggleHint('duplicateBanStage')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
 
                               <label
                                 className="settings-native-switch"
@@ -7886,6 +8145,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
+
+                            {openHintKey === 'duplicateBanStage' ? (
+                              <p
+                                id="duplicate-ban-stage-hint"
+                                className="settings-native-toggle__hint"
+                              >
+                                Финальная ступень удаляет дубль и банит пользователя, если повторы
+                                продолжаются в выбранном интервале.
+                              </p>
+                            ) : null}
                           </div>
                         </>
                       ) : null}

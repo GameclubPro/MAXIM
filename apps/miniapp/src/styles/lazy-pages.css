@@ -1,6 +1,5 @@
 /* Lazy route styles: loaded only with non-startup mini app screens. */
 
-
 .settings-policy {
   display: grid;
   gap: 8px;
@@ -672,6 +671,18 @@
   font-size: 0.78rem;
   line-height: 1.35;
   padding: 10px 12px;
+}
+
+.settings-policy__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-policy__label-row .field__label {
+  min-width: 0;
 }
 
 .text-filters-grid {
@@ -2516,7 +2527,6 @@
     width: 100%;
     min-width: 0;
   }
-
 }
 
 .settings-drilldown .mailing-message-field {

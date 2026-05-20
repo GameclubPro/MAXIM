@@ -1,8 +1,11 @@
-import type { ChatSettings } from '../prisma/prisma-client';
+import { normalizeAllowlistLink } from '@maxim/contracts/settings';
 import { createHash } from 'node:crypto';
+import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { stripUrlsFromText } from '../common/url-text.util';
 import { buildDuplicateStageKey } from './duplicate-state';
+import { extractUrlsFromText } from './rule-engine-link-detector';
+import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { RedisCounterService } from './redis-counter.service';
 
@@ -29,7 +32,7 @@ type DuplicateReactionStage = {
   action: DuplicateAction | null;
 };
 
-export type DuplicateFingerprintType = 'exact' | 'content' | 'near';
+export type DuplicateFingerprintType = 'exact' | 'content' | 'near' | 'link' | 'phone';
 
 type DuplicateFingerprint = {
   type: DuplicateFingerprintType;
@@ -208,6 +211,18 @@ export class RuleEngineDuplicateDetector {
     push('exact', compactText);
 
     const config = this.resolveFingerprintConfig(settings);
+    if (config.matchLinkValues) {
+      for (const link of this.extractNormalizedLinks(rawText)) {
+        push('link', link);
+      }
+    }
+
+    if (config.matchPhoneValues) {
+      for (const phone of extractDetectedPhoneNumbers(rawText)) {
+        push('phone', phone);
+      }
+    }
+
     if (config.ignoreLinks || config.ignorePhones) {
       const content = this.normalizeContentFingerprint(rawText, config);
       push('content', content);
@@ -226,12 +241,16 @@ export class RuleEngineDuplicateDetector {
   private resolveFingerprintConfig(settings: ChatSettings): {
     ignoreLinks: boolean;
     ignorePhones: boolean;
+    matchLinkValues: boolean;
+    matchPhoneValues: boolean;
     nearMatch: boolean;
   } {
     if (settings.duplicateDetectionPreset === 'STRICT') {
       return {
         ignoreLinks: true,
         ignorePhones: true,
+        matchLinkValues: false,
+        matchPhoneValues: false,
         nearMatch: true,
       };
     }
@@ -240,6 +259,8 @@ export class RuleEngineDuplicateDetector {
       return {
         ignoreLinks: settings.duplicateIgnoreLinksEnabled,
         ignorePhones: settings.duplicateIgnorePhonesEnabled,
+        matchLinkValues: !settings.duplicateIgnoreLinksEnabled,
+        matchPhoneValues: !settings.duplicateIgnorePhonesEnabled,
         nearMatch: settings.duplicateNearMatchEnabled,
       };
     }
@@ -247,8 +268,23 @@ export class RuleEngineDuplicateDetector {
     return {
       ignoreLinks: false,
       ignorePhones: false,
+      matchLinkValues: false,
+      matchPhoneValues: false,
       nearMatch: false,
     };
+  }
+
+  private extractNormalizedLinks(rawText: string): string[] {
+    const normalizedLinks = new Set<string>();
+
+    for (const rawLink of extractUrlsFromText(rawText)) {
+      const normalizedLink = normalizeAllowlistLink(rawLink);
+      if (normalizedLink) {
+        normalizedLinks.add(normalizedLink);
+      }
+    }
+
+    return Array.from(normalizedLinks);
   }
 
   private normalizeContentFingerprint(

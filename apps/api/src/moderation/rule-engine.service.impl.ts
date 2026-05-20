@@ -21,7 +21,10 @@ import {
   type DuplicateHit,
 } from './rule-engine-duplicate-detector';
 import { detectBlockedLink, extractUrlsFromText } from './rule-engine-link-detector';
-import { RuleEngineMessageLimitsDetector } from './rule-engine-message-limits.detector';
+import {
+  extractDetectedPhoneNumbers,
+  RuleEngineMessageLimitsDetector,
+} from './rule-engine-message-limits.detector';
 import {
   MIXED_CHAR_MAP,
   normalizeForDetection,
@@ -2184,15 +2187,24 @@ export class RuleEngineService {
     compactText: string,
     settings: ChatSettings,
   ): boolean {
-    const hasPhone = DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText);
+    const detectedPhoneCount = extractDetectedPhoneNumbers(rawText).length;
+    const hasPhone = detectedPhoneCount > 0 || DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText);
     const duplicateIgnoresPhones =
       settings.duplicateDetectionPreset === 'STRICT' ||
       (settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled);
-    if (hasPhone && !duplicateIgnoresPhones) {
+    const duplicateMatchesPhoneValues =
+      settings.duplicateDetectionPreset === 'CUSTOM' && !settings.duplicateIgnorePhonesEnabled;
+    if (hasPhone && !duplicateIgnoresPhones && !duplicateMatchesPhoneValues) {
       return false;
     }
 
     const hasUrl = extractUrlsFromText(rawText).length > 0;
+    const duplicateMatchesLinkValues =
+      settings.duplicateDetectionPreset === 'CUSTOM' && !settings.duplicateIgnoreLinksEnabled;
+    if ((hasUrl && duplicateMatchesLinkValues) || (hasPhone && duplicateMatchesPhoneValues)) {
+      return true;
+    }
+
     const shouldBuildContentCandidate = hasUrl || (hasPhone && duplicateIgnoresPhones);
     let candidateText = compactText;
 
