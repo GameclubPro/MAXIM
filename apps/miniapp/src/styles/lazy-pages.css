@@ -11506,3 +11506,123 @@
     flex-wrap: wrap;
   }
 }
+
+@media (max-width: 430px) {
+  .channel-insights__body {
+    gap: 10px;
+    padding-inline: 10px;
+  }
+
+  .channel-insights__summary--command {
+    padding-top: 12px;
+  }
+
+  .channel-insights__summary-head,
+  .channel-insights__panel-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+    align-items: stretch;
+  }
+
+  .channel-insights__summary-copy p {
+    white-space: normal;
+  }
+
+  .channel-insights__range,
+  .channel-insights__switch {
+    width: 100%;
+    max-width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .channel-insights__range .segmented-control__item,
+  .channel-insights__switch .segmented-control__item {
+    min-width: 0;
+    min-height: 32px;
+    justify-content: center;
+    padding: 4px 6px;
+    font-size: 0.72rem;
+  }
+
+  .channel-insights__kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .channel-insights__kpi-card {
+    min-height: 78px;
+    padding: 10px 9px 9px;
+    scroll-snap-align: none;
+  }
+
+  .channel-insights__kpi-card span {
+    overflow-wrap: anywhere;
+  }
+
+  .channel-insights__chart-card {
+    padding: 12px;
+  }
+
+  .channel-stats-graph__insights {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    gap: 6px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .channel-stats-graph__insight {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 390px) {
+  .channel-insights__summary--command {
+    padding-top: 16px;
+  }
+}
+
+@media (max-width: 360px) {
+  .channel-insights__summary-copy h2 {
+    font-size: 1.02rem;
+  }
+
+  .channel-insights__kpi-card {
+    min-height: 74px;
+    padding: 9px 8px 8px;
+  }
+
+  .channel-insights__kpi-card small {
+    font-size: 0.54rem;
+  }
+
+  .channel-insights__kpi-card strong {
+    font-size: 1.04rem;
+  }
+
+  .channel-insights__kpi-card span {
+    font-size: 0.62rem;
+  }
+
+  .channel-stats-graph__insight small {
+    font-size: 0.52rem;
+  }
+
+  .channel-stats-graph__insight strong {
+    font-size: 0.94rem;
+  }
+
+  .channel-stats-graph__insight em {
+    font-size: 0.62rem;
+  }
+}

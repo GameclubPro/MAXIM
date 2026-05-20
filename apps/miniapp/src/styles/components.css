@@ -5497,3 +5497,27 @@ body.chats-home-page-open .bottom-nav__label {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+@media (max-width: 380px) {
+  .chats-command__topline {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .chats-command__tabs {
+    width: 100%;
+  }
+
+  .chats-command__meta {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .chats-command__sync-chip {
+    max-width: none;
+  }
+
+  .chats-command__tab-label {
+    text-overflow: clip;
+  }
+}
