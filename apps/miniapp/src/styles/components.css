@@ -6077,3 +6077,65 @@ body.chats-home-page-open .bottom-nav__label {
     border-radius: 11px;
   }
 }
+
+/* Home final pass: keep admin system access present but visually quiet. */
+.system-root-card {
+  min-height: 40px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  border-color: rgba(199, 216, 231, 0.72);
+  background: rgba(253, 254, 255, 0.9);
+  color: #17324a;
+  box-shadow:
+    0 5px 14px rgba(22, 52, 78, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.82) inset;
+}
+
+.system-root-card__eyebrow {
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.system-root-card__eyebrow .chip {
+  min-height: 22px;
+  padding-inline: 8px;
+  border: 1px solid rgba(188, 207, 224, 0.72);
+  background: rgba(244, 249, 253, 0.82);
+  color: #334d63;
+  font-size: 0.62rem;
+}
+
+.system-root-card__eyebrow .chip--success {
+  border-color: rgba(31, 169, 126, 0.22);
+  background: rgba(31, 169, 126, 0.1);
+  color: #0f7458;
+}
+
+.system-root-card__eyebrow .chip--warning {
+  border-color: rgba(240, 164, 43, 0.25);
+  background: rgba(255, 244, 222, 0.9);
+  color: #9a5f00;
+}
+
+.system-root-card__eyebrow .chip--danger {
+  border-color: rgba(228, 83, 99, 0.24);
+  background: rgba(255, 230, 234, 0.9);
+  color: #9a2f3f;
+}
+
+@media (max-width: 430px) {
+  .bottom-nav__item {
+    padding-inline: 1px;
+  }
+
+  .bottom-nav__label {
+    font-size: 0.58rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .bottom-nav__label {
+    font-size: 0.54rem;
+  }
+}

@@ -4691,5 +4691,5 @@ body.channel-settings-page-open .bottom-nav__item.is-active::after {
 /* Header clearance: keep the first settings control visually below the compact route header. */
 .settings-home-sticky-header.compact-page-header,
 .channel-settings-screen__sticky-header {
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }

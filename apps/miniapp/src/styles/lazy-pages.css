@@ -12051,5 +12051,32 @@ body.channel-stats-page-open .bottom-nav__item {
 
 /* Header clearance: stats should start below the sticky channel header, not underneath it. */
 .channel-insights__sticky-header.compact-page-header {
-  margin-bottom: 18px;
+  margin-bottom: 10px;
+}
+
+/* Channel stats cleanup: remove repeated heading weight and keep facts above the nav. */
+.channel-insights__summary-copy h2 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.channel-insights__summary-copy p {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  padding: 0 10px;
+  border: 1px solid rgba(187, 207, 224, 0.7);
+  border-radius: 999px;
+  background: rgba(247, 251, 255, 0.86);
+  color: #496073;
+  font-size: 0.62rem;
+  font-weight: 780;
 }

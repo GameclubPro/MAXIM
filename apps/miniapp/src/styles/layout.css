@@ -482,6 +482,7 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 .design-preview .bottom-nav {
+  position: absolute;
   width: min(calc(100% - 24px), 396px);
 }
 
