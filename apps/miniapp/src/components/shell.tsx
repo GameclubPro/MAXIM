@@ -251,7 +251,7 @@ export function Shell() {
       ? `/channel/${resolvedChatId}/stats`
       : `/chat/${resolvedChatId}/events`
     : '';
-  const activityNavLabel = resolvedEntityType === 'channel' ? 'Статы' : 'События';
+  const activityNavLabel = resolvedEntityType === 'channel' ? 'Статистика' : 'События';
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');

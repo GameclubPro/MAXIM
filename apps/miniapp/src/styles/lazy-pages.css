@@ -12048,3 +12048,8 @@ body.channel-stats-page-open .bottom-nav__item {
     height: 124px;
   }
 }
+
+/* Header clearance: stats should start below the sticky channel header, not underneath it. */
+.channel-insights__sticky-header.compact-page-header {
+  margin-bottom: 18px;
+}

@@ -2635,7 +2635,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         backTo={buildManagedEntitiesRoute('channel')}
         backLabel="Назад к каналам"
         title={resolvedTitle || 'Настройки'}
-        subtitle="Канал"
         avatar={
           <EntityAvatar
             title={resolvedTitle || 'Настройки'}

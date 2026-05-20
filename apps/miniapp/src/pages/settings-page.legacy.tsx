@@ -4982,7 +4982,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             backTo={managedChatsRoute}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
-            subtitle="Настройки чата"
             avatar={
               <EntityAvatar
                 title={chatTitle || chatId || 'Настройки'}
