@@ -1381,6 +1381,14 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
+    document.body.classList.add('channel-stats-page-open');
+
+    return () => {
+      document.body.classList.remove('channel-stats-page-open');
+    };
+  }, []);
+
+  useEffect(() => {
     if (!chatId) {
       return;
     }

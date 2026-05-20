@@ -24,7 +24,6 @@ import {
   HOME_ENTITY_FAVORITE_ICONS,
   RefreshGlyph,
   SearchGlyph,
-  StarGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -41,7 +40,6 @@ import {
   buildHomeEntityFavoritesMigrationKey,
   createHomeEntityFavoritesFromEntities,
   createHomeEntityFavoritesFromLegacy,
-  getHomeEntityFavoriteIds,
   getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
   isHomeEntityFavorite,
@@ -93,7 +91,6 @@ type ManagedEntitiesReloadRequest = {
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
-const FAVORITE_DOCK_LIMIT = 10;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
@@ -421,8 +418,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showTransientEmptyState = hasNoActiveEntities && activeEntitiesState.isBackoffActive;
   const isNoEntitiesForTab = hasNoActiveEntities && isSyncSettled && !showTransientEmptyState;
 
-  const [filteredEntities, visibleEntitiesCount] = useMemo(() => {
-    const [matchingEntities, matchingCount] = buildHomeView({
+  const filteredEntities = useMemo(() => {
+    const [matchingEntities] = buildHomeView({
       entities: activeEntities,
       query,
     });
@@ -433,16 +430,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id, favoriteFilter),
           );
 
-    return [
-      orderHomeEntitiesByFavorites(
-        filteredByFavorite,
-        homeEntityFavorites[activeTab],
-        favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
-      ),
-      favoriteFilter === FAVORITE_FILTER_ALL ? matchingCount : filteredByFavorite.length,
-    ] as const;
+    return orderHomeEntitiesByFavorites(
+      filteredByFavorite,
+      homeEntityFavorites[activeTab],
+      favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
+    );
   }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites, query]);
-  const totalEntitiesCount = Array.isArray(activeEntities) ? activeEntities.length : 0;
   const favoriteCounts = useMemo(() => {
     if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
       return HOME_ENTITY_FAVORITE_TYPES.reduce(
@@ -471,32 +464,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ),
     [favoriteCounts, favoriteFilter],
   );
-  const favoriteEntitiesCount = useMemo(() => {
-    if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
-      return 0;
-    }
-
-    return activeEntities.filter((entity) =>
-      isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id),
-    ).length;
-  }, [activeEntities, activeTab, homeEntityFavorites]);
-  const favoriteEntities = useMemo(() => {
-    if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
-      return [];
-    }
-
-    const favoriteIds = getHomeEntityFavoriteIds(
-      homeEntityFavorites,
-      activeTab,
-      favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
-    );
-    const favoriteIdSet = new Set(favoriteIds);
-    return orderHomeEntitiesByFavorites(
-      activeEntities.filter((entity) => favoriteIdSet.has(entity.id)),
-      homeEntityFavorites[activeTab],
-      favoriteFilter === FAVORITE_FILTER_ALL ? HOME_ENTITY_FAVORITE_TYPES : [favoriteFilter],
-    ).slice(0, FAVORITE_DOCK_LIMIT);
-  }, [activeEntities, activeTab, favoriteFilter, homeEntityFavorites]);
   const hasSearchQuery = query.trim().length > 0;
   const tabCounts = useMemo(
     () => ({
@@ -1162,16 +1129,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               ) : null}
             </div>
           </label>
-
-          <div className="chats-command__metrics" aria-label="Сводка">
-            <span className="chats-command__metric" title={hasSearchQuery ? 'Найдено' : 'В списке'}>
-              <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
-            </span>
-            <span className="chats-command__metric" title="Избранное">
-              <StarGlyph aria-hidden />
-              <strong>{favoriteEntitiesCount}</strong>
-            </span>
-          </div>
         </div>
 
         <div className="favorite-filter" role="group" aria-label="Фильтр избранного">
@@ -1209,41 +1166,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           })}
         </div>
       </GlassCard>
-
-      {!hasSearchQuery && favoriteEntities.length > 0 ? (
-        <section className="favorite-dock" aria-label="Избранное">
-          <div className="favorite-dock__rail">
-            {favoriteEntities.map((entity, index) => (
-              <Link
-                key={entity.id}
-                to={buildEntitySettingsRoute(activeTab, entity.id)}
-                className="favorite-dock__item"
-                state={buildEntityRouteState(activeTab, entity)}
-                onClick={() => rememberEntity(activeTab, entity)}
-                onPointerEnter={(event) => {
-                  if (shouldPrefetchFromPointerEvent(event)) {
-                    prefetchEntitySettings(activeTab, entity.id);
-                  }
-                }}
-                aria-label={`${tabLabel}: ${entity.title}`}
-                title={entity.title}
-                style={
-                  {
-                    '--favorite-dock-index': index,
-                  } as CSSProperties
-                }
-              >
-                <EntityAvatar
-                  title={entity.title}
-                  entityType={activeTab}
-                  avatarUrl={entity.avatarUrl ?? null}
-                  className="favorite-dock__avatar"
-                />
-              </Link>
-            ))}
-          </div>
-        </section>
-      ) : null}
 
       {showTransientEmptyState ? (
         <GlassCard className="chats-transient-state">

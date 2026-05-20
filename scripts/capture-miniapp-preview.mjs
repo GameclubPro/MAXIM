@@ -17,6 +17,13 @@ const scenarios = [
     path: '/',
   },
   {
+    name: 'home-channels',
+    path: '/',
+    searchParams: {
+      view: 'channel',
+    },
+  },
+  {
     name: 'events-moderation',
     path: '/chat/preview-chat/events',
   },
