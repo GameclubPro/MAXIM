@@ -47,6 +47,7 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
       className="system-root-card-link"
       onPointerEnter={prefetchSystemCenter}
       onTouchStart={prefetchSystemCenter}
+      aria-label={`Система: ${systemChipLabel}`}
     >
       <GlassCard className="system-root-card" elevated>
         <div className="system-root-card__eyebrow">
@@ -54,13 +55,6 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
           <span className={systemChipClassName}>{systemChipLabel}</span>
         </div>
         <div className="system-root-card__content">
-          <div className="system-root-card__copy">
-            <h2>{systemPreviewQuery.data?.summary.title ?? 'Операционный центр'}</h2>
-            <p>
-              {systemPreviewQuery.data?.summary.detail ??
-                'Подтягиваю live-сводку по webhook, очередям и MAX-лимитам.'}
-            </p>
-          </div>
           <div className="system-root-card__stats" aria-label="Ключевые метрики">
             <div className="system-root-card__stat">
               <span>Задержка</span>

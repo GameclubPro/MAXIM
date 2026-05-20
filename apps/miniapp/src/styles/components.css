@@ -5521,3 +5521,48 @@ body.chats-home-page-open .bottom-nav__label {
     text-overflow: clip;
   }
 }
+
+.system-root-card {
+  gap: 6px;
+  padding: 10px 11px;
+  border-radius: 22px;
+}
+
+.system-root-card__eyebrow {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.system-root-card__eyebrow .chip {
+  min-height: 24px;
+  padding-inline: 9px;
+  font-size: 0.68rem;
+}
+
+.system-root-card__content {
+  display: block;
+}
+
+.system-root-card__stats {
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.system-root-card__stat {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 7px;
+  border-radius: 12px;
+}
+
+.system-root-card__stat span {
+  font-size: 0.62rem;
+  line-height: 1;
+}
+
+.system-root-card__stat strong {
+  font-size: 0.96rem;
+}

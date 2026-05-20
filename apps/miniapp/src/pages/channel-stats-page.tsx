@@ -246,7 +246,7 @@ function resolveChannelStateLabel(stats: ChannelStatsResponse): string {
 function resolveHeroNote(stats: ChannelStatsResponse): string {
   const lastUpdated = resolveChannelStatsLastUpdated(stats);
   if (lastUpdated) {
-    return `Последнее движение ${formatDateTime(lastUpdated)}`;
+    return formatDateTime(lastUpdated);
   }
 
   return stats.meta.maxSnapshotAvailable ? 'Актуальный снимок MAX' : 'Снимок MAX недоступен';
@@ -1593,7 +1593,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         backTo={buildManagedEntitiesRoute('channel')}
         backLabel="К списку каналов"
         title={resolvedTitle}
-        subtitle="Статистика канала"
         avatar={
           <EntityAvatar
             title={resolvedTitle}
@@ -1624,7 +1623,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         >
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
-              <span className="channel-insights__eyebrow">Статистика канала</span>
               <h2>Обзор</h2>
               <p>{resolveChannelStateLabel(stats)}</p>
             </div>
@@ -1710,7 +1708,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
         <MembershipActivityFeed
           title="Движение подписчиков"
-          subtitle="Последние входы и выходы по дням."
+          subtitle={null}
           variant="immersive"
           joinedLabel="каналу"
           leftLabel="канал"
@@ -1734,7 +1732,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <div className="channel-insights__panel-head">
                 <div className="channel-insights__panel-copy">
                   <strong>Топ реакций</strong>
-                  <small>Что сработало лучше всего за период.</small>
                 </div>
               </div>
 
@@ -1753,7 +1750,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             <div className="channel-insights__panel-head">
               <div className="channel-insights__panel-copy">
                 <strong>Через приложение</strong>
-                <small>Комментарии, идеи и доставка админам.</small>
               </div>
             </div>
 
@@ -1793,7 +1789,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <div className="channel-insights__panel-head">
             <div className="channel-insights__panel-copy">
               <strong>Контекст канала</strong>
-              <small>Последние точки активности и ссылка на канал.</small>
             </div>
           </div>
 

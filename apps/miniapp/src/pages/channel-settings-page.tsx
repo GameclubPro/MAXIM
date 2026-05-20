@@ -2734,12 +2734,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 {draft.commentsEnabled ? (
                   <div className="channel-settings-stack channel-settings-stack--form">
                     <label className="field channel-settings-field--wide">
-                      <span>Подсказка</span>
+                      <span>Текст</span>
                       <textarea
                         rows={3}
                         value={draft.commentsMessageText}
                         onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                        placeholder="Напишите, о чём участник должен оставить комментарий."
+                        placeholder="О чём оставить комментарий"
                       />
                     </label>
 
