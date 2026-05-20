@@ -256,11 +256,12 @@ export class RuleEngineDuplicateDetector {
     }
 
     if (settings.duplicateDetectionPreset === 'CUSTOM') {
+      // Legacy field names say "ignore"; the CUSTOM UI uses them as value-match toggles.
       return {
-        ignoreLinks: settings.duplicateIgnoreLinksEnabled,
-        ignorePhones: settings.duplicateIgnorePhonesEnabled,
-        matchLinkValues: !settings.duplicateIgnoreLinksEnabled,
-        matchPhoneValues: !settings.duplicateIgnorePhonesEnabled,
+        ignoreLinks: false,
+        ignorePhones: false,
+        matchLinkValues: settings.duplicateIgnoreLinksEnabled,
+        matchPhoneValues: settings.duplicateIgnorePhonesEnabled,
         nearMatch: settings.duplicateNearMatchEnabled,
       };
     }

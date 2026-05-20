@@ -2189,18 +2189,17 @@ export class RuleEngineService {
   ): boolean {
     const detectedPhoneCount = extractDetectedPhoneNumbers(rawText).length;
     const hasPhone = detectedPhoneCount > 0 || DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText);
-    const duplicateIgnoresPhones =
-      settings.duplicateDetectionPreset === 'STRICT' ||
-      (settings.duplicateDetectionPreset === 'CUSTOM' && settings.duplicateIgnorePhonesEnabled);
+    const isCustomDuplicateMode = settings.duplicateDetectionPreset === 'CUSTOM';
+    const duplicateIgnoresPhones = settings.duplicateDetectionPreset === 'STRICT';
     const duplicateMatchesPhoneValues =
-      settings.duplicateDetectionPreset === 'CUSTOM' && !settings.duplicateIgnorePhonesEnabled;
-    if (hasPhone && !duplicateIgnoresPhones && !duplicateMatchesPhoneValues) {
+      isCustomDuplicateMode && settings.duplicateIgnorePhonesEnabled;
+    if (hasPhone && !isCustomDuplicateMode && !duplicateIgnoresPhones) {
       return false;
     }
 
     const hasUrl = extractUrlsFromText(rawText).length > 0;
     const duplicateMatchesLinkValues =
-      settings.duplicateDetectionPreset === 'CUSTOM' && !settings.duplicateIgnoreLinksEnabled;
+      isCustomDuplicateMode && settings.duplicateIgnoreLinksEnabled;
     if ((hasUrl && duplicateMatchesLinkValues) || (hasPhone && duplicateMatchesPhoneValues)) {
       return true;
     }

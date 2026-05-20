@@ -7494,21 +7494,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
                                 <span className="settings-native-toggle__title">
-                                  Не учитывать ссылки
+                                  Одинаковая ссылка
                                 </span>
                                 <SettingsHintAnchor
                                   hintKey="duplicateIgnoreLinks"
                                   openHintKey={openHintKey}
                                   onToggleHint={toggleHint}
-                                  label="Пояснение для учета ссылок в дублях"
+                                  label="Пояснение для одинаковой ссылки в дублях"
                                 >
-                                  Вкл: ссылки не сравниваются. Выкл: та же ссылка считается дублем.
+                                  Вкл: та же ссылка считается дублем. Выкл: проверяется текст.
                                 </SettingsHintAnchor>
                               </div>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Не учитывать ссылки при сравнении дублей"
+                                aria-label="Считать одинаковую ссылку дублем"
                               >
                                 <input
                                   type="checkbox"
@@ -7531,21 +7531,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
                                 <span className="settings-native-toggle__title">
-                                  Не учитывать телефоны
+                                  Одинаковый номер
                                 </span>
                                 <SettingsHintAnchor
                                   hintKey="duplicateIgnorePhones"
                                   openHintKey={openHintKey}
                                   onToggleHint={toggleHint}
-                                  label="Пояснение для учета телефонов в дублях"
+                                  label="Пояснение для одинакового номера в дублях"
                                 >
-                                  Вкл: номера не сравниваются. Выкл: тот же номер считается дублем.
+                                  Вкл: тот же номер считается дублем. Выкл: проверяется текст.
                                 </SettingsHintAnchor>
                               </div>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Не учитывать телефоны при сравнении дублей"
+                                aria-label="Считать одинаковый номер дублем"
                               >
                                 <input
                                   type="checkbox"
