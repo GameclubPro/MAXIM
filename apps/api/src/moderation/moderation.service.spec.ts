@@ -1462,6 +1462,64 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not put a chat into hot-timeout backoff when only violation follow-up times out', () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-1',
+      },
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+
+    (service as any).createWebhookHotPathTimeoutError({
+      webhookEventId: 'event-timeout-follow-up',
+      update,
+      activeBotId: 'id613002203036_bot',
+      timeoutMs: 10_000,
+      timeoutContext: {
+        latestStage: 'violation-follow-up',
+        elapsedMs: 10_001,
+      },
+    });
+
+    expect((service as any).isWebhookHotTimeoutChatBackoffActive('-chat-1')).toBe(false);
+  });
+
+  it('keeps hot-timeout backoff for timeouts before destructive moderation finishes', () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-1',
+      },
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+
+    (service as any).createWebhookHotPathTimeoutError({
+      webhookEventId: 'event-timeout-required-subscription',
+      update,
+      activeBotId: 'id613002203036_bot',
+      timeoutMs: 10_000,
+      timeoutContext: {
+        latestStage: 'required-subscription',
+        elapsedMs: 10_001,
+      },
+    });
+
+    expect((service as any).isWebhookHotTimeoutChatBackoffActive('-chat-1')).toBe(true);
+  });
+
   it('fails open for stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
     const update = {
       ...createUpdate(),

@@ -408,6 +408,7 @@ const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
+const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set(['violation-follow-up']);
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
@@ -16354,6 +16355,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.webhookHotTimeoutChatBackoffUntilMs.set(chatId, Date.now() + WEBHOOK_HOT_CHAT_BACKOFF_MS);
   }
 
+  private shouldRememberWebhookHotTimeoutChat(
+    timeoutContext?: Record<string, unknown> | null,
+  ): boolean {
+    const latestStage = timeoutContext ? this.readString(timeoutContext.latestStage) : null;
+    return !latestStage || !WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage);
+  }
+
   private shouldSkipHotChatModeration(
     mode: SystemModeSnapshot,
     hotChatBackoffActive: boolean,
@@ -16412,7 +16420,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     error.chatId = this.extractWebhookHotPathChatId(params.update);
     error.activeBotId = params.activeBotId;
     error.webhookHotPathContext = params.timeoutContext ?? null;
-    this.rememberWebhookHotTimeoutChat(error.chatId);
+    const hotChatBackoffSuppressed = !this.shouldRememberWebhookHotTimeoutChat(
+      params.timeoutContext,
+    );
+    if (!hotChatBackoffSuppressed) {
+      this.rememberWebhookHotTimeoutChat(error.chatId);
+    }
     this.logger.warn(
       {
         webhookEventId: params.webhookEventId,
@@ -16420,6 +16433,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: error.chatId,
         activeBotId: params.activeBotId,
         timeoutMs: params.timeoutMs,
+        hotChatBackoffSuppressed,
         ...(params.timeoutContext ?? {}),
       },
       'Webhook user-facing hot path timed out; failing this event open to keep the shard responsive',
