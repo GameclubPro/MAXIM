@@ -2489,6 +2489,34 @@ body.channel-settings-page-open {
   line-height: 1.12;
 }
 
+.settings-drilldown__panel--duplicates
+  :is(.settings-policy, .settings-native-toggle, .duplicate-stage):has(
+    .channel-settings-hint-popover
+  ) {
+  position: relative;
+  overflow: visible;
+  z-index: 90;
+}
+
+.settings-drilldown__panel--duplicates .settings-info-button {
+  width: 27px;
+  height: 27px;
+  min-height: 27px;
+  border-radius: 999px;
+}
+
+.settings-drilldown__panel--duplicates .settings-info-button span {
+  font-size: 0.7rem;
+}
+
+.settings-drilldown__panel--duplicates .channel-settings-hint-popover {
+  width: min(300px, var(--hint-popover-max-width, calc(100dvw - 28px)));
+  max-width: min(300px, var(--hint-popover-max-width, calc(100dvw - 28px)));
+  padding: 9px 10px;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .settings-drilldown__panel--channel-comments .channel-settings-toggle-card__title-row,
 .settings-drilldown__panel--post-suggestions .channel-settings-toggle-card__title-row {
   align-items: center;
@@ -2778,7 +2806,8 @@ body.channel-settings-page-open {
 .settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
   .settings-native-toggle__title,
 .settings-drilldown__panel:not(.settings-drilldown__panel--broadcast-screen)
-  .channel-settings-toggle-card__copy strong {
+  .channel-settings-toggle-card__copy
+  strong {
   font-size: 0.89rem;
 }
 
