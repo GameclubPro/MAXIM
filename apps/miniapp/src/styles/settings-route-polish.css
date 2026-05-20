@@ -4315,3 +4315,120 @@ body.channel-settings-page-open {
     height: 34px;
   }
 }
+
+/* Settings second clarity pass: remove repeated captions and keep dense screens readable. */
+.settings-drilldown__panel--ladder .settings-subsection-divider {
+  display: none;
+}
+
+.settings-drilldown__panel--ladder .settings-section__collapse-inner {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--ladder .settings-native-toggle {
+  min-height: 44px;
+  padding: 7px 9px;
+}
+
+.settings-drilldown__panel--ladder .settings-native-toggle__row {
+  gap: 7px;
+}
+
+.settings-drilldown__panel--ladder .settings-native-toggle__title-wrap {
+  gap: 5px;
+}
+
+.settings-drilldown__panel--ladder .settings-native-toggle__title {
+  font-size: 0.8rem;
+  line-height: 1.08;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--ladder
+  .settings-native-toggle:not(.settings-native-toggle--nested)
+  .settings-native-toggle__title {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.settings-drilldown__panel--ladder
+  .settings-native-toggle--nested
+  .settings-native-toggle__title {
+  font-size: 0.74rem;
+}
+
+.settings-drilldown__panel--ladder .settings-info-button,
+.settings-drilldown__panel--ladder .settings-edit-button {
+  width: 25px;
+  height: 25px;
+  min-height: 25px;
+}
+
+.settings-drilldown__panel--ladder .settings-native-switch,
+.settings-drilldown__panel--ladder .toggle-switch {
+  width: 40px;
+  height: 24px;
+}
+
+.settings-drilldown__panel--ladder .toggle-switch__thumb {
+  width: 17px;
+  height: 17px;
+}
+
+.settings-drilldown__panel--ladder
+  .settings-native-switch
+  input:checked
+  + .toggle-switch
+  .toggle-switch__thumb {
+  transform: translateX(15px);
+}
+
+.settings-drilldown__panel--commercial .commercial-settings-panel,
+.settings-drilldown__panel--commercial .commercial-sensitivity-slider {
+  gap: 6px;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--commercial .commercial-sensitivity-slider__head {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--commercial .commercial-sensitivity-slider__labels {
+  font-size: 0.66rem;
+}
+
+.settings-drilldown__panel--duplicates .settings-policy {
+  gap: 5px;
+}
+
+.settings-drilldown__panel--duplicates .settings-policy__label-row {
+  min-height: 24px;
+}
+
+.settings-drilldown__panel--duplicates .duplicate-stage {
+  gap: 6px;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--duplicates .duplicate-stage__controls {
+  gap: 6px;
+}
+
+.settings-drilldown__panel--duplicates .duplicate-stage__field {
+  padding: 7px;
+}
+
+.settings-drilldown__panel--duplicates .duplicate-stage__field input {
+  min-height: 38px;
+}
+
+.settings-drilldown__panel--required-subscription .settings-native-toggle__title {
+  max-width: 14em;
+}
+
+.settings-drilldown__panel--links .allowlist-panel__title-row .field__label {
+  max-width: 100%;
+}

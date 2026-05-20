@@ -5216,9 +5216,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="allowlist-panel__head">
                                 <div className="allowlist-panel__title-block">
                                   <div className="allowlist-panel__title-row">
-                                    <span className="field__label">
-                                      Разрешенные ссылки и домены
-                                    </span>
+                                    <span className="field__label">Разрешено</span>
                                     <SettingsHintAnchor
                                       hintKey="linkAllowlistScope"
                                       openHintKey={openHintKey}
@@ -5281,7 +5279,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     placeholder={
                                       domainInputMode === 'DOMAIN'
                                         ? 'example.com'
-                                        : 'https://example.com/path'
+                                        : 'https://site.ru'
                                     }
                                   />
 
@@ -6715,7 +6713,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">
-                              Фильтровать коммерческую рекламу
+                              Фильтр рекламы
                             </span>
                             <button
                               type="button"
@@ -10207,7 +10205,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">
-                              Требовать подписку перед сообщением
+                              Требовать подписку
                             </span>
                             <button
                               type="button"
