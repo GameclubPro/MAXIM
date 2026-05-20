@@ -13191,7 +13191,7 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
-  it('handles built-in MESSAGE_RATE_LIMIT as a message-limits violation', async () => {
+  it('hard-bans built-in MESSAGE_RATE_LIMIT as system flood protection', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -13222,8 +13222,8 @@ describe('ModerationService', () => {
           {
             ruleCode: 'MESSAGE_RATE_LIMIT',
             score: 0.9,
-            reason: 'Messages are limited to 5 per 10s',
-            metadata: { count: 6, maxMessages: 5, windowSec: 10 },
+            reason: 'Messages are limited to 5 per 6s',
+            metadata: { count: 6, maxMessages: 5, windowSec: 6 },
           },
         ],
       }),
@@ -13249,19 +13249,16 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation(
-        'Алексей',
-        'снято с линии',
-        'слишком частая отправка сообщений: не более 5 за 10с',
-      ),
+      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений или стикеров'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
       data: expect.objectContaining({
         ruleCode: 'MESSAGE_RATE_LIMIT',
-        action: SanctionAction.NONE,
+        action: SanctionAction.BAN,
       }),
     });
   });

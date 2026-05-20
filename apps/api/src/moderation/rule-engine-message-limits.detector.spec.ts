@@ -161,13 +161,13 @@ describe('RuleEngineMessageLimitsDetector', () => {
         metadata: expect.objectContaining({
           count: 6,
           maxMessages: 5,
-          windowSec: 10,
+          windowSec: 6,
         }),
       }),
     );
     expect(redisCounter.calls[0]).toEqual({
-      key: 'message:anti-spam-burst:v1:chat-1:user-1:5:10',
-      ttlSec: 11,
+      key: 'message:anti-spam-burst:v1:chat-1:user-1:5:6',
+      ttlSec: 7,
     });
   });
 

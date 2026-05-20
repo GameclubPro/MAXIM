@@ -8032,8 +8032,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {openHintKey === 'antiSpam' ? (
                           <p id="anti-spam-hint" className="settings-native-toggle__hint">
-                            Базовые параметры: не более 5 сообщений за 10 секунд от одного
-                            пользователя. Изменение порогов через UI отключено.
+                            Системная защита от скоростного флуда: при опасном всплеске бот удаляет
+                            сообщение и банит отправителя. Порог не настраивается через UI.
                           </p>
                         ) : null}
                       </div>
@@ -10158,7 +10158,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         </>
                       ) : null}
-
                     </div>
                   ) : null}
                 </div>

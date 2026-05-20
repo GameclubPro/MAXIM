@@ -1983,6 +1983,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           banEnabled: settings.thematicFiltersBanEnabled,
           muteEnabled: settings.thematicFiltersMuteEnabled,
         });
+      } else if (topViolation.ruleCode === 'MESSAGE_RATE_LIMIT') {
+        // Burst flooding can starve moderation workers, so this guard is enforced as a hard ban.
+        action = SanctionAction.BAN;
       } else if (isMessageLimitsHit) {
         action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
           warnEnabled: settings.messageLimitsWarnEnabled,
@@ -4305,7 +4308,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      const reason = `слишком частая отправка сообщений: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
+      const reason = `слишком частая отправка сообщений или стикеров: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
       return this.renderEditableBotSpeechTemplate({
         style: botSpeechStyle ?? null,
         fieldKey: 'messageLimitsBotMessageText',
@@ -4528,7 +4531,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      return 'слишком частая отправка сообщений';
+      return 'слишком частая отправка сообщений или стикеров';
     }
 
     if (ruleCode === 'MESSAGE_COUNT_LIMIT') {

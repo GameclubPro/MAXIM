@@ -5,7 +5,7 @@ import { RedisCounterService } from './redis-counter.service';
 import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
 
 export const ANTI_SPAM_BURST_LIMIT = 5;
-export const ANTI_SPAM_BURST_WINDOW_SEC = 10;
+export const ANTI_SPAM_BURST_WINDOW_SEC = 6;
 const ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS = 120;
 const PHONE_NUMBER_CANDIDATE_PATTERN = /(?:^|[^\d+])(\+?\d[\d\s().-]{7,}\d)(?=$|[^\d])/gu;
 const PHONE_CONTEXT_WORD_PATTERN =

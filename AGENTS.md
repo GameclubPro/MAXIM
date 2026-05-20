@@ -160,7 +160,7 @@
 - New managed chats should reach home through `bot_added` signals, recent bootstrap, allowlist, and published snapshots. Do not reintroduce launch-context assumptions for target chat discovery.
 - When recent hydration resolves better chat metadata, keep the user-scoped published snapshot aligned so home does not linger on fallback titles like `Chat <id>`.
 - Managed-entities refresh is async. Diagnose `CHAT` and `CHANNEL` separately and trust refresh state/cursor, not only the first response.
-- `ChatSettings.antiSpamEnabled` is the fast per-chat sender flood guard: `MESSAGE_RATE_LIMIT` after more than 5 messages in 10 seconds, including attachment-only/sticker messages.
+- `ChatSettings.antiSpamEnabled` is the fast per-chat sender flood guard. The hard threshold is `MESSAGE_RATE_LIMIT` on the 6th message/sticker-like event within 6 seconds, including attachment-only messages; do not expose threshold controls, and hard-ban the sender instead of routing it through configurable message-limit escalation.
 
 ## Repo hygiene
 
