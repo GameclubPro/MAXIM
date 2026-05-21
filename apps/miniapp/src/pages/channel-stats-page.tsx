@@ -25,6 +25,15 @@ type ChannelStatsRouteState = {
 type ChartTab = 'audience' | 'views' | 'posts';
 
 type ChartInsightTone = 'accent' | 'success' | 'danger' | 'warning' | 'neutral';
+type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
+
+type ChannelDecisionCard = {
+  code: string;
+  label: string;
+  value: string;
+  meta: string | null;
+  tone: ChartInsightTone;
+};
 
 type AudienceChartPoint = {
   at: string;
@@ -61,6 +70,8 @@ const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
   { value: 'posts', label: 'Посты' },
 ];
 
+const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
+
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
     return {
@@ -95,6 +106,19 @@ function formatCompactCount(value: number | null): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function formatSignedCompactCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  if (value === 0) {
+    return '0';
+  }
+
+  const formatted = formatCompactCount(Math.abs(value));
+  return `${value > 0 ? '+' : '-'}${formatted}`;
 }
 
 function formatShortDate(value: string | null, bucket: ChannelStatsBucket): string {
@@ -225,28 +249,144 @@ function DeltaBadge({
   );
 }
 
-function EssentialSignalsStrip({ stats }: { stats: ChannelStatsResponse }) {
-  const signals = [...stats.signals.alerts, ...stats.signals.insights].slice(0, 3);
+function formatBenchmarkDelta(
+  metric: ChannelStatsResponse['intelligence']['benchmarks']['viewsPerPost'],
+): string | null {
+  if (typeof metric.deltaPercent !== 'number' || !Number.isFinite(metric.deltaPercent)) {
+    return null;
+  }
 
-  if (signals.length === 0) {
+  const rounded = Math.round(metric.deltaPercent);
+  if (rounded === 0) {
+    return '0%';
+  }
+
+  return `${rounded > 0 ? '+' : ''}${rounded}%`;
+}
+
+function resolveNumberTone(value: number | null | undefined, inverse = false): ChartInsightTone {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) {
+    return 'neutral';
+  }
+
+  const positive = inverse ? value < 0 : value > 0;
+  return positive ? 'success' : 'warning';
+}
+
+function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
+  const day = dayShortLabels[window.dayOfWeek] ?? '';
+  const hour = String(window.hour).padStart(2, '0');
+  return `${day} ${hour}:00`.trim();
+}
+
+function pushDecisionCard(cards: ChannelDecisionCard[], card: ChannelDecisionCard): void {
+  if (cards.some((item) => item.code === card.code)) {
+    return;
+  }
+
+  cards.push(card);
+}
+
+function pushSignalDecision(cards: ChannelDecisionCard[], signal: ChannelStatsSignal): void {
+  pushDecisionCard(cards, {
+    code: signal.code,
+    label: signal.label,
+    value: signal.value,
+    meta: null,
+    tone: signal.tone,
+  });
+}
+
+function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] {
+  const cards: ChannelDecisionCard[] = [];
+  const alert = stats.signals.alerts[0];
+
+  if (alert) {
+    pushSignalDecision(cards, alert);
+  }
+
+  const bestWindow = stats.signals.bestWindows[0];
+  if (bestWindow && bestWindow.posts > 0) {
+    pushDecisionCard(cards, {
+      code: 'best-window',
+      label: 'Окно',
+      value: formatBestWindowValue(bestWindow),
+      meta: formatCompactCount(bestWindow.averageViews),
+      tone: 'success',
+    });
+  }
+
+  const forecast = stats.intelligence.forecast;
+  if (forecast.net !== null) {
+    pushDecisionCard(cards, {
+      code: 'forecast',
+      label: `${forecast.horizonDays}д`,
+      value: formatSignedCompactCount(forecast.net),
+      meta: forecast.participants !== null ? formatCompactCount(forecast.participants) : null,
+      tone: resolveNumberTone(forecast.net),
+    });
+  }
+
+  const viewsPerPost = stats.intelligence.benchmarks.viewsPerPost;
+  if (stats.meta.viewsAvailable && stats.official.content.posts > 0) {
+    pushDecisionCard(cards, {
+      code: 'views-per-post',
+      label: 'Пост',
+      value: formatCompactCount(Math.round(viewsPerPost.current)),
+      meta: formatBenchmarkDelta(viewsPerPost),
+      tone: resolveNumberTone(viewsPerPost.deltaPercent),
+    });
+  }
+
+  const engagementRate = stats.intelligence.benchmarks.engagementRate;
+  if (stats.meta.viewsAvailable && stats.official.content.views > 0) {
+    pushDecisionCard(cards, {
+      code: 'engagement-rate',
+      label: 'ER',
+      value: formatPercent(engagementRate.current),
+      meta: formatBenchmarkDelta(engagementRate),
+      tone: resolveNumberTone(engagementRate.deltaPercent),
+    });
+  }
+
+  for (const signal of [
+    stats.intelligence.headline.primary,
+    ...stats.intelligence.headline.secondary,
+    ...stats.intelligence.patterns,
+    ...stats.signals.insights,
+  ]) {
+    if (cards.length >= 3) {
+      break;
+    }
+    pushSignalDecision(cards, signal);
+  }
+
+  return cards.slice(0, 3);
+}
+
+function ChannelDecisionStrip({ stats }: { stats: ChannelStatsResponse }) {
+  const cards = buildDecisionCards(stats);
+
+  if (cards.length === 0) {
     return null;
   }
 
   return (
     <div
-      className={`channel-insights__signal-strip ${
-        stats.signals.alerts.length > 0 ? 'channel-insights__signal-strip--alerts' : ''
+      className={`channel-command-strip channel-insights__decision-strip ${
+        stats.signals.alerts.length > 0 ? 'channel-insights__decision-strip--alerts' : ''
       }`}
-      aria-label="Сигналы"
+      aria-label="Ключевые сигналы"
     >
-      {signals.map((signal) => (
-        <span
-          key={signal.code}
-          className={`channel-insights__signal channel-insights__signal--${signal.tone}`}
+      {cards.map((card) => (
+        <article
+          key={card.code}
+          className={`channel-command-strip__item channel-command-strip__item--${card.tone}`}
         >
-          <small>{signal.label}</small>
-          <strong>{signal.value}</strong>
-        </span>
+          <small>{card.label}</small>
+          <strong>{card.value}</strong>
+          {card.meta ? <em>{card.meta}</em> : null}
+        </article>
       ))}
     </div>
   );
@@ -1452,10 +1592,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
               <div className="channel-insights__status-row">
-                <p>
-                  {resolveChannelStateLabel(stats)} ·{' '}
-                  {formatCompactCount(stats.channel.participantsCount)}
-                </p>
+                <p>{resolveChannelStateLabel(stats)}</p>
                 <span
                   className={`channel-insights__score channel-insights__score--${stats.health.tone}`}
                   aria-label={`Оценка канала ${stats.health.score} из 100`}
@@ -1530,7 +1667,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </article>
           </div>
 
-          <EssentialSignalsStrip stats={stats} />
+          <ChannelDecisionStrip stats={stats} />
 
           <article className="channel-insights__chart-card">
             <div className="channel-insights__panel-head">

@@ -12069,22 +12069,60 @@ body.channel-stats-page-open .bottom-nav__item {
   font-weight: 780;
 }
 
-.channel-insights__signal-strip {
-  flex-wrap: wrap;
-  overflow: visible;
-  padding-bottom: 0;
-}
-
-.channel-insights__signal {
-  flex: 1 1 118px;
+.channel-insights__status-row {
   min-width: 0;
-  justify-content: space-between;
+  align-items: center;
 }
 
-.channel-insights__signal small,
-.channel-insights__signal strong {
+.channel-insights__decision-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item {
+  min-width: 0;
+  min-height: 54px;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 13px;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item small,
+.channel-insights__decision-strip .channel-command-strip__item strong,
+.channel-insights__decision-strip .channel-command-strip__item em {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item small {
+  font-size: 0.5rem;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item strong {
+  font-size: 0.9rem;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item em {
+  font-size: 0.56rem;
+}
+
+.channel-insights__decision-strip .channel-command-strip__item--neutral {
+  background: rgba(248, 251, 253, 0.98);
+}
+
+@media (max-width: 380px) {
+  .channel-insights__decision-strip {
+    gap: 4px;
+  }
+
+  .channel-insights__decision-strip .channel-command-strip__item {
+    min-height: 50px;
+    padding: 7px 6px;
+  }
+
+  .channel-insights__decision-strip .channel-command-strip__item strong {
+    font-size: 0.82rem;
+  }
 }
