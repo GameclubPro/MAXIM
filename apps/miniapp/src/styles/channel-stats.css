@@ -1722,3 +1722,736 @@ body.channel-stats-page-open {
     font-size: 0.9rem;
   }
 }
+
+/* Final channel events polish: scoped overrides for the 2026 native-like events surface. */
+.channel-events-section {
+  --channel-events-sticky-top: calc(var(--app-safe-top) + 112px);
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.channel-events-section__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(203, 217, 231, 0.82);
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.99), rgba(244, 249, 253, 0.96)), #fff;
+  box-shadow:
+    0 16px 34px rgba(21, 47, 71, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+}
+
+.channel-events-section__head-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.channel-events-section__headline {
+  min-width: 0;
+  align-content: start;
+}
+
+.channel-events-section__head .channel-insights__eyebrow {
+  width: max-content;
+  max-width: 100%;
+}
+
+.channel-events-section__head h2 {
+  min-width: 0;
+  color: #132c43;
+  font-size: 1.34rem;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.channel-events-section__head p {
+  color: #61788d;
+  font-size: 0.76rem;
+  font-weight: 720;
+  line-height: 1.22;
+}
+
+.channel-events-section__balance {
+  min-width: 104px;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid rgba(205, 219, 232, 0.82);
+  border-radius: 18px;
+  background: rgba(250, 252, 254, 0.92);
+}
+
+.channel-events-section__balance small {
+  color: #71889d;
+  font-size: 0.58rem;
+  font-weight: 860;
+  line-height: 1;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.channel-events-section__balance strong {
+  color: #17324a;
+  font-size: 1.18rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.channel-events-section__balance span {
+  color: #657d93;
+  font-size: 0.66rem;
+  font-weight: 760;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.channel-events-section__balance--success {
+  border-color: rgba(31, 169, 126, 0.24);
+  background: rgba(239, 251, 246, 0.94);
+}
+
+.channel-events-section__balance--success strong {
+  color: #13765a;
+}
+
+.channel-events-section__balance--danger {
+  border-color: rgba(228, 83, 99, 0.22);
+  background: rgba(255, 244, 246, 0.94);
+}
+
+.channel-events-section__balance--danger strong {
+  color: #a53042;
+}
+
+.channel-events-section__head .channel-insights__range {
+  justify-self: stretch;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding: 3px;
+  border: 1px solid rgba(207, 221, 235, 0.82);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+
+.channel-events-section__head .channel-insights__range .segmented-control__item {
+  min-height: 34px;
+  padding: 5px 6px;
+  border-radius: 13px;
+  background: transparent;
+  font-size: 0.72rem;
+  font-weight: 860;
+}
+
+.channel-events-section__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.channel-events-section__metric {
+  min-width: 0;
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 8px;
+  padding: 10px;
+  border: 1px solid rgba(208, 222, 235, 0.78);
+  border-radius: 19px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 251, 254, 0.94)), #fff;
+  box-shadow:
+    0 12px 26px rgba(22, 44, 67, 0.052),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-events-section__metric-icon {
+  grid-row: 1 / 3;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(232, 243, 255, 0.92);
+  color: #0a5ea9;
+}
+
+.channel-events-section__metric small {
+  min-width: 0;
+  overflow: hidden;
+  color: #70899f;
+  font-size: 0.54rem;
+  font-weight: 850;
+  line-height: 1;
+  letter-spacing: 0.045em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.channel-events-section__metric strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #17324a;
+  font-size: 1.04rem;
+  font-weight: 900;
+  line-height: 0.98;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-events-section__metric--joined .channel-events-section__metric-icon {
+  background: rgba(219, 248, 235, 0.94);
+  color: #13765a;
+}
+
+.channel-events-section__metric--left .channel-events-section__metric-icon {
+  background: rgba(255, 229, 235, 0.92);
+  color: #a53042;
+}
+
+.channel-events-section__flow {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid rgba(208, 222, 235, 0.76);
+  border-radius: 19px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow:
+    0 10px 22px rgba(22, 44, 67, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.84) inset;
+}
+
+.channel-events-section__flow-bar {
+  display: grid;
+  grid-template-columns:
+    minmax(10px, var(--channel-events-joined-share, 50%))
+    minmax(10px, var(--channel-events-left-share, 50%));
+  gap: 3px;
+  height: 8px;
+}
+
+.channel-events-section__flow-fill {
+  min-width: 0;
+  border-radius: 999px;
+}
+
+.channel-events-section__flow-fill--joined {
+  background: linear-gradient(90deg, #1fa97e, #36c493);
+}
+
+.channel-events-section__flow-fill--left {
+  background: linear-gradient(90deg, #f1a95e, #e45363);
+}
+
+.channel-events-section__flow-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #6f879d;
+  font-size: 0.68rem;
+  font-weight: 780;
+  line-height: 1.1;
+}
+
+.channel-events-section .membership-feed--immersive {
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.channel-events-section .membership-feed__toolbar {
+  position: sticky;
+  z-index: 4;
+  top: var(--channel-events-sticky-top);
+  display: grid;
+  padding: 3px;
+  border: 1px solid rgba(208, 222, 235, 0.8);
+  border-radius: 19px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow:
+    0 12px 26px rgba(22, 44, 67, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.channel-events-section .membership-feed__filters {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.channel-events-section .membership-feed__filters .segmented-control__item {
+  min-height: 36px;
+  padding: 5px 6px;
+  border-radius: 15px;
+  font-size: 0.74rem;
+  font-weight: 860;
+}
+
+.channel-events-section .membership-feed__badge {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+}
+
+.channel-events-section .membership-feed__timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.channel-events-section .membership-feed__group {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-events-section .membership-feed__day {
+  position: sticky;
+  z-index: 3;
+  top: calc(var(--channel-events-sticky-top) + 48px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(212, 225, 238, 0.72);
+  border-radius: 16px;
+  background: rgba(250, 252, 254, 0.9);
+  box-shadow:
+    0 10px 22px rgba(22, 44, 67, 0.052),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.channel-events-section .membership-feed__day-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.channel-events-section .membership-feed__day-label {
+  color: #17324a;
+  font-size: 0.82rem;
+  font-weight: 880;
+  line-height: 1;
+}
+
+.channel-events-section .membership-feed__day-copy small {
+  display: block;
+  color: #70899f;
+  font-size: 0.64rem;
+  line-height: 1.1;
+}
+
+.channel-events-section .membership-feed__day-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.channel-events-section .membership-feed__day-pill,
+.channel-events-section .membership-feed__pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.channel-events-section .membership-feed__day-pill--joined,
+.channel-events-section .membership-feed__pill--joined {
+  color: #13765a;
+  background: rgba(219, 248, 235, 0.9);
+}
+
+.channel-events-section .membership-feed__day-pill--left,
+.channel-events-section .membership-feed__pill--left {
+  color: #a53042;
+  background: rgba(255, 229, 235, 0.92);
+}
+
+.channel-events-section .membership-feed__group-list {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(211, 224, 237, 0.82);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 14px 28px rgba(22, 44, 67, 0.052),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-events-section .membership-feed__item {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+}
+
+.channel-events-section .membership-feed__item + .membership-feed__item {
+  border-top: 1px solid rgba(221, 231, 241, 0.86);
+}
+
+.channel-events-section .membership-feed__rail {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 7px;
+  padding-top: 15px;
+}
+
+.channel-events-section .membership-feed__rail::after {
+  content: '';
+  position: absolute;
+  top: 42px;
+  bottom: -16px;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(189, 207, 224, 0.78), rgba(189, 207, 224, 0));
+  transform: translateX(-50%);
+}
+
+.channel-events-section .membership-feed__rail.is-last::after {
+  display: none;
+}
+
+.channel-events-section .membership-feed__time {
+  color: #748ba0;
+  font-size: 0.65rem;
+  font-weight: 820;
+  line-height: 1;
+}
+
+.channel-events-section .membership-feed__dot {
+  width: 13px;
+  height: 13px;
+  border: 3px solid #fff;
+  border-radius: 999px;
+  background: #90a4b8;
+  box-shadow: 0 6px 14px rgba(22, 44, 67, 0.12);
+}
+
+.channel-events-section .membership-feed__item--joined .membership-feed__dot {
+  background: #1fa97e;
+  box-shadow: 0 0 0 4px rgba(31, 169, 126, 0.12);
+}
+
+.channel-events-section .membership-feed__item--left .membership-feed__dot {
+  background: #e45363;
+  box-shadow: 0 0 0 4px rgba(228, 83, 99, 0.12);
+}
+
+.channel-events-section .membership-feed__card {
+  min-width: 0;
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 12px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.channel-events-section .membership-feed__card::before {
+  display: none;
+}
+
+.channel-events-section .membership-feed__avatar {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 15px;
+  background:
+    linear-gradient(145deg, rgba(237, 246, 255, 0.98), rgba(219, 237, 255, 0.94)),
+    rgba(239, 246, 253, 0.98);
+  box-shadow:
+    0 9px 18px rgba(25, 80, 122, 0.12),
+    0 0 0 1px rgba(205, 222, 239, 0.78);
+  color: #1b3650;
+  font-size: 0.82rem;
+  font-weight: 880;
+}
+
+.channel-events-section .membership-feed__avatar-link {
+  display: inline-flex;
+  text-decoration: none;
+}
+
+.channel-events-section .membership-feed__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.channel-events-section .membership-feed__content {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.channel-events-section .membership-feed__row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.channel-events-section .membership-feed__row strong,
+.channel-events-section .membership-feed__name-link {
+  min-width: 0;
+  overflow: hidden;
+  color: #17324a;
+  font-size: 0.88rem;
+  font-weight: 850;
+  line-height: 1.14;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-events-section .membership-feed__description {
+  margin: 0;
+  color: #637d93;
+  font-size: 0.74rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.channel-events-section .membership-feed__status {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  padding: 20px 14px;
+  border: 1px solid rgba(211, 224, 237, 0.82);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #668198;
+  text-align: center;
+  box-shadow: 0 12px 24px rgba(22, 44, 67, 0.04);
+}
+
+.channel-events-section .membership-feed__status p {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.channel-events-section .membership-feed__load-more {
+  width: 100%;
+  min-height: 42px;
+}
+
+@media (max-width: 430px) {
+  .channel-events-section {
+    gap: 9px;
+  }
+
+  .channel-events-section__head {
+    gap: 8px;
+    padding: 10px;
+    border-radius: 22px;
+  }
+
+  .channel-events-section__head-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .channel-events-section__balance {
+    min-width: 72px;
+    justify-items: end;
+    gap: 2px;
+    padding: 7px 8px;
+    border-radius: 16px;
+  }
+
+  .channel-events-section__balance small {
+    grid-column: auto;
+    font-size: 0.52rem;
+  }
+
+  .channel-events-section__balance strong {
+    grid-column: auto;
+    grid-row: auto;
+    font-size: 1.02rem;
+  }
+
+  .channel-events-section__balance span {
+    display: none;
+  }
+
+  .channel-events-section__head h2 {
+    font-size: 1.16rem;
+  }
+
+  .channel-events-section__head p {
+    display: none;
+  }
+
+  .channel-events-section__head .channel-insights__range .segmented-control__item {
+    min-height: 31px;
+  }
+
+  .channel-events-section__metrics {
+    gap: 6px;
+  }
+
+  .channel-events-section__metric {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 50px;
+    gap: 4px;
+    padding: 8px;
+  }
+
+  .channel-events-section__metric-icon {
+    display: none;
+  }
+
+  .channel-events-section__metric strong {
+    font-size: 0.96rem;
+  }
+
+  .channel-events-section__flow {
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 17px;
+  }
+
+  .channel-events-section__flow-bar {
+    height: 7px;
+  }
+
+  .channel-events-section__flow-meta {
+    font-size: 0.64rem;
+  }
+
+  .channel-events-section .membership-feed__toolbar {
+    top: calc(var(--app-safe-top) + 104px);
+  }
+
+  .channel-events-section .membership-feed__day {
+    top: calc(var(--app-safe-top) + 154px);
+    padding: 8px 9px;
+  }
+
+  .channel-events-section .membership-feed__item {
+    grid-template-columns: 46px minmax(0, 1fr);
+    padding: 0 9px;
+  }
+
+  .channel-events-section .membership-feed__card {
+    grid-template-columns: 40px minmax(0, 1fr);
+    min-height: 66px;
+    gap: 10px;
+    padding: 11px 0;
+  }
+
+  .channel-events-section .membership-feed__avatar {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    border-radius: 14px;
+  }
+
+  .channel-events-section .membership-feed__row strong,
+  .channel-events-section .membership-feed__name-link {
+    font-size: 0.84rem;
+  }
+
+  .channel-events-section .membership-feed__description {
+    font-size: 0.71rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .channel-events-section__head .channel-insights__range .segmented-control__item,
+  .channel-events-section .membership-feed__filters .segmented-control__item {
+    padding-inline: 4px;
+    font-size: 0.68rem;
+  }
+
+  .channel-events-section__flow {
+    display: none;
+  }
+
+  .channel-events-section__metric {
+    padding: 8px 7px;
+  }
+
+  .channel-events-section__metric small {
+    font-size: 0.48rem;
+  }
+
+  .channel-events-section__metric strong {
+    font-size: 0.9rem;
+  }
+
+  .channel-events-section .membership-feed__item {
+    grid-template-columns: 40px minmax(0, 1fr);
+    padding-inline: 8px;
+  }
+
+  .channel-events-section .membership-feed__rail {
+    padding-top: 13px;
+  }
+
+  .channel-events-section .membership-feed__time {
+    font-size: 0.6rem;
+  }
+
+  .channel-events-section .membership-feed__card {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .channel-events-section .membership-feed__avatar {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    border-radius: 13px;
+  }
+}

@@ -2132,6 +2132,16 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       left,
     };
   }, [activityFeed.items]);
+  const activityBalance = activitySummary.joined - activitySummary.left;
+  const activityMovementsTotal = activitySummary.joined + activitySummary.left;
+  const activityJoinedShare = activityMovementsTotal
+    ? Math.round((activitySummary.joined / activityMovementsTotal) * 100)
+    : 50;
+  const activityLeftShare = activityMovementsTotal ? 100 - activityJoinedShare : 50;
+  const activityBalanceTone =
+    activityBalance > 0 ? 'success' : activityBalance < 0 ? 'danger' : 'neutral';
+  const activityBalanceLabel =
+    activityBalance > 0 ? 'Рост аудитории' : activityBalance < 0 ? 'Отток аудитории' : 'Без сдвига';
 
   if (!chatId) {
     return (
@@ -2251,11 +2261,23 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         {section === 'events' ? (
           <section className="channel-events-section stagger-in" aria-label="События канала">
             <div className="channel-events-section__head">
-              <div className="channel-insights__summary-copy">
-                <span className="channel-insights__eyebrow">События</span>
-                <h2>{formatRangeTitle(range)}</h2>
-                <p>История участников</p>
+              <div className="channel-events-section__head-main">
+                <div className="channel-insights__summary-copy channel-events-section__headline">
+                  <span className="channel-insights__eyebrow">События</span>
+                  <h2>{formatRangeTitle(range)}</h2>
+                  <p>Входы, выходы и чистый баланс</p>
+                </div>
+
+                <div
+                  className={`channel-events-section__balance channel-events-section__balance--${activityBalanceTone}`}
+                  aria-label={`Баланс: ${formatSignedCount(activityBalance)}`}
+                >
+                  <small>Баланс</small>
+                  <strong>{formatSignedCount(activityBalance)}</strong>
+                  <span>{activityBalanceLabel}</span>
+                </div>
               </div>
+
               <SegmentedControl
                 value={range}
                 options={periodOptions}
@@ -2264,7 +2286,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               />
             </div>
 
-            <div className="channel-events-section__metrics" aria-label="Сводка загруженных событий">
+            <div
+              className="channel-events-section__metrics"
+              aria-label="Сводка загруженных событий"
+            >
               <span className="channel-events-section__metric channel-events-section__metric--total">
                 <span className="channel-events-section__metric-icon" aria-hidden="true">
                   <IconActivity width={17} height={17} strokeWidth={2.05} />
@@ -2286,6 +2311,30 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                 <small>Вышли</small>
                 <strong>{formatCount(activitySummary.left)}</strong>
               </span>
+            </div>
+
+            <div
+              className="channel-events-section__flow"
+              style={
+                {
+                  '--channel-events-joined-share': `${activityJoinedShare}%`,
+                  '--channel-events-left-share': `${activityLeftShare}%`,
+                } as CSSProperties
+              }
+              aria-label={`Вошли ${activityJoinedShare}%, вышли ${activityLeftShare}%`}
+            >
+              <div className="channel-events-section__flow-bar" aria-hidden="true">
+                <span className="channel-events-section__flow-fill channel-events-section__flow-fill--joined" />
+                <span className="channel-events-section__flow-fill channel-events-section__flow-fill--left" />
+              </div>
+              <div className="channel-events-section__flow-meta">
+                <span>
+                  Вошли {activityMovementsTotal ? formatPercent(activityJoinedShare) : '0%'}
+                </span>
+                <span>
+                  Вышли {activityMovementsTotal ? formatPercent(activityLeftShare) : '0%'}
+                </span>
+              </div>
             </div>
 
             <MembershipActivityFeed
