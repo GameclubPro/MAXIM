@@ -1,18 +1,54 @@
-import {
-  broadcastHandoffResponseSchema,
-  channelStatsRangeSchema,
-  channelStatsResponseSchema,
-  membershipActivityPageSchema,
-  membershipActivityQuerySchema,
-  profileMentionHandoffRequestSchema,
-  type BroadcastHandoffResponse,
-  type ChannelStatsRange,
-  type ChannelStatsResponse,
-  type MembershipActivityPage,
-  type MembershipActivityQuery,
-  type ProfileMentionHandoffRequest,
+import type {
+  BroadcastHandoffResponse,
+  ChannelStatsRange,
+  ChannelStatsResponse,
+  MembershipActivityPage,
+  MembershipActivityQuery,
+  ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
+
+const channelStatsRanges = new Set<ChannelStatsRange>(['24h', '7d', '30d']);
+const membershipActivityRanges = new Set<MembershipActivityQuery['range']>(['24h', '7d', '30d']);
+const membershipActivityFilters = new Set<MembershipActivityQuery['filter']>([
+  'all',
+  'joined',
+  'left',
+]);
+
+function parseChannelStatsRange(range: ChannelStatsRange): ChannelStatsRange {
+  if (!channelStatsRanges.has(range)) {
+    throw new Error('Invalid channel stats range');
+  }
+
+  return range;
+}
+
+function normalizeMembershipActivityQuery(
+  query: Partial<MembershipActivityQuery>,
+): MembershipActivityQuery {
+  const range = query.range ?? '7d';
+  const filter = query.filter ?? 'all';
+  const limit = query.limit ?? 50;
+  const cursor = query.cursor?.trim();
+
+  if (!membershipActivityRanges.has(range)) {
+    throw new Error('Invalid activity range');
+  }
+  if (!membershipActivityFilters.has(filter)) {
+    throw new Error('Invalid activity filter');
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('Invalid activity limit');
+  }
+
+  return {
+    range,
+    filter,
+    limit,
+    ...(cursor ? { cursor } : {}),
+  };
+}
 
 export async function getChannelStats(
   api: ApiTransport,
@@ -21,26 +57,31 @@ export async function getChannelStats(
   request: Pick<RequestInit, 'signal'> = {},
   options: Partial<{
     includeActivityPreview: boolean;
+    includeIntelligence: boolean;
   }> = {},
 ): Promise<ChannelStatsResponse> {
-  const query = channelStatsRangeSchema.parse(range);
+  const query = parseChannelStatsRange(range);
   const params = new URLSearchParams({
     range: query,
   });
   if (options.includeActivityPreview === false) {
     params.set('includeActivityPreview', 'false');
   }
+  if (options.includeIntelligence === false) {
+    params.set('includeIntelligence', 'false');
+  }
 
   const response = await api.request(`/channels/${chatId}/stats?${params.toString()}`, request);
-  return channelStatsResponseSchema.parse(response);
+  return response as ChannelStatsResponse;
 }
 
 export async function getChannelActivityFeed(
   api: ApiTransport,
   chatId: string,
   query: Partial<MembershipActivityQuery> = {},
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<MembershipActivityPage> {
-  const validatedQuery = membershipActivityQuerySchema.parse(query);
+  const validatedQuery = normalizeMembershipActivityQuery(query);
   const params = new URLSearchParams({
     range: validatedQuery.range,
     filter: validatedQuery.filter,
@@ -51,8 +92,11 @@ export async function getChannelActivityFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(`/channels/${chatId}/activity-feed?${params.toString()}`);
-  return membershipActivityPageSchema.parse(response);
+  const response = await api.request(
+    `/channels/${chatId}/activity-feed?${params.toString()}`,
+    request,
+  );
+  return response as MembershipActivityPage;
 }
 
 export async function handoffChannelMemberProfile(
@@ -61,7 +105,7 @@ export async function handoffChannelMemberProfile(
   userId: string,
   payload: ProfileMentionHandoffRequest,
 ): Promise<BroadcastHandoffResponse> {
-  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const requestBody = payload;
   const response = await api.request(
     `/channels/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
     {
@@ -69,7 +113,7 @@ export async function handoffChannelMemberProfile(
       body: JSON.stringify(requestBody),
     },
   );
-  return broadcastHandoffResponseSchema.parse(response);
+  return response as BroadcastHandoffResponse;
 }
 
 export function handoffChannelMemberProfileKeepalive(
@@ -78,7 +122,7 @@ export function handoffChannelMemberProfileKeepalive(
   userId: string,
   payload: ProfileMentionHandoffRequest,
 ): void {
-  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const requestBody = payload;
   api.requestKeepalive(
     `/channels/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
     {

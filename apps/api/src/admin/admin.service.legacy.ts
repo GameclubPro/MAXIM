@@ -7346,6 +7346,7 @@ export class AdminService implements OnModuleDestroy {
           totalMs,
           range: parsed.data.range,
           includeActivityPreview: parsed.data.includeActivityPreview,
+          includeIntelligence: parsed.data.includeIntelligence,
           cacheHit: false,
           refreshQueued: response.meta.refreshQueued,
         },
@@ -7679,24 +7680,6 @@ export class AdminService implements OnModuleDestroy {
       suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
       suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
     });
-    const intelligence = buildChannelStatsIntelligence({
-      totals: currentTotals,
-      previousTotals,
-      comparison,
-      signals,
-      membershipRows,
-      participantSeries,
-      postViewMetrics: periodPostViewMetrics,
-      secondary: {
-        commentAuthors: this.toSafeInteger(secondary.comment_authors),
-        suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
-        comments: this.toSafeInteger(secondary.comments),
-        suggestions: this.toSafeInteger(secondary.suggestions),
-        postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
-      },
-      maxSnapshotAvailable,
-      range: statsQuery.range,
-    });
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -7766,9 +7749,28 @@ export class AdminService implements OnModuleDestroy {
       comparison,
       health,
       signals,
-      intelligence,
       activityFeed,
     };
+    if (statsQuery.includeIntelligence) {
+      response.intelligence = buildChannelStatsIntelligence({
+        totals: currentTotals,
+        previousTotals,
+        comparison,
+        signals,
+        membershipRows,
+        participantSeries,
+        postViewMetrics: periodPostViewMetrics,
+        secondary: {
+          commentAuthors: this.toSafeInteger(secondary.comment_authors),
+          suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
+          comments: this.toSafeInteger(secondary.comments),
+          suggestions: this.toSafeInteger(secondary.suggestions),
+          postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
+        },
+        maxSnapshotAvailable,
+        range: statsQuery.range,
+      });
+    }
 
     return channelStatsResponseSchema.parse(response);
   }
@@ -7783,6 +7785,7 @@ export class AdminService implements OnModuleDestroy {
       userId,
       query.range,
       `activity=${query.includeActivityPreview ? 1 : 0}`,
+      `intelligence=${query.includeIntelligence ? 1 : 0}`,
     ].join(':');
   }
 
@@ -17145,7 +17148,14 @@ export class AdminService implements OnModuleDestroy {
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const baseQueriesStartedAtMs = Date.now();
-    const [chat, membershipRows, chatHeader, moderationSummaryRows, affectedUsers, violationRows] =
+    const [
+      chat,
+      membershipRows,
+      chatHeader,
+      moderationSummaryRows,
+      affectedUserRows,
+      violationRows,
+    ] =
       await Promise.all([
         this.prisma.chat.findUnique({
           where: { id: chatId },
@@ -17177,11 +17187,20 @@ export class AdminService implements OnModuleDestroy {
           },
           _count: { _all: true },
         }),
-        this.prisma.moderationEvent.findMany({
-          where: violationsWhere,
-          distinct: ['userId'],
-          select: { userId: true },
-        }),
+        this.prisma.$queryRaw<Array<{ affected_users: unknown }>>`
+          SELECT COUNT(DISTINCT user_id) AS affected_users
+          FROM moderation_events
+          WHERE chat_id = ${chatId}
+            AND created_at >= ${from}
+            AND created_at <= ${now}
+            AND (
+              action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN')
+              OR (
+                action = ${SanctionAction.NONE}
+                AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
+              )
+            )
+        `,
         includeModerationPreview
           ? this.prisma.moderationEvent.findMany({
               where: violationsWhere,
@@ -17272,7 +17291,7 @@ export class AdminService implements OnModuleDestroy {
         ban: moderationSummary.ban,
         unmute: moderationSummary.unmute,
         unban: moderationSummary.unban,
-        affectedUsers: affectedUsers.length,
+        affectedUsers: this.toSafeInteger(affectedUserRows[0]?.affected_users),
         total:
           moderationSummary.warn +
           moderationSummary.deleteMessage +

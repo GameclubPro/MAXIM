@@ -4232,6 +4232,7 @@ describe('AdminService.getLogsDashboard', () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '5', left_users: '2' }])
+      .mockResolvedValueOnce([{ affected_users: '2' }])
       .mockResolvedValueOnce([
         { user_id: 'user-1', sender_name: 'Алексей' },
         { user_id: 'user-2', sender_name: 'Мария' },
@@ -4262,7 +4263,6 @@ describe('AdminService.getLogsDashboard', () => {
       { action: 'NONE', ruleCode: 'MANUAL_UNBAN', _count: { _all: 1 } },
     ]);
     prisma.moderationEvent.findMany
-      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
       .mockResolvedValueOnce([
         {
           id: 'evt-1',
@@ -4476,7 +4476,9 @@ describe('AdminService.getLogsDashboard', () => {
     expect(membershipSqlText).toContain('user_added');
     expect(membershipSqlText).toContain('user_removed');
     expect(membershipSqlText).not.toContain('bot_added');
-    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]?.[0]);
+    const affectedUsersSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    expect(affectedUsersSqlText).toContain('COUNT(DISTINCT user_id)');
+    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[3]?.[0]);
     expect(activitySqlText).toContain('WITH membership_events AS (');
     expect(activitySqlText).toContain('ORDER BY created_at');
 
@@ -4566,8 +4568,8 @@ describe('AdminService.getLogsDashboard', () => {
 
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ affected_users: '0' }]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
-    prisma.moderationEvent.findMany.mockResolvedValueOnce([]);
 
     const service = new AdminService(
       prisma as never,
@@ -4602,8 +4604,8 @@ describe('AdminService.getLogsDashboard', () => {
       hasMore: false,
       nextCursor: null,
     });
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
   });
 
   it('reuses a short-lived cached dashboard response for identical requests', async () => {
@@ -4612,10 +4614,10 @@ describe('AdminService.getLogsDashboard', () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }])
-      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ affected_users: '0' }])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
-    prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    prisma.moderationEvent.findMany.mockResolvedValueOnce([]);
 
     const service = new AdminService(
       prisma as never,
@@ -4636,8 +4638,8 @@ describe('AdminService.getLogsDashboard', () => {
 
     expect(second).toEqual(first);
     expect(prisma.moderationEvent.groupBy).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(2);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it('reuses resolved user profiles between dashboard and moderation feed requests', async () => {
@@ -4646,6 +4648,7 @@ describe('AdminService.getLogsDashboard', () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
+      .mockResolvedValueOnce([{ affected_users: '2' }])
       .mockResolvedValueOnce([
         { user_id: 'user-1', sender_name: 'Алексей' },
         { user_id: 'user-2', sender_name: 'Мария' },
@@ -4658,7 +4661,26 @@ describe('AdminService.getLogsDashboard', () => {
       },
     ]);
     prisma.moderationEvent.findMany
-      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-2',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T11:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+      ])
       .mockResolvedValueOnce([
         {
           id: 'evt-ban-2',
@@ -4752,7 +4774,7 @@ describe('AdminService.getLogsDashboard', () => {
 
     expect(moderationFeed.items).toHaveLength(2);
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(1);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
   });
 });
 

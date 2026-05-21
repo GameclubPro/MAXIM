@@ -1903,6 +1903,7 @@ export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
 export const channelStatsQuerySchema = z.object({
   range: channelStatsRangeSchema.default('7d'),
   includeActivityPreview: booleanQueryFlagSchema.default(true),
+  includeIntelligence: booleanQueryFlagSchema.default(true),
 });
 export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
 
@@ -2171,7 +2172,7 @@ export const channelStatsResponseSchema = z.object({
     markers: z.array(channelStatsGraphMarkerSchema).max(8),
     bestWindows: z.array(channelStatsBestWindowSchema).max(3),
   }),
-  intelligence: channelStatsIntelligenceSchema,
+  intelligence: channelStatsIntelligenceSchema.optional(),
   activityFeed: membershipActivityPageSchema,
 });
 export type ChannelStatsResponse = z.infer<typeof channelStatsResponseSchema>;

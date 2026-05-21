@@ -1,22 +1,24 @@
 import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
-import { useQuery } from '@tanstack/react-query';
-import '../styles/lazy-pages.css';
-import '../styles/dashboard-events.css';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import '../styles/channel-stats.css';
 import type { CSSProperties } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { getChannelStats } from '../lib/api/channel-stats-client';
+import { getChannelActivityFeed, getChannelStats } from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { queryKeys } from '../lib/query-keys';
+import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
+import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ChannelStatsRouteState = {
   chatTitle: string;
@@ -24,6 +26,7 @@ type ChannelStatsRouteState = {
 };
 
 type ChartTab = 'audience' | 'views';
+type ChannelStatsSection = 'overview' | 'events';
 
 type ChartInsightTone = 'accent' | 'success' | 'danger' | 'warning' | 'neutral';
 
@@ -79,6 +82,11 @@ const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
   { value: 'views', label: 'Просмотры' },
 ];
 
+const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
+  { value: 'overview', label: 'Обзор' },
+  { value: 'events', label: 'События' },
+];
+
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
@@ -96,6 +104,10 @@ function getRouteState(state: unknown): ChannelStatsRouteState {
     avatarUrl:
       typeof row.avatarUrl === 'string' && row.avatarUrl.trim() ? row.avatarUrl.trim() : null,
   };
+}
+
+function getInitialSection(search: string): ChannelStatsSection {
+  return new URLSearchParams(search).get('section') === 'events' ? 'events' : 'overview';
 }
 
 function formatCount(value: number | null): string {
@@ -1799,11 +1811,172 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   );
 }
 
+function ChannelStatsOverview({
+  stats,
+  range,
+  chartTab,
+  onRangeChange,
+  onChartTabChange,
+}: {
+  stats: ChannelStatsResponse;
+  range: ChannelStatsRange;
+  chartTab: ChartTab;
+  onRangeChange: (range: ChannelStatsRange) => void;
+  onChartTabChange: (tab: ChartTab) => void;
+}) {
+  const chartTabs = audienceTabOptions.filter((option) => {
+    if (option.value === 'views') {
+      return stats.meta.viewsAvailable;
+    }
+
+    return true;
+  });
+  const effectiveChartTab: ChartTab =
+    stats.meta.viewsAvailable && chartTabs.some((option) => option.value === chartTab)
+      ? chartTab
+      : 'audience';
+  const audienceJoined = stats.official.audience.joined ?? 0;
+  const audienceLeft = stats.official.audience.left ?? 0;
+  const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
+  const netTone = audienceNet > 0 ? 'success' : audienceNet < 0 ? 'danger' : 'neutral';
+  const engagementRate =
+    stats.meta.viewsAvailable && stats.official.content.views > 0
+      ? (stats.official.content.reactions / stats.official.content.views) * 100
+      : null;
+  const viewsPerPost =
+    stats.meta.viewsAvailable && stats.official.content.posts > 0
+      ? Math.round(stats.official.content.views / stats.official.content.posts)
+      : null;
+  const chartTitle = effectiveChartTab === 'audience' ? 'Аудитория' : 'Просмотры';
+
+  return (
+    <section
+      className="channel-insights__summary channel-insights__summary--command stagger-in"
+      aria-label="Сводка по каналу"
+    >
+      <div className="channel-insights__summary-head">
+        <div className="channel-insights__summary-copy">
+          <span className="channel-insights__eyebrow">Статистика</span>
+          <h2>{formatRangeTitle(range)}</h2>
+          <p>
+            {formatPeriodRange(stats.period.from, stats.period.to)} ·{' '}
+            {formatBucketLabel(stats.period.bucket)}
+          </p>
+        </div>
+
+        <SegmentedControl
+          value={range}
+          options={periodOptions}
+          onChange={(next) => onRangeChange(next as ChannelStatsRange)}
+          className="channel-insights__range"
+        />
+      </div>
+
+      <ChannelSourceStrip stats={stats} />
+
+      <div className="channel-insights__kpi-grid">
+        <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
+          <small>Подписчики</small>
+          <strong>{formatCompactCount(stats.channel.participantsCount)}</strong>
+          <span>{formatCount(stats.channel.participantsCount)}</span>
+        </article>
+
+        <article className={`channel-insights__kpi-card channel-insights__kpi-card--${netTone}`}>
+          <small>Прирост</small>
+          <strong>{formatSignedCount(audienceNet)}</strong>
+          <span>
+            <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
+            <b>
+              +{formatCount(audienceJoined)} / -{formatCount(audienceLeft)}
+            </b>
+          </span>
+        </article>
+
+        <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
+          <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
+          <strong>
+            {stats.meta.viewsAvailable
+              ? formatCompactCount(viewsPerPost)
+              : formatCount(stats.official.content.posts)}
+          </strong>
+          <span>
+            {stats.meta.viewsAvailable ? (
+              <>
+                <DeltaBadge metric={stats.comparison.deltas.averageViewsPerPost} />
+                <b>{formatCompactCount(stats.official.content.views)} всего</b>
+              </>
+            ) : (
+              <DeltaBadge metric={stats.comparison.deltas.posts} />
+            )}
+          </span>
+        </article>
+
+        <article className="channel-insights__kpi-card channel-insights__kpi-card--reactions">
+          <small>{stats.meta.viewsAvailable ? 'ER' : 'Реакции'}</small>
+          <strong>
+            {engagementRate !== null
+              ? formatPercent(engagementRate)
+              : formatCompactCount(stats.official.content.reactions)}
+          </strong>
+          <span>
+            <DeltaBadge metric={stats.comparison.deltas.reactions} />
+            <b>
+              {stats.meta.viewsAvailable
+                ? formatCompactCount(stats.official.content.reactions)
+                : `${formatCount(stats.official.content.posts)} постов`}
+            </b>
+          </span>
+        </article>
+      </div>
+
+      <article className="channel-insights__chart-card channel-insights__chart-card--executive">
+        <div className="channel-insights__panel-head">
+          <div className="channel-insights__panel-copy">
+            <strong>{chartTitle}</strong>
+          </div>
+
+          {chartTabs.length > 1 ? (
+            <SegmentedControl
+              value={effectiveChartTab}
+              options={chartTabs}
+              onChange={(next) => onChartTabChange(next as ChartTab)}
+              className="channel-insights__switch"
+            />
+          ) : null}
+        </div>
+
+        {effectiveChartTab === 'audience' ? (
+          <AudienceChart stats={stats} />
+        ) : (
+          <ViewsChart stats={stats} />
+        )}
+      </article>
+
+      <article className="channel-fact-panel channel-top-posts-panel">
+        <div className="channel-insights__panel-head">
+          <div className="channel-insights__panel-copy">
+            <strong>Топ публикаций</strong>
+            <small>Посты за выбранный период</small>
+          </div>
+        </div>
+        <TopPostsChart stats={stats} />
+      </article>
+
+      <ChannelBestWindowsPanel stats={stats} />
+      <ChannelDataQualityPanel stats={stats} />
+    </section>
+  );
+}
+
 export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
+  const [section, setSection] = useState<ChannelStatsSection>(() =>
+    getInitialSection(location.search),
+  );
   const [chartTab, setChartTab] = useState<ChartTab>('audience');
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader({
     compactAfter: 12,
@@ -1815,13 +1988,52 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
     queryFn: ({ signal }) =>
-      getChannelStats(api, chatId, range, { signal }, { includeActivityPreview: false }),
-    enabled: Boolean(chatId),
+      getChannelStats(api, chatId, range, { signal }, {
+        includeActivityPreview: false,
+        includeIntelligence: false,
+      }),
+    enabled: Boolean(chatId) && section === 'overview',
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
     refetchInterval: (query) => (query.state.data?.meta.refreshQueued ? 5_000 : false),
     refetchOnWindowFocus: false,
   });
+  const activityFeed = useMembershipActivityFeed({
+    enabled: Boolean(chatId) && section === 'events',
+    range,
+    initialPage: null,
+    loadPage: (query, request) => getChannelActivityFeed(api, chatId, query, request),
+  });
+
+  useEffect(() => {
+    if (!chatId || section !== 'overview') {
+      return undefined;
+    }
+
+    let cancelled = false;
+    void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range]).then((snapshot) => {
+      if (cancelled || !snapshot) {
+        return;
+      }
+
+      const queryKey = queryKeys.channelStats(chatId, range);
+      if (!queryClient.getQueryData(queryKey)) {
+        queryClient.setQueryData(queryKey, snapshot);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, queryClient, range, section]);
+
+  useEffect(() => {
+    if (!chatId || !statsQuery.data) {
+      return;
+    }
+
+    saveStatsSnapshot('channel', [chatId, range], statsQuery.data);
+  }, [chatId, range, statsQuery.data]);
 
   useEffect(() => {
     document.body.classList.add('channel-stats-page-open');
@@ -1878,7 +2090,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (statsQuery.isLoading && !statsQuery.data) {
+  const stats = statsQuery.data ?? null;
+
+  if (section === 'overview' && statsQuery.isLoading && !stats) {
     return (
       <div className="page-stack page-enter">
         <GlassCard className="settings-section">
@@ -1888,7 +2102,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (statsQuery.error && !statsQuery.data) {
+  if (section === 'overview' && statsQuery.error && !stats) {
     return (
       <div className="page-stack page-enter">
         <GlassCard>
@@ -1911,35 +2125,30 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  const stats = statsQuery.data;
-  if (!stats) {
-    return null;
-  }
-
-  const chartTabs = audienceTabOptions.filter((option) => {
-    if (option.value === 'views') {
-      return stats.meta.viewsAvailable;
+  const handleSectionChange = (nextSection: ChannelStatsSection) => {
+    if (nextSection === section) {
+      return;
     }
 
-    return true;
-  });
-  const effectiveChartTab: ChartTab =
-    stats.meta.viewsAvailable && chartTabs.some((option) => option.value === chartTab)
-      ? chartTab
-      : 'audience';
-  const audienceJoined = stats.official.audience.joined ?? 0;
-  const audienceLeft = stats.official.audience.left ?? 0;
-  const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
-  const netTone = audienceNet > 0 ? 'success' : audienceNet < 0 ? 'danger' : 'neutral';
-  const engagementRate =
-    stats.meta.viewsAvailable && stats.official.content.views > 0
-      ? (stats.official.content.reactions / stats.official.content.views) * 100
-      : null;
-  const viewsPerPost =
-    stats.meta.viewsAvailable && stats.official.content.posts > 0
-      ? Math.round(stats.official.content.views / stats.official.content.posts)
-      : null;
-  const chartTitle = effectiveChartTab === 'audience' ? 'Аудитория' : 'Просмотры';
+    startTransition(() => {
+      setSection(nextSection);
+    });
+  };
+  const handleActivityFilterChange = (
+    nextFilter: Parameters<typeof activityFeed.setFilter>[0],
+  ) => {
+    if (nextFilter === activityFeed.filter) {
+      return;
+    }
+
+    startTransition(() => {
+      activityFeed.setFilter(nextFilter);
+    });
+  };
+  const isBusy =
+    section === 'events'
+      ? activityFeed.isReloading || activityFeed.isLoadingMore
+      : statsQuery.isFetching;
 
   return (
     <div className="channel-insights page-enter">
@@ -1951,7 +2160,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <EntityAvatar
             title={resolvedTitle}
             entityType="channel"
-            avatarUrl={statsQuery.data?.channel.avatarUrl ?? routeState.avatarUrl ?? null}
+            avatarUrl={stats?.channel.avatarUrl ?? routeState.avatarUrl ?? null}
             className="compact-page-header__entity-avatar"
           />
         }
@@ -1959,7 +2168,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         hidden={isHeaderHidden}
         className="channel-insights__sticky-header"
         aside={
-          statsQuery.isFetching ? (
+          isBusy ? (
             <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
           ) : (
             <span
@@ -1972,123 +2181,53 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
       <div className="channel-insights__body">
         {/* Product rule: factual analytics only, no smart advice or "what to do next" copy. */}
-        <section
-          className="channel-insights__summary channel-insights__summary--command stagger-in"
-          aria-label="Сводка по каналу"
-        >
-          <div className="channel-insights__summary-head">
-            <div className="channel-insights__summary-copy">
-              <span className="channel-insights__eyebrow">Статистика</span>
-              <h2>{formatRangeTitle(range)}</h2>
-              <p>
-                {formatPeriodRange(stats.period.from, stats.period.to)} ·{' '}
-                {formatBucketLabel(stats.period.bucket)}
-              </p>
+        <SegmentedControl
+          value={section}
+          options={sectionOptions}
+          onChange={(next) => handleSectionChange(next as ChannelStatsSection)}
+          className="channel-insights__section-tabs"
+        />
+
+        {section === 'events' ? (
+          <section className="channel-events-section stagger-in" aria-label="События канала">
+            <div className="channel-events-section__head">
+              <div className="channel-insights__summary-copy">
+                <span className="channel-insights__eyebrow">События</span>
+                <h2>{formatRangeTitle(range)}</h2>
+                <p>История входов и выходов участников</p>
+              </div>
+              <SegmentedControl
+                value={range}
+                options={periodOptions}
+                onChange={(next) => setRange(next as ChannelStatsRange)}
+                className="channel-insights__range"
+              />
             </div>
 
-            <SegmentedControl
-              value={range}
-              options={periodOptions}
-              onChange={setRange}
-              className="channel-insights__range"
+            <MembershipActivityFeed
+              joinedLabel="каналу"
+              leftLabel="канал"
+              variant="immersive"
+              filter={activityFeed.filter}
+              onFilterChange={handleActivityFilterChange}
+              items={activityFeed.items}
+              hasMore={activityFeed.hasMore}
+              isReloading={activityFeed.isReloading}
+              isLoadingMore={activityFeed.isLoadingMore}
+              error={activityFeed.error}
+              onLoadMore={() => void activityFeed.loadMore()}
+              onRetry={() => void activityFeed.retry()}
             />
-          </div>
-
-          <ChannelSourceStrip stats={stats} />
-
-          <div className="channel-insights__kpi-grid">
-            <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
-              <small>Подписчики</small>
-              <strong>{formatCompactCount(stats.channel.participantsCount)}</strong>
-              <span>{formatCount(stats.channel.participantsCount)}</span>
-            </article>
-
-            <article
-              className={`channel-insights__kpi-card channel-insights__kpi-card--${netTone}`}
-            >
-              <small>Прирост</small>
-              <strong>{formatSignedCount(audienceNet)}</strong>
-              <span>
-                <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
-                <b>
-                  +{formatCount(audienceJoined)} / -{formatCount(audienceLeft)}
-                </b>
-              </span>
-            </article>
-
-            <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
-              <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
-              <strong>
-                {stats.meta.viewsAvailable
-                  ? formatCompactCount(viewsPerPost)
-                  : formatCount(stats.official.content.posts)}
-              </strong>
-              <span>
-                {stats.meta.viewsAvailable ? (
-                  <>
-                    <DeltaBadge metric={stats.comparison.deltas.averageViewsPerPost} />
-                    <b>{formatCompactCount(stats.official.content.views)} всего</b>
-                  </>
-                ) : (
-                  <DeltaBadge metric={stats.comparison.deltas.posts} />
-                )}
-              </span>
-            </article>
-
-            <article className="channel-insights__kpi-card channel-insights__kpi-card--reactions">
-              <small>{stats.meta.viewsAvailable ? 'ER' : 'Реакции'}</small>
-              <strong>
-                {engagementRate !== null
-                  ? formatPercent(engagementRate)
-                  : formatCompactCount(stats.official.content.reactions)}
-              </strong>
-              <span>
-                <DeltaBadge metric={stats.comparison.deltas.reactions} />
-                <b>
-                  {stats.meta.viewsAvailable
-                    ? formatCompactCount(stats.official.content.reactions)
-                    : `${formatCount(stats.official.content.posts)} постов`}
-                </b>
-              </span>
-            </article>
-          </div>
-
-          <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-            <div className="channel-insights__panel-head">
-              <div className="channel-insights__panel-copy">
-                <strong>{chartTitle}</strong>
-              </div>
-
-              {chartTabs.length > 1 ? (
-                <SegmentedControl
-                  value={effectiveChartTab}
-                  options={chartTabs}
-                  onChange={setChartTab}
-                  className="channel-insights__switch"
-                />
-              ) : null}
-            </div>
-
-            {effectiveChartTab === 'audience' ? (
-              <AudienceChart stats={stats} />
-            ) : (
-              <ViewsChart stats={stats} />
-            )}
-          </article>
-
-          <article className="channel-fact-panel channel-top-posts-panel">
-            <div className="channel-insights__panel-head">
-              <div className="channel-insights__panel-copy">
-                <strong>Топ публикаций</strong>
-                <small>Посты за выбранный период</small>
-              </div>
-            </div>
-            <TopPostsChart stats={stats} />
-          </article>
-
-          <ChannelBestWindowsPanel stats={stats} />
-          <ChannelDataQualityPanel stats={stats} />
-        </section>
+          </section>
+        ) : stats ? (
+          <ChannelStatsOverview
+            stats={stats}
+            range={range}
+            chartTab={chartTab}
+            onRangeChange={setRange}
+            onChartTabChange={setChartTab}
+          />
+        ) : null}
       </div>
     </div>
   );

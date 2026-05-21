@@ -89,6 +89,10 @@ type ManagedEntitiesReloadRequest = {
   nonce: number;
   behavior: 'default' | 'manual' | 'recovery';
 };
+type WindowWithIdleCallback = {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
 
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
@@ -118,6 +122,10 @@ function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
 
 function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): boolean {
   return event.pointerType === 'mouse';
+}
+
+function shouldPrefetchFromPressEvent(event: ReactPointerEvent<HTMLElement>): boolean {
+  return event.pointerType !== 'mouse';
 }
 
 function formatRefreshProgress(refreshState: ManagedEntitiesRefreshState | null): string | null {
@@ -765,7 +773,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, false),
+        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
         queryFn: async ({ signal }) => {
           const { getLogsDashboard } = await import('../lib/api/events-client');
           return getLogsDashboard(
@@ -774,7 +782,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             DEFAULT_DASHBOARD_RANGE,
             {
               includeActivityPreview: false,
-              includeModerationPreview: false,
+              includeModerationPreview: true,
             },
             { signal },
           );
@@ -865,12 +873,46 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             chatId,
             DEFAULT_CHANNEL_STATS_RANGE,
             { signal },
-            { includeActivityPreview: false },
+            {
+              includeActivityPreview: false,
+              includeIntelligence: false,
+            },
           );
         },
       })
       .catch(() => undefined);
   }
+
+  useEffect(() => {
+    if (filteredEntities.length === 0) {
+      return undefined;
+    }
+
+    const candidates = filteredEntities.slice(0, 3).map((entity) => entity.id);
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) {
+        return;
+      }
+
+      for (const entityId of candidates) {
+        prefetchEntityActivity(activeTab, entityId);
+      }
+    };
+    const idleWindow = window as unknown as WindowWithIdleCallback;
+    const idleHandle = idleWindow.requestIdleCallback
+      ? idleWindow.requestIdleCallback(run, { timeout: 1_200 })
+      : window.setTimeout(run, 450);
+
+    return () => {
+      cancelled = true;
+      if (idleWindow.cancelIdleCallback && idleWindow.requestIdleCallback) {
+        idleWindow.cancelIdleCallback(idleHandle);
+      } else {
+        window.clearTimeout(idleHandle);
+      }
+    };
+  }, [activeTab, filteredEntities]);
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
@@ -988,6 +1030,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             }}
             onPointerEnter={(event) => {
               if (shouldPrefetchFromPointerEvent(event)) {
+                prefetchEntityActivity(activeTab, entity.id);
+              }
+            }}
+            onPointerDown={(event) => {
+              if (shouldPrefetchFromPressEvent(event)) {
                 prefetchEntityActivity(activeTab, entity.id);
               }
             }}

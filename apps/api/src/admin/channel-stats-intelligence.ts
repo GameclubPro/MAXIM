@@ -1,14 +1,14 @@
 import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
 
+type ChannelStatsIntelligence = NonNullable<ChannelStatsResponse['intelligence']>;
 type ChannelStatsMetricDelta = ChannelStatsResponse['comparison']['deltas']['views'];
 type ChannelStatsSignalTone = ChannelStatsResponse['signals']['insights'][number]['tone'];
 type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
 type ChannelStatsBestWindow = ChannelStatsResponse['signals']['bestWindows'][number];
-type ChannelStatsBenchmarkMetric =
-  ChannelStatsResponse['intelligence']['benchmarks']['viewsPerPost'];
-type ChannelStatsForecast = ChannelStatsResponse['intelligence']['forecast'];
-type ChannelStatsCohort = ChannelStatsResponse['intelligence']['cohort'];
-type ChannelStatsHeatmapCell = ChannelStatsResponse['intelligence']['publishingHeatmap'][number];
+type ChannelStatsBenchmarkMetric = ChannelStatsIntelligence['benchmarks']['viewsPerPost'];
+type ChannelStatsForecast = ChannelStatsIntelligence['forecast'];
+type ChannelStatsCohort = ChannelStatsIntelligence['cohort'];
+type ChannelStatsHeatmapCell = ChannelStatsIntelligence['publishingHeatmap'][number];
 
 export type ChannelStatsIntelligenceTotals = {
   joined: number;
@@ -52,7 +52,7 @@ export function buildChannelStatsIntelligence(params: {
   };
   maxSnapshotAvailable: boolean;
   range: ChannelStatsRange;
-}): ChannelStatsResponse['intelligence'] {
+}): ChannelStatsIntelligence {
   const benchmarks = buildChannelStatsBenchmarks(params.totals, params.previousTotals);
   const forecast = buildChannelStatsForecast(params.participantSeries);
   const cohort = buildChannelStatsCohort({
@@ -93,7 +93,7 @@ export function buildChannelStatsIntelligence(params: {
 function buildChannelStatsBenchmarks(
   totals: ChannelStatsIntelligenceTotals,
   previousTotals: ChannelStatsIntelligenceTotals,
-): ChannelStatsResponse['intelligence']['benchmarks'] {
+): ChannelStatsIntelligence['benchmarks'] {
   const currentViewsPerPost = totals.posts > 0 ? Math.round(totals.viewsTotal / totals.posts) : 0;
   const previousViewsPerPost =
     previousTotals.posts > 0
@@ -309,7 +309,7 @@ function buildChannelStatsPublishingHeatmap(
 
 function buildChannelStatsPatterns(params: {
   totals: ChannelStatsIntelligenceTotals;
-  benchmarks: ChannelStatsResponse['intelligence']['benchmarks'];
+  benchmarks: ChannelStatsIntelligence['benchmarks'];
   forecast: ChannelStatsForecast;
   cohort: ChannelStatsCohort;
   postViewMetrics: ChannelStatsIntelligencePostMetric[];
@@ -433,7 +433,7 @@ function buildChannelStatsHeadline(params: {
   forecast: ChannelStatsForecast;
   patterns: ChannelStatsSignal[];
   maxSnapshotAvailable: boolean;
-}): ChannelStatsResponse['intelligence']['headline'] {
+}): ChannelStatsIntelligence['headline'] {
   const primaryFromAlert = params.signals.alerts[0] ?? null;
   const primary: ChannelStatsSignal =
     primaryFromAlert ??

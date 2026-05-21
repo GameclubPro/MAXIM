@@ -1,5 +1,6 @@
 import type {
   LogsDashboardRange,
+  LogsDashboardResponse,
   LogsDashboardViolation,
   ManualModerationAction,
   ManualModerationActionRequest,
@@ -7,9 +8,8 @@ import type {
   ModerationFeedFilter,
   MembershipActivityItem,
 } from '@maxim/contracts';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
-import '../styles/lazy-pages.css';
 import '../styles/dashboard-events.css';
 import {
   startTransition,
@@ -47,6 +47,7 @@ import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
+import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
@@ -792,8 +793,11 @@ function formatViolationDate(value: string): string {
 
 function getInitialSection(search: string): EventsSection {
   const value = new URLSearchParams(search).get('section');
-  if (value === 'activity' || value === 'participants') {
-    return value;
+  if (value === 'events' || value === 'activity') {
+    return 'activity';
+  }
+  if (value === 'participants') {
+    return 'participants';
   }
 
   return 'moderation';
@@ -818,6 +822,7 @@ function useDebouncedValue(value: string, delayMs: number): string {
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [range, setRange] = useState<LogsDashboardRange>('24h');
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
@@ -837,6 +842,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
+  const includeActivityPreview = section === 'activity';
+  const includeModerationPreview = section === 'moderation';
 
   useEffect(() => {
     if (chatId) {
@@ -845,23 +852,76 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   const dashboardQuery = useQuery({
-    queryKey: queryKeys.logsDashboard(chatId ?? '', range, false, false),
+    queryKey: queryKeys.logsDashboard(
+      chatId ?? '',
+      range,
+      includeActivityPreview,
+      includeModerationPreview,
+    ),
     queryFn: ({ signal }) =>
       getLogsDashboard(
         api,
         chatId ?? '',
         range,
         {
-          includeActivityPreview: false,
-          includeModerationPreview: false,
+          includeActivityPreview,
+          includeModerationPreview,
         },
         { signal },
       ),
     enabled: Boolean(chatId) && section !== 'participants',
     staleTime: 30_000,
-    placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (!chatId || section === 'participants') {
+      return undefined;
+    }
+
+    let cancelled = false;
+    void readStatsSnapshot<LogsDashboardResponse>('chat', [
+      chatId,
+      range,
+      includeActivityPreview ? 'activity' : 'no-activity',
+      includeModerationPreview ? 'moderation' : 'no-moderation',
+    ]).then((snapshot) => {
+      if (cancelled || !snapshot) {
+        return;
+      }
+
+      const queryKey = queryKeys.logsDashboard(
+        chatId,
+        range,
+        includeActivityPreview,
+        includeModerationPreview,
+      );
+      if (!queryClient.getQueryData(queryKey)) {
+        queryClient.setQueryData(queryKey, snapshot);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, includeActivityPreview, includeModerationPreview, queryClient, range, section]);
+
+  useEffect(() => {
+    if (!chatId || !dashboardQuery.data) {
+      return;
+    }
+
+    saveStatsSnapshot(
+      'chat',
+      [
+        chatId,
+        range,
+        includeActivityPreview ? 'activity' : 'no-activity',
+        includeModerationPreview ? 'moderation' : 'no-moderation',
+      ],
+      dashboardQuery.data,
+    );
+  }, [chatId, dashboardQuery.data, includeActivityPreview, includeModerationPreview, range]);
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -931,14 +991,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const activityFeed = useMembershipActivityFeed({
     enabled: Boolean(chatId) && section === 'activity',
     range,
-    initialPage: null,
+    initialPage: includeActivityPreview ? (dashboard?.activityFeed ?? null) : null,
     loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
     enabled: Boolean(chatId) && section === 'moderation',
     range,
     filter: eventsFilter,
-    initialPage: null,
+    initialPage: includeModerationPreview ? (dashboard?.moderationFeed ?? null) : null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
   const participantsFeed = useChatParticipantsFeed({
@@ -1214,13 +1274,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const dashboardTitle =
     section === 'activity'
-      ? 'Входы и выходы'
+      ? 'События'
       : section === 'participants'
         ? 'Участники'
         : 'Модерация';
   const dashboardSubtitle =
     section === 'activity'
-      ? 'Баланс и движение участников'
+      ? 'История входов и выходов участников'
       : section === 'participants'
         ? ''
         : 'Люди и меры за выбранный период';
@@ -1333,7 +1393,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ActivityTabIcon />
                 </span>
-                <span className="events-primary-tab__label">Входы и выходы</span>
+                <span className="events-primary-tab__label">События</span>
               </button>
             </div>
           </div>
@@ -1342,7 +1402,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             className={`events-dashboard events-dashboard--${section}`}
             aria-label={
               section === 'activity'
-                ? 'Сводка по входам и выходам'
+                ? 'Сводка по событиям'
                 : section === 'participants'
                   ? 'Сводка по участникам'
                   : 'Сводка по модерации'
@@ -1373,7 +1433,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     size="lg"
                     label={
                       section === 'activity'
-                        ? 'Загружаем сводку по входам и выходам'
+                        ? 'Загружаем события'
                         : 'Загружаем сводку по модерации'
                     }
                   />

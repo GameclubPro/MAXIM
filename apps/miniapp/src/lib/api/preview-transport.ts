@@ -59,6 +59,7 @@ import {
   type ChannelDialogType,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
+  type ChannelStatsResponse,
   type ChannelStatsRange,
   type ChatRules,
   type ChatSettings,
@@ -2663,6 +2664,7 @@ function buildChannelStats(
   range: ChannelStatsRange,
   options: Partial<{
     includeActivityPreview: boolean;
+    includeIntelligence: boolean;
   }> = {},
 ) {
   const now = new Date();
@@ -2853,7 +2855,7 @@ function buildChannelStats(
     const hour = index % 24;
     const window = hotWindowByKey.get(`${dayOfWeek}:${hour}`);
     const ratio = maxWindowScore > 0 && window ? window.score / maxWindowScore : 0;
-    const tone =
+    const tone: ChannelStatsResponse['signals']['insights'][number]['tone'] =
       ratio >= 0.72 ? 'success' : ratio >= 0.42 ? 'accent' : ratio >= 0.18 ? 'warning' : 'neutral';
     return {
       dayOfWeek,
@@ -2876,7 +2878,7 @@ function buildChannelStats(
   );
   const forecastParticipants = Math.max(0, state.channelHeaderParticipantsCount + forecastNet);
 
-  return channelStatsResponseSchema.parse({
+  const response: ChannelStatsResponse = {
     channel: {
       id: channelId,
       title: resolveChannelTitle(channelId, state),
@@ -2941,6 +2943,7 @@ function buildChannelStats(
       churnAvailable: true,
       officialCoverageFrom: addDays(now, -30).toISOString(),
       missingOfficialMetrics: [],
+      refreshQueued: false,
     },
     comparison: {
       period: {
@@ -3028,7 +3031,14 @@ function buildChannelStats(
         },
       ],
     },
-    intelligence: {
+    activityFeed:
+      options.includeActivityPreview === false
+        ? { items: [], hasMore: false, nextCursor: null }
+        : buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
+  };
+
+  if (options.includeIntelligence !== false) {
+    response.intelligence = {
       headline: {
         primary: {
           code: 'headline-growth',
@@ -3073,12 +3083,10 @@ function buildChannelStats(
         { code: 'buttons-app-actions', label: 'Кнопки', value: '+298', tone: 'accent', at: null },
         { code: 'forecast', label: 'Прогноз', value: `+${forecastNet}`, tone: 'success', at: null },
       ],
-    },
-    activityFeed:
-      options.includeActivityPreview === false
-        ? { items: [], hasMore: false, nextCursor: null }
-        : buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
-  });
+    };
+  }
+
+  return channelStatsResponseSchema.parse(response);
 }
 
 function parseJsonBody(init?: RequestInit): unknown {
@@ -4482,6 +4490,7 @@ async function handleChannelRequest(
     return cloneJson(
       buildChannelStats(state, channelId, range, {
         includeActivityPreview: url.searchParams.get('includeActivityPreview') !== 'false',
+        includeIntelligence: url.searchParams.get('includeIntelligence') !== 'false',
       }),
     );
   }

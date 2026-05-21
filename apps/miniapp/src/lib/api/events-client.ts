@@ -1,34 +1,109 @@
-import {
-  logsDashboardRangeSchema,
-  logsDashboardResponseSchema,
-  manualModerationActionRequestSchema,
-  manualModerationActionResultSchema,
-  moderationFeedPageSchema,
-  moderationFeedQuerySchema,
-  chatParticipantImmunityUpdateRequestSchema,
-  chatParticipantImmunityUpdateResultSchema,
-  chatParticipantsPageSchema,
-  chatParticipantsQuerySchema,
-  membershipActivityPageSchema,
-  membershipActivityQuerySchema,
-  profileMentionHandoffRequestSchema,
-  broadcastHandoffResponseSchema,
-  type LogsDashboardRange,
-  type LogsDashboardResponse,
-  type ManualModerationActionRequest,
-  type ManualModerationActionResult,
-  type ModerationFeedPage,
-  type ModerationFeedQuery,
-  type ChatParticipantImmunityUpdateRequest,
-  type ChatParticipantImmunityUpdateResult,
-  type ChatParticipantsPage,
-  type ChatParticipantsQuery,
-  type MembershipActivityPage,
-  type MembershipActivityQuery,
-  type BroadcastHandoffResponse,
-  type ProfileMentionHandoffRequest,
+import type {
+  BroadcastHandoffResponse,
+  ChatParticipantImmunityUpdateRequest,
+  ChatParticipantImmunityUpdateResult,
+  ChatParticipantsPage,
+  ChatParticipantsQuery,
+  LogsDashboardRange,
+  LogsDashboardResponse,
+  ManualModerationActionRequest,
+  ManualModerationActionResult,
+  MembershipActivityPage,
+  MembershipActivityQuery,
+  ModerationFeedPage,
+  ModerationFeedQuery,
+  ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
+
+const logsDashboardRanges = new Set<LogsDashboardRange>(['24h', '7d', '30d']);
+const membershipActivityFilters = new Set<MembershipActivityQuery['filter']>([
+  'all',
+  'joined',
+  'left',
+]);
+const moderationFeedFilters = new Set<ModerationFeedQuery['filter']>([
+  'ALL',
+  'WARN',
+  'DELETE_MESSAGE',
+  'MUTE',
+  'BAN',
+  'UNMUTE',
+  'UNBAN',
+]);
+
+function parseLogsDashboardRange(range: LogsDashboardRange): LogsDashboardRange {
+  if (!logsDashboardRanges.has(range)) {
+    throw new Error('Invalid dashboard range');
+  }
+
+  return range;
+}
+
+function normalizeLimit(value: number | undefined, fallback: number): number {
+  const limit = value ?? fallback;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error('Invalid page limit');
+  }
+
+  return limit;
+}
+
+function normalizeMembershipActivityQuery(
+  query: Partial<MembershipActivityQuery>,
+): MembershipActivityQuery {
+  const range = query.range ?? '7d';
+  const filter = query.filter ?? 'all';
+  if (!logsDashboardRanges.has(range)) {
+    throw new Error('Invalid activity range');
+  }
+  if (!membershipActivityFilters.has(filter)) {
+    throw new Error('Invalid activity filter');
+  }
+
+  const cursor = query.cursor?.trim();
+  return {
+    range,
+    filter,
+    limit: normalizeLimit(query.limit, 50),
+    ...(cursor ? { cursor } : {}),
+  };
+}
+
+function normalizeModerationFeedQuery(query: Partial<ModerationFeedQuery>): ModerationFeedQuery {
+  const range = query.range ?? '7d';
+  const filter = query.filter ?? 'ALL';
+  if (!logsDashboardRanges.has(range)) {
+    throw new Error('Invalid moderation range');
+  }
+  if (!moderationFeedFilters.has(filter)) {
+    throw new Error('Invalid moderation filter');
+  }
+
+  const cursor = query.cursor?.trim();
+  return {
+    range,
+    filter,
+    limit: normalizeLimit(query.limit, 50),
+    ...(cursor ? { cursor } : {}),
+  };
+}
+
+function normalizeChatParticipantsQuery(query: Partial<ChatParticipantsQuery>): ChatParticipantsQuery {
+  const range = query.range ?? '7d';
+  if (!logsDashboardRanges.has(range)) {
+    throw new Error('Invalid participants range');
+  }
+
+  const cursor = query.cursor?.trim();
+  const search = query.search?.trim();
+  return {
+    range,
+    limit: normalizeLimit(query.limit, 100),
+    ...(cursor ? { cursor } : {}),
+    ...(search ? { search } : {}),
+  };
+}
 
 export async function getLogsDashboard(
   api: ApiTransport,
@@ -40,7 +115,7 @@ export async function getLogsDashboard(
   }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<LogsDashboardResponse> {
-  const validatedRange = logsDashboardRangeSchema.parse(range);
+  const validatedRange = parseLogsDashboardRange(range);
   const params = new URLSearchParams({
     range: validatedRange,
   });
@@ -54,7 +129,7 @@ export async function getLogsDashboard(
     `/chats/${chatId}/logs-dashboard?${params.toString()}`,
     request,
   );
-  return logsDashboardResponseSchema.parse(response);
+  return response as LogsDashboardResponse;
 }
 
 export async function getChatActivityFeed(
@@ -63,7 +138,7 @@ export async function getChatActivityFeed(
   query: Partial<MembershipActivityQuery> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<MembershipActivityPage> {
-  const validatedQuery = membershipActivityQuerySchema.parse(query);
+  const validatedQuery = normalizeMembershipActivityQuery(query);
   const params = new URLSearchParams({
     range: validatedQuery.range,
     filter: validatedQuery.filter,
@@ -78,7 +153,7 @@ export async function getChatActivityFeed(
     `/chats/${chatId}/activity-feed?${params.toString()}`,
     request,
   );
-  return membershipActivityPageSchema.parse(response);
+  return response as MembershipActivityPage;
 }
 
 export async function getChatModerationFeed(
@@ -87,7 +162,7 @@ export async function getChatModerationFeed(
   query: Partial<ModerationFeedQuery> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ModerationFeedPage> {
-  const validatedQuery = moderationFeedQuerySchema.parse(query);
+  const validatedQuery = normalizeModerationFeedQuery(query);
   const params = new URLSearchParams({
     range: validatedQuery.range,
     filter: validatedQuery.filter,
@@ -102,7 +177,7 @@ export async function getChatModerationFeed(
     `/chats/${chatId}/moderation-feed?${params.toString()}`,
     request,
   );
-  return moderationFeedPageSchema.parse(response);
+  return response as ModerationFeedPage;
 }
 
 export async function getChatParticipantsPage(
@@ -111,7 +186,7 @@ export async function getChatParticipantsPage(
   query: Partial<ChatParticipantsQuery> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChatParticipantsPage> {
-  const validatedQuery = chatParticipantsQuerySchema.parse(query);
+  const validatedQuery = normalizeChatParticipantsQuery(query);
   const params = new URLSearchParams({
     range: validatedQuery.range,
     limit: String(validatedQuery.limit),
@@ -125,7 +200,7 @@ export async function getChatParticipantsPage(
   }
 
   const response = await api.request(`/chats/${chatId}/members?${params.toString()}`, request);
-  return chatParticipantsPageSchema.parse(response);
+  return response as ChatParticipantsPage;
 }
 
 export async function applyManualModerationAction(
@@ -134,7 +209,7 @@ export async function applyManualModerationAction(
   userId: string,
   payload: ManualModerationActionRequest,
 ): Promise<ManualModerationActionResult> {
-  const requestBody = manualModerationActionRequestSchema.parse(payload);
+  const requestBody = payload;
   const response = await api.request(
     `/chats/${chatId}/members/${encodeURIComponent(userId)}/moderation-action`,
     {
@@ -142,7 +217,7 @@ export async function applyManualModerationAction(
       body: JSON.stringify(requestBody),
     },
   );
-  return manualModerationActionResultSchema.parse(response);
+  return response as ManualModerationActionResult;
 }
 
 export async function updateChatParticipantImmunity(
@@ -151,7 +226,7 @@ export async function updateChatParticipantImmunity(
   userId: string,
   payload: ChatParticipantImmunityUpdateRequest,
 ): Promise<ChatParticipantImmunityUpdateResult> {
-  const requestBody = chatParticipantImmunityUpdateRequestSchema.parse(payload);
+  const requestBody = payload;
   const response = await api.request(
     `/chats/${chatId}/members/${encodeURIComponent(userId)}/immunity`,
     {
@@ -159,7 +234,7 @@ export async function updateChatParticipantImmunity(
       body: JSON.stringify(requestBody),
     },
   );
-  return chatParticipantImmunityUpdateResultSchema.parse(response);
+  return response as ChatParticipantImmunityUpdateResult;
 }
 
 export async function handoffChatMemberProfile(
@@ -168,7 +243,7 @@ export async function handoffChatMemberProfile(
   userId: string,
   payload: ProfileMentionHandoffRequest,
 ): Promise<BroadcastHandoffResponse> {
-  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const requestBody = payload;
   const response = await api.request(
     `/chats/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
     {
@@ -176,7 +251,7 @@ export async function handoffChatMemberProfile(
       body: JSON.stringify(requestBody),
     },
   );
-  return broadcastHandoffResponseSchema.parse(response);
+  return response as BroadcastHandoffResponse;
 }
 
 export function handoffChatMemberProfileKeepalive(
@@ -185,7 +260,7 @@ export function handoffChatMemberProfileKeepalive(
   userId: string,
   payload: ProfileMentionHandoffRequest,
 ): void {
-  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const requestBody = payload;
   api.requestKeepalive(`/chats/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`, {
     method: 'POST',
     body: JSON.stringify(requestBody),
