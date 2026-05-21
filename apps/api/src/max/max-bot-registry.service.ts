@@ -97,6 +97,7 @@ export class MaxBotRegistryService {
   getRequiredWebhookUpdateTypes(): readonly string[] {
     return [
       'message_created',
+      'message_edited',
       'message_callback',
       'user_added',
       'bot_added',

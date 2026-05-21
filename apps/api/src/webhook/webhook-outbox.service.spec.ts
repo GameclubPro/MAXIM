@@ -813,6 +813,36 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('skips standby shared-chat message_edited events before they enter BullMQ', async () => {
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-standby-edited-message',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            type: 'message_edited',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId: '-100123' },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.PROCESSED,
+          queueName: null,
+        }),
+      }),
+    );
+  });
+
   it('skips standby shared-chat user_added events before they enter BullMQ', async () => {
     const { service, prisma, queues } = createService({
       findManyResult: [

@@ -1,5 +1,8 @@
 import { WebhookRoutingService } from './webhook-routing.service';
-import { resolveJoinWebhookQueueNameForChatId } from './webhook-queues';
+import {
+  resolveDefaultWebhookQueueNameForChatId,
+  resolveJoinWebhookQueueNameForChatId,
+} from './webhook-queues';
 
 function createConfigMock(overrides: Partial<Record<string, number>> = {}) {
   return {
@@ -150,6 +153,20 @@ describe('WebhookRoutingService', () => {
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('routes message_edited updates through adaptive default chat routing', async () => {
+    const { service, prisma, queueMetricsService } = createService();
+
+    await expect(
+      service.resolveQueueName('evt-edit', {
+        type: 'message_edited',
+        message: { chatId: 'chat-edited' },
+      }),
+    ).resolves.toBe(resolveDefaultWebhookQueueNameForChatId('chat-edited'));
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a fresh chat assignment stable during its lease window', async () => {

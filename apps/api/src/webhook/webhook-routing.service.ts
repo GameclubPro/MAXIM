@@ -108,6 +108,7 @@ export class WebhookRoutingService {
       case 'bot_removed':
         return WEBHOOK_QUEUE_BACKGROUND;
       case 'message_created':
+      case 'message_edited':
       default:
         return this.resolveDefaultQueueName(webhookEventId, payload, options);
     }
@@ -437,7 +438,7 @@ export class WebhookRoutingService {
               NULLIF(BTRIM(normalized_payload->>'type'), ''),
               NULLIF(BTRIM(normalized_payload->>'update_type'), '')
             )
-          ) = 'message_created'
+          ) = ANY(ARRAY['message_created', 'message_edited'])
           AND COALESCE(
             NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
             NULLIF(BTRIM(normalized_payload->>'chatId'), '')

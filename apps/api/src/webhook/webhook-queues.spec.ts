@@ -19,6 +19,14 @@ describe('webhook-queues', () => {
     );
   });
 
+  it('routes message_edited updates through the same default shard as message_created', () => {
+    const chatId = '-69202557471483';
+
+    expect(resolveWebhookQueueName({ type: 'message_edited', message: { chatId } })).toBe(
+      resolveDefaultWebhookQueueNameForChatId(chatId),
+    );
+  });
+
   it('spreads real numeric MAX chat ids across multiple default shards', () => {
     const hotChatIds = [
       '-69202557471483',

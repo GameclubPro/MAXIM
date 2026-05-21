@@ -1,5 +1,6 @@
 export const MAX_REQUIRED_WEBHOOK_UPDATE_TYPES = [
   'message_created',
+  'message_edited',
   'message_callback',
   'user_added',
   'user_removed',

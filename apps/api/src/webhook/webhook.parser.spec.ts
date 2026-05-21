@@ -438,6 +438,32 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://example.org');
   });
 
+  it('parses edited messages from message_edited.message envelope', () => {
+    const parsed = parser.parse({
+      update_type: 'message_edited',
+      timestamp: '2026-02-28T05:10:10.000Z',
+      message_edited: {
+        message: {
+          id: 'msg-edited-1',
+          sender: { id: 'user-edited-1' },
+          recipient: {
+            chat_id: '-71527248136199',
+            title: 'MAXIM Test Chat',
+          },
+          body: {
+            text: 'теперь тут ссылка https://edited.example',
+          },
+        },
+      },
+    });
+
+    expect(parsed.type).toBe('message_edited');
+    expect(parsed.message?.messageId).toBe('msg-edited-1');
+    expect(parsed.message?.chatId).toBe('-71527248136199');
+    expect(parsed.message?.senderId).toBe('user-edited-1');
+    expect(parsed.message?.text).toContain('https://edited.example');
+  });
+
   it('parses message from message_created object when nested message key is absent', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

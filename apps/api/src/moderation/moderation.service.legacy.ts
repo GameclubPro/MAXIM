@@ -1020,7 +1020,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null) ??
       this.maxBotLinkService?.getDefaultBotId?.() ??
       null;
-    if (this.readLowerString(update.type) === 'message_created' && update.message?.chatId) {
+    const normalizedUpdateType = this.readLowerString(update.type);
+    if (
+      (normalizedUpdateType === 'message_created' || normalizedUpdateType === 'message_edited') &&
+      update.message?.chatId
+    ) {
       void this.runtimeDiagnosticsService?.recordHotChatMessage({
         chatId: update.message.chatId,
         botId: activeBotId,
@@ -1611,6 +1615,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasFileAttachment: mediaFlags.hasFileAttachment,
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
         skipDuplicateState: Boolean(duplicateStateSkipReason),
+        skipStatefulMessageLimits: updateType === 'message_edited',
         commercialCampaignContext,
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
@@ -16336,7 +16341,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const chatId = this.extractWebhookHotPathChatId(update);
-    if (updateType === 'message_created' && chatId && chatId.startsWith('-')) {
+    if (
+      (updateType === 'message_created' || updateType === 'message_edited') &&
+      chatId &&
+      chatId.startsWith('-')
+    ) {
       return this.webhookUserFacingTimeoutMs;
     }
 

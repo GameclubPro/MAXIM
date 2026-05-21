@@ -72,6 +72,7 @@ export function resolveWebhookJobPriority(
     case 'bot_started':
       return WEBHOOK_JOB_PRIORITY.membershipJoin;
     case 'message_created':
+    case 'message_edited':
       return options?.manualCloseMessage
         ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
         : WEBHOOK_JOB_PRIORITY.message;
@@ -95,6 +96,7 @@ export function resolveWebhookQueueName(payload: unknown): ActiveWebhookQueueNam
     case 'bot_removed':
       return WEBHOOK_QUEUE_BACKGROUND;
     case 'message_created':
+    case 'message_edited':
     default:
       return resolveDefaultWebhookQueueName(payload);
   }
@@ -176,6 +178,7 @@ function readWebhookChatId(payload: unknown): string {
     record.data,
     record.event,
     record.message_created,
+    record.message_edited,
     record.user_added,
     record.bot_added,
     record.user_removed,

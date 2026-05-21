@@ -35,6 +35,7 @@ const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
+  'message_edited',
   'message_callback',
   'bot_started',
   'bot_added',
@@ -54,6 +55,7 @@ const CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES = new Set([
 ]);
 const STORED_CHAT_BINDING_REUSE_UPDATE_TYPES = new Set([
   'message_created',
+  'message_edited',
   'message_callback',
   'user_added',
   'user_removed',
@@ -495,7 +497,11 @@ export class WebhookService {
       return true;
     }
 
-    if (normalizedType !== 'message_created' && normalizedType !== 'message_callback') {
+    if (
+      normalizedType !== 'message_created' &&
+      normalizedType !== 'message_edited' &&
+      normalizedType !== 'message_callback'
+    ) {
       return false;
     }
 
@@ -1134,7 +1140,11 @@ export class WebhookService {
     }
 
     const normalizedType = params.update.type.trim().toLowerCase();
-    if (normalizedType !== 'message_created' && normalizedType !== 'message_callback') {
+    if (
+      normalizedType !== 'message_created' &&
+      normalizedType !== 'message_edited' &&
+      normalizedType !== 'message_callback'
+    ) {
       return;
     }
 

@@ -348,7 +348,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private extractPriorityChatId(payload: unknown): string | null {
-    if (extractWebhookType(payload) !== 'message_created') {
+    const updateType = extractWebhookType(payload);
+    if (updateType !== 'message_created' && updateType !== 'message_edited') {
       return null;
     }
 
@@ -777,6 +778,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     const updateType = this.readLowerString(payload.type);
     if (
       updateType !== 'message_created' &&
+      updateType !== 'message_edited' &&
       updateType !== 'user_added' &&
       updateType !== 'user_removed'
     ) {

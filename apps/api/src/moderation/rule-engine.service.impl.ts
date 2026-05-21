@@ -1435,6 +1435,7 @@ export class RuleEngineService {
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
     skipDuplicateState?: boolean;
+    skipStatefulMessageLimits?: boolean;
     commercialCampaignContext?: CommercialCampaignContext | null;
   }): Promise<DetectionResult> {
     const {
@@ -1450,6 +1451,7 @@ export class RuleEngineService {
       hasFileAttachment,
       hasVoiceAttachment,
       skipDuplicateState,
+      skipStatefulMessageLimits,
       commercialCampaignContext,
     } = params;
     const profile = createRuleEngineDetectProfile();
@@ -1539,21 +1541,25 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'message-length');
 
-    const antiSpamViolation = await this.messageLimitsDetector.detectAntiSpamBurstLimit({
-      chatId,
-      userId,
-      settings,
-    });
+    const antiSpamViolation = skipStatefulMessageLimits
+      ? null
+      : await this.messageLimitsDetector.detectAntiSpamBurstLimit({
+          chatId,
+          userId,
+          settings,
+        });
     if (antiSpamViolation) {
       violations.push(antiSpamViolation);
     }
     markRuleEngineDetectStage(profile, 'anti-spam-burst');
 
-    const messageCountViolation = await this.messageLimitsDetector.detectMessageCountLimit({
-      chatId,
-      userId,
-      settings,
-    });
+    const messageCountViolation = skipStatefulMessageLimits
+      ? null
+      : await this.messageLimitsDetector.detectMessageCountLimit({
+          chatId,
+          userId,
+          settings,
+        });
     if (messageCountViolation) {
       violations.push(messageCountViolation);
     }
@@ -1595,7 +1601,7 @@ export class RuleEngineService {
       this.shouldTrackDuplicate(text, detectionContext.compactText, settings);
     markRuleEngineDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
-      duplicateCandidate && !skipDuplicateState
+      duplicateCandidate && !skipDuplicateState && !skipStatefulMessageLimits
         ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
@@ -1606,7 +1612,12 @@ export class RuleEngineService {
         : undefined;
     markRuleEngineDetectStage(profile, 'duplicate-state');
 
-    if (violations.length === 0 && !duplicateState?.hit && !duplicateState?.decision) {
+    if (
+      violations.length === 0 &&
+      !duplicateState?.hit &&
+      !duplicateState?.decision &&
+      !skipStatefulMessageLimits
+    ) {
       violations.push(
         ...(await this.messageLimitsDetector.detectMediaCooldownLimits({
           chatId,
