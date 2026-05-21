@@ -16237,17 +16237,31 @@ describe('AdminService.getChannelStats', () => {
       })
       .mockResolvedValueOnce({
         participantsCount: 1210,
+      })
+      .mockResolvedValueOnce({
+        participantsCount: 1180,
       });
-    prisma.channelAudienceSnapshot.findMany.mockResolvedValue([
-      {
-        capturedAt: new Date('2026-03-03T10:00:00.000Z'),
-        participantsCount: 1220,
-      },
-      {
-        capturedAt: new Date('2026-03-06T10:00:00.000Z'),
-        participantsCount: 1240,
-      },
-    ]);
+    prisma.channelAudienceSnapshot.findMany
+      .mockResolvedValueOnce([
+        {
+          capturedAt: new Date('2026-03-03T10:00:00.000Z'),
+          participantsCount: 1220,
+        },
+        {
+          capturedAt: new Date('2026-03-06T10:00:00.000Z'),
+          participantsCount: 1240,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          capturedAt: new Date('2026-02-24T10:00:00.000Z'),
+          participantsCount: 1190,
+        },
+        {
+          capturedAt: new Date('2026-02-27T10:00:00.000Z'),
+          participantsCount: 1210,
+        },
+      ]);
     prisma.channelStatsSyncState.findUnique.mockResolvedValue({
       id: 'sync-1',
       chatId: 'channel-1',
@@ -16456,6 +16470,17 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.series.participants).toHaveLength(8);
     expect(result.official.series.membership).toHaveLength(8);
     expect(result.official.series.views).toHaveLength(8);
+    expect(result.comparison.period).toEqual({
+      from: '2026-02-21T12:00:00.000Z',
+      to: '2026-02-28T11:59:59.999Z',
+    });
+    expect(result.comparison.series?.participants).toHaveLength(8);
+    expect(result.comparison.series?.membership).toHaveLength(8);
+    expect(result.comparison.series?.views).toHaveLength(8);
+    expect(result.comparison.series?.participants[0]).toEqual({
+      at: '2026-02-21T00:00:00.000Z',
+      participantsCount: 1180,
+    });
     expect(channelStatsCollector.syncChannelIfStale).toHaveBeenCalledWith('channel-1', {
       staleMs: 7200000,
       reason: 'stats_endpoint',

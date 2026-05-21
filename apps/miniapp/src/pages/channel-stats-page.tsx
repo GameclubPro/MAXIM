@@ -2,6 +2,7 @@ import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from
 import { useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
 import '../styles/dashboard-events.css';
+import type { CSSProperties } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -39,6 +40,13 @@ type AudienceChartPoint = {
   leftHeight: number;
 };
 
+type PreviousAudienceChartPoint = {
+  at: string;
+  participantsCount: number | null;
+  x: number;
+  y: number;
+};
+
 type ViewChartPoint = {
   at: string;
   views: number;
@@ -47,6 +55,17 @@ type ViewChartPoint = {
   y: number;
   height: number;
   cumulativeY: number;
+};
+
+type PreviousViewChartPoint = ViewChartPoint;
+
+type ChartPostPin = {
+  messageId: string;
+  label: string;
+  value: string;
+  detail: string;
+  x: number;
+  tone: ChartInsightTone;
 };
 
 const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
@@ -468,6 +487,15 @@ function resolveChartIndexFromClientX(
   return Math.round(ratio * (pointsLength - 1));
 }
 
+function resolveAlignedIndex(sourceLength: number, targetIndex: number, targetLength: number): number {
+  if (sourceLength <= 1 || targetLength <= 1) {
+    return 0;
+  }
+
+  const ratio = clamp(targetIndex / Math.max(1, targetLength - 1), 0, 1);
+  return Math.round(ratio * (sourceLength - 1));
+}
+
 function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   if (points.length === 0) {
     return '';
@@ -491,6 +519,69 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   }
 
   return path;
+}
+
+function buildRulerPath(values: Array<number | null>, width = 320): string {
+  const numericValues = values.filter((value): value is number => typeof value === 'number');
+  if (numericValues.length === 0) {
+    return '';
+  }
+
+  const minValue = Math.min(...numericValues);
+  const maxValue = Math.max(...numericValues);
+  const range = Math.max(1, maxValue - minValue);
+  const top = 5;
+  const bottom = 25;
+  const plotWidth = width - 10;
+  const points = values.map((value, index) => {
+    const resolvedValue = typeof value === 'number' ? value : minValue;
+    return {
+      x: values.length === 1 ? width / 2 : 5 + (plotWidth * index) / Math.max(1, values.length - 1),
+      y: top + ((maxValue - resolvedValue) / range) * (bottom - top),
+    };
+  });
+
+  return buildAudiencePath(points);
+}
+
+function resolvePostPinPositions(
+  posts: ChannelStatsResponse['official']['content']['topPosts'],
+  anchors: Array<{ at: string; x: number }>,
+): ChartPostPin[] {
+  if (anchors.length === 0 || posts.length === 0) {
+    return [];
+  }
+
+  return posts.slice(0, 5).map((post, index) => {
+    const postTime = new Date(post.publishedAt).getTime();
+    let bestAnchor = anchors[0]!;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    if (Number.isFinite(postTime)) {
+      for (const anchor of anchors) {
+        const anchorTime = new Date(anchor.at).getTime();
+        const distance = Number.isFinite(anchorTime)
+          ? Math.abs(anchorTime - postTime)
+          : Number.POSITIVE_INFINITY;
+        if (distance < bestDistance) {
+          bestAnchor = anchor;
+          bestDistance = distance;
+        }
+      }
+    }
+
+    const views = post.viewsDelta || post.views;
+    return {
+      messageId: post.messageId,
+      label: `#${index + 1}`,
+      value: formatCompactCount(views),
+      detail: `${formatPostDateTime(post.publishedAt)} · ${formatCompactCount(
+        views,
+      )} просмотров · ${formatCount(post.reactions)} реакций`,
+      x: bestAnchor.x,
+      tone: index === 0 ? 'accent' : 'neutral',
+    };
+  });
 }
 
 function buildAudienceAreaPath(
@@ -550,26 +641,41 @@ function resolveGraphMarkerPositions(
 
 function buildAudienceChart(stats: ChannelStatsResponse): {
   points: AudienceChartPoint[];
+  previousPoints: PreviousAudienceChartPoint[];
   linePath: string;
   areaPath: string;
+  previousLinePath: string;
+  rulerPath: string;
+  previousRulerPath: string;
   hasLine: boolean;
+  hasPreviousLine: boolean;
   guideYs: number[];
   dividerY: number;
   barsBaseline: number;
+  eventRailY: number;
+  height: number;
   leftPad: number;
   rightPad: number;
   axisLabels: Array<{ y: number; label: string }>;
 } {
   const series = stats.official.series.participants;
+  const previousSeries = stats.comparison.series?.participants ?? [];
   if (series.length === 0) {
     return {
       points: [],
+      previousPoints: [],
       linePath: '',
       areaPath: '',
+      previousLinePath: '',
+      rulerPath: '',
+      previousRulerPath: '',
       hasLine: false,
+      hasPreviousLine: false,
       guideYs: [],
-      dividerY: 92,
-      barsBaseline: 132,
+      dividerY: 118,
+      barsBaseline: 166,
+      eventRailY: 190,
+      height: 210,
       leftPad: 50,
       rightPad: 14,
       axisLabels: [],
@@ -577,21 +683,29 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   }
 
   const width = 320;
+  const height = 210;
   const leftPad = 50;
   const rightPad = 14;
-  const lineTop = 20;
-  const lineBottom = 78;
-  const lineFloor = 88;
-  const dividerY = 98;
-  const barsBaseline = 138;
-  const joinedPeakHeight = 24;
-  const leftPeakHeight = 14;
+  const lineTop = 24;
+  const lineBottom = 98;
+  const lineFloor = 110;
+  const dividerY = 122;
+  const barsBaseline = 166;
+  const eventRailY = 190;
+  const joinedPeakHeight = 34;
+  const leftPeakHeight = 20;
   const plotWidth = width - leftPad - rightPad;
   const participantValues = series
     .map((item) => item.participantsCount)
     .filter((item): item is number => typeof item === 'number');
-  const minParticipants = participantValues.length > 0 ? Math.min(...participantValues) : 0;
-  const maxParticipants = participantValues.length > 0 ? Math.max(...participantValues) : 0;
+  const previousParticipantValues = previousSeries
+    .map((item) => item.participantsCount)
+    .filter((item): item is number => typeof item === 'number');
+  const allParticipantValues = [...participantValues, ...previousParticipantValues];
+  const minParticipants =
+    allParticipantValues.length > 0 ? Math.min(...allParticipantValues) : 0;
+  const maxParticipants =
+    allParticipantValues.length > 0 ? Math.max(...allParticipantValues) : 0;
   const participantSpan = Math.max(1, maxParticipants - minParticipants);
   const participantPadding = Math.max(1, participantSpan * 0.16);
   const participantMin = minParticipants - participantPadding;
@@ -632,10 +746,31 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       leftHeight,
     };
   });
+  const previousPoints = previousSeries.map((item, index) => {
+    const x =
+      previousSeries.length === 1
+        ? width / 2
+        : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
+    const y =
+      typeof item.participantsCount === 'number'
+        ? lineTop +
+          ((participantMax - item.participantsCount) / participantRange) * (lineBottom - lineTop)
+        : lineBottom;
+
+    return {
+      at: item.at,
+      participantsCount: item.participantsCount,
+      x,
+      y,
+    };
+  });
 
   const linePath = buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y })));
+  const previousLinePath = buildAudiencePath(
+    previousPoints.map((point) => ({ x: point.x, y: point.y })),
+  );
   const axisLabels =
-    participantValues.length === 0
+    allParticipantValues.length === 0
       ? []
       : maxParticipants === minParticipants
         ? [
@@ -655,16 +790,23 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 
   return {
     points,
+    previousPoints,
     linePath,
     areaPath: buildAudienceAreaPath(
       linePath,
       points.map((point) => ({ x: point.x, y: point.y })),
       lineFloor,
     ),
+    previousLinePath,
+    rulerPath: buildRulerPath(series.map((item) => item.participantsCount)),
+    previousRulerPath: buildRulerPath(previousSeries.map((item) => item.participantsCount)),
     hasLine: participantValues.length > 0,
+    hasPreviousLine: previousParticipantValues.length > 0,
     guideYs: [lineTop, Math.round((lineTop + lineBottom) / 2), lineBottom],
     dividerY,
     barsBaseline,
+    eventRailY,
+    height,
     leftPad,
     rightPad,
     axisLabels,
@@ -673,40 +815,61 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 
 function buildViewsChart(stats: ChannelStatsResponse): {
   bars: ViewChartPoint[];
+  previousBars: PreviousViewChartPoint[];
   maxViews: number;
   cumulativeMax: number;
   cumulativeLinePath: string;
   cumulativeAreaPath: string;
+  previousCumulativeLinePath: string;
+  rulerPath: string;
+  previousRulerPath: string;
   guideYs: number[];
   leftPad: number;
   rightPad: number;
   baselineY: number;
+  eventRailY: number;
+  height: number;
 } {
   const series = stats.official.series.views;
+  const previousSeries = stats.comparison.series?.views ?? [];
   if (series.length === 0) {
     return {
       bars: [],
+      previousBars: [],
       maxViews: 0,
       cumulativeMax: 0,
       cumulativeLinePath: '',
       cumulativeAreaPath: '',
+      previousCumulativeLinePath: '',
+      rulerPath: '',
+      previousRulerPath: '',
       guideYs: [],
       leftPad: 18,
       rightPad: 14,
-      baselineY: 162,
+      baselineY: 182,
+      eventRailY: 194,
+      height: 210,
     };
   }
 
   const width = 320;
-  const height = 180;
+  const height = 210;
   const leftPad = 18;
   const rightPad = 14;
-  const topPad = 16;
-  const bottomPad = 18;
+  const topPad = 18;
+  const bottomPad = 28;
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
-  const maxViews = Math.max(...series.map((item) => item.views), 0);
-  const cumulativeMax = Math.max(...series.map((item) => item.cumulativeViews), 0);
+  const maxViews = Math.max(
+    ...series.map((item) => item.views),
+    ...previousSeries.map((item) => item.views),
+    0,
+  );
+  const cumulativeMax = Math.max(
+    ...series.map((item) => item.cumulativeViews),
+    ...previousSeries.map((item) => item.cumulativeViews),
+    0,
+  );
   const scale = maxViews > 0 ? usableHeight / maxViews : 0;
   const cumulativeRange = Math.max(1, cumulativeMax);
 
@@ -727,11 +890,31 @@ function buildViewsChart(stats: ChannelStatsResponse): {
         topPad + ((cumulativeMax - item.cumulativeViews) / cumulativeRange) * usableHeight,
     };
   });
+  const previousBars = previousSeries.map((item, index) => {
+    const x =
+      previousSeries.length === 1
+        ? width / 2
+        : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
+    const barHeight = item.views * scale;
+    return {
+      at: item.at,
+      views: item.views,
+      cumulativeViews: item.cumulativeViews,
+      x,
+      y: height - bottomPad - barHeight,
+      height: barHeight,
+      cumulativeY:
+        topPad + ((cumulativeMax - item.cumulativeViews) / cumulativeRange) * usableHeight,
+    };
+  });
   const cumulativePoints = bars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
   const cumulativeLinePath = buildAudiencePath(cumulativePoints);
+  const previousCumulativePoints = previousBars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
+  const previousCumulativeLinePath = buildAudiencePath(previousCumulativePoints);
 
   return {
     bars,
+    previousBars,
     maxViews,
     cumulativeMax,
     cumulativeLinePath,
@@ -740,11 +923,49 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       cumulativePoints,
       height - bottomPad,
     ),
+    previousCumulativeLinePath,
+    rulerPath: buildRulerPath(series.map((item) => item.cumulativeViews)),
+    previousRulerPath: buildRulerPath(previousSeries.map((item) => item.cumulativeViews)),
     guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
     leftPad,
     rightPad,
     baselineY: height - bottomPad,
+    eventRailY: 194,
+    height,
   };
+}
+
+function ChartMiniRuler({
+  activeX,
+  currentPath,
+  previousPath,
+}: {
+  activeX: number;
+  currentPath: string;
+  previousPath: string;
+}) {
+  if (!currentPath && !previousPath) {
+    return null;
+  }
+
+  return (
+    <div className="channel-stats-graph__ruler" aria-hidden="true">
+      <svg viewBox="0 0 320 30" focusable="false">
+        {previousPath ? (
+          <path d={previousPath} className="channel-stats-graph__ruler-line is-previous" />
+        ) : null}
+        {currentPath ? (
+          <path d={currentPath} className="channel-stats-graph__ruler-line is-current" />
+        ) : null}
+        <circle
+          cx={clamp(activeX, 5, 315)}
+          cy="15"
+          r="4.5"
+          className="channel-stats-graph__ruler-dot"
+        />
+      </svg>
+    </div>
+  );
 }
 
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
@@ -758,6 +979,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 
   const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.points.length - 1, 0));
   const activePoint = chart.points[safeActiveIndex] ?? null;
+  const previousIndex = resolveAlignedIndex(
+    chart.previousPoints.length,
+    safeActiveIndex,
+    chart.points.length,
+  );
+  const activePreviousPoint = chart.previousPoints[previousIndex] ?? null;
   const hasLeftBars = chart.points.some((point) => point.left > 0);
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const slotWidth =
@@ -777,6 +1004,10 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     chart.points.map((point) => ({ at: point.at, x: point.x })),
     (marker) => marker.type !== 'post',
   );
+  const postPins = resolvePostPinPositions(
+    stats.official.content.topPosts,
+    chart.points.map((point) => ({ at: point.at, x: point.x })),
+  );
   const activeGuideLabel = activePoint
     ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
         activePoint.participantsCount,
@@ -784,6 +1015,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         activePoint.left,
       )} ушли, баланс ${formatSignedCount(activeNet)}`
     : 'Данные по аудитории недоступны';
+  const scrubberX = activePoint ? clamp((activePoint.x / 320) * 100, 15, 85) : 50;
+  const scrubberStyle = { '--scrubber-x': `${scrubberX}%` } as CSSProperties;
   const calloutX = activePoint
     ? clamp(
         activePoint.x - activeParticipantsLabelWidth / 2,
@@ -819,6 +1052,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               {hasLeftBars ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--left">
                   Вышли {formatCount(activePoint?.left ?? 0)}
+                </span>
+              ) : null}
+              {activePreviousPoint ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
+                  Прошлый {formatCount(activePreviousPoint.participantsCount)}
                 </span>
               ) : null}
             </div>
@@ -867,7 +1105,25 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               }
             }}
           >
-            <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+            {activePoint ? (
+              <div className="channel-stats-graph__scrubber" style={scrubberStyle}>
+                <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
+                <strong>{activeParticipantsLabel}</strong>
+                <span>
+                  {formatSignedCount(activeNet)} · +{formatCount(activePoint.joined)} / -
+                  {formatCount(activePoint.left)}
+                </span>
+                {activePreviousPoint ? (
+                  <em>Прошлый: {formatCount(activePreviousPoint.participantsCount)}</em>
+                ) : null}
+              </div>
+            ) : null}
+
+            <svg
+              viewBox={`0 0 320 ${chart.height}`}
+              className="channel-stats-graph__svg"
+              aria-hidden
+            >
               <defs>
                 <linearGradient id="channel-audience-line" x1="50" x2="306" y1="20" y2="78">
                   <stop offset="0" stopColor="#5f9dff" />
@@ -893,7 +1149,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   x={activePoint.x - activeBandWidth / 2}
                   y={chart.guideYs[0]! - 10}
                   width={activeBandWidth}
-                  height={chart.barsBaseline - chart.guideYs[0]! + 14}
+                  height={chart.eventRailY - chart.guideYs[0]! + 12}
                   rx={activeBandWidth / 2}
                   className="channel-stats-graph__active-band"
                 />
@@ -981,11 +1237,17 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               ))}
               <line
                 x1={chart.leftPad}
-                y1="158"
+                y1={chart.eventRailY}
                 x2={320 - chart.rightPad}
-                y2="158"
+                y2={chart.eventRailY}
                 className="channel-stats-graph__event-rail"
               />
+              {chart.hasPreviousLine ? (
+                <path
+                  d={chart.previousLinePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--previous"
+                />
+              ) : null}
               {chart.points.map((point, index) => {
                 const activity = point.joined + point.left;
                 const tone =
@@ -999,7 +1261,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   <circle
                     key={`event-${labels[index]?.at ?? index}`}
                     cx={point.x}
-                    cy="158"
+                    cy={chart.eventRailY}
                     r={safeActiveIndex === index ? 4.4 : 2.8}
                     style={{ opacity }}
                     className={`channel-stats-graph__event-dot channel-stats-graph__event-dot--${tone} ${
@@ -1008,6 +1270,20 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   />
                 );
               })}
+              {postPins.map((pin) => (
+                <g
+                  key={pin.messageId}
+                  className={`channel-stats-graph__post-pin channel-stats-graph__post-pin--${pin.tone}`}
+                  transform={`translate(${pin.x.toFixed(2)} ${chart.eventRailY - 17})`}
+                >
+                  <line x1="0" y1="8" x2="0" y2="17" />
+                  <circle cx="0" cy="5.5" r="5.5" />
+                  <text x="0" y="8.5" textAnchor="middle">
+                    {pin.label.replace('#', '')}
+                  </text>
+                  <title>{pin.detail}</title>
+                </g>
+              ))}
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path
@@ -1081,8 +1357,18 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             ))}
           </div>
 
+          <ChartMiniRuler
+            activeX={activePoint?.x ?? 160}
+            currentPath={chart.rulerPath}
+            previousPath={chart.previousRulerPath}
+          />
+
           <output className="channel-stats-graph__sr" aria-live="polite">
-            {activeGuideLabel}
+            {activePreviousPoint
+              ? `${activeGuideLabel}. Прошлый период: ${formatCount(
+                  activePreviousPoint.participantsCount,
+                )} участников.`
+              : activeGuideLabel}
           </output>
         </>
       )}
@@ -1101,6 +1387,12 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
   const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
   const activeBar = chart.bars[safeActiveIndex] ?? null;
+  const previousIndex = resolveAlignedIndex(
+    chart.previousBars.length,
+    safeActiveIndex,
+    chart.bars.length,
+  );
+  const activePreviousBar = chart.previousBars[previousIndex] ?? null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const totalViews = labels.reduce((sum, item) => sum + item.views, 0);
   const averageViews = labels.length > 0 ? Math.round(totalViews / labels.length) : 0;
@@ -1109,6 +1401,10 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
     (marker) => marker.type === 'post' || marker.type === 'peak',
   );
+  const postPins = resolvePostPinPositions(
+    stats.official.content.topPosts,
+    chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
+  );
   const slotWidth =
     chart.bars.length > 1
       ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
@@ -1116,7 +1412,12 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
   const activeViewsLabel = formatCount(activeBar?.views ?? null);
   const activeCumulativeLabel = formatCount(activeBar?.cumulativeViews ?? chart.cumulativeMax);
+  const activeCumulativeCompactLabel = formatCompactCount(
+    activeBar?.cumulativeViews ?? chart.cumulativeMax,
+  );
   const activeViewsLabelWidth = Math.max(58, activeViewsLabel.length * 7 + 18);
+  const scrubberX = activeBar ? clamp((activeBar.x / 320) * 100, 15, 85) : 50;
+  const scrubberStyle = { '--scrubber-x': `${scrubberX}%` } as CSSProperties;
   const calloutX = activeBar
     ? clamp(
         activeBar.x - activeViewsLabelWidth / 2,
@@ -1156,6 +1457,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 Накоплено {activeCumulativeLabel}
               </span>
+              {activePreviousBar ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
+                  Прошлый {formatCount(activePreviousBar.views)}
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -1202,7 +1508,22 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               }
             }}
           >
-            <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+            {activeBar ? (
+              <div className="channel-stats-graph__scrubber" style={scrubberStyle}>
+                <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
+                <strong>{activeViewsLabel}</strong>
+                <span>Накоплено {activeCumulativeCompactLabel}</span>
+                {activePreviousBar ? (
+                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}</em>
+                ) : null}
+              </div>
+            ) : null}
+
+            <svg
+              viewBox={`0 0 320 ${chart.height}`}
+              className="channel-stats-graph__svg"
+              aria-hidden
+            >
               <defs>
                 <linearGradient id="channel-views-bar" x1="0" x2="0" y1="18" y2="162">
                   <stop offset="0" stopColor="#58a6ff" />
@@ -1258,6 +1579,12 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__area channel-stats-graph__area--views-cumulative"
                 />
               ) : null}
+              {chart.previousCumulativeLinePath ? (
+                <path
+                  d={chart.previousCumulativeLinePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--previous"
+                />
+              ) : null}
               {chart.cumulativeLinePath ? (
                 <path
                   d={chart.cumulativeLinePath}
@@ -1273,6 +1600,17 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__active-guide channel-stats-graph__active-guide--views"
                 />
               ) : null}
+              {chart.previousBars.map((bar, index) => (
+                <rect
+                  key={`previous-${bar.at}-${index}`}
+                  x={bar.x - 8}
+                  y={bar.y}
+                  width="16"
+                  height={Math.max(3, bar.height)}
+                  rx="5"
+                  className="channel-stats-graph__bar channel-stats-graph__bar--previous"
+                />
+              ))}
               {chart.bars.map((bar, index) => (
                 <rect
                   key={labels[index]?.at ?? index}
@@ -1318,6 +1656,27 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   </path>
                 </g>
               ))}
+              <line
+                x1={chart.leftPad}
+                y1={chart.eventRailY}
+                x2={320 - chart.rightPad}
+                y2={chart.eventRailY}
+                className="channel-stats-graph__event-rail"
+              />
+              {postPins.map((pin) => (
+                <g
+                  key={pin.messageId}
+                  className={`channel-stats-graph__post-pin channel-stats-graph__post-pin--${pin.tone}`}
+                  transform={`translate(${pin.x.toFixed(2)} ${chart.eventRailY - 17})`}
+                >
+                  <line x1="0" y1="8" x2="0" y2="17" />
+                  <circle cx="0" cy="5.5" r="5.5" />
+                  <text x="0" y="8.5" textAnchor="middle">
+                    {pin.label.replace('#', '')}
+                  </text>
+                  <title>{pin.detail}</title>
+                </g>
+              ))}
               {activeBar ? (
                 <g>
                   <rect
@@ -1354,8 +1713,18 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             ))}
           </div>
 
+          <ChartMiniRuler
+            activeX={activeBar?.x ?? 160}
+            currentPath={chart.rulerPath}
+            previousPath={chart.previousRulerPath}
+          />
+
           <output className="channel-stats-graph__sr" aria-live="polite">
-            {activeGuideLabel}
+            {activePreviousBar
+              ? `${activeGuideLabel}. Прошлый период: ${formatCount(
+                  activePreviousBar.views,
+                )} просмотров.`
+              : activeGuideLabel}
           </output>
         </>
       )}
@@ -1673,7 +2042,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </article>
           </div>
 
-          <article className="channel-insights__chart-card">
+          <article className="channel-insights__chart-card channel-insights__chart-card--executive">
             <div className="channel-insights__panel-head">
               <div className="channel-insights__panel-copy">
                 <strong>{chartTitle}</strong>

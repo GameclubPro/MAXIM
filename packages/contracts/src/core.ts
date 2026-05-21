@@ -2417,6 +2417,30 @@ export const channelStatsResponseSchema = z.object({
       averageViewsPerPost: channelStatsMetricDeltaSchema,
       reactions: channelStatsMetricDeltaSchema,
     }),
+    series: z
+      .object({
+        participants: z.array(
+          z.object({
+            at: z.string().datetime(),
+            participantsCount: z.number().int().min(0).nullable(),
+          }),
+        ),
+        membership: z.array(
+          z.object({
+            at: z.string().datetime(),
+            joined: z.number().int().min(0),
+            left: z.number().int().min(0).nullable(),
+          }),
+        ),
+        views: z.array(
+          z.object({
+            at: z.string().datetime(),
+            views: z.number().int().min(0),
+            cumulativeViews: z.number().int().min(0),
+          }),
+        ),
+      })
+      .optional(),
   }),
   health: channelStatsHealthSchema,
   signals: z.object({

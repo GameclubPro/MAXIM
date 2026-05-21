@@ -1034,6 +1034,11 @@ type ChannelStatsPeriodTotals = {
   averageViewsPerPost: number;
   reactions: number;
 };
+type ChannelStatsComparisonSeries = NonNullable<ChannelStatsResponse['comparison']['series']>;
+type ChannelStatsPreviousPeriodSnapshot = {
+  totals: ChannelStatsPeriodTotals;
+  series: ChannelStatsComparisonSeries;
+};
 type ChannelStatsDeltaMetric = ChannelStatsResponse['comparison']['deltas']['views'];
 type ChannelStatsSignalTone = ChannelStatsResponse['signals']['insights'][number]['tone'];
 type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
@@ -7559,12 +7564,13 @@ export class AdminService implements OnModuleDestroy {
       },
       'channel',
     );
-    const previousTotals = await this.buildPreviousChannelStatsPeriodTotals(
+    const previousPeriod = await this.buildPreviousChannelStatsPeriodSnapshot(
       chatId,
       previousFrom,
       previousTo,
       bucket,
     );
+    const previousTotals = previousPeriod.totals;
     const currentTotals: ChannelStatsPeriodTotals = {
       joined,
       left,
@@ -7579,10 +7585,15 @@ export class AdminService implements OnModuleDestroy {
         0,
       ),
     };
-    const comparison = this.buildChannelStatsComparison(currentTotals, previousTotals, {
-      from: previousFrom,
-      to: previousTo,
-    });
+    const comparison = this.buildChannelStatsComparison(
+      currentTotals,
+      previousTotals,
+      {
+        from: previousFrom,
+        to: previousTo,
+      },
+      previousPeriod.series,
+    );
     const health = this.buildChannelStatsHealth({
       totals: currentTotals,
       comparison,
@@ -21317,37 +21328,59 @@ export class AdminService implements OnModuleDestroy {
     `;
   }
 
-  private async buildPreviousChannelStatsPeriodTotals(
+  private async buildPreviousChannelStatsPeriodSnapshot(
     chatId: string,
     from: Date,
     to: Date,
     bucket: ChannelStatsBucket,
-  ): Promise<ChannelStatsPeriodTotals> {
-    const [membershipRows, trackedPosts] = await Promise.all([
-      this.getMembershipEventRows(chatId, from, to, ['user_added', 'user_removed'], {
-        order: 'asc',
-      }),
-      this.prisma.channelPost.findMany({
-        where: {
-          chatId,
-          OR: [
-            { publishedAt: { gte: from, lte: to } },
-            { latestSnapshotAt: { gte: from, lte: to } },
-          ],
-        },
-        orderBy: { publishedAt: 'asc' },
-        select: {
-          id: true,
-          messageId: true,
-          publishedAt: true,
-          url: true,
-          latestViews: true,
-          latestReactions: true,
-          latestReactionsTotal: true,
-          latestSnapshotAt: true,
-        },
-      }),
-    ]);
+  ): Promise<ChannelStatsPreviousPeriodSnapshot> {
+    const [membershipRows, trackedPosts, previousAudienceSnapshot, audienceSnapshots] =
+      await Promise.all([
+        this.getMembershipEventRows(chatId, from, to, ['user_added', 'user_removed'], {
+          order: 'asc',
+        }),
+        this.prisma.channelPost.findMany({
+          where: {
+            chatId,
+            OR: [
+              { publishedAt: { gte: from, lte: to } },
+              { latestSnapshotAt: { gte: from, lte: to } },
+            ],
+          },
+          orderBy: { publishedAt: 'asc' },
+          select: {
+            id: true,
+            messageId: true,
+            publishedAt: true,
+            url: true,
+            latestViews: true,
+            latestReactions: true,
+            latestReactionsTotal: true,
+            latestSnapshotAt: true,
+          },
+        }),
+        this.prisma.channelAudienceSnapshot.findFirst({
+          where: {
+            chatId,
+            capturedAt: { lt: from },
+          },
+          orderBy: { capturedAt: 'desc' },
+          select: {
+            participantsCount: true,
+          },
+        }),
+        this.prisma.channelAudienceSnapshot.findMany({
+          where: {
+            chatId,
+            capturedAt: { gte: from, lte: to },
+          },
+          orderBy: { capturedAt: 'asc' },
+          select: {
+            capturedAt: true,
+            participantsCount: true,
+          },
+        }),
+      ]);
 
     const viewSnapshots =
       trackedPosts.length > 0
@@ -21391,8 +21424,9 @@ export class AdminService implements OnModuleDestroy {
       viewSnapshots.length > 0 || periodPostViewMetrics.some((metric) => metric.hasObservedDelta)
         ? 'observedDelta'
         : 'latestTotal';
+    const bucketStarts = this.buildChannelStatsBucketStarts(from, to, bucket);
     const viewsSeries = this.buildViewsSeries(
-      this.buildChannelStatsBucketStarts(from, to, bucket),
+      bucketStarts,
       bucket,
       trackedPosts,
       viewSnapshots,
@@ -21409,15 +21443,31 @@ export class AdminService implements OnModuleDestroy {
       0,
     );
 
+    const membershipSeries = this.buildMembershipSeries(bucketStarts, bucket, membershipRows);
+    const participantSeries = this.buildParticipantSeries(
+      bucketStarts,
+      bucket,
+      previousAudienceSnapshot?.participantsCount ?? null,
+      audienceSnapshots,
+    );
+
     return {
-      joined,
-      left,
-      net: joined - left,
-      posts: periodPosts.length,
-      views,
-      viewsTotal,
-      averageViewsPerPost: periodPosts.length > 0 ? Math.round(viewsTotal / periodPosts.length) : 0,
-      reactions,
+      totals: {
+        joined,
+        left,
+        net: joined - left,
+        posts: periodPosts.length,
+        views,
+        viewsTotal,
+        averageViewsPerPost:
+          periodPosts.length > 0 ? Math.round(viewsTotal / periodPosts.length) : 0,
+        reactions,
+      },
+      series: {
+        participants: participantSeries,
+        membership: membershipSeries,
+        views: viewsSeries,
+      },
     };
   }
 
@@ -21425,6 +21475,7 @@ export class AdminService implements OnModuleDestroy {
     current: ChannelStatsPeriodTotals,
     previous: ChannelStatsPeriodTotals,
     period: { from: Date; to: Date },
+    series?: ChannelStatsComparisonSeries,
   ): ChannelStatsResponse['comparison'] {
     return {
       period: {
@@ -21443,6 +21494,7 @@ export class AdminService implements OnModuleDestroy {
         ),
         reactions: this.buildChannelStatsDeltaMetric(current.reactions, previous.reactions),
       },
+      ...(series ? { series } : {}),
     };
   }
 

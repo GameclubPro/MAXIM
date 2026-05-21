@@ -12423,3 +12423,251 @@ body.channel-stats-page-open .channel-insights__body {
     grid-column: auto;
   }
 }
+
+/* Channel stats executive chart: factual comparison, scrubber and event pins. */
+.channel-insights__chart-card--executive {
+  gap: 11px;
+  padding: 12px;
+  border-color: rgba(196, 216, 233, 0.96);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 252, 255, 0.98)),
+    radial-gradient(circle at 16% 0%, rgba(11, 132, 255, 0.08), transparent 32%),
+    radial-gradient(circle at 88% 8%, rgba(31, 169, 126, 0.08), transparent 28%);
+  box-shadow:
+    0 14px 34px rgba(22, 44, 67, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.channel-insights__chart-card--executive .channel-insights__panel-copy strong {
+  font-size: 1.08rem;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph {
+  gap: 8px;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__summary {
+  align-items: center;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__summary-copy strong {
+  font-size: 1.18rem;
+  letter-spacing: 0;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__summary-chips {
+  gap: 6px;
+}
+
+.channel-stats-graph__chip--previous {
+  border-color: rgba(112, 137, 159, 0.2);
+  background: rgba(247, 250, 253, 0.9);
+  color: #64798d;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__canvas {
+  min-height: 248px;
+  padding: 12px 8px 8px;
+  overflow: hidden;
+  border-color: rgba(197, 216, 233, 0.96);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 250, 253, 0.99)),
+    linear-gradient(90deg, rgba(87, 114, 141, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(87, 114, 141, 0.045) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    32px 32px,
+    32px 32px;
+  box-shadow:
+    0 10px 26px rgba(23, 50, 74, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__svg {
+  height: clamp(218px, 58vw, 268px);
+  overflow: hidden;
+}
+
+.channel-stats-graph__scrubber {
+  --scrubber-edge: 96px;
+
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  left: clamp(var(--scrubber-edge), var(--scrubber-x), calc(100% - var(--scrubber-edge)));
+  width: min(184px, calc(100% - 22px));
+  min-width: 118px;
+  max-width: min(184px, calc(100% - 22px));
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(18, 47, 73, 0.1);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.93);
+  box-shadow:
+    0 12px 28px rgba(18, 47, 73, 0.14),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(18px);
+}
+
+.channel-stats-graph__scrubber small,
+.channel-stats-graph__scrubber span,
+.channel-stats-graph__scrubber em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-stats-graph__scrubber small {
+  color: #70899f;
+  font-size: 0.58rem;
+  font-weight: 820;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.channel-stats-graph__scrubber strong {
+  color: #17324a;
+  font-size: 1rem;
+  line-height: 1.04;
+}
+
+.channel-stats-graph__scrubber span,
+.channel-stats-graph__scrubber em {
+  color: #5f7487;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 720;
+  line-height: 1.12;
+}
+
+.channel-stats-graph__line--previous {
+  stroke: #8da1b3;
+  stroke-width: 2;
+  stroke-dasharray: 6 7;
+  opacity: 0.64;
+}
+
+.channel-stats-graph__bar--previous {
+  fill: rgba(117, 138, 158, 0.18);
+  opacity: 1;
+}
+
+.channel-stats-graph__post-pin {
+  pointer-events: none;
+}
+
+.channel-stats-graph__post-pin line {
+  stroke: rgba(92, 116, 139, 0.32);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.channel-stats-graph__post-pin circle {
+  fill: #ffffff;
+  stroke: #0b84ff;
+  stroke-width: 1.8;
+  filter: drop-shadow(0 4px 6px rgba(11, 132, 255, 0.2));
+}
+
+.channel-stats-graph__post-pin text {
+  fill: #0b63b8;
+  font-size: 7px;
+  font-weight: 850;
+}
+
+.channel-stats-graph__post-pin--neutral circle {
+  stroke: #8da1b3;
+  filter: none;
+}
+
+.channel-stats-graph__post-pin--neutral text {
+  fill: #60768a;
+}
+
+.channel-stats-graph__ruler {
+  height: 30px;
+  padding-inline: 6px;
+  border: 1px solid rgba(213, 225, 236, 0.8);
+  border-radius: 12px;
+  background: rgba(248, 251, 253, 0.92);
+}
+
+.channel-stats-graph__ruler svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.channel-stats-graph__ruler-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.channel-stats-graph__ruler-line.is-current {
+  stroke: #0b84ff;
+  stroke-width: 2.3;
+}
+
+.channel-stats-graph__ruler-line.is-previous {
+  stroke: #9aaec0;
+  stroke-width: 1.7;
+  stroke-dasharray: 5 6;
+  opacity: 0.78;
+}
+
+.channel-stats-graph__ruler-dot {
+  fill: #0b84ff;
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+@media (max-width: 430px) {
+  .channel-insights__chart-card--executive {
+    padding: 10px;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__canvas {
+    min-height: 232px;
+    padding: 10px 6px 7px;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__svg {
+    height: 218px;
+  }
+
+  .channel-stats-graph__scrubber {
+    --scrubber-edge: 90px;
+
+    width: min(172px, calc(100% - 18px));
+    min-width: 104px;
+    max-width: min(172px, calc(100% - 18px));
+    padding: 7px 8px;
+    border-radius: 12px;
+  }
+}
+
+@media (max-width: 380px) {
+  .channel-insights__chart-card--executive .channel-stats-graph__svg {
+    height: 204px;
+  }
+
+  .channel-stats-graph__scrubber strong {
+    font-size: 0.9rem;
+  }
+
+  .channel-stats-graph__scrubber {
+    --scrubber-edge: 74px;
+
+    width: min(136px, calc(100% - 16px));
+    min-width: 96px;
+    max-width: min(136px, calc(100% - 16px));
+  }
+}

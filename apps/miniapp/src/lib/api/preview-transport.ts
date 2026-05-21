@@ -2758,6 +2758,42 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
   const previousPosts = Math.max(1, Math.round(posts * 0.88));
   const previousReactions = Math.round(reactions * 0.76);
   const previousNet = Math.round((joined - left) * 0.62);
+  const previousJoined = Math.round(joined * 0.78);
+  const previousLeft = Math.round(left * 1.18);
+  const previousJoinedDistribution = distributeTotal(previousJoined, joinedWeights);
+  const previousLeftDistribution = distributeTotal(previousLeft, leftWeights);
+  const previousViewsDistribution = distributeTotal(previousViews, viewWeights);
+  const previousMembershipSeries = Array.from({ length: points }, (_, index) => {
+    const at = new Date(previousFrom.getTime() + stepMs * index);
+    return {
+      at: at.toISOString(),
+      joined: previousJoinedDistribution[index] ?? 0,
+      left: previousLeftDistribution[index] ?? 0,
+    };
+  });
+  let previousRunningParticipants =
+    baseParticipants - Math.max(0, previousNet) + Math.max(0, joined - left - previousNet);
+  const previousParticipantsSeries = previousMembershipSeries.map((item) => {
+    previousRunningParticipants = Math.max(
+      0,
+      previousRunningParticipants + item.joined - item.left,
+    );
+    return {
+      at: item.at,
+      participantsCount: previousRunningParticipants,
+    };
+  });
+  let previousCumulativeViews = 0;
+  const previousViewsSeries = Array.from({ length: points }, (_, index) => {
+    const at = new Date(previousFrom.getTime() + stepMs * index);
+    const value = previousViewsDistribution[index] ?? 0;
+    previousCumulativeViews += value;
+    return {
+      at: at.toISOString(),
+      views: value,
+      cumulativeViews: previousCumulativeViews,
+    };
+  });
   const currentAverageViewsPerPost = Math.round((views * 1.24) / Math.max(1, posts));
   const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
@@ -2906,12 +2942,17 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       },
       deltas: {
         audienceNet: buildDelta(joined - left, previousNet),
-        joined: buildDelta(joined, Math.round(joined * 0.78)),
-        left: buildDelta(left, Math.round(left * 1.18)),
+        joined: buildDelta(joined, previousJoined),
+        left: buildDelta(left, previousLeft),
         posts: buildDelta(posts, previousPosts),
         views: buildDelta(views, previousViews),
         averageViewsPerPost: buildDelta(currentAverageViewsPerPost, previousAverageViewsPerPost),
         reactions: buildDelta(reactions, previousReactions),
+      },
+      series: {
+        participants: previousParticipantsSeries,
+        membership: previousMembershipSeries,
+        views: previousViewsSeries,
       },
     },
     health: {
