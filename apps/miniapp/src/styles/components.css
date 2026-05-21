@@ -5204,6 +5204,8 @@ body.chats-home-page-open .bottom-nav__label {
   min-height: 160px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   padding-right: 2px;
   outline: none;
   contain: layout paint style;
