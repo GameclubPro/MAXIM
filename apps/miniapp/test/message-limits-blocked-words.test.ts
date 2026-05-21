@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  MESSAGE_LIMITS_BLOCKED_WORD_PRESETS,
+  type MessageLimitsBlockedWordPreset,
+} from '../src/lib/message-limits-blocked-word-presets';
+import {
   applyMessageLimitsBlockedWordsInput,
   mergeMessageLimitsBlockedWords,
   splitMessageLimitsBlockedWordsInput,
@@ -38,4 +42,14 @@ test('subtractMessageLimitsBlockedWords removes all matching words from a preset
 
   assert.deepEqual(result.removedWords, ['ставка', 'таро']);
   assert.deepEqual(result.nextWords, ['казино']);
+});
+
+test('tarot preset uses a full natal-card word instead of a broad personal-name stem', () => {
+  const tarotPreset = MESSAGE_LIMITS_BLOCKED_WORD_PRESETS.find(
+    (preset): preset is MessageLimitsBlockedWordPreset => preset.id === 'tarot',
+  );
+
+  assert.ok(tarotPreset);
+  assert.equal(tarotPreset.words.includes('натал'), false);
+  assert.equal(tarotPreset.words.includes('натальная'), true);
 });
