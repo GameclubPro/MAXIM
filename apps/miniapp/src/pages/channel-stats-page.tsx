@@ -280,7 +280,14 @@ function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWind
 }
 
 function pushDecisionCard(cards: ChannelDecisionCard[], card: ChannelDecisionCard): void {
-  if (cards.some((item) => item.code === card.code)) {
+  if (
+    cards.some(
+      (item) =>
+        item.code === card.code ||
+        (item.label.toLocaleLowerCase('ru-RU') === card.label.toLocaleLowerCase('ru-RU') &&
+          item.value.toLocaleLowerCase('ru-RU') === card.value.toLocaleLowerCase('ru-RU')),
+    )
+  ) {
     return;
   }
 
@@ -299,10 +306,13 @@ function pushSignalDecision(cards: ChannelDecisionCard[], signal: ChannelStatsSi
 
 function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] {
   const cards: ChannelDecisionCard[] = [];
-  const alert = stats.signals.alerts[0];
+  const headlineSignals = [
+    stats.intelligence.headline.primary,
+    ...stats.intelligence.headline.secondary,
+  ];
 
-  if (alert) {
-    pushSignalDecision(cards, alert);
+  for (const signal of headlineSignals.slice(1)) {
+    pushSignalDecision(cards, signal);
   }
 
   const bestWindow = stats.signals.bestWindows[0];
@@ -327,11 +337,22 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
     });
   }
 
+  const cohort = stats.intelligence.cohort;
+  if (cohort.joined >= 3 && cohort.retentionRate !== null) {
+    pushDecisionCard(cards, {
+      code: 'retention',
+      label: 'Возврат',
+      value: formatPercent(cohort.retentionRate),
+      meta: formatCompactCount(cohort.retained),
+      tone: resolveNumberTone(cohort.retentionRate - 65),
+    });
+  }
+
   const viewsPerPost = stats.intelligence.benchmarks.viewsPerPost;
   if (stats.meta.viewsAvailable && stats.official.content.posts > 0) {
     pushDecisionCard(cards, {
       code: 'views-per-post',
-      label: 'Пост',
+      label: 'Просм./пост',
       value: formatCompactCount(Math.round(viewsPerPost.current)),
       meta: formatBenchmarkDelta(viewsPerPost),
       tone: resolveNumberTone(viewsPerPost.deltaPercent),
@@ -350,10 +371,9 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
   }
 
   for (const signal of [
-    stats.intelligence.headline.primary,
-    ...stats.intelligence.headline.secondary,
     ...stats.intelligence.patterns,
     ...stats.signals.insights,
+    ...stats.signals.alerts,
   ]) {
     if (cards.length >= 3) {
       break;
@@ -390,29 +410,6 @@ function ChannelDecisionStrip({ stats }: { stats: ChannelStatsResponse }) {
       ))}
     </div>
   );
-}
-
-function resolveChannelStateLabel(stats: ChannelStatsResponse): string {
-  if (!stats.meta.maxSnapshotAvailable) {
-    return 'Снимок MAX недоступен';
-  }
-
-  const parts: string[] = [];
-
-  if (stats.channel.status) {
-    const normalizedStatus = stats.channel.status.trim().toLowerCase();
-    if (normalizedStatus === 'active') {
-      parts.push('Активен');
-    } else if (['inactive', 'left', 'removed', 'deleted'].includes(normalizedStatus)) {
-      parts.push('Неактивен');
-    }
-  }
-
-  if (stats.channel.isPublic !== null) {
-    parts.push(stats.channel.isPublic ? 'Публичный' : 'Приватный');
-  }
-
-  return parts.join(' · ') || 'Статус не определён';
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1375,8 +1372,10 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
-                <small>{formatCompactCount(value)} просмотров</small>
                 <small>{formatCount(post.reactions)} реакций</small>
+                {post.viewsDelta > 0 && post.viewsDelta !== post.views ? (
+                  <small>{formatCompactCount(post.views)} всего</small>
+                ) : null}
               </div>
             </>
           );
@@ -1548,6 +1547,11 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     stats.meta.viewsAvailable && stats.official.content.views > 0
       ? (stats.official.content.reactions / stats.official.content.views) * 100
       : null;
+  const viewsPerPost =
+    stats.meta.viewsAvailable && stats.official.content.posts > 0
+      ? Math.round(stats.intelligence.benchmarks.viewsPerPost.current)
+      : null;
+  const primarySignal = stats.intelligence.headline.primary;
   const chartTitle =
     effectiveChartTab === 'audience'
       ? 'Аудитория'
@@ -1591,8 +1595,13 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         >
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
-              <div className="channel-insights__status-row">
-                <p>{resolveChannelStateLabel(stats)}</p>
+              <div className="channel-insights__status-row channel-insights__status-row--headline">
+                <span
+                  className={`channel-insights__headline-badge channel-insights__headline-badge--${primarySignal.tone}`}
+                >
+                  <small>{primarySignal.label}</small>
+                  <strong>{primarySignal.value}</strong>
+                </span>
                 <span
                   className={`channel-insights__score channel-insights__score--${stats.health.tone}`}
                   aria-label={`Оценка канала ${stats.health.score} из 100`}
@@ -1631,17 +1640,17 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </article>
 
             <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
-              <small>{stats.meta.viewsAvailable ? 'Просмотры' : 'Посты'}</small>
+              <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
               <strong>
                 {stats.meta.viewsAvailable
-                  ? formatCompactCount(stats.official.content.views)
+                  ? formatCompactCount(viewsPerPost)
                   : formatCount(stats.official.content.posts)}
               </strong>
               <span>
                 {stats.meta.viewsAvailable ? (
                   <>
-                    <DeltaBadge metric={stats.comparison.deltas.views} />
-                    <b>{formatCount(stats.official.content.posts)} постов</b>
+                    <DeltaBadge metric={stats.comparison.deltas.averageViewsPerPost} />
+                    <b>{formatCompactCount(stats.official.content.views)} всего</b>
                   </>
                 ) : (
                   <DeltaBadge metric={stats.comparison.deltas.posts} />
