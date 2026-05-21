@@ -1,3 +1,4 @@
+import './styles/managed-giveaway.css';
 import './styles/lazy-pages.css';
 import './styles/design-preview.css';
 import './styles/broadcast-studio.css';

@@ -10,6 +10,7 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
+import '../styles/managed-giveaway.css';
 import '../styles/lazy-pages.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-route-polish.css';
