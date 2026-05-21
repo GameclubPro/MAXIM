@@ -432,6 +432,13 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
   },
   {
+    name: 'channel-events',
+    path: '/channel/preview-channel/stats',
+    searchParams: {
+      section: 'events',
+    },
+  },
+  {
     name: 'giveaway-blocked',
     path: '/giveaways/preview-giveaway',
     searchParams: {

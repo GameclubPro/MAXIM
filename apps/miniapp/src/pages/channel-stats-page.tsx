@@ -1,5 +1,17 @@
 import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  Activity as IconActivity,
+  Calendar as IconCalendar,
+  ClockRotateRight as IconClockRotateRight,
+  Community as IconCommunity,
+  DatabaseStats as IconDatabaseStats,
+  Eye as IconEye,
+  GraphUp as IconGraphUp,
+  PercentageCircle as IconPercentageCircle,
+  UserPlus as IconUserPlus,
+  UserXmark as IconUserXmark,
+} from 'iconoir-react';
 import '../styles/channel-stats.css';
 import type { CSSProperties } from 'react';
 import { startTransition, useEffect, useMemo, useState } from 'react';
@@ -355,16 +367,31 @@ function ChannelSourceStrip({ stats }: { stats: ChannelStatsResponse }) {
   return (
     <div className="channel-fact-strip" aria-label="Источник и свежесть данных">
       <span>
-        <small>Срез</small>
-        <strong>{formatDateTime(stats.period.to)}</strong>
+        <i className="channel-fact-strip__icon" aria-hidden="true">
+          <IconClockRotateRight width={16} height={16} strokeWidth={2.1} />
+        </i>
+        <div className="channel-fact-strip__copy">
+          <small>Срез</small>
+          <strong>{formatDateTime(stats.period.to)}</strong>
+        </div>
       </span>
       <span>
-        <small>Период</small>
-        <strong>{formatPeriodRange(stats.period.from, stats.period.to)}</strong>
+        <i className="channel-fact-strip__icon" aria-hidden="true">
+          <IconCalendar width={16} height={16} strokeWidth={2.1} />
+        </i>
+        <div className="channel-fact-strip__copy">
+          <small>Период</small>
+          <strong>{formatPeriodRange(stats.period.from, stats.period.to)}</strong>
+        </div>
       </span>
       <span>
-        <small>Покрытие</small>
-        <strong>{coverageLabel}</strong>
+        <i className="channel-fact-strip__icon" aria-hidden="true">
+          <IconDatabaseStats width={16} height={16} strokeWidth={2.1} />
+        </i>
+        <div className="channel-fact-strip__copy">
+          <small>Покрытие</small>
+          <strong>{coverageLabel}</strong>
+        </div>
       </span>
     </div>
   );
@@ -1858,10 +1885,7 @@ function ChannelStatsOverview({
         <div className="channel-insights__summary-copy">
           <span className="channel-insights__eyebrow">Статистика</span>
           <h2>{formatRangeTitle(range)}</h2>
-          <p>
-            {formatPeriodRange(stats.period.from, stats.period.to)} ·{' '}
-            {formatBucketLabel(stats.period.bucket)}
-          </p>
+          <p>{formatPeriodRange(stats.period.from, stats.period.to)}</p>
         </div>
 
         <SegmentedControl
@@ -1872,17 +1896,25 @@ function ChannelStatsOverview({
         />
       </div>
 
-      <ChannelSourceStrip stats={stats} />
-
       <div className="channel-insights__kpi-grid">
         <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
-          <small>Подписчики</small>
+          <div className="channel-insights__kpi-top">
+            <small>Подписчики</small>
+            <span className="channel-insights__kpi-icon" aria-hidden="true">
+              <IconCommunity width={17} height={17} strokeWidth={2.05} />
+            </span>
+          </div>
           <strong>{formatCompactCount(stats.channel.participantsCount)}</strong>
           <span>{formatCount(stats.channel.participantsCount)}</span>
         </article>
 
         <article className={`channel-insights__kpi-card channel-insights__kpi-card--${netTone}`}>
-          <small>Прирост</small>
+          <div className="channel-insights__kpi-top">
+            <small>Прирост</small>
+            <span className="channel-insights__kpi-icon" aria-hidden="true">
+              <IconGraphUp width={17} height={17} strokeWidth={2.05} />
+            </span>
+          </div>
           <strong>{formatSignedCount(audienceNet)}</strong>
           <span>
             <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
@@ -1893,7 +1925,12 @@ function ChannelStatsOverview({
         </article>
 
         <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
-          <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
+          <div className="channel-insights__kpi-top">
+            <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
+            <span className="channel-insights__kpi-icon" aria-hidden="true">
+              <IconEye width={17} height={17} strokeWidth={2.05} />
+            </span>
+          </div>
           <strong>
             {stats.meta.viewsAvailable
               ? formatCompactCount(viewsPerPost)
@@ -1912,7 +1949,12 @@ function ChannelStatsOverview({
         </article>
 
         <article className="channel-insights__kpi-card channel-insights__kpi-card--reactions">
-          <small>{stats.meta.viewsAvailable ? 'ER' : 'Реакции'}</small>
+          <div className="channel-insights__kpi-top">
+            <small>{stats.meta.viewsAvailable ? 'ER' : 'Реакции'}</small>
+            <span className="channel-insights__kpi-icon" aria-hidden="true">
+              <IconPercentageCircle width={17} height={17} strokeWidth={2.05} />
+            </span>
+          </div>
           <strong>
             {engagementRate !== null
               ? formatPercent(engagementRate)
@@ -1951,6 +1993,8 @@ function ChannelStatsOverview({
           <ViewsChart stats={stats} />
         )}
       </article>
+
+      <ChannelSourceStrip stats={stats} />
 
       <article className="channel-fact-panel channel-top-posts-panel">
         <div className="channel-insights__panel-head">
@@ -2071,6 +2115,24 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     }
   }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
 
+  const stats = statsQuery.data ?? null;
+  const activitySummary = useMemo(() => {
+    const joined = activityFeed.items.reduce(
+      (count, item) => count + (item.type === 'joined' ? 1 : 0),
+      0,
+    );
+    const left = activityFeed.items.reduce(
+      (count, item) => count + (item.type === 'left' ? 1 : 0),
+      0,
+    );
+
+    return {
+      total: activityFeed.items.length,
+      joined,
+      left,
+    };
+  }, [activityFeed.items]);
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -2089,8 +2151,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       </div>
     );
   }
-
-  const stats = statsQuery.data ?? null;
 
   if (section === 'overview' && statsQuery.isLoading && !stats) {
     return (
@@ -2194,7 +2254,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <div className="channel-insights__summary-copy">
                 <span className="channel-insights__eyebrow">События</span>
                 <h2>{formatRangeTitle(range)}</h2>
-                <p>История входов и выходов участников</p>
+                <p>История участников</p>
               </div>
               <SegmentedControl
                 value={range}
@@ -2202,6 +2262,30 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                 onChange={(next) => setRange(next as ChannelStatsRange)}
                 className="channel-insights__range"
               />
+            </div>
+
+            <div className="channel-events-section__metrics" aria-label="Сводка загруженных событий">
+              <span className="channel-events-section__metric channel-events-section__metric--total">
+                <span className="channel-events-section__metric-icon" aria-hidden="true">
+                  <IconActivity width={17} height={17} strokeWidth={2.05} />
+                </span>
+                <small>Событий</small>
+                <strong>{formatCount(activitySummary.total)}</strong>
+              </span>
+              <span className="channel-events-section__metric channel-events-section__metric--joined">
+                <span className="channel-events-section__metric-icon" aria-hidden="true">
+                  <IconUserPlus width={17} height={17} strokeWidth={2.05} />
+                </span>
+                <small>Вошли</small>
+                <strong>{formatCount(activitySummary.joined)}</strong>
+              </span>
+              <span className="channel-events-section__metric channel-events-section__metric--left">
+                <span className="channel-events-section__metric-icon" aria-hidden="true">
+                  <IconUserXmark width={17} height={17} strokeWidth={2.05} />
+                </span>
+                <small>Вышли</small>
+                <strong>{formatCount(activitySummary.left)}</strong>
+              </span>
             </div>
 
             <MembershipActivityFeed
