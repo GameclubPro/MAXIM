@@ -20,8 +20,9 @@ export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
       return;
     }
 
-    const outcome =
-      await this.managedEntitiesDiscoveryService.processManagedEntitiesRefreshJob(job.data);
+    const outcome = await this.managedEntitiesDiscoveryService.processManagedEntitiesRefreshJob(
+      job.data,
+    );
     if (!outcome) {
       return;
     }

@@ -307,11 +307,15 @@ function formatRangeTitle(range: ChannelStatsRange): string {
   return periodOptions.find((option) => option.value === range)?.label ?? range;
 }
 
-function formatViewModeLabel(mode: ChannelStatsResponse['official']['content']['viewsMode']): string {
+function formatViewModeLabel(
+  mode: ChannelStatsResponse['official']['content']['viewsMode'],
+): string {
   return mode === 'observedDelta' ? 'прирост за период' : 'последний total';
 }
 
-function formatMissingMetric(metric: ChannelStatsResponse['meta']['missingOfficialMetrics'][number]) {
+function formatMissingMetric(
+  metric: ChannelStatsResponse['meta']['missingOfficialMetrics'][number],
+) {
   if (metric === 'reach') {
     return 'охват';
   }
@@ -487,7 +491,11 @@ function resolveChartIndexFromClientX(
   return Math.round(ratio * (pointsLength - 1));
 }
 
-function resolveAlignedIndex(sourceLength: number, targetIndex: number, targetLength: number): number {
+function resolveAlignedIndex(
+  sourceLength: number,
+  targetIndex: number,
+  targetLength: number,
+): number {
   if (sourceLength <= 1 || targetLength <= 1) {
     return 0;
   }
@@ -702,10 +710,8 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     .map((item) => item.participantsCount)
     .filter((item): item is number => typeof item === 'number');
   const allParticipantValues = [...participantValues, ...previousParticipantValues];
-  const minParticipants =
-    allParticipantValues.length > 0 ? Math.min(...allParticipantValues) : 0;
-  const maxParticipants =
-    allParticipantValues.length > 0 ? Math.max(...allParticipantValues) : 0;
+  const minParticipants = allParticipantValues.length > 0 ? Math.min(...allParticipantValues) : 0;
+  const maxParticipants = allParticipantValues.length > 0 ? Math.max(...allParticipantValues) : 0;
   const participantSpan = Math.max(1, maxParticipants - minParticipants);
   const participantPadding = Math.max(1, participantSpan * 0.16);
   const participantMin = minParticipants - participantPadding;

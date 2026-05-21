@@ -32,10 +32,7 @@ export function getMaxBridge() {
 
 function hasBridgeRuntimePayload(bridge: ReturnType<typeof resolveBridge>): boolean {
   return Boolean(
-    bridge?.initData ||
-      bridge?.init_data ||
-      bridge?.initDataUnsafe ||
-      bridge?.init_data_unsafe,
+    bridge?.initData || bridge?.init_data || bridge?.initDataUnsafe || bridge?.init_data_unsafe,
   );
 }
 
@@ -198,10 +195,7 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
   const { width, height } = resolveViewportSize();
   const viewportTop = Math.round(viewport?.offsetTop ?? 0);
   const viewportLeft = Math.round(viewport?.offsetLeft ?? 0);
-  const keyboardOverlap = Math.max(
-    0,
-    Math.round(window.innerHeight - (height + viewportTop)),
-  );
+  const keyboardOverlap = Math.max(0, Math.round(window.innerHeight - (height + viewportTop)));
   const previewPreset = options.previewDevice
     ? getPreviewDevicePreset(options.previewDevice)
     : null;
@@ -534,12 +528,10 @@ function isDisabledInteractiveElement(element: HTMLElement): boolean {
     return true;
   }
 
-  return (
-    element instanceof HTMLButtonElement ||
+  return element instanceof HTMLButtonElement ||
     element instanceof HTMLInputElement ||
     element instanceof HTMLSelectElement ||
     element instanceof HTMLTextAreaElement
-  )
     ? element.disabled
     : false;
 }

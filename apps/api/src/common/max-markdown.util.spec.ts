@@ -90,9 +90,7 @@ describe('renderSupportedMarkdownAsHtml', () => {
       renderSupportedMarkdownAsHtml('# Анонс\n\n```\nconst value = "<MAX>";\n```\n\nТекст', {
         blockMode: 'raw',
       }),
-    ).toBe(
-      '<strong>Анонс</strong>\n\n<pre>const value = &quot;&lt;MAX&gt;&quot;;</pre>\n\nТекст',
-    );
+    ).toBe('<strong>Анонс</strong>\n\n<pre>const value = &quot;&lt;MAX&gt;&quot;;</pre>\n\nТекст');
     expect(stripSupportedMarkdownToPlainText('# Анонс\n\n```\nconst value = "<MAX>";\n```')).toBe(
       'Анонс\n\nconst value = "<MAX>";',
     );

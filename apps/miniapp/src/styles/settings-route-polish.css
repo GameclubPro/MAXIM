@@ -3031,8 +3031,7 @@ body.channel-settings-page-open {
   border-radius: 24px 24px 0 0;
   border-color: rgba(136, 163, 188, 0.18);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.97)),
-    #f7fafc;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.97)), #f7fafc;
   box-shadow:
     0 22px 58px rgba(18, 38, 61, 0.16),
     0 8px 24px rgba(18, 38, 61, 0.07);
@@ -4354,9 +4353,7 @@ body.channel-settings-page-open {
   white-space: normal;
 }
 
-.settings-drilldown__panel--ladder
-  .settings-native-toggle--nested
-  .settings-native-toggle__title {
+.settings-drilldown__panel--ladder .settings-native-toggle--nested .settings-native-toggle__title {
   font-size: 0.74rem;
 }
 

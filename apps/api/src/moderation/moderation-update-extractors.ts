@@ -57,7 +57,9 @@ export function collectForwardedTextSnippets(raw: unknown): string[] {
   return [...snippets];
 }
 
-export function extractRawMessageNode(raw: Record<string, unknown>): Record<string, unknown> | null {
+export function extractRawMessageNode(
+  raw: Record<string, unknown>,
+): Record<string, unknown> | null {
   const directMessage = asRecord(raw.message);
   if (directMessage) {
     return directMessage;

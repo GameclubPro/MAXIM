@@ -26,8 +26,6 @@ export function createRuleDetectionContext(params: {
     normalizedText,
     rawLoweredText: settings.commercialAdsFilterEnabled ? text.toLowerCase() : '',
     measuredLength: typeof effectiveLength === 'number' ? effectiveLength : text.length,
-    compactText: settings.antiDuplicateEnabled
-      ? normalizedText.replace(/\s+/g, ' ').trim()
-      : '',
+    compactText: settings.antiDuplicateEnabled ? normalizedText.replace(/\s+/g, ' ').trim() : '',
   };
 }

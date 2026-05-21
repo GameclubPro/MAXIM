@@ -1,8 +1,4 @@
-import {
-  hydrateMirroredItem,
-  readLocalMirrorItem,
-  saveMirroredItem,
-} from './native-storage';
+import { hydrateMirroredItem, readLocalMirrorItem, saveMirroredItem } from './native-storage';
 
 export const LAST_CHAT_ID_KEY = 'maxim:last-chat-id';
 export const LAST_ENTITY_TYPE_KEY = 'maxim:last-entity-type';

@@ -57,12 +57,7 @@ const allowedLegacyImportFiles = new Set([
 ]);
 
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
-const ignoredDirectoryNames = new Set([
-  '.git',
-  'coverage',
-  'dist',
-  'node_modules',
-]);
+const ignoredDirectoryNames = new Set(['.git', 'coverage', 'dist', 'node_modules']);
 const legacyImportPattern =
   /\b(?:import|export)\b[\s\S]*?\bfrom\s+['"][^'"]*\.legacy(?:\.[^'"]+)?['"]|import\s*\(\s*['"][^'"]*\.legacy(?:\.[^'"]+)?['"]\s*\)/u;
 
@@ -73,7 +68,8 @@ const runtimeEntrypointBoundaryGuards = [
     patterns: [
       {
         pattern: /\bWebhookService\b/u,
-        reason: 'Controllers should keep webhook signature, parsing, rate-limit, and outbox ingestion behind WebhookIngestionService.',
+        reason:
+          'Controllers should keep webhook signature, parsing, rate-limit, and outbox ingestion behind WebhookIngestionService.',
       },
       {
         pattern: /\bWebhookParser\b/u,
@@ -87,7 +83,8 @@ const runtimeEntrypointBoundaryGuards = [
     patterns: [
       {
         pattern: /\bMaxClientService\b/u,
-        reason: 'Action workers should dispatch through MaxActionDispatchService so MAX API execution can be isolated from processor topology.',
+        reason:
+          'Action workers should dispatch through MaxActionDispatchService so MAX API execution can be isolated from processor topology.',
       },
       {
         pattern: /\bexecuteActionJob\s*\(/u,
@@ -101,11 +98,13 @@ const runtimeEntrypointBoundaryGuards = [
     patterns: [
       {
         pattern: /\bModerationService\b/u,
-        reason: 'Dynamic moderation workers should execute through ModerationExecutionService instead of depending on the legacy moderation service.',
+        reason:
+          'Dynamic moderation workers should execute through ModerationExecutionService instead of depending on the legacy moderation service.',
       },
       {
         pattern: /\bmoderationService\.processWebhookEvent\s*\(/u,
-        reason: 'Dynamic moderation workers should call ModerationExecutionService.processWebhookEvent.',
+        reason:
+          'Dynamic moderation workers should call ModerationExecutionService.processWebhookEvent.',
       },
     ],
   },
@@ -115,15 +114,19 @@ const runtimeEntrypointBoundaryGuards = [
     patterns: [
       {
         pattern: /\bAdminService\b/u,
-        reason: 'Managed-entities refresh workers should stay behind the discovery boundary instead of reaching legacy admin directly.',
+        reason:
+          'Managed-entities refresh workers should stay behind the discovery boundary instead of reaching legacy admin directly.',
       },
       {
         pattern: /\bManagedEntitiesService\b/u,
-        reason: 'Managed-entities refresh workers should use ManagedEntitiesDiscoveryService as the runtime discovery boundary.',
+        reason:
+          'Managed-entities refresh workers should use ManagedEntitiesDiscoveryService as the runtime discovery boundary.',
       },
       {
-        pattern: /\b(?:adminService|managedEntitiesService)\.processManagedEntitiesRefreshJob\s*\(/u,
-        reason: 'Managed-entities refresh workers should dispatch through ManagedEntitiesDiscoveryService.',
+        pattern:
+          /\b(?:adminService|managedEntitiesService)\.processManagedEntitiesRefreshJob\s*\(/u,
+        reason:
+          'Managed-entities refresh workers should dispatch through ManagedEntitiesDiscoveryService.',
       },
     ],
   },

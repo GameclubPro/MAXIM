@@ -3,9 +3,7 @@ import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.se
 describe('ManagedEntitiesDiscoveryService', () => {
   it('keeps managed entity refresh jobs behind the discovery boundary', async () => {
     const managedEntitiesService = {
-      processManagedEntitiesRefreshJob: jest
-        .fn()
-        .mockResolvedValue({ continueAfterMs: 5_000 }),
+      processManagedEntitiesRefreshJob: jest.fn().mockResolvedValue({ continueAfterMs: 5_000 }),
       listChatsWithRefreshState: jest.fn(),
       listChannelsWithRefreshState: jest.fn(),
     };

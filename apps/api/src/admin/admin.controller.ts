@@ -515,7 +515,13 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.dialogService.toggleChannelDialogReaction(chatId, user, dialogType, messageId, body);
+    return this.dialogService.toggleChannelDialogReaction(
+      chatId,
+      user,
+      dialogType,
+      messageId,
+      body,
+    );
   }
 
   @Get('chats/:chatId/dialog/:dialogType')

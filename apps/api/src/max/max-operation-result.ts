@@ -19,6 +19,4 @@ export type MaxOperationSuccess<TValue = void> = {
   value: TValue;
 };
 
-export type MaxOperationResult<TValue = void> =
-  | MaxOperationSuccess<TValue>
-  | MaxOperationFailure;
+export type MaxOperationResult<TValue = void> = MaxOperationSuccess<TValue> | MaxOperationFailure;

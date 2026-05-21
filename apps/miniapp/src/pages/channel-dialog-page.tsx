@@ -72,12 +72,7 @@ import {
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import {
-  downloadMaxFile,
-  maxImpact,
-  maxSelectionChanged,
-  openMaxBotLink,
-} from '../lib/max-bridge';
+import { downloadMaxFile, maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';

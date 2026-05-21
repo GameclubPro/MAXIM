@@ -5835,7 +5835,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 busy={isRulesBusy}
                                 ariaLabel="Сводка правил"
                               />
-
                             </div>
 
                             <div className="broadcast-compose-flow broadcast-compose-flow--screen rules-compose-flow">
@@ -6714,9 +6713,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle text-filter-card">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Фильтр рекламы
-                            </span>
+                            <span className="settings-native-toggle__title">Фильтр рекламы</span>
                             <button
                               type="button"
                               className={cn(

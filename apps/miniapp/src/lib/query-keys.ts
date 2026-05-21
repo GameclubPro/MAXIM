@@ -34,10 +34,8 @@ export const queryKeys = {
   currentUser: (chatId: string | null | undefined) => ['me', chatId ?? null] as const,
   settingsHeaderBotLoad: (botIdsSignature: string) =>
     ['settings-header-bot-load', botIdsSignature] as const,
-  chatManagedBroadcastCalendar: (
-    chatId: string | null | undefined,
-    ...scope: readonly unknown[]
-  ) => ['managed-broadcast-calendar', chatId, ...scope] as const,
+  chatManagedBroadcastCalendar: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
+    ['managed-broadcast-calendar', chatId, ...scope] as const,
 
   channelSettingsScreen: (chatId: string | null | undefined) =>
     ['channel-settings-screen', chatId] as const,

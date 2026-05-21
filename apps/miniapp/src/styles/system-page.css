@@ -1,14 +1,12 @@
 @layer pages {
-
-.system-hero__eyebrow,
-.system-panel__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
+  .system-hero__eyebrow,
+  .system-panel__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
 }
 
 .system-hero__main {

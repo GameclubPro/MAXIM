@@ -10,7 +10,7 @@ on:
       services:
         description: Space-separated service names. Leave empty to deploy the default production set.
         required: false
-        default: ""
+        default: ''
 
 permissions:
   contents: read

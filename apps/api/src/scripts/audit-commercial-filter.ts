@@ -1,5 +1,10 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { createPrismaClient, Prisma, PrismaClient, type ChatSettings } from '../prisma/prisma-client';
+import {
+  createPrismaClient,
+  Prisma,
+  PrismaClient,
+  type ChatSettings,
+} from '../prisma/prisma-client';
 import { config as loadEnv } from 'dotenv';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

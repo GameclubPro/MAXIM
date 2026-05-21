@@ -1273,7 +1273,9 @@ export class MaxBotLinkService {
     const primaryBotId =
       this.resolvePreferredPrimaryBotId(
         storedPrimaryBotId,
-        activeActionableMemberships.length > 0 ? activeActionableMemberships : activeKnownMemberships,
+        activeActionableMemberships.length > 0
+          ? activeActionableMemberships
+          : activeKnownMemberships,
       ) ??
       storedPrimaryBotId ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)

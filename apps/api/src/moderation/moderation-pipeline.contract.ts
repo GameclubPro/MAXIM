@@ -15,8 +15,7 @@ export type ModerationPipelineContext<TUpdate = unknown> = {
 };
 
 export type ModerationPipelineStageResult<TContext extends ModerationPipelineContext> =
-  | TContext
-  | void;
+  TContext | void;
 
 export interface ModerationPipelineStage<
   TContext extends ModerationPipelineContext = ModerationPipelineContext,

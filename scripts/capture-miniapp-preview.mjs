@@ -99,7 +99,10 @@ const scenarios = [
         });
         window.scrollBy({ top: -84, behavior: 'instant' });
       });
-      await page.locator('.broadcast-link-editor input[type="url"]').first().fill('https://max.ru/');
+      await page
+        .locator('.broadcast-link-editor input[type="url"]')
+        .first()
+        .fill('https://max.ru/');
       await page.waitForTimeout(350);
     },
   },

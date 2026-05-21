@@ -1842,7 +1842,9 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain(
       'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
     );
-    expect(String(updatePayload?.text ?? '')).toContain('Телефонные номера в сообщениях запрещены.');
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Телефонные номера в сообщениях запрещены.',
+    );
     expect(getLastUiText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 

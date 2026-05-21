@@ -4198,9 +4198,7 @@
   align-items: flex-end;
   justify-content: center;
   padding: 12px 8px
-    calc(
-      12px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px)
-    );
+    calc(12px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px));
 }
 
 .action-confirm-sheet__backdrop {

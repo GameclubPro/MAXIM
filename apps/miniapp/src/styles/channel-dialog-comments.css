@@ -1,23 +1,21 @@
 @layer pages {
+  /* Loaded only with the comments dialog route. */
 
-/* Loaded only with the comments dialog route. */
-
-.channel-dialog-screen {
-  --dialog-accent: #0b84ff;
-  --dialog-bg-start: #edf5ff;
-  --dialog-bg-end: #f9fbff;
-  --dialog-surface: rgba(255, 255, 255, 0.9);
-  position: relative;
-  min-height: 100%;
-  height: 100%;
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  padding: max(10px, env(safe-area-inset-top, 0px)) clamp(10px, 2vw, 16px)
-    max(10px, calc(var(--safe-bottom) + 6px)) clamp(10px, 2vw, 16px);
-  background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
-}
-
+  .channel-dialog-screen {
+    --dialog-accent: #0b84ff;
+    --dialog-bg-start: #edf5ff;
+    --dialog-bg-end: #f9fbff;
+    --dialog-surface: rgba(255, 255, 255, 0.9);
+    position: relative;
+    min-height: 100%;
+    height: 100%;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    padding: max(10px, env(safe-area-inset-top, 0px)) clamp(10px, 2vw, 16px)
+      max(10px, calc(var(--safe-bottom) + 6px)) clamp(10px, 2vw, 16px);
+    background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+  }
 }
 
 .channel-dialog-screen--suggest {

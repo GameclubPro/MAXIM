@@ -1,13 +1,11 @@
 @layer pages {
+  /* Public giveaway route styles split from lazy-pages.css. */
 
-/* Public giveaway route styles split from lazy-pages.css. */
-
-.giveaway-page {
-  width: min(100%, 960px);
-  margin: 0 auto;
-  gap: 16px;
-}
-
+  .giveaway-page {
+    width: min(100%, 960px);
+    margin: 0 auto;
+    gap: 16px;
+  }
 }
 
 .giveaway-page--modal-only {
@@ -552,7 +550,6 @@
 }
 
 @media (min-width: 720px) {
-
   .giveaway-page__requirement-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1662,7 +1659,6 @@
 }
 
 @media (max-width: 430px) {
-
   .giveaway-page__main-image {
     height: 112px;
   }

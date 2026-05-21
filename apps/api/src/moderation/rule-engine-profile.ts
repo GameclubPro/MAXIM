@@ -22,10 +22,7 @@ export function createRuleEngineDetectProfile(): RuleEngineDetectProfile {
   };
 }
 
-export function markRuleEngineDetectStage(
-  profile: RuleEngineDetectProfile,
-  stage: string,
-): void {
+export function markRuleEngineDetectStage(profile: RuleEngineDetectProfile, stage: string): void {
   const now = Date.now();
   profile.latestStage = stage;
   profile.stages.set(stage, Math.max(0, now - profile.lastMarkedAtMs));

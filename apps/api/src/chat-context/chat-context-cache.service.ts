@@ -832,10 +832,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
     const userScoped = (
       await this.getManagedEntitiesRecentBootstrapFromKey(
-        ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(
-          entityType,
-          normalizedUserId,
-        ),
+        ChatContextCacheService.managedEntitiesRecentBootstrapUserKey(entityType, normalizedUserId),
         { entityType, userId: normalizedUserId },
       )
     ).map((entry) => this.ensureRecentBootstrapEntryUser(entry, normalizedUserId));
@@ -1059,11 +1056,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
           )
           .filter((userId): userId is string => Boolean(userId))
           .map((userId) =>
-            this.removeManagedEntitiesRecentBootstrap(
-              currentEntityType,
-              normalizedChatId,
-              userId,
-            ),
+            this.removeManagedEntitiesRecentBootstrap(currentEntityType, normalizedChatId, userId),
           ),
       ]);
       await this.redis.del(chatUsersKey);

@@ -7,7 +7,7 @@ type WebhookQueueRetryPolicyName = Extract<
 
 export type ProcessWebhookJob = QueueJobEnvelope<
   {
-  webhookEventId: string;
+    webhookEventId: string;
   },
   {
     retryPolicyName?: WebhookQueueRetryPolicyName;
