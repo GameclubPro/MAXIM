@@ -109,6 +109,10 @@ function linkWarnNotice(name: string): string {
   return `Товарищ ${userMention(name)}, взял на карандаш 📝 По ссылкам тут режим строгий, не доводим до протокола.`;
 }
 
+function editedLinkWarnNotice(name: string): string {
+  return `${userMention(name)}, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.`;
+}
+
 function messageLimitsWarnNotice(name: string, reason: string): string {
   return `Товарищ ${userMention(name)}, взял на карандаш 📝 Причина: ${reason}.`;
 }
@@ -12077,6 +12081,64 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('uses edited-message copy for link WARN after a quiet edit', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: false,
+            linkWarnEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate({
+      ...createUpdate(),
+      type: 'message_edited',
+    });
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      editedLinkWarnNotice('Алексей'),
+    );
   });
 
   it('sends only WARN on second link when explanation and warning are enabled', async () => {

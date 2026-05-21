@@ -327,6 +327,29 @@ describe('bot speech styles', () => {
     );
   });
 
+  it('uses subtle edited-message copy for default link notices', () => {
+    const service = createService();
+    const userLabel = '**Алексей**';
+
+    expect((service as any).buildLinkExplanation(userLabel, true, '', 'POLICE', true)).toBe(
+      '**Алексей**, ссылку убрал. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь не проходят.',
+    );
+    expect((service as any).buildLinkWarnExplanation(userLabel, '', 'POLICE', true)).toBe(
+      '**Алексей**, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.',
+    );
+
+    expect(
+      (service as any).buildLinkWarnExplanation(
+        userLabel,
+        'Ручной текст: {warning}. Причина: {reason}.',
+        'POLICE',
+        true,
+      ),
+    ).toBe(
+      'Ручной текст: вынесено предупреждение за ссылку после редактирования. Причина: ссылка появилась после тихой правки; в этом чате ссылки всё ещё нельзя.',
+    );
+  });
+
   it('applies style presets by clearing all editable overrides and saving the base style', () => {
     const nextSettings = applyBotSpeechStylePreset(
       createBotSpeechSettings({

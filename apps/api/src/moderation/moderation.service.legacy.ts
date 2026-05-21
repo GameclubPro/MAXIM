@@ -2033,6 +2033,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   messageDeleted,
                   settings.linkBotMessageText,
                   settings.botSpeechStyle,
+                  updateType === 'message_edited',
                 ),
                 settings.linkAdminContactButtonEnabled,
                 settings.linkAdminContactButtonUrl,
@@ -2059,6 +2060,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   userLabel,
                   settings.linkWarnMessageText,
                   settings.botSpeechStyle,
+                  updateType === 'message_edited',
                 ),
                 settings.linkAdminContactButtonEnabled,
                 settings.linkAdminContactButtonUrl,
@@ -2895,9 +2897,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     canDeleteMessage: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
+    editedMessage = false,
   ): string {
-    const reason = 'в этом чате ссылки не проходят, без ссылок';
+    const reason = editedMessage
+      ? 'ссылка появилась после тихой правки; в этом чате ссылки не проходят'
+      : 'в этом чате ссылки не проходят, без ссылок';
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+    const hasTemplateOverride =
+      typeof templateText === 'string' && templateText.trim().length > 0;
+    if (editedMessage && !hasTemplateOverride) {
+      const editedFallback =
+        '{user}, ссылку убрал. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь не проходят.';
+      return this.renderBotMessageTemplate(editedFallback, editedFallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason,
+      });
+    }
+
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
       fieldKey: 'linkBotMessageText',
@@ -3001,9 +3018,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
+    editedMessage = false,
   ): string {
-    const reason = 'в этом чате ссылки не проходят, без ссылок';
-    const warning = 'вынесено предупреждение за ссылку';
+    const reason = editedMessage
+      ? 'ссылка появилась после тихой правки; в этом чате ссылки всё ещё нельзя'
+      : 'в этом чате ссылки не проходят, без ссылок';
+    const warning = editedMessage
+      ? 'вынесено предупреждение за ссылку после редактирования'
+      : 'вынесено предупреждение за ссылку';
+    const hasTemplateOverride =
+      typeof templateText === 'string' && templateText.trim().length > 0;
+    if (editedMessage && !hasTemplateOverride) {
+      const editedFallback =
+        '{user}, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.';
+      return this.renderBotMessageTemplate(editedFallback, editedFallback, {
+        user: userLabel,
+        reason,
+        warning,
+      });
+    }
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
