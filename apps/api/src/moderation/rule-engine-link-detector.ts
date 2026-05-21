@@ -11,6 +11,16 @@ type AllowlistMatchers = {
   domains: Set<string>;
 };
 
+type ResolvedLink = {
+  raw: string;
+  match: {
+    normalizedLink: string;
+    normalizedDomain: string | null;
+  };
+  allowlisted: boolean;
+  explicit: boolean;
+};
+
 export function detectBlockedLink(
   text: string,
   policy: LinkPolicy,
@@ -31,20 +41,37 @@ export function detectBlockedLink(
   }
 
   const matchers = buildAllowlistMatchers(allowlist);
+  const resolvedLinks = resolveDetectedLinks(links, matchers);
+  const allowlistedExplicitDomains = new Set(
+    resolvedLinks
+      .filter((link) => link.allowlisted && link.explicit && link.match.normalizedDomain)
+      .map((link) => link.match.normalizedDomain as string),
+  );
+  const allowlistedExplicitDomainLabels = new Set(
+    [...allowlistedExplicitDomains]
+      .map((domain) => extractDomainBrandLabel(domain))
+      .filter((label): label is string => label !== null),
+  );
 
-  for (const link of links) {
-    if (policy === LinkPolicy.ALLOWLIST_ONLY && !shouldCheckExactAllowlistLink(link)) {
+  for (const link of resolvedLinks) {
+    if (link.allowlisted) {
       continue;
     }
 
-    const linkMatch = resolveAllowlistMatch(link);
-    if (!linkMatch) {
+    if (
+      !link.explicit &&
+      link.match.normalizedDomain &&
+      (allowlistedExplicitDomains.has(link.match.normalizedDomain) ||
+        isBareBrandMentionForAllowedLink(
+          link.raw,
+          link.match.normalizedDomain,
+          allowlistedExplicitDomainLabels,
+        ))
+    ) {
       continue;
     }
 
-    if (!isAllowlistedLink(matchers, linkMatch)) {
-      return `Link ${linkMatch.normalizedLink} is not in allowlist`;
-    }
+    return `Link ${link.match.normalizedLink} is not in allowlist`;
   }
 
   return null;
@@ -73,6 +100,29 @@ function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers
   }
 
   return { exactLinks, domains };
+}
+
+function resolveDetectedLinks(
+  links: readonly string[],
+  matchers: AllowlistMatchers,
+): ResolvedLink[] {
+  const resolved: ResolvedLink[] = [];
+
+  for (const raw of links) {
+    const match = resolveAllowlistMatch(raw);
+    if (!match) {
+      continue;
+    }
+
+    resolved.push({
+      raw,
+      match,
+      allowlisted: isAllowlistedLink(matchers, match),
+      explicit: isExplicitLink(raw),
+    });
+  }
+
+  return resolved;
 }
 
 function resolveAllowlistMatch(
@@ -104,7 +154,33 @@ function isAllowlistedLink(
   return false;
 }
 
-function shouldCheckExactAllowlistLink(value: string): boolean {
+function isBareBrandMentionForAllowedLink(
+  raw: string,
+  normalizedDomain: string,
+  allowlistedDomainLabels: ReadonlySet<string>,
+): boolean {
+  if (!/[A-Z]/.test(raw)) {
+    return false;
+  }
+
+  const brandLabel = extractDomainBrandLabel(normalizedDomain);
+  return brandLabel !== null && allowlistedDomainLabels.has(brandLabel);
+}
+
+function extractDomainBrandLabel(domain: string): string | null {
+  const labels = domain
+    .trim()
+    .toLowerCase()
+    .split('.')
+    .filter((label) => label.length > 0);
+  if (labels.length < 2) {
+    return null;
+  }
+
+  return labels[labels.length - 2] ?? null;
+}
+
+function isExplicitLink(value: string): boolean {
   const normalized = value.trim();
   if (!normalized) {
     return false;

@@ -502,6 +502,32 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('blocks bare domains in ALLOWLIST_ONLY mode', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'подробнее на bad.com',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('blocks bare unicode domains in ALLOWLIST_ONLY mode', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'каталог мебельтюмень.рф',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
   it('does not treat dotted russian words as blocked links', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -594,6 +620,32 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('ignores a preceding bare branded domain when the same message has an exact allowlisted URL', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Читайте на URA.RU https://ura.news/news/1053075490',
+      settings: buildSettings(),
+      domainAllowlist: ['https://ura.news/news/1053075490'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('blocks bare domains that are not backed by an allowlisted URL in the same message', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Читайте на URA.RU',
+      settings: buildSettings(),
+      domainAllowlist: ['https://ura.news/news/1053075490'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
   it('does not detect PROFANITY when russian profanity filter is disabled', async () => {

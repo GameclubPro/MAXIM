@@ -64,7 +64,7 @@ export function formatDeleteBotMessagesDelayLabel(value: number): string {
 }
 
 const ALLOWLIST_URL_CANDIDATE_PATTERN =
-  /(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<>"'()[\]{}]*/i;
+  /(?:https?:\/\/|(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:[a-z]{2,24}|xn--[a-z0-9-]{2,59}|рф))[^\s<>"'()[\]{}]*/iu;
 const ENCODED_WHITESPACE_PATTERN = /%(?:09|0a|0d|20)/i;
 const ALLOWLIST_HOST_ALIASES = new Map<string, string>([
   ['vk.com', 'vk.com'],
