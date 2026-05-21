@@ -12054,19 +12054,7 @@ body.channel-stats-page-open .bottom-nav__item {
   margin-bottom: 10px;
 }
 
-/* Channel stats cleanup: remove repeated heading weight and keep facts above the nav. */
-.channel-insights__summary-copy h2 {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
+/* Channel stats cleanup: compact facts only, no secondary chrome. */
 .channel-insights__summary-copy p {
   min-height: 28px;
   display: inline-flex;
@@ -12081,47 +12069,22 @@ body.channel-stats-page-open .bottom-nav__item {
   font-weight: 780;
 }
 
-.channel-command-strip {
-  gap: 5px;
+.channel-insights__signal-strip {
+  flex-wrap: wrap;
+  overflow: visible;
+  padding-bottom: 0;
 }
 
-.channel-command-strip__item {
-  min-height: 54px;
-  padding: 8px;
-  border-radius: 13px;
+.channel-insights__signal {
+  flex: 1 1 118px;
+  min-width: 0;
+  justify-content: space-between;
 }
 
-.channel-command-strip__item small {
-  font-size: 0.5rem;
-}
-
-.channel-command-strip__item strong {
-  font-size: 0.92rem;
-}
-
-.channel-command-strip__item em {
-  font-size: 0.56rem;
-}
-
-.channel-cohort-card--wide {
-  padding: 10px;
-  border-radius: 15px;
-}
-
-.channel-cohort-card--wide .channel-cohort-card__steps {
-  gap: 7px;
-}
-
-.channel-insights__extras {
-  gap: 6px;
-}
-
-.channel-insights__extras-summary {
-  min-height: 34px;
-  padding: 7px 10px;
-  border-radius: 13px;
-}
-
-.channel-insights__extras-summary strong {
-  font-size: 0.62rem;
+.channel-insights__signal small,
+.channel-insights__signal strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
