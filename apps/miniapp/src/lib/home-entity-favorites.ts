@@ -1,4 +1,5 @@
 import type { ChatSummary, ManagedEntityFavoriteType } from '@maxim/contracts';
+import { hydrateMirroredItem, readLocalMirrorItem, saveMirroredItem } from './native-storage';
 
 export type HomeEntityFavoriteEntityType = 'chat' | 'channel';
 export type HomeEntityFavoriteType = ManagedEntityFavoriteType;
@@ -170,7 +171,7 @@ export function readHomeEntityFavorites(scope?: string | null): HomeEntityFavori
   }
 
   try {
-    const raw = window.localStorage.getItem(buildHomeEntityFavoritesStorageKey(scope));
+    const raw = readLocalMirrorItem(buildHomeEntityFavoritesStorageKey(scope));
     if (!raw) {
       return createEmptyHomeEntityFavorites();
     }
@@ -190,7 +191,7 @@ export function readLegacyHomeEntityFavorites(scope?: string | null): LegacyHome
   }
 
   try {
-    const raw = window.localStorage.getItem(buildLegacyHomeEntityFavoritesStorageKey(scope));
+    const raw = readLocalMirrorItem(buildLegacyHomeEntityFavoritesStorageKey(scope));
     if (!raw) {
       return {
         chat: [],
@@ -216,12 +217,31 @@ export function saveHomeEntityFavorites(
   }
 
   try {
-    window.localStorage.setItem(
+    saveMirroredItem(
       buildHomeEntityFavoritesStorageKey(scope),
       JSON.stringify(sanitizeHomeEntityFavorites(favorites)),
     );
   } catch {
     // Ignore localStorage failures in restrictive WebView environments.
+  }
+}
+
+export async function hydrateHomeEntityFavorites(
+  scope?: string | null,
+): Promise<HomeEntityFavorites> {
+  if (typeof window === 'undefined') {
+    return createEmptyHomeEntityFavorites();
+  }
+
+  try {
+    const raw = await hydrateMirroredItem(buildHomeEntityFavoritesStorageKey(scope));
+    if (!raw) {
+      return createEmptyHomeEntityFavorites();
+    }
+
+    return sanitizeHomeEntityFavorites(JSON.parse(raw));
+  } catch {
+    return createEmptyHomeEntityFavorites();
   }
 }
 

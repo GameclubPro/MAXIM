@@ -19,7 +19,11 @@ import { createApiTransport } from './lib/api/transport';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData, waitForInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
-import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
+import {
+  installMaxNativeInteractionFeedback,
+  readyMaxMiniApp,
+  syncMaxNativeEnvironment,
+} from './lib/max-bridge';
 import { PUBLIC_BASE_PATH, PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
   LazyChannelDialogPage,
@@ -322,6 +326,8 @@ export function App() {
     readyMaxMiniApp();
     return cleanup;
   }, [preview.device, preview.enabled]);
+
+  useEffect(() => installMaxNativeInteractionFeedback(), []);
 
   useEffect(() => {
     if (!preview.enabled || previewRuntime) {

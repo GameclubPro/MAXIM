@@ -1,3 +1,9 @@
+import {
+  hydrateMirroredItem,
+  readLocalMirrorItem,
+  saveMirroredItem,
+} from './native-storage';
+
 export const LAST_CHAT_ID_KEY = 'maxim:last-chat-id';
 export const LAST_ENTITY_TYPE_KEY = 'maxim:last-entity-type';
 export const LAST_CHAT_ENTITY_ID_KEY = 'maxim:last-chat-entity-id';
@@ -11,13 +17,7 @@ type ManagedEntityListItem = {
 };
 
 export function readLastChatId(): string {
-  try {
-    return (
-      window.localStorage.getItem(LAST_CHAT_ID_KEY) ?? readLastEntityId(readLastEntityType()) ?? ''
-    );
-  } catch {
-    return '';
-  }
+  return readLocalMirrorItem(LAST_CHAT_ID_KEY) ?? readLastEntityId(readLastEntityType()) ?? '';
 }
 
 export function saveLastChatId(chatId: string): void {
@@ -25,11 +25,7 @@ export function saveLastChatId(chatId: string): void {
     return;
   }
 
-  try {
-    window.localStorage.setItem(LAST_CHAT_ID_KEY, chatId);
-  } catch {
-    // Ignore localStorage failures in restrictive WebView environments.
-  }
+  saveMirroredItem(LAST_CHAT_ID_KEY, chatId);
 }
 
 function resolveEntityIdKey(entityType: LastEntityType): string {
@@ -37,34 +33,22 @@ function resolveEntityIdKey(entityType: LastEntityType): string {
 }
 
 export function readLastEntityType(): LastEntityType {
-  try {
-    const value = window.localStorage.getItem(LAST_ENTITY_TYPE_KEY);
-    return value === 'channel' ? 'channel' : 'chat';
-  } catch {
-    return 'chat';
-  }
+  const value = readLocalMirrorItem(LAST_ENTITY_TYPE_KEY);
+  return value === 'channel' ? 'channel' : 'chat';
 }
 
 export function saveLastEntityType(entityType: LastEntityType): void {
-  try {
-    window.localStorage.setItem(LAST_ENTITY_TYPE_KEY, entityType);
-  } catch {
-    // Ignore localStorage failures in restrictive WebView environments.
-  }
+  saveMirroredItem(LAST_ENTITY_TYPE_KEY, entityType);
 }
 
 export function readLastEntityId(entityType: LastEntityType): string {
-  try {
-    const storedId = window.localStorage.getItem(resolveEntityIdKey(entityType));
-    if (storedId) {
-      return storedId;
-    }
-
-    const legacyId = window.localStorage.getItem(LAST_CHAT_ID_KEY) ?? '';
-    return legacyId && readLastEntityType() === entityType ? legacyId : '';
-  } catch {
-    return '';
+  const storedId = readLocalMirrorItem(resolveEntityIdKey(entityType));
+  if (storedId) {
+    return storedId;
   }
+
+  const legacyId = readLocalMirrorItem(LAST_CHAT_ID_KEY) ?? '';
+  return legacyId && readLastEntityType() === entityType ? legacyId : '';
 }
 
 export function saveLastEntityId(entityType: LastEntityType, entityId: string): void {
@@ -72,13 +56,29 @@ export function saveLastEntityId(entityType: LastEntityType, entityId: string): 
     return;
   }
 
-  try {
-    window.localStorage.setItem(resolveEntityIdKey(entityType), entityId);
-    window.localStorage.setItem(LAST_CHAT_ID_KEY, entityId);
-    window.localStorage.setItem(LAST_ENTITY_TYPE_KEY, entityType);
-  } catch {
-    // Ignore localStorage failures in restrictive WebView environments.
-  }
+  saveMirroredItem(resolveEntityIdKey(entityType), entityId);
+  saveMirroredItem(LAST_CHAT_ID_KEY, entityId);
+  saveMirroredItem(LAST_ENTITY_TYPE_KEY, entityType);
+}
+
+export async function hydrateLastEntityState(): Promise<{
+  entityType: LastEntityType;
+  chatId: string;
+  channelId: string;
+}> {
+  const [entityTypeValue, chatId, channelId, legacyChatId] = await Promise.all([
+    hydrateMirroredItem(LAST_ENTITY_TYPE_KEY),
+    hydrateMirroredItem(LAST_CHAT_ENTITY_ID_KEY),
+    hydrateMirroredItem(LAST_CHANNEL_ENTITY_ID_KEY),
+    hydrateMirroredItem(LAST_CHAT_ID_KEY),
+  ]);
+  const entityType = normalizeEntityType(entityTypeValue, 'chat');
+
+  return {
+    entityType,
+    chatId: chatId || (entityType === 'chat' ? legacyChatId : '') || '',
+    channelId: channelId || (entityType === 'channel' ? legacyChatId : '') || '',
+  };
 }
 
 export function normalizeEntityType(

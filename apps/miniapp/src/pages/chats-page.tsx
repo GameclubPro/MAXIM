@@ -42,6 +42,7 @@ import {
   createHomeEntityFavoritesFromLegacy,
   getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
+  hydrateHomeEntityFavorites,
   isHomeEntityFavorite,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
@@ -60,6 +61,7 @@ import {
   saveLastEntityId,
   saveLastEntityType,
 } from '../lib/last-chat';
+import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -336,6 +338,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     searchParams.get('view'),
     readLastEntityType(),
   ) as ManagedTab;
+
+  useNativeBackHandler(
+    () => {
+      setFavoritePicker(null);
+      return true;
+    },
+    { enabled: Boolean(favoritePicker), priority: 650 },
+  );
+
   const activeEntitiesKey = getEntitiesKey(activeTab);
   const chatsState = useManagedEntitiesSync({
     api,
@@ -560,6 +571,30 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     saveChatTitles(allEntities);
   }, [channelsState.data, chatsState.data]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void hydrateHomeEntityFavorites(favoriteStorageScope).then((nativeFavorites) => {
+      if (cancelled) {
+        return;
+      }
+
+      setHomeEntityFavorites((current) => {
+        const next = mergeHomeEntityFavorites(current, nativeFavorites);
+        if (JSON.stringify(next) === JSON.stringify(current)) {
+          return current;
+        }
+
+        saveHomeEntityFavorites(favoriteStorageScope, next);
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteStorageScope]);
 
   useEffect(() => {
     const serverFavorites = createHomeEntityFavoritesFromEntities({

@@ -15,9 +15,46 @@ export type MaxPlatform = 'ios' | 'android' | 'desktop' | 'web' | 'unknown';
 
 const LEGACY_ANDROID_MAJOR_MAX = 9;
 const LEGACY_ANDROID_CHROMIUM_MAJOR_MAX = 99;
+const KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX = 120;
+const NATIVE_HAPTIC_DEDUPLICATE_MS = 80;
 
 function resolveBridge() {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
   return window.MAX?.WebApp ?? window.WebApp;
+}
+
+export function getMaxBridge() {
+  return resolveBridge();
+}
+
+function hasBridgeRuntimePayload(bridge: ReturnType<typeof resolveBridge>): boolean {
+  return Boolean(
+    bridge?.initData ||
+      bridge?.init_data ||
+      bridge?.initDataUnsafe ||
+      bridge?.init_data_unsafe,
+  );
+}
+
+function shouldSkipNativeSideEffects(): boolean {
+  if (typeof document === 'undefined') {
+    return false;
+  }
+
+  const client = document.documentElement.dataset.maxClient;
+  return client === 'preview' || client === 'browser';
+}
+
+function resolveNativeSideEffectBridge() {
+  const bridge = resolveBridge();
+  if (!bridge || shouldSkipNativeSideEffects() || !hasBridgeRuntimePayload(bridge)) {
+    return undefined;
+  }
+
+  return bridge;
 }
 
 function resolveViewportSize() {
@@ -157,7 +194,14 @@ function normalizePlatform(
 function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } = {}) {
   const root = document.documentElement;
   const bridge = resolveBridge();
-  const { height } = resolveViewportSize();
+  const viewport = window.visualViewport;
+  const { width, height } = resolveViewportSize();
+  const viewportTop = Math.round(viewport?.offsetTop ?? 0);
+  const viewportLeft = Math.round(viewport?.offsetLeft ?? 0);
+  const keyboardOverlap = Math.max(
+    0,
+    Math.round(window.innerHeight - (height + viewportTop)),
+  );
   const previewPreset = options.previewDevice
     ? getPreviewDevicePreset(options.previewDevice)
     : null;
@@ -196,6 +240,16 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
   }
 
   root.style.setProperty('--app-viewport-height', `${height}px`);
+  root.style.setProperty('--app-viewport-width', `${width}px`);
+  root.style.setProperty('--app-visual-viewport-top', `${viewportTop}px`);
+  root.style.setProperty('--app-visual-viewport-left', `${viewportLeft}px`);
+  root.style.setProperty('--app-keyboard-overlap', `${keyboardOverlap}px`);
+
+  if (keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX) {
+    root.dataset.maxKeyboardOpen = 'true';
+  } else {
+    delete root.dataset.maxKeyboardOpen;
+  }
 }
 
 export function syncMaxNativeEnvironment(
@@ -245,7 +299,7 @@ function scheduleMiniAppClose(): void {
 }
 
 export function readyMaxMiniApp(): void {
-  resolveBridge()?.ready?.();
+  resolveNativeSideEffectBridge()?.ready?.();
 }
 
 export function closeMaxMiniApp(fallback?: () => void): void {
@@ -334,12 +388,12 @@ export function openMaxProfileLink(url: string): boolean {
 }
 
 export function canShareMaxContent(): boolean {
-  const bridge = resolveBridge();
+  const bridge = resolveNativeSideEffectBridge();
   return typeof bridge?.shareMaxContent === 'function';
 }
 
 export async function shareMaxContent(payload: MaxSharePayload): Promise<void> {
-  const bridge = resolveBridge();
+  const bridge = resolveNativeSideEffectBridge();
   if (typeof bridge?.shareMaxContent !== 'function') {
     throw new Error('Native share недоступен в этой версии MAX.');
   }
@@ -347,8 +401,65 @@ export async function shareMaxContent(payload: MaxSharePayload): Promise<void> {
   await Promise.resolve(bridge.shareMaxContent(payload));
 }
 
+export function canShareNativeContent(): boolean {
+  const bridge = resolveNativeSideEffectBridge();
+  return (
+    typeof bridge?.shareContent === 'function' || typeof bridge?.shareMaxContent === 'function'
+  );
+}
+
+export async function shareNativeContent(payload: {
+  text?: string;
+  link?: string;
+  preferMax?: boolean;
+}): Promise<void> {
+  const { preferMax = false, ...sharePayload } = payload;
+  const bridge = resolveNativeSideEffectBridge();
+
+  if (preferMax && typeof bridge?.shareMaxContent === 'function') {
+    await Promise.resolve(bridge.shareMaxContent(sharePayload));
+    return;
+  }
+
+  if (typeof bridge?.shareContent === 'function') {
+    await Promise.resolve(bridge.shareContent(sharePayload));
+    return;
+  }
+
+  if (typeof bridge?.shareMaxContent === 'function') {
+    await Promise.resolve(bridge.shareMaxContent(sharePayload));
+    return;
+  }
+
+  throw new Error('Native share недоступен в этой версии MAX.');
+}
+
+export function canDownloadNativeFile(url: string): boolean {
+  const parsed = parseMaxUrl(url.trim());
+  return Boolean(
+    parsed && parsed.protocol === 'https:' && resolveNativeSideEffectBridge()?.downloadFile,
+  );
+}
+
+export async function downloadMaxFile(url: string, fileName: string): Promise<LinkOpenMethod> {
+  const normalizedUrl = url.trim();
+  const normalizedFileName = fileName.trim() || 'file';
+  const bridge = resolveNativeSideEffectBridge();
+
+  if (normalizedUrl && canDownloadNativeFile(normalizedUrl)) {
+    try {
+      await Promise.resolve(bridge?.downloadFile?.(normalizedUrl, normalizedFileName));
+      return 'bridge-external';
+    } catch {
+      // Fall through to regular link opening when the native client refuses the download.
+    }
+  }
+
+  return openMaxBotLink(normalizedUrl);
+}
+
 export function setMaxClosingConfirmation(enabled: boolean): void {
-  const bridge = resolveBridge();
+  const bridge = resolveNativeSideEffectBridge();
   if (!bridge) {
     return;
   }
@@ -362,7 +473,7 @@ export function setMaxClosingConfirmation(enabled: boolean): void {
 }
 
 export function setMaxBackButtonVisible(visible: boolean): void {
-  const backButton = resolveBridge()?.BackButton;
+  const backButton = resolveNativeSideEffectBridge()?.BackButton;
   if (!backButton) {
     return;
   }
@@ -375,8 +486,14 @@ export function setMaxBackButtonVisible(visible: boolean): void {
   backButton.hide?.();
 }
 
+let lastExplicitHapticAt = 0;
+
+function noteExplicitHaptic(): void {
+  lastExplicitHapticAt = Date.now();
+}
+
 export function bindMaxBackButton(handler: MaxBackButtonHandler): () => void {
-  const backButton = resolveBridge()?.BackButton;
+  const backButton = resolveNativeSideEffectBridge()?.BackButton;
   if (!backButton?.onClick) {
     return () => undefined;
   }
@@ -388,13 +505,103 @@ export function bindMaxBackButton(handler: MaxBackButtonHandler): () => void {
 }
 
 export function maxImpact(style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft' = 'light'): void {
-  resolveBridge()?.HapticFeedback?.impactOccurred?.(style);
+  noteExplicitHaptic();
+  resolveNativeSideEffectBridge()?.HapticFeedback?.impactOccurred?.(style);
 }
 
 export function maxNotify(type: 'error' | 'success' | 'warning'): void {
-  resolveBridge()?.HapticFeedback?.notificationOccurred?.(type);
+  noteExplicitHaptic();
+  resolveNativeSideEffectBridge()?.HapticFeedback?.notificationOccurred?.(type);
 }
 
 export function maxSelectionChanged(): void {
-  resolveBridge()?.HapticFeedback?.selectionChanged?.();
+  noteExplicitHaptic();
+  resolveNativeSideEffectBridge()?.HapticFeedback?.selectionChanged?.();
+}
+
+function resolveInteractiveTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+
+  return target.closest<HTMLElement>(
+    'button, a, input[type="checkbox"], input[type="radio"], [role="button"], [role="tab"]',
+  );
+}
+
+function isDisabledInteractiveElement(element: HTMLElement): boolean {
+  if (element.getAttribute('aria-disabled') === 'true') {
+    return true;
+  }
+
+  return (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+  )
+    ? element.disabled
+    : false;
+}
+
+function shouldSkipDelegatedHaptic(element: HTMLElement): boolean {
+  return (
+    element.dataset.nativeHaptic === 'none' ||
+    Boolean(element.closest('[data-native-haptic="none"]')) ||
+    Date.now() - lastExplicitHapticAt < NATIVE_HAPTIC_DEDUPLICATE_MS
+  );
+}
+
+function resolveDelegatedHaptic(element: HTMLElement): 'selection' | 'light' | 'medium' | 'heavy' {
+  if (
+    element instanceof HTMLInputElement &&
+    (element.type === 'checkbox' || element.type === 'radio')
+  ) {
+    return 'selection';
+  }
+
+  if (
+    element.getAttribute('role') === 'tab' ||
+    element.getAttribute('aria-pressed') !== null ||
+    element.classList.contains('settings-native-switch')
+  ) {
+    return 'selection';
+  }
+
+  const className = element.className.toString();
+  if (/danger|delete|destructive/iu.test(className)) {
+    return 'heavy';
+  }
+  if (/accent|confirm|primary|save|publish/iu.test(className)) {
+    return 'medium';
+  }
+
+  return 'light';
+}
+
+export function installMaxNativeInteractionFeedback(): () => void {
+  if (typeof document === 'undefined') {
+    return () => undefined;
+  }
+
+  const handleClick = (event: MouseEvent) => {
+    const element = resolveInteractiveTarget(event.target);
+    if (!element || isDisabledInteractiveElement(element) || shouldSkipDelegatedHaptic(element)) {
+      return;
+    }
+
+    const haptic = resolveDelegatedHaptic(element);
+    if (haptic === 'selection') {
+      maxSelectionChanged();
+      return;
+    }
+
+    maxImpact(haptic);
+  };
+
+  document.addEventListener('click', handleClick);
+
+  return () => {
+    document.removeEventListener('click', handleClick);
+  };
 }

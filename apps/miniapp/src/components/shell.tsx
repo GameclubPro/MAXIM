@@ -10,6 +10,7 @@ import {
 } from '../lib/max-bridge';
 import {
   buildManagedEntitiesRoute,
+  hydrateLastEntityState,
   normalizeEntityType,
   readLastEntityId,
   readLastEntityType,
@@ -17,6 +18,7 @@ import {
   saveLastEntityType,
   type LastEntityType,
 } from '../lib/last-chat';
+import { runNativeBackHandlers, useNativeBackHandlersAvailable } from '../lib/native-back';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 
 type ScreenInfo = {
@@ -181,6 +183,7 @@ export function Shell() {
   }));
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const isKeyboardOpen = useKeyboardOpen();
+  const hasNativeBackHandlers = useNativeBackHandlersAvailable();
   const isChatsRoute = location.pathname === '/';
   const selectedRootEntityType = useMemo(
     () => normalizeEntityType(new URLSearchParams(location.search).get('view'), lastEntityType),
@@ -214,6 +217,29 @@ export function Shell() {
 
     saveChatTitle(chatId, routeChatTitle);
   }, [chatId, routeChatTitle, routeEntityType]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void hydrateLastEntityState().then((state) => {
+      if (cancelled) {
+        return;
+      }
+
+      setLastEntityIds((current) => ({
+        chat: current.chat || state.chatId,
+        channel: current.channel || state.channelId,
+      }));
+
+      if (!chatId) {
+        setLastEntityType(state.entityType);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
 
   useEffect(() => {
     if (!isChatsRoute) {
@@ -278,7 +304,7 @@ export function Shell() {
   );
 
   useEffect(() => {
-    const shouldShowNativeBack = !isChatsRoute;
+    const shouldShowNativeBack = !isChatsRoute || hasNativeBackHandlers;
     setMaxBackButtonVisible(shouldShowNativeBack);
 
     if (!shouldShowNativeBack) {
@@ -289,6 +315,10 @@ export function Shell() {
 
     const cleanup = bindMaxBackButton(() => {
       maxImpact('light');
+      if (runNativeBackHandlers()) {
+        return;
+      }
+
       if (shouldCloseMiniAppOnBack) {
         closeMaxMiniApp(() => {
           navigate(homeRoute, { replace: true });
@@ -308,7 +338,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatsRoute, navigate, shouldCloseMiniAppOnBack]);
+  }, [hasNativeBackHandlers, homeRoute, isChatsRoute, navigate, shouldCloseMiniAppOnBack]);
 
   return (
     <div

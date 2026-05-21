@@ -27,7 +27,14 @@ import {
   shouldReplaceLocalManagedPollDraft,
   syncManagedPollDraft,
 } from '../lib/managed-poll-draft-sync';
-import { openMaxBotLink } from '../lib/max-bridge';
+import {
+  canShareNativeContent,
+  maxNotify,
+  maxSelectionChanged,
+  openMaxBotLink,
+  shareNativeContent,
+} from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
 
@@ -496,6 +503,28 @@ export function ManagedPollCard({
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   };
 
+  useNativeBackHandler(
+    () => {
+      setOpenHintKey(null);
+      return true;
+    },
+    { enabled: openHintKey !== null, priority: 520 },
+  );
+
+  const sharePublishedPoll = async (url: string) => {
+    try {
+      maxSelectionChanged();
+      await shareNativeContent({
+        text: poll?.question || 'Опрос',
+        link: url,
+        preferMax: true,
+      });
+      maxNotify('success');
+    } catch {
+      openMaxBotLink(url);
+    }
+  };
+
   useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
   useEffect(() => {
@@ -575,22 +604,33 @@ export function ManagedPollCard({
               : 'Пост ещё не опубликован'}
           </span>
           {poll.publishedUrl ? (
-            <a
-              href={poll.publishedUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="managed-poll-card__link"
-              onClick={(event) => {
-                if (!(window.MAX?.WebApp ?? window.WebApp)) {
-                  return;
-                }
+            <span className="managed-poll-card__link-row">
+              <a
+                href={poll.publishedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="managed-poll-card__link"
+                onClick={(event) => {
+                  if (!(window.MAX?.WebApp ?? window.WebApp)) {
+                    return;
+                  }
 
-                event.preventDefault();
-                openMaxBotLink(poll.publishedUrl ?? '');
-              }}
-            >
-              Открыть пост
-            </a>
+                  event.preventDefault();
+                  openMaxBotLink(poll.publishedUrl ?? '');
+                }}
+              >
+                Открыть пост
+              </a>
+              {canShareNativeContent() ? (
+                <button
+                  type="button"
+                  className="managed-poll-card__link"
+                  onClick={() => void sharePublishedPoll(poll.publishedUrl ?? '')}
+                >
+                  Поделиться
+                </button>
+              ) : null}
+            </span>
           ) : null}
         </div>
         <div className="managed-poll-card__meta-line">

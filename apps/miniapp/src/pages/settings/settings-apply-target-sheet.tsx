@@ -12,6 +12,7 @@ import {
   HOME_ENTITY_FAVORITE_TYPES,
 } from '../../lib/home-entity-favorites';
 import { cn } from '../../lib/cn';
+import { useNativeBackHandler } from '../../lib/native-back';
 import type { ApplySectionKey } from '../settings-page-state';
 import { APPLY_TARGET_FAVORITE_ICONS, SECTION_LABELS } from './settings-page-helpers';
 
@@ -58,6 +59,18 @@ export function SettingsApplyTargetSheet({
   onTargetChange,
   onConfirm,
 }: SettingsApplyTargetSheetProps) {
+  useNativeBackHandler(
+    () => {
+      if (isApplying) {
+        return false;
+      }
+
+      onClose();
+      return true;
+    },
+    { enabled: Boolean(sheet), priority: 690 },
+  );
+
   if (!sheet) {
     return null;
   }

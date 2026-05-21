@@ -18,6 +18,7 @@ import {
 } from '../lib/home-entity-favorites';
 import { cn } from '../lib/cn';
 import { getInitDataUserId } from '../lib/init-data';
+import { useNativeBackHandler } from '../lib/native-back';
 import { BroadcastAudienceSheet } from './broadcast-audience-sheet';
 import { SegmentedControl } from './ui/segmented-control';
 
@@ -115,6 +116,14 @@ export function BroadcastAudienceControls({
           avatarUrl: null,
         }
       : null;
+
+  useNativeBackHandler(
+    () => {
+      setAllConfirmOpen(false);
+      return true;
+    },
+    { enabled: allConfirmOpen, priority: 640 },
+  );
   const selectedPreviewBundle = buildBroadcastAudiencePreviewBundle({
     targetChatIds,
     choices,

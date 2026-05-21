@@ -1,6 +1,7 @@
 import { Link as IconoirLink } from 'iconoir-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
+import { useNativeBackHandler } from '../lib/native-back';
 
 export type MaxMarkdownTool =
   | 'heading'
@@ -82,6 +83,16 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
     const shouldEnableSelectionTray = showToolbar && toolbarMode === 'selection-tray';
     const isSelectionTrayVisible =
       shouldEnableSelectionTray && (formattingTrayOpen || hasSelectedText);
+
+    useNativeBackHandler(
+      () => {
+        setFormattingTrayOpen(false);
+        setHasSelectedText(false);
+        textareaRef.current?.blur();
+        return true;
+      },
+      { enabled: isSelectionTrayVisible, priority: 560 },
+    );
 
     const syncSelection = useCallback((textarea: HTMLTextAreaElement | null) => {
       if (!textarea) {

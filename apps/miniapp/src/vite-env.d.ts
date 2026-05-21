@@ -26,6 +26,8 @@ type MaxWebAppBridge = {
   close?: () => void;
   openLink?: (url: string) => void;
   openMaxLink?: (url: string) => void;
+  downloadFile?: (url: string, fileName: string) => Promise<{ status?: string }> | void;
+  shareContent?: (payload: { text?: string; link?: string }) => Promise<{ status?: string }> | void;
   enableClosingConfirmation?: () => void;
   disableClosingConfirmation?: () => void;
   isClosingConfirmationEnabled?: boolean;
@@ -52,6 +54,18 @@ type MaxWebAppBridge = {
           chatType?: 'DIALOG' | 'CHAT';
         },
   ) => Promise<unknown> | void;
+  DeviceStorage?: {
+    getItem?: (key: string) => Promise<{ key?: string; value?: string | null }>;
+    setItem?: (key: string, value: string) => Promise<{ status?: string }>;
+    removeItem?: (key: string) => Promise<{ status?: string }>;
+    clear?: () => Promise<{ status?: string }> | void;
+  };
+  SecureStorage?: {
+    getItem?: (key: string) => Promise<{ key?: string; value?: string | null }>;
+    setItem?: (key: string, value: string) => Promise<{ status?: string }>;
+    removeItem?: (key: string) => Promise<{ status?: string }>;
+    clear?: () => Promise<{ status?: string }> | void;
+  };
 };
 
 declare global {

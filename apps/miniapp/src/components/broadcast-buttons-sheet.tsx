@@ -9,6 +9,7 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastLinkButtonFieldErrors } from '../lib/broadcast-link-buttons';
 import { cn } from '../lib/cn';
+import { useNativeBackHandler } from '../lib/native-back';
 import './broadcast-buttons-sheet.css';
 
 type BroadcastButtonsSheetProps = {
@@ -54,6 +55,14 @@ export function BroadcastButtonsSheet({
   onChange,
   onClose,
 }: BroadcastButtonsSheetProps) {
+  useNativeBackHandler(
+    () => {
+      onClose();
+      return true;
+    },
+    { enabled: open, priority: 680 },
+  );
+
   useEffect(() => {
     if (!open || typeof document === 'undefined') {
       return undefined;

@@ -11,6 +11,7 @@ import {
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
 import { renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
+import { useNativeBackHandler } from '../lib/native-back';
 
 export type MaxRichTextEditorHandle = {
   focus: () => void;
@@ -130,6 +131,17 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
     const focusEditor = useCallback(() => {
       editorRef.current?.focus();
     }, []);
+
+    useNativeBackHandler(
+      () => {
+        editingLinkRef.current = null;
+        setLinkEditorOpen(false);
+        setLinkError('');
+        focusEditor();
+        return true;
+      },
+      { enabled: linkEditorOpen, priority: 570 },
+    );
 
     const restoreOrCreateEditorRange = useCallback(() => {
       const editor = editorRef.current;

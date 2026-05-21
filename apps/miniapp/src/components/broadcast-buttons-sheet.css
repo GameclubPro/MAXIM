@@ -6,7 +6,9 @@
   align-items: flex-end;
   justify-content: center;
   padding: 12px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(
+    12px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px)
+  );
 }
 
 .broadcast-buttons-sheet__backdrop {
@@ -19,7 +21,7 @@
 .broadcast-buttons-sheet__panel {
   position: relative;
   width: min(100%, 560px);
-  max-height: min(82dvh, 720px);
+  max-height: min(calc(var(--app-viewport-height, 100dvh) - 24px), 720px);
   overflow-y: auto;
   display: grid;
   gap: 8px;

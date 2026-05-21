@@ -33,6 +33,7 @@ import {
 } from '../lib/broadcast-schedule';
 import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 
 type BroadcastSchedulePlannerProps = {
   value: string[];
@@ -658,6 +659,16 @@ export function BroadcastSchedulePlanner({
   const showAgendaSkeleton =
     sheetMode === 'agenda' && managedBroadcastsLoading && agendaDayEntries.length === 0;
   const isDaySheetOpen = sheetMode !== null;
+  useNativeBackHandler(
+    () => {
+      setApplyToAllPickedDays(false);
+      setSheetMode(null);
+      setAgendaDayKey(null);
+      maxImpact('soft');
+      return true;
+    },
+    { enabled: isDaySheetOpen, priority: 640 },
+  );
   const pastSlotCount = normalizedValue.filter(
     (slot) => new Date(slot).getTime() < minimumTime,
   ).length;

@@ -6,6 +6,11 @@ import {
   type BroadcastTimingMode,
 } from './broadcast-schedule';
 import type { BroadcastScopedTargetMode } from './broadcast-audience';
+import {
+  readNativeStorageItem,
+  removeNativeStorageItem,
+  writeNativeStorageItem,
+} from './native-storage';
 
 export type BroadcastComposerDraftEntityType = 'chat' | 'channel';
 
@@ -37,7 +42,11 @@ function getStorageKey(entityType: BroadcastComposerDraftEntityType, entityId: s
 }
 
 function canUseStorage(): boolean {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+  try {
+    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+  } catch {
+    return false;
+  }
 }
 
 function canUseIndexedDb(): boolean {
@@ -262,10 +271,22 @@ export async function loadBroadcastComposerDraftAsync(
     return null;
   }
 
-  return (
-    (await readBroadcastDraftFromIndexedDb(getStorageKey(entityType, entityId))) ??
-    loadBroadcastComposerDraft(entityType, entityId)
-  );
+  const key = getStorageKey(entityType, entityId);
+  const indexedDraft = await readBroadcastDraftFromIndexedDb(key);
+  if (indexedDraft) {
+    return indexedDraft;
+  }
+
+  const nativeDraft = await readNativeStorageItem(key);
+  if (nativeDraft) {
+    try {
+      return parseBroadcastComposerDraftEnvelope(JSON.parse(nativeDraft));
+    } catch {
+      return loadBroadcastComposerDraft(entityType, entityId);
+    }
+  }
+
+  return loadBroadcastComposerDraft(entityType, entityId);
 }
 
 export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): boolean {
@@ -290,15 +311,18 @@ export function saveBroadcastComposerDraft(
   entityId: string,
   draft: BroadcastComposerDraft,
 ): void {
-  if (!entityId || !canUseStorage()) {
+  if (!entityId || typeof window === 'undefined') {
     return;
   }
 
+  const key = getStorageKey(entityType, entityId);
   try {
-    const key = getStorageKey(entityType, entityId);
     if (isBroadcastComposerDraftEmpty(draft)) {
-      window.localStorage.removeItem(key);
+      if (canUseStorage()) {
+        window.localStorage.removeItem(key);
+      }
       void writeBroadcastDraftToIndexedDb(key, null);
+      void removeNativeStorageItem(key);
       return;
     }
 
@@ -319,15 +343,19 @@ export function saveBroadcastComposerDraft(
             images: [],
           }
         : draft;
+    const localEnvelope = {
+      ...envelope,
+      draft: localDraft,
+    };
 
     void writeBroadcastDraftToIndexedDb(key, envelope);
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({
-        ...envelope,
-        draft: localDraft,
-      }),
-    );
+    const serializedLocalEnvelope = JSON.stringify(localEnvelope);
+    if (serializedLocalEnvelope.length <= LOCAL_STORAGE_IMAGE_BASE64_LIMIT) {
+      void writeNativeStorageItem(key, serializedLocalEnvelope);
+    }
+    if (canUseStorage()) {
+      window.localStorage.setItem(key, serializedLocalEnvelope);
+    }
   } catch {
     // Storage can be unavailable or quota-limited inside a WebView.
   }

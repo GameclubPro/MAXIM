@@ -4197,7 +4197,10 @@
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 12px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+  padding: 12px 8px
+    calc(
+      12px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px)
+    );
 }
 
 .action-confirm-sheet__backdrop {
@@ -4743,10 +4746,24 @@
 }
 
 .managed-poll-card__link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
   color: #0a79db;
+  font: inherit;
   font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.managed-poll-card__link-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .managed-poll-card__field-head {
@@ -7700,7 +7717,8 @@
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  padding: 6px 8px
+    calc(6px + env(safe-area-inset-bottom, 0px) + min(var(--app-keyboard-overlap, 0px), 260px));
 }
 
 .broadcast-audience-sheet__backdrop {
@@ -7718,8 +7736,8 @@
   z-index: 1;
   width: min(100%, 720px);
   max-width: 100%;
-  height: min(96dvh, 900px);
-  min-height: min(620px, 96dvh);
+  height: min(calc(var(--app-viewport-height, 100dvh) - 12px), 900px);
+  min-height: min(620px, calc(var(--app-viewport-height, 100dvh) - 12px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }

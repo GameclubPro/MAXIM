@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
+import { useNativeBackHandler } from '../../lib/native-back';
 
 type ActionConfirmSheetProps = {
   id: string;
@@ -43,6 +44,18 @@ export function ActionConfirmSheet({
   onClose,
   onConfirm,
 }: ActionConfirmSheetProps) {
+  useNativeBackHandler(
+    () => {
+      if (isBusy) {
+        return false;
+      }
+
+      onClose();
+      return true;
+    },
+    { enabled: open, priority: 700 },
+  );
+
   useEffect(() => {
     if (!open) {
       return undefined;

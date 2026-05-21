@@ -72,7 +72,13 @@ import {
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import {
+  downloadMaxFile,
+  maxImpact,
+  maxSelectionChanged,
+  openMaxBotLink,
+} from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
@@ -841,7 +847,7 @@ function CommentMessageAttachments({
                 onClick={(event) => {
                   event.stopPropagation();
                   if (url) {
-                    openMaxBotLink(url);
+                    void downloadMaxFile(url, fileName);
                   }
                 }}
                 disabled={!url}
@@ -1683,6 +1689,38 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setIsComposeEmojiOpen(false);
     resetAttachmentPickers();
   };
+
+  useNativeBackHandler(
+    () => {
+      dismissMessageActions();
+      return true;
+    },
+    { enabled: Boolean(activeMessageId), priority: 630 },
+  );
+
+  useNativeBackHandler(
+    () => {
+      setIsComposeEmojiOpen(false);
+      return true;
+    },
+    { enabled: isComposeEmojiOpen, priority: 620 },
+  );
+
+  useNativeBackHandler(
+    () => {
+      cancelEditing({ restoreDraft: true });
+      return true;
+    },
+    { enabled: Boolean(editingMessage), priority: 610 },
+  );
+
+  useNativeBackHandler(
+    () => {
+      setReplyToMessageId(null);
+      return true;
+    },
+    { enabled: Boolean(replyTarget), priority: 600 },
+  );
 
   useEffect(() => {
     clearMessagePress();

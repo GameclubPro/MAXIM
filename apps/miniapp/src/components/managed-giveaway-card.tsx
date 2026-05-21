@@ -30,7 +30,14 @@ import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
 import { openFileInputPicker } from '../lib/file-input-picker';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
-import { maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import {
+  canShareNativeContent,
+  maxNotify,
+  maxSelectionChanged,
+  openMaxBotLink,
+  shareNativeContent,
+} from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { useToast } from './ui/toast';
 
@@ -1314,6 +1321,25 @@ export function ManagedGiveawayCard({
     window.open(targetUrl, '_blank', 'noopener,noreferrer');
   };
 
+  const shareManagedGiveawayLink = async (url: string | null, label: string) => {
+    const targetUrl = url?.trim() ?? '';
+    if (!targetUrl) {
+      return;
+    }
+
+    try {
+      maxSelectionChanged();
+      await shareNativeContent({
+        text: label,
+        link: targetUrl,
+        preferMax: true,
+      });
+      maxNotify('success');
+    } catch {
+      openManagedGiveawayLink(targetUrl);
+    }
+  };
+
   const closeFeaturedGiveaway = async () => {
     if (!featuredItem) {
       return;
@@ -1647,6 +1673,31 @@ export function ManagedGiveawayCard({
     loadingDetails: draftDetailsQuery.isLoading,
   });
   const isEditingOpen = editorMode !== 'closed';
+  useNativeBackHandler(
+    () => {
+      setOpenHintKey(null);
+      return true;
+    },
+    { enabled: openHintKey !== null, priority: 520 },
+  );
+  useNativeBackHandler(
+    () => {
+      setChannelModalOpen(false);
+      return true;
+    },
+    { enabled: channelModalOpen, priority: 650 },
+  );
+  useNativeBackHandler(
+    () => {
+      if (isBusy) {
+        return false;
+      }
+
+      clearEditor();
+      return true;
+    },
+    { enabled: isEditingOpen, priority: 540 },
+  );
   const publicationTextReady = Boolean(draft?.description.trim());
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
   const isScheduledStart = Boolean(draft?.startsAtLocal.trim());
@@ -1849,6 +1900,18 @@ export function ManagedGiveawayCard({
                   disabled={isBusy}
                 >
                   Открыть пост
+                </button>
+              ) : null}
+              {featuredItem.publicationUrl && canShareNativeContent() ? (
+                <button
+                  type="button"
+                  className="button button--ghost managed-giveaway__dashboard-link"
+                  onClick={() =>
+                    void shareManagedGiveawayLink(featuredItem.publicationUrl, featuredItem.title)
+                  }
+                  disabled={isBusy}
+                >
+                  Поделиться
                 </button>
               ) : null}
               {featuredItem.resultsUrl ? (

@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
+import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 
 type SettingsDrilldownPanelProps = {
@@ -55,6 +56,14 @@ export function SettingsDrilldownPanel({
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const isKeyboardOpen = useKeyboardOpen(120, open);
+
+  useNativeBackHandler(
+    () => {
+      onClose();
+      return true;
+    },
+    { enabled: open, priority: 620 },
+  );
 
   useEffect(() => {
     if (!open) {

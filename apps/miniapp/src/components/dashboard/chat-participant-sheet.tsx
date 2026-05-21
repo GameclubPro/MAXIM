@@ -1,5 +1,6 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
 import { useEffect, useState } from 'react';
+import { useNativeBackHandler } from '../../lib/native-back';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 
@@ -198,6 +199,28 @@ export function ChatParticipantSheet({
   const [immunityDurationDays, setImmunityDurationDays] = useState(3);
   const [dailyViolationLimit, setDailyViolationLimit] = useState(3);
   const [openHintKey, setOpenHintKey] = useState<ParticipantHintKey | null>(null);
+
+  useNativeBackHandler(
+    () => {
+      if (openHintKey !== null) {
+        setOpenHintKey(null);
+        return true;
+      }
+
+      if (activeComposer !== null) {
+        setActiveComposer(null);
+        return true;
+      }
+
+      if (isSavingImmunity || isApplyingModeration) {
+        return false;
+      }
+
+      onClose();
+      return true;
+    },
+    { enabled: open, priority: 660 },
+  );
 
   useEffect(() => {
     if (!item || !open) {

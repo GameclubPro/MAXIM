@@ -10,6 +10,8 @@ import {
   orderBroadcastAudienceChoices,
 } from '../lib/broadcast-audience-search';
 import { cn } from '../lib/cn';
+import { maxSelectionChanged } from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { EntityAvatar } from './ui/entity-avatar';
 
 type BroadcastAudienceSheetProps = {
@@ -68,6 +70,14 @@ export function BroadcastAudienceSheet({
   );
   const [searchValue, setSearchValue] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useNativeBackHandler(
+    () => {
+      onClose();
+      return true;
+    },
+    { enabled: open, priority: 680 },
+  );
 
   useEffect(() => {
     if (!open) {
@@ -152,6 +162,7 @@ export function BroadcastAudienceSheet({
   const canRefresh = typeof onRefresh === 'function';
 
   function toggleSelection(chatId: string) {
+    maxSelectionChanged();
     setDraftSelection((current) =>
       current.includes(chatId) ? current.filter((item) => item !== chatId) : [...current, chatId],
     );

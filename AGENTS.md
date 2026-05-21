@@ -84,6 +84,10 @@
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
+- For native mini app behavior, prefer shared helpers over raw bridge calls:
+  - register overlay/sheet/editor close behavior with `apps/miniapp/src/lib/native-back.ts`
+  - mirror durable device-local state through `apps/miniapp/src/lib/native-storage.ts`
+  - use `apps/miniapp/src/lib/max-bridge.ts` for MAX links, native share/download, haptics, ready, viewport, and BackButton.
 
 ## Deploy and VPS
 
