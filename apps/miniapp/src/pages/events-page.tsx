@@ -845,7 +845,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   const dashboardQuery = useQuery({
-    queryKey: queryKeys.logsDashboard(chatId ?? '', range),
+    queryKey: queryKeys.logsDashboard(chatId ?? '', range, false, false),
     queryFn: ({ signal }) =>
       getLogsDashboard(
         api,
@@ -857,9 +857,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         },
         { signal },
       ),
-    enabled: Boolean(chatId),
-    staleTime: 0,
-    refetchOnMount: 'always',
+    enabled: Boolean(chatId) && section !== 'participants',
+    staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
 

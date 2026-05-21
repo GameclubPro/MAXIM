@@ -52,6 +52,7 @@ import {
   type ChatParticipantsQuery,
   type ChannelDialogType,
   type ChannelStatsBucket,
+  type ChannelStatsQuery,
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
@@ -645,6 +646,9 @@ const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
 const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
 const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
+const CHANNEL_STATS_RESPONSE_CACHE_TTL_MS = 30_000;
+const CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS = 5_000;
+const SLOW_CHANNEL_STATS_THRESHOLD_MS = 1_500;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
 const CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE = 2;
 const CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS = 700;
@@ -1180,6 +1184,11 @@ export class AdminService implements OnModuleDestroy {
     string,
     TimedPromiseCacheEntry<LogsDashboardResponse>
   >();
+  private readonly channelStatsResponseCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ChannelStatsResponse>
+  >();
+  private readonly channelStatsRefreshRuns = new Map<string, Promise<void>>();
   private readonly moderationFeedPageCache = new Map<
     string,
     TimedPromiseCacheEntry<ModerationFeedPage>
@@ -7297,26 +7306,65 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const now = new Date();
-    const from = this.resolveChannelStatsFrom(parsed.data.range, now);
-    const bucket = this.resolveChannelStatsBucket(parsed.data.range);
-    const previousFrom = new Date(from.getTime() - (now.getTime() - from.getTime()));
-    const previousTo = new Date(Math.max(previousFrom.getTime(), from.getTime() - 1));
+    const cacheKey = this.buildChannelStatsResponseCacheKey(chatId, user.userId, parsed.data);
+    const cached = this.channelStatsResponseCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
 
-    try {
-      await this.channelStatsCollector?.syncChannelIfStale(chatId, {
-        staleMs: CHANNEL_STATS_REFRESH_STALE_MS,
-        reason: 'stats_endpoint',
+    const entry: TimedPromiseCacheEntry<ChannelStatsResponse> = {
+      expiresAtMs: Date.now() + CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
+      promise: Promise.resolve(null as never),
+    };
+    const pending = this.buildChannelStatsResponse(chatId, parsed.data)
+      .then((response) => {
+        entry.expiresAtMs =
+          Date.now() +
+          (response.meta.refreshQueued
+            ? CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS
+            : CHANNEL_STATS_RESPONSE_CACHE_TTL_MS);
+        return response;
+      })
+      .catch((error: unknown) => {
+        const current = this.channelStatsResponseCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.channelStatsResponseCache.delete(cacheKey);
+        }
+        throw error;
       });
-    } catch (error: unknown) {
+    entry.promise = pending;
+    this.channelStatsResponseCache.set(cacheKey, entry);
+
+    const startedAtMs = Date.now();
+    const response = await pending;
+    const totalMs = Date.now() - startedAtMs;
+    if (totalMs >= SLOW_CHANNEL_STATS_THRESHOLD_MS) {
       this.logger.warn(
         {
           chatId,
-          err: error instanceof Error ? error.message : String(error),
+          userId: user.userId,
+          totalMs,
+          range: parsed.data.range,
+          includeActivityPreview: parsed.data.includeActivityPreview,
+          cacheHit: false,
+          refreshQueued: response.meta.refreshQueued,
         },
-        'Failed to refresh channel stats opportunistically',
+        'Slow channel stats request completed',
       );
     }
+
+    return response;
+  }
+
+  private async buildChannelStatsResponse(
+    chatId: string,
+    statsQuery: ChannelStatsQuery,
+  ): Promise<ChannelStatsResponse> {
+    const now = new Date();
+    const from = this.resolveChannelStatsFrom(statsQuery.range, now);
+    const bucket = this.resolveChannelStatsBucket(statsQuery.range);
+    const previousFrom = new Date(from.getTime() - (now.getTime() - from.getTime()));
+    const previousTo = new Date(Math.max(previousFrom.getTime(), from.getTime() - 1));
 
     const [
       chat,
@@ -7446,6 +7494,10 @@ export class AdminService implements OnModuleDestroy {
       }),
     ]);
 
+    const refreshQueued = this.shouldRefreshChannelStats(latestAudienceSnapshot, syncState)
+      ? this.scheduleChannelStatsRefresh(chatId)
+      : false;
+
     const viewSnapshots =
       trackedPosts.length > 0
         ? await this.prisma.channelPostViewSnapshot.findMany({
@@ -7563,17 +7615,19 @@ export class AdminService implements OnModuleDestroy {
       audienceSnapshots,
     );
     const membershipSeries = this.buildMembershipSeries(bucketStarts, bucket, membershipRows);
-    const activityFeed = await this.getMembershipActivityFeedPage(
-      chatId,
-      from,
-      now,
-      {
-        range: parsed.data.range,
-        filter: 'all',
-        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-      },
-      'channel',
-    );
+    const activityFeed = statsQuery.includeActivityPreview
+      ? await this.getMembershipActivityFeedPage(
+          chatId,
+          from,
+          now,
+          {
+            range: statsQuery.range,
+            filter: 'all',
+            limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+          },
+          'channel',
+        )
+      : this.buildEmptyMembershipActivityPage();
     const previousPeriod = await this.buildPreviousChannelStatsPeriodSnapshot(
       chatId,
       previousFrom,
@@ -7620,7 +7674,7 @@ export class AdminService implements OnModuleDestroy {
       membershipSeries,
       viewsSeries,
       postViewMetrics: periodPostViewMetrics,
-      range: parsed.data.range,
+      range: statsQuery.range,
       maxSnapshotAvailable,
       suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
       suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
@@ -7641,7 +7695,7 @@ export class AdminService implements OnModuleDestroy {
         postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
       },
       maxSnapshotAvailable,
-      range: parsed.data.range,
+      range: statsQuery.range,
     });
     const response: ChannelStatsResponse = {
       channel: {
@@ -7655,7 +7709,7 @@ export class AdminService implements OnModuleDestroy {
         avatarUrl,
       },
       period: {
-        range: parsed.data.range,
+        range: statsQuery.range,
         from: from.toISOString(),
         to: now.toISOString(),
         bucket,
@@ -7707,6 +7761,7 @@ export class AdminService implements OnModuleDestroy {
           earliestAudienceSnapshot?.capturedAt ?? null,
         ),
         missingOfficialMetrics: [...CHANNEL_STATS_MISSING_METRICS],
+        refreshQueued,
       },
       comparison,
       health,
@@ -7716,6 +7771,71 @@ export class AdminService implements OnModuleDestroy {
     };
 
     return channelStatsResponseSchema.parse(response);
+  }
+
+  private buildChannelStatsResponseCacheKey(
+    chatId: string,
+    userId: string,
+    query: ChannelStatsQuery,
+  ): string {
+    return [
+      chatId,
+      userId,
+      query.range,
+      `activity=${query.includeActivityPreview ? 1 : 0}`,
+    ].join(':');
+  }
+
+  private shouldRefreshChannelStats(
+    latestAudienceSnapshot: { capturedAt: Date } | null,
+    syncState: { lastAudienceSyncAt: Date | null; lastViewsSyncAt: Date | null } | null,
+  ): boolean {
+    const nowMs = Date.now();
+    const audienceStale =
+      !latestAudienceSnapshot ||
+      nowMs - latestAudienceSnapshot.capturedAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS ||
+      !syncState?.lastAudienceSyncAt ||
+      nowMs - syncState.lastAudienceSyncAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS;
+    const viewsStale =
+      !syncState?.lastViewsSyncAt ||
+      nowMs - syncState.lastViewsSyncAt.getTime() > CHANNEL_STATS_REFRESH_STALE_MS;
+
+    return audienceStale || viewsStale;
+  }
+
+  private scheduleChannelStatsRefresh(chatId: string): boolean {
+    const collector = this.channelStatsCollector;
+    if (!collector) {
+      return false;
+    }
+
+    const existing = this.channelStatsRefreshRuns.get(chatId);
+    if (existing) {
+      return true;
+    }
+
+    const pending = Promise.resolve()
+      .then(() =>
+        collector.syncChannelIfStale(chatId, {
+          staleMs: CHANNEL_STATS_REFRESH_STALE_MS,
+          reason: 'stats_endpoint',
+        }),
+      )
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to refresh channel stats in background',
+        );
+      })
+      .finally(() => {
+        this.channelStatsRefreshRuns.delete(chatId);
+        this.invalidateChannelStatsResponseCache(chatId);
+      });
+    this.channelStatsRefreshRuns.set(chatId, pending);
+    return true;
   }
 
   async getChannelActivityFeed(
@@ -28762,6 +28882,15 @@ export class AdminService implements OnModuleDestroy {
     for (const key of this.logsDashboardResponseCache.keys()) {
       if (key.startsWith(prefix)) {
         this.logsDashboardResponseCache.delete(key);
+      }
+    }
+  }
+
+  private invalidateChannelStatsResponseCache(chatId: string): void {
+    const prefix = `${chatId}:`;
+    for (const key of this.channelStatsResponseCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.channelStatsResponseCache.delete(key);
       }
     }
   }

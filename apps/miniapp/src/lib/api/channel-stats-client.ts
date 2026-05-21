@@ -19,12 +19,19 @@ export async function getChannelStats(
   chatId: string,
   range: ChannelStatsRange = '7d',
   request: Pick<RequestInit, 'signal'> = {},
+  options: Partial<{
+    includeActivityPreview: boolean;
+  }> = {},
 ): Promise<ChannelStatsResponse> {
-  const validatedRange = channelStatsRangeSchema.parse(range);
-  const response = await api.request(
-    `/channels/${chatId}/stats?range=${encodeURIComponent(validatedRange)}`,
-    request,
-  );
+  const query = channelStatsRangeSchema.parse(range);
+  const params = new URLSearchParams({
+    range: query,
+  });
+  if (options.includeActivityPreview === false) {
+    params.set('includeActivityPreview', 'false');
+  }
+
+  const response = await api.request(`/channels/${chatId}/stats?${params.toString()}`, request);
   return channelStatsResponseSchema.parse(response);
 }
 

@@ -1902,6 +1902,7 @@ export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
 
 export const channelStatsQuerySchema = z.object({
   range: channelStatsRangeSchema.default('7d'),
+  includeActivityPreview: booleanQueryFlagSchema.default(true),
 });
 export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
 
@@ -2122,6 +2123,7 @@ export const channelStatsResponseSchema = z.object({
     churnAvailable: z.boolean(),
     officialCoverageFrom: z.string().datetime().nullable(),
     missingOfficialMetrics: z.array(channelStatsMissingMetricSchema),
+    refreshQueued: z.boolean().default(false),
   }),
   comparison: z.object({
     period: z.object({

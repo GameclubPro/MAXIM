@@ -84,6 +84,7 @@
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
+- Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - For native mini app behavior, prefer shared helpers over raw bridge calls:
   - register overlay/sheet/editor close behavior with `apps/miniapp/src/lib/native-back.ts`
   - mirror durable device-local state through `apps/miniapp/src/lib/native-storage.ts`
@@ -169,6 +170,7 @@
 - When recent hydration resolves better chat metadata, keep the user-scoped published snapshot aligned so home does not linger on fallback titles like `Chat <id>`.
 - Managed-entities refresh is async. Diagnose `CHAT` and `CHANNEL` separately and trust refresh state/cursor, not only the first response.
 - `ChatSettings.antiSpamEnabled` is the fast per-chat sender flood guard. The hard threshold is `MESSAGE_RATE_LIMIT` on the 6th message/sticker-like event within 6 seconds, including attachment-only messages; do not expose threshold controls, and hard-ban the sender instead of routing it through configurable message-limit escalation.
+- Channel statistics should open from cached/read-model data. Do not block `GET /channels/:chatId/stats` on MAX refresh; queue stale refresh in the background and request `includeActivityPreview=false` for the mini app's first stats paint.
 - Channel statistics screens should stay factual. Do not add "What to do next", smart recommendations, pseudo-AI advice, or coaching copy; prefer neutral metrics, freshness/source coverage, charts, top posts, and best publishing windows.
 
 ## Repo hygiene

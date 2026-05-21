@@ -8887,7 +8887,9 @@ describe('AdminService.listChannels', () => {
         nextPollAfterMs: 0,
       },
     });
-    await flushAsyncTasks();
+    for (let index = 0; index < 5; index += 1) {
+      await Promise.resolve();
+    }
   });
 
   it('clears stale cached channels when a local refresh revalidates and loses admin access', async () => {
@@ -16440,6 +16442,7 @@ describe('AdminService.getChannelStats', () => {
       churnAvailable: true,
       officialCoverageFrom: '2026-02-28T08:00:00.000Z',
       missingOfficialMetrics: ['reach', 'uniqueViews'],
+      refreshQueued: false,
     });
     expect(result.activityFeed).toEqual({
       items: [
@@ -16481,10 +16484,7 @@ describe('AdminService.getChannelStats', () => {
       at: '2026-02-21T00:00:00.000Z',
       participantsCount: 1180,
     });
-    expect(channelStatsCollector.syncChannelIfStale).toHaveBeenCalledWith('channel-1', {
-      staleMs: 7200000,
-      reason: 'stats_endpoint',
-    });
+    expect(channelStatsCollector.syncChannelIfStale).not.toHaveBeenCalled();
 
     const statsSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(statsSqlText).toContain('COUNT(DISTINCT CASE');
@@ -16494,6 +16494,119 @@ describe('AdminService.getChannelStats', () => {
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
     expect(membershipSqlText).toContain('WITH membership_events AS (');
     expect(membershipSqlText).toContain('ORDER BY created_at');
+  });
+
+  it('returns cached channel stats immediately and refreshes stale MAX data in background', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          posts_with_buttons: '0',
+          comments: '0',
+          suggestions: '0',
+          comment_authors: '0',
+          suggestion_authors: '0',
+          suggestions_delivered: '0',
+          suggestions_failed: '0',
+          last_bot_activity_at: null,
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prisma.channelAudienceSnapshot.findFirst
+      .mockResolvedValueOnce({
+        chatId: 'channel-1',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: new Date('2026-03-07T07:55:00.000Z'),
+        capturedAt: new Date('2026-03-07T07:56:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        capturedAt: new Date('2026-03-01T08:00:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        participantsCount: 1240,
+      })
+      .mockResolvedValueOnce({
+        participantsCount: 1240,
+      });
+    prisma.channelAudienceSnapshot.findMany.mockResolvedValue([]);
+    prisma.channelStatsSyncState.findUnique.mockResolvedValue({
+      id: 'sync-1',
+      chatId: 'channel-1',
+      viewsCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+      membershipCoverageFrom: new Date('2026-03-01T08:00:00.000Z'),
+      lastAudienceSyncAt: new Date('2026-03-07T07:56:00.000Z'),
+      lastViewsSyncAt: new Date('2026-03-07T07:56:00.000Z'),
+      lastOpportunisticSyncAt: null,
+      createdAt: new Date('2026-03-01T08:00:00.000Z'),
+      updatedAt: new Date('2026-03-07T07:56:00.000Z'),
+    });
+    prisma.channelPost.findMany.mockResolvedValue([]);
+    prisma.channelPost.findFirst.mockResolvedValue(null);
+
+    const refreshDeferred = createDeferred<void>();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const channelStatsCollector = {
+      syncChannelIfStale: jest.fn().mockReturnValue(refreshDeferred.promise),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      channelStatsCollector as never,
+    );
+
+    let resolvedResult: Awaited<ReturnType<AdminService['getChannelStats']>> | null = null;
+    const resultPromise = service
+      .getChannelStats(
+        'channel-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { range: '7d', includeActivityPreview: false },
+      )
+      .then((result) => {
+        resolvedResult = result;
+        return result;
+      });
+    const race = await Promise.race([
+      resultPromise.then(() => 'resolved' as const),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+    refreshDeferred.resolve(undefined);
+    const result = resolvedResult ?? (await resultPromise);
+    expect(race).toBe('resolved');
+    expect(result.meta.refreshQueued).toBe(true);
+    expect(result.activityFeed).toEqual({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(channelStatsCollector.syncChannelIfStale).toHaveBeenCalledWith('channel-1', {
+      staleMs: 7200000,
+      reason: 'stats_endpoint',
+    });
+
+    await flushAsyncTasks();
   });
 
   it.each([

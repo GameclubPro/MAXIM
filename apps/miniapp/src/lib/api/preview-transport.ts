@@ -2657,7 +2657,14 @@ function buildLogsDashboard(
   });
 }
 
-function buildChannelStats(state: PreviewState, channelId: string, range: ChannelStatsRange) {
+function buildChannelStats(
+  state: PreviewState,
+  channelId: string,
+  range: ChannelStatsRange,
+  options: Partial<{
+    includeActivityPreview: boolean;
+  }> = {},
+) {
   const now = new Date();
   const activityItems = filterActivityItems(state.channelActivity, range, 'all', now);
   const joined = activityItems.filter((item) => item.type === 'joined').length;
@@ -3067,7 +3074,10 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
         { code: 'forecast', label: 'Прогноз', value: `+${forecastNet}`, tone: 'success', at: null },
       ],
     },
-    activityFeed: buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
+    activityFeed:
+      options.includeActivityPreview === false
+        ? { items: [], hasMore: false, nextCursor: null }
+        : buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
   });
 }
 
@@ -4469,7 +4479,11 @@ async function handleChannelRequest(
 
   if (tail[0] === 'stats' && method === 'GET') {
     const range = (url.searchParams.get('range') as ChannelStatsRange | null) ?? '7d';
-    return cloneJson(buildChannelStats(state, channelId, range));
+    return cloneJson(
+      buildChannelStats(state, channelId, range, {
+        includeActivityPreview: url.searchParams.get('includeActivityPreview') !== 'false',
+      }),
+    );
   }
 
   if (tail[0] === 'activity-feed' && method === 'GET') {

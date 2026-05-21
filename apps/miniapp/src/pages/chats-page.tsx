@@ -765,13 +765,20 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
-        queryFn: () =>
-          api.request(
-            `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(
-              DEFAULT_DASHBOARD_RANGE,
-            )}&includeActivityPreview=false`,
-          ),
+        queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, false),
+        queryFn: async ({ signal }) => {
+          const { getLogsDashboard } = await import('../lib/api/events-client');
+          return getLogsDashboard(
+            api,
+            chatId,
+            DEFAULT_DASHBOARD_RANGE,
+            {
+              includeActivityPreview: false,
+              includeModerationPreview: false,
+            },
+            { signal },
+          );
+        },
       })
       .catch(() => undefined);
   }
@@ -851,10 +858,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     void queryClient
       .prefetchQuery({
         queryKey: queryKeys.channelStats(chatId, DEFAULT_CHANNEL_STATS_RANGE),
-        queryFn: () =>
-          api.request(
-            `/channels/${chatId}/stats?range=${encodeURIComponent(DEFAULT_CHANNEL_STATS_RANGE)}`,
-          ),
+        queryFn: async ({ signal }) => {
+          const { getChannelStats } = await import('../lib/api/channel-stats-client');
+          return getChannelStats(
+            api,
+            chatId,
+            DEFAULT_CHANNEL_STATS_RANGE,
+            { signal },
+            { includeActivityPreview: false },
+          );
+        },
       })
       .catch(() => undefined);
   }

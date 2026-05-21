@@ -1814,8 +1814,13 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
-    queryFn: ({ signal }) => getChannelStats(api, chatId, range, { signal }),
+    queryFn: ({ signal }) =>
+      getChannelStats(api, chatId, range, { signal }, { includeActivityPreview: false }),
     enabled: Boolean(chatId),
+    staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
+    refetchInterval: (query) => (query.state.data?.meta.refreshQueued ? 5_000 : false),
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
