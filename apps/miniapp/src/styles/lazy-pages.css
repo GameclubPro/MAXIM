@@ -12203,6 +12203,172 @@ body.channel-stats-page-open .bottom-nav__item {
   height: clamp(146px, 38vw, 184px);
 }
 
+/* Channel stats intelligence pass: useful facts only. */
+.channel-insights__useful-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.channel-insights__useful-grid:empty {
+  display: none;
+}
+
+.channel-insights__signal-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  overflow: visible;
+  padding-bottom: 0;
+}
+
+.channel-insights__signal {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  align-content: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 7px 8px;
+  border-radius: 13px;
+}
+
+.channel-insights__signal small,
+.channel-insights__signal strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-insights__signal small {
+  font-size: 0.5rem;
+}
+
+.channel-insights__signal strong {
+  font-size: 0.82rem;
+}
+
+.channel-insights__benchmark-rail {
+  gap: 5px;
+}
+
+.channel-insights__benchmark-rail .channel-benchmark-rail__item {
+  gap: 4px;
+  min-height: 52px;
+  padding: 7px 8px;
+  border-radius: 13px;
+}
+
+.channel-insights__benchmark-rail .channel-benchmark-rail__item small,
+.channel-insights__benchmark-rail .channel-benchmark-rail__item strong,
+.channel-insights__benchmark-rail .channel-benchmark-rail__item em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-insights__benchmark-rail .channel-benchmark-rail__item small {
+  font-size: 0.5rem;
+}
+
+.channel-insights__benchmark-rail .channel-benchmark-rail__item strong {
+  font-size: 0.92rem;
+}
+
+.channel-insights__benchmark-rail .channel-benchmark-rail__item em {
+  font-size: 0.56rem;
+}
+
+.channel-insights__intel-grid {
+  grid-template-columns: minmax(96px, 0.58fr) minmax(0, 1.42fr);
+  gap: 5px;
+}
+
+.channel-insights__intel-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.channel-insights__intel-grid .channel-forecast-card,
+.channel-insights__intel-grid .channel-cohort-card {
+  min-height: 86px;
+  border-radius: 13px;
+}
+
+.channel-insights__intel-grid .channel-forecast-card {
+  gap: 5px;
+  padding: 9px;
+}
+
+.channel-insights__intel-grid .channel-forecast-card small,
+.channel-insights__intel-grid .channel-cohort-card__head small {
+  font-size: 0.5rem;
+}
+
+.channel-insights__intel-grid .channel-forecast-card strong {
+  font-size: 1.26rem;
+}
+
+.channel-insights__intel-grid .channel-forecast-card span {
+  font-size: 0.58rem;
+}
+
+.channel-insights__intel-grid .channel-cohort-card {
+  gap: 8px;
+  padding: 9px;
+}
+
+.channel-insights__intel-grid .channel-cohort-card__head strong {
+  font-size: 0.86rem;
+}
+
+.channel-insights__intel-grid .channel-cohort-card__steps {
+  gap: 6px;
+}
+
+.channel-insights__intel-grid .channel-cohort-step {
+  gap: 4px 7px;
+  grid-template-columns: minmax(0, 1fr) minmax(48px, auto);
+}
+
+.channel-insights__intel-grid .channel-cohort-step small,
+.channel-insights__intel-grid .channel-cohort-step strong {
+  font-size: 0.62rem;
+}
+
+.channel-insights__intel-grid .channel-cohort-step__bar {
+  height: 5px;
+}
+
+.channel-insights__heatmap {
+  gap: 7px;
+  padding: 8px;
+  border-radius: 13px;
+}
+
+.channel-insights__heatmap .channel-heatmap__head small {
+  font-size: 0.5rem;
+}
+
+.channel-insights__heatmap .channel-heatmap__head strong {
+  font-size: 0.82rem;
+}
+
+.channel-insights__heatmap .channel-heatmap__grid {
+  grid-template-columns: 20px repeat(24, minmax(5px, 1fr));
+  gap: 2px;
+}
+
+.channel-insights__heatmap .channel-heatmap__corner,
+.channel-insights__heatmap .channel-heatmap__hour,
+.channel-insights__heatmap .channel-heatmap__day {
+  font-size: 0.48rem;
+}
+
+.channel-insights__heatmap .channel-heatmap__cell {
+  border-radius: 3px;
+}
+
 @media (max-width: 380px) {
   .channel-insights__decision-strip {
     gap: 4px;
@@ -12223,5 +12389,28 @@ body.channel-stats-page-open .bottom-nav__item {
 
   .channel-stats-graph__svg {
     height: 138px;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-insights__signal-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .channel-insights__benchmark-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .channel-insights__intel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-insights__heatmap {
+    padding: 7px;
+  }
+
+  .channel-insights__heatmap .channel-heatmap__grid {
+    grid-template-columns: 18px repeat(24, minmax(4px, 1fr));
+    gap: 1.5px;
   }
 }

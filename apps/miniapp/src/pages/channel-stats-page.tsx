@@ -2,7 +2,8 @@ import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from
 import { useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
 import '../styles/dashboard-events.css';
-import { useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -71,6 +72,7 @@ const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
 ];
 
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
+const heatmapHourLabels = [0, 6, 12, 18] as const;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -264,6 +266,16 @@ function formatBenchmarkDelta(
   return `${rounded > 0 ? '+' : ''}${rounded}%`;
 }
 
+function formatDecimal(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  return new Intl.NumberFormat('ru-RU', {
+    maximumFractionDigits: value > 0 && value < 10 ? 1 : 0,
+  }).format(value);
+}
+
 function resolveNumberTone(value: number | null | undefined, inverse = false): ChartInsightTone {
   if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) {
     return 'neutral';
@@ -277,6 +289,12 @@ function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWind
   const day = dayShortLabels[window.dayOfWeek] ?? '';
   const hour = String(window.hour).padStart(2, '0');
   return `${day} ${hour}:00`.trim();
+}
+
+function formatBestWindowMeta(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
+  const views = formatCompactCount(window.averageViews);
+  const reactions = formatCompactCount(window.averageReactions);
+  return reactions === '—' || window.averageReactions === 0 ? views : `${views} · ${reactions}`;
 }
 
 function pushDecisionCard(cards: ChannelDecisionCard[], card: ChannelDecisionCard): void {
@@ -306,12 +324,8 @@ function pushSignalDecision(cards: ChannelDecisionCard[], signal: ChannelStatsSi
 
 function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] {
   const cards: ChannelDecisionCard[] = [];
-  const headlineSignals = [
-    stats.intelligence.headline.primary,
-    ...stats.intelligence.headline.secondary,
-  ];
 
-  for (const signal of headlineSignals.slice(1)) {
+  for (const signal of stats.signals.alerts.slice(0, 1)) {
     pushSignalDecision(cards, signal);
   }
 
@@ -319,9 +333,9 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
   if (bestWindow && bestWindow.posts > 0) {
     pushDecisionCard(cards, {
       code: 'best-window',
-      label: 'Окно',
+      label: 'Публиковать',
       value: formatBestWindowValue(bestWindow),
-      meta: formatCompactCount(bestWindow.averageViews),
+      meta: formatBestWindowMeta(bestWindow),
       tone: 'success',
     });
   }
@@ -332,7 +346,10 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
       code: 'forecast',
       label: `${forecast.horizonDays}д`,
       value: formatSignedCompactCount(forecast.net),
-      meta: forecast.participants !== null ? formatCompactCount(forecast.participants) : null,
+      meta:
+        forecast.participants !== null
+          ? `${formatCompactCount(forecast.participants)} всего`
+          : null,
       tone: resolveNumberTone(forecast.net),
     });
   }
@@ -341,9 +358,9 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
   if (cohort.joined >= 3 && cohort.retentionRate !== null) {
     pushDecisionCard(cards, {
       code: 'retention',
-      label: 'Возврат',
+      label: 'Новые',
       value: formatPercent(cohort.retentionRate),
-      meta: formatCompactCount(cohort.retained),
+      meta: `${formatCompactCount(cohort.retained)} удержано`,
       tone: resolveNumberTone(cohort.retentionRate - 65),
     });
   }
@@ -371,9 +388,9 @@ function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] 
   }
 
   for (const signal of [
+    ...stats.intelligence.headline.secondary,
     ...stats.intelligence.patterns,
     ...stats.signals.insights,
-    ...stats.signals.alerts,
   ]) {
     if (cards.length >= 3) {
       break;
@@ -408,6 +425,258 @@ function ChannelDecisionStrip({ stats }: { stats: ChannelStatsResponse }) {
           {card.meta ? <em>{card.meta}</em> : null}
         </article>
       ))}
+    </div>
+  );
+}
+
+function collectUsefulSignals(stats: ChannelStatsResponse): ChannelStatsSignal[] {
+  const result: ChannelStatsSignal[] = [];
+  for (const signal of [
+    ...stats.signals.alerts,
+    ...stats.intelligence.patterns,
+    ...stats.signals.insights,
+    ...stats.intelligence.headline.secondary,
+  ]) {
+    if (result.some((item) => item.code === signal.code)) {
+      continue;
+    }
+    result.push(signal);
+    if (result.length >= 4) {
+      break;
+    }
+  }
+  return result;
+}
+
+function ChannelSignalStrip({ stats }: { stats: ChannelStatsResponse }) {
+  const signals = collectUsefulSignals(stats);
+
+  if (signals.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className={`channel-insights__signal-strip ${
+        stats.signals.alerts.length > 0 ? 'channel-insights__signal-strip--alerts' : ''
+      }`}
+      aria-label="Сигналы"
+    >
+      {signals.map((signal) => (
+        <span
+          key={signal.code}
+          className={`channel-insights__signal channel-insights__signal--${signal.tone}`}
+        >
+          <small>{signal.label}</small>
+          <strong>{signal.value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ChannelBenchmarkRail({ stats }: { stats: ChannelStatsResponse }) {
+  const benchmarks: Array<{
+    code: string;
+    label: string;
+    value: string;
+    delta: string | null;
+    tone: ChartInsightTone;
+  }> = [];
+  const { viewsPerPost, reactionsPerPost, engagementRate } = stats.intelligence.benchmarks;
+
+  if (stats.meta.viewsAvailable && stats.official.content.posts > 0) {
+    benchmarks.push({
+      code: 'views-per-post',
+      label: 'Просм./пост',
+      value: formatCompactCount(Math.round(viewsPerPost.current)),
+      delta: formatBenchmarkDelta(viewsPerPost),
+      tone: resolveNumberTone(viewsPerPost.deltaPercent),
+    });
+  }
+
+  if (stats.official.content.posts > 0) {
+    benchmarks.push({
+      code: 'reactions-per-post',
+      label: 'Реакц./пост',
+      value: formatDecimal(reactionsPerPost.current),
+      delta: formatBenchmarkDelta(reactionsPerPost),
+      tone: resolveNumberTone(reactionsPerPost.deltaPercent),
+    });
+  }
+
+  if (stats.meta.viewsAvailable && stats.official.content.views > 0) {
+    benchmarks.push({
+      code: 'engagement-rate',
+      label: 'ER',
+      value: formatPercent(engagementRate.current),
+      delta: formatBenchmarkDelta(engagementRate),
+      tone: resolveNumberTone(engagementRate.deltaPercent),
+    });
+  }
+
+  if (benchmarks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="channel-benchmark-rail channel-insights__benchmark-rail">
+      {benchmarks.map((benchmark) => (
+        <article
+          key={benchmark.code}
+          className={`channel-benchmark-rail__item is-${benchmark.tone}`}
+        >
+          <small>{benchmark.label}</small>
+          <strong>{benchmark.value}</strong>
+          {benchmark.delta ? <em>{benchmark.delta}</em> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ChannelForecastCohort({ stats }: { stats: ChannelStatsResponse }) {
+  const forecast = stats.intelligence.forecast;
+  const cohort = stats.intelligence.cohort;
+  const hasForecast = forecast.net !== null || forecast.participants !== null;
+  const hasCohort = cohort.sampleSize > 0 || cohort.joined > 0;
+
+  if (!hasForecast && !hasCohort) {
+    return null;
+  }
+
+  const cohortSteps = [
+    {
+      code: 'joined',
+      label: 'Пришли',
+      value: formatCount(cohort.joined),
+      width: cohort.joined > 0 ? 100 : 0,
+      tone: 'accent',
+    },
+    {
+      code: 'retained',
+      label: 'Остались',
+      value: formatPercent(cohort.retentionRate),
+      width: clamp(cohort.retentionRate ?? 0, 0, 100),
+      tone: resolveNumberTone((cohort.retentionRate ?? 0) - 65),
+    },
+    {
+      code: 'participated',
+      label: 'Вовлеклись',
+      value: formatPercent(cohort.participationRate),
+      width: clamp(cohort.participationRate ?? 0, 0, 100),
+      tone: resolveNumberTone((cohort.participationRate ?? 0) - 20),
+    },
+  ] as const;
+
+  return (
+    <div
+      className={`channel-intel-grid channel-insights__intel-grid ${
+        hasForecast && hasCohort ? '' : 'channel-insights__intel-grid--single'
+      }`}
+    >
+      {hasForecast ? (
+        <article className={`channel-forecast-card is-${resolveNumberTone(forecast.net ?? 0)}`}>
+          <small>{forecast.horizonDays}д</small>
+          <strong>
+            {forecast.net !== null
+              ? formatSignedCompactCount(forecast.net)
+              : formatCompactCount(forecast.participants)}
+          </strong>
+          <span>
+            {forecast.participants !== null
+              ? `${formatCompactCount(forecast.participants)} всего`
+              : forecast.confidence}
+          </span>
+        </article>
+      ) : null}
+
+      {hasCohort ? (
+        <article className="channel-cohort-card channel-cohort-card--wide">
+          <div className="channel-cohort-card__head">
+            <small>Новые</small>
+            <strong>{formatCompactCount(cohort.sampleSize || cohort.joined)}</strong>
+          </div>
+          <div className="channel-cohort-card__steps">
+            {cohortSteps.map((step) => (
+              <div key={step.code} className={`channel-cohort-step is-${step.tone}`}>
+                <small>{step.label}</small>
+                <strong>{step.value}</strong>
+                <span className="channel-cohort-step__bar" aria-hidden="true">
+                  <i style={{ width: `${Math.max(4, step.width)}%` }} />
+                </span>
+              </div>
+            ))}
+          </div>
+        </article>
+      ) : null}
+    </div>
+  );
+}
+
+function ChannelPublishingHeatmap({ stats }: { stats: ChannelStatsResponse }) {
+  const cells = stats.intelligence.publishingHeatmap;
+
+  if (cells.length === 0) {
+    return null;
+  }
+
+  const maxScore = Math.max(...cells.map((cell) => cell.score), 1);
+  const cellsByKey = new Map(cells.map((cell) => [`${cell.dayOfWeek}:${cell.hour}`, cell]));
+  const bestWindow = stats.signals.bestWindows.find((window) => window.posts > 0) ?? null;
+
+  return (
+    <div className="channel-heatmap channel-insights__heatmap">
+      <div className="channel-heatmap__head">
+        <small>Окна</small>
+        {bestWindow ? <strong>{formatBestWindowValue(bestWindow)}</strong> : null}
+      </div>
+      <div className="channel-heatmap__grid" aria-label="Окна публикаций">
+        <span className="channel-heatmap__corner" aria-hidden="true" />
+        {Array.from({ length: 24 }, (_, hour) => (
+          <span key={`hour-${hour}`} className="channel-heatmap__hour">
+            {heatmapHourLabels.includes(hour as (typeof heatmapHourLabels)[number]) ? hour : ''}
+          </span>
+        ))}
+        {dayShortLabels.map((day, dayOfWeek) => (
+          <Fragment key={day}>
+            <span key={`${day}-label`} className="channel-heatmap__day">
+              {day}
+            </span>
+            {Array.from({ length: 24 }, (_, hour) => {
+              const cell = cellsByKey.get(`${dayOfWeek}:${hour}`) ?? null;
+              const heat = cell ? clamp(cell.score / maxScore, 0.12, 1) : 0;
+              const title = cell
+                ? `${day} ${String(hour).padStart(2, '0')}:00 · ${formatCompactCount(
+                    cell.averageViews,
+                  )}`
+                : `${day} ${String(hour).padStart(2, '0')}:00`;
+
+              return (
+                <span
+                  key={`${day}-${hour}`}
+                  className={`channel-heatmap__cell ${
+                    cell && cell.posts > 0 ? `has-posts is-${cell.tone}` : ''
+                  }`}
+                  style={{ '--heat': heat } as CSSProperties}
+                  title={title}
+                />
+              );
+            })}
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChannelUsefulStats({ stats }: { stats: ChannelStatsResponse }) {
+  return (
+    <div className="channel-insights__useful-grid">
+      <ChannelSignalStrip stats={stats} />
+      <ChannelBenchmarkRail stats={stats} />
+      <ChannelForecastCohort stats={stats} />
+      <ChannelPublishingHeatmap stats={stats} />
     </div>
   );
 }
@@ -1634,7 +1903,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <span>
                 <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
                 <b>
-                  {formatCount(audienceJoined)} / {formatCount(audienceLeft)}
+                  +{formatCount(audienceJoined)} / -{formatCount(audienceLeft)}
                 </b>
               </span>
             </article>
@@ -1700,6 +1969,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               <TopPostsChart stats={stats} />
             )}
           </article>
+
+          <ChannelUsefulStats stats={stats} />
         </section>
       </div>
     </div>
