@@ -88,6 +88,7 @@
   - register overlay/sheet/editor close behavior with `apps/miniapp/src/lib/native-back.ts`
   - mirror durable device-local state through `apps/miniapp/src/lib/native-storage.ts`
   - use `apps/miniapp/src/lib/max-bridge.ts` for MAX links, native share/download, haptics, ready, viewport, and BackButton.
+- Do not put global `touch-action` or root `overscroll-behavior-y` locks on `html`/`body` in the mini app; MAX mobile WebViews can stop page or nested home-list scrolling. Scope `touch-action: pan-y` / `-webkit-overflow-scrolling: touch` to the actual scroll container instead.
 
 ## Deploy and VPS
 
