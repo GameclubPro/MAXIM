@@ -2,8 +2,7 @@ import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from
 import { useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
 import '../styles/dashboard-events.css';
-import type { CSSProperties } from 'react';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -23,18 +22,9 @@ type ChannelStatsRouteState = {
   avatarUrl: string | null;
 };
 
-type ChartTab = 'audience' | 'views' | 'posts';
+type ChartTab = 'audience' | 'views';
 
 type ChartInsightTone = 'accent' | 'success' | 'danger' | 'warning' | 'neutral';
-type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
-
-type ChannelDecisionCard = {
-  code: string;
-  label: string;
-  value: string;
-  meta: string | null;
-  tone: ChartInsightTone;
-};
 
 type AudienceChartPoint = {
   at: string;
@@ -68,11 +58,9 @@ const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
 const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
   { value: 'audience', label: 'Аудитория' },
   { value: 'views', label: 'Просмотры' },
-  { value: 'posts', label: 'Посты' },
 ];
 
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
-const heatmapHourLabels = [0, 6, 12, 18] as const;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -108,19 +96,6 @@ function formatCompactCount(value: number | null): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function formatSignedCompactCount(value: number | null): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '—';
-  }
-
-  if (value === 0) {
-    return '0';
-  }
-
-  const formatted = formatCompactCount(Math.abs(value));
-  return `${value > 0 ? '+' : '-'}${formatted}`;
 }
 
 function formatShortDate(value: string | null, bucket: ChannelStatsBucket): string {
@@ -223,13 +198,15 @@ function resolveDeltaTone(
   return positive ? 'success' : 'warning';
 }
 
-function formatPostTime(value: string): string {
+function formatPostDateTime(value: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) {
     return '';
   }
 
   return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
@@ -251,433 +228,209 @@ function DeltaBadge({
   );
 }
 
-function formatBenchmarkDelta(
-  metric: ChannelStatsResponse['intelligence']['benchmarks']['viewsPerPost'],
-): string | null {
-  if (typeof metric.deltaPercent !== 'number' || !Number.isFinite(metric.deltaPercent)) {
-    return null;
-  }
-
-  const rounded = Math.round(metric.deltaPercent);
-  if (rounded === 0) {
-    return '0%';
-  }
-
-  return `${rounded > 0 ? '+' : ''}${rounded}%`;
-}
-
-function formatDecimal(value: number | null): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '—';
-  }
-
-  return new Intl.NumberFormat('ru-RU', {
-    maximumFractionDigits: value > 0 && value < 10 ? 1 : 0,
-  }).format(value);
-}
-
-function resolveNumberTone(value: number | null | undefined, inverse = false): ChartInsightTone {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) {
-    return 'neutral';
-  }
-
-  const positive = inverse ? value < 0 : value > 0;
-  return positive ? 'success' : 'warning';
-}
-
 function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
   const day = dayShortLabels[window.dayOfWeek] ?? '';
   const hour = String(window.hour).padStart(2, '0');
   return `${day} ${hour}:00`.trim();
 }
 
-function formatBestWindowMeta(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
+function formatBestWindowStats(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
   const views = formatCompactCount(window.averageViews);
   const reactions = formatCompactCount(window.averageReactions);
-  return reactions === '—' || window.averageReactions === 0 ? views : `${views} · ${reactions}`;
+  return reactions === '—' || window.averageReactions === 0
+    ? `${views} просмотров`
+    : `${views} просмотров · ${reactions} реакций`;
 }
 
-function pushDecisionCard(cards: ChannelDecisionCard[], card: ChannelDecisionCard): void {
-  if (
-    cards.some(
-      (item) =>
-        item.code === card.code ||
-        (item.label.toLocaleLowerCase('ru-RU') === card.label.toLocaleLowerCase('ru-RU') &&
-          item.value.toLocaleLowerCase('ru-RU') === card.value.toLocaleLowerCase('ru-RU')),
-    )
-  ) {
-    return;
+function formatDateTime(value: string | null): string {
+  if (!value) {
+    return '—';
   }
 
-  cards.push(card);
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '—';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
 }
 
-function pushSignalDecision(cards: ChannelDecisionCard[], signal: ChannelStatsSignal): void {
-  pushDecisionCard(cards, {
-    code: signal.code,
-    label: signal.label,
-    value: signal.value,
-    meta: null,
-    tone: signal.tone,
-  });
+function formatDateOnly(value: string | null): string {
+  if (!value) {
+    return '—';
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '—';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  }).format(parsed);
 }
 
-function buildDecisionCards(stats: ChannelStatsResponse): ChannelDecisionCard[] {
-  const cards: ChannelDecisionCard[] = [];
-
-  for (const signal of stats.signals.alerts.slice(0, 1)) {
-    pushSignalDecision(cards, signal);
-  }
-
-  const bestWindow = stats.signals.bestWindows[0];
-  if (bestWindow && bestWindow.posts > 0) {
-    pushDecisionCard(cards, {
-      code: 'best-window',
-      label: 'Публиковать',
-      value: formatBestWindowValue(bestWindow),
-      meta: formatBestWindowMeta(bestWindow),
-      tone: 'success',
-    });
-  }
-
-  const forecast = stats.intelligence.forecast;
-  if (forecast.net !== null) {
-    pushDecisionCard(cards, {
-      code: 'forecast',
-      label: `${forecast.horizonDays}д`,
-      value: formatSignedCompactCount(forecast.net),
-      meta:
-        forecast.participants !== null
-          ? `${formatCompactCount(forecast.participants)} всего`
-          : null,
-      tone: resolveNumberTone(forecast.net),
-    });
-  }
-
-  const cohort = stats.intelligence.cohort;
-  if (cohort.joined >= 3 && cohort.retentionRate !== null) {
-    pushDecisionCard(cards, {
-      code: 'retention',
-      label: 'Новые',
-      value: formatPercent(cohort.retentionRate),
-      meta: `${formatCompactCount(cohort.retained)} удержано`,
-      tone: resolveNumberTone(cohort.retentionRate - 65),
-    });
-  }
-
-  const viewsPerPost = stats.intelligence.benchmarks.viewsPerPost;
-  if (stats.meta.viewsAvailable && stats.official.content.posts > 0) {
-    pushDecisionCard(cards, {
-      code: 'views-per-post',
-      label: 'Просм./пост',
-      value: formatCompactCount(Math.round(viewsPerPost.current)),
-      meta: formatBenchmarkDelta(viewsPerPost),
-      tone: resolveNumberTone(viewsPerPost.deltaPercent),
-    });
-  }
-
-  const engagementRate = stats.intelligence.benchmarks.engagementRate;
-  if (stats.meta.viewsAvailable && stats.official.content.views > 0) {
-    pushDecisionCard(cards, {
-      code: 'engagement-rate',
-      label: 'ER',
-      value: formatPercent(engagementRate.current),
-      meta: formatBenchmarkDelta(engagementRate),
-      tone: resolveNumberTone(engagementRate.deltaPercent),
-    });
-  }
-
-  for (const signal of [
-    ...stats.intelligence.headline.secondary,
-    ...stats.intelligence.patterns,
-    ...stats.signals.insights,
-  ]) {
-    if (cards.length >= 3) {
-      break;
-    }
-    pushSignalDecision(cards, signal);
-  }
-
-  return cards.slice(0, 3);
+function formatPeriodRange(from: string, to: string): string {
+  return `${formatDateOnly(from)} — ${formatDateOnly(to)}`;
 }
 
-function ChannelDecisionStrip({ stats }: { stats: ChannelStatsResponse }) {
-  const cards = buildDecisionCards(stats);
+function formatBucketLabel(bucket: ChannelStatsBucket): string {
+  return bucket === 'hour' ? 'по часам' : 'по дням';
+}
 
-  if (cards.length === 0) {
-    return null;
+function formatRangeTitle(range: ChannelStatsRange): string {
+  return periodOptions.find((option) => option.value === range)?.label ?? range;
+}
+
+function formatViewModeLabel(mode: ChannelStatsResponse['official']['content']['viewsMode']): string {
+  return mode === 'observedDelta' ? 'прирост за период' : 'последний total';
+}
+
+function formatMissingMetric(metric: ChannelStatsResponse['meta']['missingOfficialMetrics'][number]) {
+  if (metric === 'reach') {
+    return 'охват';
   }
+
+  return 'уникальные';
+}
+
+function formatMissingMetrics(
+  metrics: ChannelStatsResponse['meta']['missingOfficialMetrics'],
+): string {
+  if (metrics.length === 0) {
+    return '—';
+  }
+
+  return metrics.map(formatMissingMetric).join(', ');
+}
+
+function ChannelSourceStrip({ stats }: { stats: ChannelStatsResponse }) {
+  const coverageLabel = stats.meta.officialCoverageFrom
+    ? `с ${formatDateOnly(stats.meta.officialCoverageFrom)}`
+    : stats.meta.maxSnapshotAvailable
+      ? 'текущий снимок'
+      : 'нет снимка';
 
   return (
-    <div
-      className={`channel-command-strip channel-insights__decision-strip ${
-        stats.signals.alerts.length > 0 ? 'channel-insights__decision-strip--alerts' : ''
-      }`}
-      aria-label="Ключевые сигналы"
-    >
-      {cards.map((card) => (
-        <article
-          key={card.code}
-          className={`channel-command-strip__item channel-command-strip__item--${card.tone}`}
-        >
-          <small>{card.label}</small>
-          <strong>{card.value}</strong>
-          {card.meta ? <em>{card.meta}</em> : null}
-        </article>
-      ))}
+    <div className="channel-fact-strip" aria-label="Источник и свежесть данных">
+      <span>
+        <small>Срез</small>
+        <strong>{formatDateTime(stats.period.to)}</strong>
+      </span>
+      <span>
+        <small>Период</small>
+        <strong>{formatPeriodRange(stats.period.from, stats.period.to)}</strong>
+      </span>
+      <span>
+        <small>Покрытие</small>
+        <strong>{coverageLabel}</strong>
+      </span>
     </div>
   );
 }
 
-function collectUsefulSignals(stats: ChannelStatsResponse): ChannelStatsSignal[] {
-  const result: ChannelStatsSignal[] = [];
-  for (const signal of [
-    ...stats.signals.alerts,
-    ...stats.intelligence.patterns,
-    ...stats.signals.insights,
-    ...stats.intelligence.headline.secondary,
-  ]) {
-    if (result.some((item) => item.code === signal.code)) {
-      continue;
-    }
-    result.push(signal);
-    if (result.length >= 4) {
-      break;
-    }
-  }
-  return result;
-}
-
-function ChannelSignalStrip({ stats }: { stats: ChannelStatsResponse }) {
-  const signals = collectUsefulSignals(stats);
-
-  if (signals.length === 0) {
-    return null;
-  }
+function ChannelBestWindowsPanel({ stats }: { stats: ChannelStatsResponse }) {
+  const windows = stats.signals.bestWindows.filter((window) => window.posts > 0).slice(0, 3);
 
   return (
-    <div
-      className={`channel-insights__signal-strip ${
-        stats.signals.alerts.length > 0 ? 'channel-insights__signal-strip--alerts' : ''
-      }`}
-      aria-label="Сигналы"
-    >
-      {signals.map((signal) => (
-        <span
-          key={signal.code}
-          className={`channel-insights__signal channel-insights__signal--${signal.tone}`}
-        >
-          <small>{signal.label}</small>
-          <strong>{signal.value}</strong>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function ChannelBenchmarkRail({ stats }: { stats: ChannelStatsResponse }) {
-  const benchmarks: Array<{
-    code: string;
-    label: string;
-    value: string;
-    delta: string | null;
-    tone: ChartInsightTone;
-  }> = [];
-  const { viewsPerPost, reactionsPerPost, engagementRate } = stats.intelligence.benchmarks;
-
-  if (stats.meta.viewsAvailable && stats.official.content.posts > 0) {
-    benchmarks.push({
-      code: 'views-per-post',
-      label: 'Просм./пост',
-      value: formatCompactCount(Math.round(viewsPerPost.current)),
-      delta: formatBenchmarkDelta(viewsPerPost),
-      tone: resolveNumberTone(viewsPerPost.deltaPercent),
-    });
-  }
-
-  if (stats.official.content.posts > 0) {
-    benchmarks.push({
-      code: 'reactions-per-post',
-      label: 'Реакц./пост',
-      value: formatDecimal(reactionsPerPost.current),
-      delta: formatBenchmarkDelta(reactionsPerPost),
-      tone: resolveNumberTone(reactionsPerPost.deltaPercent),
-    });
-  }
-
-  if (stats.meta.viewsAvailable && stats.official.content.views > 0) {
-    benchmarks.push({
-      code: 'engagement-rate',
-      label: 'ER',
-      value: formatPercent(engagementRate.current),
-      delta: formatBenchmarkDelta(engagementRate),
-      tone: resolveNumberTone(engagementRate.deltaPercent),
-    });
-  }
-
-  if (benchmarks.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="channel-benchmark-rail channel-insights__benchmark-rail">
-      {benchmarks.map((benchmark) => (
-        <article
-          key={benchmark.code}
-          className={`channel-benchmark-rail__item is-${benchmark.tone}`}
-        >
-          <small>{benchmark.label}</small>
-          <strong>{benchmark.value}</strong>
-          {benchmark.delta ? <em>{benchmark.delta}</em> : null}
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function ChannelForecastCohort({ stats }: { stats: ChannelStatsResponse }) {
-  const forecast = stats.intelligence.forecast;
-  const cohort = stats.intelligence.cohort;
-  const hasForecast = forecast.net !== null || forecast.participants !== null;
-  const hasCohort = cohort.sampleSize > 0 || cohort.joined > 0;
-
-  if (!hasForecast && !hasCohort) {
-    return null;
-  }
-
-  const cohortSteps = [
-    {
-      code: 'joined',
-      label: 'Пришли',
-      value: formatCount(cohort.joined),
-      width: cohort.joined > 0 ? 100 : 0,
-      tone: 'accent',
-    },
-    {
-      code: 'retained',
-      label: 'Остались',
-      value: formatPercent(cohort.retentionRate),
-      width: clamp(cohort.retentionRate ?? 0, 0, 100),
-      tone: resolveNumberTone((cohort.retentionRate ?? 0) - 65),
-    },
-    {
-      code: 'participated',
-      label: 'Вовлеклись',
-      value: formatPercent(cohort.participationRate),
-      width: clamp(cohort.participationRate ?? 0, 0, 100),
-      tone: resolveNumberTone((cohort.participationRate ?? 0) - 20),
-    },
-  ] as const;
-
-  return (
-    <div
-      className={`channel-intel-grid channel-insights__intel-grid ${
-        hasForecast && hasCohort ? '' : 'channel-insights__intel-grid--single'
-      }`}
-    >
-      {hasForecast ? (
-        <article className={`channel-forecast-card is-${resolveNumberTone(forecast.net ?? 0)}`}>
-          <small>{forecast.horizonDays}д</small>
-          <strong>
-            {forecast.net !== null
-              ? formatSignedCompactCount(forecast.net)
-              : formatCompactCount(forecast.participants)}
-          </strong>
-          <span>
-            {forecast.participants !== null
-              ? `${formatCompactCount(forecast.participants)} всего`
-              : forecast.confidence}
-          </span>
-        </article>
-      ) : null}
-
-      {hasCohort ? (
-        <article className="channel-cohort-card channel-cohort-card--wide">
-          <div className="channel-cohort-card__head">
-            <small>Новые</small>
-            <strong>{formatCompactCount(cohort.sampleSize || cohort.joined)}</strong>
-          </div>
-          <div className="channel-cohort-card__steps">
-            {cohortSteps.map((step) => (
-              <div key={step.code} className={`channel-cohort-step is-${step.tone}`}>
-                <small>{step.label}</small>
-                <strong>{step.value}</strong>
-                <span className="channel-cohort-step__bar" aria-hidden="true">
-                  <i style={{ width: `${Math.max(4, step.width)}%` }} />
-                </span>
-              </div>
-            ))}
-          </div>
-        </article>
-      ) : null}
-    </div>
-  );
-}
-
-function ChannelPublishingHeatmap({ stats }: { stats: ChannelStatsResponse }) {
-  const cells = stats.intelligence.publishingHeatmap;
-
-  if (cells.length === 0) {
-    return null;
-  }
-
-  const maxScore = Math.max(...cells.map((cell) => cell.score), 1);
-  const cellsByKey = new Map(cells.map((cell) => [`${cell.dayOfWeek}:${cell.hour}`, cell]));
-  const bestWindow = stats.signals.bestWindows.find((window) => window.posts > 0) ?? null;
-
-  return (
-    <div className="channel-heatmap channel-insights__heatmap">
-      <div className="channel-heatmap__head">
-        <small>Окна</small>
-        {bestWindow ? <strong>{formatBestWindowValue(bestWindow)}</strong> : null}
+    <article className="channel-fact-panel channel-best-windows-panel">
+      <div className="channel-insights__panel-head">
+        <div className="channel-insights__panel-copy">
+          <strong>Окна публикаций</strong>
+          <small>Среднее по постам за период</small>
+        </div>
       </div>
-      <div className="channel-heatmap__grid" aria-label="Окна публикаций">
-        <span className="channel-heatmap__corner" aria-hidden="true" />
-        {Array.from({ length: 24 }, (_, hour) => (
-          <span key={`hour-${hour}`} className="channel-heatmap__hour">
-            {heatmapHourLabels.includes(hour as (typeof heatmapHourLabels)[number]) ? hour : ''}
-          </span>
-        ))}
-        {dayShortLabels.map((day, dayOfWeek) => (
-          <Fragment key={day}>
-            <span key={`${day}-label`} className="channel-heatmap__day">
-              {day}
-            </span>
-            {Array.from({ length: 24 }, (_, hour) => {
-              const cell = cellsByKey.get(`${dayOfWeek}:${hour}`) ?? null;
-              const heat = cell ? clamp(cell.score / maxScore, 0.12, 1) : 0;
-              const title = cell
-                ? `${day} ${String(hour).padStart(2, '0')}:00 · ${formatCompactCount(
-                    cell.averageViews,
-                  )}`
-                : `${day} ${String(hour).padStart(2, '0')}:00`;
 
-              return (
-                <span
-                  key={`${day}-${hour}`}
-                  className={`channel-heatmap__cell ${
-                    cell && cell.posts > 0 ? `has-posts is-${cell.tone}` : ''
-                  }`}
-                  style={{ '--heat': heat } as CSSProperties}
-                  title={title}
-                />
-              );
-            })}
-          </Fragment>
+      {windows.length > 0 ? (
+        <div className="channel-best-windows">
+          {windows.map((window) => (
+            <div key={`${window.dayOfWeek}-${window.hour}`} className="channel-best-windows__row">
+              <strong>{formatBestWindowValue(window)}</strong>
+              <span>{formatBestWindowStats(window)}</span>
+              <small>{formatCount(window.posts)} постов</small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="channel-fact-panel__empty">Недостаточно публикаций за период.</p>
+      )}
+    </article>
+  );
+}
+
+function ChannelDataQualityPanel({ stats }: { stats: ChannelStatsResponse }) {
+  const rows = [
+    {
+      code: 'max',
+      label: 'MAX',
+      value: stats.meta.maxSnapshotAvailable ? 'снимок есть' : 'снимка нет',
+      detail:
+        typeof stats.channel.participantsCount === 'number'
+          ? `${formatCount(stats.channel.participantsCount)} участников`
+          : 'участники недоступны',
+    },
+    {
+      code: 'coverage',
+      label: 'Покрытие',
+      value: stats.meta.officialCoverageFrom
+        ? `с ${formatDateOnly(stats.meta.officialCoverageFrom)}`
+        : 'текущий срез',
+      detail: formatBucketLabel(stats.period.bucket),
+    },
+    {
+      code: 'views',
+      label: 'Просмотры',
+      value: stats.meta.viewsAvailable
+        ? formatViewModeLabel(stats.official.content.viewsMode)
+        : 'нет постов',
+      detail: stats.meta.viewsAvailable
+        ? `${formatCompactCount(stats.official.content.views)} за период`
+        : 'статистика постов отсутствует',
+    },
+    {
+      code: 'churn',
+      label: 'Вход/выход',
+      value: stats.meta.churnAvailable ? 'за весь период' : 'частично',
+      detail: `${formatCount(stats.official.audience.joined)} / ${formatCount(
+        stats.official.audience.left ?? 0,
+      )}`,
+    },
+    {
+      code: 'missing',
+      label: 'Нет в MAX',
+      value: formatMissingMetrics(stats.meta.missingOfficialMetrics),
+      detail:
+        stats.meta.missingOfficialMetrics.length > 0
+          ? 'не используется в расчётах'
+          : 'метрик не скрыто',
+    },
+  ];
+
+  return (
+    <article className="channel-fact-panel channel-data-quality">
+      <div className="channel-insights__panel-head">
+        <div className="channel-insights__panel-copy">
+          <strong>Качество данных</strong>
+          <small>Источник и ограничения</small>
+        </div>
+      </div>
+
+      <div className="channel-data-quality__grid">
+        {rows.map((row) => (
+          <div key={row.code} className="channel-data-quality__item">
+            <small>{row.label}</small>
+            <strong>{row.value}</strong>
+            <span>{row.detail}</span>
+          </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function ChannelUsefulStats({ stats }: { stats: ChannelStatsResponse }) {
-  return (
-    <div className="channel-insights__useful-grid">
-      <ChannelSignalStrip stats={stats} />
-      <ChannelBenchmarkRail stats={stats} />
-      <ChannelForecastCohort stats={stats} />
-      <ChannelPublishingHeatmap stats={stats} />
-    </div>
+    </article>
   );
 }
 
@@ -1633,7 +1386,7 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
               <div className="channel-posts-chart__row-head">
                 <span className="channel-posts-chart__rank">#{index + 1}</span>
                 <span className="channel-posts-chart__title">
-                  {formatPostTime(post.publishedAt)}
+                  {formatPostDateTime(post.publishedAt)}
                 </span>
                 <strong>{formatCompactCount(value)}</strong>
               </div>
@@ -1641,6 +1394,7 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
+                <small>{formatCompactCount(value)} просмотров за период</small>
                 <small>{formatCount(post.reactions)} реакций</small>
                 {post.viewsDelta > 0 && post.viewsDelta !== post.views ? (
                   <small>{formatCompactCount(post.views)} всего</small>
@@ -1720,21 +1474,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [chatId, resolvedTitle]);
 
   useEffect(() => {
-    if (!statsQuery.data?.meta.viewsAvailable && (chartTab === 'views' || chartTab === 'posts')) {
+    if (!statsQuery.data?.meta.viewsAvailable && chartTab === 'views') {
       setChartTab('audience');
     }
-    if (
-      statsQuery.data?.meta.viewsAvailable &&
-      chartTab === 'posts' &&
-      statsQuery.data.official.content.topPosts.length === 0
-    ) {
-      setChartTab('audience');
-    }
-  }, [
-    chartTab,
-    statsQuery.data?.meta.viewsAvailable,
-    statsQuery.data?.official.content.topPosts.length,
-  ]);
+  }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
 
   if (!chatId) {
     return (
@@ -1798,10 +1541,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       return stats.meta.viewsAvailable;
     }
 
-    if (option.value === 'posts') {
-      return stats.meta.viewsAvailable && stats.official.content.topPosts.length > 0;
-    }
-
     return true;
   });
   const effectiveChartTab: ChartTab =
@@ -1818,15 +1557,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       : null;
   const viewsPerPost =
     stats.meta.viewsAvailable && stats.official.content.posts > 0
-      ? Math.round(stats.intelligence.benchmarks.viewsPerPost.current)
+      ? Math.round(stats.official.content.views / stats.official.content.posts)
       : null;
-  const primarySignal = stats.intelligence.headline.primary;
-  const chartTitle =
-    effectiveChartTab === 'audience'
-      ? 'Аудитория'
-      : effectiveChartTab === 'views'
-        ? 'Просмотры'
-        : 'Посты';
+  const chartTitle = effectiveChartTab === 'audience' ? 'Аудитория' : 'Просмотры';
 
   return (
     <div className="channel-insights page-enter">
@@ -1858,26 +1591,19 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       />
 
       <div className="channel-insights__body">
+        {/* Product rule: factual analytics only, no smart advice or "what to do next" copy. */}
         <section
           className="channel-insights__summary channel-insights__summary--command stagger-in"
           aria-label="Сводка по каналу"
         >
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
-              <div className="channel-insights__status-row channel-insights__status-row--headline">
-                <span
-                  className={`channel-insights__headline-badge channel-insights__headline-badge--${primarySignal.tone}`}
-                >
-                  <small>{primarySignal.label}</small>
-                  <strong>{primarySignal.value}</strong>
-                </span>
-                <span
-                  className={`channel-insights__score channel-insights__score--${stats.health.tone}`}
-                  aria-label={`Оценка канала ${stats.health.score} из 100`}
-                >
-                  {stats.health.score}
-                </span>
-              </div>
+              <span className="channel-insights__eyebrow">Статистика</span>
+              <h2>{formatRangeTitle(range)}</h2>
+              <p>
+                {formatPeriodRange(stats.period.from, stats.period.to)} ·{' '}
+                {formatBucketLabel(stats.period.bucket)}
+              </p>
             </div>
 
             <SegmentedControl
@@ -1887,6 +1613,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               className="channel-insights__range"
             />
           </div>
+
+          <ChannelSourceStrip stats={stats} />
 
           <div className="channel-insights__kpi-grid">
             <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
@@ -1945,32 +1673,41 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </article>
           </div>
 
-          <ChannelDecisionStrip stats={stats} />
-
           <article className="channel-insights__chart-card">
             <div className="channel-insights__panel-head">
               <div className="channel-insights__panel-copy">
                 <strong>{chartTitle}</strong>
               </div>
 
-              <SegmentedControl
-                value={effectiveChartTab}
-                options={chartTabs}
-                onChange={setChartTab}
-                className="channel-insights__switch"
-              />
+              {chartTabs.length > 1 ? (
+                <SegmentedControl
+                  value={effectiveChartTab}
+                  options={chartTabs}
+                  onChange={setChartTab}
+                  className="channel-insights__switch"
+                />
+              ) : null}
             </div>
 
             {effectiveChartTab === 'audience' ? (
               <AudienceChart stats={stats} />
-            ) : effectiveChartTab === 'views' ? (
-              <ViewsChart stats={stats} />
             ) : (
-              <TopPostsChart stats={stats} />
+              <ViewsChart stats={stats} />
             )}
           </article>
 
-          <ChannelUsefulStats stats={stats} />
+          <article className="channel-fact-panel channel-top-posts-panel">
+            <div className="channel-insights__panel-head">
+              <div className="channel-insights__panel-copy">
+                <strong>Топ публикаций</strong>
+                <small>Посты за выбранный период</small>
+              </div>
+            </div>
+            <TopPostsChart stats={stats} />
+          </article>
+
+          <ChannelBestWindowsPanel stats={stats} />
+          <ChannelDataQualityPanel stats={stats} />
         </section>
       </div>
     </div>
