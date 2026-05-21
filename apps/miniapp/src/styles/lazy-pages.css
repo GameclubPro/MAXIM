@@ -12080,3 +12080,48 @@ body.channel-stats-page-open .bottom-nav__item {
   font-size: 0.62rem;
   font-weight: 780;
 }
+
+.channel-command-strip {
+  gap: 5px;
+}
+
+.channel-command-strip__item {
+  min-height: 54px;
+  padding: 8px;
+  border-radius: 13px;
+}
+
+.channel-command-strip__item small {
+  font-size: 0.5rem;
+}
+
+.channel-command-strip__item strong {
+  font-size: 0.92rem;
+}
+
+.channel-command-strip__item em {
+  font-size: 0.56rem;
+}
+
+.channel-cohort-card--wide {
+  padding: 10px;
+  border-radius: 15px;
+}
+
+.channel-cohort-card--wide .channel-cohort-card__steps {
+  gap: 7px;
+}
+
+.channel-insights__extras {
+  gap: 6px;
+}
+
+.channel-insights__extras-summary {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 13px;
+}
+
+.channel-insights__extras-summary strong {
+  font-size: 0.62rem;
+}
