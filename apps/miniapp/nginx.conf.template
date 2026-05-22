@@ -26,10 +26,23 @@ server {
     add_header Pragma "no-cache" always;
   }
 
+  location ~ ^__MINIAPP_BASE_PATH__assets/.+\.js$ {
+    try_files $uri @stale_miniapp_js_asset;
+    expires 30d;
+    add_header Cache-Control "public, max-age=2592000, immutable";
+  }
+
   location __MINIAPP_BASE_PATH__assets/ {
     try_files $uri =404;
     expires 30d;
     add_header Cache-Control "public, max-age=2592000, immutable";
+  }
+
+  location @stale_miniapp_js_asset {
+    default_type application/javascript;
+    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+    add_header Pragma "no-cache" always;
+    return 200 "try{window.sessionStorage.setItem('maxim:stale-js-asset-reload:v1',window.location.href)}catch(e){}window.location.reload();throw new Error('Stale mini app asset; reloading.');\n";
   }
 
   location __MINIAPP_BASE_PATH__ {
