@@ -27002,16 +27002,6 @@ export class AdminService implements OnModuleDestroy {
       };
     }
 
-    if (sawBotDenied) {
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-      this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
-      return {
-        status: 'denied',
-        source: 'remote',
-        reason: 'bot_not_admin',
-      };
-    }
-
     if (throttledError) {
       return {
         status: 'throttled',
@@ -27023,6 +27013,16 @@ export class AdminService implements OnModuleDestroy {
       return {
         status: 'unknown',
         error: unknownError,
+      };
+    }
+
+    if (sawBotDenied) {
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
+      this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
+      return {
+        status: 'denied',
+        source: 'remote',
+        reason: 'bot_not_admin',
       };
     }
 

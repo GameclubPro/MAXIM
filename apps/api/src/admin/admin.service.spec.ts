@@ -16202,6 +16202,66 @@ describe('AdminService admin access validation', () => {
     expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
   });
 
+  it('does not cache bot_denied when one candidate bot is transiently unavailable', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+      primaryBotId: 'bot-primary',
+      botId: null,
+      botMemberships: [{ botId: 'bot-primary' }, { botId: 'bot-standby' }],
+    });
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('timeout of 5000ms exceeded'), {
+            code: 'ECONNABORTED',
+          }),
+        )
+        .mockRejectedValueOnce({
+          response: {
+            status: 403,
+            data: {
+              code: 'chat.denied',
+              message: 'Bot is not a chat member',
+            },
+          },
+        }),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId: string | null | undefined) =>
+        botId ? { id: botId, state: 'active' } : null,
+      ),
+      getAllBots: jest.fn().mockReturnValue([{ id: 'bot-primary' }, { id: 'bot-standby' }]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'bot-primary' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalledWith(
+      'chat-1',
+      user.userId,
+      'bot_denied',
+    );
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('cleans stale allowlist rows when MAX says bot no longer has access to the chat', async () => {
     const prisma = createPrismaMock();
     let accessState: 'bot_denied' | null = null;

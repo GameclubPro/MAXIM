@@ -1283,7 +1283,10 @@ export class WebhookService {
     const message = this.extractErrorMessage(error);
     return (
       code === 'InvalidArg' ||
+      code === 'P2007' ||
       message.includes('hex escape') ||
+      message.includes('invalid input syntax for type json') ||
+      message.includes('invalid input value') ||
       message.includes('unicode') ||
       message.includes('surrogate') ||
       message.includes('invalid byte sequence') ||

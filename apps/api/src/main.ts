@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { SanitizedExceptionFilter } from './common/sanitized-exception.filter';
 import { getAppRole, roleRunsHttp } from './runtime/app-role';
 
 async function bootstrap() {
@@ -25,6 +26,7 @@ async function bootstrap() {
   );
 
   app.useLogger(app.get(Logger));
+  app.useGlobalFilters(new SanitizedExceptionFilter());
   app.setGlobalPrefix('api');
   app.enableCors({
     origin: true,

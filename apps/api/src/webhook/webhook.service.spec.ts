@@ -153,6 +153,59 @@ describe('WebhookService', () => {
     );
   });
 
+  it('retries webhook storage with sanitized payload on Prisma json syntax errors', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest
+          .fn()
+          .mockRejectedValueOnce({
+            code: 'P2007',
+            message: 'Invalid input value: invalid input syntax for type json',
+          })
+          .mockResolvedValueOnce({ id: 'evt-2b' }),
+        updateMany: jest.fn(),
+      },
+    };
+
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const result = await service.ingest(
+      {
+        updateId: 'u-2b',
+        type: 'message_created',
+        message: {
+          messageId: 'mid-2',
+          chatId: 'chat-1',
+          senderId: 'user-1',
+          text: 'bad-\ud800-json',
+          createdAt: new Date('2026-03-26T12:00:00.000Z').toISOString(),
+        },
+      },
+      '127.0.0.1',
+    );
+
+    expect(result).toEqual({ accepted: true, duplicate: false });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookEvent.create.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            message: expect.objectContaining({
+              text: 'bad-\ufffd-json',
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not wait for deferred membership invalidation or admin read models before accepting webhook events', async () => {
     const neverSettles = new Promise<never>(() => undefined);
     const prisma = {
