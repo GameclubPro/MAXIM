@@ -1,5 +1,10 @@
-import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type {
+  ChannelStatsBucket,
+  ChannelStatsRange,
+  ChannelStatsResponse,
+  MembershipActivityItem,
+} from '@maxim/contracts';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity as IconActivity,
   Calendar as IconCalendar,
@@ -23,10 +28,17 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { getChannelActivityFeed, getChannelStats } from '../lib/api/channel-stats-client';
+import { useToast } from '../components/ui/toast';
+import {
+  getChannelActivityFeed,
+  getChannelStats,
+  handoffChannelMemberProfile,
+  handoffChannelMemberProfileKeepalive,
+} from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -405,7 +417,6 @@ function ChannelBestWindowsPanel({ stats }: { stats: ChannelStatsResponse }) {
       <div className="channel-insights__panel-head">
         <div className="channel-insights__panel-copy">
           <strong>Окна публикаций</strong>
-          <small>Среднее по постам за период</small>
         </div>
       </div>
 
@@ -479,7 +490,6 @@ function ChannelDataQualityPanel({ stats }: { stats: ChannelStatsResponse }) {
       <div className="channel-insights__panel-head">
         <div className="channel-insights__panel-copy">
           <strong>Качество данных</strong>
-          <small>Источник и ограничения</small>
         </div>
       </div>
 
@@ -2000,7 +2010,6 @@ function ChannelStatsOverview({
         <div className="channel-insights__panel-head">
           <div className="channel-insights__panel-copy">
             <strong>Топ публикаций</strong>
-            <small>Посты за выбранный период</small>
           </div>
         </div>
         <TopPostsChart stats={stats} />
@@ -2016,6 +2025,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
   const [section, setSection] = useState<ChannelStatsSection>(() =>
@@ -2032,11 +2042,17 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const statsQuery = useQuery({
     queryKey: queryKeys.channelStats(chatId, range),
     queryFn: ({ signal }) =>
-      getChannelStats(api, chatId, range, { signal }, {
-        includeActivityPreview: false,
-        includeIntelligence: false,
-      }),
-    enabled: Boolean(chatId) && section === 'overview',
+      getChannelStats(
+        api,
+        chatId,
+        range,
+        { signal },
+        {
+          includeActivityPreview: false,
+          includeIntelligence: false,
+        },
+      ),
+    enabled: Boolean(chatId),
     staleTime: 30_000,
     placeholderData: (previousData) => previousData,
     refetchInterval: (query) => (query.state.data?.meta.refreshQueued ? 5_000 : false),
@@ -2116,7 +2132,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
 
   const stats = statsQuery.data ?? null;
-  const activitySummary = useMemo(() => {
+  const loadedActivitySummary = useMemo(() => {
     const joined = activityFeed.items.reduce(
       (count, item) => count + (item.type === 'joined' ? 1 : 0),
       0,
@@ -2130,9 +2146,28 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       total: activityFeed.items.length,
       joined,
       left,
+      balance: joined - left,
     };
   }, [activityFeed.items]);
-  const activityBalance = activitySummary.joined - activitySummary.left;
+
+  const activitySummary = useMemo(() => {
+    if (!stats) {
+      return loadedActivitySummary;
+    }
+
+    const joined = stats.official.audience.joined;
+    const left = stats.official.audience.left ?? 0;
+    const balance = stats.official.audience.net ?? joined - left;
+
+    return {
+      total: joined + left,
+      joined,
+      left,
+      balance,
+    };
+  }, [loadedActivitySummary, stats]);
+
+  const activityBalance = activitySummary.balance;
   const activityMovementsTotal = activitySummary.joined + activitySummary.left;
   const activityJoinedShare = activityMovementsTotal
     ? Math.round((activitySummary.joined / activityMovementsTotal) * 100)
@@ -2142,6 +2177,46 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     activityBalance > 0 ? 'success' : activityBalance < 0 ? 'danger' : 'neutral';
   const activityBalanceLabel =
     activityBalance > 0 ? 'Рост аудитории' : activityBalance < 0 ? 'Отток аудитории' : 'Без сдвига';
+  const profileHandoffMutation = useMutation({
+    mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
+      handoffChannelMemberProfile(api, chatId, userId, { displayName }),
+    onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+        });
+      }
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть профиль',
+        description: error instanceof Error ? error.message : 'Попробуйте ещё раз.',
+      });
+    },
+  });
+
+  const activateChannelProfile = (item: MembershipActivityItem) => {
+    const normalizedUserId = item.userId.trim();
+    if (!normalizedUserId || !chatId) {
+      return;
+    }
+
+    const displayName = item.userDisplayName.trim() || 'Участник';
+    const handoffUrl = item.profileHandoffUrl?.trim() ?? '';
+    if (handoffUrl) {
+      handoffChannelMemberProfileKeepalive(api, chatId, normalizedUserId, { displayName });
+      if (openMaxBotLinkAndClose(handoffUrl)) {
+        return;
+      }
+    }
+
+    profileHandoffMutation.mutate({
+      userId: normalizedUserId,
+      displayName,
+    });
+  };
 
   if (!chatId) {
     return (
@@ -2204,9 +2279,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       setSection(nextSection);
     });
   };
-  const handleActivityFilterChange = (
-    nextFilter: Parameters<typeof activityFeed.setFilter>[0],
-  ) => {
+  const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
     if (nextFilter === activityFeed.filter) {
       return;
     }
@@ -2265,7 +2338,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                 <div className="channel-insights__summary-copy channel-events-section__headline">
                   <span className="channel-insights__eyebrow">События</span>
                   <h2>{formatRangeTitle(range)}</h2>
-                  <p>Входы, выходы и чистый баланс</p>
                 </div>
 
                 <div
@@ -2350,6 +2422,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
               error={activityFeed.error}
               onLoadMore={() => void activityFeed.loadMore()}
               onRetry={() => void activityFeed.retry()}
+              onProfileActivate={activateChannelProfile}
             />
           </section>
         ) : stats ? (

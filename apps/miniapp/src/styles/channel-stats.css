@@ -953,9 +953,7 @@ body.channel-stats-page-open .channel-insights__body {
 
 /* Channel stats gets its own high-density native treatment so it does not inherit the heavier lazy page layout. */
 body.channel-stats-page-open {
-  background:
-    linear-gradient(180deg, #f7fbff 0%, #f3f7fb 48%, #fbf8f2 100%),
-    #f5f8fb;
+  background: linear-gradient(180deg, #f7fbff 0%, #f3f7fb 48%, #fbf8f2 100%), #f5f8fb;
 }
 
 .channel-insights__sticky-header.compact-page-header {
@@ -1016,7 +1014,12 @@ body.channel-stats-page-open {
   border: 1px solid rgba(205, 219, 233, 0.74);
   border-radius: 24px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(241, 248, 255, 0.96) 62%, rgba(255, 249, 239, 0.9)),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.98),
+      rgba(241, 248, 255, 0.96) 62%,
+      rgba(255, 249, 239, 0.9)
+    ),
     #fff;
   box-shadow:
     0 18px 38px rgba(23, 50, 74, 0.08),
@@ -1066,9 +1069,7 @@ body.channel-stats-page-open {
   padding: 10px;
   border-color: rgba(209, 222, 235, 0.72);
   border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 252, 255, 0.92)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 252, 255, 0.92)), #fff;
   box-shadow:
     0 12px 24px rgba(22, 44, 67, 0.055),
     0 1px 0 rgba(255, 255, 255, 0.82) inset;
@@ -1117,9 +1118,7 @@ body.channel-stats-page-open {
   padding: 12px;
   border-color: rgba(208, 222, 235, 0.72);
   border-radius: 20px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)), #fff;
   box-shadow:
     0 16px 32px rgba(22, 44, 67, 0.065),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -1221,9 +1220,7 @@ body.channel-stats-page-open {
 .channel-fact-panel {
   border-color: rgba(208, 222, 235, 0.74);
   border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)), #fff;
   box-shadow:
     0 16px 32px rgba(22, 44, 67, 0.06),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -1232,9 +1229,7 @@ body.channel-stats-page-open {
 .channel-insights__chart-card--executive {
   gap: 12px;
   padding: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 251, 255, 0.96)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 251, 255, 0.96)), #fff;
   box-shadow:
     0 20px 42px rgba(20, 50, 76, 0.09),
     0 1px 0 rgba(255, 255, 255, 0.9) inset;
@@ -1286,9 +1281,7 @@ body.channel-stats-page-open {
   padding: 10px;
   border: 1px solid rgba(208, 222, 235, 0.72);
   border-radius: 19px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)), #fff;
   box-shadow:
     0 14px 28px rgba(22, 44, 67, 0.06),
     0 1px 0 rgba(255, 255, 255, 0.84) inset;
@@ -1427,9 +1420,7 @@ body.channel-stats-page-open {
   padding: 11px;
   border-color: rgba(210, 223, 236, 0.7);
   border-radius: 20px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)),
-    #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)), #fff;
   box-shadow:
     0 14px 28px rgba(22, 44, 67, 0.06),
     0 1px 0 rgba(255, 255, 255, 0.86) inset;
@@ -2441,6 +2432,646 @@ body.channel-stats-page-open {
 
   .channel-events-section .membership-feed__time {
     font-size: 0.6rem;
+  }
+
+  .channel-events-section .membership-feed__card {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .channel-events-section .membership-feed__avatar {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    border-radius: 13px;
+  }
+}
+
+body.channel-stats-page-open {
+  background: linear-gradient(180deg, #f8fbfd 0%, #eef5f8 52%, #f7fafc 100%), #f3f7fa;
+}
+
+body.channel-stats-page-open .app-shell {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 74px);
+}
+
+.channel-insights {
+  min-width: 0;
+}
+
+.channel-insights__body {
+  width: min(100%, 760px);
+  gap: 10px;
+  padding-inline: clamp(8px, 2.4vw, 14px);
+}
+
+.channel-insights__sticky-header.compact-page-header {
+  --compact-page-header-height: 50px;
+  --compact-page-header-radius: 18px;
+  margin-bottom: 8px;
+}
+
+.channel-insights__sticky-header .compact-page-header__bar {
+  border-color: rgba(204, 219, 233, 0.72);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 10px 24px rgba(20, 48, 72, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-insights__section-tabs {
+  top: calc(var(--app-safe-top) + 56px);
+  min-height: 44px;
+  padding: 3px;
+  border-color: rgba(202, 217, 231, 0.78);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 12px 24px rgba(21, 47, 71, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.channel-insights__section-tabs .segmented-control__item {
+  min-height: 36px;
+  border-radius: 14px;
+  font-size: 0.76rem;
+}
+
+.channel-insights__summary--command {
+  gap: 9px;
+  padding-top: 0;
+}
+
+.channel-insights__summary--command > .channel-insights__summary-head,
+.channel-events-section__head {
+  min-height: 0;
+  padding: 12px 13px;
+  border-color: rgba(202, 217, 231, 0.78);
+  border-radius: 21px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 253, 0.96)), #fff;
+  box-shadow:
+    0 14px 28px rgba(20, 48, 72, 0.065),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.channel-insights__summary-head {
+  grid-template-columns: minmax(0, 1fr) minmax(148px, auto);
+  align-items: center;
+}
+
+.channel-insights__summary-copy {
+  gap: 3px;
+}
+
+.channel-insights__summary-copy h2,
+.channel-events-section__head h2 {
+  font-size: 1.18rem;
+  line-height: 1;
+}
+
+.channel-insights__summary-copy p {
+  color: #647b90;
+  font-size: 0.72rem;
+  font-weight: 720;
+  line-height: 1.18;
+}
+
+.channel-insights__eyebrow {
+  color: #73899e;
+  font-size: 0.58rem;
+  letter-spacing: 0.075em;
+}
+
+.channel-insights__range {
+  width: min(154px, 100%);
+  border-radius: 15px;
+}
+
+.channel-insights__range .segmented-control__item,
+.channel-insights__switch .segmented-control__item {
+  min-height: 30px;
+  padding: 4px 5px;
+  border-radius: 12px;
+  font-size: 0.68rem;
+}
+
+.channel-insights__kpi-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.channel-insights__kpi-card {
+  min-height: 86px;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 18px;
+  box-shadow:
+    0 12px 24px rgba(20, 48, 72, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-insights__kpi-icon {
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 11px;
+}
+
+.channel-insights__kpi-top {
+  padding-right: 32px;
+}
+
+.channel-insights__kpi-card small,
+.channel-events-section__metric small,
+.channel-fact-strip small,
+.channel-data-quality__item small,
+.channel-best-windows__row small {
+  letter-spacing: 0.03em;
+}
+
+.channel-insights__kpi-card strong {
+  font-size: 1.26rem;
+}
+
+.channel-insights__kpi-card > span {
+  font-size: 0.68rem;
+  line-height: 1.12;
+}
+
+.channel-insights__chart-card,
+.channel-fact-panel {
+  border-color: rgba(204, 219, 233, 0.78);
+  border-radius: 20px;
+  box-shadow:
+    0 13px 26px rgba(20, 48, 72, 0.055),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+}
+
+.channel-insights__chart-card--executive {
+  gap: 10px;
+  padding: 10px;
+  box-shadow:
+    0 15px 30px rgba(20, 48, 72, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.channel-insights__panel-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.channel-insights__panel-copy strong {
+  font-size: 0.96rem;
+  line-height: 1.08;
+}
+
+.channel-stats-graph {
+  gap: 8px;
+}
+
+.channel-stats-graph__summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.channel-stats-graph__summary-copy {
+  min-width: 0;
+}
+
+.channel-stats-graph__summary-copy small,
+.channel-stats-graph__summary-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-stats-graph__summary-copy strong {
+  font-size: 1rem;
+}
+
+.channel-stats-graph__summary-chips {
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 1px;
+  scrollbar-width: none;
+}
+
+.channel-stats-graph__summary-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.channel-stats-graph__chip {
+  min-height: 25px;
+  padding-inline: 9px;
+  font-size: 0.68rem;
+  font-weight: 780;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__canvas {
+  min-height: 220px;
+  padding: 8px 6px 6px;
+  border-radius: 17px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.98)),
+    linear-gradient(90deg, rgba(87, 114, 141, 0.042) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(87, 114, 141, 0.035) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    30px 30px,
+    30px 30px;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__svg {
+  height: clamp(200px, 55vw, 246px);
+}
+
+.channel-stats-graph__scrubber {
+  top: 8px;
+  width: min(166px, calc(100% - 18px));
+  min-width: 108px;
+  padding: 7px 8px;
+  border-radius: 12px;
+}
+
+.channel-stats-graph__scrubber strong {
+  font-size: 0.94rem;
+}
+
+.channel-stats-graph__scrubber span,
+.channel-stats-graph__scrubber em {
+  font-size: 0.6rem;
+}
+
+.channel-stats-graph__labels {
+  gap: 2px;
+}
+
+.channel-stats-graph__labels small {
+  font-size: 0.62rem;
+}
+
+.channel-fact-strip {
+  gap: 6px;
+}
+
+.channel-fact-strip > span {
+  min-height: 54px;
+  padding: 8px;
+  border-radius: 16px;
+}
+
+.channel-fact-strip__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 11px;
+}
+
+.channel-fact-strip strong {
+  font-size: 0.7rem;
+}
+
+.channel-posts-chart__row {
+  padding: 9px;
+  border-radius: 15px;
+}
+
+.channel-posts-chart__row-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.channel-posts-chart__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-posts-chart__row-meta {
+  gap: 5px;
+}
+
+.channel-best-windows__row {
+  grid-template-columns: minmax(58px, 0.72fr) minmax(0, 1fr) auto;
+  gap: 7px;
+  padding: 8px 9px;
+  border-radius: 15px;
+}
+
+.channel-data-quality__grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.channel-data-quality__item {
+  min-height: 62px;
+  padding: 8px 9px;
+  border-radius: 15px;
+}
+
+.channel-data-quality__item:last-child {
+  grid-column: 1 / -1;
+}
+
+.channel-events-section {
+  --channel-events-sticky-top: calc(var(--app-safe-top) + 104px);
+  gap: 9px;
+}
+
+.channel-events-section__head {
+  gap: 9px;
+}
+
+.channel-events-section__head-main {
+  grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
+  align-items: center;
+  gap: 9px;
+}
+
+.channel-events-section__balance {
+  min-width: 86px;
+  padding: 8px 9px;
+  border-radius: 16px;
+}
+
+.channel-events-section__balance strong {
+  font-size: 1.08rem;
+}
+
+.channel-events-section__balance span {
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-events-section__metrics {
+  gap: 6px;
+}
+
+.channel-events-section__metric {
+  min-height: 58px;
+  padding: 8px;
+  border-radius: 16px;
+}
+
+.channel-events-section__metric strong {
+  font-size: 0.96rem;
+}
+
+.channel-events-section__flow {
+  padding: 8px 10px;
+  border-radius: 16px;
+}
+
+.channel-events-section .membership-feed__toolbar {
+  top: var(--channel-events-sticky-top);
+  border-radius: 17px;
+}
+
+.channel-events-section .membership-feed__filters .segmented-control__item {
+  min-height: 34px;
+  font-size: 0.72rem;
+}
+
+.channel-events-section .membership-feed__day {
+  top: calc(var(--channel-events-sticky-top) + 45px);
+  padding: 8px 10px;
+  border-radius: 15px;
+}
+
+.channel-events-section .membership-feed__group-list {
+  border-radius: 19px;
+}
+
+.channel-events-section .membership-feed__item {
+  grid-template-columns: 48px minmax(0, 1fr);
+  padding-inline: 9px;
+}
+
+.channel-events-section .membership-feed__rail {
+  padding-top: 13px;
+}
+
+.channel-events-section .membership-feed__card {
+  min-height: 66px;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.channel-events-section .membership-feed__avatar {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+
+.channel-events-section .membership-feed__row strong,
+.channel-events-section .membership-feed__name-link {
+  font-size: 0.84rem;
+}
+
+.channel-events-section .membership-feed__pill {
+  min-height: 23px;
+  padding: 4px 8px;
+}
+
+.channel-events-section .membership-feed__description {
+  margin-top: 1px;
+  font-size: 0.71rem;
+}
+
+@media (min-width: 720px) {
+  .channel-insights__body {
+    width: min(100%, 860px);
+  }
+
+  .channel-insights__summary-head {
+    grid-template-columns: minmax(0, 1fr) 170px;
+  }
+
+  .channel-insights__kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .channel-stats-graph__summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .channel-stats-graph__summary-chips {
+    justify-content: flex-end;
+  }
+
+  .channel-data-quality__grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .channel-data-quality__item:last-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 430px) {
+  body.channel-stats-page-open .app-shell {
+    padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 68px);
+  }
+
+  .channel-insights__body {
+    gap: 8px;
+  }
+
+  .channel-insights__summary-head {
+    grid-template-columns: minmax(0, 1fr) 150px;
+    gap: 8px;
+  }
+
+  .channel-insights__summary--command > .channel-insights__summary-head,
+  .channel-events-section__head {
+    padding: 10px;
+    border-radius: 19px;
+  }
+
+  .channel-insights__summary-copy h2,
+  .channel-events-section__head h2 {
+    font-size: 1.08rem;
+  }
+
+  .channel-insights__range {
+    width: 150px;
+  }
+
+  .channel-insights__kpi-card {
+    min-height: 80px;
+    padding: 9px;
+  }
+
+  .channel-insights__kpi-card strong {
+    font-size: 1.16rem;
+  }
+
+  .channel-insights__kpi-card > span {
+    font-size: 0.64rem;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__canvas {
+    min-height: 210px;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__svg {
+    height: 202px;
+  }
+
+  .channel-insights__chart-card--executive .channel-insights__panel-head {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .channel-insights__chart-card--executive .channel-insights__switch {
+    justify-self: start;
+    width: min(238px, 100%);
+  }
+
+  .channel-fact-strip small {
+    font-size: 0.48rem;
+    letter-spacing: 0.01em;
+  }
+
+  .channel-events-section__metric {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-events-section__metric-icon {
+    display: none;
+  }
+}
+
+@media (max-width: 370px) {
+  .channel-insights__section-tabs .segmented-control__item,
+  .channel-insights__range .segmented-control__item,
+  .channel-insights__switch .segmented-control__item,
+  .channel-events-section .membership-feed__filters .segmented-control__item {
+    font-size: 0.64rem;
+  }
+
+  .channel-insights__summary-head {
+    grid-template-columns: minmax(0, 1fr) 134px;
+  }
+
+  .channel-insights__range {
+    width: 134px;
+  }
+
+  .channel-insights__range .segmented-control__item {
+    padding-inline: 3px;
+  }
+
+  .channel-insights__kpi-grid {
+    gap: 6px;
+  }
+
+  .channel-insights__kpi-card {
+    min-height: 76px;
+    padding: 8px;
+  }
+
+  .channel-insights__kpi-card small {
+    font-size: 0.49rem;
+  }
+
+  .channel-insights__kpi-card strong {
+    font-size: 1.04rem;
+  }
+
+  .channel-insights__kpi-card > span {
+    gap: 4px;
+    font-size: 0.58rem;
+  }
+
+  .channel-insights__kpi-icon {
+    display: none;
+  }
+
+  .channel-insights__kpi-top {
+    padding-right: 0;
+  }
+
+  .channel-fact-strip {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(120px, 1fr);
+    grid-template-columns: none;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .channel-fact-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .channel-events-section__head-main {
+    grid-template-columns: minmax(0, 1fr) 74px;
+  }
+
+  .channel-events-section__balance {
+    min-width: 74px;
+  }
+
+  .channel-events-section__balance span {
+    display: none;
+  }
+
+  .channel-events-section__flow {
+    display: grid;
+  }
+
+  .channel-events-section .membership-feed__item {
+    grid-template-columns: 40px minmax(0, 1fr);
+    padding-inline: 8px;
   }
 
   .channel-events-section .membership-feed__card {
