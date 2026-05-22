@@ -3836,3 +3836,327 @@ body.events-page-open .app-shell {
     font-size: 0.98rem;
   }
 }
+
+/* Native-density correction for events surfaces. */
+body.events-page-open .app-shell {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 56px);
+}
+
+.events-screen {
+  max-width: 620px;
+}
+
+.events-stage {
+  border-bottom-right-radius: 16px;
+  border-bottom-left-radius: 16px;
+  background: rgba(246, 249, 252, 0.98);
+  box-shadow: 0 10px 22px rgba(20, 45, 68, 0.055);
+}
+
+.events-stage__appbar-bar {
+  min-height: calc(var(--app-safe-top) + 54px);
+  padding: calc(var(--app-safe-top) + 7px) 12px 7px;
+}
+
+.events-stage__back,
+.events-stage__entity-avatar {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+.events-stage__appbar-copy strong {
+  font-size: 0.92rem;
+}
+
+.events-stage__panel {
+  padding: 6px 12px 12px;
+}
+
+.events-primary-tabs {
+  border-radius: 14px;
+}
+
+.events-primary-tab {
+  min-height: 36px;
+  border-radius: 10px;
+}
+
+.events-primary-tab__label {
+  font-size: 0.7rem;
+}
+
+.events-dashboard {
+  gap: 7px;
+  padding: 9px;
+  border-radius: 14px;
+}
+
+.events-dashboard__head-copy strong {
+  font-size: 0.9rem;
+}
+
+.events-dashboard__range {
+  width: 144px;
+  border-radius: 13px;
+}
+
+.events-dashboard__range .segmented-control__item {
+  min-height: 28px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+}
+
+.events-dashboard__body,
+.events-dashboard__activity {
+  border-radius: 12px;
+}
+
+.events-dashboard__hero,
+.events-dashboard__activity-balance {
+  min-height: 78px;
+  padding: 11px 12px;
+}
+
+.events-dashboard__hero strong,
+.events-dashboard__activity-balance strong {
+  font-size: 1.44rem;
+}
+
+.events-dashboard__metric {
+  min-height: 58px;
+  padding: 9px 10px;
+}
+
+.events-dashboard__metric strong,
+.events-dashboard__flow-card strong {
+  font-size: 0.98rem;
+}
+
+.events-dashboard__hero small,
+.events-dashboard__metric small,
+.events-dashboard__activity-balance small,
+.events-dashboard__flow-card small {
+  font-size: 0.54rem;
+}
+
+.events-screen__filters {
+  margin-inline: -1px;
+  padding: 0 1px 1px;
+}
+
+.events-filter-chip {
+  min-height: 28px;
+  border-radius: 10px;
+  font-size: 0.66rem;
+}
+
+.event-feed-item {
+  border-radius: 12px;
+  box-shadow: 0 7px 14px rgba(22, 44, 67, 0.035);
+}
+
+.event-feed-item__trigger {
+  min-height: 62px;
+  padding: 9px 9px 9px 15px;
+}
+
+.event-feed-item::before {
+  inset: 9px auto 9px 6px;
+}
+
+.event-feed-item__headline {
+  gap: 7px;
+}
+
+.event-feed-item__identity strong,
+.event-feed-item__name-link {
+  font-size: 0.82rem;
+  line-height: 1.15;
+}
+
+.event-feed-item__stamp {
+  max-width: 100%;
+  gap: 4px;
+}
+
+.event-feed-item__summary {
+  font-size: 0.7rem;
+}
+
+.event-feed-item__details {
+  padding: 0 9px 9px 15px;
+}
+
+.event-feed-item__excerpt {
+  padding-top: 9px;
+}
+
+.logs-violation-item__moderation {
+  padding: 7px;
+  border-radius: 11px;
+}
+
+.logs-violation-item__quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.logs-violation-item__quick-actions--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.logs-violation-item__quick-button {
+  min-height: 34px;
+  border-radius: 9px;
+  font-size: 0.72rem;
+}
+
+.logs-violation-item__duration-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(209, 222, 235, 0.86);
+  border-radius: 11px;
+  background: rgba(248, 251, 254, 0.92);
+}
+
+.logs-violation-item__duration-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #2c4d68;
+  font-size: 0.78rem;
+  font-weight: 780;
+}
+
+.logs-violation-item__duration-label svg {
+  width: 16px;
+  height: 16px;
+}
+
+.logs-violation-item__duration-label span,
+.logs-violation-item__duration-output {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logs-violation-item__duration-output {
+  color: #17324a;
+  font-size: 0.8rem;
+  font-weight: 860;
+}
+
+.logs-violation-item__ban-presets {
+  gap: 6px;
+}
+
+.logs-violation-item__ban-preset {
+  min-height: 32px;
+  border-radius: 9px;
+}
+
+.logs-violation-item__confirm-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.logs-violation-item__confirm-actions .button {
+  min-width: 0;
+}
+
+.membership-feed--immersive {
+  border-radius: 14px;
+}
+
+.membership-feed--immersive .membership-feed__group-list {
+  border-radius: 12px;
+}
+
+.membership-feed--immersive .membership-feed__card {
+  min-height: 58px;
+}
+
+@media (max-width: 430px) {
+  .events-dashboard__head {
+    grid-template-columns: minmax(0, 1fr) 140px;
+  }
+
+  .events-dashboard__range {
+    width: 140px;
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) 100px;
+  }
+
+  .events-dashboard__activity {
+    grid-template-columns: minmax(82px, 0.7fr) minmax(0, 1.3fr);
+  }
+
+  .events-dashboard__hero,
+  .events-dashboard__activity-balance {
+    min-height: 76px;
+  }
+
+  .events-dashboard__metric {
+    min-height: 38px;
+    padding: 8px 9px;
+  }
+}
+
+@media (max-width: 370px) {
+  .events-stage__appbar-bar {
+    grid-template-columns: 34px minmax(0, 1fr) 12px;
+  }
+
+  .events-dashboard__head {
+    grid-template-columns: minmax(0, 1fr) 112px;
+  }
+
+  .events-dashboard__range {
+    width: 112px;
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) 92px;
+  }
+
+  .events-dashboard__activity {
+    grid-template-columns: minmax(74px, 0.68fr) minmax(0, 1.32fr);
+  }
+
+  .events-primary-tab {
+    min-height: 34px;
+  }
+
+  .event-feed-item__trigger {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .event-feed-item__avatar,
+  .event-feed-item__avatar-link {
+    grid-column: 1;
+  }
+
+  .event-feed-item__body {
+    grid-column: 2;
+  }
+
+  .logs-violation-item__ban-config-controls,
+  .logs-violation-item__confirm-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

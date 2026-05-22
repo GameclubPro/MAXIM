@@ -577,7 +577,11 @@ function ViolationModerationControls({
 
   return (
     <section className="logs-violation-item__moderation" aria-label="Действия модератора">
-      <div className="logs-violation-item__quick-actions">
+      <div
+        className={`logs-violation-item__quick-actions ${
+          releaseAction ? 'logs-violation-item__quick-actions--single' : ''
+        }`}
+      >
         {!releaseAction ? (
           <button
             type="button"
@@ -626,40 +630,12 @@ function ViolationModerationControls({
 
       {!releaseAction && muteExpanded ? (
         <div className="logs-violation-item__ban-config">
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 10,
-              padding: '10px 12px',
-              borderRadius: 14,
-              border: '1px solid rgba(62, 96, 127, 0.18)',
-            }}
-          >
-            <div
-              style={{
-                minWidth: 0,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 8,
-                color: 'var(--text-primary)',
-                fontSize: '0.82rem',
-                fontWeight: 700,
-              }}
-            >
+          <div className="logs-violation-item__duration-summary">
+            <div className="logs-violation-item__duration-label">
               <ClockIcon />
               <span>Срок мута</span>
             </div>
-            <output
-              aria-live="polite"
-              style={{
-                padding: 0,
-                color: 'var(--text-primary)',
-                fontSize: '0.82rem',
-                fontWeight: 800,
-              }}
-            >
+            <output className="logs-violation-item__duration-output" aria-live="polite">
               {formatMuteDurationCompact(muteDurationHours)}
             </output>
           </div>
@@ -737,22 +713,10 @@ function ViolationModerationControls({
 
       {pendingAction ? (
         <div className="logs-violation-item__ban-config">
-          <p
-            className="settings-native-toggle__hint settings-native-toggle__hint--inline"
-            style={{ margin: 0 }}
-          >
+          <p className="settings-native-toggle__hint settings-native-toggle__hint--inline">
             {resolveConfirmMessage(pendingAction, muteDurationHours, violation)}
           </p>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-              gap: 10,
-              flexWrap: 'wrap',
-              width: '100%',
-            }}
-          >
+          <div className="logs-violation-item__confirm-actions">
             <button
               type="button"
               className="button button--ghost"
@@ -1280,11 +1244,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     },
   ];
   const dashboardTitle =
-    section === 'activity'
-      ? 'События'
-      : section === 'participants'
-        ? 'Участники'
-        : 'Модерация';
+    section === 'activity' ? 'События' : section === 'participants' ? 'Участники' : 'Модерация';
   const dashboardSubtitle = '';
   const activateProfile = (
     userId: string,
@@ -1434,9 +1394,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   <Spinner
                     size="lg"
                     label={
-                      section === 'activity'
-                        ? 'Загружаем события'
-                        : 'Загружаем сводку по модерации'
+                      section === 'activity' ? 'Загружаем события' : 'Загружаем сводку по модерации'
                     }
                   />
                 </div>

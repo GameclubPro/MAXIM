@@ -3215,3 +3215,516 @@ body.channel-stats-page-open .app-shell {
     display: none;
   }
 }
+
+/* Native-density correction for channel analytics. */
+body.channel-stats-page-open .app-shell {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 56px);
+}
+
+.channel-insights__body {
+  width: min(100%, 820px);
+  gap: 9px;
+  padding-inline: clamp(8px, 2vw, 12px);
+}
+
+.channel-insights__section-tabs {
+  top: calc(var(--app-safe-top) + 54px);
+  min-height: 42px;
+  padding: 3px;
+  border-radius: 14px;
+  box-shadow:
+    0 10px 22px rgba(21, 47, 71, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+}
+
+.channel-insights__section-tabs .segmented-control__item {
+  min-height: 34px;
+  border-radius: 11px;
+  font-size: 0.72rem;
+}
+
+.channel-insights__summary--command,
+.channel-events-section {
+  gap: 8px;
+}
+
+.channel-insights__summary--command > .channel-insights__summary-head,
+.channel-events-section__head,
+.channel-insights__chart-card,
+.channel-fact-panel {
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 9px 18px rgba(20, 48, 72, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-insights__summary--command > .channel-insights__summary-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.channel-insights__summary--command
+  > .channel-insights__summary-head
+  .channel-insights__summary-copy {
+  display: none;
+}
+
+.channel-insights__summary-head {
+  grid-template-columns: minmax(0, 1fr) 144px;
+}
+
+.channel-insights__summary-copy h2,
+.channel-events-section__head h2 {
+  font-size: 1rem;
+  line-height: 1.04;
+}
+
+.channel-insights__range {
+  width: 144px;
+  border-radius: 13px;
+}
+
+.channel-insights__range .segmented-control__item,
+.channel-insights__switch .segmented-control__item {
+  min-height: 28px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+}
+
+.channel-insights__kpi-grid {
+  gap: 6px;
+}
+
+.channel-insights__kpi-card {
+  min-height: 78px;
+  gap: 5px;
+  padding: 9px;
+  border-radius: 12px;
+  box-shadow:
+    0 8px 16px rgba(20, 48, 72, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-insights__kpi-icon {
+  top: 9px;
+  right: 9px;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.channel-insights__kpi-top {
+  padding-right: 30px;
+}
+
+.channel-insights__kpi-card small {
+  font-size: 0.49rem;
+  letter-spacing: 0.02em;
+}
+
+.channel-insights__kpi-card strong {
+  font-size: 1.12rem;
+  line-height: 0.98;
+}
+
+.channel-insights__kpi-card > span {
+  gap: 4px;
+  font-size: 0.6rem;
+}
+
+.channel-insights__chart-card--executive {
+  gap: 9px;
+  padding: 9px;
+  border-radius: 14px;
+}
+
+.channel-insights__panel-head {
+  gap: 7px;
+}
+
+.channel-insights__panel-copy strong {
+  font-size: 0.9rem;
+}
+
+.channel-stats-graph {
+  gap: 7px;
+}
+
+.channel-stats-graph__summary {
+  gap: 6px;
+}
+
+.channel-stats-graph__summary-copy strong {
+  font-size: 0.94rem;
+}
+
+.channel-stats-graph__summary-copy small {
+  font-size: 0.58rem;
+}
+
+.channel-stats-graph__summary-chips {
+  gap: 5px;
+}
+
+.channel-stats-graph__chip {
+  min-height: 23px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__canvas {
+  min-height: 204px;
+  padding: 7px 5px 5px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.98));
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__svg {
+  height: clamp(190px, 52vw, 232px);
+}
+
+.channel-stats-graph__scrubber,
+.channel-stats-graph__ruler {
+  display: none;
+}
+
+.channel-stats-graph__labels small {
+  font-size: 0.58rem;
+}
+
+.channel-fact-strip {
+  gap: 6px;
+}
+
+.channel-fact-strip > span,
+.channel-posts-chart__row,
+.channel-best-windows__row,
+.channel-data-quality__item {
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.channel-fact-strip > span {
+  min-height: 50px;
+  padding: 7px;
+}
+
+.channel-fact-strip__icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.channel-fact-strip small,
+.channel-data-quality__item small,
+.channel-best-windows__row small {
+  font-size: 0.47rem;
+  letter-spacing: 0.02em;
+}
+
+.channel-fact-strip strong,
+.channel-data-quality__item strong {
+  font-size: 0.68rem;
+}
+
+.channel-posts-chart__row {
+  padding: 8px;
+}
+
+.channel-posts-chart__rank {
+  min-width: 24px;
+  min-height: 22px;
+  border-radius: 8px;
+  font-size: 0.66rem;
+}
+
+.channel-posts-chart__title {
+  font-size: 0.72rem;
+}
+
+.channel-posts-chart__row-head strong {
+  font-size: 0.86rem;
+}
+
+.channel-posts-chart__row-meta small {
+  font-size: 0.62rem;
+}
+
+.channel-best-windows__row {
+  grid-template-columns: minmax(56px, 0.68fr) minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.channel-best-windows__row strong {
+  font-size: 0.8rem;
+}
+
+.channel-best-windows__row span {
+  font-size: 0.68rem;
+}
+
+.channel-data-quality__item {
+  min-height: 56px;
+  padding: 8px;
+}
+
+.channel-data-quality__item span {
+  font-size: 0.62rem;
+}
+
+.channel-events-section {
+  --channel-events-sticky-top: calc(var(--app-safe-top) + 96px);
+  gap: 8px;
+}
+
+.channel-events-section__head {
+  grid-template-columns: minmax(0, 1fr) 144px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 11px;
+}
+
+.channel-events-section__head-main {
+  display: block;
+  min-width: 0;
+}
+
+.channel-events-section__headline {
+  gap: 2px;
+}
+
+.channel-events-section__headline p {
+  font-size: 0.66rem;
+}
+
+.channel-events-section__balance,
+.channel-events-section__flow {
+  display: none;
+}
+
+.channel-events-section__head .channel-insights__range {
+  width: 144px;
+}
+
+.channel-events-section__metrics {
+  gap: 6px;
+}
+
+.channel-events-section__metric {
+  min-height: 52px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 8px;
+  border-radius: 12px;
+  box-shadow:
+    0 8px 16px rgba(20, 48, 72, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-events-section__metric-icon {
+  display: none;
+}
+
+.channel-events-section__metric small {
+  font-size: 0.48rem;
+  letter-spacing: 0.02em;
+}
+
+.channel-events-section__metric strong {
+  font-size: 0.92rem;
+}
+
+.channel-events-section .membership-feed__toolbar {
+  top: var(--channel-events-sticky-top);
+  border-radius: 13px;
+}
+
+.channel-events-section .membership-feed__filters .segmented-control__item {
+  min-height: 32px;
+  border-radius: 10px;
+  font-size: 0.68rem;
+}
+
+.channel-events-section .membership-feed__day {
+  top: calc(var(--channel-events-sticky-top) + 42px);
+  padding: 7px 9px;
+  border-radius: 12px;
+}
+
+.channel-events-section .membership-feed__day-label {
+  font-size: 0.76rem;
+}
+
+.channel-events-section .membership-feed__day-copy small {
+  font-size: 0.58rem;
+}
+
+.channel-events-section .membership-feed__group-list {
+  border-radius: 12px;
+}
+
+.channel-events-section .membership-feed__item {
+  grid-template-columns: 44px minmax(0, 1fr);
+  padding-inline: 8px;
+}
+
+.channel-events-section .membership-feed__rail {
+  padding-top: 12px;
+}
+
+.channel-events-section .membership-feed__time {
+  font-size: 0.6rem;
+}
+
+.channel-events-section .membership-feed__dot {
+  width: 11px;
+  height: 11px;
+  border-width: 2px;
+}
+
+.channel-events-section .membership-feed__card {
+  min-height: 60px;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 9px;
+  padding: 9px 0;
+}
+
+.channel-events-section .membership-feed__avatar {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 12px;
+}
+
+.channel-events-section .membership-feed__row strong,
+.channel-events-section .membership-feed__name-link {
+  font-size: 0.8rem;
+}
+
+.channel-events-section .membership-feed__pill {
+  min-height: 21px;
+  padding: 3px 7px;
+  font-size: 0.58rem;
+}
+
+.channel-events-section .membership-feed__description {
+  display: none;
+  font-size: 0.68rem;
+}
+
+@media (min-width: 720px) {
+  .channel-insights__summary-head,
+  .channel-events-section__head {
+    grid-template-columns: minmax(0, 1fr) 154px;
+  }
+
+  .channel-insights__range,
+  .channel-events-section__head .channel-insights__range {
+    width: 154px;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-insights__body {
+    gap: 8px;
+    padding-inline: 8px;
+  }
+
+  .channel-insights__summary-head,
+  .channel-events-section__head {
+    grid-template-columns: minmax(0, 1fr) 136px;
+  }
+
+  .channel-insights__range,
+  .channel-events-section__head .channel-insights__range {
+    width: 136px;
+  }
+
+  .channel-insights__summary-copy h2,
+  .channel-events-section__head h2 {
+    font-size: 0.96rem;
+  }
+
+  .channel-insights__kpi-card {
+    min-height: 74px;
+    padding: 8px;
+  }
+
+  .channel-insights__kpi-card strong {
+    font-size: 1.04rem;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__canvas {
+    min-height: 196px;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__svg {
+    height: 190px;
+  }
+
+  .channel-fact-strip {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(112px, 1fr);
+    grid-template-columns: none;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .channel-fact-strip::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (max-width: 370px) {
+  .channel-insights__summary-head,
+  .channel-events-section__head {
+    grid-template-columns: minmax(0, 1fr) 122px;
+  }
+
+  .channel-insights__range,
+  .channel-events-section__head .channel-insights__range {
+    width: 122px;
+  }
+
+  .channel-insights__range .segmented-control__item,
+  .channel-insights__switch .segmented-control__item,
+  .channel-events-section .membership-feed__filters .segmented-control__item {
+    font-size: 0.61rem;
+  }
+
+  .channel-insights__kpi-card > span {
+    font-size: 0.56rem;
+  }
+
+  .channel-events-section__headline p {
+    display: none;
+  }
+
+  .channel-events-section__metric {
+    min-height: 48px;
+    padding: 7px;
+  }
+
+  .channel-events-section .membership-feed__item {
+    grid-template-columns: 38px minmax(0, 1fr);
+    padding-inline: 7px;
+  }
+
+  .channel-events-section .membership-feed__card {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .channel-events-section .membership-feed__avatar {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+  }
+}

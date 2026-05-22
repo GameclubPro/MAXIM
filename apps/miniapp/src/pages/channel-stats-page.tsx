@@ -293,8 +293,8 @@ function formatBestWindowStats(window: ChannelStatsResponse['signals']['bestWind
   const views = formatCompactCount(window.averageViews);
   const reactions = formatCompactCount(window.averageReactions);
   return reactions === '—' || window.averageReactions === 0
-    ? `${views} просмотров`
-    : `${views} просмотров · ${reactions} реакций`;
+    ? `${views} просм.`
+    : `${views} просм. · ${reactions} реакц.`;
 }
 
 function formatDateTime(value: string | null): string {
@@ -1814,8 +1814,8 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
-                <small>{formatCompactCount(value)} просмотров за период</small>
-                <small>{formatCount(post.reactions)} реакций</small>
+                <small>{formatCompactCount(value)} за период</small>
+                <small>{formatCount(post.reactions)} реакц.</small>
                 {post.viewsDelta > 0 && post.viewsDelta !== post.views ? (
                   <small>{formatCompactCount(post.views)} всего</small>
                 ) : null}
@@ -1890,7 +1890,6 @@ function ChannelStatsOverview({
       <div className="channel-insights__summary-head">
         <div className="channel-insights__summary-copy">
           <h2>Обзор</h2>
-          <p>{formatPeriodRange(stats.period.from, stats.period.to)}</p>
         </div>
 
         <SegmentedControl
@@ -2163,11 +2162,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [loadedActivitySummary, stats]);
 
   const activityBalance = activitySummary.balance;
-  const activityMovementsTotal = activitySummary.joined + activitySummary.left;
-  const activityJoinedShare = activityMovementsTotal
-    ? Math.round((activitySummary.joined / activityMovementsTotal) * 100)
-    : 50;
-  const activityLeftShare = activityMovementsTotal ? 100 - activityJoinedShare : 50;
   const activityBalanceTone =
     activityBalance > 0 ? 'success' : activityBalance < 0 ? 'danger' : 'neutral';
   const activityBalanceLabel =
@@ -2378,30 +2372,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
                 <small>Вышли</small>
                 <strong>{formatCount(activitySummary.left)}</strong>
               </span>
-            </div>
-
-            <div
-              className="channel-events-section__flow"
-              style={
-                {
-                  '--channel-events-joined-share': `${activityJoinedShare}%`,
-                  '--channel-events-left-share': `${activityLeftShare}%`,
-                } as CSSProperties
-              }
-              aria-label={`Вошли ${activityJoinedShare}%, вышли ${activityLeftShare}%`}
-            >
-              <div className="channel-events-section__flow-bar" aria-hidden="true">
-                <span className="channel-events-section__flow-fill channel-events-section__flow-fill--joined" />
-                <span className="channel-events-section__flow-fill channel-events-section__flow-fill--left" />
-              </div>
-              <div className="channel-events-section__flow-meta">
-                <span>
-                  Вошли {activityMovementsTotal ? formatPercent(activityJoinedShare) : '0%'}
-                </span>
-                <span>
-                  Вышли {activityMovementsTotal ? formatPercent(activityLeftShare) : '0%'}
-                </span>
-              </div>
             </div>
 
             <MembershipActivityFeed
