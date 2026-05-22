@@ -851,6 +851,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
   }, [chatId]);
 
+  useEffect(() => {
+    document.body.classList.add('events-page-open');
+
+    return () => {
+      document.body.classList.remove('events-page-open');
+    };
+  }, []);
+
   const dashboardQuery = useQuery({
     queryKey: queryKeys.logsDashboard(
       chatId ?? '',
@@ -1254,21 +1262,20 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const moderationHeroMetric = {
     label: 'Нарушения',
     value: String(violationsSummary.total),
-    note:
-      violationsSummary.total > 0 ? 'Зафиксировано за период' : 'За период нарушений не найдено',
+    note: '',
     tone: 'accent' as const,
   };
   const moderationSecondaryMetrics = [
     {
-      label: 'Люди',
+      label: 'Затронуто',
       value: String(violationsSummary.affectedUsers),
-      note: 'Участников затронуто',
+      note: '',
       tone: 'neutral' as const,
     },
     {
-      label: 'Мут + бан',
+      label: 'Мут/бан',
       value: String(hardMeasures),
-      note: 'Жёсткие меры',
+      note: '',
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
     },
   ];
@@ -1278,12 +1285,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : section === 'participants'
         ? 'Участники'
         : 'Модерация';
-  const dashboardSubtitle =
-    section === 'activity'
-      ? 'История входов и выходов участников'
-      : section === 'participants'
-        ? ''
-        : 'Люди и меры за выбранный период';
+  const dashboardSubtitle = '';
   const activateProfile = (
     userId: string,
     displayName: string,
@@ -1336,8 +1338,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 className="events-stage__entity-avatar"
               />
               <div className="events-stage__appbar-copy">
-                <strong>Статистика</strong>
-                <span className="events-stage__appbar-label">{chatTitle}</span>
+                <strong>{chatTitle}</strong>
+                <span className="events-stage__appbar-label">{dashboardTitle}</span>
               </div>
             </div>
 
@@ -1513,7 +1515,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 >
                   <small>{moderationHeroMetric.label}</small>
                   <strong>{moderationHeroMetric.value}</strong>
-                  <span>{moderationHeroMetric.note}</span>
+                  {moderationHeroMetric.note ? <span>{moderationHeroMetric.note}</span> : null}
                 </article>
 
                 <div className="events-dashboard__stack">
@@ -1524,7 +1526,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     >
                       <small>{item.label}</small>
                       <strong>{item.value}</strong>
-                      <span>{item.note}</span>
+                      {item.note ? <span>{item.note}</span> : null}
                     </article>
                   ))}
                 </div>
@@ -1560,6 +1562,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
+          variant="immersive"
           filter={activityFeed.filter}
           onFilterChange={handleActivityFilterChange}
           items={activityFeed.items}

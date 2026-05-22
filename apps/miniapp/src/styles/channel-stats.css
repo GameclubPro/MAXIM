@@ -3086,3 +3086,132 @@ body.channel-stats-page-open .app-shell {
     border-radius: 13px;
   }
 }
+
+/* Final dense pass for channel stats and channel events. */
+.channel-insights__summary--command > .channel-insights__summary-head,
+.channel-events-section__head,
+.channel-insights__chart-card,
+.channel-fact-panel {
+  border-radius: 18px;
+}
+
+.channel-insights__summary-copy h2,
+.channel-events-section__head h2 {
+  font-size: 1.08rem;
+  font-weight: 840;
+  letter-spacing: 0;
+}
+
+.channel-events-section__headline p {
+  margin: 0;
+  color: #647b90;
+  font-size: 0.7rem;
+  font-weight: 720;
+  line-height: 1.16;
+}
+
+.channel-insights__chart-card--executive {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 251, 255, 0.97)), #fff;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__canvas {
+  border-radius: 15px;
+}
+
+.channel-stats-graph__callout {
+  fill: rgba(20, 42, 62, 0.94);
+}
+
+.channel-stats-graph__callout-text {
+  font-weight: 820;
+}
+
+.channel-fact-strip > span,
+.channel-posts-chart__row,
+.channel-best-windows__row,
+.channel-data-quality__item,
+.channel-events-section__metric,
+.channel-events-section__flow,
+.channel-events-section .membership-feed__toolbar,
+.channel-events-section .membership-feed__day,
+.channel-events-section .membership-feed__group-list {
+  border-color: rgba(209, 222, 235, 0.82);
+}
+
+.channel-events-section__flow {
+  border: 1px solid rgba(209, 222, 235, 0.82);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 9px 18px rgba(22, 44, 67, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.channel-events-section .membership-feed__group-list {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.channel-events-section .membership-feed__item + .membership-feed__item {
+  border-top-color: rgba(220, 230, 240, 0.82);
+}
+
+.channel-events-section .membership-feed__description {
+  color: #5d7488;
+}
+
+@media (min-width: 720px) {
+  .channel-insights__summary-copy h2,
+  .channel-events-section__head h2 {
+    font-size: 1.14rem;
+  }
+}
+
+@media (max-width: 370px) {
+  .channel-events-section__headline p {
+    display: none;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-events-section__head {
+    grid-template-columns: minmax(0, 1fr) 150px;
+    align-items: center;
+    min-height: 0;
+    padding: 10px 12px;
+  }
+
+  .channel-events-section__head-main {
+    display: block;
+    min-width: 0;
+  }
+
+  .channel-events-section__balance {
+    display: none;
+  }
+
+  .channel-events-section__head .channel-insights__range {
+    width: 150px;
+  }
+
+  .channel-events-section__metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .channel-events-section__metric {
+    min-height: 54px;
+  }
+}
+
+@media (max-width: 370px) {
+  .channel-events-section__head {
+    grid-template-columns: minmax(0, 1fr) 132px;
+    padding: 9px 10px;
+  }
+
+  .channel-events-section__head .channel-insights__range {
+    width: 132px;
+  }
+
+  .channel-events-section__flow-meta {
+    display: none;
+  }
+}

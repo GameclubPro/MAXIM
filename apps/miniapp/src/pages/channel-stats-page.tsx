@@ -339,10 +339,6 @@ function formatBucketLabel(bucket: ChannelStatsBucket): string {
   return bucket === 'hour' ? 'по часам' : 'по дням';
 }
 
-function formatRangeTitle(range: ChannelStatsRange): string {
-  return periodOptions.find((option) => option.value === range)?.label ?? range;
-}
-
 function formatViewModeLabel(
   mode: ChannelStatsResponse['official']['content']['viewsMode'],
 ): string {
@@ -1893,8 +1889,7 @@ function ChannelStatsOverview({
     >
       <div className="channel-insights__summary-head">
         <div className="channel-insights__summary-copy">
-          <span className="channel-insights__eyebrow">Статистика</span>
-          <h2>{formatRangeTitle(range)}</h2>
+          <h2>Обзор</h2>
           <p>{formatPeriodRange(stats.period.from, stats.period.to)}</p>
         </div>
 
@@ -2336,8 +2331,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             <div className="channel-events-section__head">
               <div className="channel-events-section__head-main">
                 <div className="channel-insights__summary-copy channel-events-section__headline">
-                  <span className="channel-insights__eyebrow">События</span>
-                  <h2>{formatRangeTitle(range)}</h2>
+                  <h2>События</h2>
+                  {stats ? <p>{formatPeriodRange(stats.period.from, stats.period.to)}</p> : null}
                 </div>
 
                 <div
