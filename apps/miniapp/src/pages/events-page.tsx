@@ -34,7 +34,9 @@ import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
   applyManualModerationAction,
+  getChatActivityDashboard,
   getChatActivityFeed,
+  getChatModerationDashboard,
   getChatParticipantsPage,
   getChatModerationFeed,
   getLogsDashboard,
@@ -60,6 +62,7 @@ type EventsSection = 'activity' | 'moderation' | 'participants';
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
 const PARTICIPANTS_SEARCH_DEBOUNCE_MS = 350;
+const IDLE_PREFETCH_DELAY_MS = 700;
 
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
@@ -783,6 +786,25 @@ function useDebouncedValue(value: string, delayMs: number): string {
   return debouncedValue;
 }
 
+async function measureDashboardRequest<T>(label: string, task: () => Promise<T>): Promise<T> {
+  if (typeof performance === 'undefined' || typeof performance.mark !== 'function') {
+    return task();
+  }
+
+  const started = `events-dashboard:${label}:start`;
+  const finished = `events-dashboard:${label}:end`;
+  const measured = `events-dashboard:${label}`;
+  performance.mark(started);
+  try {
+    return await task();
+  } finally {
+    performance.mark(finished);
+    performance.measure(measured, started, finished);
+    performance.clearMarks(started);
+    performance.clearMarks(finished);
+  }
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -830,19 +852,36 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       includeActivityPreview,
       includeModerationPreview,
     ),
-    queryFn: ({ signal }) =>
-      getLogsDashboard(
-        api,
-        chatId ?? '',
-        range,
-        {
-          includeActivityPreview,
-          includeModerationPreview,
-        },
-        { signal },
-      ),
+    queryFn: ({ signal }) => {
+      const targetChatId = chatId ?? '';
+      if (section === 'activity') {
+        return measureDashboardRequest('activity', () =>
+          getChatActivityDashboard(api, targetChatId, range, { signal }),
+        );
+      }
+
+      if (section === 'moderation') {
+        return measureDashboardRequest('moderation', () =>
+          getChatModerationDashboard(api, targetChatId, range, { signal }),
+        );
+      }
+
+      return measureDashboardRequest('legacy', () =>
+        getLogsDashboard(
+          api,
+          targetChatId,
+          range,
+          {
+            includeActivityPreview,
+            includeModerationPreview,
+          },
+          { signal },
+        ),
+      );
+    },
     enabled: Boolean(chatId) && section !== 'participants',
     staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
 
@@ -894,6 +933,36 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       dashboardQuery.data,
     );
   }, [chatId, dashboardQuery.data, includeActivityPreview, includeModerationPreview, range]);
+
+  useEffect(() => {
+    if (!chatId || section === 'participants' || !dashboardQuery.data) {
+      return undefined;
+    }
+
+    const targetSection: Extract<EventsSection, 'activity' | 'moderation'> =
+      section === 'moderation' ? 'activity' : 'moderation';
+    const prefetch = () => {
+      const isActivity = targetSection === 'activity';
+      void queryClient
+        .prefetchQuery({
+          queryKey: queryKeys.logsDashboard(chatId, range, isActivity, !isActivity),
+          queryFn: ({ signal }) =>
+            isActivity
+              ? getChatActivityDashboard(api, chatId, range, { signal })
+              : getChatModerationDashboard(api, chatId, range, { signal }),
+          staleTime: 30_000,
+        })
+        .catch(() => undefined);
+    };
+
+    if ('requestIdleCallback' in window && typeof window.requestIdleCallback === 'function') {
+      const idleId = window.requestIdleCallback(prefetch, { timeout: 2_000 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+
+    const timeoutId = window.setTimeout(prefetch, IDLE_PREFETCH_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [api, chatId, dashboardQuery.data, queryClient, range, section]);
 
   const chatTitle = useMemo(() => {
     if (!chatId) {

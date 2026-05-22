@@ -775,15 +775,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       .prefetchQuery({
         queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
         queryFn: async ({ signal }) => {
-          const { getLogsDashboard } = await import('../lib/api/events-client');
-          return getLogsDashboard(
+          const { getChatModerationDashboard } = await import('../lib/api/events-client');
+          return getChatModerationDashboard(
             api,
             chatId,
             DEFAULT_DASHBOARD_RANGE,
-            {
-              includeActivityPreview: false,
-              includeModerationPreview: true,
-            },
             { signal },
           );
         },

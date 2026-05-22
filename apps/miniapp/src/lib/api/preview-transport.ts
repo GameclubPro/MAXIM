@@ -3957,6 +3957,26 @@ async function handleChatRequest(
     );
   }
 
+  if (tail[0] === 'moderation-dashboard' && method === 'GET') {
+    const range = (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d';
+    return cloneJson(
+      buildLogsDashboard(state, chatId, range, {
+        includeActivityPreview: false,
+        includeModerationPreview: true,
+      }),
+    );
+  }
+
+  if (tail[0] === 'activity-dashboard' && method === 'GET') {
+    const range = (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d';
+    return cloneJson(
+      buildLogsDashboard(state, chatId, range, {
+        includeActivityPreview: true,
+        includeModerationPreview: false,
+      }),
+    );
+  }
+
   if (tail[0] === 'moderation-feed' && method === 'GET') {
     return cloneJson(
       buildModerationFeedPage(

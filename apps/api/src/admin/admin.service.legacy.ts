@@ -286,6 +286,10 @@ import {
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
+import {
+  selectLogsDashboardMembershipSummary,
+  selectLogsDashboardModerationSummary,
+} from './logs-dashboard-rollups';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -17138,69 +17142,40 @@ export class AdminService implements OnModuleDestroy {
     const startedAtMs = Date.now();
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(range, now);
-    const membershipEventsSql = this.buildMembershipEventDedupeSourceSql(chatId, from, now, [
-      'user_added',
-      'user_removed',
-    ]);
     const headerPromise =
       this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
 
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const baseQueriesStartedAtMs = Date.now();
-    const [
-      chat,
-      membershipRows,
-      chatHeader,
-      moderationSummaryRows,
-      affectedUserRows,
-      violationRows,
-    ] =
+    const [chat, membershipSummary, chatHeader, moderationSummary, violationRows] =
       await Promise.all([
         this.prisma.chat.findUnique({
           where: { id: chatId },
           select: { id: true, title: true },
         }),
-        this.prisma.$queryRaw<Array<{ joined_users: unknown; left_users: unknown }>>`
-        WITH membership_events AS (${membershipEventsSql})
-        SELECT
-          COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
-          COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
-        FROM membership_events
-      `,
-        headerPromise,
-        this.prisma.moderationEvent.groupBy({
-          by: ['action', 'ruleCode'],
-          where: {
-            chatId,
-            createdAt: { gte: from, lte: now },
-            OR: [
-              { action: 'WARN' },
-              { action: 'DELETE_MESSAGE' },
-              { action: 'MUTE' },
-              { action: { in: [SanctionAction.BAN, SanctionAction.KICK] } },
-              {
-                action: SanctionAction.NONE,
-                ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] },
-              },
-            ],
-          },
-          _count: { _all: true },
-        }),
-        this.prisma.$queryRaw<Array<{ affected_users: unknown }>>`
-          SELECT COUNT(DISTINCT user_id) AS affected_users
-          FROM moderation_events
-          WHERE chat_id = ${chatId}
-            AND created_at >= ${from}
-            AND created_at <= ${now}
-            AND (
-              action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN')
-              OR (
-                action = ${SanctionAction.NONE}
-                AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
-              )
+        includeActivityPreview
+          ? selectLogsDashboardMembershipSummary(
+              this.prisma,
+              chatId,
+              from,
+              now,
+              (edgeChatId, edgeFrom, edgeTo, eventTypes) =>
+                this.getMembershipEventRows(edgeChatId, edgeFrom, edgeTo, eventTypes),
             )
-        `,
+          : Promise.resolve({ joinedUsers: 0, leftUsers: 0 }),
+        headerPromise,
+        includeModerationPreview
+          ? selectLogsDashboardModerationSummary(this.prisma, chatId, from, now)
+          : Promise.resolve({
+              warn: 0,
+              deleteMessage: 0,
+              mute: 0,
+              ban: 0,
+              unmute: 0,
+              unban: 0,
+              affectedUsers: 0,
+            }),
         includeModerationPreview
           ? this.prisma.moderationEvent.findMany({
               where: violationsWhere,
@@ -17210,7 +17185,6 @@ export class AdminService implements OnModuleDestroy {
           : Promise.resolve([]),
       ]);
     const baseQueriesFinishedAtMs = Date.now();
-    const moderationSummary = this.summarizeLogsDashboardModerationCounts(moderationSummaryRows);
     const moderationPreviewRows = violationRows.slice(0, LOGS_DASHBOARD_VIOLATIONS_LIMIT);
     const moderationProfilesStartedAtMs = Date.now();
     const moderationUserProfiles = includeModerationPreview
@@ -17218,13 +17192,13 @@ export class AdminService implements OnModuleDestroy {
           chatId,
           'chat',
           moderationPreviewRows.map((row) => row.userId),
+          { allowRemoteLookup: false },
         )
       : new Map<string, ResolvedUserProfile>();
     const moderationProfilesFinishedAtMs = Date.now();
 
-    const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
-    const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
-    const leftUsers = this.toSafeInteger(membershipSource.left_users);
+    const joinedUsers = membershipSummary.joinedUsers;
+    const leftUsers = membershipSummary.leftUsers;
     const activityFeedStartedAtMs = Date.now();
     const activityFeed = includeActivityPreview
       ? await this.getMembershipActivityFeedPage(
@@ -17237,6 +17211,7 @@ export class AdminService implements OnModuleDestroy {
             limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
           },
           'chat',
+          { allowRemoteLookup: false },
         )
       : this.buildEmptyMembershipActivityPage();
     const activityFeedFinishedAtMs = Date.now();
@@ -17291,7 +17266,7 @@ export class AdminService implements OnModuleDestroy {
         ban: moderationSummary.ban,
         unmute: moderationSummary.unmute,
         unban: moderationSummary.unban,
-        affectedUsers: this.toSafeInteger(affectedUserRows[0]?.affected_users),
+        affectedUsers: moderationSummary.affectedUsers,
         total:
           moderationSummary.warn +
           moderationSummary.deleteMessage +
@@ -28838,62 +28813,6 @@ export class AdminService implements OnModuleDestroy {
     const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(fallbackHeader);
     await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
     return enrichedHeader;
-  }
-
-  private summarizeLogsDashboardModerationCounts(
-    rows: Array<{
-      action: SanctionAction;
-      ruleCode: string | null;
-      _count: { _all: number };
-    }>,
-  ): {
-    warn: number;
-    deleteMessage: number;
-    mute: number;
-    ban: number;
-    unmute: number;
-    unban: number;
-  } {
-    const summary = {
-      warn: 0,
-      deleteMessage: 0,
-      mute: 0,
-      ban: 0,
-      unmute: 0,
-      unban: 0,
-    };
-
-    for (const row of rows) {
-      const count = this.toSafeInteger(row._count._all);
-      if (row.action === 'WARN') {
-        summary.warn += count;
-        continue;
-      }
-      if (row.action === 'DELETE_MESSAGE') {
-        summary.deleteMessage += count;
-        continue;
-      }
-      if (row.action === 'MUTE') {
-        summary.mute += count;
-        continue;
-      }
-      if (row.action === SanctionAction.BAN || row.action === SanctionAction.KICK) {
-        summary.ban += count;
-        continue;
-      }
-      if (row.action !== SanctionAction.NONE) {
-        continue;
-      }
-      if (row.ruleCode === 'MANUAL_UNMUTE') {
-        summary.unmute += count;
-        continue;
-      }
-      if (row.ruleCode === 'MANUAL_UNBAN') {
-        summary.unban += count;
-      }
-    }
-
-    return summary;
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {

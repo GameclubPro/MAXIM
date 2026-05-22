@@ -18,6 +18,7 @@ import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
 import { AdminService } from './admin.service';
+import { selectLogsDashboardMembershipSummary } from './logs-dashboard-rollups';
 
 type ManagedEntityType = 'chat' | 'channel';
 
@@ -4228,11 +4229,65 @@ describe('AdminService.getLogsDashboard', () => {
     jest.useRealTimers();
   });
 
+  it('keeps membership edge ranges outside complete rollup buckets', async () => {
+    const prisma = {
+      $queryRaw: jest.fn().mockResolvedValue([{ joined_users: '4', left_users: '1' }]),
+    };
+    const fetchEdgeRows = jest.fn().mockResolvedValue([]);
+
+    const summary = await selectLogsDashboardMembershipSummary(
+      prisma as never,
+      'chat-1',
+      new Date('2026-03-01T12:15:30.000Z'),
+      new Date('2026-03-02T12:45:00.000Z'),
+      fetchEdgeRows,
+    );
+
+    expect(summary).toEqual({ joinedUsers: 4, leftUsers: 1 });
+    expect(fetchEdgeRows).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      new Date('2026-03-01T12:15:30.000Z'),
+      new Date('2026-03-01T12:59:59.999Z'),
+      ['user_added', 'user_removed'],
+    );
+    expect(fetchEdgeRows).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      new Date('2026-03-02T12:00:00.000Z'),
+      new Date('2026-03-02T12:45:00.000Z'),
+      ['user_added', 'user_removed'],
+    );
+  });
+
   it('returns membership and violations summary for selected chat', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '5', left_users: '2' }])
-      .mockResolvedValueOnce([{ affected_users: '2' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          warn: '3',
+          deleteMessage: '4',
+          mute: '1',
+          ban: '2',
+          unmute: '1',
+          unban: '1',
+          affected_user_ids: ['user-1', 'user-2'],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
       .mockResolvedValueOnce([
         { user_id: 'user-1', sender_name: 'Алексей' },
         { user_id: 'user-2', sender_name: 'Мария' },
@@ -4400,14 +4455,14 @@ describe('AdminService.getLogsDashboard', () => {
     });
     expect(result.violations).toHaveLength(3);
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
-    expect(result.violations[0]?.avatarUrl).toBe('https://cdn.max.ru/u/1/avatar-full.jpg');
-    expect(result.violations[0]?.profileUrl).toBe('https://max.ru/aleksey');
+    expect(result.violations[0]?.avatarUrl).toBeNull();
+    expect(result.violations[0]?.profileUrl).toBeNull();
     expect(result.violations[0]?.profileHandoffUrl).toEqual(
       expect.stringContaining('https://max.ru/777000_bot?start=pm'),
     );
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
-    expect(result.violations[1]?.avatarUrl).toBe('https://cdn.max.ru/u/2/avatar-full.jpg');
-    expect(result.violations[1]?.profileUrl).toBe('https://max.ru/maria');
+    expect(result.violations[1]?.avatarUrl).toBeNull();
+    expect(result.violations[1]?.profileUrl).toBeNull();
     expect(result.violations[1]?.profileHandoffUrl).toEqual(
       expect.stringContaining('https://max.ru/777000_bot?start=pm'),
     );
@@ -4424,8 +4479,8 @@ describe('AdminService.getLogsDashboard', () => {
           type: 'joined',
           userId: 'user-3',
           userDisplayName: 'Ирина',
-          avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
-          profileUrl: 'https://max.ru/irina',
+          avatarUrl: null,
+          profileUrl: null,
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
@@ -4434,8 +4489,8 @@ describe('AdminService.getLogsDashboard', () => {
           type: 'left',
           userId: 'user-2',
           userDisplayName: 'Мария',
-          avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
-          profileUrl: 'https://max.ru/maria',
+          avatarUrl: null,
+          profileUrl: null,
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm'),
           createdAt: '2026-03-02T09:30:00.000Z',
         },
@@ -4471,20 +4526,16 @@ describe('AdminService.getLogsDashboard', () => {
     expect(dedupeSqlText).toContain('event_type IN');
     expect(dedupeSqlText).toContain('ORDER BY event_at DESC, id DESC');
 
-    const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(membershipSqlText).toContain('WITH membership_events AS (');
-    expect(membershipSqlText).toContain('user_added');
-    expect(membershipSqlText).toContain('user_removed');
-    expect(membershipSqlText).not.toContain('bot_added');
-    const affectedUsersSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
-    expect(affectedUsersSqlText).toContain('COUNT(DISTINCT user_id)');
-    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[3]?.[0]);
+    const membershipRollupSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(membershipRollupSqlText).toContain('chat_membership_activity_rollups');
+    const moderationRollupSqlText = extractSqlText(prisma.$queryRaw.mock.calls[3]?.[0]);
+    expect(moderationRollupSqlText).toContain('chat_moderation_stats_rollups');
+    expect(moderationRollupSqlText).toContain('affected_user_ids');
+    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[6]?.[0]);
     expect(activitySqlText).toContain('WITH membership_events AS (');
     expect(activitySqlText).toContain('ORDER BY created_at');
 
-    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
-    );
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
     );
@@ -4497,6 +4548,30 @@ describe('AdminService.getLogsDashboard', () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
     prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
@@ -4557,18 +4632,19 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.period.from).toBe('2026-03-01T12:00:00.000Z');
     expect(result.period.to).toBe('2026-03-02T12:00:00.000Z');
 
-    const countArgs = prisma.moderationEvent.groupBy.mock.calls[0]?.[0];
-    const createdAt = countArgs.where.createdAt;
-    expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
-    expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
+    const moderationEdgeSqlText =
+      prisma.$queryRaw.mock.calls
+        .map((call) => extractSqlText(call[0]))
+        .find((sqlText) => sqlText.includes('FROM moderation_events')) ?? '';
+    expect(moderationEdgeSqlText).toContain('created_at >=');
+    expect(moderationEdgeSqlText).toContain('created_at <');
   });
 
   it('skips non-requested preview feeds to keep dashboard responses lighter', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }]);
-    prisma.$queryRaw.mockResolvedValueOnce([{ affected_users: '0' }]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
 
     const service = new AdminService(
@@ -4604,7 +4680,8 @@ describe('AdminService.getLogsDashboard', () => {
       hasMore: false,
       nextCursor: null,
     });
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
   });
 
@@ -4614,7 +4691,30 @@ describe('AdminService.getLogsDashboard', () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }])
-      .mockResolvedValueOnce([{ affected_users: '0' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
     prisma.moderationEvent.findMany.mockResolvedValueOnce([]);
@@ -4637,18 +4737,38 @@ describe('AdminService.getLogsDashboard', () => {
     const second = await service.getLogsDashboard('chat-1', actor, { range: '24h' });
 
     expect(second).toEqual(first);
-    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(5);
   });
 
-  it('reuses resolved user profiles between dashboard and moderation feed requests', async () => {
+  it('keeps dashboard and moderation feed profile resolution on the local fast path', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
     prisma.$queryRaw
-      .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
-      .mockResolvedValueOnce([{ affected_users: '2' }])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '2',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: ['user-1', 'user-2'],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affected_user_ids: [],
+        },
+      ])
       .mockResolvedValueOnce([
         { user_id: 'user-1', sender_name: 'Алексей' },
         { user_id: 'user-2', sender_name: 'Мария' },
@@ -4773,7 +4893,7 @@ describe('AdminService.getLogsDashboard', () => {
     });
 
     expect(moderationFeed.items).toHaveLength(2);
-    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
   });
 });

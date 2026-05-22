@@ -132,6 +132,40 @@ export async function getLogsDashboard(
   return response as LogsDashboardResponse;
 }
 
+export async function getChatModerationDashboard(
+  api: ApiTransport,
+  chatId: string,
+  range: LogsDashboardRange = '7d',
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<LogsDashboardResponse> {
+  const validatedRange = parseLogsDashboardRange(range);
+  const params = new URLSearchParams({
+    range: validatedRange,
+  });
+  const response = await api.request(
+    `/chats/${chatId}/moderation-dashboard?${params.toString()}`,
+    request,
+  );
+  return response as LogsDashboardResponse;
+}
+
+export async function getChatActivityDashboard(
+  api: ApiTransport,
+  chatId: string,
+  range: LogsDashboardRange = '7d',
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<LogsDashboardResponse> {
+  const validatedRange = parseLogsDashboardRange(range);
+  const params = new URLSearchParams({
+    range: validatedRange,
+  });
+  const response = await api.request(
+    `/chats/${chatId}/activity-dashboard?${params.toString()}`,
+    request,
+  );
+  return response as LogsDashboardResponse;
+}
+
 export async function getChatActivityFeed(
   api: ApiTransport,
   chatId: string,

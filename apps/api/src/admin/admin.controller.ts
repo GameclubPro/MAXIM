@@ -267,6 +267,32 @@ export class AdminController {
     return this.moderationService.getChatModerationFeed(chatId, user, query);
   }
 
+  @Get('chats/:chatId/moderation-dashboard')
+  getChatModerationDashboard(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getLogsDashboard(chatId, user, {
+      ...(query && typeof query === 'object' ? (query as Record<string, unknown>) : {}),
+      includeActivityPreview: false,
+      includeModerationPreview: true,
+    });
+  }
+
+  @Get('chats/:chatId/activity-dashboard')
+  getChatActivityDashboard(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getLogsDashboard(chatId, user, {
+      ...(query && typeof query === 'object' ? (query as Record<string, unknown>) : {}),
+      includeActivityPreview: true,
+      includeModerationPreview: false,
+    });
+  }
+
   @Get('chats/:chatId/members')
   getChatParticipantsPage(
     @Param('chatId') chatId: string,

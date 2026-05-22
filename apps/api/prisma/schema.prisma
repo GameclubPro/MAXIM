@@ -678,6 +678,9 @@ model ModerationEvent {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([chatId, createdAt])
+  @@index([chatId, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_created_id_idx")
+  @@index([chatId, action, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_action_created_id_idx")
+  @@index([chatId, ruleCode, createdAt(sort: Desc), id(sort: Desc)], map: "moderation_events_chat_rule_created_id_idx")
   @@index([botId, createdAt(sort: Desc)], map: "moderation_events_bot_id_created_at_idx")
   @@index([chatId, userId, createdAt])
   @@index([chatId, userId, action, createdAt(sort: Desc)])
@@ -720,7 +723,37 @@ model ChatMembershipActivityEvent {
   @@index([chatId, eventType, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_event_type_event_at_idx")
   @@index([chatId, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_event_at_idx")
   @@index([chatId, userId, eventAt(sort: Desc)], map: "chat_membership_activity_events_chat_id_user_id_event_at_idx")
+  @@index([chatId, eventType, eventAt(sort: Desc), userId, createdAt(sort: Desc), id(sort: Desc)], map: "chat_membership_activity_events_dashboard_idx")
   @@map("chat_membership_activity_events")
+}
+
+model ChatModerationStatsRollup {
+  chatId          String   @map("chat_id")
+  bucketStart     DateTime @map("bucket_start")
+  warn            Int      @default(0)
+  deleteMessage   Int      @default(0) @map("delete_message")
+  mute            Int      @default(0)
+  ban             Int      @default(0)
+  unmute          Int      @default(0)
+  unban           Int      @default(0)
+  affectedUserIds String[] @default([]) @map("affected_user_ids")
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@id([chatId, bucketStart])
+  @@index([chatId, bucketStart(sort: Desc)], map: "chat_moderation_stats_rollups_chat_bucket_idx")
+  @@map("chat_moderation_stats_rollups")
+}
+
+model ChatMembershipActivityRollup {
+  chatId          String   @map("chat_id")
+  bucketStart     DateTime @map("bucket_start")
+  joinedUsers     Int      @default(0) @map("joined_users")
+  leftUsers       Int      @default(0) @map("left_users")
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@id([chatId, bucketStart])
+  @@index([chatId, bucketStart(sort: Desc)], map: "chat_membership_activity_rollups_chat_bucket_idx")
+  @@map("chat_membership_activity_rollups")
 }
 
 model ManagedEntityLocalActivity {

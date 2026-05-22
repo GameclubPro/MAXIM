@@ -236,7 +236,8 @@ export function buildLogsDashboardResponseCacheKey(
   includeActivityPreview: boolean,
   includeModerationPreview: boolean,
 ): string {
-  return `${chatId}:${userId}:${range}:activity=${includeActivityPreview ? 1 : 0}:moderation=${
+  void userId;
+  return `${chatId}:${range}:activity=${includeActivityPreview ? 1 : 0}:moderation=${
     includeModerationPreview ? 1 : 0
   }`;
 }
@@ -248,10 +249,10 @@ export function buildModerationFeedPageCacheKey(
   query: ModerationFeedQuery,
   profileOptions: { allowRemoteLookup?: boolean } = {},
 ): string {
+  void userId;
   const profileMode = profileOptions.allowRemoteLookup === false ? 'local' : 'remote';
   return [
     chatId,
-    userId,
     entityType,
     query.range,
     query.filter,
@@ -268,10 +269,10 @@ export function buildMembershipActivityFeedPageCacheKey(
   query: MembershipActivityQuery,
   profileOptions: { allowRemoteLookup?: boolean } = {},
 ): string {
+  void userId;
   const profileMode = profileOptions.allowRemoteLookup === false ? 'local' : 'remote';
   return [
     chatId,
-    userId,
     entityType,
     query.range,
     query.filter,

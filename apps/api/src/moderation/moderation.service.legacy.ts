@@ -145,7 +145,6 @@ import {
 const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
 const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
-
 type ActiveMute = {
   eventId: string;
   issuedAt: Date;
@@ -153,19 +152,15 @@ type ActiveMute = {
   durationHours: number | null;
   permanent: boolean;
 };
-
 type ActiveMuteCacheReadResult =
   | { status: 'active'; mute: ActiveMute }
   | { status: 'inactive' }
   | { status: 'miss' };
-
 type ChatAdminCheckSource = 'remote' | 'local' | 'remote+local' | 'local_fallback';
-
 type ChatAdminCheckResult = {
   isAdmin: boolean;
   source: ChatAdminCheckSource;
 };
-
 type RequiredSubscriptionChannelMetadata = {
   id: string;
   title: string;
@@ -173,7 +168,6 @@ type RequiredSubscriptionChannelMetadata = {
   usable: boolean;
   checkMembership: boolean;
 };
-
 type SharedChatExecutionGuard =
   | {
       mode: 'allow';
@@ -190,19 +184,15 @@ type SharedChatExecutionGuard =
       assignedBotIds: string[];
       reason: 'non-primary-bot' | 'removed-membership';
     };
-
 type RemoteChatAdminAccessState = 'granted' | 'user_denied';
-
 type ManagedChannelContext = {
   channelSettings: PersistedChannelSettings;
   adminUserIds: string[];
 };
-
 type ChannelAutoPostMessageText = {
   text: string | null;
   textFormat: MaxSendMessageOptions['textFormat'] | null;
 };
-
 type ChannelAutoPostScanState = {
   latestTimestampMs: number;
   latestMessageIdsAtTimestamp: string[];
@@ -211,46 +201,39 @@ type ChannelAutoPostScanState = {
   terminalFailureClosedAtMs: number | null;
   terminalFailureReason: string | null;
 };
-
 type ManualGroupCloseListedMessage = {
   messageId: string;
   text: string | null;
   timestampMs: number;
   senderId: string | null;
 };
-
 type ChannelAutoPostExecutionPlan = {
   batchSize: number;
   interChannelDelayMs: number;
   maxNewMessagesPerScan: number;
 };
-
 type PendingChatAdminLookup = {
   cacheKey: string;
   userId: string;
   staleCached: RemoteChatAdminAccessState | null;
   resolve: (value: RemoteChatAdminAccessState | null) => void;
 };
-
 type PendingChatAdminLookupBatch = {
   chatId: string;
   lookups: Map<string, PendingChatAdminLookup>;
   scheduled: boolean;
 };
-
 type PendingChatAdminSharedCacheRead = {
   cacheKey: string;
   userId: string;
   resolve: (value: RemoteChatAdminAccessState | null) => void;
   reject: (reason?: unknown) => void;
 };
-
 type PendingChatAdminSharedCacheBatch = {
   chatId: string;
   reads: Map<string, PendingChatAdminSharedCacheRead>;
   scheduled: boolean;
 };
-
 type PendingGlobalSpammerExemptionLookup = {
   userId: string;
   resolve: (value: boolean) => void;
