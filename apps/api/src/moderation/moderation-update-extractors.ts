@@ -215,6 +215,11 @@ function collectMediaFlags(
   }
 
   const row = node as Record<string, unknown>;
+  const relationType = readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+  if (isReplyReferenceType(relationType)) {
+    return;
+  }
+
   const payload =
     row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
       ? (row.payload as Record<string, unknown>)
@@ -317,6 +322,10 @@ function collectMediaFlags(
     }
 
     if (value && (typeof value === 'object' || Array.isArray(value))) {
+      if (isReplyReferenceKey(keyLower)) {
+        continue;
+      }
+
       const childStickerContext =
         stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
       const childFileContext =
@@ -338,6 +347,27 @@ function createEmptyMediaFlags(): ModerationMediaFlags {
     hasFileAttachment: false,
     hasVoiceAttachment: false,
   };
+}
+
+function isReplyReferenceType(value: string | null): boolean {
+  return value === 'reply' || value === 'reply_message' || value === 'replymessage';
+}
+
+function isReplyReferenceKey(value: string): boolean {
+  return (
+    value === 'reply' ||
+    value === 'replyto' ||
+    value === 'reply_to' ||
+    value === 'replymessage' ||
+    value === 'reply_message' ||
+    value === 'replytomessage' ||
+    value === 'reply_to_message' ||
+    value === 'repliedmessage' ||
+    value === 'replied_message' ||
+    value === 'quoted' ||
+    value === 'quotedmessage' ||
+    value === 'quoted_message'
+  );
 }
 
 function isLikelyVideoFileName(value: string | null): boolean {

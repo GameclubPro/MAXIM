@@ -1342,6 +1342,43 @@ function createImageFileAttachmentUpdate(): MaxUpdate {
   };
 }
 
+function createReplyToPhotoUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-reply-photo-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-reply-photo-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: 'Спасибо, понял',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          text: 'Спасибо, понял',
+        },
+        link: {
+          type: 'reply',
+          message: {
+            text: '',
+            attachments: [
+              {
+                type: 'image',
+                payload: {
+                  mime_type: 'image/jpeg',
+                  url: 'https://cdn.example/admin-photo.jpg',
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
 describe('ModerationService', () => {
   it('does not schedule re-enqueue for terminal MAX processing errors', async () => {
     const prisma = {
@@ -14105,6 +14142,68 @@ describe('ModerationService', () => {
     expect(detectionArgs.hasPhotoAttachment).toBe(true);
     expect(detectionArgs.hasFileAttachment).toBe(false);
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('ignores photo attachments from the replied-to message when photo messages are disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ photoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasPhotoAttachment?: boolean }) => {
+        if (params.hasPhotoAttachment) {
+          return {
+            violations: [{ ruleCode: 'PHOTO_BLOCKED', score: 0.88, reason: 'Photo disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createReplyToPhotoUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasPhotoAttachment?: boolean;
+    };
+    expect(detectionArgs.hasPhotoAttachment).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('detects forwarded video attachment and moderates it as regular message content', async () => {
