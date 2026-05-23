@@ -173,6 +173,60 @@ function ClockIcon() {
   );
 }
 
+function EventsDashboardSkeleton({ section }: { section: Exclude<EventsSection, 'participants'> }) {
+  if (section === 'activity') {
+    return (
+      <div
+        className="events-dashboard__activity events-dashboard__activity--loading"
+        role="status"
+        aria-label="Загружаем сводку"
+      >
+        <article className="events-dashboard__activity-balance events-dashboard__activity-balance--loading">
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--value" />
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--short" />
+        </article>
+
+        <div className="events-dashboard__activity-ledger">
+          <article className="events-dashboard__flow-card events-dashboard__flow-card--loading">
+            <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+            <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--metric" />
+          </article>
+          <article className="events-dashboard__flow-card events-dashboard__flow-card--loading">
+            <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+            <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--metric" />
+          </article>
+          <div className="events-dashboard__flow-bar events-dashboard__flow-bar--loading" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="events-dashboard__body events-dashboard__body--moderation events-dashboard__body--loading"
+      role="status"
+      aria-label="Загружаем сводку"
+    >
+      <article className="events-dashboard__hero events-dashboard__hero--loading">
+        <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+        <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--value" />
+      </article>
+
+      <div className="events-dashboard__stack">
+        <article className="events-dashboard__metric events-dashboard__metric--loading">
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--metric" />
+        </article>
+        <article className="events-dashboard__metric events-dashboard__metric--loading">
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--label" />
+          <span className="events-dashboard__skeleton-line events-dashboard__skeleton-line--metric" />
+        </article>
+      </div>
+    </div>
+  );
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -1458,16 +1512,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </div>
 
             {section !== 'participants' && isDashboardPending ? (
-              <GlassCard className="events-inline-state">
-                <div className="events-loading-state">
-                  <Spinner
-                    size="lg"
-                    label={
-                      section === 'activity' ? 'Загружаем события' : 'Загружаем сводку по модерации'
-                    }
-                  />
-                </div>
-              </GlassCard>
+              <EventsDashboardSkeleton section={section} />
             ) : section !== 'participants' && hasBlockingDashboardError ? (
               <GlassCard className="events-inline-state">
                 <StatusState

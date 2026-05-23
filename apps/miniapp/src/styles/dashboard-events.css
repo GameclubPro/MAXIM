@@ -4089,3 +4089,139 @@ body.events-page-open .app-shell {
     justify-content: flex-start;
   }
 }
+
+/* Final events polish: compact live summary and quiet loading states. */
+.events-dashboard:not(.events-dashboard--participants) .events-dashboard__head {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: end;
+}
+
+.events-dashboard:not(.events-dashboard--participants) .events-dashboard__head-copy {
+  display: none;
+}
+
+.events-dashboard__activity {
+  grid-template-columns: minmax(82px, 0.7fr) minmax(0, 1.3fr);
+}
+
+.events-dashboard__activity-balance,
+.events-dashboard__hero {
+  min-height: 58px;
+}
+
+.events-dashboard__flow-card span,
+.events-dashboard__flow-meta {
+  display: none;
+}
+
+.events-dashboard__activity-ledger {
+  align-content: stretch;
+}
+
+.events-dashboard__flow-card {
+  align-content: center;
+}
+
+.events-dashboard__body--loading,
+.events-dashboard__activity--loading {
+  pointer-events: none;
+}
+
+.events-dashboard__hero--loading,
+.events-dashboard__activity-balance--loading,
+.events-dashboard__metric--loading,
+.events-dashboard__flow-card--loading {
+  background: rgba(250, 253, 255, 0.98);
+}
+
+.events-dashboard__activity-balance--loading::before {
+  background: rgba(157, 181, 204, 0.22);
+}
+
+.events-dashboard__flow-bar--loading {
+  height: 5px;
+  margin: 0 10px 9px;
+  border-radius: 999px;
+  background: rgba(222, 233, 243, 0.92);
+}
+
+.events-dashboard__skeleton-line {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #eaf2f8, #f8fbfe, #eaf2f8);
+  background-size: 180% 100%;
+  animation: events-dashboard-shimmer 1.1s ease-in-out infinite;
+}
+
+.events-dashboard__skeleton-line--label {
+  width: 62px;
+  height: 8px;
+}
+
+.events-dashboard__skeleton-line--value {
+  width: 44px;
+  height: 24px;
+}
+
+.events-dashboard__skeleton-line--metric {
+  width: 30px;
+  height: 17px;
+}
+
+.events-dashboard__skeleton-line--short {
+  width: 72px;
+  height: 8px;
+}
+
+.event-feed-item__summary {
+  color: #4f687e;
+}
+
+.event-feed-item__excerpt span {
+  font-size: 0.6rem;
+}
+
+.membership-feed--immersive .membership-feed__title p,
+.membership-feed--immersive .membership-feed__description {
+  display: none;
+}
+
+.participants-roster__item {
+  min-height: 62px;
+}
+
+@keyframes events-dashboard-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: -80% 0;
+  }
+}
+
+@media (max-width: 430px) {
+  .events-dashboard__activity {
+    grid-template-columns: minmax(76px, 0.68fr) minmax(0, 1.32fr);
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) minmax(90px, 0.68fr);
+  }
+}
+
+@media (max-width: 370px) {
+  .events-dashboard__range {
+    width: 108px;
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) 84px;
+  }
+
+  .events-dashboard__activity {
+    grid-template-columns: minmax(68px, 0.64fr) minmax(0, 1.36fr);
+  }
+}

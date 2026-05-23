@@ -18,7 +18,7 @@ import {
   UserXmark as IconUserXmark,
 } from 'iconoir-react';
 import '../styles/channel-stats.css';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
@@ -102,8 +102,8 @@ const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
 ];
 
 const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
-  { value: 'audience', label: 'Аудитория' },
-  { value: 'views', label: 'Просмотры' },
+  { value: 'audience', label: 'Аудит.' },
+  { value: 'views', label: 'Просм.' },
 ];
 
 const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
@@ -534,6 +534,25 @@ function resolveChartIndexFromClientX(
 
   const ratio = clamp((clientX - rect.left) / Math.max(rect.width, 1), 0, 1);
   return Math.round(ratio * (pointsLength - 1));
+}
+
+function readChartIndexFromPointer(
+  event: PointerEvent<HTMLDivElement>,
+  pointsLength: number,
+): number {
+  return resolveChartIndexFromClientX(
+    event.clientX,
+    event.currentTarget.getBoundingClientRect(),
+    pointsLength,
+  );
+}
+
+function captureChartPointer(event: PointerEvent<HTMLDivElement>): void {
+  try {
+    event.currentTarget.setPointerCapture(event.pointerId);
+  } catch {
+    // Older WebViews can skip pointer capture; scrubbing still works inside the canvas.
+  }
 }
 
 function resolveAlignedIndex(
@@ -1122,27 +1141,16 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuemax={chart.points.length}
             aria-valuenow={safeActiveIndex + 1}
             aria-valuetext={activeGuideLabel}
-            onPointerDown={(event) =>
-              setActiveIndex(
-                resolveChartIndexFromClientX(
-                  event.clientX,
-                  event.currentTarget.getBoundingClientRect(),
-                  chart.points.length,
-                ),
-              )
-            }
+            onPointerDown={(event) => {
+              captureChartPointer(event);
+              setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
+            }}
             onPointerMove={(event) => {
               if (event.pointerType !== 'mouse' && event.buttons !== 1) {
                 return;
               }
 
-              setActiveIndex(
-                resolveChartIndexFromClientX(
-                  event.clientX,
-                  event.currentTarget.getBoundingClientRect(),
-                  chart.points.length,
-                ),
-              );
+              setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
             }}
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft') {
@@ -1525,27 +1533,16 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuemax={chart.bars.length}
             aria-valuenow={safeActiveIndex + 1}
             aria-valuetext={activeGuideLabel}
-            onPointerDown={(event) =>
-              setActiveIndex(
-                resolveChartIndexFromClientX(
-                  event.clientX,
-                  event.currentTarget.getBoundingClientRect(),
-                  chart.bars.length,
-                ),
-              )
-            }
+            onPointerDown={(event) => {
+              captureChartPointer(event);
+              setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
+            }}
             onPointerMove={(event) => {
               if (event.pointerType !== 'mouse' && event.buttons !== 1) {
                 return;
               }
 
-              setActiveIndex(
-                resolveChartIndexFromClientX(
-                  event.clientX,
-                  event.currentTarget.getBoundingClientRect(),
-                  chart.bars.length,
-                ),
-              );
+              setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
             }}
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft') {
@@ -1880,40 +1877,35 @@ function ChannelStatsOverview({
     stats.meta.viewsAvailable && stats.official.content.posts > 0
       ? Math.round(stats.official.content.views / stats.official.content.posts)
       : null;
-  const chartTitle = effectiveChartTab === 'audience' ? 'Аудитория' : 'Просмотры';
+  const chartTitle = 'Динамика';
 
   return (
     <section
       className="channel-insights__summary channel-insights__summary--command stagger-in"
       aria-label="Сводка по каналу"
     >
-      <div className="channel-insights__summary-head">
-        <div className="channel-insights__summary-copy">
-          <h2>Обзор</h2>
-        </div>
-
-        <SegmentedControl
-          value={range}
-          options={periodOptions}
-          onChange={(next) => onRangeChange(next as ChannelStatsRange)}
-          className="channel-insights__range"
-        />
-      </div>
-
       <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-        <div className="channel-insights__panel-head">
+        <div className="channel-insights__panel-head channel-insights__panel-head--chart">
           <div className="channel-insights__panel-copy">
             <strong>{chartTitle}</strong>
           </div>
 
-          {chartTabs.length > 1 ? (
+          <div className="channel-insights__chart-controls">
+            {chartTabs.length > 1 ? (
+              <SegmentedControl
+                value={effectiveChartTab}
+                options={chartTabs}
+                onChange={(next) => onChartTabChange(next as ChartTab)}
+                className="channel-insights__switch"
+              />
+            ) : null}
             <SegmentedControl
-              value={effectiveChartTab}
-              options={chartTabs}
-              onChange={(next) => onChartTabChange(next as ChartTab)}
-              className="channel-insights__switch"
+              value={range}
+              options={periodOptions}
+              onChange={(next) => onRangeChange(next as ChannelStatsRange)}
+              className="channel-insights__range"
             />
-          ) : null}
+          </div>
         </div>
 
         {effectiveChartTab === 'audience' ? (

@@ -2599,3 +2599,132 @@ body.channel-stats-page-open .channel-insights__body {
     padding: 6px 7px;
   }
 }
+
+/* Final analytics polish: chart-first controls, less chrome, stable mobile height. */
+.channel-insights__summary--command {
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.channel-insights__chart-card--executive .channel-insights__panel-head--chart {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 6px;
+}
+
+.channel-insights__panel-head--chart .channel-insights__panel-copy strong {
+  font-size: 0.86rem;
+}
+
+.channel-insights__chart-controls {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 232px) 154px;
+  align-items: center;
+  justify-content: start;
+  gap: 6px;
+}
+
+.channel-insights__chart-controls .channel-insights__switch {
+  width: 100%;
+  max-width: 232px;
+}
+
+.channel-insights__chart-controls .channel-insights__switch .segmented-control__item {
+  padding-inline: 4px;
+  font-size: 0.62rem;
+}
+
+.channel-insights__chart-controls .channel-insights__range {
+  width: 154px;
+  margin-left: 0;
+}
+
+.channel-insights__chart-card--executive {
+  gap: 7px;
+  padding: 7px;
+}
+
+.channel-stats-graph__summary {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+
+.channel-stats-graph__summary-copy {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.channel-stats-graph__summary-copy small {
+  flex: 0 0 auto;
+}
+
+.channel-stats-graph__summary-copy strong {
+  min-width: 0;
+  font-size: 0.88rem;
+}
+
+.channel-stats-graph__summary-chips {
+  display: none;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__canvas {
+  min-height: 166px;
+  padding: 4px 4px 3px;
+  border-radius: 10px;
+}
+
+.channel-insights__chart-card--executive .channel-stats-graph__svg {
+  height: clamp(156px, 39vw, 192px);
+}
+
+.channel-stats-graph__labels {
+  margin-top: -2px;
+}
+
+.channel-stats-graph__callout {
+  filter: drop-shadow(0 5px 10px rgba(23, 50, 74, 0.16));
+}
+
+.channel-stats-graph__dot.is-active,
+.channel-stats-graph__dot--views.is-active {
+  filter: drop-shadow(0 0 8px rgba(11, 132, 255, 0.34));
+}
+
+.channel-events-section__head {
+  padding: 7px 8px;
+}
+
+.channel-events-section__metric {
+  min-height: 42px;
+}
+
+.channel-events-section .membership-feed__description {
+  display: none;
+}
+
+@media (max-width: 380px) {
+  .channel-insights__chart-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-insights__chart-controls .channel-insights__switch {
+    max-width: 100%;
+    order: 2;
+  }
+
+  .channel-insights__chart-controls .channel-insights__range {
+    width: 112px;
+    order: 1;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__canvas {
+    min-height: 158px;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__svg {
+    height: 154px;
+  }
+}
