@@ -1,5 +1,6 @@
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import { SegmentedControl } from './ui/segmented-control';
+import { ResetIcon } from './ui/reset-icon';
 
 export type BroadcastWorkspaceView = 'compose' | 'calendar' | 'history';
 export type BroadcastHistoryFilter = 'future' | 'active' | 'error' | 'sent' | 'canceled';
@@ -25,6 +26,18 @@ type BroadcastHistoryFilterTabsProps = {
   value: BroadcastHistoryFilter;
   counts: BroadcastHistoryCounts;
   onChange: (value: BroadcastHistoryFilter) => void;
+};
+
+type BroadcastWorkspaceChromeProps = {
+  showTabs: boolean;
+  value: BroadcastWorkspaceView;
+  historyCount: number;
+  disabled?: boolean;
+  showReset: boolean;
+  resetLabel: string;
+  resetPending?: boolean;
+  onChange: (value: BroadcastWorkspaceView) => void;
+  onReset: () => void;
 };
 
 function isFutureBroadcast(broadcast: ManagedBroadcastSummary): boolean {
@@ -129,6 +142,50 @@ export function BroadcastWorkspaceTabs({
         { value: 'history', label: 'История', count: historyCount },
       ]}
     />
+  );
+}
+
+export function BroadcastWorkspaceChrome({
+  showTabs,
+  value,
+  historyCount,
+  disabled = false,
+  showReset,
+  resetLabel,
+  resetPending = false,
+  onChange,
+  onReset,
+}: BroadcastWorkspaceChromeProps) {
+  if (!showTabs && !showReset) {
+    return null;
+  }
+
+  const effectiveResetLabel = resetPending ? 'Сбрасываем' : resetLabel;
+
+  return (
+    <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
+      {showTabs ? (
+        <BroadcastWorkspaceTabs
+          value={value}
+          historyCount={historyCount}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      ) : null}
+
+      {showReset ? (
+        <button
+          type="button"
+          className="broadcast-shell-reset"
+          onClick={onReset}
+          disabled={disabled}
+          aria-label={effectiveResetLabel}
+          title={effectiveResetLabel}
+        >
+          <ResetIcon />
+        </button>
+      ) : null}
+    </div>
   );
 }
 

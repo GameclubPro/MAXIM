@@ -54,6 +54,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { AdminContactToggle } from '../components/admin-contact-toggle';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -61,7 +62,7 @@ import {
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import {
   BroadcastHistoryFilterTabs,
-  BroadcastWorkspaceTabs,
+  BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
@@ -4549,6 +4550,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : mailingTimingMode === 'cycle'
         ? 'Запустить'
         : 'Запланировать';
+  const mailingFooterPrimaryActionLabel = editingManagedBroadcast
+    ? 'Сохранить'
+    : mailingTimingMode === 'now'
+      ? 'Отправить'
+      : mailingTimingMode === 'cycle'
+        ? 'Старт'
+        : 'В план';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
@@ -4570,131 +4578,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const mailingStudioAudienceValue =
-    mailingTargetMode === 'all'
-      ? 'Все'
-      : mailingTargetMode === 'selected'
-        ? formatRussianCountLabel(
-            mailingAudiencePayload.targetChatIds.length,
-            'чат',
-            'чата',
-            'чатов',
-          )
-        : 'Чат';
-  const mailingStudioReadyCount = [
-    mailingContentReady,
-    mailingAudienceReady,
-    mailingScheduleReady && mailingHasFutureSlots,
-    mailingButtonDraftValid,
-  ].filter(Boolean).length;
-  const mailingStudioSignals: BroadcastStudioSignal[] = [
-    {
-      label: 'Контент',
-      value: !mailingHasPublishableContent
-        ? 'Пусто'
-        : !mailingMediaReady
-          ? mailingImagesPreparing
-            ? 'Фото...'
-            : 'Фото'
-          : mailingImageLabel || editingMailingHasVideo
-            ? mailingImageLabel || 'Видео'
-            : `${normalizedMailingText.length}/2000`,
-      tone: mailingContentReady ? 'ready' : 'pending',
-      icon: 'content',
-    },
-    {
-      label: 'Кому',
-      value: mailingStudioAudienceValue,
-      tone: mailingAudienceReady ? (mailingTargetMode === 'all' ? 'warning' : 'ready') : 'danger',
-      icon: 'audience',
-    },
-    {
-      label: 'Когда',
-      value:
-        mailingTimingMode === 'now'
-          ? 'Сейчас'
-          : mailingTimingMode === 'cycle'
-            ? 'Цикл'
-            : mailingPlannerState.futureSlotCount > 0
-              ? formatRussianCountLabel(
-                  mailingPlannerState.futureSlotCount,
-                  'слот',
-                  'слота',
-                  'слотов',
-                )
-              : 'Не выбрано',
-      tone: mailingScheduleReady && mailingHasFutureSlots ? 'ready' : 'pending',
-      icon: 'time',
-    },
-    {
-      label: 'Кнопки',
-      value: mailingHasVisibleButtons ? mailingVisibleButtonStatus : 'Без кнопки',
-      tone: mailingButtonDraftValid ? (mailingHasVisibleButtons ? 'ready' : 'neutral') : 'danger',
-      icon: 'button',
-    },
-  ];
-  const mailingStudioSubtitle = editingManagedBroadcast
-    ? 'Редактирование'
-    : mailingFooterMeta || mailingHeaderSummary || 'Черновик';
   const mailingDrilldownFooter = (
-    <div
-      className={cn(
-        'broadcast-publish-bar',
-        mailingPublishIssueLabels.length > 0 && !isMailingBusy && 'has-issues',
-      )}
-    >
-      <div
-        className={cn(
-          'broadcast-publish-bar__copy',
-          mailingPublishIssueLabels.length > 0 && !isMailingBusy && 'has-issues',
-        )}
-      >
-        <strong>{mailingFooterTitle}</strong>
-        <small>{mailingFooterMeta || 'Черновик'}</small>
-        {mailingPublishIssueLabels.length > 0 && !isMailingBusy ? (
-          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {mailingPublishIssueActions.map((issue) => (
-              <button
-                key={`mailing-publish-issue-${issue.label}`}
-                type="button"
-                className="broadcast-publish-bar__issue"
-                onClick={issue.onClick}
-              >
-                {issue.label}
-              </button>
-            ))}
-          </span>
-        ) : null}
-      </div>
-      <button
-        type="button"
-        className="button button--ghost broadcast-publish-bar__test"
-        onClick={handleSendBroadcastTest}
-        disabled={isMailingBusy || !mailingTestReady}
-        aria-label={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
-        title={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
-      >
-        <span>{sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}</span>
-      </button>
-      <button
-        type="button"
-        className="button button--accent broadcast-publish-bar__button"
-        onClick={handleSendBroadcast}
-        disabled={mailingSendDisabled}
-      >
-        <span>
-          {isUpdatingManagedBroadcast
-            ? 'Сохраняем...'
-            : sendBroadcastMutation.isPending
-              ? mailingTimingMode === 'now'
-                ? 'Отправляем...'
-                : 'Планируем...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : mailingPrimaryActionLabel}
-        </span>
-      </button>
-    </div>
+    <BroadcastPublishBar
+      title={mailingFooterTitle}
+      meta={mailingFooterMeta}
+      issues={mailingPublishIssueActions}
+      busy={isMailingBusy}
+      testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
+      testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
+      testDisabled={isMailingBusy || !mailingTestReady}
+      primaryLabel={
+        isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : sendBroadcastMutation.isPending
+            ? mailingTimingMode === 'now'
+              ? 'Отправляем...'
+              : 'Планируем...'
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : mailingFooterPrimaryActionLabel
+      }
+      primaryDisabled={mailingSendDisabled}
+      onTest={handleSendBroadcastTest}
+      onPrimary={handleSendBroadcast}
+    />
   );
 
   useEffect(() => {
@@ -9597,58 +9504,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
                         <div className="broadcast-studio-screen__chrome">
-                          <BroadcastStudioHeader
-                            title={
-                              editingManagedBroadcast
-                                ? 'Редактирование автопостинга'
-                                : duplicatedManagedBroadcast
-                                  ? 'Копия автопостинга'
-                                  : 'Новый автопостинг'
-                            }
-                            subtitle={mailingStudioSubtitle}
-                            readyCount={mailingStudioReadyCount}
-                            totalCount={4}
-                            signals={mailingStudioSignals}
-                            busy={isMailingBusy}
-                            editing={
-                              editingManagedBroadcast !== null ||
-                              duplicatedManagedBroadcast !== null
-                            }
+                          <BroadcastWorkspaceChrome
+                            showTabs={showMailingWorkspaceTabs}
+                            value={mailingWorkspaceView}
+                            historyCount={orderedManagedBroadcasts.length}
+                            disabled={isMailingBusy}
+                            showReset={showMailingResetAction}
+                            resetLabel={mailingResetActionLabel}
+                            resetPending={clearBroadcastHandoffMutation.isPending}
+                            onChange={setMailingWorkspaceView}
+                            onReset={handleClearMailingComposer}
                           />
-
-                          {showMailingWorkspaceTabs || showMailingResetAction ? (
-                            <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-                              {showMailingWorkspaceTabs ? (
-                                <BroadcastWorkspaceTabs
-                                  value={mailingWorkspaceView}
-                                  historyCount={orderedManagedBroadcasts.length}
-                                  disabled={isMailingBusy}
-                                  onChange={setMailingWorkspaceView}
-                                />
-                              ) : null}
-
-                              {showMailingResetAction ? (
-                                <button
-                                  type="button"
-                                  className="broadcast-shell-reset"
-                                  onClick={handleClearMailingComposer}
-                                  disabled={isMailingBusy}
-                                  aria-label={
-                                    clearBroadcastHandoffMutation.isPending
-                                      ? 'Сбрасываем'
-                                      : mailingResetActionLabel
-                                  }
-                                  title={
-                                    clearBroadcastHandoffMutation.isPending
-                                      ? 'Сбрасываем'
-                                      : mailingResetActionLabel
-                                  }
-                                >
-                                  <ResetIcon />
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
                         </div>
 
                         {mailingWorkspaceView === 'compose' ? (

@@ -28,13 +28,10 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import {
-  BroadcastStudioHeader,
-  type BroadcastStudioSignal,
-} from '../components/broadcast-studio-header';
+import { BroadcastPublishBar } from '../components/broadcast-publish-bar';
 import {
   BroadcastHistoryFilterTabs,
-  BroadcastWorkspaceTabs,
+  BroadcastWorkspaceChrome,
   countManagedBroadcastHistoryFilters,
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
@@ -48,7 +45,6 @@ import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
-import { ResetIcon } from '../components/ui/reset-icon';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -2036,65 +2032,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const broadcastStudioReadyCount = [
-    broadcastContentReady,
-    true,
-    broadcastScheduleReady && broadcastHasFutureSlots,
-    broadcastButtonDraftValid,
-  ].filter(Boolean).length;
-  const broadcastStudioSignals: BroadcastStudioSignal[] = [
-    {
-      label: 'Контент',
-      value: !broadcastHasPublishableContent
-        ? 'Пусто'
-        : !broadcastMediaReady
-          ? broadcastImagesPreparing
-            ? 'Фото...'
-            : 'Фото'
-          : broadcastImageLabel || editingBroadcastHasVideo
-            ? broadcastImageLabel || 'Видео'
-            : `${normalizedBroadcastText.length}/2000`,
-      tone: broadcastContentReady ? 'ready' : 'pending',
-      icon: 'content',
-    },
-    {
-      label: 'Канал',
-      value: 'Канал',
-      tone: 'ready',
-      icon: 'channel',
-    },
-    {
-      label: 'Когда',
-      value:
-        broadcastTimingMode === 'now'
-          ? 'Сейчас'
-          : broadcastTimingMode === 'cycle'
-            ? 'Цикл'
-            : broadcastPlannerState.futureSlotCount > 0
-              ? formatChannelCountLabel(
-                  broadcastPlannerState.futureSlotCount,
-                  'слот',
-                  'слота',
-                  'слотов',
-                )
-              : 'Не выбрано',
-      tone: broadcastScheduleReady && broadcastHasFutureSlots ? 'ready' : 'pending',
-      icon: 'time',
-    },
-    {
-      label: 'Кнопки',
-      value: broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : 'Без кнопки',
-      tone: broadcastButtonDraftValid
-        ? broadcastHasVisibleButtons
-          ? 'ready'
-          : 'neutral'
-        : 'danger',
-      icon: 'button',
-    },
-  ];
-  const broadcastStudioSubtitle = editingManagedBroadcast
-    ? 'Редактирование'
-    : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик';
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
@@ -2102,69 +2039,41 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : broadcastTimingMode === 'cycle'
         ? 'Запустить'
         : 'Запланировать';
+  const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
+    ? 'Сохранить'
+    : broadcastTimingMode === 'now'
+      ? 'Отправить'
+      : broadcastTimingMode === 'cycle'
+        ? 'Старт'
+        : 'В план';
   const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
     : 'compose';
   const broadcastDrilldownFooter = (
-    <div
-      className={cn(
-        'broadcast-publish-bar',
-        broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy && 'has-issues',
-      )}
-    >
-      <div
-        className={cn(
-          'broadcast-publish-bar__copy',
-          broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy && 'has-issues',
-        )}
-      >
-        <strong>{broadcastFooterTitle}</strong>
-        <small>{broadcastFooterMeta || 'Черновик'}</small>
-        {broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy ? (
-          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
-            {broadcastPublishIssueActions.map((issue) => (
-              <button
-                key={`channel-broadcast-publish-issue-${issue.label}`}
-                type="button"
-                className="broadcast-publish-bar__issue"
-                onClick={issue.onClick}
-              >
-                {issue.label}
-              </button>
-            ))}
-          </span>
-        ) : null}
-      </div>
-      <button
-        type="button"
-        className="button button--ghost broadcast-publish-bar__test"
-        onClick={handleSendChannelBroadcastTest}
-        disabled={isBroadcastBusy || !broadcastTestReady}
-        aria-label={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
-        title={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
-      >
-        <span>{sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}</span>
-      </button>
-      <button
-        type="button"
-        className="button button--accent broadcast-publish-bar__button"
-        onClick={handleSendChannelBroadcast}
-        disabled={broadcastSendDisabled}
-      >
-        <span>
-          {isUpdatingManagedBroadcast
-            ? 'Сохраняем...'
-            : sendBroadcastMutation.isPending
-              ? broadcastTimingMode === 'now'
-                ? 'Отправляем...'
-                : 'Планируем...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : broadcastPrimaryActionLabel}
-        </span>
-      </button>
-    </div>
+    <BroadcastPublishBar
+      title={broadcastFooterTitle}
+      meta={broadcastFooterMeta}
+      issues={broadcastPublishIssueActions}
+      busy={isBroadcastBusy}
+      testLabel={sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
+      testAriaLabel={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
+      testDisabled={isBroadcastBusy || !broadcastTestReady}
+      primaryLabel={
+        isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : sendBroadcastMutation.isPending
+            ? broadcastTimingMode === 'now'
+              ? 'Отправляем...'
+              : 'Планируем...'
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : broadcastFooterPrimaryActionLabel
+      }
+      primaryDisabled={broadcastSendDisabled}
+      onTest={handleSendChannelBroadcastTest}
+      onPrimary={handleSendChannelBroadcast}
+    />
   );
 
   function resetBroadcastPlanner() {
@@ -2939,57 +2848,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
                   <div className="broadcast-studio-screen__chrome">
-                    <BroadcastStudioHeader
-                      title={
-                        editingManagedBroadcast
-                          ? 'Редактирование автопостинга'
-                          : duplicatedManagedBroadcast
-                            ? 'Копия автопостинга'
-                            : 'Новый автопостинг'
-                      }
-                      subtitle={broadcastStudioSubtitle}
-                      readyCount={broadcastStudioReadyCount}
-                      totalCount={4}
-                      signals={broadcastStudioSignals}
-                      busy={isBroadcastBusy}
-                      editing={
-                        editingManagedBroadcast !== null || duplicatedManagedBroadcast !== null
-                      }
+                    <BroadcastWorkspaceChrome
+                      showTabs={showBroadcastWorkspaceTabs}
+                      value={activeBroadcastWorkspaceView}
+                      historyCount={orderedManagedBroadcasts.length}
+                      disabled={isBroadcastBusy}
+                      showReset={showBroadcastResetAction}
+                      resetLabel={broadcastResetActionLabel}
+                      resetPending={clearBroadcastHandoffMutation.isPending}
+                      onChange={setBroadcastWorkspaceView}
+                      onReset={handleClearBroadcastComposer}
                     />
-
-                    {showBroadcastWorkspaceTabs || showBroadcastResetAction ? (
-                      <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-                        {showBroadcastWorkspaceTabs ? (
-                          <BroadcastWorkspaceTabs
-                            value={activeBroadcastWorkspaceView}
-                            historyCount={orderedManagedBroadcasts.length}
-                            disabled={isBroadcastBusy}
-                            onChange={setBroadcastWorkspaceView}
-                          />
-                        ) : null}
-
-                        {showBroadcastResetAction ? (
-                          <button
-                            type="button"
-                            className="broadcast-shell-reset"
-                            onClick={handleClearBroadcastComposer}
-                            disabled={isBroadcastBusy}
-                            aria-label={
-                              clearBroadcastHandoffMutation.isPending
-                                ? 'Сбрасываем'
-                                : broadcastResetActionLabel
-                            }
-                            title={
-                              clearBroadcastHandoffMutation.isPending
-                                ? 'Сбрасываем'
-                                : broadcastResetActionLabel
-                            }
-                          >
-                            <ResetIcon />
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
                   </div>
 
                   {activeBroadcastWorkspaceView === 'compose' ? (
