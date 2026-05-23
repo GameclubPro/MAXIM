@@ -145,7 +145,7 @@ export function BroadcastContentComposer({
     onImagePreparationChange?.(nextState.total > nextState.done);
   }
 
-  async function handleImageFiles(files: FileList | null) {
+  async function handleImageFiles(files: FileList | File[] | null) {
     const selectedFiles = Array.from(files ?? []);
     if (selectedFiles.length === 0) {
       return;
@@ -340,6 +340,7 @@ export function BroadcastContentComposer({
                   disabled={isBusy}
                   ariaLabel={textAriaLabel}
                   className="broadcast-message-card__rich-editor"
+                  onPasteFiles={(files) => void handleImageFiles(files)}
                 />
 
                 {previewButtonRows.length > 0 ? (

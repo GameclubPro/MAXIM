@@ -101,6 +101,11 @@ type BroadcastQuickSlot = {
   slot: string;
   label: string;
 };
+type BroadcastQuickTemplate = {
+  id: string;
+  label: string;
+  slots: string[];
+};
 
 function areSelectionStatesEqual(
   left: BroadcastSchedulePlannerSelectionState | null,
@@ -779,6 +784,23 @@ export function BroadcastSchedulePlanner({
     maxImpact('light');
   }
 
+  function pickQuickScheduleTemplate(template: BroadcastQuickTemplate) {
+    if (disabled || template.slots.length === 0) {
+      return;
+    }
+
+    activateScheduledMode();
+    onChange(template.slots);
+    setPickedDayKeys([]);
+    setActiveDayKey(getBroadcastScheduleDayKey(template.slots[0] ?? anchorNow));
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    setApplyToAllPickedDays(false);
+    setIsConfirmed(true);
+    setCalendarExpanded(false);
+    maxImpact('medium');
+  }
+
   const monthCells = getMonthCells(visibleMonthKey);
   const scheduleReady =
     timingMode === 'now' ||
@@ -786,6 +808,44 @@ export function BroadcastSchedulePlanner({
     (timingMode === 'scheduled' && futureSlotCount > 0);
   const cycleStartInputValue = formatLocalDateTimeInputValue(normalizedCycle.startAt);
   const cycleStartMinValue = formatLocalDateTimeInputValue(new Date(liveNowMs + 30_000));
+  const quickScheduleTemplates: BroadcastQuickTemplate[] = [];
+  if (!calendarOnly && timingMode === 'scheduled' && normalizedValue.length === 0) {
+    const templateBlueprints = [
+      { id: 'three-evenings', label: '3 вечера', count: 3, minutes: 18 * 60, weekdaysOnly: false },
+      { id: 'five-workdays', label: '5 будней', count: 5, minutes: 9 * 60, weekdaysOnly: true },
+      { id: 'seven-days', label: '7 дней', count: 7, minutes: 13 * 60, weekdaysOnly: false },
+    ];
+
+    for (const template of templateBlueprints) {
+      const slots: string[] = [];
+      for (
+        let dayOffset = 0;
+        dayOffset < BROADCAST_SCHEDULE_MAX_DAYS && slots.length < template.count;
+        dayOffset += 1
+      ) {
+        const day = addDays(new Date(liveNowMs), dayOffset);
+        const dayKey = getBroadcastScheduleDayKey(day);
+        const weekDay = new Date(`${dayKey}T12:00:00`).getDay();
+        if (template.weekdaysOnly && (weekDay === 0 || weekDay === 6)) {
+          continue;
+        }
+
+        if (isSlotInPast(dayKey, template.minutes) || isSlotBusy(dayKey, template.minutes)) {
+          continue;
+        }
+
+        slots.push(buildBroadcastScheduleSlotIso(dayKey, template.minutes));
+      }
+
+      if (slots.length === template.count) {
+        quickScheduleTemplates.push({
+          id: template.id,
+          label: template.label,
+          slots,
+        });
+      }
+    }
+  }
 
   return (
     <>
@@ -872,6 +932,22 @@ export function BroadcastSchedulePlanner({
                         disabled={disabled}
                       >
                         {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {quickScheduleTemplates.length > 0 ? (
+                  <div className="broadcast-planner__quick-templates" aria-label="Быстрый план">
+                    {quickScheduleTemplates.map((template) => (
+                      <button
+                        key={template.id}
+                        type="button"
+                        className="broadcast-planner__quick-template"
+                        onClick={() => pickQuickScheduleTemplate(template)}
+                        disabled={disabled}
+                      >
+                        {template.label}
                       </button>
                     ))}
                   </div>

@@ -183,7 +183,7 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signals {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
   gap: 4px;
   overflow: visible;
 }
@@ -647,7 +647,14 @@ body.settings-drilldown-open .toast__close {
   gap: 4px;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot {
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-templates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
   min-width: 0;
   min-height: 29px;
   border: 1px solid rgba(11, 127, 198, 0.16);
@@ -665,7 +672,14 @@ body.settings-drilldown-open .toast__close {
   box-shadow: none;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled {
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
+  border-color: rgba(21, 152, 106, 0.16);
+  background: #edf8f2;
+  color: #13795a;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template:disabled {
   opacity: 0.58;
 }
 
@@ -838,8 +852,13 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .managed-broadcast-card__quick-action {
-  padding: 0 8px;
+  width: 32px;
+  padding: 0;
   font-size: 0.62rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .managed-broadcast-card__quick-action span {
+  display: none;
 }
 
 .settings-drilldown__panel--broadcast-screen .managed-broadcast-card__menu-trigger {

@@ -4427,6 +4427,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     Boolean(mailingVideoSource.mediaPayload);
   const mailingImageLabel =
     mailingImages.length > 1 ? `${mailingImages.length} фото` : mailingImageEnabled ? 'Фото' : null;
+  const mailingMediaSignalLabel = mailingImageLabel ?? (editingMailingHasVideo ? 'Видео' : null);
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
@@ -4483,6 +4484,52 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedMailingButtons),
   );
+  const mailingContentSignalValue = mailingContentReady
+    ? normalizedMailingText && mailingMediaSignalLabel
+      ? 'Текст+медиа'
+      : normalizedMailingText
+        ? 'Текст'
+        : (mailingMediaSignalLabel ?? 'Готов')
+    : mailingImagesPreparing
+      ? 'Фото...'
+      : mailingHasDirectContent
+        ? 'Проверка'
+        : 'Пусто';
+  const mailingAudienceSignalValue =
+    mailingTargetMode === 'all'
+      ? mailingCalendarTargetChatIds.length > 0
+        ? `Все ${mailingCalendarTargetChatIds.length}`
+        : 'Все'
+      : mailingTargetMode === 'selected'
+        ? mailingAudiencePayload.targetChatIds.length > 0
+          ? `${mailingAudiencePayload.targetChatIds.length} чат.`
+          : 'Не выбрано'
+        : 'Текущий';
+  const mailingTimingSignalValue =
+    mailingTimingMode === 'now'
+      ? 'Сейчас'
+      : mailingTimingMode === 'cycle'
+        ? mailingCycleValidationError
+          ? 'Цикл?'
+          : `Цикл ${mailingNormalizedCycle.count}`
+        : mailingPlannerState.futureSlotCount > 0
+          ? `${mailingPlannerState.futureSlotCount} сл.`
+          : 'Без слотов';
+  const mailingButtonsSignalValue = !mailingButtonDraftValid
+    ? 'Ошибка'
+    : mailingHasVisibleButtons
+      ? `${mailingVisibleButtons.length} кноп.`
+      : 'Без кнопок';
+  const mailingHistorySignalValue =
+    mailingHistoryCounts.error > 0
+      ? `Ошибки ${mailingHistoryCounts.error}`
+      : mailingHistoryCounts.future > 0
+        ? `План ${mailingHistoryCounts.future}`
+        : mailingHistoryCounts.active > 0
+          ? `Идут ${mailingHistoryCounts.active}`
+          : orderedManagedBroadcasts.length > 0
+            ? `${orderedManagedBroadcasts.length} запис.`
+            : 'История';
   const mailingPlannerPending = mailingPlannerState.isDaySheetOpen;
   const mailingAudienceReady =
     mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
@@ -4561,6 +4608,60 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
+  const mailingStudioSignals: BroadcastStudioSignal[] = [
+    {
+      label: 'Контент',
+      value: mailingContentSignalValue,
+      tone: mailingContentReady ? 'ready' : mailingHasDirectContent ? 'warning' : 'pending',
+      icon: 'content',
+      onClick: () => setMailingWorkspaceView('compose'),
+    },
+    {
+      label: 'Кому',
+      value: mailingAudienceSignalValue,
+      tone: mailingAudienceReady ? 'ready' : 'danger',
+      icon: 'audience',
+      onClick: () => setMailingWorkspaceView('compose'),
+    },
+    {
+      label: 'Время',
+      value: mailingTimingSignalValue,
+      tone: mailingScheduleReady ? 'ready' : 'pending',
+      icon: 'time',
+      onClick: () => setMailingWorkspaceView('compose'),
+    },
+    {
+      label: 'Кнопки',
+      value: mailingButtonsSignalValue,
+      tone: mailingButtonDraftValid ? (mailingHasVisibleButtons ? 'ready' : 'neutral') : 'danger',
+      icon: 'button',
+      onClick: () => {
+        setMailingWorkspaceView('compose');
+        setMailingButtonsSheetOpen(true);
+      },
+    },
+    {
+      label: 'История',
+      value: mailingHistorySignalValue,
+      tone:
+        mailingHistoryCounts.error > 0
+          ? 'danger'
+          : mailingHistoryCounts.future > 0 || mailingHistoryCounts.active > 0
+            ? 'ready'
+            : 'neutral',
+      icon: 'channel',
+      onClick:
+        showMailingWorkspaceTabs && orderedManagedBroadcasts.length > 0
+          ? () => setMailingWorkspaceView('history')
+          : undefined,
+    },
+  ];
+  const mailingStudioReadyCount = [
+    mailingContentReady,
+    mailingAudienceReady,
+    mailingScheduleReady,
+    mailingButtonDraftValid,
+  ].filter(Boolean).length;
   const mailingFooterTitle = editingManagedBroadcast
     ? 'Сохранить автопостинг'
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
@@ -9504,6 +9605,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
                         <div className="broadcast-studio-screen__chrome">
+                          <BroadcastStudioHeader
+                            title={
+                              editingManagedBroadcast
+                                ? 'Редактирование'
+                                : duplicatedManagedBroadcast
+                                  ? 'Копия автопостинга'
+                                  : 'Автопостинг'
+                            }
+                            subtitle={mailingFooterTitle}
+                            readyCount={mailingStudioReadyCount}
+                            totalCount={4}
+                            signals={mailingStudioSignals}
+                            busy={isMailingBusy}
+                            editing={Boolean(editingManagedBroadcast)}
+                          />
+
                           <BroadcastWorkspaceChrome
                             showTabs={showMailingWorkspaceTabs}
                             value={mailingWorkspaceView}

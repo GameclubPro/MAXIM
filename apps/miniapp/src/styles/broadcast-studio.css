@@ -168,7 +168,7 @@
 
 .broadcast-studio-command__signals {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
   gap: 8px;
 }
 
@@ -3130,7 +3130,7 @@
 }
 
 .broadcast-planner__cycle-presets {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
 }
 
 .broadcast-planner__cycle-field input[type='datetime-local'],

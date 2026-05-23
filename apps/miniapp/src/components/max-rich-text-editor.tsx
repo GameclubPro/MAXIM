@@ -26,6 +26,7 @@ type MaxRichTextEditorProps = {
   disabled?: boolean;
   ariaLabel: string;
   className?: string;
+  onPasteFiles?: (files: File[]) => void;
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
@@ -43,7 +44,16 @@ const BLOCK_TAGS = new Set([
 
 export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichTextEditorProps>(
   function MaxRichTextEditor(
-    { value, onChange, maxLength, placeholder, disabled = false, ariaLabel, className },
+    {
+      value,
+      onChange,
+      maxLength,
+      placeholder,
+      disabled = false,
+      ariaLabel,
+      className,
+      onPasteFiles,
+    },
     ref,
   ) {
     const editorRef = useRef<HTMLDivElement | null>(null);
@@ -300,9 +310,26 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           onPointerUp={syncActiveTools}
           onFocus={syncActiveTools}
           onPaste={(event) => {
+            if (disabled) {
+              return;
+            }
+
             event.preventDefault();
+            const pastedFiles = Array.from(event.clipboardData.files).filter((file) =>
+              file.type.toLowerCase().startsWith('image/'),
+            );
             const pastedHtml = event.clipboardData.getData('text/html');
             const pastedText = event.clipboardData.getData('text/plain');
+            if (pastedFiles.length > 0 && onPasteFiles) {
+              onPasteFiles(pastedFiles);
+              if (pastedText) {
+                insertPlainTextAtCurrentRange(pastedText);
+                emitCurrentMarkdown();
+                syncActiveTools();
+              }
+              return;
+            }
+
             if (!pastedHtml) {
               insertPlainTextAtCurrentRange(pastedText);
               emitCurrentMarkdown();
