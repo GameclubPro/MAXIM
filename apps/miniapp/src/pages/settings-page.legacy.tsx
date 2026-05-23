@@ -368,7 +368,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
+  const { isCompact: isHeaderCompact } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
@@ -4994,7 +4994,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               />
             }
             compact={isHeaderCompact}
-            hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"
             aside={
               showHeaderStatus ? (
@@ -6104,7 +6103,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   <SettingsSectionToggle
                     title="Розыгрыши"
                     summary="Запуск, итоги и реролл в mini app"
-                    status="Апп"
+                    status="Мини"
                     icon="gift"
                     tone="amber"
                     open={expandedSections.giveaway}

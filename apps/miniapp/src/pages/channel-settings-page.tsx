@@ -833,7 +833,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
+  const { isCompact: isHeaderCompact } = useAutoHideHeader();
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
@@ -1994,24 +1994,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardStatus = !draft.commentsEnabled
     ? 'Выкл'
     : draft.commentsModerationEnabled
-      ? 'Модер'
+      ? 'Модерация'
       : 'Вкл';
-  const postSuggestionsEntryLabel = draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Апп' : 'Бот';
+  const postSuggestionsEntryLabel =
+    draft.postSuggestionsEntryMode === 'MINIAPP' ? 'Мини-апп' : 'Бот';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
     ? `${postSuggestionsEntryLabel} · ${draft.postSuggestionsDailyLimit}/24ч`
     : 'Ручной режим';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled
-    ? draft.postSuggestionsEntryMode === 'MINIAPP'
-      ? 'Апп'
-      : 'Бот'
-    : 'Ручн';
+    ? postSuggestionsEntryLabel
+    : 'Ручной';
   const broadcastCardStatus =
     broadcastTimingMode === 'cycle'
       ? 'Цикл'
       : broadcastTimingMode === 'now'
         ? 'Сейчас'
         : broadcastScheduledSlots.length > 0
-          ? 'Календ'
+          ? 'План'
           : broadcastHasVisibleButtons
             ? broadcastVisibleButtonStatus
             : broadcastHasPublishableContent
@@ -2639,7 +2638,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           />
         }
         compact={isHeaderCompact}
-        hidden={isHeaderHidden}
         className="channel-settings-screen__sticky-header"
         aside={
           showHeaderStatus ? (
@@ -3356,7 +3354,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             <SettingsSectionToggle
               title="Розыгрыши"
               summary=""
-              status="Апп"
+              status="Мини"
               icon="gift"
               tone="amber"
               open={expandedSections.giveaway}

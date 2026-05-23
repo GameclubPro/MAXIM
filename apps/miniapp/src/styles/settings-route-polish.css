@@ -4690,3 +4690,307 @@ body.channel-settings-page-open .bottom-nav__item.is-active::after {
 .channel-settings-screen__sticky-header {
   margin-bottom: 10px;
 }
+
+/* 2026 settings finish: native-density rows, readable state chips, and cleaner sheet chrome. */
+body.settings-home-page-open .app-shell,
+body.channel-settings-page-open .app-shell {
+  --bottom-nav-height: 68px;
+  --bottom-nav-offset: 8px;
+  padding-bottom: calc(
+    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 28px
+  );
+}
+
+.settings-sections--chat-home,
+.channel-settings-screen {
+  padding-bottom: 18px;
+}
+
+.settings-sections-shell {
+  padding-bottom: 10px;
+}
+
+.settings-home-group-head {
+  padding: 10px 2px 1px;
+}
+
+.settings-home-group-head::after {
+  background: linear-gradient(90deg, rgba(116, 139, 159, 0.2), transparent 74%);
+}
+
+.settings-home-group-head__title {
+  color: #5f7487;
+  font-size: 0.62rem;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.settings-home-entry .settings-section__toggle,
+.settings-home-entry--priority .settings-section__toggle,
+.settings-home-entry--list .settings-section__toggle,
+.channel-settings-card .settings-section__toggle {
+  grid-template-columns: 34px minmax(0, 1fr) minmax(0, auto) 26px;
+  min-height: 52px;
+  padding: 7px 8px;
+  gap: 8px;
+  border-radius: 16px;
+  border-color: rgba(196, 213, 228, 0.76);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 252, 255, 0.95)),
+    linear-gradient(106deg, var(--settings-entry-soft), transparent 50%);
+  box-shadow:
+    0 8px 18px rgba(24, 55, 83, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.settings-home-entry .settings-section__toggle::before,
+.channel-settings-card .settings-section__toggle::before {
+  opacity: 0.3;
+}
+
+.settings-home-entry .settings-section__toggle::after,
+.channel-settings-card .settings-section__toggle::after {
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  opacity: 0.34;
+}
+
+.settings-home-entry .settings-section__icon-badge,
+.settings-home-entry--priority .settings-section__icon-badge,
+.settings-home-entry--list .settings-section__icon-badge,
+.channel-settings-card .settings-section__icon-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+.settings-home-entry .settings-section__icon-badge svg,
+.channel-settings-card .settings-section__icon-badge svg {
+  width: 17px;
+  height: 17px;
+}
+
+.settings-home-entry .settings-section__toggle-main h3,
+.settings-home-entry--priority .settings-section__toggle-main h3,
+.settings-home-entry--list .settings-section__toggle-main h3,
+.channel-settings-card .settings-section__toggle-main h3 {
+  font-size: 0.86rem;
+  line-height: 1.08;
+  font-weight: 830;
+}
+
+.settings-home-entry .settings-section__status-chip,
+.channel-settings-card .settings-section__status-chip {
+  max-width: min(35vw, 108px);
+  min-width: 28px;
+  min-height: 22px;
+  padding-inline: 7px;
+  border-color: rgba(196, 213, 228, 0.72);
+  background: rgba(255, 255, 255, 0.76);
+  color: color-mix(in srgb, var(--settings-entry-accent) 66%, #223b52 34%);
+  font-size: 0.55rem;
+  font-weight: 830;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+}
+
+.settings-home-entry .settings-section__chevron,
+.channel-settings-card .settings-section__chevron {
+  width: 26px;
+  height: 26px;
+  border-color: rgba(196, 213, 228, 0.7);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.channel-settings-card .settings-section__status-chip {
+  max-width: min(31vw, 112px);
+}
+
+.settings-drilldown {
+  --settings-drilldown-top-offset: max(7px, calc(env(safe-area-inset-top, 0px) + 2px));
+}
+
+.settings-drilldown__panel {
+  border-radius: 22px 22px 0 0;
+  border-color: rgba(132, 159, 184, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(247, 250, 253, 0.975)), #f7fafc;
+  box-shadow:
+    0 20px 54px rgba(18, 38, 61, 0.15),
+    0 8px 24px rgba(18, 38, 61, 0.06);
+}
+
+.settings-drilldown__header {
+  padding: 14px 11px 8px;
+  border-bottom-color: rgba(188, 205, 220, 0.45);
+  background:
+    radial-gradient(100% 150% at 100% 0%, var(--settings-panel-accent-soft), transparent 42%),
+    rgba(255, 255, 255, 0.96);
+}
+
+.settings-drilldown__header::before {
+  top: 6px;
+  width: 32px;
+  height: 3px;
+  opacity: 0.58;
+}
+
+.settings-drilldown__title-wrap {
+  gap: 6px 8px;
+  padding-top: 8px;
+}
+
+.settings-drilldown__title {
+  font-size: 0.96rem;
+}
+
+.settings-drilldown__summary {
+  min-height: 21px;
+  padding: 4px 8px;
+  border-color: rgba(196, 213, 228, 0.7);
+  background: rgba(255, 255, 255, 0.72);
+  color: #486277;
+  font-size: 0.56rem;
+  font-weight: 800;
+}
+
+.settings-drilldown__close {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+.settings-drilldown__content {
+  background: #f7fafc;
+}
+
+.settings-drilldown .settings-section__collapse-inner,
+.settings-drilldown__panel--channel-comments .settings-section__collapse-inner,
+.settings-drilldown__panel--post-suggestions .settings-section__collapse-inner,
+.settings-drilldown__panel--channel-poll .settings-section__collapse-inner,
+.settings-drilldown__panel--channel-giveaway .settings-section__collapse-inner {
+  padding: 8px 8px calc(14px + env(safe-area-inset-bottom, 0px));
+  gap: 7px;
+}
+
+.settings-drilldown .settings-native-toggle,
+.settings-drilldown .channel-settings-toggle-card {
+  min-height: 48px;
+  padding: 8px 9px 8px 10px;
+}
+
+.settings-drilldown .settings-native-toggle__title,
+.settings-drilldown .channel-settings-toggle-card__copy strong {
+  font-size: 0.83rem;
+}
+
+.settings-drilldown .channel-settings-toggle-card__copy > span {
+  display: none;
+}
+
+.settings-drilldown .channel-settings-toggle-card__title-row .channel-settings-hint-anchor {
+  display: inline-flex;
+}
+
+.settings-drilldown .field textarea {
+  min-height: 78px;
+}
+
+.settings-drilldown .field input,
+.settings-drilldown .field select,
+.settings-drilldown .field textarea,
+.settings-drilldown .allowlist-add-row input {
+  font-size: 0.84rem;
+}
+
+.settings-drilldown__footer {
+  padding: 7px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+}
+
+.settings-drilldown__footer-actions {
+  gap: 7px;
+}
+
+.settings-drilldown__footer-actions .button {
+  min-height: 42px;
+  border-radius: 13px;
+  font-size: 0.78rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .settings-drilldown__header {
+  padding-top: 18px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__chrome {
+  gap: 8px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-stage-card {
+  border-radius: 16px;
+}
+
+@media (max-width: 430px) {
+  .settings-home-entry .settings-section__toggle,
+  .settings-home-entry--priority .settings-section__toggle,
+  .settings-home-entry--list .settings-section__toggle,
+  .channel-settings-card .settings-section__toggle {
+    grid-template-columns: 31px minmax(0, 1fr) minmax(0, auto) 24px;
+    min-height: 48px;
+    padding: 6px 7px;
+    gap: 7px;
+  }
+
+  .settings-home-entry .settings-section__icon-badge,
+  .settings-home-entry--priority .settings-section__icon-badge,
+  .settings-home-entry--list .settings-section__icon-badge,
+  .channel-settings-card .settings-section__icon-badge {
+    width: 31px;
+    height: 31px;
+    border-radius: 11px;
+  }
+
+  .settings-home-entry .settings-section__toggle-main h3,
+  .settings-home-entry--priority .settings-section__toggle-main h3,
+  .settings-home-entry--list .settings-section__toggle-main h3,
+  .channel-settings-card .settings-section__toggle-main h3 {
+    font-size: 0.8rem;
+  }
+
+  .settings-home-entry .settings-section__status-chip,
+  .channel-settings-card .settings-section__status-chip {
+    max-width: min(33vw, 92px);
+    min-height: 20px;
+    padding-inline: 6px;
+    font-size: 0.5rem;
+  }
+
+  .settings-drilldown__header {
+    padding: 13px 10px 8px;
+  }
+
+  .settings-drilldown__close {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-width: 380px) {
+  body.settings-home-page-open .app-shell,
+  body.channel-settings-page-open .app-shell {
+    --bottom-nav-height: 60px;
+    padding-bottom: calc(
+      var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 22px
+    );
+  }
+
+  .settings-home-entry .settings-section__status-chip,
+  .channel-settings-card .settings-section__status-chip {
+    max-width: min(32vw, 82px);
+  }
+}
