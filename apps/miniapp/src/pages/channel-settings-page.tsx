@@ -1841,7 +1841,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const pendingBroadcastReviewPayload = pendingBroadcastPublishReview?.payload ?? null;
   const pendingBroadcastReviewFacts = pendingBroadcastReviewPayload
     ? [
-        'Канал',
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingBroadcastReviewPayload)}`,
         pendingBroadcastReviewPayload.buttonEnabled || broadcastSystemButtons.length > 0
           ? `Кнопки · ${formatBroadcastButtonsStatus([
@@ -2067,7 +2066,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
           : broadcastSelectionSummary || 'Автопостинг';
   const broadcastFooterMeta = [
-    'Текущий канал',
     broadcastImageLabel,
     editingBroadcastHasVideo ? 'Видео' : null,
     broadcastHasVisibleButtons ? broadcastVisibleButtonStatus : null,

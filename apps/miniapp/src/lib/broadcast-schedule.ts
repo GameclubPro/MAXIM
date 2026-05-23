@@ -44,8 +44,8 @@ export function createDefaultBroadcastCycleDraft(nowMs = Date.now()): BroadcastC
   return {
     startMode: 'now',
     startAt: new Date(nowMs + 60 * 60 * 1_000).toISOString(),
-    everyHours: BROADCAST_CYCLE_MIN_HOURS,
-    count: 5,
+    everyHours: 24,
+    count: 7,
   };
 }
 

@@ -6,14 +6,19 @@ import {
   buildAgendaEntriesFromCalendarSlots,
 } from '../src/lib/broadcast-planner-agenda';
 import {
+  buildBroadcastQuickScheduleSlots,
   buildFreeWindowsForDay,
+  buildBroadcastSmartScheduleTemplates,
   buildSlotsByDay,
   formatCountLabel,
   getMonthCells,
   getMonthKeys,
   snapMinutesToStep,
 } from '../src/lib/broadcast-planner-time';
-import { buildBroadcastScheduleSlotIso } from '../src/lib/broadcast-schedule';
+import {
+  buildBroadcastScheduleSlotIso,
+  getBroadcastScheduleDayKey,
+} from '../src/lib/broadcast-schedule';
 
 function createManagedBroadcast(
   overrides: Partial<ManagedBroadcastSummary> = {},
@@ -114,6 +119,45 @@ test('calculates planner free windows from occupied slots', () => {
   assert.deepEqual(
     windows.map((window) => window.label),
     ['08:00-09:00', '09:30-12:00', '12:30-20:00', '20:30-22:00'],
+  );
+});
+
+test('builds one-tap quick schedule slots around occupied times', () => {
+  const nowMs = new Date(2026, 4, 6, 10, 0, 0, 0).getTime();
+  const occupiedSuggestedSlot = buildBroadcastScheduleSlotIso('2026-05-06', 11 * 60);
+
+  const slots = buildBroadcastQuickScheduleSlots({
+    nowMs,
+    minimumTimeMs: nowMs + 30_000,
+    occupiedSlots: [occupiedSuggestedSlot],
+  });
+
+  assert.equal(slots.length, 3);
+  assert.equal(
+    slots.some((slot) => slot.slot === occupiedSuggestedSlot),
+    false,
+  );
+});
+
+test('builds smart schedule templates without busy slots', () => {
+  const nowMs = new Date(2026, 4, 6, 10, 0, 0, 0).getTime();
+  const busyPrimeSlot = buildBroadcastScheduleSlotIso('2026-05-06', 18 * 60);
+
+  const templates = buildBroadcastSmartScheduleTemplates({
+    nowMs,
+    minimumTimeMs: nowMs + 30_000,
+    occupiedSlots: [busyPrimeSlot],
+  });
+  const prime = templates.find((template) => template.id === 'prime-3');
+  const workdays = templates.find((template) => template.id === 'workdays-5');
+
+  assert.equal(prime?.label, 'Прайм');
+  assert.equal(prime?.meta, '3×18:00');
+  assert.equal(getBroadcastScheduleDayKey(prime?.slots[0] ?? ''), '2026-05-07');
+  assert.equal(workdays?.slots.length, 5);
+  assert.equal(
+    workdays?.slots.some((slot) => [0, 6].includes(new Date(slot).getDay())),
+    false,
   );
 });
 

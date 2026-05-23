@@ -656,7 +656,7 @@ body.settings-drilldown-open .toast__close {
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot,
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
   min-width: 0;
-  min-height: 29px;
+  min-height: 32px;
   border: 1px solid rgba(11, 127, 198, 0.16);
   border-radius: 8px;
   background: #eef8fd;
@@ -673,9 +673,31 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
+  display: grid;
+  place-items: center;
+  gap: 2px;
   border-color: rgba(21, 152, 106, 0.16);
   background: #edf8f2;
   color: #13795a;
+  line-height: 1;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template strong,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template small {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template strong {
+  font-size: 0.58rem;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template small {
+  font-size: 0.49rem;
+  opacity: 0.72;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled,
@@ -1177,18 +1199,49 @@ body.settings-drilldown-open .toast__close {
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-message-card {
-    min-height: 104px;
+    min-height: 80px;
   }
 
   .settings-drilldown__panel--broadcast-screen
     .broadcast-content-composer.is-empty
     .broadcast-message-card {
-    min-height: 86px;
+    min-height: 58px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen
+    .broadcast-content-composer.is-empty
+    .broadcast-message-card__bubble {
+    min-height: 46px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen
+    .broadcast-message-card__rich-editor
+    .max-rich-text-editor__surface {
+    min-height: 28px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-message-card__buttons {
+    gap: 4px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-message-card__button {
+    min-height: 26px;
+    border-radius: 8px;
+    font-size: 0.62rem;
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-content-composer__modifier {
-    min-height: 26px;
+    min-height: 24px;
     font-size: 0.6rem;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-content-composer__bar {
+    min-height: 28px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-content-composer__tool {
+    width: 28px;
+    height: 28px;
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-audience-card__trigger {
@@ -1197,6 +1250,11 @@ body.settings-drilldown-open .toast__close {
 
   .settings-drilldown__panel--broadcast-screen .broadcast-planner__mode-card {
     padding: 4px;
+  }
+
+  .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot,
+  .settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-template {
+    min-height: 30px;
   }
 
   .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar {

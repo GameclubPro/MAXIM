@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createDefaultBroadcastCycleDraft,
   findBroadcastSlotConflicts,
   formatBroadcastCycleIntervalLabel,
   getBroadcastCycleValidationError,
@@ -11,6 +12,15 @@ import {
 } from '../src/lib/broadcast-schedule';
 
 const NOW_MS = Date.parse('2026-05-06T10:00:00.000Z');
+
+test('defaults cycle drafts to a channel-safe daily cadence', () => {
+  assert.deepEqual(createDefaultBroadcastCycleDraft(NOW_MS), {
+    startMode: 'now',
+    startAt: '2026-05-06T11:00:00.000Z',
+    everyHours: 24,
+    count: 7,
+  });
+});
 
 test('normalizes cycle draft limits and preserves a valid delayed start', () => {
   const normalized = normalizeBroadcastCycleDraft(

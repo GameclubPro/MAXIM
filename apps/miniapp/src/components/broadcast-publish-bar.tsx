@@ -39,7 +39,7 @@ export function BroadcastPublishBar({
     <div className={cn('broadcast-publish-bar', showIssues && 'has-issues')}>
       <div className={cn('broadcast-publish-bar__copy', showIssues && 'has-issues')}>
         <strong>{title}</strong>
-        <small>{meta || 'Черновик'}</small>
+        {meta ? <small>{meta}</small> : null}
         {showIssues ? (
           <span className="broadcast-publish-bar__issues" aria-label="Не готово">
             {issues.map((issue) => (

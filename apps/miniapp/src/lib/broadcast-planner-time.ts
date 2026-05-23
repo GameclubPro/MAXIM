@@ -1,6 +1,8 @@
 import {
+  BROADCAST_SCHEDULE_MAX_DAYS,
   BROADCAST_SCHEDULE_STEP_MINUTES,
   buildBroadcastScheduleSlotIso,
+  getBroadcastSlotInstantKey,
   getBroadcastScheduleDayKey,
   sortAndUniqueBroadcastSlots,
 } from './broadcast-schedule';
@@ -18,6 +20,34 @@ export type BroadcastFreeWindow = {
   endMinutes: number;
 };
 
+export type BroadcastQuickScheduleSlot = {
+  slot: string;
+  label: string;
+};
+
+export type BroadcastSmartScheduleTemplate = {
+  id: string;
+  label: string;
+  meta: string;
+  slots: string[];
+};
+
+type BroadcastScheduleTemplateBlueprint = {
+  id: string;
+  label: string;
+  count: number;
+  minutes: number;
+  weekdayMode: 'any' | 'workdays';
+};
+
+type BroadcastSmartScheduleOptions = {
+  nowMs: number;
+  minimumTimeMs?: number;
+  occupiedSlots?: readonly string[];
+  maxDays?: number;
+  limit?: number;
+};
+
 export const BROADCAST_PLANNER_SLOT_GROUPS: BroadcastPlannerSlotGroup[] = [
   { label: 'Ночь', start: 0, end: 6 * 60 },
   { label: 'Утро', start: 6 * 60, end: 12 * 60 },
@@ -29,6 +59,12 @@ export const BROADCAST_PLANNER_NOW_REFRESH_MS = 30_000;
 
 const FREE_WINDOW_START_MINUTES = 8 * 60;
 const FREE_WINDOW_END_MINUTES = 22 * 60;
+const QUICK_SCHEDULE_SLOT_LIMIT = 3;
+const SMART_SCHEDULE_TEMPLATE_BLUEPRINTS: BroadcastScheduleTemplateBlueprint[] = [
+  { id: 'prime-3', label: 'Прайм', count: 3, minutes: 18 * 60, weekdayMode: 'any' },
+  { id: 'workdays-5', label: 'Будни', count: 5, minutes: 9 * 60, weekdayMode: 'workdays' },
+  { id: 'daily-7', label: '7 дней', count: 7, minutes: 13 * 60, weekdayMode: 'any' },
+];
 
 export function addDays(value: Date, days: number): Date {
   return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);
@@ -204,6 +240,120 @@ export function getSuggestedMinutes(dayKey: string, minimumTimeMs: number): numb
       }),
     ),
   ).slice(0, 4);
+}
+
+function getScheduleWindowEnd(nowMs: number, maxDays: number): Date {
+  return endOfMonth(addDays(new Date(nowMs), Math.max(0, maxDays - 1)));
+}
+
+function buildOccupiedInstantSet(occupiedSlots: readonly string[] = []): Set<string> {
+  return new Set(sortAndUniqueBroadcastSlots([...occupiedSlots]).map(getBroadcastSlotInstantKey));
+}
+
+function isCandidateSlotAvailable(
+  dayKey: string,
+  minutes: number,
+  minimumTimeMs: number,
+  occupiedInstantSet: Set<string>,
+): boolean {
+  const slot = buildBroadcastScheduleSlotIso(dayKey, minutes);
+  const slotTime = new Date(slot).getTime();
+  return (
+    Number.isFinite(slotTime) &&
+    slotTime >= minimumTimeMs &&
+    !occupiedInstantSet.has(getBroadcastSlotInstantKey(slot))
+  );
+}
+
+function shouldUseTemplateDay(
+  dayKey: string,
+  template: BroadcastScheduleTemplateBlueprint,
+): boolean {
+  if (template.weekdayMode === 'any') {
+    return true;
+  }
+
+  const weekDay = new Date(`${dayKey}T12:00:00`).getDay();
+  return weekDay !== 0 && weekDay !== 6;
+}
+
+export function buildBroadcastQuickScheduleSlots({
+  nowMs,
+  minimumTimeMs = nowMs + 30_000,
+  occupiedSlots = [],
+  maxDays = BROADCAST_SCHEDULE_MAX_DAYS,
+  limit = QUICK_SCHEDULE_SLOT_LIMIT,
+}: BroadcastSmartScheduleOptions): BroadcastQuickScheduleSlot[] {
+  const occupiedInstantSet = buildOccupiedInstantSet(occupiedSlots);
+  const windowEnd = getScheduleWindowEnd(nowMs, maxDays);
+  const result: BroadcastQuickScheduleSlot[] = [];
+
+  for (let dayOffset = 0; dayOffset < maxDays && result.length < limit; dayOffset += 1) {
+    const dayKey = getBroadcastScheduleDayKey(addDays(new Date(nowMs), dayOffset));
+    if (startOfDay(new Date(`${dayKey}T12:00:00`)).getTime() > windowEnd.getTime()) {
+      break;
+    }
+
+    for (const minutes of getSuggestedMinutes(dayKey, minimumTimeMs)) {
+      if (result.length >= limit) {
+        break;
+      }
+
+      if (!isCandidateSlotAvailable(dayKey, minutes, minimumTimeMs, occupiedInstantSet)) {
+        continue;
+      }
+
+      result.push({
+        slot: buildBroadcastScheduleSlotIso(dayKey, minutes),
+        label: `${formatDayChipLabel(dayKey)} ${formatMinuteLabel(minutes)}`,
+      });
+    }
+  }
+
+  return result;
+}
+
+export function buildBroadcastSmartScheduleTemplates({
+  nowMs,
+  minimumTimeMs = nowMs + 30_000,
+  occupiedSlots = [],
+  maxDays = BROADCAST_SCHEDULE_MAX_DAYS,
+}: Omit<BroadcastSmartScheduleOptions, 'limit'>): BroadcastSmartScheduleTemplate[] {
+  const occupiedInstantSet = buildOccupiedInstantSet(occupiedSlots);
+  const windowEnd = getScheduleWindowEnd(nowMs, maxDays);
+  const templates: BroadcastSmartScheduleTemplate[] = [];
+
+  for (const template of SMART_SCHEDULE_TEMPLATE_BLUEPRINTS) {
+    const slots: string[] = [];
+
+    for (let dayOffset = 0; dayOffset < maxDays && slots.length < template.count; dayOffset += 1) {
+      const dayKey = getBroadcastScheduleDayKey(addDays(new Date(nowMs), dayOffset));
+      if (startOfDay(new Date(`${dayKey}T12:00:00`)).getTime() > windowEnd.getTime()) {
+        break;
+      }
+
+      if (!shouldUseTemplateDay(dayKey, template)) {
+        continue;
+      }
+
+      if (!isCandidateSlotAvailable(dayKey, template.minutes, minimumTimeMs, occupiedInstantSet)) {
+        continue;
+      }
+
+      slots.push(buildBroadcastScheduleSlotIso(dayKey, template.minutes));
+    }
+
+    if (slots.length === template.count) {
+      templates.push({
+        id: template.id,
+        label: template.label,
+        meta: `${template.count}×${formatMinuteLabel(template.minutes)}`,
+        slots,
+      });
+    }
+  }
+
+  return templates;
 }
 
 function getSlotMinutes(slot: string): number | null {

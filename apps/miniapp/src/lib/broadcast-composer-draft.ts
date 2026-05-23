@@ -290,15 +290,22 @@ export async function loadBroadcastComposerDraftAsync(
 }
 
 export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): boolean {
+  const hasButtonDraft = draft.buttons.some((button) => button.text.trim() || button.url.trim());
+  const hasImageDraft =
+    draft.images.length > 0 || draft.imageEnabled || Boolean(draft.imageBase64.trim());
+  const hasSchedule =
+    draft.timingMode === 'scheduled'
+      ? draft.scheduledSlots.length > 0
+      : draft.timingMode === 'cycle';
+
   return (
     !draft.text.trim() &&
     draft.targetMode === 'current' &&
     draft.targetChatIds.length <= 1 &&
     draft.lastScopedTargetMode === 'current' &&
-    draft.buttons.length === 0 &&
-    draft.images.length === 0 &&
-    draft.timingMode === 'scheduled' &&
-    draft.scheduledSlots.length === 0
+    !hasButtonDraft &&
+    !hasImageDraft &&
+    !hasSchedule
   );
 }
 
