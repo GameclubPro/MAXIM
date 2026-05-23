@@ -9,6 +9,8 @@ export type BroadcastStudioSignal = {
   value: string;
   tone?: BroadcastStudioSignalTone;
   icon?: BroadcastStudioSignalIcon;
+  onClick?: () => void;
+  disabled?: boolean;
 };
 
 type BroadcastStudioHeaderProps = {
@@ -147,21 +149,48 @@ export function BroadcastStudioHeader({
       </div>
 
       <div className="broadcast-studio-command__signals">
-        {signals.map((signal, index) => (
-          <span
-            key={`${signal.label}-${signal.value}-${index}`}
-            className={cn('broadcast-studio-command__signal', `is-${signal.tone ?? 'neutral'}`)}
-            aria-label={`${signal.label}: ${signal.value}`}
-          >
-            <span className="broadcast-studio-command__signal-icon">
-              <BroadcastSignalIcon icon={signal.icon ?? 'content'} />
+        {signals.map((signal, index) => {
+          const content = (
+            <>
+              <span className="broadcast-studio-command__signal-icon">
+                <BroadcastSignalIcon icon={signal.icon ?? 'content'} />
+              </span>
+              <span className="broadcast-studio-command__signal-copy">
+                <span className="broadcast-studio-command__signal-label">{signal.label}</span>
+                <strong>{signal.value}</strong>
+              </span>
+            </>
+          );
+          const signalClassName = cn(
+            'broadcast-studio-command__signal',
+            `is-${signal.tone ?? 'neutral'}`,
+            signal.onClick && 'is-action',
+          );
+          const signalLabel = `${signal.label}: ${signal.value}`;
+
+          return signal.onClick ? (
+            <button
+              key={`${signal.label}-${signal.value}-${index}`}
+              type="button"
+              className={signalClassName}
+              onClick={signal.onClick}
+              disabled={busy || signal.disabled}
+              aria-label={signalLabel}
+              title={signalLabel}
+            >
+              {content}
+            </button>
+          ) : (
+            <span
+              key={`${signal.label}-${signal.value}-${index}`}
+              className={signalClassName}
+              aria-label={signalLabel}
+              title={signalLabel}
+            >
+              {content}
             </span>
-            <span className="broadcast-studio-command__signal-copy">
-              <span className="broadcast-studio-command__signal-label">{signal.label}</span>
-              <strong>{signal.value}</strong>
-            </span>
-          </span>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

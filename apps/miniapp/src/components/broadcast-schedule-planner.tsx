@@ -97,6 +97,10 @@ export type BroadcastSchedulePlannerSelectionState = {
 };
 
 type BroadcastScheduleSheetMode = 'time' | 'agenda';
+type BroadcastQuickSlot = {
+  slot: string;
+  label: string;
+};
 
 function areSelectionStatesEqual(
   left: BroadcastSchedulePlannerSelectionState | null,
@@ -728,6 +732,53 @@ export function BroadcastSchedulePlanner({
     maxImpact('soft');
   }
 
+  const quickScheduleSlots: BroadcastQuickSlot[] = [];
+  if (!calendarOnly && timingMode === 'scheduled' && normalizedValue.length === 0) {
+    const cursor = new Date(liveNowMs);
+    for (
+      let dayOffset = 0;
+      dayOffset < BROADCAST_SCHEDULE_MAX_DAYS && quickScheduleSlots.length < 3;
+      dayOffset += 1
+    ) {
+      const dayKey = getBroadcastScheduleDayKey(addDays(cursor, dayOffset));
+      if (startOfDay(new Date(`${dayKey}T12:00:00`)).getTime() > windowEnd.getTime()) {
+        break;
+      }
+
+      for (const minutes of getSuggestedMinutes(dayKey, minimumTime)) {
+        if (quickScheduleSlots.length >= 3) {
+          break;
+        }
+
+        if (isSlotInPast(dayKey, minutes) || isSlotBusy(dayKey, minutes)) {
+          continue;
+        }
+
+        quickScheduleSlots.push({
+          slot: buildBroadcastScheduleSlotIso(dayKey, minutes),
+          label: `${formatDayChipLabel(dayKey)} ${formatMinuteLabel(minutes)}`,
+        });
+      }
+    }
+  }
+
+  function pickQuickScheduleSlot(slot: string) {
+    if (disabled) {
+      return;
+    }
+
+    activateScheduledMode();
+    onChange([slot]);
+    setPickedDayKeys([]);
+    setActiveDayKey(getBroadcastScheduleDayKey(slot));
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    setApplyToAllPickedDays(false);
+    setIsConfirmed(true);
+    setCalendarExpanded(false);
+    maxImpact('light');
+  }
+
   const monthCells = getMonthCells(visibleMonthKey);
   const scheduleReady =
     timingMode === 'now' ||
@@ -809,6 +860,22 @@ export function BroadcastSchedulePlanner({
                     {scheduleStatusSummary || scheduleStatusLabel}
                   </span>
                 </div>
+
+                {quickScheduleSlots.length > 0 ? (
+                  <div className="broadcast-planner__quick-slots" aria-label="Быстрое время">
+                    {quickScheduleSlots.map((option) => (
+                      <button
+                        key={option.slot}
+                        type="button"
+                        className="broadcast-planner__quick-slot"
+                        onClick={() => pickQuickScheduleSlot(option.slot)}
+                        disabled={disabled}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               {timingMode === 'scheduled' && scheduledDayCards.length > 0 ? (

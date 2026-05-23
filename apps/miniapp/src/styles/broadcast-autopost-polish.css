@@ -106,11 +106,150 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__chrome {
-  gap: 0;
+  gap: 5px;
   padding: 5px 7px;
   border-bottom-color: rgba(132, 152, 169, 0.14);
   background: rgba(243, 246, 248, 0.98);
   box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command {
+  display: grid;
+  gap: 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__hero {
+  display: none;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy {
+  gap: 0;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy strong {
+  overflow: hidden;
+  color: var(--broadcast-polish-ink);
+  font-size: 0.78rem;
+  font-weight: 920;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy small,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__score {
+  min-width: 38px;
+  min-height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(21, 152, 106, 0.2);
+  border-radius: 999px;
+  background: #e1f5ed;
+  color: #13795a;
+  padding: 0 8px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__score strong {
+  font-size: 0.64rem;
+  line-height: 1;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__meter {
+  display: none;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(111, 132, 150, 0.14);
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__meter span {
+  background: linear-gradient(90deg, #0b7fc6, #15986a);
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  overflow: visible;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal {
+  min-width: 0;
+  min-height: 27px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--broadcast-polish-line);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--broadcast-polish-muted);
+  padding: 0 5px;
+  font: inherit;
+  text-align: center;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-action {
+  cursor: pointer;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-icon {
+  display: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-copy,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
+  display: block;
+  overflow: hidden;
+  color: var(--broadcast-polish-ink);
+  font-size: 0.58rem;
+  font-weight: 920;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-ready {
+  border-color: rgba(21, 152, 106, 0.18);
+  background: #e7f7f0;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-warning {
+  border-color: rgba(196, 122, 24, 0.22);
+  background: #fff5df;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-danger {
+  border-color: rgba(204, 70, 97, 0.22);
+  background: #fff0f3;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-pending {
+  background: #eef4f7;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-shell__topbar {
@@ -500,6 +639,34 @@ body.settings-drilldown-open .toast__close {
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__mode-state.is-ready {
   background: #daf3eb;
   color: #13795a;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot {
+  min-width: 0;
+  min-height: 29px;
+  border: 1px solid rgba(11, 127, 198, 0.16);
+  border-radius: 8px;
+  background: #eef8fd;
+  color: var(--broadcast-polish-accent-strong);
+  padding: 0 6px;
+  overflow: hidden;
+  font: inherit;
+  font-size: 0.58rem;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__quick-slot:disabled {
+  opacity: 0.58;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-planner__target-chip {

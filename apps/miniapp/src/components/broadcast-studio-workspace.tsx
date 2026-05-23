@@ -137,7 +137,7 @@ export function BroadcastWorkspaceTabs({
       }}
       ariaLabel="Раздел автопостинга"
       options={[
-        { value: 'compose', label: 'Создать' },
+        { value: 'compose', label: 'Пост' },
         { value: 'calendar', label: 'План' },
         { value: 'history', label: 'История', count: historyCount },
       ]}
