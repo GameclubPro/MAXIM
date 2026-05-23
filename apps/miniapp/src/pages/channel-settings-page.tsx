@@ -1936,13 +1936,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastTimingMode === 'now' ||
     (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
     broadcastCalendarScheduleReady;
-  const broadcastPublishReady =
-    broadcastContentReady &&
-    broadcastScheduleReady &&
-    broadcastButtonDraftValid &&
-    broadcastHasFutureSlots;
   const broadcastTestReady = broadcastContentReady && broadcastButtonDraftValid;
-  const broadcastSendDisabled = isBroadcastBusy || !broadcastPublishReady;
+  const broadcastSendDisabled = isBroadcastBusy;
   const broadcastPublishIssueLabels = [
     !broadcastHasPublishableContent ? 'Контент' : null,
     broadcastHasPublishableContent && !broadcastMediaReady ? 'Фото' : null,

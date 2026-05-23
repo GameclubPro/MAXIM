@@ -4498,14 +4498,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingTimingMode === 'now' ||
     (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
     mailingCalendarScheduleReady;
-  const mailingPublishReady =
-    mailingContentReady &&
-    mailingAudienceReady &&
-    mailingScheduleReady &&
-    mailingButtonDraftValid &&
-    mailingHasFutureSlots;
   const mailingTestReady = mailingContentReady && mailingButtonDraftValid;
-  const mailingSendDisabled = isMailingBusy || !mailingPublishReady;
+  const mailingSendDisabled = isMailingBusy;
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Контент' : null,
     mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
