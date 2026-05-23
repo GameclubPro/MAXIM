@@ -647,13 +647,37 @@ function resolvePostPinPositions(
       messageId: post.messageId,
       label: `#${index + 1}`,
       value: formatCompactCount(views),
-      detail: `${formatPostDateTime(post.publishedAt)} · ${formatCompactCount(
-        views,
-      )} просмотров · ${formatCount(post.reactions)} реакций`,
+      detail: `${formatCompactCount(views)} просм. · ${formatCompactCount(
+        post.reactions,
+      )} р.`,
       x: bestAnchor.x,
       tone: index === 0 ? 'accent' : 'neutral',
     };
   });
+}
+
+function resolveActivePostPin(
+  pins: ChartPostPin[],
+  activeX: number | null,
+  slotWidth: number,
+): ChartPostPin | null {
+  if (pins.length === 0 || activeX === null) {
+    return null;
+  }
+
+  const threshold = clamp(slotWidth * 0.52, 12, 28);
+  let closestPin: ChartPostPin | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (const pin of pins) {
+    const distance = Math.abs(pin.x - activeX);
+    if (distance < closestDistance) {
+      closestPin = pin;
+      closestDistance = distance;
+    }
+  }
+
+  return closestPin && closestDistance <= threshold ? closestPin : null;
 }
 
 function buildAudienceAreaPath(
@@ -1063,7 +1087,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.72, 26, 40);
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
-  const activeParticipantsLabelWidth = Math.max(58, activeParticipantsLabel.length * 7 + 18);
   const activeNet = activePoint ? activePoint.joined - activePoint.left : 0;
   const maxMembershipActivity = Math.max(
     ...chart.points.map((point) => point.joined + point.left),
@@ -1078,6 +1101,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     stats.official.content.topPosts,
     chart.points.map((point) => ({ at: point.at, x: point.x })),
   );
+  const activePostPin = resolveActivePostPin(postPins, activePoint?.x ?? null, slotWidth);
   const activeGuideLabel = activePoint
     ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
         activePoint.participantsCount,
@@ -1085,16 +1109,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         activePoint.left,
       )} ушли, баланс ${formatSignedCount(activeNet)}`
     : 'Данные по аудитории недоступны';
-  const scrubberX = activePoint ? clamp((activePoint.x / 320) * 100, 15, 85) : 50;
-  const scrubberStyle = { '--scrubber-x': `${scrubberX}%` } as CSSProperties;
-  const calloutX = activePoint
-    ? clamp(
-        activePoint.x - activeParticipantsLabelWidth / 2,
-        chart.leftPad,
-        320 - chart.rightPad - activeParticipantsLabelWidth,
-      )
-    : 0;
-  const calloutY = activePoint ? clamp(activePoint.y - 36, 8, chart.dividerY - 28) : 0;
+  const tooltipX = activePoint ? clamp((activePoint.x / 320) * 100, 15, 85) : 50;
+  const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
 
   return (
     <div className="channel-stats-graph">
@@ -1165,7 +1181,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             }}
           >
             {activePoint ? (
-              <div className="channel-stats-graph__scrubber" style={scrubberStyle}>
+              <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
                 <strong>{activeParticipantsLabel}</strong>
                 <span>
@@ -1174,6 +1190,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 </span>
                 {activePreviousPoint ? (
                   <em>Прошлый: {formatCount(activePreviousPoint.participantsCount)}</em>
+                ) : null}
+                {activePostPin ? (
+                  <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
+                    {activePostPin.label} · {activePostPin.detail}
+                  </em>
                 ) : null}
               </div>
             ) : null}
@@ -1332,15 +1353,14 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               {postPins.map((pin) => (
                 <g
                   key={pin.messageId}
-                  className={`channel-stats-graph__post-pin channel-stats-graph__post-pin--${pin.tone}`}
+                  className={`channel-stats-graph__post-marker channel-stats-graph__post-marker--${
+                    pin.tone
+                  } ${activePostPin?.messageId === pin.messageId ? 'is-active' : ''}`}
                   transform={`translate(${pin.x.toFixed(2)} ${chart.eventRailY - 17})`}
                 >
-                  <line x1="0" y1="8" x2="0" y2="17" />
-                  <circle cx="0" cy="5.5" r="5.5" />
-                  <text x="0" y="8.5" textAnchor="middle">
-                    {pin.label.replace('#', '')}
-                  </text>
-                  <title>{pin.detail}</title>
+                  <title>{`${pin.label} · ${pin.detail}`}</title>
+                  <line x1="0" y1="9" x2="0" y2="17" />
+                  <circle cx="0" cy="5" r="4.5" />
                 </g>
               ))}
               {graphMarkers.map((marker) => (
@@ -1380,26 +1400,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                     />
                   ))
                 : null}
-              {activePoint ? (
-                <g>
-                  <rect
-                    x={calloutX}
-                    y={calloutY}
-                    width={activeParticipantsLabelWidth}
-                    height="24"
-                    rx="12"
-                    className="channel-stats-graph__callout"
-                  />
-                  <text
-                    x={calloutX + activeParticipantsLabelWidth / 2}
-                    y={calloutY + 16}
-                    textAnchor="middle"
-                    className="channel-stats-graph__callout-text"
-                  >
-                    {activeParticipantsLabel}
-                  </text>
-                </g>
-              ) : null}
             </svg>
           </div>
 
@@ -1474,17 +1474,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeCumulativeCompactLabel = formatCompactCount(
     activeBar?.cumulativeViews ?? chart.cumulativeMax,
   );
-  const activeViewsLabelWidth = Math.max(58, activeViewsLabel.length * 7 + 18);
-  const scrubberX = activeBar ? clamp((activeBar.x / 320) * 100, 15, 85) : 50;
-  const scrubberStyle = { '--scrubber-x': `${scrubberX}%` } as CSSProperties;
-  const calloutX = activeBar
-    ? clamp(
-        activeBar.x - activeViewsLabelWidth / 2,
-        chart.leftPad,
-        320 - chart.rightPad - activeViewsLabelWidth,
-      )
-    : 0;
-  const calloutY = activeBar ? clamp(activeBar.y - 34, 8, chart.baselineY - 28) : 0;
+  const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
+  const tooltipX = activeBar ? clamp((activeBar.x / 320) * 100, 15, 85) : 50;
+  const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
         activeBar.views,
@@ -1557,12 +1549,17 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             }}
           >
             {activeBar ? (
-              <div className="channel-stats-graph__scrubber" style={scrubberStyle}>
+              <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
                 <strong>{activeViewsLabel}</strong>
                 <span>Накоплено {activeCumulativeCompactLabel}</span>
                 {activePreviousBar ? (
                   <em>Прошлый: {formatCompactCount(activePreviousBar.views)}</em>
+                ) : null}
+                {activePostPin ? (
+                  <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
+                    {activePostPin.label} · {activePostPin.detail}
+                  </em>
                 ) : null}
               </div>
             ) : null}
@@ -1714,37 +1711,16 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               {postPins.map((pin) => (
                 <g
                   key={pin.messageId}
-                  className={`channel-stats-graph__post-pin channel-stats-graph__post-pin--${pin.tone}`}
+                  className={`channel-stats-graph__post-marker channel-stats-graph__post-marker--${
+                    pin.tone
+                  } ${activePostPin?.messageId === pin.messageId ? 'is-active' : ''}`}
                   transform={`translate(${pin.x.toFixed(2)} ${chart.eventRailY - 17})`}
                 >
-                  <line x1="0" y1="8" x2="0" y2="17" />
-                  <circle cx="0" cy="5.5" r="5.5" />
-                  <text x="0" y="8.5" textAnchor="middle">
-                    {pin.label.replace('#', '')}
-                  </text>
-                  <title>{pin.detail}</title>
+                  <title>{`${pin.label} · ${pin.detail}`}</title>
+                  <line x1="0" y1="9" x2="0" y2="17" />
+                  <circle cx="0" cy="5" r="4.5" />
                 </g>
               ))}
-              {activeBar ? (
-                <g>
-                  <rect
-                    x={calloutX}
-                    y={calloutY}
-                    width={activeViewsLabelWidth}
-                    height="24"
-                    rx="12"
-                    className="channel-stats-graph__callout channel-stats-graph__callout--views"
-                  />
-                  <text
-                    x={calloutX + activeViewsLabelWidth / 2}
-                    y={calloutY + 16}
-                    textAnchor="middle"
-                    className="channel-stats-graph__callout-text"
-                  >
-                    {activeViewsLabel}
-                  </text>
-                </g>
-              ) : null}
             </svg>
           </div>
 
