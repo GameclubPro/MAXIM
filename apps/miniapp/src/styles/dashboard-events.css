@@ -3630,3 +3630,462 @@ body.events-page-open .app-shell {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* 2026 events pass: denser native screens with stable, scan-first blocks. */
+body.events-page-open .app-shell {
+  --bottom-nav-height: 62px;
+  --bottom-nav-offset: 5px;
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 42px);
+}
+
+.events-screen {
+  gap: 8px;
+  max-width: 600px;
+}
+
+.events-stage {
+  border-bottom-right-radius: 14px;
+  border-bottom-left-radius: 14px;
+  box-shadow: 0 8px 18px rgba(20, 45, 68, 0.045);
+}
+
+.events-stage__appbar-bar {
+  min-height: calc(var(--app-safe-top) + 48px);
+  gap: 8px;
+  padding: calc(var(--app-safe-top) + 5px) 10px 6px;
+}
+
+.events-stage__back {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+
+.events-stage__entity-avatar {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 11px;
+}
+
+.events-stage__appbar-copy strong {
+  font-size: 0.88rem;
+}
+
+.events-stage__appbar-label {
+  font-size: 0.62rem;
+}
+
+.events-stage__panel {
+  gap: 7px;
+  padding: 6px 10px 10px;
+}
+
+.events-primary-tabs {
+  border-radius: 12px;
+}
+
+.events-primary-tabs__track {
+  gap: 3px;
+}
+
+.events-primary-tab {
+  min-height: 32px;
+  gap: 6px;
+  border-radius: 9px;
+}
+
+.events-primary-tab__icon {
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
+}
+
+.events-primary-tab__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.events-primary-tab__label {
+  font-size: 0.66rem;
+}
+
+.events-dashboard {
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.events-dashboard__head {
+  gap: 7px;
+}
+
+.events-dashboard__head-copy strong {
+  font-size: 0.86rem;
+}
+
+.events-dashboard__range {
+  width: 132px;
+  border-radius: 12px;
+}
+
+.events-dashboard__range .segmented-control__item {
+  min-height: 27px;
+  border-radius: 9px;
+  font-size: 0.62rem;
+}
+
+.events-dashboard__body,
+.events-dashboard__activity {
+  border-radius: 10px;
+}
+
+.events-dashboard__body--moderation {
+  grid-template-columns: minmax(0, 1fr) minmax(104px, 0.72fr);
+}
+
+.events-dashboard__hero,
+.events-dashboard__activity-balance {
+  min-height: 64px;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.events-dashboard__hero small,
+.events-dashboard__activity-balance small,
+.events-dashboard__flow-card small,
+.events-dashboard__metric small {
+  font-size: 0.48rem;
+  letter-spacing: 0.025em;
+}
+
+.events-dashboard__hero strong,
+.events-dashboard__activity-balance strong {
+  font-size: 1.24rem;
+}
+
+.events-dashboard__hero span,
+.events-dashboard__activity-balance span,
+.events-dashboard__flow-card span,
+.events-dashboard__metric span,
+.events-dashboard__flow-meta small {
+  font-size: 0.62rem;
+}
+
+.events-dashboard__metric {
+  min-height: 48px;
+  gap: 4px;
+  padding: 8px 9px;
+}
+
+.events-dashboard__metric strong,
+.events-dashboard__flow-card strong {
+  font-size: 0.9rem;
+}
+
+.events-dashboard__activity {
+  grid-template-columns: minmax(88px, 0.74fr) minmax(0, 1.26fr);
+}
+
+.events-dashboard__flow-card {
+  gap: 4px;
+  padding: 9px 10px 8px;
+}
+
+.events-dashboard__flow-bar {
+  height: 4px;
+  margin: 0 10px;
+}
+
+.events-dashboard__flow-meta {
+  gap: 8px;
+  padding: 6px 10px 9px;
+}
+
+.events-inline-state {
+  border-radius: 12px;
+}
+
+.events-loading-state {
+  min-height: 72px;
+}
+
+.events-screen__filters {
+  gap: 5px;
+}
+
+.events-filter-chip {
+  min-height: 27px;
+  padding: 0 9px;
+  border-radius: 9px;
+  font-size: 0.62rem;
+}
+
+.events-filter-chip small {
+  font-size: 0.62rem;
+}
+
+.events-feed {
+  gap: 6px;
+}
+
+.event-feed-item {
+  border-radius: 10px;
+}
+
+.event-feed-item::before {
+  inset: 8px auto 8px 5px;
+}
+
+.event-feed-item__trigger {
+  min-height: 56px;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+}
+
+.event-feed-item__avatar {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+
+.event-feed-item__body {
+  gap: 4px;
+}
+
+.event-feed-item__identity strong,
+.event-feed-item__name-link {
+  font-size: 0.78rem;
+}
+
+.event-feed-item__summary {
+  font-size: 0.66rem;
+}
+
+.event-feed-item__toggle {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 8px;
+}
+
+.event-feed-item__details {
+  gap: 8px;
+  padding: 0 8px 8px 14px;
+}
+
+.event-feed-item__excerpt {
+  padding: 8px 0 0 40px;
+}
+
+.logs-violation-item__moderation {
+  gap: 8px;
+}
+
+.logs-violation-item__quick-button,
+.logs-violation-item__apply-button {
+  min-height: 34px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+}
+
+.logs-violation-item__ban-config {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.membership-feed--immersive {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.membership-feed--immersive .membership-feed__toolbar {
+  border-radius: 12px;
+}
+
+.membership-feed--immersive .membership-feed__filters .segmented-control__item {
+  min-height: 30px;
+  border-radius: 9px;
+  font-size: 0.66rem;
+}
+
+.membership-feed--immersive .membership-feed__group-list {
+  border-radius: 10px;
+}
+
+.membership-feed--immersive .membership-feed__item {
+  grid-template-columns: 40px minmax(0, 1fr);
+  padding: 0 8px;
+}
+
+.membership-feed--immersive .membership-feed__rail {
+  padding-top: 10px;
+}
+
+.membership-feed--immersive .membership-feed__card {
+  grid-template-columns: 34px minmax(0, 1fr);
+  min-height: 54px;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.membership-feed--immersive .membership-feed__avatar {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  border-radius: 11px;
+}
+
+.membership-feed--immersive .membership-feed__name-link,
+.membership-feed--immersive .membership-feed__row strong {
+  font-size: 0.78rem;
+}
+
+.membership-feed--immersive .membership-feed__description {
+  font-size: 0.66rem;
+}
+
+.participants-roster {
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+}
+
+.participants-roster__search {
+  min-height: 42px;
+  padding: 0 12px;
+  border-radius: 12px;
+}
+
+.participants-roster__list {
+  gap: 6px;
+}
+
+.participants-roster__item {
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
+}
+
+.participants-roster__avatar-shell {
+  border-radius: 13px;
+}
+
+.participants-roster__avatar {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+.participants-roster__content {
+  gap: 5px;
+}
+
+.participants-roster__identity strong {
+  font-size: 0.82rem;
+}
+
+.participants-roster__identity span {
+  font-size: 0.68rem;
+}
+
+.participants-roster__pill {
+  min-height: 20px;
+  padding: 0 8px;
+  font-size: 0.62rem;
+}
+
+.participants-roster__immunity,
+.participants-roster__violations {
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 0.68rem;
+}
+
+.participants-roster__chevron {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 430px) {
+  .events-stage__panel {
+    padding-inline: 9px;
+  }
+
+  .events-dashboard__range {
+    width: 122px;
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) minmax(96px, 0.7fr);
+  }
+
+  .events-dashboard__activity {
+    grid-template-columns: minmax(82px, 0.72fr) minmax(0, 1.28fr);
+  }
+
+  .events-dashboard__hero strong,
+  .events-dashboard__activity-balance strong {
+    font-size: 1.18rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .events-stage__appbar-copy strong {
+    font-size: 0.82rem;
+  }
+
+  .events-primary-tab {
+    min-height: 30px;
+    padding-inline: 4px;
+  }
+
+  .events-primary-tab__label {
+    font-size: 0.62rem;
+  }
+
+  .events-primary-tab__icon {
+    display: none;
+  }
+
+  .events-dashboard__head {
+    grid-template-columns: minmax(0, 1fr) 112px;
+  }
+
+  .events-dashboard__range {
+    width: 112px;
+  }
+
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr) 88px;
+  }
+
+  .events-dashboard__activity {
+    grid-template-columns: minmax(76px, 0.68fr) minmax(0, 1.32fr);
+  }
+
+  .events-dashboard__hero,
+  .events-dashboard__activity-balance {
+    min-height: 60px;
+    padding: 8px;
+  }
+
+  .events-dashboard__flow-card {
+    padding: 8px;
+  }
+
+  .participants-roster__item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .participants-roster__aside {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+}

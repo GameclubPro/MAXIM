@@ -1900,6 +1900,29 @@ function ChannelStatsOverview({
         />
       </div>
 
+      <article className="channel-insights__chart-card channel-insights__chart-card--executive">
+        <div className="channel-insights__panel-head">
+          <div className="channel-insights__panel-copy">
+            <strong>{chartTitle}</strong>
+          </div>
+
+          {chartTabs.length > 1 ? (
+            <SegmentedControl
+              value={effectiveChartTab}
+              options={chartTabs}
+              onChange={(next) => onChartTabChange(next as ChartTab)}
+              className="channel-insights__switch"
+            />
+          ) : null}
+        </div>
+
+        {effectiveChartTab === 'audience' ? (
+          <AudienceChart stats={stats} />
+        ) : (
+          <ViewsChart stats={stats} />
+        )}
+      </article>
+
       <div className="channel-insights__kpi-grid">
         <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
           <div className="channel-insights__kpi-top">
@@ -1974,29 +1997,6 @@ function ChannelStatsOverview({
           </span>
         </article>
       </div>
-
-      <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-        <div className="channel-insights__panel-head">
-          <div className="channel-insights__panel-copy">
-            <strong>{chartTitle}</strong>
-          </div>
-
-          {chartTabs.length > 1 ? (
-            <SegmentedControl
-              value={effectiveChartTab}
-              options={chartTabs}
-              onChange={(next) => onChartTabChange(next as ChartTab)}
-              className="channel-insights__switch"
-            />
-          ) : null}
-        </div>
-
-        {effectiveChartTab === 'audience' ? (
-          <AudienceChart stats={stats} />
-        ) : (
-          <ViewsChart stats={stats} />
-        )}
-      </article>
 
       <ChannelSourceStrip stats={stats} />
 
