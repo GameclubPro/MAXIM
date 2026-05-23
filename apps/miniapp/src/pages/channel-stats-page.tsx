@@ -335,36 +335,6 @@ function formatPeriodRange(from: string, to: string): string {
   return `${formatDateOnly(from)} — ${formatDateOnly(to)}`;
 }
 
-function formatBucketLabel(bucket: ChannelStatsBucket): string {
-  return bucket === 'hour' ? 'по часам' : 'по дням';
-}
-
-function formatViewModeLabel(
-  mode: ChannelStatsResponse['official']['content']['viewsMode'],
-): string {
-  return mode === 'observedDelta' ? 'прирост за период' : 'последний total';
-}
-
-function formatMissingMetric(
-  metric: ChannelStatsResponse['meta']['missingOfficialMetrics'][number],
-) {
-  if (metric === 'reach') {
-    return 'охват';
-  }
-
-  return 'уникальные';
-}
-
-function formatMissingMetrics(
-  metrics: ChannelStatsResponse['meta']['missingOfficialMetrics'],
-): string {
-  if (metrics.length === 0) {
-    return '—';
-  }
-
-  return metrics.map(formatMissingMetric).join(', ');
-}
-
 function ChannelSourceStrip({ stats }: { stats: ChannelStatsResponse }) {
   const coverageLabel = stats.meta.officialCoverageFrom
     ? `с ${formatDateOnly(stats.meta.officialCoverageFrom)}`
@@ -429,75 +399,6 @@ function ChannelBestWindowsPanel({ stats }: { stats: ChannelStatsResponse }) {
       ) : (
         <p className="channel-fact-panel__empty">Недостаточно публикаций за период.</p>
       )}
-    </article>
-  );
-}
-
-function ChannelDataQualityPanel({ stats }: { stats: ChannelStatsResponse }) {
-  const rows = [
-    {
-      code: 'max',
-      label: 'MAX',
-      value: stats.meta.maxSnapshotAvailable ? 'снимок есть' : 'снимка нет',
-      detail:
-        typeof stats.channel.participantsCount === 'number'
-          ? `${formatCount(stats.channel.participantsCount)} участников`
-          : 'участники недоступны',
-    },
-    {
-      code: 'coverage',
-      label: 'Покрытие',
-      value: stats.meta.officialCoverageFrom
-        ? `с ${formatDateOnly(stats.meta.officialCoverageFrom)}`
-        : 'текущий срез',
-      detail: formatBucketLabel(stats.period.bucket),
-    },
-    {
-      code: 'views',
-      label: 'Просмотры',
-      value: stats.meta.viewsAvailable
-        ? formatViewModeLabel(stats.official.content.viewsMode)
-        : 'нет постов',
-      detail: stats.meta.viewsAvailable
-        ? `${formatCompactCount(stats.official.content.views)} за период`
-        : 'статистика постов отсутствует',
-    },
-    {
-      code: 'churn',
-      label: 'Вход/выход',
-      value: stats.meta.churnAvailable ? 'за весь период' : 'частично',
-      detail: `${formatCount(stats.official.audience.joined)} / ${formatCount(
-        stats.official.audience.left ?? 0,
-      )}`,
-    },
-    {
-      code: 'missing',
-      label: 'Нет в MAX',
-      value: formatMissingMetrics(stats.meta.missingOfficialMetrics),
-      detail:
-        stats.meta.missingOfficialMetrics.length > 0
-          ? 'не используется в расчётах'
-          : 'метрик не скрыто',
-    },
-  ];
-
-  return (
-    <article className="channel-fact-panel channel-data-quality">
-      <div className="channel-insights__panel-head">
-        <div className="channel-insights__panel-copy">
-          <strong>Качество данных</strong>
-        </div>
-      </div>
-
-      <div className="channel-data-quality__grid">
-        {rows.map((row) => (
-          <div key={row.code} className="channel-data-quality__item">
-            <small>{row.label}</small>
-            <strong>{row.value}</strong>
-            <span>{row.detail}</span>
-          </div>
-        ))}
-      </div>
     </article>
   );
 }
@@ -1978,7 +1879,6 @@ function ChannelStatsOverview({
       </article>
 
       <ChannelBestWindowsPanel stats={stats} />
-      <ChannelDataQualityPanel stats={stats} />
     </section>
   );
 }
