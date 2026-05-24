@@ -290,6 +290,12 @@ import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
 } from './logs-dashboard-rollups';
+import {
+  selectChannelStatsMembershipBucketRows,
+  selectModerationFeedReadModelRows,
+  type ChannelStatsMembershipBucketRow,
+  type ModerationFeedReadModelRow,
+} from './stats-read-model-selectors';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -528,15 +534,7 @@ type ChannelSuggestionDeliveryInput = {
   mediaFileName?: string | null;
 };
 
-type ModerationViolationRow = {
-  id: string;
-  action: SanctionAction;
-  ruleCode: string;
-  userId: string;
-  createdAt: Date;
-  maskedExcerpt: string | null;
-  metadata: Prisma.JsonValue | null;
-};
+type ModerationViolationRow = ModerationFeedReadModelRow;
 
 type PreparedManagedBroadcastRequest = {
   payload: SendBroadcastRequest;
@@ -7382,6 +7380,7 @@ export class AdminService implements OnModuleDestroy {
       syncState,
       trackedPosts,
       anyPost,
+      membershipBucketRows,
       membershipRows,
     ] = await Promise.all([
       this.prisma.chat.findUnique({
@@ -7494,9 +7493,12 @@ export class AdminService implements OnModuleDestroy {
         where: { chatId },
         select: { id: true },
       }),
-      this.getMembershipEventRows(chatId, from, now, ['user_added', 'user_removed'], {
-        order: 'asc',
-      }),
+      selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to: now, bucket }),
+      statsQuery.includeIntelligence
+        ? this.getMembershipEventRows(chatId, from, now, ['user_added', 'user_removed'], {
+            order: 'asc',
+          })
+        : Promise.resolve([]),
     ]);
 
     const refreshQueued = this.shouldRefreshChannelStats(latestAudienceSnapshot, syncState)
@@ -7573,17 +7575,13 @@ export class AdminService implements OnModuleDestroy {
       syncState?.membershipCoverageFrom &&
       syncState.membershipCoverageFrom.getTime() <= from.getTime(),
     );
-    let joined = 0;
-    let left = 0;
-    for (const row of membershipRows) {
-      if (row.event_type === 'user_added') {
-        joined += 1;
-      } else if (row.event_type === 'user_removed') {
-        left += 1;
-      }
-    }
-
     const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
+    const membershipSeries = this.buildMembershipSeriesFromBucketRows(
+      bucketStarts,
+      membershipBucketRows,
+    );
+    const joined = membershipSeries.reduce((total, item) => total + item.joined, 0);
+    const left = membershipSeries.reduce((total, item) => total + item.left, 0);
     const periodPosts = trackedPosts.filter(
       (post) =>
         post.publishedAt.getTime() >= from.getTime() && post.publishedAt.getTime() <= now.getTime(),
@@ -7619,7 +7617,6 @@ export class AdminService implements OnModuleDestroy {
       previousAudienceSnapshot?.participantsCount ?? null,
       audienceSnapshots,
     );
-    const membershipSeries = this.buildMembershipSeries(bucketStarts, bucket, membershipRows);
     const activityFeed = statsQuery.includeActivityPreview
       ? await this.getMembershipActivityFeedPage(
           chatId,
@@ -17145,10 +17142,8 @@ export class AdminService implements OnModuleDestroy {
     const headerPromise =
       this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
 
-    const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
-
     const baseQueriesStartedAtMs = Date.now();
-    const [chat, membershipSummary, chatHeader, moderationSummary, violationRows] =
+    const [chat, membershipSummary, chatHeader, moderationSummary, moderationFeed] =
       await Promise.all([
         this.prisma.chat.findUnique({
           where: { id: chatId },
@@ -17177,25 +17172,21 @@ export class AdminService implements OnModuleDestroy {
               affectedUsers: 0,
             }),
         includeModerationPreview
-          ? this.prisma.moderationEvent.findMany({
-              where: violationsWhere,
-              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-              take: LOGS_DASHBOARD_VIOLATIONS_LIMIT + 1,
-            })
-          : Promise.resolve([]),
+          ? this.getModerationFeedPage(
+              chatId,
+              from,
+              now,
+              {
+                range,
+                filter: 'ALL',
+                limit: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
+              },
+              'chat',
+              { allowRemoteLookup: false },
+            )
+          : this.buildEmptyModerationFeedPage(),
       ]);
     const baseQueriesFinishedAtMs = Date.now();
-    const moderationPreviewRows = violationRows.slice(0, LOGS_DASHBOARD_VIOLATIONS_LIMIT);
-    const moderationProfilesStartedAtMs = Date.now();
-    const moderationUserProfiles = includeModerationPreview
-      ? await this.resolveUserProfiles(
-          chatId,
-          'chat',
-          moderationPreviewRows.map((row) => row.userId),
-          { allowRemoteLookup: false },
-        )
-      : new Map<string, ResolvedUserProfile>();
-    const moderationProfilesFinishedAtMs = Date.now();
 
     const joinedUsers = membershipSummary.joinedUsers;
     const leftUsers = membershipSummary.leftUsers;
@@ -17215,29 +17206,6 @@ export class AdminService implements OnModuleDestroy {
         )
       : this.buildEmptyMembershipActivityPage();
     const activityFeedFinishedAtMs = Date.now();
-    const moderationFeedStartedAtMs = Date.now();
-    const moderationFeed = includeModerationPreview
-      ? moderationFeedPageSchema.parse({
-          items: moderationPreviewRows.map((row) =>
-            this.mapModerationViolationRow(
-              chatId,
-              'chat',
-              row as ModerationViolationRow,
-              moderationUserProfiles,
-            ),
-          ),
-          hasMore: violationRows.length > LOGS_DASHBOARD_VIOLATIONS_LIMIT,
-          nextCursor:
-            violationRows.length > LOGS_DASHBOARD_VIOLATIONS_LIMIT &&
-            moderationPreviewRows[moderationPreviewRows.length - 1]
-              ? this.encodeModerationFeedCursor({
-                  createdAt: moderationPreviewRows[moderationPreviewRows.length - 1]!.createdAt,
-                  id: moderationPreviewRows[moderationPreviewRows.length - 1]!.id,
-                })
-              : null,
-        })
-      : this.buildEmptyModerationFeedPage();
-    const moderationFeedFinishedAtMs = Date.now();
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -17291,10 +17259,8 @@ export class AdminService implements OnModuleDestroy {
           includeActivityPreview,
           includeModerationPreview,
           baseQueriesMs: baseQueriesFinishedAtMs - baseQueriesStartedAtMs,
-          moderationProfilesMs: moderationProfilesFinishedAtMs - moderationProfilesStartedAtMs,
           activityFeedMs: activityFeedFinishedAtMs - activityFeedStartedAtMs,
-          moderationFeedAssembleMs: moderationFeedFinishedAtMs - moderationFeedStartedAtMs,
-          moderationPreviewCount: moderationPreviewRows.length,
+          moderationPreviewCount: moderationFeed.items.length,
           activityPreviewCount: activityFeed.items.length,
         },
         'Slow logs dashboard build completed',
@@ -20433,67 +20399,6 @@ export class AdminService implements OnModuleDestroy {
     return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
   }
 
-  private buildModerationFeedWhere(
-    chatId: string,
-    from: Date,
-    to: Date,
-    filter: ModerationFeedFilter,
-  ): Prisma.ModerationEventWhereInput {
-    const baseWhere: Prisma.ModerationEventWhereInput = {
-      chatId,
-      createdAt: { gte: from, lte: to },
-    };
-
-    if (filter === 'ALL') {
-      return {
-        ...baseWhere,
-        OR: [
-          {
-            action: {
-              in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'],
-            },
-          },
-          {
-            action: SanctionAction.NONE,
-            ruleCode: {
-              in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
-            },
-          },
-        ],
-      };
-    }
-
-    if (filter === 'UNMUTE') {
-      return {
-        ...baseWhere,
-        action: SanctionAction.NONE,
-        ruleCode: 'MANUAL_UNMUTE',
-      };
-    }
-
-    if (filter === 'UNBAN') {
-      return {
-        ...baseWhere,
-        action: SanctionAction.NONE,
-        ruleCode: 'MANUAL_UNBAN',
-      };
-    }
-
-    if (filter === 'BAN') {
-      return {
-        ...baseWhere,
-        action: {
-          in: [SanctionAction.BAN, SanctionAction.KICK],
-        },
-      };
-    }
-
-    return {
-      ...baseWhere,
-      action: filter,
-    };
-  }
-
   private buildParticipantViolationCountWhere(
     chatId: string,
     userIds: readonly string[],
@@ -20595,7 +20500,10 @@ export class AdminService implements OnModuleDestroy {
     const action = this.normalizeModerationViolationAction(row.action, metadata);
     const ruleCode = this.normalizeModerationViolationRuleCode(row.ruleCode, row.action);
     const userDisplayName =
-      this.readStoredModerationTargetDisplayName(metadata) ?? userProfile?.displayName ?? null;
+      this.readTrimmedString(row.userDisplayName) ??
+      this.readStoredModerationTargetDisplayName(metadata) ??
+      userProfile?.displayName ??
+      null;
 
     return {
       id: row.id,
@@ -20603,9 +20511,10 @@ export class AdminService implements OnModuleDestroy {
       ruleCode,
       userId: row.userId,
       userDisplayName,
-      avatarUrl: userProfile?.avatarUrl ?? null,
-      profileUrl: userProfile?.profileUrl ?? null,
+      avatarUrl: row.avatarUrl ?? userProfile?.avatarUrl ?? null,
+      profileUrl: row.profileUrl ?? userProfile?.profileUrl ?? null,
       profileHandoffUrl:
+        row.profileHandoffUrl ??
         userProfile?.profileHandoffUrl ??
         this.buildProfileMentionHandoffUrl(chatId, entityType, row.userId, userDisplayName),
       createdAt: row.createdAt.toISOString(),
@@ -20661,35 +20570,26 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ModerationFeedPage> {
     const limit = Math.max(1, Math.min(100, query.limit));
     const cursor = this.decodeModerationFeedCursor(query.cursor);
-    const baseWhere = this.buildModerationFeedWhere(chatId, from, to, query.filter);
-    const rows = await this.prisma.moderationEvent.findMany({
-      where: cursor
-        ? {
-            AND: [
-              baseWhere,
-              {
-                OR: [
-                  { createdAt: { lt: cursor.createdAt } },
-                  {
-                    createdAt: cursor.createdAt,
-                    id: { lt: cursor.id },
-                  },
-                ],
-              },
-            ],
-          }
-        : baseWhere,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: limit + 1,
+    const rows = await selectModerationFeedReadModelRows(this.prisma, {
+      chatId,
+      from,
+      to,
+      filter: query.filter,
+      cursor,
+      limit: limit + 1,
     });
 
     const pageRows = rows.slice(0, limit);
-    const userProfiles = await this.resolveUserProfiles(
-      chatId,
-      entityType,
-      pageRows.map((row) => row.userId),
-      profileOptions,
-    );
+    const userIdsToResolve =
+      profileOptions.allowRemoteLookup === false
+        ? []
+        : pageRows
+            .filter((row) => !this.readTrimmedString(row.userDisplayName))
+            .map((row) => row.userId);
+    const userProfiles =
+      userIdsToResolve.length > 0
+        ? await this.resolveUserProfiles(chatId, entityType, userIdsToResolve, profileOptions)
+        : new Map<string, ResolvedUserProfile>();
     const lastRow = pageRows.at(-1);
 
     return moderationFeedPageSchema.parse({
@@ -21400,47 +21300,6 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
-  private buildMembershipEventDedupeSourceSql(
-    chatId: string,
-    from: Date,
-    to: Date,
-    eventTypes: readonly string[],
-  ): Prisma.Sql {
-    return Prisma.sql`
-      SELECT
-        id,
-        event_at AS created_at,
-        event_type,
-        user_id,
-        sender_name
-      FROM (
-        SELECT
-          id,
-          event_at,
-          event_type,
-          user_id,
-          sender_name,
-          ROW_NUMBER() OVER (
-            PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at
-            ORDER BY
-              CASE
-                WHEN sender_name IS NULL OR BTRIM(sender_name) = '' THEN 1
-                ELSE 0
-              END ASC,
-              created_at DESC,
-              id DESC
-          ) AS membership_event_rank
-        FROM chat_membership_activity_events
-        WHERE chat_id = ${chatId}
-          AND event_type IN (${Prisma.join(eventTypes)})
-          AND event_at >= ${from}
-          AND event_at <= ${to}
-      ) membership_events_ranked
-      WHERE membership_event_rank = 1
-      ORDER BY event_at DESC, id DESC
-    `;
-  }
-
   private async getMembershipEventRows(
     chatId: string,
     from: Date,
@@ -21458,8 +21317,8 @@ export class AdminService implements OnModuleDestroy {
     const cursorClause = cursor
       ? Prisma.sql`
           AND (
-            created_at < ${cursor.createdAt}
-            OR (created_at = ${cursor.createdAt} AND id < ${cursor.id})
+            event_at < ${cursor.createdAt}
+            OR (event_at = ${cursor.createdAt} AND source_event_id < ${cursor.id})
           )
         `
       : Prisma.empty;
@@ -21467,25 +21326,21 @@ export class AdminService implements OnModuleDestroy {
       typeof options.limit === 'number' && Number.isFinite(options.limit)
         ? Prisma.sql`LIMIT ${Math.max(1, Math.trunc(options.limit))}`
         : Prisma.empty;
-    const membershipEventsSql = this.buildMembershipEventDedupeSourceSql(
-      chatId,
-      from,
-      to,
-      eventTypes,
-    );
 
     return this.prisma.$queryRaw<MembershipEventRow[]>`
-      WITH membership_events AS (${membershipEventsSql})
       SELECT
-        id,
-        created_at,
+        source_event_id AS id,
+        event_at AS created_at,
         event_type,
         user_id,
         sender_name
-      FROM membership_events
-      WHERE 1 = 1
+      FROM chat_membership_activity_feed_items
+      WHERE chat_id = ${chatId}
+        AND event_type IN (${Prisma.join(eventTypes)})
+        AND event_at >= ${from}
+        AND event_at <= ${to}
         ${cursorClause}
-      ORDER BY created_at ${orderDirectionSql}, id ${orderDirectionSql}
+      ORDER BY event_at ${orderDirectionSql}, source_event_id ${orderDirectionSql}
       ${limitClause}
     `;
   }
@@ -21496,11 +21351,9 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     bucket: ChannelStatsBucket,
   ): Promise<ChannelStatsPreviousPeriodSnapshot> {
-    const [membershipRows, trackedPosts, previousAudienceSnapshot, audienceSnapshots] =
+    const [membershipBucketRows, trackedPosts, previousAudienceSnapshot, audienceSnapshots] =
       await Promise.all([
-        this.getMembershipEventRows(chatId, from, to, ['user_added', 'user_removed'], {
-          order: 'asc',
-        }),
+        selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to, bucket }),
         this.prisma.channelPost.findMany({
           where: {
             chatId,
@@ -21562,16 +21415,6 @@ export class AdminService implements OnModuleDestroy {
           })
         : [];
 
-    let joined = 0;
-    let left = 0;
-    for (const row of membershipRows) {
-      if (row.event_type === 'user_added') {
-        joined += 1;
-      } else if (row.event_type === 'user_removed') {
-        left += 1;
-      }
-    }
-
     const periodPosts = trackedPosts.filter(
       (post) =>
         post.publishedAt.getTime() >= from.getTime() && post.publishedAt.getTime() <= to.getTime(),
@@ -21605,7 +21448,12 @@ export class AdminService implements OnModuleDestroy {
       0,
     );
 
-    const membershipSeries = this.buildMembershipSeries(bucketStarts, bucket, membershipRows);
+    const membershipSeries = this.buildMembershipSeriesFromBucketRows(
+      bucketStarts,
+      membershipBucketRows,
+    );
+    const joined = membershipSeries.reduce((total, item) => total + item.joined, 0);
+    const left = membershipSeries.reduce((total, item) => total + item.left, 0);
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
@@ -22089,26 +21937,21 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
-  private buildMembershipSeries(
+  private buildMembershipSeriesFromBucketRows(
     bucketStarts: Date[],
-    bucket: ChannelStatsBucket,
-    rows: Array<{ created_at: Date | string; event_type: string | null }>,
+    rows: ChannelStatsMembershipBucketRow[],
   ) {
     const grouped = new Map<string, { joined: number; left: number }>();
 
     for (const row of rows) {
-      const createdAt = this.toIsoString(row.created_at);
-      if (!createdAt) {
+      const bucketStart = this.toIsoString(row.bucket_start);
+      if (!bucketStart) {
         continue;
       }
-      const bucketStart = this.floorChannelStatsBucket(new Date(createdAt), bucket).toISOString();
-      const current = grouped.get(bucketStart) ?? { joined: 0, left: 0 };
-      if (row.event_type === 'user_added') {
-        current.joined += 1;
-      } else if (row.event_type === 'user_removed') {
-        current.left += 1;
-      }
-      grouped.set(bucketStart, current);
+      grouped.set(new Date(bucketStart).toISOString(), {
+        joined: this.toSafeInteger(row.joined_users),
+        left: this.toSafeInteger(row.left_users),
+      });
     }
 
     return bucketStarts.map((bucketStart) => {
@@ -22425,10 +22268,10 @@ export class AdminService implements OnModuleDestroy {
           user_id,
           sender_name,
           event_at
-        FROM chat_membership_activity_events
+        FROM chat_membership_activity_feed_items
         WHERE chat_id = ${chatId}
           AND user_id IN (${Prisma.join(normalizedUserIds)})
-          AND sender_name IS NOT NULL
+          AND COALESCE(BTRIM(sender_name), '') <> ''
 
         UNION ALL
 

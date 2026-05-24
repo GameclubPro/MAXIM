@@ -727,6 +727,30 @@ model ChatMembershipActivityEvent {
   @@map("chat_membership_activity_events")
 }
 
+model ChatModerationFeedItem {
+  id              String         @id
+  chatId          String         @map("chat_id")
+  botId           String?        @map("bot_id")
+  userId          String         @map("user_id")
+  messageId       String?        @map("message_id")
+  eventType       EventType      @map("event_type")
+  ruleCode        String         @map("rule_code")
+  action          SanctionAction
+  maskedExcerpt   String?        @map("masked_excerpt")
+  score           Float          @default(1)
+  operator        Operator       @default(BOT)
+  metadata        Json?
+  userDisplayName String?        @map("user_display_name")
+  createdAt       DateTime       @map("created_at")
+  updatedAt       DateTime       @default(now()) @map("updated_at")
+
+  @@index([chatId, createdAt(sort: Desc), id(sort: Desc)], map: "chat_moderation_feed_items_chat_created_id_idx")
+  @@index([chatId, action, createdAt(sort: Desc), id(sort: Desc)], map: "chat_moderation_feed_items_chat_action_created_id_idx")
+  @@index([chatId, ruleCode, createdAt(sort: Desc), id(sort: Desc)], map: "chat_moderation_feed_items_chat_rule_created_id_idx")
+  @@index([chatId, userId, createdAt(sort: Desc)], map: "chat_moderation_feed_items_chat_user_created_idx")
+  @@map("chat_moderation_feed_items")
+}
+
 model ChatModerationStatsRollup {
   chatId          String   @map("chat_id")
   bucketStart     DateTime @map("bucket_start")
@@ -744,16 +768,60 @@ model ChatModerationStatsRollup {
   @@map("chat_moderation_stats_rollups")
 }
 
+model ChatModerationAffectedUserHour {
+  chatId      String   @map("chat_id")
+  bucketStart DateTime @map("bucket_start")
+  userId      String   @map("user_id")
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  @@id([chatId, bucketStart, userId])
+  @@index([chatId, bucketStart(sort: Desc)], map: "chat_moderation_affected_user_hours_chat_bucket_idx")
+  @@map("chat_moderation_affected_user_hours")
+}
+
 model ChatMembershipActivityRollup {
-  chatId          String   @map("chat_id")
-  bucketStart     DateTime @map("bucket_start")
-  joinedUsers     Int      @default(0) @map("joined_users")
-  leftUsers       Int      @default(0) @map("left_users")
-  updatedAt       DateTime @default(now()) @map("updated_at")
+  chatId      String   @map("chat_id")
+  bucketStart DateTime @map("bucket_start")
+  joinedUsers Int      @default(0) @map("joined_users")
+  leftUsers   Int      @default(0) @map("left_users")
+  updatedAt   DateTime @default(now()) @map("updated_at")
 
   @@id([chatId, bucketStart])
   @@index([chatId, bucketStart(sort: Desc)], map: "chat_membership_activity_rollups_chat_bucket_idx")
   @@map("chat_membership_activity_rollups")
+}
+
+model ChatMembershipActivityFeedItem {
+  canonicalKey    String   @id @map("canonical_key")
+  sourceEventId   String   @map("source_event_id")
+  botId           String?  @map("bot_id")
+  chatId          String   @map("chat_id")
+  eventType       String   @map("event_type")
+  userId          String?  @map("user_id")
+  senderName      String?  @map("sender_name")
+  eventAt         DateTime @map("event_at")
+  sourceCreatedAt DateTime @map("source_created_at")
+  updatedAt       DateTime @default(now()) @map("updated_at")
+
+  @@index([chatId, eventType, eventAt(sort: Desc), sourceEventId(sort: Desc)], map: "chat_membership_activity_feed_items_chat_event_idx")
+  @@index([chatId, eventAt(sort: Desc), sourceEventId(sort: Desc)], map: "chat_membership_activity_feed_items_chat_time_idx")
+  @@index([chatId, userId, eventAt(sort: Desc)], map: "chat_membership_activity_feed_items_chat_user_time_idx")
+  @@map("chat_membership_activity_feed_items")
+}
+
+model ChannelStatsBucketRollup {
+  chatId      String   @map("chat_id")
+  bucketStart DateTime @map("bucket_start")
+  joinedUsers Int      @default(0) @map("joined_users")
+  leftUsers   Int      @default(0) @map("left_users")
+  posts       Int      @default(0)
+  viewsDelta  Int      @default(0) @map("views_delta")
+  reactions   Int      @default(0)
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  @@id([chatId, bucketStart])
+  @@index([chatId, bucketStart(sort: Desc)], map: "channel_stats_bucket_rollups_chat_bucket_idx")
+  @@map("channel_stats_bucket_rollups")
 }
 
 model ManagedEntityLocalActivity {

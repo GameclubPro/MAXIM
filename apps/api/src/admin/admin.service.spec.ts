@@ -4274,7 +4274,7 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '2',
           unmute: '1',
           unban: '1',
-          affected_user_ids: ['user-1', 'user-2'],
+          affectedUsers: 0,
         },
       ])
       .mockResolvedValueOnce([
@@ -4285,12 +4285,50 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '0',
           unmute: '0',
           unban: '0',
-          affected_user_ids: [],
+          affectedUsers: 0,
         },
       ])
+      .mockResolvedValueOnce([{ affected_users: '2' }])
       .mockResolvedValueOnce([
-        { user_id: 'user-1', sender_name: 'Алексей' },
-        { user_id: 'user-2', sender_name: 'Мария' },
+        {
+          id: 'evt-1',
+          action: 'WARN',
+          ruleCode: 'PROFANITY',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T09:00:00.000Z'),
+          maskedExcerpt: '***',
+          metadata: { reason: 'Profanity detected' },
+          userDisplayName: 'Алексей',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
+        },
+        {
+          id: 'evt-2',
+          action: 'BAN',
+          ruleCode: 'LINK_BLOCKED',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T08:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+          userDisplayName: 'Мария',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
+        },
+        {
+          id: 'evt-3',
+          action: 'NONE',
+          ruleCode: 'MANUAL_UNBAN',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T07:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: { reason: 'Ручной разбан участника через miniapp' },
+          userDisplayName: 'Мария',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
+        },
       ])
       .mockResolvedValueOnce([
         {
@@ -4308,45 +4346,7 @@ describe('AdminService.getLogsDashboard', () => {
           sender_name: 'Мария',
         },
       ]);
-    prisma.moderationEvent.groupBy.mockResolvedValueOnce([
-      { action: 'WARN', ruleCode: null, _count: { _all: 3 } },
-      { action: 'DELETE_MESSAGE', ruleCode: null, _count: { _all: 4 } },
-      { action: 'MUTE', ruleCode: null, _count: { _all: 1 } },
-      { action: 'BAN', ruleCode: null, _count: { _all: 1 } },
-      { action: 'KICK', ruleCode: null, _count: { _all: 1 } },
-      { action: 'NONE', ruleCode: 'MANUAL_UNMUTE', _count: { _all: 1 } },
-      { action: 'NONE', ruleCode: 'MANUAL_UNBAN', _count: { _all: 1 } },
-    ]);
-    prisma.moderationEvent.findMany
-      .mockResolvedValueOnce([
-        {
-          id: 'evt-1',
-          action: 'WARN',
-          ruleCode: 'PROFANITY',
-          userId: 'user-1',
-          createdAt: new Date('2026-03-02T09:00:00.000Z'),
-          maskedExcerpt: '***',
-          metadata: { reason: 'Profanity detected' },
-        },
-        {
-          id: 'evt-2',
-          action: 'BAN',
-          ruleCode: 'LINK_BLOCKED',
-          userId: 'user-2',
-          createdAt: new Date('2026-03-02T08:00:00.000Z'),
-          maskedExcerpt: null,
-          metadata: null,
-        },
-        {
-          id: 'evt-3',
-          action: 'NONE',
-          ruleCode: 'MANUAL_UNBAN',
-          userId: 'user-2',
-          createdAt: new Date('2026-03-02T07:00:00.000Z'),
-          maskedExcerpt: null,
-          metadata: { reason: 'Ручной разбан участника через miniapp' },
-        },
-      ]);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -4499,46 +4499,31 @@ describe('AdminService.getLogsDashboard', () => {
       nextCursor: null,
     });
 
-    const dedupeSqlText = extractSqlText(
-      (
-        service as unknown as {
-          buildMembershipEventDedupeSourceSql: (
-            chatId: string,
-            from: Date,
-            to: Date,
-            eventTypes: readonly string[],
-          ) => unknown;
-        }
-      ).buildMembershipEventDedupeSourceSql(
-        'chat-1',
-        new Date('2026-02-23T12:00:00.000Z'),
-        new Date('2026-03-02T12:00:00.000Z'),
-        ['user_added', 'user_removed'],
-      ),
-    );
-    expect(dedupeSqlText).toContain('FROM chat_membership_activity_events');
-    expect(dedupeSqlText).toContain('event_at AS created_at');
-    expect(dedupeSqlText).toContain('ROW_NUMBER() OVER');
-    expect(dedupeSqlText).toContain(
-      "PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at",
-    );
-    expect(dedupeSqlText).toContain('membership_event_rank = 1');
-    expect(dedupeSqlText).toContain('event_type IN');
-    expect(dedupeSqlText).toContain('ORDER BY event_at DESC, id DESC');
-
-    const membershipRollupSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    const querySqlTexts = prisma.$queryRaw.mock.calls.map((call) => extractSqlText(call));
+    const membershipRollupSqlText =
+      querySqlTexts.find((sqlText) => sqlText.includes('chat_membership_activity_rollups')) ?? '';
     expect(membershipRollupSqlText).toContain('chat_membership_activity_rollups');
-    const moderationRollupSqlText = extractSqlText(prisma.$queryRaw.mock.calls[3]?.[0]);
+    const moderationRollupSqlText =
+      querySqlTexts.find((sqlText) => sqlText.includes('chat_moderation_stats_rollups')) ?? '';
     expect(moderationRollupSqlText).toContain('chat_moderation_stats_rollups');
-    expect(moderationRollupSqlText).toContain('affected_user_ids');
-    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[6]?.[0]);
-    expect(activitySqlText).toContain('WITH membership_events AS (');
-    expect(activitySqlText).toContain('ORDER BY created_at');
+    expect(moderationRollupSqlText).not.toContain('affected_user_ids');
+    const affectedSqlText =
+      querySqlTexts.find((sqlText) => sqlText.includes('chat_moderation_affected_user_hours')) ??
+      '';
+    expect(affectedSqlText).toContain('chat_moderation_affected_user_hours');
+    const moderationFeedSqlText =
+      querySqlTexts.find((sqlText) => sqlText.includes('FROM chat_moderation_feed_items feed')) ??
+      '';
+    expect(moderationFeedSqlText).toContain('FROM chat_moderation_feed_items feed');
+    const activitySqlText =
+      querySqlTexts.find((sqlText) =>
+        sqlText.includes('FROM chat_membership_activity_feed_items'),
+      ) ?? '';
+    expect(activitySqlText).toContain('FROM chat_membership_activity_feed_items');
+    expect(activitySqlText).toContain('ORDER BY event_at');
 
     expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
-    );
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
   });
 
   it('uses 24h period boundaries when range=24h', async () => {
@@ -4548,8 +4533,6 @@ describe('AdminService.getLogsDashboard', () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         {
           warn: '0',
@@ -4558,7 +4541,7 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '0',
           unmute: '0',
           unban: '0',
-          affected_user_ids: [],
+          affectedUsers: 0,
         },
       ])
       .mockResolvedValueOnce([
@@ -4569,12 +4552,13 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '0',
           unmute: '0',
           unban: '0',
-          affected_user_ids: [],
+          affectedUsers: 0,
         },
       ])
+      .mockResolvedValueOnce([{ affected_users: '0' }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
-    prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -4633,6 +4617,7 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.period.to).toBe('2026-03-02T12:00:00.000Z');
 
     expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
     const moderationEdgeSqlText =
       prisma.$queryRaw.mock.calls
         .map((call) => extractSqlText(call[0]))
@@ -4692,32 +4677,32 @@ describe('AdminService.getLogsDashboard', () => {
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affectedUsers: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          warn: '0',
+          deleteMessage: '0',
+          mute: '0',
+          ban: '0',
+          unmute: '0',
+          unban: '0',
+          affectedUsers: 0,
+        },
+      ])
+      .mockResolvedValueOnce([{ affected_users: '0' }])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          warn: '0',
-          deleteMessage: '0',
-          mute: '0',
-          ban: '0',
-          unmute: '0',
-          unban: '0',
-          affected_user_ids: [],
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          warn: '0',
-          deleteMessage: '0',
-          mute: '0',
-          ban: '0',
-          unmute: '0',
-          unban: '0',
-          affected_user_ids: [],
-        },
-      ])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
-    prisma.moderationEvent.findMany.mockResolvedValueOnce([]);
 
     const service = new AdminService(
       prisma as never,
@@ -4738,8 +4723,8 @@ describe('AdminService.getLogsDashboard', () => {
 
     expect(second).toEqual(first);
     expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(5);
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(7);
   });
 
   it('keeps dashboard and moderation feed profile resolution on the local fast path', async () => {
@@ -4755,7 +4740,7 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '2',
           unmute: '0',
           unban: '0',
-          affected_user_ids: ['user-1', 'user-2'],
+          affectedUsers: 0,
         },
       ])
       .mockResolvedValueOnce([
@@ -4766,21 +4751,10 @@ describe('AdminService.getLogsDashboard', () => {
           ban: '0',
           unmute: '0',
           unban: '0',
-          affected_user_ids: [],
+          affectedUsers: 0,
         },
       ])
-      .mockResolvedValueOnce([
-        { user_id: 'user-1', sender_name: 'Алексей' },
-        { user_id: 'user-2', sender_name: 'Мария' },
-      ]);
-    prisma.moderationEvent.groupBy.mockResolvedValueOnce([
-      {
-        action: 'BAN',
-        ruleCode: 'MANUAL_BAN',
-        _count: { _all: 2 },
-      },
-    ]);
-    prisma.moderationEvent.findMany
+      .mockResolvedValueOnce([{ affected_users: '2' }])
       .mockResolvedValueOnce([
         {
           id: 'evt-ban-2',
@@ -4790,6 +4764,10 @@ describe('AdminService.getLogsDashboard', () => {
           createdAt: new Date('2026-03-02T11:00:00.000Z'),
           maskedExcerpt: null,
           metadata: null,
+          userDisplayName: 'Мария',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
         {
           id: 'evt-ban-1',
@@ -4799,6 +4777,10 @@ describe('AdminService.getLogsDashboard', () => {
           createdAt: new Date('2026-03-02T10:00:00.000Z'),
           maskedExcerpt: null,
           metadata: null,
+          userDisplayName: 'Алексей',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
       ])
       .mockResolvedValueOnce([
@@ -4810,6 +4792,10 @@ describe('AdminService.getLogsDashboard', () => {
           createdAt: new Date('2026-03-02T11:00:00.000Z'),
           maskedExcerpt: null,
           metadata: null,
+          userDisplayName: 'Мария',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
         {
           id: 'evt-ban-1',
@@ -4819,26 +4805,10 @@ describe('AdminService.getLogsDashboard', () => {
           createdAt: new Date('2026-03-02T10:00:00.000Z'),
           maskedExcerpt: null,
           metadata: null,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 'evt-ban-2',
-          action: 'BAN',
-          ruleCode: 'MANUAL_BAN',
-          userId: 'user-2',
-          createdAt: new Date('2026-03-02T11:00:00.000Z'),
-          maskedExcerpt: null,
-          metadata: null,
-        },
-        {
-          id: 'evt-ban-1',
-          action: 'BAN',
-          ruleCode: 'MANUAL_BAN',
-          userId: 'user-1',
-          createdAt: new Date('2026-03-02T10:00:00.000Z'),
-          maskedExcerpt: null,
-          metadata: null,
+          userDisplayName: 'Алексей',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
       ]);
 
@@ -4894,7 +4864,9 @@ describe('AdminService.getLogsDashboard', () => {
 
     expect(moderationFeed.items).toHaveLength(2);
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(5);
   });
 });
 
@@ -5047,8 +5019,8 @@ describe('AdminService.getChatActivityFeed', () => {
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
 
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(activitySqlText).toContain('WITH membership_events AS (');
-    expect(activitySqlText).toContain('ORDER BY created_at');
+    expect(activitySqlText).toContain('FROM chat_membership_activity_feed_items');
+    expect(activitySqlText).toContain('ORDER BY event_at');
   });
 
   it('deduplicates membership events produced by different bots for the same user and timestamp', async () => {
@@ -5118,7 +5090,7 @@ describe('AdminService.getChatModerationFeed', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.moderationEvent.findMany
+    prisma.$queryRaw
       .mockResolvedValueOnce([
         {
           id: 'evt-ban-3',
@@ -5128,6 +5100,10 @@ describe('AdminService.getChatModerationFeed', () => {
           createdAt: new Date('2026-03-02T11:00:00.000Z'),
           maskedExcerpt: null,
           metadata: { permanent: true },
+          userDisplayName: 'Анна',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
         {
           id: 'evt-ban-2',
@@ -5137,6 +5113,10 @@ describe('AdminService.getChatModerationFeed', () => {
           createdAt: new Date('2026-03-02T10:30:00.000Z'),
           maskedExcerpt: '***',
           metadata: null,
+          userDisplayName: 'Мария',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
         {
           id: 'evt-ban-1',
@@ -5146,6 +5126,10 @@ describe('AdminService.getChatModerationFeed', () => {
           createdAt: new Date('2026-03-02T09:00:00.000Z'),
           maskedExcerpt: null,
           metadata: { duplicateCount: 4 },
+          userDisplayName: 'Игорь',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
       ])
       .mockResolvedValueOnce([
@@ -5157,14 +5141,12 @@ describe('AdminService.getChatModerationFeed', () => {
           createdAt: new Date('2026-03-02T09:00:00.000Z'),
           maskedExcerpt: null,
           metadata: { duplicateCount: 4 },
+          userDisplayName: 'Игорь',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
         },
       ]);
-    prisma.$queryRaw
-      .mockResolvedValueOnce([
-        { user_id: 'user-3', sender_name: 'Анна' },
-        { user_id: 'user-2', sender_name: 'Мария' },
-      ])
-      .mockResolvedValueOnce([{ user_id: 'user-1', sender_name: 'Игорь' }]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -5291,35 +5273,22 @@ describe('AdminService.getChatModerationFeed', () => {
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
 
-    const firstCall = prisma.moderationEvent.findMany.mock.calls[0]?.[0];
-    expect(firstCall.where).toEqual(
-      expect.objectContaining({
-        chatId: 'chat-1',
-        action: { in: ['BAN', 'KICK'] },
-      }),
-    );
-    expect(firstCall.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
+    const firstSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]);
+    expect(firstSqlText).toContain('FROM chat_moderation_feed_items feed');
+    expect(firstSqlText).toContain("feed.action IN ('BAN', 'KICK')");
+    expect(firstSqlText).toContain('ORDER BY feed.created_at DESC, feed.id DESC');
 
-    const secondCall = prisma.moderationEvent.findMany.mock.calls[1]?.[0];
-    expect(secondCall.where.AND).toHaveLength(2);
-    expect(secondCall.where.AND[1]).toEqual(
-      expect.objectContaining({
-        OR: expect.arrayContaining([
-          expect.objectContaining({ createdAt: expect.objectContaining({ lt: expect.any(Date) }) }),
-          expect.objectContaining({
-            createdAt: expect.any(Date),
-            id: expect.objectContaining({ lt: 'evt-ban-2' }),
-          }),
-        ]),
-      }),
-    );
+    const secondSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
+    expect(secondSqlText).toContain('feed.created_at <');
+    expect(secondSqlText).toContain('feed.id <');
   });
 
   it('prefers stored target display names from moderation event metadata when profile lookup is empty', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.moderationEvent.findMany.mockResolvedValue([
+    prisma.$queryRaw.mockResolvedValue([
       {
         id: 'evt-ban-4',
         action: 'BAN',
@@ -5331,9 +5300,12 @@ describe('AdminService.getChatModerationFeed', () => {
           permanent: true,
           targetDisplayName: 'Людмила',
         },
+        userDisplayName: null,
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
       },
     ]);
-    prisma.$queryRaw.mockResolvedValue([]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -5379,6 +5351,7 @@ describe('AdminService.getChatModerationFeed', () => {
       hasMore: false,
       nextCursor: null,
     });
+    expect(prisma.moderationEvent.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -16406,9 +16379,44 @@ describe('AdminService.getChannelStats', () => {
         },
       ])
       .mockResolvedValueOnce([
-        { created_at: new Date('2026-03-03T09:00:00.000Z'), event_type: 'user_added' },
-        { created_at: new Date('2026-03-04T09:00:00.000Z'), event_type: 'user_added' },
-        { created_at: new Date('2026-03-05T09:00:00.000Z'), event_type: 'user_removed' },
+        {
+          bucket_start: new Date('2026-03-03T00:00:00.000Z'),
+          joined_users: '1',
+          left_users: '0',
+        },
+        {
+          bucket_start: new Date('2026-03-04T00:00:00.000Z'),
+          joined_users: '1',
+          left_users: '0',
+        },
+        {
+          bucket_start: new Date('2026-03-05T00:00:00.000Z'),
+          joined_users: '0',
+          left_users: '1',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-ch-int-1',
+          created_at: new Date('2026-03-03T09:00:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-10',
+          sender_name: 'Андрей',
+        },
+        {
+          id: 'wh-ch-int-2',
+          created_at: new Date('2026-03-04T09:00:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-12',
+          sender_name: 'Ольга',
+        },
+        {
+          id: 'wh-ch-int-3',
+          created_at: new Date('2026-03-05T09:00:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-11',
+          sender_name: 'Елена',
+        },
       ])
       .mockResolvedValueOnce([
         {
@@ -16425,7 +16433,9 @@ describe('AdminService.getChannelStats', () => {
           user_id: 'user-11',
           sender_name: 'Елена',
         },
-      ]);
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
     prisma.channelAudienceSnapshot.findFirst
       .mockResolvedValueOnce({
         chatId: 'channel-1',
@@ -16693,9 +16703,10 @@ describe('AdminService.getChannelStats', () => {
     expect(statsSqlText).toContain("payload->>'threadId'");
     expect(statsSqlText).toContain("payload->>'delivered' = 'true'");
     expect(statsSqlText).toContain("payload->>'delivered' = 'false'");
-    const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
-    expect(membershipSqlText).toContain('WITH membership_events AS (');
-    expect(membershipSqlText).toContain('ORDER BY created_at');
+    const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
+    expect(membershipSqlText).toContain('channel_stats_bucket_rollups');
+    expect(membershipSqlText).toContain('chat_membership_activity_feed_items');
+    expect(membershipSqlText).toContain('ORDER BY bucket_start ASC');
   });
 
   it('returns cached channel stats immediately and refreshes stale MAX data in background', async () => {
@@ -16784,7 +16795,7 @@ describe('AdminService.getChannelStats', () => {
           displayName: null,
           chatTitle: null,
         },
-        { range: '7d', includeActivityPreview: false },
+        { range: '7d', includeActivityPreview: false, includeIntelligence: false },
       )
       .then((result) => {
         resolvedResult = result;
@@ -16891,7 +16902,7 @@ describe('AdminService.getChannelStats', () => {
           displayName: null,
           chatTitle: null,
         },
-        { range },
+        { range, includeActivityPreview: false, includeIntelligence: false },
       );
 
       expect(result.period.range).toBe(range);
@@ -16924,7 +16935,11 @@ describe('AdminService.getChannelStats', () => {
         },
       ])
       .mockResolvedValueOnce([
-        { created_at: new Date('2026-03-07T09:30:00.000Z'), event_type: 'user_added' },
+        {
+          bucket_start: new Date('2026-03-07T09:00:00.000Z'),
+          joined_users: '1',
+          left_users: '0',
+        },
       ])
       .mockResolvedValueOnce([
         {
@@ -16935,7 +16950,8 @@ describe('AdminService.getChannelStats', () => {
           sender_name: null,
         },
       ])
-      .mockResolvedValueOnce([{ user_id: 'user-42', sender_name: 'Павел' }]);
+      .mockResolvedValueOnce([{ user_id: 'user-42', sender_name: 'Павел' }])
+      .mockResolvedValueOnce([]);
     prisma.channelAudienceSnapshot.findFirst
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
@@ -17001,7 +17017,7 @@ describe('AdminService.getChannelStats', () => {
         displayName: null,
         chatTitle: null,
       },
-      { range: '24h' },
+      { range: '24h', includeIntelligence: false },
     );
 
     expect(result.channel).toEqual({

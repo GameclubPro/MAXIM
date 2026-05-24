@@ -1,0 +1,212 @@
+import type { ChannelStatsBucket, ModerationFeedFilter } from '@maxim/contracts';
+import { Prisma, type SanctionAction } from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
+
+export type ModerationFeedReadModelRow = {
+  id: string;
+  action: SanctionAction;
+  ruleCode: string;
+  userId: string;
+  createdAt: Date;
+  maskedExcerpt: string | null;
+  metadata: Prisma.JsonValue | null;
+  userDisplayName?: string | null;
+  avatarUrl?: string | null;
+  profileUrl?: string | null;
+  profileHandoffUrl?: string | null;
+};
+
+export type ChannelStatsMembershipBucketRow = {
+  bucket_start: Date | string;
+  joined_users: unknown;
+  left_users: unknown;
+};
+
+type SelectModerationFeedRowsParams = {
+  chatId: string;
+  from: Date;
+  to: Date;
+  filter: ModerationFeedFilter;
+  cursor: {
+    createdAt: Date;
+    id: string;
+  } | null;
+  limit: number;
+};
+
+type SelectChannelStatsMembershipBucketRowsParams = {
+  chatId: string;
+  from: Date;
+  to: Date;
+  bucket: ChannelStatsBucket;
+};
+
+type CompleteHourlyRollupWindow = {
+  completeFrom: Date;
+  completeTo: Date;
+  hasCompleteBuckets: boolean;
+};
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+export async function selectModerationFeedReadModelRows(
+  prisma: PrismaService,
+  params: SelectModerationFeedRowsParams,
+): Promise<ModerationFeedReadModelRow[]> {
+  const filterSql = buildModerationFeedFilterSql(params.filter);
+  const cursorSql = params.cursor
+    ? Prisma.sql`
+        AND (
+          feed.created_at < ${params.cursor.createdAt}
+          OR (feed.created_at = ${params.cursor.createdAt} AND feed.id < ${params.cursor.id})
+        )
+      `
+    : Prisma.empty;
+
+  return prisma.$queryRaw<ModerationFeedReadModelRow[]>`
+    SELECT
+      feed.id,
+      feed.action,
+      feed.rule_code AS "ruleCode",
+      feed.user_id AS "userId",
+      feed.created_at AS "createdAt",
+      feed.masked_excerpt AS "maskedExcerpt",
+      feed.metadata,
+      COALESCE(feed.user_display_name, membership_profile.sender_name) AS "userDisplayName",
+      NULL::TEXT AS "avatarUrl",
+      NULL::TEXT AS "profileUrl",
+      NULL::TEXT AS "profileHandoffUrl"
+    FROM chat_moderation_feed_items feed
+    LEFT JOIN LATERAL (
+      SELECT membership.sender_name
+      FROM chat_membership_activity_feed_items membership
+      WHERE membership.chat_id = feed.chat_id
+        AND membership.user_id = feed.user_id
+        AND COALESCE(BTRIM(membership.sender_name), '') <> ''
+      ORDER BY membership.event_at DESC, membership.source_event_id DESC
+      LIMIT 1
+    ) membership_profile ON TRUE
+    WHERE feed.chat_id = ${params.chatId}
+      AND feed.created_at >= ${params.from}
+      AND feed.created_at <= ${params.to}
+      ${filterSql}
+      ${cursorSql}
+    ORDER BY feed.created_at DESC, feed.id DESC
+    LIMIT ${params.limit}
+  `;
+}
+
+export async function selectChannelStatsMembershipBucketRows(
+  prisma: PrismaService,
+  params: SelectChannelStatsMembershipBucketRowsParams,
+): Promise<ChannelStatsMembershipBucketRow[]> {
+  const bucketName = params.bucket === 'hour' ? 'hour' : 'day';
+  const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteHourlyRollupWindow(
+    params.from,
+    params.to,
+  );
+  const rollupRowsSql = hasCompleteBuckets
+    ? Prisma.sql`
+        SELECT
+          date_trunc(${bucketName}, bucket_start)::TIMESTAMP(3) AS bucket_start,
+          COALESCE(SUM(joined_users), 0) AS joined_users,
+          COALESCE(SUM(left_users), 0) AS left_users
+        FROM channel_stats_bucket_rollups
+        WHERE chat_id = ${params.chatId}
+          AND bucket_start >= ${completeFrom}
+          AND bucket_start < ${completeTo}
+        GROUP BY date_trunc(${bucketName}, bucket_start)::TIMESTAMP(3)
+      `
+    : Prisma.sql`
+        SELECT
+          NULL::TIMESTAMP(3) AS bucket_start,
+          0::BIGINT AS joined_users,
+          0::BIGINT AS left_users
+        WHERE FALSE
+      `;
+  const edgeExclusionSql = hasCompleteBuckets
+    ? Prisma.sql`AND NOT (event_at >= ${completeFrom} AND event_at < ${completeTo})`
+    : Prisma.empty;
+
+  return prisma.$queryRaw<ChannelStatsMembershipBucketRow[]>`
+    WITH membership_bucket_rows AS (
+      ${rollupRowsSql}
+
+      UNION ALL
+
+      SELECT
+        date_trunc(${bucketName}, event_at)::TIMESTAMP(3) AS bucket_start,
+        COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
+        COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
+      FROM chat_membership_activity_feed_items
+      WHERE chat_id = ${params.chatId}
+        AND event_type IN ('user_added', 'user_removed')
+        AND event_at >= ${params.from}
+        AND event_at <= ${params.to}
+        ${edgeExclusionSql}
+      GROUP BY date_trunc(${bucketName}, event_at)::TIMESTAMP(3)
+    )
+    SELECT
+      bucket_start,
+      COALESCE(SUM(joined_users), 0) AS joined_users,
+      COALESCE(SUM(left_users), 0) AS left_users
+    FROM membership_bucket_rows
+    GROUP BY bucket_start
+    ORDER BY bucket_start ASC
+  `;
+}
+
+function buildModerationFeedFilterSql(filter: ModerationFeedFilter): Prisma.Sql {
+  if (filter === 'ALL') {
+    return Prisma.sql`
+      AND (
+        feed.action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN')
+        OR (
+          feed.action = 'NONE'
+          AND feed.rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
+        )
+      )
+    `;
+  }
+
+  if (filter === 'UNMUTE') {
+    return Prisma.sql`
+      AND feed.action = 'NONE'
+      AND feed.rule_code = 'MANUAL_UNMUTE'
+    `;
+  }
+
+  if (filter === 'UNBAN') {
+    return Prisma.sql`
+      AND feed.action = 'NONE'
+      AND feed.rule_code = 'MANUAL_UNBAN'
+    `;
+  }
+
+  if (filter === 'BAN') {
+    return Prisma.sql`AND feed.action IN ('BAN', 'KICK')`;
+  }
+
+  return Prisma.sql`AND feed.action = ${filter}::"SanctionAction"`;
+}
+
+function resolveCompleteHourlyRollupWindow(from: Date, to: Date): CompleteHourlyRollupWindow {
+  const flooredFrom = floorDateToHour(from);
+  const completeFrom =
+    flooredFrom.getTime() === from.getTime()
+      ? flooredFrom
+      : new Date(flooredFrom.getTime() + ONE_HOUR_MS);
+  const completeTo = floorDateToHour(to);
+
+  return {
+    completeFrom,
+    completeTo,
+    hasCompleteBuckets: completeFrom.getTime() < completeTo.getTime(),
+  };
+}
+
+function floorDateToHour(date: Date): Date {
+  const result = new Date(date);
+  result.setUTCMinutes(0, 0, 0);
+  return result;
+}

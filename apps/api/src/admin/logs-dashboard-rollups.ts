@@ -95,49 +95,19 @@ export async function selectLogsDashboardModerationSummary(
 ): Promise<LogsDashboardModerationSummary> {
   const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteRollupWindow(from, to);
   const rollupRowsPromise = hasCompleteBuckets
-    ? prisma.$queryRaw<Array<LogsDashboardModerationSummary & { affected_user_ids: unknown }>>`
-        WITH rollups AS (
-          SELECT
-            warn,
-            delete_message,
-            mute,
-            ban,
-            unmute,
-            unban,
-            affected_user_ids
-          FROM chat_moderation_stats_rollups
-          WHERE chat_id = ${chatId}
-            AND bucket_start >= ${completeFrom}
-            AND bucket_start < ${completeTo}
-        ),
-        counts AS (
-          SELECT
-            COALESCE(SUM(warn), 0) AS "warn",
-            COALESCE(SUM(delete_message), 0) AS "deleteMessage",
-            COALESCE(SUM(mute), 0) AS "mute",
-            COALESCE(SUM(ban), 0) AS "ban",
-            COALESCE(SUM(unmute), 0) AS "unmute",
-            COALESCE(SUM(unban), 0) AS "unban"
-          FROM rollups
-        ),
-        affected AS (
-          SELECT COALESCE(
-            ARRAY_AGG(DISTINCT affected_user_id) FILTER (
-              WHERE COALESCE(BTRIM(affected_user_id), '') <> ''
-            ),
-            ARRAY[]::TEXT[]
-          ) AS affected_user_ids
-          FROM rollups, unnest(affected_user_ids) AS affected_user_id
-        )
+    ? prisma.$queryRaw<Array<LogsDashboardModerationSummary>>`
         SELECT
-          counts."warn",
-          counts."deleteMessage",
-          counts."mute",
-          counts."ban",
-          counts."unmute",
-          counts."unban",
-          affected.affected_user_ids
-        FROM counts, affected
+          COALESCE(SUM(warn), 0) AS "warn",
+          COALESCE(SUM(delete_message), 0) AS "deleteMessage",
+          COALESCE(SUM(mute), 0) AS "mute",
+          COALESCE(SUM(ban), 0) AS "ban",
+          COALESCE(SUM(unmute), 0) AS "unmute",
+          COALESCE(SUM(unban), 0) AS "unban",
+          0 AS "affectedUsers"
+        FROM chat_moderation_stats_rollups
+        WHERE chat_id = ${chatId}
+          AND bucket_start >= ${completeFrom}
+          AND bucket_start < ${completeTo}
       `
     : Promise.resolve([
         {
@@ -147,15 +117,13 @@ export async function selectLogsDashboardModerationSummary(
           ban: 0,
           unmute: 0,
           unban: 0,
-          affected_user_ids: [],
+          affectedUsers: 0,
         },
       ]);
   const edgeExclusion = hasCompleteBuckets
     ? Prisma.sql`AND NOT (created_at >= ${completeFrom} AND created_at < ${completeTo})`
     : Prisma.empty;
-  const edgeRowsPromise = prisma.$queryRaw<
-    Array<LogsDashboardModerationSummary & { affected_user_ids: unknown }>
-  >`
+  const edgeRowsPromise = prisma.$queryRaw<Array<LogsDashboardModerationSummary>>`
     SELECT
       COUNT(*) FILTER (WHERE action = 'WARN') AS "warn",
       COUNT(*) FILTER (WHERE action = 'DELETE_MESSAGE') AS "deleteMessage",
@@ -167,19 +135,7 @@ export async function selectLogsDashboardModerationSummary(
       COUNT(*) FILTER (
         WHERE action = 'NONE' AND rule_code = 'MANUAL_UNBAN'
       ) AS "unban",
-      COALESCE(
-        ARRAY_AGG(DISTINCT user_id) FILTER (
-          WHERE COALESCE(BTRIM(user_id), '') <> ''
-            AND (
-              action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'BAN', 'KICK')
-              OR (
-                action = 'NONE'
-                AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
-              )
-            )
-        ),
-        ARRAY[]::TEXT[]
-      ) AS affected_user_ids
+      0 AS "affectedUsers"
     FROM moderation_events
     WHERE chat_id = ${chatId}
       AND created_at >= ${from}
@@ -193,20 +149,47 @@ export async function selectLogsDashboardModerationSummary(
         )
       )
   `;
-  const [rollupRows, edgeRows] = await Promise.all([rollupRowsPromise, edgeRowsPromise]);
+  const rollupAffectedUsersSql = hasCompleteBuckets
+    ? Prisma.sql`
+        SELECT user_id
+        FROM chat_moderation_affected_user_hours
+        WHERE chat_id = ${chatId}
+          AND bucket_start >= ${completeFrom}
+          AND bucket_start < ${completeTo}
+      `
+    : Prisma.sql`SELECT NULL::TEXT AS user_id WHERE FALSE`;
+  const affectedRowsPromise = prisma.$queryRaw<Array<{ affected_users: unknown }>>`
+    WITH affected_user_ids AS (
+      ${rollupAffectedUsersSql}
+
+      UNION
+
+      SELECT DISTINCT user_id
+      FROM moderation_events
+      WHERE chat_id = ${chatId}
+        AND created_at >= ${from}
+        AND created_at <= ${to}
+        ${edgeExclusion}
+        AND COALESCE(BTRIM(user_id), '') <> ''
+        AND (
+          action IN ('WARN', 'DELETE_MESSAGE', 'MUTE', 'BAN', 'KICK')
+          OR (
+            action = 'NONE'
+            AND rule_code IN ('MANUAL_UNMUTE', 'MANUAL_UNBAN')
+          )
+        )
+    )
+    SELECT COUNT(DISTINCT user_id) AS affected_users
+    FROM affected_user_ids
+  `;
+  const [rollupRows, edgeRows, affectedRows] = await Promise.all([
+    rollupRowsPromise,
+    edgeRowsPromise,
+    affectedRowsPromise,
+  ]);
   const rollupSource = rollupRows[0] ?? emptyModerationSummarySource();
   const edgeSource = edgeRows[0] ?? emptyModerationSummarySource();
-  const affectedUserIds = new Set<string>();
-  for (const source of [rollupSource.affected_user_ids, edgeSource.affected_user_ids]) {
-    if (!Array.isArray(source)) {
-      continue;
-    }
-    for (const userId of source) {
-      if (typeof userId === 'string' && userId.trim()) {
-        affectedUserIds.add(userId.trim());
-      }
-    }
-  }
+  const affectedSource = affectedRows[0] ?? { affected_users: 0 };
 
   return {
     warn: toSafeInteger(rollupSource.warn) + toSafeInteger(edgeSource.warn),
@@ -216,7 +199,7 @@ export async function selectLogsDashboardModerationSummary(
     ban: toSafeInteger(rollupSource.ban) + toSafeInteger(edgeSource.ban),
     unmute: toSafeInteger(rollupSource.unmute) + toSafeInteger(edgeSource.unmute),
     unban: toSafeInteger(rollupSource.unban) + toSafeInteger(edgeSource.unban),
-    affectedUsers: affectedUserIds.size,
+    affectedUsers: toSafeInteger(affectedSource.affected_users),
   };
 }
 
@@ -228,9 +211,7 @@ function floorDateToHour(date: Date): Date {
 
 function ceilDateToHour(date: Date): Date {
   const floored = floorDateToHour(date);
-  return floored.getTime() === date.getTime()
-    ? floored
-    : new Date(floored.getTime() + ONE_HOUR_MS);
+  return floored.getTime() === date.getTime() ? floored : new Date(floored.getTime() + ONE_HOUR_MS);
 }
 
 function resolveCompleteRollupWindow(from: Date, to: Date): RollupWindow {
@@ -261,9 +242,7 @@ function resolveDashboardEdgeRanges(
   ].filter((range) => range.from.getTime() <= range.to.getTime());
 }
 
-function emptyModerationSummarySource(): LogsDashboardModerationSummary & {
-  affected_user_ids: unknown;
-} {
+function emptyModerationSummarySource(): LogsDashboardModerationSummary {
   return {
     warn: 0,
     deleteMessage: 0,
@@ -272,7 +251,6 @@ function emptyModerationSummarySource(): LogsDashboardModerationSummary & {
     unmute: 0,
     unban: 0,
     affectedUsers: 0,
-    affected_user_ids: [],
   };
 }
 
