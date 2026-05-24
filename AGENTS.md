@@ -174,6 +174,7 @@
 - `ChatSettings.antiSpamEnabled` is the fast per-chat sender flood guard. The hard threshold is `MESSAGE_RATE_LIMIT` on the 6th message/sticker-like event within 6 seconds, including attachment-only messages; do not expose threshold controls, and hard-ban the sender instead of routing it through configurable message-limit escalation.
 - Moderation dashboard/feed and membership activity feed should read from maintained read models (`chat_moderation_feed_items`, `chat_moderation_affected_user_hours`, `chat_membership_activity_feed_items`) instead of rebuilding from raw events on each request.
 - Channel statistics should open from cached/read-model data. Use `channel_stats_bucket_rollups` for membership, posts, views, and reactions; keep raw `channel_posts` reads limited to compact top-post/top-reaction details. Do not block `GET /channels/:chatId/stats` on MAX refresh; queue stale refresh in the background and request `includeActivityPreview=false` for the mini app's first stats paint.
+- Channel statistics audience graphs should plot joined/left net growth from `series.membership`; use `series.participants` only as total-audience context. Period views should use observed `viewsDelta` when it exists, with `latestTotal`/`viewsTotal` only as the no-delta fallback.
 - Channel statistics screens should stay factual. Do not add "What to do next", smart recommendations, pseudo-AI advice, or coaching copy; prefer neutral metrics, freshness/source coverage, charts, top posts, and best publishing windows.
 
 ## Repo hygiene

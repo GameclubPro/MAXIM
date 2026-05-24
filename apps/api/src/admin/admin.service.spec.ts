@@ -16356,6 +16356,75 @@ describe('AdminService.getChannelStats', () => {
     jest.useRealTimers();
   });
 
+  it('uses observed view deltas for period charts when latest totals are larger', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      resolveChannelStatsViewsMode: (totals: {
+        viewsDelta: number;
+        viewsTotal: number;
+      }) => 'observedDelta' | 'latestTotal';
+      buildViewsSeriesFromContentSeries: (
+        contentSeries: Array<{
+          at: string;
+          posts: number;
+          viewsDelta: number;
+          viewsTotal: number;
+          reactions: number;
+        }>,
+        mode: 'observedDelta' | 'latestTotal',
+      ) => Array<{ at: string; views: number; cumulativeViews: number }>;
+    };
+
+    const mode = statsHelpers.resolveChannelStatsViewsMode({
+      viewsDelta: 120,
+      viewsTotal: 1_000,
+    });
+    const series = statsHelpers.buildViewsSeriesFromContentSeries(
+      [
+        {
+          at: '2026-03-07T09:00:00.000Z',
+          posts: 1,
+          viewsDelta: 45,
+          viewsTotal: 500,
+          reactions: 0,
+        },
+        {
+          at: '2026-03-07T10:00:00.000Z',
+          posts: 0,
+          viewsDelta: 75,
+          viewsTotal: 500,
+          reactions: 0,
+        },
+      ],
+      mode,
+    );
+
+    expect(mode).toBe('observedDelta');
+    expect(series).toEqual([
+      {
+        at: '2026-03-07T09:00:00.000Z',
+        views: 45,
+        cumulativeViews: 45,
+      },
+      {
+        at: '2026-03-07T10:00:00.000Z',
+        views: 75,
+        cumulativeViews: 120,
+      },
+    ]);
+    expect(
+      statsHelpers.resolveChannelStatsViewsMode({
+        viewsDelta: 0,
+        viewsTotal: 1_000,
+      }),
+    ).toBe('latestTotal');
+  });
+
   it('returns official-first channel stats without reading channel settings', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 

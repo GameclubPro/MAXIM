@@ -21991,10 +21991,7 @@ export class AdminService implements OnModuleDestroy {
     viewsDelta: number;
     viewsTotal: number;
   }): ChannelStatsViewMode {
-    if (
-      totals.viewsDelta > 0 &&
-      (totals.viewsTotal === 0 || totals.viewsDelta >= totals.viewsTotal)
-    ) {
+    if (totals.viewsDelta > 0) {
       return 'observedDelta';
     }
 
