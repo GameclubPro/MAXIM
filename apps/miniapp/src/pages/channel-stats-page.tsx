@@ -41,6 +41,10 @@ import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
+import {
+  resolveInitialAudienceChartIndex,
+  resolveInitialViewsChartIndex,
+} from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -1013,11 +1017,21 @@ function ChartMiniRuler({
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildAudienceChart(stats);
   const labels = chart.points;
-  const [activeIndex, setActiveIndex] = useState(Math.max(chart.points.length - 1, 0));
+  const [activeIndex, setActiveIndex] = useState(() =>
+    resolveInitialAudienceChartIndex(chart.points),
+  );
 
   useEffect(() => {
-    setActiveIndex(Math.max(chart.points.length - 1, 0));
-  }, [chart.points.length, stats.period.from, stats.period.to]);
+    setActiveIndex(resolveInitialAudienceChartIndex(chart.points));
+  }, [
+    chart.points.length,
+    stats.channel.participantsCount,
+    stats.official.audience.joined,
+    stats.official.audience.left,
+    stats.official.audience.net,
+    stats.period.from,
+    stats.period.to,
+  ]);
 
   const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.points.length - 1, 0));
   const activePoint = chart.points[safeActiveIndex] ?? null;
@@ -1039,10 +1053,15 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeMembershipBarWidth = clamp(slotWidth * 0.62, 7, 14);
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
   const activeParticipantsCompactLabel = formatCompactCount(activePoint?.participantsCount ?? null);
+  const hasActiveParticipantsCount =
+    activePoint?.participantsCount !== null && activePoint?.participantsCount !== undefined;
   const activeNet = activePoint?.net ?? 0;
   const activeCumulativeNet = activePoint?.cumulativeNet ?? 0;
   const activeNetLabel = formatSignedCount(activeNet);
   const activeCumulativeNetLabel = formatSignedCount(activeCumulativeNet);
+  const activeAudiencePrimaryLabel = hasActiveParticipantsCount
+    ? `${activeParticipantsCompactLabel} подписчиков`
+    : `${activeCumulativeNetLabel} за период`;
   const activeBucketLabel = stats.period.bucket === 'hour' ? 'За час' : 'За день';
   const activeBucketChipLabel = stats.period.bucket === 'hour' ? 'Час' : 'День';
   const activeParticipantDetail =
@@ -1087,7 +1106,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   ? formatChartDetailDate(activePoint.at, stats.period.bucket)
                   : 'Нет данных'}
               </small>
-              <strong>{activeCumulativeNetLabel} за период</strong>
+              <strong>{activeAudiencePrimaryLabel}</strong>
             </div>
 
             <div className="channel-stats-graph__summary-chips">
@@ -1107,8 +1126,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   Пред. {formatSignedCompactCount(activePreviousPoint.cumulativeNet)}
                 </span>
               ) : null}
-              {activePoint?.participantsCount !== null &&
-              activePoint?.participantsCount !== undefined ? (
+              {hasActiveParticipantsCount ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--audience-total">
                   Всего {activeParticipantsCompactLabel}
                 </span>
@@ -1151,9 +1169,14 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             {activePoint ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
-                <strong>Баланс {activeCumulativeNetLabel}</strong>
+                <strong>
+                  {hasActiveParticipantsCount
+                    ? `${activeParticipantsLabel} подписчиков`
+                    : `Баланс ${activeCumulativeNetLabel}`}
+                </strong>
                 <span>
-                  {activeBucketLabel} {activeNetLabel} · +{formatCount(activePoint.joined)} / -
+                  Баланс {activeCumulativeNetLabel} · {activeBucketLabel.toLocaleLowerCase('ru-RU')}{' '}
+                  {activeNetLabel} · +{formatCount(activePoint.joined)} / -
                   {formatCount(activePoint.left)}
                 </span>
                 {activePoint.participantsCount !== null ? (
@@ -1432,11 +1455,19 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildViewsChart(stats);
   const labels = stats.official.series.views;
-  const [activeIndex, setActiveIndex] = useState(Math.max(chart.bars.length - 1, 0));
+  const [activeIndex, setActiveIndex] = useState(() => resolveInitialViewsChartIndex(chart.bars));
 
   useEffect(() => {
-    setActiveIndex(Math.max(chart.bars.length - 1, 0));
-  }, [chart.bars.length, stats.period.from, stats.period.to]);
+    setActiveIndex(resolveInitialViewsChartIndex(chart.bars));
+  }, [
+    chart.bars.length,
+    stats.official.content.views,
+    stats.official.content.viewsTotal,
+    stats.official.content.viewsMode,
+    stats.official.content.lastPublishedAt,
+    stats.period.from,
+    stats.period.to,
+  ]);
 
   const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
   const activeBar = chart.bars[safeActiveIndex] ?? null;
