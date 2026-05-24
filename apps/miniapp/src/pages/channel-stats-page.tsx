@@ -102,7 +102,7 @@ const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
 ];
 
 const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
-  { value: 'audience', label: 'Аудит.' },
+  { value: 'audience', label: 'Ауд.' },
   { value: 'views', label: 'Просм.' },
 ];
 
@@ -112,6 +112,8 @@ const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
 ];
 
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
+const CHART_VIEWBOX_WIDTH = 320;
+const CHART_VIEWBOX_HEIGHT = 276;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -548,9 +550,7 @@ function resolvePostPinPositions(
       messageId: post.messageId,
       label: `#${index + 1}`,
       value: formatCompactCount(views),
-      detail: `${formatCompactCount(views)} просм. · ${formatCompactCount(
-        post.reactions,
-      )} р.`,
+      detail: `${formatCompactCount(views)} просм. · ${formatCompactCount(post.reactions)} р.`,
       x: bestAnchor.x,
       tone: index === 0 ? 'accent' : 'neutral',
     };
@@ -669,28 +669,28 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       hasLine: false,
       hasPreviousLine: false,
       guideYs: [],
-      dividerY: 118,
-      barsBaseline: 166,
-      eventRailY: 190,
-      height: 210,
-      leftPad: 50,
-      rightPad: 14,
+      dividerY: 156,
+      barsBaseline: 220,
+      eventRailY: 252,
+      height: CHART_VIEWBOX_HEIGHT,
+      leftPad: 44,
+      rightPad: 16,
       axisLabels: [],
     };
   }
 
-  const width = 320;
-  const height = 210;
-  const leftPad = 50;
-  const rightPad = 14;
-  const lineTop = 24;
-  const lineBottom = 98;
-  const lineFloor = 110;
-  const dividerY = 122;
-  const barsBaseline = 166;
-  const eventRailY = 190;
-  const joinedPeakHeight = 34;
-  const leftPeakHeight = 20;
+  const width = CHART_VIEWBOX_WIDTH;
+  const height = CHART_VIEWBOX_HEIGHT;
+  const leftPad = 44;
+  const rightPad = 16;
+  const lineTop = 30;
+  const lineBottom = 132;
+  const lineFloor = 148;
+  const dividerY = 158;
+  const barsBaseline = 220;
+  const eventRailY = 252;
+  const joinedPeakHeight = 48;
+  const leftPeakHeight = 28;
   const plotWidth = width - leftPad - rightPad;
   const participantValues = series
     .map((item) => item.participantsCount)
@@ -839,20 +839,20 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       rulerPath: '',
       previousRulerPath: '',
       guideYs: [],
-      leftPad: 18,
-      rightPad: 14,
-      baselineY: 182,
-      eventRailY: 194,
-      height: 210,
+      leftPad: 22,
+      rightPad: 16,
+      baselineY: 224,
+      eventRailY: 252,
+      height: CHART_VIEWBOX_HEIGHT,
     };
   }
 
-  const width = 320;
-  const height = 210;
-  const leftPad = 18;
-  const rightPad = 14;
-  const topPad = 18;
-  const bottomPad = 28;
+  const width = CHART_VIEWBOX_WIDTH;
+  const height = CHART_VIEWBOX_HEIGHT;
+  const leftPad = 22;
+  const rightPad = 16;
+  const topPad = 28;
+  const bottomPad = 52;
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
   const maxViews = Math.max(
@@ -984,9 +984,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const slotWidth =
     chart.points.length > 1
-      ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.points.length - 1)
+      ? (CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad) /
+        Math.max(1, chart.points.length - 1)
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.72, 26, 40);
+  const membershipBarWidth = clamp(slotWidth * 0.48, 5, 10);
+  const activeMembershipBarWidth = clamp(slotWidth * 0.62, 7, 14);
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
   const activeNet = activePoint ? activePoint.joined - activePoint.left : 0;
   const maxMembershipActivity = Math.max(
@@ -1010,7 +1013,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         activePoint.left,
       )} ушли, баланс ${formatSignedCount(activeNet)}`
     : 'Данные по аудитории недоступны';
-  const tooltipX = activePoint ? clamp((activePoint.x / 320) * 100, 15, 85) : 50;
+  const tooltipX = activePoint ? clamp((activePoint.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
 
   return (
@@ -1101,7 +1104,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             ) : null}
 
             <svg
-              viewBox={`0 0 320 ${chart.height}`}
+              viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${chart.height}`}
               className="channel-stats-graph__svg"
               aria-hidden
             >
@@ -1150,7 +1153,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   key={`guide-${y}`}
                   x1={chart.leftPad}
                   y1={y}
-                  x2={320 - chart.rightPad}
+                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                   y2={y}
                   className="channel-stats-graph__grid"
                 />
@@ -1158,14 +1161,14 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               <line
                 x1={chart.leftPad}
                 y1={chart.dividerY}
-                x2={320 - chart.rightPad}
+                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                 y2={chart.dividerY}
                 className="channel-stats-graph__divider"
               />
               <line
                 x1={chart.leftPad}
                 y1={chart.barsBaseline}
-                x2={320 - chart.rightPad}
+                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                 y2={chart.barsBaseline}
                 className="channel-stats-graph__baseline"
               />
@@ -1193,9 +1196,15 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               {chart.points.map((point, index) => (
                 <g key={labels[index]?.at ?? index}>
                   <rect
-                    x={point.x - (safeActiveIndex === index ? 6 : 5)}
+                    x={
+                      point.x -
+                      (safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth) /
+                        2
+                    }
                     y={point.joinedTop}
-                    width={safeActiveIndex === index ? 12 : 10}
+                    width={
+                      safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth
+                    }
                     height={point.joinedHeight}
                     rx="4.5"
                     className={`channel-stats-graph__bar channel-stats-graph__bar--joined ${
@@ -1204,9 +1213,17 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   />
                   {point.leftHeight > 0 ? (
                     <rect
-                      x={point.x - (safeActiveIndex === index ? 6 : 5)}
+                      x={
+                        point.x -
+                        (safeActiveIndex === index
+                          ? activeMembershipBarWidth
+                          : membershipBarWidth) /
+                          2
+                      }
                       y={point.leftTop}
-                      width={safeActiveIndex === index ? 12 : 10}
+                      width={
+                        safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth
+                      }
                       height={point.leftHeight}
                       rx="4.5"
                       className={`channel-stats-graph__bar channel-stats-graph__bar--left ${
@@ -1219,7 +1236,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               <line
                 x1={chart.leftPad}
                 y1={chart.eventRailY}
-                x2={320 - chart.rightPad}
+                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                 y2={chart.eventRailY}
                 className="channel-stats-graph__event-rail"
               />
@@ -1267,7 +1284,9 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path
-                    d={`M ${marker.x.toFixed(2)} 101 l 5 5 l -5 5 l -5 -5 Z`}
+                    d={`M ${marker.x.toFixed(2)} ${(chart.dividerY - 28).toFixed(
+                      2,
+                    )} l 5 5 l -5 5 l -5 -5 Z`}
                     className={`channel-stats-graph__marker channel-stats-graph__marker--${marker.tone}`}
                   >
                     <title>{`${marker.label} ${marker.value}`}</title>
@@ -1367,16 +1386,19 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   );
   const slotWidth =
     chart.bars.length > 1
-      ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
+      ? (CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
+  const previousBarWidth = clamp(slotWidth * 0.54, 4, 15);
+  const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
+  const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
   const activeViewsLabel = formatCount(activeBar?.views ?? null);
   const activeCumulativeLabel = formatCount(activeBar?.cumulativeViews ?? chart.cumulativeMax);
   const activeCumulativeCompactLabel = formatCompactCount(
     activeBar?.cumulativeViews ?? chart.cumulativeMax,
   );
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
-  const tooltipX = activeBar ? clamp((activeBar.x / 320) * 100, 15, 85) : 50;
+  const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
@@ -1466,7 +1488,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             ) : null}
 
             <svg
-              viewBox={`0 0 320 ${chart.height}`}
+              viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${chart.height}`}
               className="channel-stats-graph__svg"
               aria-hidden
             >
@@ -1507,7 +1529,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   key={`views-guide-${y}`}
                   x1={chart.leftPad}
                   y1={y}
-                  x2={320 - chart.rightPad}
+                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                   y2={y}
                   className="channel-stats-graph__grid"
                 />
@@ -1515,7 +1537,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <line
                 x1={chart.leftPad}
                 y1={chart.baselineY}
-                x2={320 - chart.rightPad}
+                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                 y2={chart.baselineY}
                 className="channel-stats-graph__baseline"
               />
@@ -1549,9 +1571,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               {chart.previousBars.map((bar, index) => (
                 <rect
                   key={`previous-${bar.at}-${index}`}
-                  x={bar.x - 8}
+                  x={bar.x - previousBarWidth / 2}
                   y={bar.y}
-                  width="16"
+                  width={previousBarWidth}
                   height={Math.max(3, bar.height)}
                   rx="5"
                   className="channel-stats-graph__bar channel-stats-graph__bar--previous"
@@ -1560,9 +1582,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               {chart.bars.map((bar, index) => (
                 <rect
                   key={labels[index]?.at ?? index}
-                  x={bar.x - (safeActiveIndex === index ? 10 : 9)}
+                  x={bar.x - (safeActiveIndex === index ? activeViewBarWidth : viewBarWidth) / 2}
                   y={bar.y}
-                  width={safeActiveIndex === index ? 20 : 18}
+                  width={safeActiveIndex === index ? activeViewBarWidth : viewBarWidth}
                   height={Math.max(4, bar.height)}
                   rx="6"
                   className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
@@ -1595,7 +1617,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path
-                    d={`M ${marker.x.toFixed(2)} 170 l 4.8 -8.4 l 4.8 8.4 Z`}
+                    d={`M ${marker.x.toFixed(2)} ${(chart.baselineY + 17).toFixed(
+                      2,
+                    )} l 4.8 -8.4 l 4.8 8.4 Z`}
                     className={`channel-stats-graph__marker channel-stats-graph__marker--${marker.tone}`}
                   >
                     <title>{`${marker.label} ${marker.value}`}</title>
@@ -1605,7 +1629,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <line
                 x1={chart.leftPad}
                 y1={chart.eventRailY}
-                x2={320 - chart.rightPad}
+                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
                 y2={chart.eventRailY}
                 className="channel-stats-graph__event-rail"
               />
