@@ -1,4 +1,5 @@
-import type { ChannelStatsBucket, ModerationFeedFilter } from '@maxim/contracts';
+import type { ModerationFeedFilter } from '@maxim/contracts';
+import type { ChannelStatsBucket } from '@maxim/contracts/channel-stats';
 import { Prisma, type SanctionAction } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 

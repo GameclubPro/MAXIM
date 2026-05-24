@@ -1,4 +1,4 @@
-import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
+import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 
 type ChannelStatsIntelligence = NonNullable<ChannelStatsResponse['intelligence']>;
 type ChannelStatsMetricDelta = ChannelStatsResponse['comparison']['deltas']['views'];

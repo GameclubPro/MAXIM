@@ -13,7 +13,6 @@ import {
   channelDialogTypeSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
-  channelStatsResponseSchema,
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
@@ -59,8 +58,6 @@ import {
   type ChannelDialogType,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
-  type ChannelStatsResponse,
-  type ChannelStatsRange,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -91,6 +88,11 @@ import {
   type SystemDashboardResponse,
   type SystemModeSnapshot,
 } from '@maxim/contracts';
+import {
+  channelStatsResponseSchema,
+  type ChannelStatsRange,
+  type ChannelStatsResponse,
+} from '@maxim/contracts/channel-stats';
 import {
   PREVIEW_CHANNEL_ID,
   PREVIEW_CHANNEL_TITLE,

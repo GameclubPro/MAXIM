@@ -1,0 +1,283 @@
+import { z } from 'zod';
+import { booleanQueryFlagSchema } from './dashboard-common.js';
+import { membershipActivityPageSchema } from './membership-activity.js';
+
+export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
+export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
+
+export const channelStatsQuerySchema = z.object({
+  range: channelStatsRangeSchema.default('7d'),
+  includeActivityPreview: booleanQueryFlagSchema.default(true),
+  includeIntelligence: booleanQueryFlagSchema.default(true),
+});
+export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
+
+export const channelStatsBucketSchema = z.enum(['hour', 'day']);
+export type ChannelStatsBucket = z.infer<typeof channelStatsBucketSchema>;
+
+export const channelStatsMissingMetricSchema = z.enum(['reach', 'uniqueViews']);
+export type ChannelStatsMissingMetric = z.infer<typeof channelStatsMissingMetricSchema>;
+
+export const channelStatsReactionSchema = z.object({
+  emoji: z.string().min(1),
+  count: z.number().int().min(0),
+});
+export type ChannelStatsReaction = z.infer<typeof channelStatsReactionSchema>;
+
+export const channelStatsViewModeSchema = z.enum(['observedDelta', 'latestTotal']);
+export type ChannelStatsViewMode = z.infer<typeof channelStatsViewModeSchema>;
+
+export const channelStatsSignalToneSchema = z.enum([
+  'accent',
+  'success',
+  'warning',
+  'danger',
+  'neutral',
+]);
+export type ChannelStatsSignalTone = z.infer<typeof channelStatsSignalToneSchema>;
+
+export const channelStatsMetricDeltaSchema = z.object({
+  current: z.number().int(),
+  previous: z.number().int(),
+  absolute: z.number().int(),
+  percent: z.number().nullable(),
+});
+export type ChannelStatsMetricDelta = z.infer<typeof channelStatsMetricDeltaSchema>;
+
+export const channelStatsSignalSchema = z.object({
+  code: z.string().min(1).max(64),
+  label: z.string().min(1).max(48),
+  value: z.string().min(1).max(32),
+  tone: channelStatsSignalToneSchema,
+  at: z.string().datetime().nullable(),
+});
+export type ChannelStatsSignal = z.infer<typeof channelStatsSignalSchema>;
+
+export const channelStatsGraphMarkerSchema = z.object({
+  code: z.string().min(1).max(64),
+  type: z.enum(['post', 'peak', 'anomaly']),
+  label: z.string().min(1).max(48),
+  value: z.string().min(1).max(32),
+  tone: channelStatsSignalToneSchema,
+  at: z.string().datetime(),
+});
+export type ChannelStatsGraphMarker = z.infer<typeof channelStatsGraphMarkerSchema>;
+
+export const channelStatsBestWindowSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  hour: z.number().int().min(0).max(23),
+  score: z.number().int().min(0),
+  posts: z.number().int().min(0),
+  averageViews: z.number().int().min(0),
+  averageReactions: z.number().int().min(0),
+});
+export type ChannelStatsBestWindow = z.infer<typeof channelStatsBestWindowSchema>;
+
+export const channelStatsBenchmarkMetricSchema = z.object({
+  current: z.number(),
+  baseline: z.number(),
+  deltaPercent: z.number().nullable(),
+});
+export type ChannelStatsBenchmarkMetric = z.infer<typeof channelStatsBenchmarkMetricSchema>;
+
+export const channelStatsForecastConfidenceSchema = z.enum(['low', 'medium', 'high']);
+export type ChannelStatsForecastConfidence = z.infer<typeof channelStatsForecastConfidenceSchema>;
+
+export const channelStatsForecastSchema = z.object({
+  horizonDays: z.number().int().min(1).max(90),
+  participants: z.number().int().min(0).nullable(),
+  net: z.number().int().nullable(),
+  confidence: channelStatsForecastConfidenceSchema,
+});
+export type ChannelStatsForecast = z.infer<typeof channelStatsForecastSchema>;
+
+export const channelStatsCohortSchema = z.object({
+  joined: z.number().int().min(0),
+  retained: z.number().int().min(0),
+  participated: z.number().int().min(0),
+  reactions: z.number().int().min(0),
+  retentionRate: z.number().nullable(),
+  participationRate: z.number().nullable(),
+  reactionsPerJoined: z.number().nullable(),
+  sampleSize: z.number().int().min(0),
+});
+export type ChannelStatsCohort = z.infer<typeof channelStatsCohortSchema>;
+
+export const channelStatsHeatmapCellSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  hour: z.number().int().min(0).max(23),
+  score: z.number().int().min(0),
+  posts: z.number().int().min(0),
+  averageViews: z.number().int().min(0),
+  averageReactions: z.number().int().min(0),
+  tone: channelStatsSignalToneSchema,
+});
+export type ChannelStatsHeatmapCell = z.infer<typeof channelStatsHeatmapCellSchema>;
+
+export const channelStatsIntelligenceSchema = z.object({
+  headline: z.object({
+    primary: channelStatsSignalSchema,
+    secondary: z.array(channelStatsSignalSchema).max(2),
+  }),
+  benchmarks: z.object({
+    viewsPerPost: channelStatsBenchmarkMetricSchema,
+    reactionsPerPost: channelStatsBenchmarkMetricSchema,
+    engagementRate: channelStatsBenchmarkMetricSchema,
+  }),
+  forecast: channelStatsForecastSchema,
+  cohort: channelStatsCohortSchema,
+  publishingHeatmap: z.array(channelStatsHeatmapCellSchema).max(168),
+  patterns: z.array(channelStatsSignalSchema).max(5),
+});
+export type ChannelStatsIntelligence = z.infer<typeof channelStatsIntelligenceSchema>;
+
+export const channelStatsHealthSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  tone: channelStatsSignalToneSchema,
+  factors: z
+    .array(
+      z.object({
+        code: z.string().min(1).max(64),
+        label: z.string().min(1).max(48),
+        tone: channelStatsSignalToneSchema,
+        impact: z.number().int(),
+      }),
+    )
+    .max(4),
+});
+export type ChannelStatsHealth = z.infer<typeof channelStatsHealthSchema>;
+
+export const channelStatsTopPostSchema = z.object({
+  messageId: z.string(),
+  publishedAt: z.string().datetime(),
+  url: z.string().trim().max(2_048).nullable(),
+  views: z.number().int().min(0),
+  viewsDelta: z.number().int().min(0),
+  reactions: z.number().int().min(0),
+});
+export type ChannelStatsTopPost = z.infer<typeof channelStatsTopPostSchema>;
+
+export const channelStatsResponseSchema = z.object({
+  channel: z.object({
+    id: z.string(),
+    title: z.string(),
+    participantsCount: z.number().int().min(0).nullable(),
+    status: z.string().nullable(),
+    isPublic: z.boolean().nullable(),
+    link: z.string().trim().max(2_048).nullable(),
+    lastEventAt: z.string().datetime().nullable(),
+    avatarUrl: z.string().trim().url().nullable().optional(),
+  }),
+  period: z.object({
+    range: channelStatsRangeSchema,
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+    bucket: channelStatsBucketSchema,
+  }),
+  official: z.object({
+    audience: z.object({
+      joined: z.number().int().min(0),
+      left: z.number().int().min(0).nullable(),
+      net: z.number().int().nullable(),
+    }),
+    content: z.object({
+      posts: z.number().int().min(0),
+      views: z.number().int().min(0),
+      viewsTotal: z.number().int().min(0),
+      viewsMode: channelStatsViewModeSchema,
+      reactions: z.number().int().min(0),
+      topReactions: z.array(channelStatsReactionSchema),
+      topPosts: z.array(channelStatsTopPostSchema),
+      lastPublishedAt: z.string().datetime().nullable(),
+    }),
+    series: z.object({
+      participants: z.array(
+        z.object({
+          at: z.string().datetime(),
+          participantsCount: z.number().int().min(0).nullable(),
+        }),
+      ),
+      membership: z.array(
+        z.object({
+          at: z.string().datetime(),
+          joined: z.number().int().min(0),
+          left: z.number().int().min(0).nullable(),
+        }),
+      ),
+      views: z.array(
+        z.object({
+          at: z.string().datetime(),
+          views: z.number().int().min(0),
+          cumulativeViews: z.number().int().min(0),
+        }),
+      ),
+    }),
+  }),
+  secondary: z.object({
+    postsWithButtons: z.number().int().min(0),
+    comments: z.number().int().min(0),
+    suggestions: z.number().int().min(0),
+    commentAuthors: z.number().int().min(0),
+    suggestionAuthors: z.number().int().min(0),
+    suggestionsDelivered: z.number().int().min(0),
+    suggestionsFailed: z.number().int().min(0),
+    lastBotActivityAt: z.string().datetime().nullable(),
+  }),
+  meta: z.object({
+    maxSnapshotAvailable: z.boolean(),
+    viewsAvailable: z.boolean(),
+    churnAvailable: z.boolean(),
+    officialCoverageFrom: z.string().datetime().nullable(),
+    missingOfficialMetrics: z.array(channelStatsMissingMetricSchema),
+    refreshQueued: z.boolean().default(false),
+  }),
+  comparison: z.object({
+    period: z.object({
+      from: z.string().datetime(),
+      to: z.string().datetime(),
+    }),
+    deltas: z.object({
+      audienceNet: channelStatsMetricDeltaSchema,
+      joined: channelStatsMetricDeltaSchema,
+      left: channelStatsMetricDeltaSchema,
+      posts: channelStatsMetricDeltaSchema,
+      views: channelStatsMetricDeltaSchema,
+      averageViewsPerPost: channelStatsMetricDeltaSchema,
+      reactions: channelStatsMetricDeltaSchema,
+    }),
+    series: z
+      .object({
+        participants: z.array(
+          z.object({
+            at: z.string().datetime(),
+            participantsCount: z.number().int().min(0).nullable(),
+          }),
+        ),
+        membership: z.array(
+          z.object({
+            at: z.string().datetime(),
+            joined: z.number().int().min(0),
+            left: z.number().int().min(0).nullable(),
+          }),
+        ),
+        views: z.array(
+          z.object({
+            at: z.string().datetime(),
+            views: z.number().int().min(0),
+            cumulativeViews: z.number().int().min(0),
+          }),
+        ),
+      })
+      .optional(),
+  }),
+  health: channelStatsHealthSchema,
+  signals: z.object({
+    insights: z.array(channelStatsSignalSchema).max(6),
+    alerts: z.array(channelStatsSignalSchema).max(4),
+    markers: z.array(channelStatsGraphMarkerSchema).max(8),
+    bestWindows: z.array(channelStatsBestWindowSchema).max(3),
+  }),
+  intelligence: channelStatsIntelligenceSchema.optional(),
+  activityFeed: membershipActivityPageSchema,
+});
+export type ChannelStatsResponse = z.infer<typeof channelStatsResponseSchema>;

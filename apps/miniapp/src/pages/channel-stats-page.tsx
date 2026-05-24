@@ -1,9 +1,9 @@
+import type { MembershipActivityItem } from '@maxim/contracts';
 import type {
   ChannelStatsBucket,
   ChannelStatsRange,
   ChannelStatsResponse,
-  MembershipActivityItem,
-} from '@maxim/contracts';
+} from '@maxim/contracts/channel-stats';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity as IconActivity,

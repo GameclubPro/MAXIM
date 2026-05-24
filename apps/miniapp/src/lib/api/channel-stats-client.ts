@@ -1,11 +1,10 @@
 import type {
   BroadcastHandoffResponse,
-  ChannelStatsRange,
-  ChannelStatsResponse,
   MembershipActivityPage,
   MembershipActivityQuery,
   ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
+import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 import type { ApiTransport } from './transport';
 
 const channelStatsRanges = new Set<ChannelStatsRange>(['24h', '7d', '30d']);
