@@ -203,6 +203,9 @@ export async function selectChannelStatsContentBucketRows(
   const viewEdgeExclusionSql = hasCompleteBuckets
     ? Prisma.sql`AND NOT (snapshots.captured_at >= ${completeFrom} AND snapshots.captured_at < ${completeTo})`
     : Prisma.empty;
+  const initialViewCorrectionWindowSql = hasCompleteBuckets
+    ? Prisma.sql`AND snapshots.captured_at >= ${completeFrom} AND snapshots.captured_at < ${completeTo}`
+    : Prisma.sql`AND FALSE`;
 
   return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
     WITH content_bucket_rows AS (
@@ -262,6 +265,32 @@ export async function selectChannelStatsContentBucketRows(
         AND snapshots.captured_at >= ${params.from}
         AND snapshots.captured_at <= ${params.to}
         ${viewEdgeExclusionSql}
+      GROUP BY date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3)
+
+      UNION ALL
+
+      -- First snapshots of period posts are period views, but the hourly rollup
+      -- stores only deltas after the first snapshot.
+      SELECT
+        date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3) AS bucket_start,
+        0::BIGINT AS posts,
+        COALESCE(SUM(GREATEST(snapshots.views, 0)), 0) AS views_delta,
+        0::BIGINT AS views_total,
+        0::BIGINT AS reactions
+      FROM channel_posts posts
+      JOIN LATERAL (
+        SELECT first_snapshot.captured_at, first_snapshot.views
+        FROM channel_post_view_snapshots first_snapshot
+        WHERE first_snapshot.channel_post_id = posts.id
+        ORDER BY first_snapshot.captured_at ASC, first_snapshot.id ASC
+        LIMIT 1
+      ) snapshots ON TRUE
+      WHERE posts.chat_id = ${params.chatId}
+        AND posts.published_at >= ${params.from}
+        AND posts.published_at <= ${params.to}
+        AND snapshots.captured_at >= ${params.from}
+        AND snapshots.captured_at <= ${params.to}
+        ${initialViewCorrectionWindowSql}
       GROUP BY date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3)
     )
     SELECT

@@ -16798,6 +16798,8 @@ describe('AdminService.getChannelStats', () => {
     expect(contentSqlText).toContain('views_total');
     expect(contentSqlText).toContain("date_trunc('day', bucket_start)");
     expect(contentSqlText).toContain('channel_post_view_snapshots');
+    expect(contentSqlText).toContain('ORDER BY first_snapshot.captured_at ASC');
+    expect(contentSqlText).toContain('GREATEST(snapshots.views, 0)');
   });
 
   it('returns cached channel stats immediately and refreshes stale MAX data in background', async () => {
@@ -16838,9 +16840,7 @@ describe('AdminService.getChannelStats', () => {
       .mockResolvedValueOnce({
         capturedAt: new Date('2026-03-01T08:00:00.000Z'),
       })
-      .mockResolvedValueOnce({
-        participantsCount: 1240,
-      })
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
         participantsCount: 1240,
       });
@@ -16903,6 +16903,10 @@ describe('AdminService.getChannelStats', () => {
     const result = resolvedResult ?? (await resultPromise);
     expect(race).toBe('resolved');
     expect(result.meta.refreshQueued).toBe(true);
+    expect(result.official.series.participants).toHaveLength(8);
+    expect(
+      result.official.series.participants.every((point) => point.participantsCount === 1240),
+    ).toBe(true);
     expect(result.activityFeed).toEqual({
       items: [],
       hasMore: false,

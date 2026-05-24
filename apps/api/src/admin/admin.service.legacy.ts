@@ -7601,7 +7601,7 @@ export class AdminService implements OnModuleDestroy {
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
-      previousAudienceSnapshot?.participantsCount ?? null,
+      previousAudienceSnapshot?.participantsCount ?? participantsCount,
       audienceSnapshots,
     );
     const activityFeed = statsQuery.includeActivityPreview
