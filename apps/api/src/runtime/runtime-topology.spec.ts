@@ -3,8 +3,15 @@ import {
   RUNTIME_SERVICE_PROFILES,
   resolveRuntimeServiceProfile,
 } from './runtime-topology';
+import { APP_ROLES, normalizeAppRole } from './app-role';
 
 describe('runtime-topology', () => {
+  it('normalizes app roles from the shared role registry', () => {
+    expect(APP_ROLES).toEqual(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']);
+    expect(normalizeAppRole(' MODERATION ')).toBe('moderation');
+    expect(normalizeAppRole('unknown', 'ingress')).toBe('ingress');
+  });
+
   it('keeps default webhook shard groups in one typed topology map', () => {
     expect(RUNTIME_SERVICE_PROFILES['api-moderation'].moderationQueues).toEqual([
       'moderation-default-0',

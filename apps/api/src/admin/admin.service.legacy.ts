@@ -84,7 +84,6 @@ import {
   type ManagedEntityType,
   type ManualModerationActionResult,
   type Me,
-  type ModerationFeedFilter,
   type ModerationFeedPage,
   type ModerationFeedQuery,
   type ModerationEvent,

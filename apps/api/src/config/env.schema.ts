@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema } from '@maxim/contracts/bot-speech';
 import { parseAdditionalMaxBotsJson } from '../max/max-bot-config.util';
-import { RUNTIME_SERVICE_NAMES } from '../runtime/runtime-topology';
+import { APP_ROLES } from '../runtime/app-role';
+import {
+  DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  RUNTIME_SERVICE_NAMES,
+  WEBHOOK_DYNAMIC_LEASES_MODES,
+} from '../runtime/runtime-topology';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -90,15 +95,8 @@ const envSchema = z.object({
   MAX_WEBHOOK_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   MAX_WEBHOOK_STALE_INGRESS_MS: z.coerce.number().int().positive().default(300_000),
   MAX_WEBHOOK_STALE_RECREATE_COOLDOWN_MS: z.coerce.number().int().positive().default(600_000),
-  WEBHOOK_DYNAMIC_LEASES_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
-  WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: z
-    .enum([
-      'api-moderation',
-      'api-moderation-realtime-b',
-      'api-moderation-realtime-c',
-      'api-moderation-realtime-d',
-    ])
-    .optional(),
+  WEBHOOK_DYNAMIC_LEASES_MODE: z.enum(WEBHOOK_DYNAMIC_LEASES_MODES).default('off'),
+  WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: z.enum(DEFAULT_WEBHOOK_WORKER_GROUP_NAMES).optional(),
   WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: z.string().optional(),
   WEBHOOK_DYNAMIC_LEASES_HEARTBEAT_MS: z.coerce.number().int().positive().default(3_000),
   WEBHOOK_DYNAMIC_LEASES_LEASE_TTL_MS: z.coerce.number().int().positive().default(12_000),
@@ -176,7 +174,7 @@ const envSchema = z.object({
   SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(1000),
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
   MAX_ACTION_DISPATCH_ENABLED: envBoolean(true),
-  APP_ROLE: z.enum(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']).default('all'),
+  APP_ROLE: z.enum(APP_ROLES).default('all'),
   APP_SERVICE_NAME: z.enum(RUNTIME_SERVICE_NAMES).optional(),
   BOT_OWNERSHIP_FOUNDATION_ENABLED: envBoolean(true),
   BOT_OWNERSHIP_REPAIR_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),

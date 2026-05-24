@@ -18,7 +18,6 @@ import {
   type DomainAllowlistEntry,
 } from '@maxim/contracts/settings';
 import {
-  type BroadcastImage,
   type BroadcastLinkButton,
   type BroadcastTargetMode,
   type ManagedBroadcastDetails,
@@ -171,6 +170,7 @@ import {
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import { SettingsApplyTargetSheet } from './settings/settings-apply-target-sheet';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
+import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
   COMMENTS_SETTING_KEYS,
   SECTION_SETTING_KEYS,
@@ -191,7 +191,6 @@ import {
   ManagedBroadcastListItem,
   MailingWorkspaceView,
   PendingBroadcastPublishReview,
-  normalizeBroadcastImageList,
   resolveBroadcastImagesFromLegacyFields,
   areBroadcastImagesReady,
   ChatSettingsButtonGroup,
@@ -398,12 +397,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
   const [mailingButtonsSheetOpen, setMailingButtonsSheetOpen] = useState(false);
   const [mailingButtonRevealSignal, setMailingButtonRevealSignal] = useState(0);
-  const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
-  const [mailingImageBase64, setMailingImageBase64] = useState('');
-  const [mailingImageMimeType, setMailingImageMimeType] = useState('');
-  const [mailingImageFileName, setMailingImageFileName] = useState('');
-  const [mailingImages, setMailingImages] = useState<BroadcastImage[]>([]);
-  const [mailingImagesPreparing, setMailingImagesPreparing] = useState(false);
+  const {
+    mailingImageEnabled,
+    mailingImageBase64,
+    mailingImageMimeType,
+    mailingImageFileName,
+    mailingImages,
+    mailingImagesPreparing,
+    applyMailingImages,
+    resetMailingImages,
+    setMailingImagesPreparing,
+  } = useBroadcastImageDraft();
   const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
   const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('now');
@@ -432,17 +436,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState('');
   const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
     useState('');
-
-  function applyMailingImages(nextImages: BroadcastImage[]) {
-    const normalizedImages = normalizeBroadcastImageList(nextImages);
-    const firstImage = normalizedImages[0];
-    setMailingImages(normalizedImages);
-    setMailingImagesPreparing(false);
-    setMailingImageEnabled(normalizedImages.length > 0);
-    setMailingImageBase64(firstImage?.base64 ?? '');
-    setMailingImageMimeType(firstImage?.mimeType ?? '');
-    setMailingImageFileName(firstImage?.fileName ?? '');
-  }
 
   useEffect(() => {
     const { body } = document;
@@ -2747,12 +2740,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingAudienceError('');
     setMailingText('');
     setMailingButtons([]);
-    setMailingImageEnabled(false);
-    setMailingImageBase64('');
-    setMailingImageMimeType('');
-    setMailingImageFileName('');
-    setMailingImages([]);
-    setMailingImagesPreparing(false);
+    resetMailingImages();
     setMailingVideoCleared(false);
     setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());

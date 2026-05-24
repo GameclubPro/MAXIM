@@ -340,6 +340,44 @@ function addStoredLinkButtonIssues(
     }
   });
 }
+
+function addStoredBotButtonGroupIssues(
+  value: {
+    enabled: boolean;
+    buttons: BroadcastLinkButton[];
+    buttonsPath: string;
+    buttonUrl: string;
+    buttonText: string;
+    buttonUrlPath: string;
+    buttonTextPath: string;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (!value.enabled) {
+    return;
+  }
+
+  if (value.buttons.length > 0) {
+    addStoredLinkButtonIssues(value.buttons, ctx, [value.buttonsPath]);
+    return;
+  }
+
+  if (!isValidBotButtonUrl(value.buttonUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [value.buttonUrlPath],
+      message: 'Укажите корректную ссылку для кнопки (http/https).',
+    });
+  }
+
+  if (!isValidBotButtonText(value.buttonText)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [value.buttonTextPath],
+      message: 'Введите название кнопки.',
+    });
+  }
+}
 const messageLimitsBlockedWordSchema = z.string().trim().max(32);
 const messageLimitsBlockedWordsSchema = z
   .array(messageLimitsBlockedWordSchema)
@@ -734,82 +772,39 @@ export const chatSettingsSchema = z
       buttonUrl: value.linkBotButtonUrl,
       buttonText: value.linkBotButtonText,
     });
-    if (value.linkBotMessageEnabled && value.linkBotButtonEnabled && linkBotButtons.length > 0) {
-      addStoredLinkButtonIssues(linkBotButtons, ctx, ['linkBotButtons']);
-    } else if (
-      value.linkBotMessageEnabled &&
-      value.linkBotButtonEnabled &&
-      linkBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.linkBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['linkBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (value.linkBotMessageEnabled && value.linkBotButtonEnabled && linkBotButtons.length > 0) {
-      // Validation already added above.
-    } else if (
-      value.linkBotMessageEnabled &&
-      value.linkBotButtonEnabled &&
-      linkBotButtons.length === 0 &&
-      !isValidBotButtonText(value.linkBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['linkBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.linkBotMessageEnabled && value.linkBotButtonEnabled,
+        buttons: linkBotButtons,
+        buttonsPath: 'linkBotButtons',
+        buttonUrl: value.linkBotButtonUrl,
+        buttonText: value.linkBotButtonText,
+        buttonUrlPath: 'linkBotButtonUrl',
+        buttonTextPath: 'linkBotButtonText',
+      },
+      ctx,
+    );
 
     const greetingBotButtons = resolveStoredLinkButtons({
       buttons: value.greetingBotButtons,
       buttonUrl: value.greetingBotButtonUrl,
       buttonText: value.greetingBotButtonText,
     });
-    if (
-      value.greetingEnabled &&
-      value.greetingBotMessageEnabled &&
-      value.greetingBotButtonEnabled &&
-      greetingBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(greetingBotButtons, ctx, ['greetingBotButtons']);
-    } else if (
-      value.greetingEnabled &&
-      value.greetingBotMessageEnabled &&
-      value.greetingBotButtonEnabled &&
-      value.greetingBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.greetingBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['greetingBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.greetingEnabled &&
-      value.greetingBotMessageEnabled &&
-      value.greetingBotButtonEnabled &&
-      greetingBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.greetingEnabled &&
-      value.greetingBotMessageEnabled &&
-      value.greetingBotButtonEnabled &&
-      value.greetingBotButtons.length === 0 &&
-      !isValidBotButtonText(value.greetingBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['greetingBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled:
+          value.greetingEnabled &&
+          value.greetingBotMessageEnabled &&
+          value.greetingBotButtonEnabled,
+        buttons: greetingBotButtons,
+        buttonsPath: 'greetingBotButtons',
+        buttonUrl: value.greetingBotButtonUrl,
+        buttonText: value.greetingBotButtonText,
+        buttonUrlPath: 'greetingBotButtonUrl',
+        buttonTextPath: 'greetingBotButtonText',
+      },
+      ctx,
+    );
 
     if (value.requiredSubscriptionEnabled && value.requiredSubscriptionChannelIds.length === 0) {
       ctx.addIssue({
@@ -834,86 +829,36 @@ export const chatSettingsSchema = z
       buttonUrl: value.duplicateBotButtonUrl,
       buttonText: value.duplicateBotButtonText,
     });
-    if (
-      value.duplicateBotMessageEnabled &&
-      value.duplicateBotButtonEnabled &&
-      duplicateBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(duplicateBotButtons, ctx, ['duplicateBotButtons']);
-    } else if (
-      value.duplicateBotMessageEnabled &&
-      value.duplicateBotButtonEnabled &&
-      value.duplicateBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.duplicateBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['duplicateBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.duplicateBotMessageEnabled &&
-      value.duplicateBotButtonEnabled &&
-      duplicateBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.duplicateBotMessageEnabled &&
-      value.duplicateBotButtonEnabled &&
-      value.duplicateBotButtons.length === 0 &&
-      !isValidBotButtonText(value.duplicateBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['duplicateBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.duplicateBotMessageEnabled && value.duplicateBotButtonEnabled,
+        buttons: duplicateBotButtons,
+        buttonsPath: 'duplicateBotButtons',
+        buttonUrl: value.duplicateBotButtonUrl,
+        buttonText: value.duplicateBotButtonText,
+        buttonUrlPath: 'duplicateBotButtonUrl',
+        buttonTextPath: 'duplicateBotButtonText',
+      },
+      ctx,
+    );
 
     const messageLimitsBotButtons = resolveStoredLinkButtons({
       buttons: value.messageLimitsBotButtons,
       buttonUrl: value.messageLimitsBotButtonUrl,
       buttonText: value.messageLimitsBotButtonText,
     });
-    if (
-      value.messageLimitsBotMessageEnabled &&
-      value.messageLimitsBotButtonEnabled &&
-      messageLimitsBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(messageLimitsBotButtons, ctx, ['messageLimitsBotButtons']);
-    } else if (
-      value.messageLimitsBotMessageEnabled &&
-      value.messageLimitsBotButtonEnabled &&
-      value.messageLimitsBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.messageLimitsBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['messageLimitsBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.messageLimitsBotMessageEnabled &&
-      value.messageLimitsBotButtonEnabled &&
-      messageLimitsBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.messageLimitsBotMessageEnabled &&
-      value.messageLimitsBotButtonEnabled &&
-      value.messageLimitsBotButtons.length === 0 &&
-      !isValidBotButtonText(value.messageLimitsBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['messageLimitsBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.messageLimitsBotMessageEnabled && value.messageLimitsBotButtonEnabled,
+        buttons: messageLimitsBotButtons,
+        buttonsPath: 'messageLimitsBotButtons',
+        buttonUrl: value.messageLimitsBotButtonUrl,
+        buttonText: value.messageLimitsBotButtonText,
+        buttonUrlPath: 'messageLimitsBotButtonUrl',
+        buttonTextPath: 'messageLimitsBotButtonText',
+      },
+      ctx,
+    );
 
     const normalizedMessageLimitsBlockedWords = new Set<string>();
     for (const rawWord of value.messageLimitsBlockedWords) {
@@ -944,86 +889,36 @@ export const chatSettingsSchema = z
       buttonUrl: value.textFiltersBotButtonUrl,
       buttonText: value.textFiltersBotButtonText,
     });
-    if (
-      value.textFiltersBotMessageEnabled &&
-      value.textFiltersBotButtonEnabled &&
-      textFiltersBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(textFiltersBotButtons, ctx, ['textFiltersBotButtons']);
-    } else if (
-      value.textFiltersBotMessageEnabled &&
-      value.textFiltersBotButtonEnabled &&
-      value.textFiltersBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.textFiltersBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['textFiltersBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.textFiltersBotMessageEnabled &&
-      value.textFiltersBotButtonEnabled &&
-      textFiltersBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.textFiltersBotMessageEnabled &&
-      value.textFiltersBotButtonEnabled &&
-      value.textFiltersBotButtons.length === 0 &&
-      !isValidBotButtonText(value.textFiltersBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['textFiltersBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.textFiltersBotMessageEnabled && value.textFiltersBotButtonEnabled,
+        buttons: textFiltersBotButtons,
+        buttonsPath: 'textFiltersBotButtons',
+        buttonUrl: value.textFiltersBotButtonUrl,
+        buttonText: value.textFiltersBotButtonText,
+        buttonUrlPath: 'textFiltersBotButtonUrl',
+        buttonTextPath: 'textFiltersBotButtonText',
+      },
+      ctx,
+    );
 
     const thematicFiltersBotButtons = resolveStoredLinkButtons({
       buttons: value.thematicFiltersBotButtons,
       buttonUrl: value.thematicFiltersBotButtonUrl,
       buttonText: value.thematicFiltersBotButtonText,
     });
-    if (
-      value.thematicFiltersBotMessageEnabled &&
-      value.thematicFiltersBotButtonEnabled &&
-      thematicFiltersBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(thematicFiltersBotButtons, ctx, ['thematicFiltersBotButtons']);
-    } else if (
-      value.thematicFiltersBotMessageEnabled &&
-      value.thematicFiltersBotButtonEnabled &&
-      value.thematicFiltersBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.thematicFiltersBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['thematicFiltersBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.thematicFiltersBotMessageEnabled &&
-      value.thematicFiltersBotButtonEnabled &&
-      thematicFiltersBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.thematicFiltersBotMessageEnabled &&
-      value.thematicFiltersBotButtonEnabled &&
-      value.thematicFiltersBotButtons.length === 0 &&
-      !isValidBotButtonText(value.thematicFiltersBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['thematicFiltersBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.thematicFiltersBotMessageEnabled && value.thematicFiltersBotButtonEnabled,
+        buttons: thematicFiltersBotButtons,
+        buttonsPath: 'thematicFiltersBotButtons',
+        buttonUrl: value.thematicFiltersBotButtonUrl,
+        buttonText: value.thematicFiltersBotButtonText,
+        buttonUrlPath: 'thematicFiltersBotButtonUrl',
+        buttonTextPath: 'thematicFiltersBotButtonText',
+      },
+      ctx,
+    );
 
     if (value.thematicCodewordEnabled) {
       const codeword = value.thematicCodeword.trim();
@@ -1076,43 +971,18 @@ export const chatSettingsSchema = z
       buttonUrl: value.nightModeBotButtonUrl,
       buttonText: value.nightModeBotButtonText,
     });
-    if (
-      value.nightModeBotMessageEnabled &&
-      value.nightModeBotButtonEnabled &&
-      nightModeBotButtons.length > 0
-    ) {
-      addStoredLinkButtonIssues(nightModeBotButtons, ctx, ['nightModeBotButtons']);
-    } else if (
-      value.nightModeBotMessageEnabled &&
-      value.nightModeBotButtonEnabled &&
-      value.nightModeBotButtons.length === 0 &&
-      !isValidBotButtonUrl(value.nightModeBotButtonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['nightModeBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.nightModeBotMessageEnabled &&
-      value.nightModeBotButtonEnabled &&
-      nightModeBotButtons.length > 0
-    ) {
-      // Validation already added above.
-    } else if (
-      value.nightModeBotMessageEnabled &&
-      value.nightModeBotButtonEnabled &&
-      value.nightModeBotButtons.length === 0 &&
-      !isValidBotButtonText(value.nightModeBotButtonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['nightModeBotButtonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addStoredBotButtonGroupIssues(
+      {
+        enabled: value.nightModeBotMessageEnabled && value.nightModeBotButtonEnabled,
+        buttons: nightModeBotButtons,
+        buttonsPath: 'nightModeBotButtons',
+        buttonUrl: value.nightModeBotButtonUrl,
+        buttonText: value.nightModeBotButtonText,
+        buttonUrlPath: 'nightModeBotButtonUrl',
+        buttonTextPath: 'nightModeBotButtonText',
+      },
+      ctx,
+    );
 
     if (
       value.nightModeForceCloseEnabled &&

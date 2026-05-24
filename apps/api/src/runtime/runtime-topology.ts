@@ -1,4 +1,4 @@
-import type { AppRole } from './app-role';
+import { normalizeAppRole, type AppRole } from './app-role';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -427,21 +427,6 @@ export function normalizeDefaultWorkerGroupName(
 
   const normalized = value.trim();
   return isDefaultWebhookWorkerGroupName(normalized) ? normalized : null;
-}
-
-function normalizeAppRole(value: unknown): AppRole {
-  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  if (
-    normalized === 'ingress' ||
-    normalized === 'admin' ||
-    normalized === 'enqueue' ||
-    normalized === 'moderation' ||
-    normalized === 'action' ||
-    normalized === 'all'
-  ) {
-    return normalized;
-  }
-  return 'all';
 }
 
 function serviceNameByRole(role: AppRole): RuntimeServiceName {

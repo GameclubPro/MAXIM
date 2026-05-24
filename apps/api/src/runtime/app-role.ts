@@ -1,20 +1,21 @@
 export type AppRole = 'all' | 'ingress' | 'admin' | 'enqueue' | 'moderation' | 'action';
 
+export const APP_ROLES = [
+  'all',
+  'ingress',
+  'admin',
+  'enqueue',
+  'moderation',
+  'action',
+] as const satisfies readonly AppRole[];
+
+export function normalizeAppRole(value: unknown, fallback: AppRole = 'all'): AppRole {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return APP_ROLES.includes(normalized as AppRole) ? (normalized as AppRole) : fallback;
+}
+
 export function getAppRole(): AppRole {
-  const value = String(process.env.APP_ROLE ?? 'all')
-    .trim()
-    .toLowerCase();
-  if (
-    value === 'all' ||
-    value === 'ingress' ||
-    value === 'admin' ||
-    value === 'enqueue' ||
-    value === 'moderation' ||
-    value === 'action'
-  ) {
-    return value;
-  }
-  return 'all';
+  return normalizeAppRole(process.env.APP_ROLE);
 }
 
 export function roleRunsHttp(role: AppRole): boolean {
