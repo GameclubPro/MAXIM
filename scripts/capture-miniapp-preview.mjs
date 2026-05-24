@@ -444,6 +444,17 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-stats-top-posts',
+    path: '/channel/preview-channel/stats',
+    beforeShot: async (page) => {
+      await page.locator('.channel-top-posts-panel').evaluate((element) => {
+        element.scrollIntoView({ block: 'start', behavior: 'instant' });
+        window.scrollBy({ top: -116, behavior: 'instant' });
+      });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'channel-events',
     path: '/channel/preview-channel/stats',
     searchParams: {

@@ -217,6 +217,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-fact-panel {
+  scroll-margin-top: calc(var(--app-safe-top) + 112px);
   border: 1px solid rgba(210, 223, 235, 0.94);
   display: grid;
   gap: 9px;
@@ -230,6 +231,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-insights__chart-card {
+  scroll-margin-top: calc(var(--app-safe-top) + 112px);
   border: 1px solid rgba(210, 223, 235, 0.94);
   display: grid;
   gap: 9px;
@@ -339,7 +341,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-insights__panel-copy strong {
-  line-height: 1.08;
+  line-height: 1.12;
   font-size: 0.9rem;
 }
 
@@ -398,26 +400,47 @@ body.channel-stats-page-open .channel-insights__body {
   gap: 6px;
 }
 
+.channel-posts-chart {
+  gap: 0;
+}
+
 .channel-posts-chart__list {
   display: grid;
-  gap: 6px;
+  gap: 0;
 }
 
 .channel-posts-chart__row {
+  position: relative;
+  display: grid;
   gap: 7px;
-  background: rgba(255, 255, 255, 0.8);
-  border-color: rgba(209, 222, 235, 0.82);
-  border-radius: 12px;
+  padding: 10px 0 11px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
-  padding: 8px;
+}
+
+.channel-posts-chart__row + .channel-posts-chart__row {
+  border-top: 1px solid rgba(209, 222, 235, 0.68);
+}
+
+.channel-posts-chart__row:focus-visible {
+  outline: 2px solid rgba(11, 132, 255, 0.34);
+  outline-offset: 2px;
+  border-radius: 12px;
 }
 
 .channel-posts-chart__rank {
-  background: #17324a;
-  min-width: 24px;
-  min-height: 22px;
-  border-radius: 8px;
+  background: rgba(23, 50, 74, 0.96);
+  min-width: 27px;
+  min-height: 24px;
+  border-radius: 9px;
   font-size: 0.66rem;
+}
+
+.channel-posts-chart__row:first-child .channel-posts-chart__rank {
+  background: linear-gradient(135deg, #0b84ff, #35c59f);
+  box-shadow: 0 8px 14px rgba(11, 132, 255, 0.16);
 }
 
 .channel-posts-chart__title {
@@ -425,31 +448,33 @@ body.channel-stats-page-open .channel-insights__body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.72rem;
+  font-size: 0.74rem;
+  font-weight: 850;
 }
 
 .channel-posts-chart__row-head strong {
-  color: #0a5ea9;
-  font-size: 0.86rem;
+  color: #075fae;
+  font-size: 0.88rem;
 }
 
 .channel-posts-chart__bar {
-  height: 6px;
-  background: rgba(226, 236, 246, 0.96);
+  height: 7px;
+  background: rgba(226, 236, 246, 0.9);
 }
 
 .channel-posts-chart__bar span {
-  background: #0b84ff;
+  background: linear-gradient(90deg, #0b84ff, #35c59f);
   box-shadow: none;
 }
 
 .channel-posts-chart__row-meta {
-  gap: 5px;
+  gap: 7px;
 }
 
 .channel-posts-chart__row-meta small {
   color: #668198;
   font-size: 0.62rem;
+  font-weight: 720;
 }
 
 .channel-best-windows__row {
@@ -2471,7 +2496,7 @@ body.channel-stats-page-open .channel-insights__body {
   color: #102a43;
   font-size: 1.22rem;
   font-weight: 920;
-  line-height: 1.02;
+  line-height: 1.08;
 }
 
 .channel-insights__chart-card--executive .channel-stats-graph__summary-chips {
@@ -2891,6 +2916,10 @@ body.channel-stats-page-open .channel-insights__body {
     min-height: 26px;
     padding-inline: 7px;
     font-size: 0.6rem;
+  }
+
+  .channel-insights__chart-card--executive .channel-stats-graph__chip--audience-total {
+    display: none;
   }
 
   .channel-insights__chart-card--executive .channel-stats-graph__canvas,

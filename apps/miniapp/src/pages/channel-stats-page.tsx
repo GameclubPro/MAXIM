@@ -1109,7 +1109,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               ) : null}
               {activePoint?.participantsCount !== null &&
               activePoint?.participantsCount !== undefined ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--audience-total">
                   Всего {activeParticipantsCompactLabel}
                 </span>
               ) : null}
@@ -1768,7 +1768,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
 function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const posts = stats.official.content.topPosts;
-  const maxViews = Math.max(...posts.map((post) => post.viewsDelta || post.views), 0);
+  const isPeriodViews = stats.official.content.viewsMode === 'observedDelta';
+  const resolvePostViews = (
+    post: ChannelStatsResponse['official']['content']['topPosts'][number],
+  ) => (isPeriodViews ? post.viewsDelta : post.views);
+  const maxViews = Math.max(...posts.map(resolvePostViews), 0);
 
   if (posts.length === 0) {
     return (
@@ -1782,8 +1786,19 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
     <div className="channel-posts-chart">
       <div className="channel-posts-chart__list">
         {posts.map((post, index) => {
-          const value = post.viewsDelta || post.views;
-          const width = maxViews > 0 ? Math.max(8, Math.round((value / maxViews) * 100)) : 8;
+          const value = resolvePostViews(post);
+          const width = maxViews > 0 && value > 0 ? Math.max(5, (value / maxViews) * 100) : 0;
+          const valueLabel = formatCompactCount(value);
+          const detailParts = [
+            `${formatCount(value)} просмотров ${isPeriodViews ? 'за период' : 'всего'}`,
+          ];
+          const metaParts = [`${formatCount(post.reactions)} реакц.`];
+
+          if (isPeriodViews && post.views > value) {
+            detailParts.push(`${formatCount(post.views)} всего`);
+            metaParts.push(`${formatCompactCount(post.views)} всего`);
+          }
+
           const row = (
             <>
               <div className="channel-posts-chart__row-head">
@@ -1791,20 +1806,21 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                 <span className="channel-posts-chart__title">
                   {formatPostDateTime(post.publishedAt)}
                 </span>
-                <strong>{formatCompactCount(value)}</strong>
+                <strong>{valueLabel}</strong>
               </div>
               <div className="channel-posts-chart__bar" aria-hidden="true">
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
-                <small>{formatCompactCount(value)} за период</small>
-                <small>{formatCount(post.reactions)} реакц.</small>
-                {post.viewsDelta > 0 && post.viewsDelta !== post.views ? (
-                  <small>{formatCompactCount(post.views)} всего</small>
-                ) : null}
+                {metaParts.map((part) => (
+                  <small key={part}>{part}</small>
+                ))}
               </div>
             </>
           );
+          const rowLabel = `Публикация ${index + 1}, ${formatPostDateTime(
+            post.publishedAt,
+          )}: ${detailParts.join(', ')}, ${formatCount(post.reactions)} реакций`;
 
           return post.url ? (
             <a
@@ -1813,11 +1829,16 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
               target="_blank"
               rel="noreferrer"
               className="channel-posts-chart__row"
+              aria-label={rowLabel}
             >
               {row}
             </a>
           ) : (
-            <article key={post.messageId} className="channel-posts-chart__row">
+            <article
+              key={post.messageId}
+              className="channel-posts-chart__row"
+              aria-label={rowLabel}
+            >
               {row}
             </article>
           );
