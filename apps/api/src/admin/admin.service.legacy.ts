@@ -22121,6 +22121,25 @@ export class AdminService implements OnModuleDestroy {
       return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
     }
 
+    if (value && typeof value === 'object') {
+      const numericObject = value as {
+        toNumber?: () => number;
+        toString?: () => string;
+      };
+      if (typeof numericObject.toNumber === 'function') {
+        const parsed = numericObject.toNumber();
+        return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+      }
+
+      if (typeof numericObject.toString === 'function') {
+        const stringValue = numericObject.toString();
+        if (stringValue && stringValue !== '[object Object]') {
+          const parsed = Number(stringValue);
+          return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+        }
+      }
+    }
+
     return 0;
   }
 

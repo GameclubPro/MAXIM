@@ -831,6 +831,13 @@ function extractSqlText(arg: unknown): string {
   return String(arg);
 }
 
+function createDecimalLike(value: number) {
+  return {
+    toNumber: () => value,
+    toString: () => String(value),
+  };
+}
+
 function createConfigMock(
   options: { previousToken?: string; botId?: string | null; token?: string } = {},
 ) {
@@ -16450,34 +16457,34 @@ describe('AdminService.getChannelStats', () => {
       .mockResolvedValueOnce([
         {
           bucket_start: new Date('2026-03-03T00:00:00.000Z'),
-          joined_users: '1',
-          left_users: '0',
+          joined_users: createDecimalLike(1),
+          left_users: createDecimalLike(0),
         },
         {
           bucket_start: new Date('2026-03-04T00:00:00.000Z'),
-          joined_users: '1',
-          left_users: '0',
+          joined_users: createDecimalLike(1),
+          left_users: createDecimalLike(0),
         },
         {
           bucket_start: new Date('2026-03-05T00:00:00.000Z'),
-          joined_users: '0',
-          left_users: '1',
+          joined_users: createDecimalLike(0),
+          left_users: createDecimalLike(1),
         },
       ])
       .mockResolvedValueOnce([
         {
           bucket_start: new Date('2026-03-03T00:00:00.000Z'),
-          posts: '1',
-          views_delta: '150',
-          views_total: '150',
-          reactions: '5',
+          posts: createDecimalLike(1),
+          views_delta: createDecimalLike(150),
+          views_total: createDecimalLike(150),
+          reactions: createDecimalLike(5),
         },
         {
           bucket_start: new Date('2026-03-06T00:00:00.000Z'),
-          posts: '1',
-          views_delta: '260',
-          views_total: '260',
-          reactions: '7',
+          posts: createDecimalLike(1),
+          views_delta: createDecimalLike(260),
+          views_total: createDecimalLike(260),
+          reactions: createDecimalLike(7),
         },
       ])
       .mockResolvedValueOnce([
