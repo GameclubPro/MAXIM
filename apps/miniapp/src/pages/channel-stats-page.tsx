@@ -221,6 +221,22 @@ function formatSignedCount(value: number | null): string {
   return String(value);
 }
 
+function formatSignedCompactCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  if (value > 0) {
+    return `+${formatCompactCount(value)}`;
+  }
+
+  if (value < 0) {
+    return `-${formatCompactCount(Math.abs(value))}`;
+  }
+
+  return '0';
+}
+
 function formatPercent(value: number | null): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
@@ -1022,11 +1038,13 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const membershipBarWidth = clamp(slotWidth * 0.48, 5, 10);
   const activeMembershipBarWidth = clamp(slotWidth * 0.62, 7, 14);
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
+  const activeParticipantsCompactLabel = formatCompactCount(activePoint?.participantsCount ?? null);
   const activeNet = activePoint?.net ?? 0;
   const activeCumulativeNet = activePoint?.cumulativeNet ?? 0;
   const activeNetLabel = formatSignedCount(activeNet);
   const activeCumulativeNetLabel = formatSignedCount(activeCumulativeNet);
   const activeBucketLabel = stats.period.bucket === 'hour' ? 'За час' : 'За день';
+  const activeBucketChipLabel = stats.period.bucket === 'hour' ? 'Час' : 'День';
   const activeParticipantDetail =
     activePoint?.participantsCount === null || activePoint?.participantsCount === undefined
       ? 'итоговая аудитория не снята'
@@ -1074,25 +1092,25 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--line">
-                {activeBucketLabel} {activeNetLabel}
+                {activeBucketChipLabel} {activeNetLabel}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--joined">
-                Вошли {formatCount(activePoint?.joined ?? 0)}
+                Вошли {formatCompactCount(activePoint?.joined ?? 0)}
               </span>
               {hasLeftBars ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--left">
-                  Вышли {formatCount(activePoint?.left ?? 0)}
+                  Вышли {formatCompactCount(activePoint?.left ?? 0)}
                 </span>
               ) : null}
               {activePreviousPoint ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
-                  Прошлый {formatSignedCount(activePreviousPoint.cumulativeNet)}
+                  Пред. {formatSignedCompactCount(activePreviousPoint.cumulativeNet)}
                 </span>
               ) : null}
               {activePoint?.participantsCount !== null &&
               activePoint?.participantsCount !== undefined ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                  Всего {activeParticipantsLabel}
+                  Всего {activeParticipantsCompactLabel}
                 </span>
               ) : null}
             </div>
@@ -1449,7 +1467,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
   const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
   const activeViewsLabel = formatCount(activeBar?.views ?? null);
-  const activeCumulativeLabel = formatCount(activeBar?.cumulativeViews ?? chart.cumulativeMax);
+  const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
   const activeCumulativeCompactLabel = formatCompactCount(
     activeBar?.cumulativeViews ?? chart.cumulativeMax,
   );
@@ -1457,6 +1475,8 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
     stats.official.content.viewsMode === 'observedDelta' ? 'за период' : 'всего у постов';
   const viewsCumulativeLabel =
     stats.official.content.viewsMode === 'observedDelta' ? 'Накоплено' : 'Сумма';
+  const viewsCumulativeChipLabel =
+    stats.official.content.viewsMode === 'observedDelta' ? 'Итог' : 'Сумма';
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
@@ -1485,17 +1505,17 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                Пик {formatCount(chart.maxViews)}
+                Пик {formatCompactCount(chart.maxViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                Среднее {formatCount(averageViews)}
+                Ср. {formatCompactCount(averageViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                {viewsCumulativeLabel} {activeCumulativeLabel}
+                {viewsCumulativeChipLabel} {activeCumulativeCompactLabel}
               </span>
               {activePreviousBar ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
-                  Прошлый {formatCount(activePreviousBar.views)}
+                  Пред. {formatCompactCount(activePreviousBar.views)}
                 </span>
               ) : null}
             </div>
@@ -1536,7 +1556,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activeBar ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
-                <strong>{activeViewsLabel} просмотров</strong>
+                <strong>{activeViewsCompactLabel} просмотров</strong>
                 <span>
                   {viewsModeLabel} · {viewsCumulativeLabel.toLocaleLowerCase('ru-RU')}{' '}
                   {activeCumulativeCompactLabel}

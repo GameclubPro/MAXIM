@@ -432,6 +432,18 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
   },
   {
+    name: 'channel-stats-views',
+    path: '/channel/preview-channel/stats',
+    beforeShot: async (page) => {
+      await page
+        .locator('.channel-insights__switch .segmented-control__item')
+        .filter({ hasText: /Просм\./u })
+        .click();
+      await page.locator('.channel-stats-graph__bar--views').first().waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'channel-events',
     path: '/channel/preview-channel/stats',
     searchParams: {

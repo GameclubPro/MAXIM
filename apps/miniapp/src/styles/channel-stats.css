@@ -2572,9 +2572,13 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-stats-graph__tooltip strong {
+  overflow: visible;
   color: #102a43;
   font-size: 1.08rem;
   font-weight: 930;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .channel-stats-graph__tooltip span,
@@ -2582,6 +2586,13 @@ body.channel-stats-page-open .channel-insights__body {
   color: #4c667d;
   font-size: 0.66rem;
   font-weight: 760;
+}
+
+.channel-stats-graph__tooltip span {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .channel-stats-graph__grid {
@@ -2831,6 +2842,10 @@ body.channel-stats-page-open .channel-insights__body {
     height: 296px;
   }
 
+  .channel-insights__chart-card--executive .channel-stats-graph__chip--previous {
+    display: none;
+  }
+
   .channel-stats-graph__tooltip {
     --tooltip-edge: 100px;
     width: min(198px, calc(100% - 16px));
@@ -2864,14 +2879,18 @@ body.channel-stats-page-open .channel-insights__body {
     gap: 6px;
   }
 
+  .channel-insights__chart-card--executive .channel-stats-graph__summary-chips {
+    gap: 4px;
+  }
+
   .channel-insights__chart-card--executive .channel-stats-graph__summary-copy strong {
     font-size: 1.12rem;
   }
 
   .channel-insights__chart-card--executive .channel-stats-graph__chip {
     min-height: 26px;
-    padding-inline: 8px;
-    font-size: 0.64rem;
+    padding-inline: 7px;
+    font-size: 0.6rem;
   }
 
   .channel-insights__chart-card--executive .channel-stats-graph__canvas,
@@ -2884,10 +2903,10 @@ body.channel-stats-page-open .channel-insights__body {
   }
 
   .channel-stats-graph__tooltip {
-    --tooltip-edge: 88px;
-    width: min(174px, calc(100% - 14px));
+    --tooltip-edge: 102px;
+    width: min(204px, calc(100% - 14px));
     min-width: 112px;
-    max-width: min(174px, calc(100% - 14px));
+    max-width: min(204px, calc(100% - 14px));
     padding: 8px 9px;
   }
 }
