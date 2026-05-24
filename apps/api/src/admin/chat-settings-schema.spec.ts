@@ -1,4 +1,9 @@
-import { chatSettingsSchema, updateChatRulesRequestSchema } from '@maxim/contracts';
+import {
+  broadcastHandoffRequestSchema,
+  chatSettingsSchema,
+  sendBroadcastRequestSchema,
+  updateChatRulesRequestSchema,
+} from '@maxim/contracts';
 
 describe('chatSettingsSchema duplicate flow validation', () => {
   it('allows phone numbers and photos by default', () => {
@@ -141,5 +146,59 @@ describe('updateChatRulesRequestSchema button normalization', () => {
     });
 
     expect(genericButtonResult.success).toBe(false);
+  });
+});
+
+describe('broadcast request schema normalization', () => {
+  it('keeps audience, buttons, and legacy cycle fields aligned for send and handoff payloads', () => {
+    const sendPayload = sendBroadcastRequestSchema.parse({
+      text: 'Анонс',
+      targetChatIds: [' chat-2 ', 'chat-1', 'chat-2'],
+      buttonEnabled: true,
+      buttonUrl: ' https://max.ru/channel/maxim ',
+      buttonText: ' Читать ',
+      cycleEnabled: true,
+      cycleEveryDays: 2,
+      cycleCount: 3,
+    });
+    const handoffPayload = broadcastHandoffRequestSchema.parse({
+      targetChatIds: [' chat-2 ', 'chat-1', 'chat-2'],
+      buttonEnabled: true,
+      buttonUrl: ' https://max.ru/channel/maxim ',
+      buttonText: ' Читать ',
+      cycleEnabled: true,
+      cycleEveryDays: 2,
+      cycleCount: 3,
+    });
+
+    for (const payload of [sendPayload, handoffPayload]) {
+      expect(payload.targetMode).toBe('selected');
+      expect(payload.targetChatIds).toEqual(['chat-2', 'chat-1']);
+      expect(payload.applyToAllChats).toBe(false);
+      expect(payload.buttons).toEqual([{ text: 'Читать', url: 'https://max.ru/channel/maxim' }]);
+      expect(payload.buttonEnabled).toBe(true);
+      expect(payload.buttonUrl).toBe('https://max.ru/channel/maxim');
+      expect(payload.buttonText).toBe('Читать');
+      expect(payload.cycleEveryHours).toBe(48);
+    }
+  });
+
+  it('uses shared validation for selected audience and calendar slots', () => {
+    for (const schema of [sendBroadcastRequestSchema, broadcastHandoffRequestSchema]) {
+      const result = schema.safeParse({
+        text: 'Анонс',
+        targetMode: 'selected',
+        targetChatIds: [],
+        scheduleMode: 'calendar',
+        scheduledSlots: [],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.map((issue) => issue.path.join('.'))).toEqual(
+          expect.arrayContaining(['targetChatIds', 'scheduledSlots']),
+        );
+      }
+    }
   });
 });

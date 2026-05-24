@@ -3,6 +3,12 @@ export * from './bot-speech.js';
 export * from './giveaway.js';
 import { botSpeechPersonaSchema, botSpeechStyleSchema } from './bot-speech.js';
 import {
+  addBroadcastAudienceIssues,
+  addBroadcastScheduleIssues,
+  buildBroadcastAudienceState,
+  buildBroadcastScheduleState,
+} from './broadcast-request-utils.js';
+import {
   DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES,
   DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
@@ -2210,40 +2216,6 @@ export type BroadcastScheduleMode = z.infer<typeof broadcastScheduleModeSchema>;
 
 const MAX_BROADCAST_CALENDAR_SLOTS = 186;
 
-function normalizeBroadcastScheduledSlots(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((a, b) =>
-    a.localeCompare(b),
-  );
-}
-
-function normalizeBroadcastTargetChatIds(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-}
-
-function resolveBroadcastTargetMode(value: {
-  targetMode?: BroadcastTargetMode;
-  applyToAllChats?: boolean;
-  targetChatIds?: string[];
-}): BroadcastTargetMode {
-  if (value.targetMode === 'all' || value.applyToAllChats) {
-    return 'all';
-  }
-
-  if (value.targetMode === 'selected') {
-    return 'selected';
-  }
-
-  if (value.targetMode === 'current') {
-    return 'current';
-  }
-
-  if (normalizeBroadcastTargetChatIds(value.targetChatIds ?? []).length > 0) {
-    return 'selected';
-  }
-
-  return 'current';
-}
-
 function normalizeBroadcastLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return values.map((value) => ({
     text: value.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
@@ -2271,6 +2243,58 @@ function resolveBroadcastLinkButtons(value: {
       url: value.buttonUrl ?? '',
     },
   ]);
+}
+
+function addBroadcastButtonIssues(
+  value: {
+    buttons?: BroadcastLinkButton[];
+    buttonEnabled?: boolean;
+    buttonUrl?: string;
+    buttonText?: string;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if ((value.buttons?.length ?? 0) > 0 || !value.buttonEnabled) {
+    return;
+  }
+
+  if (!isValidBotButtonUrl(value.buttonUrl ?? '')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonUrl'],
+      message: 'Укажите корректную ссылку для кнопки (http/https).',
+    });
+  }
+
+  if (!isValidBotButtonText(value.buttonText ?? '')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonText'],
+      message: 'Введите название кнопки.',
+    });
+  }
+}
+
+function buildBroadcastButtonState(value: {
+  buttons?: BroadcastLinkButton[];
+  buttonEnabled?: boolean;
+  buttonUrl?: string;
+  buttonText?: string;
+}): {
+  buttons: BroadcastLinkButton[];
+  buttonEnabled: boolean;
+  buttonUrl: string;
+  buttonText: string;
+} {
+  const buttons = resolveBroadcastLinkButtons(value);
+  const primaryButton = buttons[0];
+
+  return {
+    buttons,
+    buttonEnabled: buttons.length > 0,
+    buttonUrl: primaryButton?.url ?? '',
+    buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+  };
 }
 
 export const sendBroadcastRequestSchema = z
@@ -2312,15 +2336,7 @@ export const sendBroadcastRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
-    const targetMode = resolveBroadcastTargetMode(value);
-    const targetChatIds = normalizeBroadcastTargetChatIds(value.targetChatIds);
-    if (targetMode === 'selected' && targetChatIds.length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['targetChatIds'],
-        message: 'Выберите хотя бы один чат.',
-      });
-    }
+    addBroadcastAudienceIssues(value, ctx);
 
     const images = normalizeBroadcastImages(value);
     const hasImages = images.length > 0;
@@ -2359,29 +2375,7 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (
-      value.buttons.length === 0 &&
-      value.buttonEnabled &&
-      !isValidBotButtonUrl(value.buttonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.buttons.length === 0 &&
-      value.buttonEnabled &&
-      !isValidBotButtonText(value.buttonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
+    addBroadcastButtonIssues(value, ctx);
 
     if (value.imageEnabled && !hasImages) {
       ctx.addIssue({
@@ -2417,36 +2411,12 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.scheduleMode === 'calendar') {
-      if (normalizeBroadcastScheduledSlots(value.scheduledSlots).length === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['scheduledSlots'],
-          message: 'Добавьте хотя бы один слот публикации.',
-        });
-      }
-    } else {
-      if (value.cycleEnabled && value.cycleCount < 2) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['cycleCount'],
-          message: 'Для цикла укажите минимум 2 отправки.',
-        });
-      }
-
-      if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['cycleEveryHours'],
-          message: 'Укажите интервал циклического автопостинга.',
-        });
-      }
-    }
+    addBroadcastScheduleIssues(value, ctx);
   })
   .transform((value) => {
-    const buttons = resolveBroadcastLinkButtons(value);
-    const primaryButton = buttons[0];
-    const targetMode = resolveBroadcastTargetMode(value);
+    const audienceState = buildBroadcastAudienceState(value);
+    const buttonState = buildBroadcastButtonState(value);
+    const scheduleState = buildBroadcastScheduleState(value);
     const images = normalizeBroadcastImages(value);
     const hasVideoPayload =
       value.mediaType === 'video' &&
@@ -2457,13 +2427,13 @@ export const sendBroadcastRequestSchema = z
 
     return {
       ...value,
-      targetMode,
-      targetChatIds: normalizeBroadcastTargetChatIds(value.targetChatIds),
-      applyToAllChats: targetMode === 'all',
-      buttons,
-      buttonEnabled: buttons.length > 0,
-      buttonUrl: primaryButton?.url ?? '',
-      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      targetMode: audienceState.targetMode,
+      targetChatIds: audienceState.targetChatIds,
+      applyToAllChats: audienceState.applyToAllChats,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
       imageEnabled: Boolean(firstImage),
       imageBase64: firstImage?.base64 ?? '',
       imageMimeType: firstImage?.mimeType ?? '',
@@ -2473,8 +2443,8 @@ export const sendBroadcastRequestSchema = z
       mediaPayload: hasVideoPayload ? value.mediaPayload : hasImageGallery ? { images } : null,
       mediaMimeType: hasVideoPayload ? value.mediaMimeType.trim() : '',
       mediaFileName: hasVideoPayload ? value.mediaFileName.trim() : '',
-      cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
-      scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+      cycleEveryHours: scheduleState.cycleEveryHours,
+      scheduledSlots: scheduleState.scheduledSlots,
     };
   });
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
@@ -2503,82 +2473,26 @@ export const broadcastHandoffRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
-    const targetMode = resolveBroadcastTargetMode(value);
-    const targetChatIds = normalizeBroadcastTargetChatIds(value.targetChatIds);
-    if (targetMode === 'selected' && targetChatIds.length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['targetChatIds'],
-        message: 'Выберите хотя бы один чат.',
-      });
-    }
-
-    if (
-      value.buttons.length === 0 &&
-      value.buttonEnabled &&
-      !isValidBotButtonUrl(value.buttonUrl)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
-      });
-    }
-
-    if (
-      value.buttons.length === 0 &&
-      value.buttonEnabled &&
-      !isValidBotButtonText(value.buttonText)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['buttonText'],
-        message: 'Введите название кнопки.',
-      });
-    }
-
-    if (value.scheduleMode === 'calendar') {
-      if (normalizeBroadcastScheduledSlots(value.scheduledSlots).length === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['scheduledSlots'],
-          message: 'Добавьте хотя бы один слот публикации.',
-        });
-      }
-    } else {
-      if (value.cycleEnabled && value.cycleCount < 2) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['cycleCount'],
-          message: 'Для цикла укажите минимум 2 отправки.',
-        });
-      }
-
-      if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['cycleEveryHours'],
-          message: 'Укажите интервал циклического автопостинга.',
-        });
-      }
-    }
+    addBroadcastAudienceIssues(value, ctx);
+    addBroadcastButtonIssues(value, ctx);
+    addBroadcastScheduleIssues(value, ctx);
   })
   .transform((value) => {
-    const buttons = resolveBroadcastLinkButtons(value);
-    const primaryButton = buttons[0];
-    const targetMode = resolveBroadcastTargetMode(value);
+    const audienceState = buildBroadcastAudienceState(value);
+    const buttonState = buildBroadcastButtonState(value);
+    const scheduleState = buildBroadcastScheduleState(value);
 
     return {
       ...value,
-      targetMode,
-      targetChatIds: normalizeBroadcastTargetChatIds(value.targetChatIds),
-      applyToAllChats: targetMode === 'all',
-      buttons,
-      buttonEnabled: buttons.length > 0,
-      buttonUrl: primaryButton?.url ?? '',
-      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-      cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
-      scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+      targetMode: audienceState.targetMode,
+      targetChatIds: audienceState.targetChatIds,
+      applyToAllChats: audienceState.applyToAllChats,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
+      cycleEveryHours: scheduleState.cycleEveryHours,
+      scheduledSlots: scheduleState.scheduledSlots,
     };
   });
 export type BroadcastHandoffRequest = z.infer<typeof broadcastHandoffRequestSchema>;
