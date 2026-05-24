@@ -16397,6 +16397,22 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
+          bucket_start: new Date('2026-03-03T00:00:00.000Z'),
+          posts: '1',
+          views_delta: '150',
+          views_total: '150',
+          reactions: '5',
+        },
+        {
+          bucket_start: new Date('2026-03-06T00:00:00.000Z'),
+          posts: '1',
+          views_delta: '260',
+          views_total: '260',
+          reactions: '7',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           id: 'wh-ch-int-1',
           created_at: new Date('2026-03-03T09:00:00.000Z'),
           event_type: 'user_added',
@@ -16707,6 +16723,10 @@ describe('AdminService.getChannelStats', () => {
     expect(membershipSqlText).toContain('channel_stats_bucket_rollups');
     expect(membershipSqlText).toContain('chat_membership_activity_feed_items');
     expect(membershipSqlText).toContain('ORDER BY bucket_start ASC');
+    const contentSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
+    expect(contentSqlText).toContain('channel_stats_bucket_rollups');
+    expect(contentSqlText).toContain('views_total');
+    expect(contentSqlText).toContain('channel_post_view_snapshots');
   });
 
   it('returns cached channel stats immediately and refreshes stale MAX data in background', async () => {
@@ -16729,6 +16749,9 @@ describe('AdminService.getChannelStats', () => {
           last_bot_activity_at: null,
         },
       ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     prisma.channelAudienceSnapshot.findFirst
@@ -16850,6 +16873,9 @@ describe('AdminService.getChannelStats', () => {
           },
         ])
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]);
       prisma.channelAudienceSnapshot.findFirst
         .mockResolvedValueOnce({
@@ -16943,6 +16969,15 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
+          bucket_start: new Date('2026-03-07T09:00:00.000Z'),
+          posts: '1',
+          views_delta: '0',
+          views_total: '44',
+          reactions: '0',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           id: 'wh-missing-1',
           created_at: new Date('2026-03-07T09:30:00.000Z'),
           event_type: 'user_added',
@@ -16951,6 +16986,7 @@ describe('AdminService.getChannelStats', () => {
         },
       ])
       .mockResolvedValueOnce([{ user_id: 'user-42', sender_name: 'Павел' }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     prisma.channelAudienceSnapshot.findFirst
       .mockResolvedValueOnce(null)

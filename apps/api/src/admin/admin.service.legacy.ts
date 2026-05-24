@@ -291,8 +291,10 @@ import {
   selectLogsDashboardModerationSummary,
 } from './logs-dashboard-rollups';
 import {
+  selectChannelStatsContentBucketRows,
   selectChannelStatsMembershipBucketRows,
   selectModerationFeedReadModelRows,
+  type ChannelStatsContentBucketRow,
   type ChannelStatsMembershipBucketRow,
   type ModerationFeedReadModelRow,
 } from './stats-read-model-selectors';
@@ -1046,6 +1048,13 @@ type ChannelStatsPostViewMetric = {
   viewsDelta: number;
   viewsCurrent: number;
   hasObservedDelta: boolean;
+};
+type ChannelStatsContentBucketPoint = {
+  at: string;
+  posts: number;
+  viewsDelta: number;
+  viewsTotal: number;
+  reactions: number;
 };
 type ChannelStatsPeriodTotals = {
   joined: number;
@@ -7378,9 +7387,10 @@ export class AdminService implements OnModuleDestroy {
       previousAudienceSnapshot,
       audienceSnapshots,
       syncState,
-      trackedPosts,
+      periodPosts,
       anyPost,
       membershipBucketRows,
+      contentBucketRows,
       membershipRows,
     ] = await Promise.all([
       this.prisma.chat.findUnique({
@@ -7472,10 +7482,7 @@ export class AdminService implements OnModuleDestroy {
       this.prisma.channelPost.findMany({
         where: {
           chatId,
-          OR: [
-            { publishedAt: { gte: from, lte: now } },
-            { latestSnapshotAt: { gte: from, lte: now } },
-          ],
+          publishedAt: { gte: from, lte: now },
         },
         orderBy: { publishedAt: 'asc' },
         select: {
@@ -7494,6 +7501,7 @@ export class AdminService implements OnModuleDestroy {
         select: { id: true },
       }),
       selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to: now, bucket }),
+      selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to: now, bucket }),
       statsQuery.includeIntelligence
         ? this.getMembershipEventRows(chatId, from, now, ['user_added', 'user_removed'], {
             order: 'asc',
@@ -7506,11 +7514,11 @@ export class AdminService implements OnModuleDestroy {
       : false;
 
     const viewSnapshots =
-      trackedPosts.length > 0
+      periodPosts.length > 0
         ? await this.prisma.channelPostViewSnapshot.findMany({
             where: {
               channelPostId: {
-                in: trackedPosts.map((post) => post.id),
+                in: periodPosts.map((post) => post.id),
               },
               capturedAt: { gte: from, lte: now },
             },
@@ -7582,35 +7590,15 @@ export class AdminService implements OnModuleDestroy {
     );
     const joined = membershipSeries.reduce((total, item) => total + item.joined, 0);
     const left = membershipSeries.reduce((total, item) => total + item.left, 0);
-    const periodPosts = trackedPosts.filter(
-      (post) =>
-        post.publishedAt.getTime() >= from.getTime() && post.publishedAt.getTime() <= now.getTime(),
-    );
-    const postViewMetrics = this.buildPostViewMetrics(trackedPosts, viewSnapshots, from);
-    const periodPostViewMetrics = postViewMetrics.filter(
-      (metric) =>
-        metric.post.publishedAt.getTime() >= from.getTime() &&
-        metric.post.publishedAt.getTime() <= now.getTime(),
-    );
-    const viewsMode: ChannelStatsViewMode =
-      viewSnapshots.length > 0 || periodPostViewMetrics.some((metric) => metric.hasObservedDelta)
-        ? 'observedDelta'
-        : 'latestTotal';
-    const viewsSeries = this.buildViewsSeries(
-      bucketStarts,
-      bucket,
-      trackedPosts,
-      viewSnapshots,
-      from,
-      viewsMode,
-    );
+    const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
+    const contentTotals = this.buildContentTotals(contentSeries);
+    const postViewMetrics = this.buildPostViewMetrics(periodPosts, viewSnapshots, from);
+    const viewsMode = this.resolveChannelStatsViewsMode(contentTotals);
+    const viewsSeries = this.buildViewsSeriesFromContentSeries(contentSeries, viewsMode);
     const periodViews = viewsSeries.reduce((total, item) => total + item.views, 0);
-    const periodViewsTotal = periodPosts.reduce(
-      (total, item) => total + Math.max(0, item.latestViews),
-      0,
-    );
+    const periodViewsTotal = contentTotals.viewsTotal;
     const topReactions = this.buildTopReactions(periodPosts);
-    const topPosts = this.buildTopPosts(periodPostViewMetrics);
+    const topPosts = this.buildTopPosts(postViewMetrics);
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
@@ -7641,15 +7629,12 @@ export class AdminService implements OnModuleDestroy {
       joined,
       left,
       net: joined - left,
-      posts: periodPosts.length,
+      posts: contentTotals.posts,
       views: periodViews,
       viewsTotal: periodViewsTotal,
       averageViewsPerPost:
-        periodPosts.length > 0 ? Math.round(periodViewsTotal / periodPosts.length) : 0,
-      reactions: periodPosts.reduce(
-        (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
-        0,
-      ),
+        contentTotals.posts > 0 ? Math.round(periodViewsTotal / contentTotals.posts) : 0,
+      reactions: contentTotals.reactions,
     };
     const comparison = this.buildChannelStatsComparison(
       currentTotals,
@@ -7675,7 +7660,7 @@ export class AdminService implements OnModuleDestroy {
       topPosts,
       membershipSeries,
       viewsSeries,
-      postViewMetrics: periodPostViewMetrics,
+      postViewMetrics,
       range: statsQuery.range,
       maxSnapshotAvailable,
       suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
@@ -7705,14 +7690,11 @@ export class AdminService implements OnModuleDestroy {
           net: joined - left,
         },
         content: {
-          posts: periodPosts.length,
+          posts: contentTotals.posts,
           views: periodViews,
           viewsTotal: periodViewsTotal,
           viewsMode,
-          reactions: periodPosts.reduce(
-            (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
-            0,
-          ),
+          reactions: contentTotals.reactions,
           topReactions,
           topPosts,
           lastPublishedAt:
@@ -7760,7 +7742,7 @@ export class AdminService implements OnModuleDestroy {
         signals,
         membershipRows,
         participantSeries,
-        postViewMetrics: periodPostViewMetrics,
+        postViewMetrics,
         secondary: {
           commentAuthors: this.toSafeInteger(secondary.comment_authors),
           suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
@@ -21351,29 +21333,10 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     bucket: ChannelStatsBucket,
   ): Promise<ChannelStatsPreviousPeriodSnapshot> {
-    const [membershipBucketRows, trackedPosts, previousAudienceSnapshot, audienceSnapshots] =
+    const [membershipBucketRows, contentBucketRows, previousAudienceSnapshot, audienceSnapshots] =
       await Promise.all([
         selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to, bucket }),
-        this.prisma.channelPost.findMany({
-          where: {
-            chatId,
-            OR: [
-              { publishedAt: { gte: from, lte: to } },
-              { latestSnapshotAt: { gte: from, lte: to } },
-            ],
-          },
-          orderBy: { publishedAt: 'asc' },
-          select: {
-            id: true,
-            messageId: true,
-            publishedAt: true,
-            url: true,
-            latestViews: true,
-            latestReactions: true,
-            latestReactionsTotal: true,
-            latestSnapshotAt: true,
-          },
-        }),
+        selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to, bucket }),
         this.prisma.channelAudienceSnapshot.findFirst({
           where: {
             chatId,
@@ -21397,56 +21360,12 @@ export class AdminService implements OnModuleDestroy {
         }),
       ]);
 
-    const viewSnapshots =
-      trackedPosts.length > 0
-        ? await this.prisma.channelPostViewSnapshot.findMany({
-            where: {
-              channelPostId: {
-                in: trackedPosts.map((post) => post.id),
-              },
-              capturedAt: { gte: from, lte: to },
-            },
-            orderBy: [{ channelPostId: 'asc' }, { capturedAt: 'asc' }],
-            select: {
-              channelPostId: true,
-              views: true,
-              capturedAt: true,
-            },
-          })
-        : [];
-
-    const periodPosts = trackedPosts.filter(
-      (post) =>
-        post.publishedAt.getTime() >= from.getTime() && post.publishedAt.getTime() <= to.getTime(),
-    );
-    const postViewMetrics = this.buildPostViewMetrics(trackedPosts, viewSnapshots, from);
-    const periodPostViewMetrics = postViewMetrics.filter(
-      (metric) =>
-        metric.post.publishedAt.getTime() >= from.getTime() &&
-        metric.post.publishedAt.getTime() <= to.getTime(),
-    );
-    const viewsMode: ChannelStatsViewMode =
-      viewSnapshots.length > 0 || periodPostViewMetrics.some((metric) => metric.hasObservedDelta)
-        ? 'observedDelta'
-        : 'latestTotal';
     const bucketStarts = this.buildChannelStatsBucketStarts(from, to, bucket);
-    const viewsSeries = this.buildViewsSeries(
-      bucketStarts,
-      bucket,
-      trackedPosts,
-      viewSnapshots,
-      from,
-      viewsMode,
-    );
+    const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
+    const contentTotals = this.buildContentTotals(contentSeries);
+    const viewsMode = this.resolveChannelStatsViewsMode(contentTotals);
+    const viewsSeries = this.buildViewsSeriesFromContentSeries(contentSeries, viewsMode);
     const views = viewsSeries.reduce((total, item) => total + item.views, 0);
-    const viewsTotal = periodPosts.reduce(
-      (total, item) => total + Math.max(0, item.latestViews),
-      0,
-    );
-    const reactions = periodPosts.reduce(
-      (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
-      0,
-    );
 
     const membershipSeries = this.buildMembershipSeriesFromBucketRows(
       bucketStarts,
@@ -21466,12 +21385,12 @@ export class AdminService implements OnModuleDestroy {
         joined,
         left,
         net: joined - left,
-        posts: periodPosts.length,
+        posts: contentTotals.posts,
         views,
-        viewsTotal,
+        viewsTotal: contentTotals.viewsTotal,
         averageViewsPerPost:
-          periodPosts.length > 0 ? Math.round(viewsTotal / periodPosts.length) : 0,
-        reactions,
+          contentTotals.posts > 0 ? Math.round(contentTotals.viewsTotal / contentTotals.posts) : 0,
+        reactions: contentTotals.reactions,
       },
       series: {
         participants: participantSeries,
@@ -22009,73 +21928,89 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
-  private buildViewsSeries(
+  private buildContentSeriesFromBucketRows(
     bucketStarts: Date[],
-    bucket: ChannelStatsBucket,
-    posts: ChannelStatsPostRow[],
-    snapshots: ChannelStatsViewSnapshotRow[],
-    from: Date,
-    mode: ChannelStatsViewMode,
-  ) {
-    const grouped = new Map<string, number>();
+    rows: ChannelStatsContentBucketRow[],
+  ): ChannelStatsContentBucketPoint[] {
+    const grouped = new Map<string, Omit<ChannelStatsContentBucketPoint, 'at'>>();
 
-    if (mode === 'latestTotal') {
-      for (const post of posts) {
-        if (post.publishedAt.getTime() < from.getTime()) {
-          continue;
-        }
-
-        const bucketStart = this.floorChannelStatsBucket(post.publishedAt, bucket).toISOString();
-        grouped.set(bucketStart, (grouped.get(bucketStart) ?? 0) + Math.max(0, post.latestViews));
+    for (const row of rows) {
+      const bucketStart = this.toIsoString(row.bucket_start);
+      if (!bucketStart) {
+        continue;
       }
-    } else {
-      const postsById = new Map(posts.map((post) => [post.id, post]));
-      const snapshotsByPostId = new Map<string, ChannelStatsViewSnapshotRow[]>();
-      for (const snapshot of snapshots) {
-        const current = snapshotsByPostId.get(snapshot.channelPostId) ?? [];
-        current.push(snapshot);
-        snapshotsByPostId.set(snapshot.channelPostId, current);
-      }
-
-      for (const [postId, postSnapshots] of snapshotsByPostId.entries()) {
-        const post = postsById.get(postId);
-        if (!post) {
-          continue;
-        }
-
-        const sortedSnapshots = postSnapshots
-          .slice()
-          .sort((left, right) => left.capturedAt.getTime() - right.capturedAt.getTime());
-        let previousViews: number | null = post.publishedAt.getTime() >= from.getTime() ? 0 : null;
-
-        for (const snapshot of sortedSnapshots) {
-          const currentViews = Math.max(0, this.toSafeInteger(snapshot.views));
-          if (previousViews === null) {
-            previousViews = currentViews;
-            continue;
-          }
-
-          const gainedViews = Math.max(0, currentViews - previousViews);
-          previousViews = currentViews;
-          if (gainedViews === 0) {
-            continue;
-          }
-
-          const bucketStart = this.floorChannelStatsBucket(
-            snapshot.capturedAt,
-            bucket,
-          ).toISOString();
-          grouped.set(bucketStart, (grouped.get(bucketStart) ?? 0) + gainedViews);
-        }
-      }
+      const key = new Date(bucketStart).toISOString();
+      const current = grouped.get(key) ?? {
+        posts: 0,
+        viewsDelta: 0,
+        viewsTotal: 0,
+        reactions: 0,
+      };
+      current.posts += this.toSafeInteger(row.posts);
+      current.viewsDelta += this.toSafeInteger(row.views_delta);
+      current.viewsTotal += this.toSafeInteger(row.views_total);
+      current.reactions += this.toSafeInteger(row.reactions);
+      grouped.set(key, current);
     }
 
-    let cumulativeViews = 0;
     return bucketStarts.map((bucketStart) => {
-      const views = grouped.get(bucketStart.toISOString()) ?? 0;
-      cumulativeViews += views;
+      const current = grouped.get(bucketStart.toISOString()) ?? {
+        posts: 0,
+        viewsDelta: 0,
+        viewsTotal: 0,
+        reactions: 0,
+      };
       return {
         at: bucketStart.toISOString(),
+        posts: current.posts,
+        viewsDelta: current.viewsDelta,
+        viewsTotal: current.viewsTotal,
+        reactions: current.reactions,
+      };
+    });
+  }
+
+  private buildContentTotals(contentSeries: ChannelStatsContentBucketPoint[]) {
+    return contentSeries.reduce(
+      (totals, item) => ({
+        posts: totals.posts + item.posts,
+        viewsDelta: totals.viewsDelta + item.viewsDelta,
+        viewsTotal: totals.viewsTotal + item.viewsTotal,
+        reactions: totals.reactions + item.reactions,
+      }),
+      {
+        posts: 0,
+        viewsDelta: 0,
+        viewsTotal: 0,
+        reactions: 0,
+      },
+    );
+  }
+
+  private resolveChannelStatsViewsMode(totals: {
+    viewsDelta: number;
+    viewsTotal: number;
+  }): ChannelStatsViewMode {
+    if (
+      totals.viewsDelta > 0 &&
+      (totals.viewsTotal === 0 || totals.viewsDelta >= totals.viewsTotal)
+    ) {
+      return 'observedDelta';
+    }
+
+    return 'latestTotal';
+  }
+
+  private buildViewsSeriesFromContentSeries(
+    contentSeries: ChannelStatsContentBucketPoint[],
+    mode: ChannelStatsViewMode,
+  ) {
+    let cumulativeViews = 0;
+    return contentSeries.map((bucket) => {
+      const views = mode === 'observedDelta' ? bucket.viewsDelta : bucket.viewsTotal;
+      cumulativeViews += views;
+      return {
+        at: bucket.at,
         views,
         cumulativeViews,
       };

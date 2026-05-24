@@ -816,6 +816,7 @@ model ChannelStatsBucketRollup {
   leftUsers   Int      @default(0) @map("left_users")
   posts       Int      @default(0)
   viewsDelta  Int      @default(0) @map("views_delta")
+  viewsTotal  Int      @default(0) @map("views_total")
   reactions   Int      @default(0)
   updatedAt   DateTime @default(now()) @map("updated_at")
 

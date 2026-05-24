@@ -22,6 +22,14 @@ export type ChannelStatsMembershipBucketRow = {
   left_users: unknown;
 };
 
+export type ChannelStatsContentBucketRow = {
+  bucket_start: Date | string;
+  posts: unknown;
+  views_delta: unknown;
+  views_total: unknown;
+  reactions: unknown;
+};
+
 type SelectModerationFeedRowsParams = {
   chatId: string;
   from: Date;
@@ -151,6 +159,117 @@ export async function selectChannelStatsMembershipBucketRows(
       COALESCE(SUM(joined_users), 0) AS joined_users,
       COALESCE(SUM(left_users), 0) AS left_users
     FROM membership_bucket_rows
+    GROUP BY bucket_start
+    ORDER BY bucket_start ASC
+  `;
+}
+
+export async function selectChannelStatsContentBucketRows(
+  prisma: PrismaService,
+  params: SelectChannelStatsMembershipBucketRowsParams,
+): Promise<ChannelStatsContentBucketRow[]> {
+  const bucketName = params.bucket === 'hour' ? 'hour' : 'day';
+  const { completeFrom, completeTo, hasCompleteBuckets } = resolveCompleteHourlyRollupWindow(
+    params.from,
+    params.to,
+  );
+  const rollupRowsSql = hasCompleteBuckets
+    ? Prisma.sql`
+        SELECT
+          date_trunc(${bucketName}, bucket_start)::TIMESTAMP(3) AS bucket_start,
+          COALESCE(SUM(posts), 0) AS posts,
+          COALESCE(SUM(views_delta), 0) AS views_delta,
+          COALESCE(SUM(views_total), 0) AS views_total,
+          COALESCE(SUM(reactions), 0) AS reactions
+        FROM channel_stats_bucket_rollups
+        WHERE chat_id = ${params.chatId}
+          AND bucket_start >= ${completeFrom}
+          AND bucket_start < ${completeTo}
+        GROUP BY date_trunc(${bucketName}, bucket_start)::TIMESTAMP(3)
+      `
+    : Prisma.sql`
+        SELECT
+          NULL::TIMESTAMP(3) AS bucket_start,
+          0::BIGINT AS posts,
+          0::BIGINT AS views_delta,
+          0::BIGINT AS views_total,
+          0::BIGINT AS reactions
+        WHERE FALSE
+      `;
+  const postEdgeExclusionSql = hasCompleteBuckets
+    ? Prisma.sql`AND NOT (published_at >= ${completeFrom} AND published_at < ${completeTo})`
+    : Prisma.empty;
+  const viewEdgeExclusionSql = hasCompleteBuckets
+    ? Prisma.sql`AND NOT (snapshots.captured_at >= ${completeFrom} AND snapshots.captured_at < ${completeTo})`
+    : Prisma.empty;
+
+  return prisma.$queryRaw<ChannelStatsContentBucketRow[]>`
+    WITH content_bucket_rows AS (
+      ${rollupRowsSql}
+
+      UNION ALL
+
+      SELECT
+        date_trunc(${bucketName}, published_at)::TIMESTAMP(3) AS bucket_start,
+        COUNT(*) AS posts,
+        0::BIGINT AS views_delta,
+        COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_total,
+        COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
+      FROM channel_posts
+      WHERE chat_id = ${params.chatId}
+        AND published_at >= ${params.from}
+        AND published_at <= ${params.to}
+        ${postEdgeExclusionSql}
+      GROUP BY date_trunc(${bucketName}, published_at)::TIMESTAMP(3)
+
+      UNION ALL
+
+      SELECT
+        date_trunc(${bucketName}, snapshots.captured_at)::TIMESTAMP(3) AS bucket_start,
+        0::BIGINT AS posts,
+        COALESCE(
+          SUM(
+            GREATEST(
+              snapshots.views - COALESCE(
+                previous_snapshot.views,
+                CASE WHEN posts.published_at >= ${params.from} THEN 0 ELSE snapshots.views END
+              ),
+              0
+            )
+          ),
+          0
+        ) AS views_delta,
+        0::BIGINT AS views_total,
+        0::BIGINT AS reactions
+      FROM channel_post_view_snapshots snapshots
+      JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
+      LEFT JOIN LATERAL (
+        SELECT previous.views
+        FROM channel_post_view_snapshots previous
+        WHERE previous.channel_post_id = snapshots.channel_post_id
+          AND (
+            previous.captured_at < snapshots.captured_at
+            OR (
+              previous.captured_at = snapshots.captured_at
+              AND previous.id < snapshots.id
+            )
+          )
+        ORDER BY previous.captured_at DESC, previous.id DESC
+        LIMIT 1
+      ) previous_snapshot ON TRUE
+      WHERE posts.chat_id = ${params.chatId}
+        AND snapshots.captured_at >= ${params.from}
+        AND snapshots.captured_at <= ${params.to}
+        ${viewEdgeExclusionSql}
+      GROUP BY date_trunc(${bucketName}, snapshots.captured_at)::TIMESTAMP(3)
+    )
+    SELECT
+      bucket_start,
+      COALESCE(SUM(posts), 0) AS posts,
+      COALESCE(SUM(views_delta), 0) AS views_delta,
+      COALESCE(SUM(views_total), 0) AS views_total,
+      COALESCE(SUM(reactions), 0) AS reactions
+    FROM content_bucket_rows
     GROUP BY bucket_start
     ORDER BY bucket_start ASC
   `;
