@@ -16722,10 +16722,12 @@ describe('AdminService.getChannelStats', () => {
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]);
     expect(membershipSqlText).toContain('channel_stats_bucket_rollups');
     expect(membershipSqlText).toContain('chat_membership_activity_feed_items');
+    expect(membershipSqlText).toContain("date_trunc('day', bucket_start)");
     expect(membershipSqlText).toContain('ORDER BY bucket_start ASC');
     const contentSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
     expect(contentSqlText).toContain('channel_stats_bucket_rollups');
     expect(contentSqlText).toContain('views_total');
+    expect(contentSqlText).toContain("date_trunc('day', bucket_start)");
     expect(contentSqlText).toContain('channel_post_view_snapshots');
   });
 
@@ -16935,6 +16937,10 @@ describe('AdminService.getChannelStats', () => {
       expect(result.period.from).toBe(expectedFrom);
       expect(result.period.to).toBe('2026-03-07T12:00:00.000Z');
       expect(result.period.bucket).toBe(expectedBucket);
+      const querySqlTexts = prisma.$queryRaw.mock.calls.map((call) => extractSqlText(call));
+      expect(
+        querySqlTexts.some((sqlText) => sqlText.includes(`date_trunc('${expectedBucket}',`)),
+      ).toBe(true);
     },
   );
 
