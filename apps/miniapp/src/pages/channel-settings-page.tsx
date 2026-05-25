@@ -63,13 +63,13 @@ import {
   getChannelManagedBroadcastCalendar,
   getChannelManagedBroadcast,
   getChannelSettingsScreen,
+  getChannelVkParsingCapability,
   retryChannelManagedBroadcast,
   sendChannelBroadcast,
   sendChannelBroadcastTest,
   updateChannelManagedBroadcast,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
-import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
@@ -108,7 +108,6 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
-import { canUseVkParsing } from '../lib/vk-parsing-access';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -943,13 +942,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         }
       : {}),
   });
-  const currentUserQuery = useQuery({
-    queryKey: queryKeys.currentUser(chatId),
-    queryFn: ({ signal }) => getMe(api, { chatId, entityType: 'channel', signal }),
-    enabled: Boolean(chatId),
-    staleTime: 300_000,
-    refetchOnWindowFocus: false,
-  });
   const broadcastHandoffStateQuery = useQuery({
     queryKey: queryKeys.channelBroadcastHandoff(chatId),
     queryFn: () => getChannelBroadcastHandoffState(api, chatId ?? ''),
@@ -1005,7 +997,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showSettingsHandoffError =
     Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
-  const canAccessVkParsing = canUseVkParsing(currentUserQuery.data?.userId);
+  const vkParsingCapabilityQuery = useQuery({
+    queryKey: queryKeys.channelVkParsingCapability(chatId),
+    queryFn: () => getChannelVkParsingCapability(api, chatId ?? ''),
+    enabled: Boolean(chatId),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const canAccessVkParsing = vkParsingCapabilityQuery.data?.canUse === true;
   const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({

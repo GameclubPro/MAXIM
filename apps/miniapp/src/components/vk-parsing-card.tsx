@@ -58,6 +58,46 @@ function formatVkPostDate(value: string | null): string {
   }).format(date);
 }
 
+function formatVkSourceRetry(value: string | null): string {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function formatVkSourceSyncLabel(source: {
+  syncStatus: string;
+  nextSyncAt: string | null;
+  lastError: string | null;
+}): string | null {
+  if (source.syncStatus === 'QUEUED') {
+    return 'В очереди';
+  }
+  if (source.syncStatus === 'SYNCING') {
+    return 'Обновляется';
+  }
+  if (source.syncStatus === 'BACKOFF') {
+    const retryAt = formatVkSourceRetry(source.nextSyncAt);
+    return retryAt ? `Повтор ${retryAt}` : 'Повтор позже';
+  }
+  if (source.syncStatus === 'ERROR' || source.lastError) {
+    return 'Ошибка';
+  }
+
+  return null;
+}
+
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Не удалось выполнить действие.';
@@ -90,7 +130,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     queryFn: () => getChannelVkParsing(api, chatId),
     enabled: Boolean(chatId) && active,
     staleTime: 30_000,
-    refetchInterval: active ? 600_000 : false,
+    refetchInterval: active ? 15_000 : false,
     refetchOnWindowFocus: false,
   });
 
@@ -99,7 +139,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     onSuccess: () => {
       setSourceUrl('');
       void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
-      pushToast({ tone: 'success', title: 'Источник добавлен' });
+      pushToast({ tone: 'success', title: 'Источник добавлен', description: 'Обновление запущено' });
       maxNotify('success');
     },
     onError: (error) => {
@@ -136,10 +176,10 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
       pushToast({
-        tone: result.imported > 0 ? 'success' : 'info',
-        title: result.imported > 0 ? 'Посты обновлены' : 'Новых постов нет',
+        tone: result.queued > 0 ? 'success' : 'info',
+        title: result.queued > 0 ? 'Обновление запущено' : 'Нечего обновлять',
       });
-      maxNotify(result.imported > 0 ? 'success' : 'warning');
+      maxNotify(result.queued > 0 ? 'success' : 'warning');
     },
     onError: (error) => {
       pushToast({
@@ -284,36 +324,42 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
               </button>
             </span>
           ) : null}
-          {sources.map((source) => (
-            <span
-              key={source.id}
-              className={cn(
-                'vk-parsing-source-chip',
-                selectedSourceId === source.id && 'is-selected',
-              )}
-            >
-              <button
-                type="button"
-                className="vk-parsing-source-chip__select"
-                aria-pressed={selectedSourceId === source.id}
-                title={source.title}
-                onClick={() => setSelectedSourceId(source.id)}
+          {sources.map((source) => {
+            const syncLabel = formatVkSourceSyncLabel(source);
+            return (
+              <span
+                key={source.id}
+                className={cn(
+                  'vk-parsing-source-chip',
+                  selectedSourceId === source.id && 'is-selected',
+                  source.syncStatus === 'SYNCING' && 'is-syncing',
+                  source.syncStatus === 'ERROR' && 'has-error',
+                  source.syncStatus === 'BACKOFF' && 'has-error',
+                )}
               >
-                <span>{source.title}</span>
-              </button>
-              {source.lastError ? <small title={source.lastError}>Ошибка</small> : null}
-              <button
-                type="button"
-                className="vk-parsing-source-chip__remove"
-                aria-label={`Удалить ${source.title}`}
-                title="Удалить источник"
-                disabled={removeSourceMutation.isPending}
-                onClick={() => removeSourceMutation.mutate(source.id)}
-              >
-                <Xmark aria-hidden />
-              </button>
-            </span>
-          ))}
+                <button
+                  type="button"
+                  className="vk-parsing-source-chip__select"
+                  aria-pressed={selectedSourceId === source.id}
+                  title={source.title}
+                  onClick={() => setSelectedSourceId(source.id)}
+                >
+                  <span>{source.title}</span>
+                </button>
+                {syncLabel ? <small title={source.lastError ?? undefined}>{syncLabel}</small> : null}
+                <button
+                  type="button"
+                  className="vk-parsing-source-chip__remove"
+                  aria-label={`Удалить ${source.title}`}
+                  title="Удалить источник"
+                  disabled={removeSourceMutation.isPending}
+                  onClick={() => removeSourceMutation.mutate(source.id)}
+                >
+                  <Xmark aria-hidden />
+                </button>
+              </span>
+            );
+          })}
         </div>
       ) : null}
 
@@ -463,6 +509,8 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                       {post.photoUrls.length > 0 ? <span>{post.photoUrls.length} фото</span> : null}
                       {post.linkUrls.length > 0 ? <span>{post.linkUrls.length} ссыл.</span> : null}
                       {post.status === 'PUBLISHED' ? <span>Опубликован</span> : null}
+                      {post.status === 'CHANGED_AFTER_PUBLISH' ? <span>Изменён в VK</span> : null}
+                      {post.status === 'UNAVAILABLE' ? <span>Недоступен в VK</span> : null}
                       {post.status === 'FAILED' ? <span>Ошибка</span> : null}
                     </div>
 
@@ -478,6 +526,10 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                             Открыть
                           </a>
                         ) : null
+                      ) : post.status === 'UNAVAILABLE' ? (
+                        <button type="button" className="button button--ghost" disabled>
+                          Недоступен
+                        </button>
                       ) : (
                         <button
                           type="button"

@@ -964,19 +964,31 @@ model ManagedBroadcastDelivery {
 }
 
 model VkParsingSource {
-  id              String    @id @default(cuid())
-  chatId          String    @map("chat_id")
-  ownerId         Int       @map("owner_id")
-  wallOwnerId     Int       @map("wall_owner_id")
-  screenName      String    @map("screen_name")
-  title           String
-  url             String
-  status          String    @default("ACTIVE")
-  lastSyncAt      DateTime? @map("last_sync_at")
-  lastError       String?   @map("last_error")
-  createdByUserId String    @map("created_by_user_id")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id                  String    @id @default(cuid())
+  chatId              String    @map("chat_id")
+  ownerId             Int       @map("owner_id")
+  wallOwnerId         Int       @map("wall_owner_id")
+  screenName          String    @map("screen_name")
+  title               String
+  url                 String
+  status              String    @default("ACTIVE")
+  syncStatus          String    @default("IDLE") @map("sync_status")
+  nextSyncAt          DateTime? @map("next_sync_at")
+  lastSyncAt          DateTime? @map("last_sync_at")
+  lastSuccessAt       DateTime? @map("last_success_at")
+  syncStartedAt       DateTime? @map("sync_started_at")
+  syncLockedAt        DateTime? @map("sync_locked_at")
+  syncLockedBy        String?   @map("sync_locked_by")
+  syncAttemptCount    Int       @default(0) @map("sync_attempt_count")
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  lastErrorCode       String?   @map("last_error_code")
+  lastImportedCount   Int       @default(0) @map("last_imported_count")
+  lastFetchedCount    Int       @default(0) @map("last_fetched_count")
+  lastSyncDurationMs  Int?      @map("last_sync_duration_ms")
+  lastError           String?   @map("last_error")
+  createdByUserId     String    @map("created_by_user_id")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
 
   chat  Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   posts VkParsingPost[]
@@ -984,29 +996,36 @@ model VkParsingSource {
   @@unique([chatId, wallOwnerId], map: "vk_parsing_sources_chat_wall_owner_key")
   @@index([chatId, status], map: "vk_parsing_sources_chat_status_idx")
   @@index([status, lastSyncAt], map: "vk_parsing_sources_status_last_sync_at_idx")
+  @@index([status, nextSyncAt], map: "vk_parsing_sources_status_next_sync_at_idx")
+  @@index([syncStatus, syncLockedAt], map: "vk_parsing_sources_sync_status_locked_at_idx")
   @@map("vk_parsing_sources")
 }
 
 model VkParsingPost {
-  id                 String    @id @default(cuid())
-  sourceId           String    @map("source_id")
-  chatId             String    @map("chat_id")
-  vkOwnerId          Int       @map("vk_owner_id")
-  vkPostId           Int       @map("vk_post_id")
-  vkPublishedAt      DateTime? @map("vk_published_at")
-  text               String    @default("")
-  url                String
-  photoUrls          Json      @default("[]") @map("photo_urls")
-  linkUrls           Json      @default("[]") @map("link_urls")
-  attachments        Json      @default("[]")
-  raw                Json?
-  status             String    @default("NEW")
-  publishedMessageId String?   @map("published_message_id")
-  publishedUrl       String?   @map("published_url")
-  publishedAtMax     DateTime? @map("published_at_max")
-  lastError          String?   @map("last_error")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  id                   String    @id @default(cuid())
+  sourceId             String    @map("source_id")
+  chatId               String    @map("chat_id")
+  vkOwnerId            Int       @map("vk_owner_id")
+  vkPostId             Int       @map("vk_post_id")
+  vkPublishedAt        DateTime? @map("vk_published_at")
+  text                 String    @default("")
+  url                  String
+  photoUrls            Json      @default("[]") @map("photo_urls")
+  linkUrls             Json      @default("[]") @map("link_urls")
+  attachments          Json      @default("[]")
+  raw                  Json?
+  contentHash          String    @default("") @map("content_hash")
+  publishedContentHash String?   @map("published_content_hash")
+  status               String    @default("NEW")
+  publishedMessageId   String?   @map("published_message_id")
+  publishedUrl         String?   @map("published_url")
+  publishedAtMax       DateTime? @map("published_at_max")
+  lastSeenAt           DateTime? @map("last_seen_at")
+  missingSinceAt       DateTime? @map("missing_since_at")
+  unavailableAt        DateTime? @map("unavailable_at")
+  lastError            String?   @map("last_error")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   chat   Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   source VkParsingSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
@@ -1014,7 +1033,23 @@ model VkParsingPost {
   @@unique([chatId, vkOwnerId, vkPostId], map: "vk_parsing_posts_chat_vk_post_key")
   @@index([sourceId, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_source_published_at_idx")
   @@index([chatId, status, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_chat_status_published_idx")
+  @@index([sourceId, lastSeenAt], map: "vk_parsing_posts_source_last_seen_at_idx")
   @@map("vk_parsing_posts")
+}
+
+model VkParsingMediaCache {
+  id            String    @id @default(cuid())
+  url           String    @unique
+  status        String    @default("UNKNOWN")
+  mimeType      String?   @map("mime_type")
+  contentLength Int?      @map("content_length")
+  lastCheckedAt DateTime? @map("last_checked_at")
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, lastCheckedAt], map: "vk_parsing_media_cache_status_checked_idx")
+  @@map("vk_parsing_media_cache")
 }
 
 model ManagedGiveaway {

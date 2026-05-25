@@ -25,6 +25,9 @@ import { ManagedGiveawayService } from './managed-giveaway.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
+import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
+import { VK_PARSING_SYNC_QUEUE } from './vk-parsing.queue';
+import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import { VkParsingService } from './vk-parsing.service';
 
 @Module({
@@ -32,6 +35,7 @@ import { VkParsingService } from './vk-parsing.service';
     BullModule.registerQueue({ name: ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_MANUAL_FANOUT_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_SUGGESTION_DELIVERY_QUEUE }),
+    BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
     AuthModule,
     MaxModule,
     ChatContextModule,
@@ -51,8 +55,10 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
+    VkParsingRateLimitService,
     VkParsingService,
     ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
+    ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManagedEntitiesRefreshProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
@@ -66,6 +72,7 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
+    VkParsingRateLimitService,
     VkParsingService,
   ],
 })

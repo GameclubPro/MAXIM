@@ -65,6 +65,16 @@
   color: #244f82;
 }
 
+.vk-parsing-source-chip.is-syncing {
+  border-color: rgba(31, 122, 88, 0.38);
+  background: rgba(31, 122, 88, 0.09);
+}
+
+.vk-parsing-source-chip.has-error {
+  border-color: rgba(178, 69, 69, 0.32);
+  background: rgba(178, 69, 69, 0.08);
+}
+
 .vk-parsing-source-chip__select {
   min-width: 0;
   border: 0;
@@ -91,8 +101,12 @@
 }
 
 .vk-parsing-source-chip small {
-  color: #b24545;
+  max-width: 128px;
+  overflow: hidden;
+  color: #7b5260;
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vk-parsing-source-chip__remove {

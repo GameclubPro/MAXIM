@@ -176,7 +176,7 @@
 - Channel statistics should open from cached/read-model data. Use `channel_stats_bucket_rollups` for membership, posts, views, and reactions; keep raw `channel_posts` reads limited to compact top-post/top-reaction details. Do not block `GET /channels/:chatId/stats` on MAX refresh; queue stale refresh in the background and request `includeActivityPreview=false` for the mini app's first stats paint.
 - Channel statistics audience graphs should plot joined/left net growth from `series.membership`; use `series.participants` only as total-audience context. Period views should use observed `viewsDelta` when it exists, with `latestTotal`/`viewsTotal` only as the no-delta fallback.
 - Channel statistics screens should stay factual. Do not add "What to do next", smart recommendations, pseudo-AI advice, or coaching copy; prefer neutral metrics, freshness/source coverage, charts, top posts, and best publishing windows.
-- VK parsing is a channel-only admin feature. Keep mini app access limited to MAX user ids `183470701` and `98315271`; backend endpoints must enforce the same allowlist plus channel admin access. Current supported VK import media are text, photos, and links only.
+- VK parsing is a channel-only admin feature. Mini app visibility comes from the server capability endpoint; do not reintroduce a hardcoded mini app allowlist. Backend endpoints must enforce the configured allowlist plus channel admin access. Current supported VK import media are text, photos, and links only, and source sync runs through the BullMQ `vk-parsing-sync` queue with DB source leases.
 
 ## Repo hygiene
 

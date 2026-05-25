@@ -2177,7 +2177,22 @@ export type ManagedBroadcastCalendarResponse = z.infer<
 export const vkParsingSourceStatusSchema = z.enum(['ACTIVE', 'DISABLED']);
 export type VkParsingSourceStatus = z.infer<typeof vkParsingSourceStatusSchema>;
 
-export const vkParsingPostStatusSchema = z.enum(['NEW', 'PUBLISHED', 'FAILED']);
+export const vkParsingSourceSyncStatusSchema = z.enum([
+  'IDLE',
+  'QUEUED',
+  'SYNCING',
+  'BACKOFF',
+  'ERROR',
+]);
+export type VkParsingSourceSyncStatus = z.infer<typeof vkParsingSourceSyncStatusSchema>;
+
+export const vkParsingPostStatusSchema = z.enum([
+  'NEW',
+  'PUBLISHED',
+  'FAILED',
+  'CHANGED_AFTER_PUBLISH',
+  'UNAVAILABLE',
+]);
 export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
 
 export const vkParsingSourceSchema = z.object({
@@ -2189,7 +2204,16 @@ export const vkParsingSourceSchema = z.object({
   title: z.string(),
   url: z.string().url(),
   status: vkParsingSourceStatusSchema,
+  syncStatus: vkParsingSourceSyncStatusSchema.default('IDLE'),
+  nextSyncAt: z.string().datetime().nullable().default(null),
   lastSyncAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable().default(null),
+  syncStartedAt: z.string().datetime().nullable().default(null),
+  consecutiveFailures: z.number().int().min(0).default(0),
+  lastErrorCode: z.string().nullable().default(null),
+  lastImportedCount: z.number().int().min(0).default(0),
+  lastFetchedCount: z.number().int().min(0).default(0),
+  lastSyncDurationMs: z.number().int().min(0).nullable().default(null),
   lastError: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -2210,16 +2234,28 @@ export const vkParsingPostSchema = z.object({
   photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
   linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
   status: vkParsingPostStatusSchema,
+  contentHash: z.string().default(''),
+  publishedContentHash: z.string().nullable().default(null),
   publishedMessageId: z.string().nullable(),
   publishedUrl: z.string().url().nullable(),
   publishedAtMax: z.string().datetime().nullable(),
+  lastSeenAt: z.string().datetime().nullable().default(null),
+  missingSinceAt: z.string().datetime().nullable().default(null),
+  unavailableAt: z.string().datetime().nullable().default(null),
   lastError: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
 export type VkParsingPost = z.infer<typeof vkParsingPostSchema>;
 
+export const vkParsingCapabilitySchema = z.object({
+  enabled: z.boolean().default(false),
+  canUse: z.boolean().default(false),
+});
+export type VkParsingCapability = z.infer<typeof vkParsingCapabilitySchema>;
+
 export const vkParsingFeedSchema = z.object({
+  capabilities: vkParsingCapabilitySchema.default({ enabled: false, canUse: false }),
   sources: z.array(vkParsingSourceSchema).default([]),
   posts: z.array(vkParsingPostSchema).default([]),
 });
@@ -2253,6 +2289,7 @@ export type PublishVkParsingPostRequest = z.infer<typeof publishVkParsingPostReq
 
 export const vkParsingRefreshResultSchema = vkParsingFeedSchema.extend({
   imported: z.number().int().min(0).default(0),
+  queued: z.number().int().min(0).default(0),
 });
 export type VkParsingRefreshResult = z.infer<typeof vkParsingRefreshResultSchema>;
 

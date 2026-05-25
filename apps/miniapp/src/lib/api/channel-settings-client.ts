@@ -21,6 +21,7 @@ import {
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
   sendBroadcastRequestSchema,
+  vkParsingCapabilitySchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
   type BroadcastHandoffState,
@@ -36,6 +37,7 @@ import {
   type PublishVkParsingPostResult,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
+  type VkParsingCapability,
   type VkParsingFeed,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
@@ -282,6 +284,14 @@ export async function getChannelVkParsing(
 ): Promise<VkParsingFeed> {
   const response = await api.request(`/channels/${chatId}/vk-parsing`);
   return vkParsingFeedSchema.parse(response);
+}
+
+export async function getChannelVkParsingCapability(
+  api: ApiTransport,
+  chatId: string,
+): Promise<VkParsingCapability> {
+  const response = await api.request(`/channels/${chatId}/vk-parsing/capability`);
+  return vkParsingCapabilitySchema.parse(response);
 }
 
 export async function addChannelVkParsingSource(
