@@ -10943,7 +10943,7 @@ export class PrivateControlService {
   }
 
   private launcherIntroMarkerKey(userId: string): string {
-    return `private-control:launcher-intro:v1:${userId}`;
+    return `private-control:launcher-intro:v2:${userId}`;
   }
 
   private async hasDeliveredLauncherIntro(userId: string): Promise<boolean> {
