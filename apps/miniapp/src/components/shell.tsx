@@ -119,7 +119,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.startsWith('/legal/')) {
     return {
       title: 'Правовые документы',
-      subtitle: 'Условия использования и обработка данных MAXIM.',
+      subtitle: 'Условия использования и обработка данных ботов.',
     };
   }
 
@@ -363,7 +363,7 @@ export function Shell() {
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
             <Link to={homeRoute} className="shell-brand">
-              MAXIM
+              Панель
             </Link>
             <span className="shell-chip">Панель</span>
           </div>

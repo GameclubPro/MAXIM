@@ -157,9 +157,9 @@ type PreviewDialogThreadBuckets = Partial<
 const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
 const PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY = 'maxim.preview.giveaway.runtime';
 const PREVIEW_PRIMARY_BOT_ID = '777000_bot';
-const PREVIEW_PRIMARY_BOT_LABEL = 'MAXIM';
+const PREVIEW_PRIMARY_BOT_LABEL = 'Майор Максимов';
 const PREVIEW_STANDBY_BOT_ID = '777001_bot';
-const PREVIEW_STANDBY_BOT_LABEL = 'MAXIM 2';
+const PREVIEW_STANDBY_BOT_LABEL = 'Майор Максимова';
 const PREVIEW_REX_BOT_ID = '777002_bot';
 const PREVIEW_REX_BOT_LABEL = 'Рэкс';
 
@@ -189,9 +189,9 @@ function buildPreviewAssignedBots(
       role: primaryBotId === PREVIEW_PRIMARY_BOT_ID ? 'primary' : 'standby',
       membershipStatus: 'active',
       lifecycleState: 'active',
-      speechPersona: 'neutral',
-      characterName: 'Чат-бот',
-      avatarUrl: buildPreviewAvatarDataUrl('MAXIM', '#22b6b7', '#1484a0'),
+      speechPersona: 'male',
+      characterName: 'Майор Максимов',
+      avatarUrl: buildPreviewAvatarDataUrl('Майор Максимов', '#22b6b7', '#1484a0'),
       capabilities: [],
       permissionsSummary: {
         checkedAt: new Date().toISOString(),
@@ -2135,7 +2135,7 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
     const username = isBot
       ? `helper_${index + 1}_bot`
       : (featuredParticipant?.username ?? `preview_member_${index + 1}`);
-    const label = isBot ? `MAXIM ${index === count - 1 ? 'Assist' : 'Guard'}` : displayName;
+    const label = isBot ? (index === count - 1 ? 'Рэкс' : 'Майор Максимова') : displayName;
     const immunity =
       !isBot && index === 4
         ? createPreviewImmunity(72, 5, 1)
