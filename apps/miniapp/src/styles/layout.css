@@ -500,6 +500,17 @@ body.settings-drilldown-open .bottom-nav {
   background: transparent;
 }
 
+.design-preview .app-shell.app-shell--immersive.app-shell--comments-dialog {
+  min-height: calc(
+    100% + var(--design-preview-safe-top, 0px) + var(--design-preview-safe-bottom, 0px)
+  );
+  height: calc(
+    100% + var(--design-preview-safe-top, 0px) + var(--design-preview-safe-bottom, 0px)
+  );
+  margin-top: calc(-1 * var(--design-preview-safe-top, 0px));
+  margin-bottom: calc(-1 * var(--design-preview-safe-bottom, 0px));
+}
+
 .page-stack {
   gap: 10px;
 }
