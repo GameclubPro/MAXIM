@@ -11,6 +11,7 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'poll',
   'requiredSubscription',
   'rules',
+  'vkParsing',
 ]);
 const CHANNEL_SETTINGS_FOCUS = new Set([
   'broadcast',
@@ -18,6 +19,7 @@ const CHANNEL_SETTINGS_FOCUS = new Set([
   'giveaway',
   'poll',
   'postSuggestions',
+  'vkParsing',
 ]);
 
 type ChannelDialogLaunchPayload = {

@@ -1,4 +1,3 @@
-import { ForbiddenException } from '@nestjs/common';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { VkParsingService } from './vk-parsing.service';
@@ -117,7 +116,6 @@ describe('VkParsingService', () => {
         VK_SERVICE_TOKEN: 'vk-service-token',
         VK_API_BASE_URL: 'https://api.vk.ru',
         VK_API_VERSION: '5.131',
-        VK_PARSING_ALLOWED_USER_IDS: '183470701,98315271',
         VK_PARSING_SYNC_INTERVAL_MS: 600_000,
         VK_PARSING_FETCH_COUNT: 100,
         VK_API_TIMEOUT_MS: 10_000,
@@ -209,13 +207,31 @@ describe('VkParsingService', () => {
     };
   }
 
-  it('denies users outside the VK parsing allowlist', async () => {
+  it('allows any channel admin to use VK parsing', async () => {
     const { service, adminService } = createFixture();
 
     await expect(
-      service.listVkParsing('channel-1', { userId: 'not-allowed' } as never),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(adminService.assertChatAdmin).not.toHaveBeenCalled();
+      service.listVkParsing('channel-1', { userId: 'not-allowlisted' } as never),
+    ).resolves.toMatchObject({
+      capabilities: { enabled: true, canUse: true },
+    });
+    expect(adminService.assertChatAdmin).toHaveBeenCalledWith(
+      'channel-1',
+      'not-allowlisted',
+      'channel',
+    );
+  });
+
+  it('allows chat admins to use VK parsing in chats', async () => {
+    const { service, prisma, adminService } = createFixture();
+    prisma.chat.findUnique.mockResolvedValue({ entityType: ChatEntityType.CHAT });
+
+    await expect(
+      service.listVkParsing('chat-1', { userId: 'chat-admin' } as never),
+    ).resolves.toMatchObject({
+      capabilities: { enabled: true, canUse: true },
+    });
+    expect(adminService.assertChatAdmin).toHaveBeenCalledWith('chat-1', 'chat-admin', 'chat');
   });
 
   it('updates VK parsing automation settings for a channel', async () => {
@@ -756,6 +772,55 @@ describe('VkParsingService', () => {
       },
     );
     expect(result.messageId).toBe('mid-1');
+  });
+
+  it('publishes VK posts to chats without channel engagement buttons', async () => {
+    const { service, prisma, adminService, maxClient } = createFixture();
+    const source = createSource({ chatId: 'chat-1' });
+    const post = createPostRow({
+      chatId: 'chat-1',
+      source,
+      text: 'Пост для чата',
+    });
+    prisma.chat.findUnique.mockResolvedValue({ entityType: ChatEntityType.CHAT });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-chat-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/mid-chat-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-chat-1',
+      url: 'https://max.ru/chats/chat-1/message/mid-chat-1',
+    });
+
+    const result = await service.publishPost(
+      'chat-1',
+      'post-1',
+      { userId: 'chat-admin' } as never,
+      {
+        text: 'Публикуем в чат',
+        photoUrls: [],
+        linkUrls: [],
+      },
+    );
+
+    expect(adminService.assertChatAdmin).toHaveBeenCalledWith('chat-1', 'chat-admin', 'chat');
+    expect(adminService.buildChannelPublicationEngagementContext).not.toHaveBeenCalled();
+    expect(adminService.recordChannelPublicationEngagement).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Публикуем в чат',
+      expect.not.objectContaining({ buttons: expect.anything() }),
+      {
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+    expect(result.messageId).toBe('mid-chat-1');
   });
 
   it('does not publish the same VK post twice', async () => {

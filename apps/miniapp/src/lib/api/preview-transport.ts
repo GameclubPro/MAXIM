@@ -137,6 +137,7 @@ type PreviewState = {
   channelPoll: ManagedPoll;
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
+  chatVkParsing: VkParsingFeed;
   channelVkParsing: VkParsingFeed;
   chatPrimaryBotId: string | null;
   channelPrimaryBotId: string | null;
@@ -947,6 +948,183 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
       },
     ],
   });
+}
+
+type PreviewVkParsingRouteResult = { handled: false } | { handled: true; value: unknown };
+
+function handleVkParsingPreviewRequest(
+  state: PreviewState,
+  entityType: 'chat' | 'channel',
+  chatId: string,
+  tail: string[],
+  method: string,
+  init?: RequestInit,
+): PreviewVkParsingRouteResult {
+  if (tail[0] !== 'vk-parsing') {
+    return { handled: false };
+  }
+
+  const readFeed = () => (entityType === 'channel' ? state.channelVkParsing : state.chatVkParsing);
+  const writeFeed = (feed: VkParsingFeed) => {
+    if (entityType === 'channel') {
+      state.channelVkParsing = feed;
+    } else {
+      state.chatVkParsing = feed;
+    }
+  };
+
+  if (tail[1] === 'capability' && method === 'GET') {
+    return {
+      handled: true,
+      value: vkParsingCapabilitySchema.parse({ enabled: true, canUse: true }),
+    };
+  }
+
+  if (tail.length === 1 && method === 'GET') {
+    return { handled: true, value: cloneJson(readFeed()) };
+  }
+
+  if (tail[1] === 'settings' && method === 'PATCH') {
+    const payload = updateVkParsingSettingsRequestSchema.parse(parseJsonBody(init));
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      settings: {
+        ...readFeed().settings,
+        ...payload,
+        chatId,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    writeFeed(feed);
+    return { handled: true, value: cloneJson(feed) };
+  }
+
+  if (tail[1] === 'sources' && tail.length === 2 && method === 'POST') {
+    const payload = addVkParsingSourceRequestSchema.parse(parseJsonBody(init));
+    const now = new Date();
+    const parsedUrl = new URL(payload.url);
+    const screenName = parsedUrl.pathname.split('/').filter(Boolean)[0] ?? 'vk_source';
+    const source: VkParsingSource = {
+      id: `preview-vk-source-${Date.now()}`,
+      chatId,
+      ownerId: 200900,
+      wallOwnerId: -200900,
+      screenName,
+      title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
+      url: parsedUrl.toString(),
+      status: 'ACTIVE',
+      syncStatus: 'QUEUED',
+      nextSyncAt: null,
+      lastSyncAt: null,
+      lastSuccessAt: null,
+      syncStartedAt: null,
+      consecutiveFailures: 0,
+      lastErrorCode: null,
+      lastImportedCount: 0,
+      lastFetchedCount: 0,
+      lastSyncDurationMs: null,
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: [source, ...readFeed().sources],
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: vkParsingRefreshResultSchema.parse({
+        ...feed,
+        imported: 0,
+        queued: 1,
+      }),
+    };
+  }
+
+  if (tail[1] === 'sources' && tail[2] && method === 'DELETE') {
+    const sourceId = decodeURIComponent(tail[2]);
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: readFeed().sources.filter((source) => source.id !== sourceId),
+      posts: readFeed().posts.filter((post) => post.sourceId !== sourceId),
+    });
+    writeFeed(feed);
+    return { handled: true, value: cloneJson(feed) };
+  }
+
+  if (tail[1] === 'refresh' && method === 'POST') {
+    const nowIso = new Date().toISOString();
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: readFeed().sources.map((source) => ({
+        ...source,
+        syncStatus: 'IDLE',
+        lastSyncAt: nowIso,
+        lastSuccessAt: nowIso,
+        syncStartedAt: null,
+        consecutiveFailures: 0,
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: nowIso,
+      })),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: vkParsingRefreshResultSchema.parse({
+        ...feed,
+        imported: 2,
+        queued: feed.sources.length,
+      }),
+    };
+  }
+
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'publish' && method === 'POST') {
+    const payload = publishVkParsingPostRequestSchema.parse(parseJsonBody(init));
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+
+    const nowIso = new Date().toISOString();
+    const messageId = `preview-vk-published-${Date.now()}`;
+    const urlPrefix = entityType === 'channel' ? 'channels/yuzhnoe-news' : 'chats/preview-chat';
+    const url = `https://max.ru/${urlPrefix}/message/${messageId}`;
+    const updatedPost: VkParsingPost = {
+      ...post,
+      text: payload.text,
+      photoUrls: payload.photoUrls,
+      linkUrls: payload.linkUrls,
+      status: 'PUBLISHED',
+      publishedContentHash: `preview-${messageId}`,
+      publishedMessageId: messageId,
+      publishedUrl: url,
+      publishedAtMax: nowIso,
+      autoPublishedAt: null,
+      autoPublishError: null,
+      lastError: null,
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: publishVkParsingPostResultSchema.parse({
+        post: updatedPost,
+        messageId,
+        url,
+      }),
+    };
+  }
+
+  throw new Error(
+    `Preview transport does not implement ${method} /vk-parsing/${tail.slice(1).join('/')}`,
+  );
 }
 
 function createPreviewImmunity(durationHours: number, dailyViolationLimit: number, used = 0) {
@@ -2390,6 +2568,7 @@ function createInitialState(): PreviewState {
       lastError: null,
     }),
   ];
+  const chatVkParsing = createPreviewVkParsingFeed(PREVIEW_CHAT_ID, now);
   const channelVkParsing = createPreviewVkParsingFeed(PREVIEW_CHANNEL_ID, now);
   const chatDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
     comments: {
@@ -2698,6 +2877,7 @@ function createInitialState(): PreviewState {
       ],
     ),
     chatViolations: createChatViolations(now),
+    chatVkParsing,
     channelHeaderParticipantsCount: 9_240,
     channelDialogs,
     channelDialogThreads: {},
@@ -3732,6 +3912,18 @@ async function handleChatRequest(
     }
   }
 
+  const vkParsingResponse = handleVkParsingPreviewRequest(
+    state,
+    'chat',
+    chatId,
+    tail,
+    method,
+    init,
+  );
+  if (vkParsingResponse.handled) {
+    return vkParsingResponse.value;
+  }
+
   if (tail[0] === 'settings' && tail.length === 1) {
     if (method === 'GET') {
       return cloneJson(state.chatSettings);
@@ -4340,139 +4532,16 @@ async function handleChannelRequest(
     return cloneJson(buildPreviewBotExecutionPlan(state, 'channel', channelId));
   }
 
-  if (tail[0] === 'vk-parsing') {
-    if (tail[1] === 'capability' && method === 'GET') {
-      return vkParsingCapabilitySchema.parse({ enabled: true, canUse: true });
-    }
-
-    if (tail.length === 1 && method === 'GET') {
-      return cloneJson(state.channelVkParsing);
-    }
-
-    if (tail[1] === 'settings' && method === 'PATCH') {
-      const payload = updateVkParsingSettingsRequestSchema.parse(parseJsonBody(init));
-      state.channelVkParsing = vkParsingFeedSchema.parse({
-        ...state.channelVkParsing,
-        settings: {
-          ...state.channelVkParsing.settings,
-          ...payload,
-          chatId: channelId,
-          updatedAt: new Date().toISOString(),
-        },
-      });
-      return cloneJson(state.channelVkParsing);
-    }
-
-    if (tail[1] === 'sources' && tail.length === 2 && method === 'POST') {
-      const payload = addVkParsingSourceRequestSchema.parse(parseJsonBody(init));
-      const now = new Date();
-      const parsedUrl = new URL(payload.url);
-      const screenName = parsedUrl.pathname.split('/').filter(Boolean)[0] ?? 'vk_source';
-      const source: VkParsingSource = {
-        id: `preview-vk-source-${Date.now()}`,
-        chatId: channelId,
-        ownerId: 200900,
-        wallOwnerId: -200900,
-        screenName,
-        title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
-        url: parsedUrl.toString(),
-        status: 'ACTIVE',
-        syncStatus: 'QUEUED',
-        nextSyncAt: null,
-        lastSyncAt: null,
-        lastSuccessAt: null,
-        syncStartedAt: null,
-        consecutiveFailures: 0,
-        lastErrorCode: null,
-        lastImportedCount: 0,
-        lastFetchedCount: 0,
-        lastSyncDurationMs: null,
-        lastError: null,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      };
-      state.channelVkParsing = vkParsingFeedSchema.parse({
-        ...state.channelVkParsing,
-        sources: [source, ...state.channelVkParsing.sources],
-      });
-      return vkParsingRefreshResultSchema.parse({
-        ...state.channelVkParsing,
-        imported: 0,
-        queued: 1,
-      });
-    }
-
-    if (tail[1] === 'sources' && tail[2] && method === 'DELETE') {
-      const sourceId = decodeURIComponent(tail[2]);
-      state.channelVkParsing = vkParsingFeedSchema.parse({
-        ...state.channelVkParsing,
-        sources: state.channelVkParsing.sources.filter((source) => source.id !== sourceId),
-        posts: state.channelVkParsing.posts.filter((post) => post.sourceId !== sourceId),
-      });
-      return cloneJson(state.channelVkParsing);
-    }
-
-    if (tail[1] === 'refresh' && method === 'POST') {
-      const nowIso = new Date().toISOString();
-      state.channelVkParsing = vkParsingFeedSchema.parse({
-        ...state.channelVkParsing,
-        sources: state.channelVkParsing.sources.map((source) => ({
-          ...source,
-          syncStatus: 'IDLE',
-          lastSyncAt: nowIso,
-          lastSuccessAt: nowIso,
-          syncStartedAt: null,
-          consecutiveFailures: 0,
-          lastErrorCode: null,
-          lastError: null,
-          updatedAt: nowIso,
-        })),
-      });
-      return vkParsingRefreshResultSchema.parse({
-        ...state.channelVkParsing,
-        imported: 2,
-        queued: state.channelVkParsing.sources.length,
-      });
-    }
-
-    if (tail[1] === 'posts' && tail[2] && tail[3] === 'publish' && method === 'POST') {
-      const payload = publishVkParsingPostRequestSchema.parse(parseJsonBody(init));
-      const postId = decodeURIComponent(tail[2]);
-      const post = state.channelVkParsing.posts.find((item) => item.id === postId);
-      if (!post) {
-        throw new Error(`Preview VK post not found: ${postId}`);
-      }
-
-      const nowIso = new Date().toISOString();
-      const messageId = `preview-vk-published-${Date.now()}`;
-      const url = `https://max.ru/channels/yuzhnoe-news/message/${messageId}`;
-      const updatedPost: VkParsingPost = {
-        ...post,
-        text: payload.text,
-        photoUrls: payload.photoUrls,
-        linkUrls: payload.linkUrls,
-        status: 'PUBLISHED',
-        publishedContentHash: `preview-${messageId}`,
-        publishedMessageId: messageId,
-        publishedUrl: url,
-        publishedAtMax: nowIso,
-        autoPublishedAt: null,
-        autoPublishError: null,
-        lastError: null,
-        updatedAt: nowIso,
-      };
-      state.channelVkParsing = vkParsingFeedSchema.parse({
-        ...state.channelVkParsing,
-        posts: state.channelVkParsing.posts.map((item) =>
-          item.id === updatedPost.id ? updatedPost : item,
-        ),
-      });
-      return publishVkParsingPostResultSchema.parse({
-        post: updatedPost,
-        messageId,
-        url,
-      });
-    }
+  const vkParsingResponse = handleVkParsingPreviewRequest(
+    state,
+    'channel',
+    channelId,
+    tail,
+    method,
+    init,
+  );
+  if (vkParsingResponse.handled) {
+    return vkParsingResponse.value;
   }
 
   if (tail[0] === 'dialog' && tail[1]) {

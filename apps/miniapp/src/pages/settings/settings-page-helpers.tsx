@@ -579,7 +579,8 @@ export type SettingsSectionKey =
   | 'poll'
   | 'giveaway'
   | 'comments'
-  | 'mailing';
+  | 'mailing'
+  | 'vkParsing';
 
 export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -598,6 +599,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   invitationAccess: false,
   comments: false,
   mailing: false,
+  vkParsing: false,
   extra: false,
 };
 

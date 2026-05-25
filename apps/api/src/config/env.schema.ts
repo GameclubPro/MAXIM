@@ -220,7 +220,6 @@ const envSchema = z.object({
   VK_API_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
   VK_API_RPS: z.coerce.number().int().positive().default(5),
   VK_API_RATE_LIMIT_WAIT_MS: z.coerce.number().int().min(0).default(2_000),
-  VK_PARSING_ALLOWED_USER_IDS: z.string().default('183470701,98315271'),
   VK_PARSING_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(600_000),
   VK_PARSING_FETCH_COUNT: z.coerce.number().int().min(1).max(100).default(100),
   VK_PARSING_QUEUE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),

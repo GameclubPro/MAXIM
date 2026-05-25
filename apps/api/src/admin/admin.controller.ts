@@ -753,6 +753,58 @@ export class AdminController {
     return this.broadcastService.retryManagedBroadcast(chatId, broadcastId, user);
   }
 
+  @Get('chats/:chatId/vk-parsing')
+  getChatVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.listVkParsing(chatId, user);
+  }
+
+  @Get('chats/:chatId/vk-parsing/capability')
+  getChatVkParsingCapability(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.getCapability(chatId, user);
+  }
+
+  @Patch('chats/:chatId/vk-parsing/settings')
+  updateChatVkParsingSettings(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateSettings(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/vk-parsing/sources')
+  addChatVkParsingSource(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.addSource(chatId, user, body);
+  }
+
+  @Delete('chats/:chatId/vk-parsing/sources/:sourceId')
+  removeChatVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.removeSource(chatId, sourceId, user);
+  }
+
+  @Post('chats/:chatId/vk-parsing/refresh')
+  refreshChatVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.refresh(chatId, user);
+  }
+
+  @Post('chats/:chatId/vk-parsing/posts/:postId/publish')
+  publishChatVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.publishPost(chatId, postId, user, body);
+  }
+
   @Get('chats/:chatId/giveaways')
   getChatGiveaways(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.managedGiveawayService.listManagedGiveaways(chatId, user, 'chat');

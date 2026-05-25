@@ -67,6 +67,7 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { VkParsingCard } from '../components/vk-parsing-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -100,6 +101,7 @@ import {
   updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
+import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
@@ -155,6 +157,7 @@ import {
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
 import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { queryKeys } from '../lib/query-keys';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -544,6 +547,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'comments' &&
       focusSection !== 'poll' &&
       focusSection !== 'giveaway' &&
+      focusSection !== 'vkParsing' &&
       focusSection !== 'broadcast' &&
       focusSection !== 'requiredSubscription'
     ) {
@@ -562,9 +566,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ? { poll: true }
               : focusSection === 'giveaway'
                 ? { giveaway: true }
-                : focusSection === 'requiredSubscription'
-                  ? { requiredSubscription: true }
-                  : { mailing: true }),
+                : focusSection === 'vkParsing'
+                  ? { vkParsing: true }
+                  : focusSection === 'requiredSubscription'
+                    ? { requiredSubscription: true }
+                    : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -690,6 +696,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
+  const vkParsingCapabilityQuery = useQuery({
+    queryKey: queryKeys.vkParsingCapability('chat', chatId),
+    queryFn: () => getVkParsingCapability(api, 'chat', chatId ?? ''),
+    enabled: Boolean(chatId),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const canAccessVkParsing = vkParsingCapabilityQuery.data?.canUse === true;
   const adminContactProfileUrl = useMemo(
     () => resolveAdminContactProfileUrl(meQuery.data ?? {}),
     [meQuery.data],
@@ -3591,6 +3605,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (
       (section === 'mailing' && focusSection === 'broadcast') ||
       (section === 'giveaway' && focusSection === 'giveaway') ||
+      (section === 'vkParsing' && focusSection === 'vkParsing') ||
       (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
@@ -9932,6 +9947,58 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </div>
               </SettingsDrilldownPanel>
             </GlassCard>
+
+            {canAccessVkParsing ? (
+              <GlassCard
+                className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+                style={{ animationDelay: '326ms', order: 6 }}
+                aria-label="ВК-парсинг"
+              >
+                <div
+                  className={cn('settings-section__head', 'settings-section__head--interactive')}
+                >
+                  <SettingsSectionToggle
+                    title="ВК-парсинг"
+                    summary=""
+                    status="Импорт"
+                    icon="links"
+                    tone="ink"
+                    open={expandedSections.vkParsing}
+                    controls="settings-vk-parsing-content"
+                    onClick={() => toggleSection('vkParsing')}
+                  />
+                </div>
+
+                <SettingsDrilldownPanel
+                  id="settings-vk-parsing-content"
+                  open={expandedSections.vkParsing}
+                  title="ВК-парсинг"
+                  summary="Посты из VK"
+                  tone="ink"
+                  className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
+                  onClose={() => toggleSection('vkParsing')}
+                >
+                  <div
+                    id="settings-vk-parsing-content"
+                    className={cn(
+                      'settings-section__collapse',
+                      expandedSections.vkParsing && 'is-open',
+                    )}
+                  >
+                    {expandedSections.vkParsing ? (
+                      <div className="settings-section__collapse-inner">
+                        <VkParsingCard
+                          api={api}
+                          chatId={chatId ?? ''}
+                          active={expandedSections.vkParsing}
+                          entityType="chat"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </SettingsDrilldownPanel>
+              </GlassCard>
+            ) : null}
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"

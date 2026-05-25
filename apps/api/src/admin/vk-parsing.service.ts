@@ -16,7 +16,6 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -128,7 +127,7 @@ const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 100, 203]);
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
 const VK_INLINE_LINK_PATTERN =
-  /(?:https?:\/\/|www\.)[^\s<>()\]\["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]\["'`{}]+/giu;
+  /(?:https?:\/\/|www\.)[^\s<>()\]["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]["'`{}]+/giu;
 const VK_AD_DISCLOSURE_PATTERNS = [
   /(^|[\s#(.,;:!?-])реклама($|[\s#).,;:!?-])/iu,
   /на\s+правах\s+рекламы/iu,
@@ -153,7 +152,6 @@ class VkApiRequestError extends ServiceUnavailableException {
 @Injectable()
 export class VkParsingService {
   private readonly logger = new Logger(VkParsingService.name);
-  private readonly allowedUserIds: ReadonlySet<string>;
   private readonly vkApiBaseUrl: string;
   private readonly vkApiVersion: string;
   private readonly vkApiTimeoutMs: number;
@@ -176,12 +174,6 @@ export class VkParsingService {
     private readonly syncQueue: Queue<VkParsingSyncJob>,
     private readonly configService: ConfigService,
   ) {
-    this.allowedUserIds = new Set(
-      String(configService.get<string>('VK_PARSING_ALLOWED_USER_IDS') ?? '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
     this.vkApiBaseUrl = this.normalizeBaseUrl(
       configService.get<string>('VK_API_BASE_URL') ?? 'https://api.vk.ru',
     );
@@ -202,35 +194,34 @@ export class VkParsingService {
   }
 
   async getCapability(chatId: string, user: AuthUser): Promise<VkParsingCapability> {
-    const enabled = this.allowedUserIds.size > 0;
-    if (!enabled || !this.allowedUserIds.has(user.userId)) {
-      return { enabled, canUse: false };
-    }
-
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: { entityType: true },
     });
-    if (!chat || chat.entityType !== ChatEntityType.CHANNEL) {
-      return { enabled, canUse: false };
+    if (!chat) {
+      return { enabled: true, canUse: false };
     }
 
     try {
-      await this.adminService.assertChatAdmin(chatId, user.userId, 'channel');
+      await this.adminService.assertChatAdmin(
+        chatId,
+        user.userId,
+        this.resolveAdminEntityType(chat.entityType),
+      );
     } catch {
-      return { enabled, canUse: false };
+      return { enabled: true, canUse: false };
     }
 
-    return { enabled, canUse: true };
+    return { enabled: true, canUse: true };
   }
 
   async listVkParsing(chatId: string, user: AuthUser): Promise<VkParsingFeed> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     return this.buildFeed(chatId, { enabled: true, canUse: true });
   }
 
   async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     const parsed = updateVkParsingSettingsRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -251,7 +242,7 @@ export class VkParsingService {
   }
 
   async addSource(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingRefreshResult> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     const parsed = addVkParsingSourceRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -298,7 +289,7 @@ export class VkParsingService {
   }
 
   async removeSource(chatId: string, sourceId: string, user: AuthUser): Promise<VkParsingFeed> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     const source = await this.prisma.vkParsingSource.findFirst({
       where: { id: sourceId, chatId },
     });
@@ -320,7 +311,7 @@ export class VkParsingService {
   }
 
   async refresh(chatId: string, user: AuthUser): Promise<VkParsingRefreshResult> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     const sources = await this.prisma.vkParsingSource.findMany({
       where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
       orderBy: [{ createdAt: 'asc' }],
@@ -361,7 +352,7 @@ export class VkParsingService {
     user: AuthUser,
     body: unknown,
   ): Promise<PublishVkParsingPostResult> {
-    await this.assertVkParsingChannelAccess(chatId, user);
+    await this.assertVkParsingAccess(chatId, user);
     const parsed = publishVkParsingPostRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -428,6 +419,7 @@ export class VkParsingService {
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
     const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
+    const entityType = await this.resolvePublicationEntityType(post.chatId);
     const requestOptions = {
       botId,
       trafficClass: params.trafficClass,
@@ -441,12 +433,17 @@ export class VkParsingService {
     };
 
     try {
-      const engagementContext = await this.adminService.buildChannelPublicationEngagementContext(
-        post.chatId,
-        botId,
-      );
-      if (engagementContext.buttons.length > 0) {
-        options.buttons = engagementContext.buttons;
+      let engagementContext: Awaited<
+        ReturnType<AdminService['buildChannelPublicationEngagementContext']>
+      > | null = null;
+      if (entityType === ChatEntityType.CHANNEL) {
+        engagementContext = await this.adminService.buildChannelPublicationEngagementContext(
+          post.chatId,
+          botId,
+        );
+        if (engagementContext.buttons.length > 0) {
+          options.buttons = engagementContext.buttons;
+        }
       }
 
       const imagePayloads = await this.downloadAndUploadImages(payload.photoUrls, requestOptions);
@@ -468,13 +465,15 @@ export class VkParsingService {
         options,
         requestOptions,
       );
-      await this.recordChannelPublicationEngagementSafely({
-        chatId: post.chatId,
-        actorUserId: params.actorUserId,
-        messageId: result.messageId,
-        engagementContext,
-        botId,
-      });
+      if (engagementContext) {
+        await this.recordChannelPublicationEngagementSafely({
+          chatId: post.chatId,
+          actorUserId: params.actorUserId,
+          messageId: result.messageId,
+          engagementContext,
+          botId,
+        });
+      }
       const updated = await this.prisma.vkParsingPost.update({
         where: { id: post.id },
         data: {
@@ -546,23 +545,33 @@ export class VkParsingService {
     }
   }
 
-  private async assertVkParsingChannelAccess(chatId: string, user: AuthUser): Promise<void> {
-    if (!this.allowedUserIds.has(user.userId)) {
-      throw new ForbiddenException('ВК-парсинг недоступен для этого пользователя.');
-    }
-
+  private async assertVkParsingAccess(chatId: string, user: AuthUser): Promise<ChatEntityType> {
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: { entityType: true },
     });
     if (!chat) {
-      throw new NotFoundException('Канал не найден.');
-    }
-    if (chat.entityType !== ChatEntityType.CHANNEL) {
-      throw new BadRequestException('ВК-парсинг доступен только для каналов.');
+      throw new NotFoundException('Чат или канал не найден.');
     }
 
-    await this.adminService.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.adminService.assertChatAdmin(
+      chatId,
+      user.userId,
+      this.resolveAdminEntityType(chat.entityType),
+    );
+    return chat.entityType;
+  }
+
+  private resolveAdminEntityType(entityType: ChatEntityType): 'chat' | 'channel' {
+    return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+  }
+
+  private async resolvePublicationEntityType(chatId: string): Promise<ChatEntityType | null> {
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { entityType: true },
+    });
+    return chat?.entityType ?? null;
   }
 
   private async buildFeed(

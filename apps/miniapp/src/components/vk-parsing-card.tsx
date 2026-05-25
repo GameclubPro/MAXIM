@@ -19,13 +19,14 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UpdateVkParsingSettingsRequest, VkParsingPost } from '@maxim/contracts';
 import {
-  addChannelVkParsingSource,
-  getChannelVkParsing,
-  publishChannelVkParsingPost,
-  refreshChannelVkParsing,
-  removeChannelVkParsingSource,
-  updateChannelVkParsingSettings,
-} from '../lib/api/channel-settings-client';
+  addVkParsingSource,
+  getVkParsing,
+  publishVkParsingPost,
+  refreshVkParsing,
+  removeVkParsingSource,
+  updateVkParsingSettings,
+  type VkParsingEntityType,
+} from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { maxNotify } from '../lib/max-bridge';
@@ -40,6 +41,7 @@ type VkParsingCardProps = {
   api: ApiTransport;
   chatId: string;
   active: boolean;
+  entityType?: VkParsingEntityType;
 };
 
 type PublishPayload = {
@@ -60,7 +62,7 @@ const VK_PARSING_SETTING_TOGGLES: Array<{
   {
     key: 'autoPublishEnabled',
     label: 'Автопостинг',
-    hint: 'Новые посты из подключенных источников выходят в канал после очередного обновления.',
+    hint: 'Новые посты из подключенных источников выходят в чат или канал после очередного обновления.',
   },
   {
     key: 'stripLinksEnabled',
@@ -183,7 +185,7 @@ function toggleValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
-export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
+export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: VkParsingCardProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [sourceUrl, setSourceUrl] = useState('');
@@ -195,8 +197,8 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
 
   const feedQuery = useQuery({
-    queryKey: queryKeys.channelVkParsing(chatId),
-    queryFn: () => getChannelVkParsing(api, chatId),
+    queryKey: queryKeys.vkParsing(entityType, chatId),
+    queryFn: () => getVkParsing(api, entityType, chatId),
     enabled: Boolean(chatId) && active,
     staleTime: 30_000,
     refetchInterval: active ? 15_000 : false,
@@ -204,10 +206,10 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   });
 
   const addSourceMutation = useMutation({
-    mutationFn: (url: string) => addChannelVkParsingSource(api, chatId, url),
+    mutationFn: (url: string) => addVkParsingSource(api, entityType, chatId, url),
     onSuccess: () => {
       setSourceUrl('');
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({
         tone: 'success',
         title: 'Источник добавлен',
@@ -226,12 +228,12 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   });
 
   const removeSourceMutation = useMutation({
-    mutationFn: (sourceId: string) => removeChannelVkParsingSource(api, chatId, sourceId),
+    mutationFn: (sourceId: string) => removeVkParsingSource(api, entityType, chatId, sourceId),
     onSuccess: (_feed, sourceId) => {
       if (selectedSourceId === sourceId) {
         setSelectedSourceId(null);
       }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'info', title: 'Источник удалён' });
     },
     onError: (error) => {
@@ -245,9 +247,9 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   });
 
   const refreshMutation = useMutation({
-    mutationFn: () => refreshChannelVkParsing(api, chatId),
+    mutationFn: () => refreshVkParsing(api, entityType, chatId),
     onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({
         tone: result.queued > 0 ? 'success' : 'info',
         title: result.queued > 0 ? 'Обновление запущено' : 'Нечего обновлять',
@@ -266,9 +268,9 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
 
   const updateSettingsMutation = useMutation({
     mutationFn: (payload: UpdateVkParsingSettingsRequest) =>
-      updateChannelVkParsingSettings(api, chatId, payload),
+      updateVkParsingSettings(api, entityType, chatId, payload),
     onSuccess: (nextFeed) => {
-      queryClient.setQueryData(queryKeys.channelVkParsing(chatId), nextFeed);
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId), nextFeed);
       pushToast({ tone: 'success', title: 'Настройки сохранены' });
       maxNotify('success');
     },
@@ -284,14 +286,14 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
 
   const publishMutation = useMutation({
     mutationFn: (payload: PublishPayload) =>
-      publishChannelVkParsingPost(api, chatId, payload.postId, {
+      publishVkParsingPost(api, entityType, chatId, payload.postId, {
         text: payload.text,
         photoUrls: payload.photoUrls,
         linkUrls: payload.linkUrls,
       }),
     onSuccess: () => {
       setEditingPostId(null);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Пост опубликован' });
       maxNotify('success');
     },
