@@ -53,6 +53,16 @@ describe('VkParsingService', () => {
     };
     const adminService = {
       assertChatAdmin: jest.fn().mockResolvedValue(undefined),
+      buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
+        buttons: [],
+        threadId: null,
+        includeCommentsButton: false,
+        includeSuggestButton: false,
+        suggestButtonText: null,
+        autoPostButtonsMode: 'OFF',
+        suggestionEntryMode: 'BOT',
+      }),
+      recordChannelPublicationEngagement: jest.fn().mockResolvedValue(undefined),
     };
     const maxClient = {
       uploadImage: jest.fn(),
@@ -253,5 +263,107 @@ describe('VkParsingService', () => {
       },
     );
     expect(result.messageId).toBe('mid-1');
+  });
+
+  it('adds channel comments and suggestion buttons when publishing a VK post', async () => {
+    const { service, prisma, adminService, maxClient } = createFixture();
+    const engagementContext = {
+      buttons: [
+        [{ type: 'link', text: '💬 Комментарии · 0', url: 'https://max.ru/bot?startapp=comments' }],
+        [{ type: 'link', text: 'Предложить пост', url: 'https://max.ru/bot?start=suggest' }],
+      ],
+      threadId: 'thread-1',
+      includeCommentsButton: true,
+      includeSuggestButton: true,
+      suggestButtonText: 'Предложить пост',
+      autoPostButtonsMode: 'BOTH',
+      suggestionEntryMode: 'BOT',
+    };
+    const source = {
+      id: 'source-1',
+      chatId: 'channel-1',
+      ownerId: 36819802,
+      wallOwnerId: -36819802,
+      screenName: 'avto_prodaja_rb',
+      title: 'Авторынок Уфа',
+      url: 'https://vk.ru/avto_prodaja_rb',
+      status: 'ACTIVE',
+      lastSyncAt: null,
+      lastError: null,
+      createdByUserId: '183470701',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    };
+    const post = {
+      id: 'post-1',
+      sourceId: source.id,
+      chatId: 'channel-1',
+      vkOwnerId: -36819802,
+      vkPostId: 101,
+      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+      text: 'Продам авто',
+      url: 'https://vk.ru/wall-36819802_101',
+      photoUrls: [],
+      linkUrls: [],
+      attachments: [],
+      raw: {},
+      status: 'NEW',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAtMax: null,
+      lastError: null,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+      source,
+    };
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    adminService.buildChannelPublicationEngagementContext.mockResolvedValue(engagementContext);
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+
+    await service.publishPost(
+      'channel-1',
+      'post-1',
+      { userId: '183470701' } as never,
+      {
+        text: 'Мой текст',
+        photoUrls: [],
+        linkUrls: [],
+      },
+    );
+
+    expect(adminService.buildChannelPublicationEngagementContext).toHaveBeenCalledWith(
+      'channel-1',
+      'bot-1',
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Мой текст',
+      expect.objectContaining({
+        buttons: engagementContext.buttons,
+      }),
+      {
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+    expect(adminService.recordChannelPublicationEngagement).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      actorUserId: '183470701',
+      messageId: 'mid-1',
+      context: engagementContext,
+      source: 'vk_parsing',
+      botId: 'bot-1',
+    });
   });
 });

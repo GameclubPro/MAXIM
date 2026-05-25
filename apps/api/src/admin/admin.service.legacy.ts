@@ -342,6 +342,16 @@ type ManagedEntitiesPublishedDiffReadResult = {
   orderedIds: string[];
 };
 
+export type ChannelPublicationEngagementContext = {
+  buttons: MaxMessageButton[][];
+  threadId: string | null;
+  includeCommentsButton: boolean;
+  includeSuggestButton: boolean;
+  suggestButtonText: string | null;
+  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+  suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
+};
+
 const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
 const ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS = 30_000;
 
@@ -15749,6 +15759,104 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return rows;
+  }
+
+  async buildChannelPublicationEngagementContext(
+    chatId: string,
+    botId?: string | null,
+  ): Promise<ChannelPublicationEngagementContext> {
+    const settings = await this.getPublicChannelSettings(chatId);
+    const includeCommentsButton = settings.commentsEnabled;
+    const includeSuggestButton = settings.postSuggestionsEnabled;
+    const autoPostButtonsMode = this.normalizeChannelAutoPostButtonsMode(settings);
+
+    if (!includeCommentsButton && !includeSuggestButton) {
+      return {
+        buttons: [],
+        threadId: null,
+        includeCommentsButton,
+        includeSuggestButton,
+        suggestButtonText: null,
+        autoPostButtonsMode,
+        suggestionEntryMode: settings.postSuggestionsEntryMode,
+      };
+    }
+
+    const threadId = randomUUID();
+    const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
+    const buttons: MaxMessageButton[][] = [];
+
+    if (includeCommentsButton) {
+      buttons.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+          botId,
+        ),
+      ]);
+    }
+
+    if (includeSuggestButton) {
+      buttons.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'suggest',
+          threadId,
+          suggestButtonText,
+          botId,
+          settings.postSuggestionsEntryMode,
+        ),
+      ]);
+    }
+
+    return {
+      buttons,
+      threadId,
+      includeCommentsButton,
+      includeSuggestButton,
+      suggestButtonText: includeSuggestButton ? suggestButtonText : null,
+      autoPostButtonsMode,
+      suggestionEntryMode: settings.postSuggestionsEntryMode,
+    };
+  }
+
+  async recordChannelPublicationEngagement(params: {
+    chatId: string;
+    actorUserId: string;
+    messageId: string;
+    context: ChannelPublicationEngagementContext;
+    source: string;
+    botId?: string | null;
+  }): Promise<void> {
+    const { chatId, actorUserId, messageId, context, source, botId } = params;
+    if (
+      !messageId.trim() ||
+      !context.threadId ||
+      (!context.includeCommentsButton && !context.includeSuggestButton)
+    ) {
+      return;
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId,
+        action: CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+        payload: {
+          messageId,
+          threadId: context.threadId,
+          includeCommentsButton: context.includeCommentsButton,
+          includeSuggestButton: context.includeSuggestButton,
+          autoPostButtonsMode: context.autoPostButtonsMode,
+          suggestionEntryMode: context.suggestionEntryMode,
+          source,
+          ...(botId ? { botId } : {}),
+          ...(context.suggestButtonText ? { suggestButtonText: context.suggestButtonText } : {}),
+        },
+      },
+    });
   }
 
   private async resolveBroadcastButtons(

@@ -249,6 +249,14 @@ export class VkParsingService {
     };
 
     try {
+      const engagementContext = await this.adminService.buildChannelPublicationEngagementContext(
+        chatId,
+        botId,
+      );
+      if (engagementContext.buttons.length > 0) {
+        options.buttons = engagementContext.buttons;
+      }
+
       const imagePayloads = [];
       for (let index = 0; index < photoUrls.length; index += 1) {
         const image = await this.downloadImage(photoUrls[index]!, index);
@@ -278,6 +286,13 @@ export class VkParsingService {
         options,
         requestOptions,
       );
+      await this.recordChannelPublicationEngagementSafely({
+        chatId,
+        actorUserId: user.userId,
+        messageId: result.messageId,
+        engagementContext,
+        botId,
+      });
       const updated = await this.prisma.vkParsingPost.update({
         where: { id: post.id },
         data: {
@@ -304,6 +319,36 @@ export class VkParsingService {
         },
       });
       throw error;
+    }
+  }
+
+  private async recordChannelPublicationEngagementSafely(params: {
+    chatId: string;
+    actorUserId: string;
+    messageId: string;
+    engagementContext: Awaited<
+      ReturnType<AdminService['buildChannelPublicationEngagementContext']>
+    >;
+    botId?: string | null;
+  }): Promise<void> {
+    try {
+      await this.adminService.recordChannelPublicationEngagement({
+        chatId: params.chatId,
+        actorUserId: params.actorUserId,
+        messageId: params.messageId,
+        context: params.engagementContext,
+        source: 'vk_parsing',
+        botId: params.botId,
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          messageId: params.messageId,
+          err: error,
+        },
+        'Failed to record VK parsing channel engagement binding',
+      );
     }
   }
 
