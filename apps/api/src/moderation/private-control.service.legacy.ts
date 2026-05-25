@@ -35,8 +35,13 @@ import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { AdminService } from '../admin/admin.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
+import {
+  BOT_START_APP_LINE,
+  buildBotStartIntroLines,
+  buildBotStartQuickActionText,
+} from '../common/bot-start-greeting';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
-import { USER_AGREEMENT_SHORT_NOTICE, USER_AGREEMENT_START_NOTICE } from '../common/user-agreement-notice';
+import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -10898,8 +10903,9 @@ export class PrivateControlService {
     const lines = [
       this.markdownTitle(profile.characterName),
       '',
-      '📱 Все настройки, розыгрыши и модерация открываются в приложении.',
-      USER_AGREEMENT_SHORT_NOTICE, this.buildLauncherQuickActionText(profile.persona),
+      BOT_START_APP_LINE,
+      USER_AGREEMENT_SHORT_NOTICE,
+      buildBotStartQuickActionText(profile),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
     return {
@@ -10913,13 +10919,7 @@ export class PrivateControlService {
 
   private renderLauncherIntroView(): PrivateView {
     const profile = this.resolveActiveBotSpeechProfile();
-    const lines = [
-      this.markdownTitle(`${profile.characterName} на связи`),
-      '',
-      'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
-      '',
-      USER_AGREEMENT_START_NOTICE, '', 'Если понадобится помощь, техподдержка ниже.',
-    ];
+    const lines = buildBotStartIntroLines(profile, (title) => this.markdownTitle(title));
     return {
       text: lines.join('\n'),
       options: {
@@ -10940,18 +10940,6 @@ export class PrivateControlService {
       persona: bot?.speechPersona ?? 'male',
       characterName,
     };
-  }
-
-  private buildLauncherQuickActionText(persona: BotSpeechPersona): string {
-    if (persona === 'female') {
-      return 'Я готова быстро принять текст, фото или видео для публикации.';
-    }
-
-    if (persona === 'neutral') {
-      return 'Быстро приму текст, фото или видео для публикации.';
-    }
-
-    return 'Я готов быстро принять текст, фото или видео для публикации.';
   }
 
   private launcherIntroMarkerKey(userId: string): string {

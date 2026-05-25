@@ -4678,10 +4678,17 @@ describe('ModerationService', () => {
       expect.stringContaining(USER_AGREEMENT_SHORT_NOTICE),
       expect.objectContaining({
         buttons: expect.any(Array),
+        textFormat: 'markdown',
       }),
       {
         ignoreFailureMetricStatuses: [403, 404],
       },
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('розыгрыш'),
+      expect.anything(),
+      expect.anything(),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();

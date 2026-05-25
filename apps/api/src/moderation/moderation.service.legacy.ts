@@ -67,6 +67,10 @@ import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
+import {
+  BOT_PRIVATE_MENU_APP_LINE,
+  buildBotStartQuickActionText,
+} from '../common/bot-start-greeting';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { PrismaService } from '../prisma/prisma.service';
@@ -4016,21 +4020,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const profile = this.resolveActiveBotSpeechProfile();
     return [
       profile.characterName,
-      'Открывайте приложение для настроек, розыгрышей и модерации.',
-      USER_AGREEMENT_SHORT_NOTICE, this.buildPrivateMenuQuickActionText(profile.persona),
+      BOT_PRIVATE_MENU_APP_LINE,
+      USER_AGREEMENT_SHORT_NOTICE,
+      buildBotStartQuickActionText(profile),
     ].join('\n');
-  }
-
-  private buildPrivateMenuQuickActionText(persona: BotSpeechPersona): string {
-    if (persona === 'female') {
-      return 'Я готова быстро принять текст, фото или видео для публикации.';
-    }
-
-    if (persona === 'neutral') {
-      return 'Быстро приму текст, фото или видео для публикации.';
-    }
-
-    return 'Я готов быстро принять текст, фото или видео для публикации.';
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
@@ -11001,6 +10994,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return {
       buttons,
+      textFormat: 'markdown',
     };
   }
 

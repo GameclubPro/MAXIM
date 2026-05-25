@@ -1153,7 +1153,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
     expect(getLastUiText(maxClient)).toContain(
-      'Все настройки, розыгрыши и модерация открываются в приложении.',
+      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
     );
     expect(getLastUiText(maxClient)).toContain(
       'Я готов быстро принять текст, фото или видео для публикации.',
@@ -1209,11 +1209,13 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(''));
 
-    expect(getLastSentText(maxClient)).toContain('**Майор Максимов на связи**');
+    expect(getLastSentText(maxClient)).toContain('**Майор Максимов на связи.**');
     expect(getLastSentText(maxClient)).toContain(
-      'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
+      'Я помогаю администраторам держать чаты и каналы в порядке: фильтрую спам, опасные ссылки, мат, дубли сообщений и другие нарушения.',
     );
+    expect(getLastSentText(maxClient)).not.toContain('розыгрыш');
     expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_START_NOTICE);
+    expect(getLastSendOptions(maxClient)?.textFormat).toBe('markdown');
     expect(getLastSentText(maxClient)).toContain('Если понадобится помощь, техподдержка ниже.');
     expect(
       getLastButtons(maxClient)
@@ -1225,10 +1227,52 @@ describe('PrivateControlService', () => {
 
     expect(getLastSentText(maxClient)).toContain('**Майор Максимов**');
     expect(getLastSentText(maxClient)).toContain(
-      'Все настройки, розыгрыши и модерация открываются в приложении.',
+      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
     );
     expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_SHORT_NOTICE);
     expect(getLastSentText(maxClient)).not.toContain('Техподдержка ниже.');
+  });
+
+  it('renders the one-time launcher intro with Rex third-person copy', async () => {
+    const { service, maxClient } = createHarness({
+      maxBotLinkService: {
+        getBotTokenSync: jest.fn().mockReturnValue('test-token'),
+        getValidationTokens: jest.fn().mockReturnValue(['test-token']),
+        getEntryBotId: jest.fn().mockReturnValue('999000_bot'),
+        getContextOrDefaultBotId: jest.fn().mockReturnValue('999000_bot'),
+        getResolvedBotSync: jest.fn().mockReturnValue({
+          id: '999000_bot',
+          characterName: 'Рэкс',
+          label: 'Рэкс',
+          speechPersona: 'neutral',
+        }),
+        buildMiniappStartUrlSync: jest
+          .fn()
+          .mockImplementation(
+            (startParam: string) =>
+              `https://max.ru/999000_bot?startapp=${encodeURIComponent(startParam)}`,
+          ),
+        buildEntryMiniappStartUrlSync: jest
+          .fn()
+          .mockImplementation(
+            (startParam: string) =>
+              `https://max.ru/999000_bot?startapp=${encodeURIComponent(startParam)}`,
+          ),
+        isKnownBotUserId: jest.fn().mockReturnValue(false),
+        resolveContactIdSync: jest.fn().mockReturnValue(null),
+      },
+    });
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
+
+    expect(getLastSentText(maxClient)).toContain('**Рэкс на посту.**');
+    expect(getLastSentText(maxClient)).toContain(
+      'Помогает администраторам держать чаты и каналы в порядке: замечает спам, опасные ссылки, мат, дубли сообщений и другие нарушения.',
+    );
+    expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_START_NOTICE);
+    expect(getLastSentText(maxClient)).not.toContain('Рэкс на связи');
+    expect(getLastSentText(maxClient)).not.toContain('Я помогаю');
+    expect(getLastSentText(maxClient)).not.toContain('розыгрыш');
   });
 
   it('fails open when private dialog delivery hits a terminal MAX error', async () => {
@@ -1341,7 +1385,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('меню'));
 
     expect(getLastUiText(maxClient)).toContain(
-      'Все настройки, розыгрыши и модерация открываются в приложении.',
+      'Все настройки, модерация, публикации и работа с каналами доступны в приложении.',
     );
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
