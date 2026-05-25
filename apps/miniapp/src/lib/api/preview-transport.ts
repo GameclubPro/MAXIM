@@ -1,4 +1,5 @@
 import {
+  addVkParsingSourceRequestSchema,
   applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
   applySettingsTargetSchema,
@@ -35,6 +36,8 @@ import {
   membershipActivityPageSchema,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
+  publishVkParsingPostRequestSchema,
+  publishVkParsingPostResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
@@ -47,6 +50,10 @@ import {
   updateManagedEntityFavoritesRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
+  updateVkParsingSettingsRequestSchema,
+  vkParsingCapabilitySchema,
+  vkParsingFeedSchema,
+  vkParsingRefreshResultSchema,
   type ApplySettingsTarget,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
@@ -87,6 +94,10 @@ import {
   type PublishChatRulesResult,
   type SystemDashboardResponse,
   type SystemModeSnapshot,
+  type VkParsingFeed,
+  type VkParsingPost,
+  type VkParsingSettings,
+  type VkParsingSource,
 } from '@maxim/contracts';
 import {
   channelStatsResponseSchema,
@@ -126,6 +137,7 @@ type PreviewState = {
   channelPoll: ManagedPoll;
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
+  channelVkParsing: VkParsingFeed;
   chatPrimaryBotId: string | null;
   channelPrimaryBotId: string | null;
   chatPartnerAssistEnabled: boolean;
@@ -713,6 +725,228 @@ function addHours(value: Date, hours: number): Date {
 
 function addDays(value: Date, days: number): Date {
   return addHours(value, days * 24);
+}
+
+function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
+  const createdAt = addDays(now, -18).toISOString();
+  const syncedAt = addHours(now, -1.2).toISOString();
+  const sourceOne: VkParsingSource = {
+    id: 'preview-vk-source-yuzhnoe',
+    chatId,
+    ownerId: 200501,
+    wallOwnerId: -200501,
+    screenName: 'yuzhnoe_media',
+    title: 'Южное медиа',
+    url: 'https://vk.com/yuzhnoe_media',
+    status: 'ACTIVE',
+    syncStatus: 'IDLE',
+    nextSyncAt: null,
+    lastSyncAt: syncedAt,
+    lastSuccessAt: syncedAt,
+    syncStartedAt: null,
+    consecutiveFailures: 0,
+    lastErrorCode: null,
+    lastImportedCount: 4,
+    lastFetchedCount: 9,
+    lastSyncDurationMs: 1240,
+    lastError: null,
+    createdAt,
+    updatedAt: syncedAt,
+  };
+  const sourceTwo: VkParsingSource = {
+    id: 'preview-vk-source-afisha',
+    chatId,
+    ownerId: 200812,
+    wallOwnerId: -200812,
+    screenName: 'afisha_yuga',
+    title: 'Афиша Юга',
+    url: 'https://vk.com/afisha_yuga',
+    status: 'ACTIVE',
+    syncStatus: 'BACKOFF',
+    nextSyncAt: addHours(now, 1.4).toISOString(),
+    lastSyncAt: addHours(now, -4.5).toISOString(),
+    lastSuccessAt: addHours(now, -8).toISOString(),
+    syncStartedAt: null,
+    consecutiveFailures: 1,
+    lastErrorCode: 'RATE_LIMIT',
+    lastImportedCount: 1,
+    lastFetchedCount: 5,
+    lastSyncDurationMs: 1890,
+    lastError: 'VK временно ограничил запросы к источнику.',
+    createdAt: addDays(now, -9).toISOString(),
+    updatedAt: addHours(now, -4.5).toISOString(),
+  };
+  const settings: VkParsingSettings = {
+    chatId,
+    autoPublishEnabled: true,
+    stripLinksEnabled: true,
+    skipAdsEnabled: true,
+    updatedAt: addHours(now, -2).toISOString(),
+  };
+
+  return vkParsingFeedSchema.parse({
+    capabilities: { enabled: true, canUse: true },
+    settings,
+    sources: [sourceOne, sourceTwo],
+    posts: [
+      {
+        id: 'preview-vk-post-4281',
+        sourceId: sourceOne.id,
+        chatId,
+        sourceTitle: sourceOne.title,
+        sourceUrl: sourceOne.url,
+        vkOwnerId: sourceOne.wallOwnerId,
+        vkPostId: 4281,
+        vkPublishedAt: addHours(now, -2.4).toISOString(),
+        text: 'На Южной площади открыли вечернюю навигацию: новые указатели, подсветка у перехода и карта маршрутов на выходные.',
+        url: `${sourceOne.url}?w=wall${sourceOne.wallOwnerId}_4281`,
+        photoUrls: [
+          buildPreviewAvatarDataUrl('Парк', '#4d94ff', '#2b64dd'),
+          buildPreviewAvatarDataUrl('Маршрут', '#3cc58b', '#0f9f70'),
+        ],
+        linkUrls: ['https://example.com/south-map'],
+        status: 'NEW',
+        contentHash: 'preview-vk-4281',
+        publishedContentHash: null,
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAtMax: null,
+        autoPublishedAt: null,
+        autoPublishError: null,
+        skippedAt: null,
+        skipReason: null,
+        lastSeenAt: addHours(now, -1.8).toISOString(),
+        missingSinceAt: null,
+        unavailableAt: null,
+        lastError: null,
+        createdAt: addHours(now, -2.4).toISOString(),
+        updatedAt: addHours(now, -1.8).toISOString(),
+      },
+      {
+        id: 'preview-vk-post-4276',
+        sourceId: sourceOne.id,
+        chatId,
+        sourceTitle: sourceOne.title,
+        sourceUrl: sourceOne.url,
+        vkOwnerId: sourceOne.wallOwnerId,
+        vkPostId: 4276,
+        vkPublishedAt: addHours(now, -7).toISOString(),
+        text: 'Расписание городского катка на неделю обновлено. Утренние слоты оставили для школ, вечерние доступны по живой очереди.',
+        url: `${sourceOne.url}?w=wall${sourceOne.wallOwnerId}_4276`,
+        photoUrls: [buildPreviewAvatarDataUrl('Каток', '#7db8ff', '#4d89ff')],
+        linkUrls: [],
+        status: 'PUBLISHED',
+        contentHash: 'preview-vk-4276',
+        publishedContentHash: 'preview-vk-4276',
+        publishedMessageId: 'preview-max-vk-4276',
+        publishedUrl: 'https://max.ru/channels/yuzhnoe-news/message/preview-vk-4276',
+        publishedAtMax: addHours(now, -6.8).toISOString(),
+        autoPublishedAt: addHours(now, -6.8).toISOString(),
+        autoPublishError: null,
+        skippedAt: null,
+        skipReason: null,
+        lastSeenAt: addHours(now, -6.5).toISOString(),
+        missingSinceAt: null,
+        unavailableAt: null,
+        lastError: null,
+        createdAt: addHours(now, -7).toISOString(),
+        updatedAt: addHours(now, -6.8).toISOString(),
+      },
+      {
+        id: 'preview-vk-post-119',
+        sourceId: sourceTwo.id,
+        chatId,
+        sourceTitle: sourceTwo.title,
+        sourceUrl: sourceTwo.url,
+        vkOwnerId: sourceTwo.wallOwnerId,
+        vkPostId: 119,
+        vkPublishedAt: addHours(now, -10).toISOString(),
+        text: 'Промопост партнёра с маркировкой и внешним переходом.',
+        url: `${sourceTwo.url}?w=wall${sourceTwo.wallOwnerId}_119`,
+        photoUrls: [],
+        linkUrls: ['https://example.com/promo'],
+        status: 'SKIPPED',
+        contentHash: 'preview-vk-119',
+        publishedContentHash: null,
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAtMax: null,
+        autoPublishedAt: null,
+        autoPublishError: null,
+        skippedAt: addHours(now, -9.9).toISOString(),
+        skipReason: 'AD',
+        lastSeenAt: addHours(now, -9.8).toISOString(),
+        missingSinceAt: null,
+        unavailableAt: null,
+        lastError: null,
+        createdAt: addHours(now, -10).toISOString(),
+        updatedAt: addHours(now, -9.9).toISOString(),
+      },
+      {
+        id: 'preview-vk-post-4259',
+        sourceId: sourceOne.id,
+        chatId,
+        sourceTitle: sourceOne.title,
+        sourceUrl: sourceOne.url,
+        vkOwnerId: sourceOne.wallOwnerId,
+        vkPostId: 4259,
+        vkPublishedAt: addHours(now, -19).toISOString(),
+        text: 'Автор обновил исходный пост после публикации: добавил перенос площадки и новый тайминг вечерней программы.',
+        url: `${sourceOne.url}?w=wall${sourceOne.wallOwnerId}_4259`,
+        photoUrls: [buildPreviewAvatarDataUrl('UPD', '#f1a44b', '#ea7b4b')],
+        linkUrls: [],
+        status: 'CHANGED_AFTER_PUBLISH',
+        contentHash: 'preview-vk-4259-v2',
+        publishedContentHash: 'preview-vk-4259-v1',
+        publishedMessageId: 'preview-max-vk-4259',
+        publishedUrl: 'https://max.ru/channels/yuzhnoe-news/message/preview-vk-4259',
+        publishedAtMax: addHours(now, -18.6).toISOString(),
+        autoPublishedAt: null,
+        autoPublishError: null,
+        skippedAt: null,
+        skipReason: null,
+        lastSeenAt: addHours(now, -1.5).toISOString(),
+        missingSinceAt: null,
+        unavailableAt: null,
+        lastError: null,
+        createdAt: addHours(now, -19).toISOString(),
+        updatedAt: addHours(now, -1.5).toISOString(),
+      },
+      {
+        id: 'preview-vk-post-4244',
+        sourceId: sourceTwo.id,
+        chatId,
+        sourceTitle: sourceTwo.title,
+        sourceUrl: sourceTwo.url,
+        vkOwnerId: sourceTwo.wallOwnerId,
+        vkPostId: 4244,
+        vkPublishedAt: addDays(now, -1).toISOString(),
+        text: 'Фотоподборка с фестиваля загружена, но часть медиа временно не принял MAX.',
+        url: `${sourceTwo.url}?w=wall${sourceTwo.wallOwnerId}_4244`,
+        photoUrls: [
+          buildPreviewAvatarDataUrl('Фест', '#ff82a8', '#eb577f'),
+          buildPreviewAvatarDataUrl('Сцена', '#5ab7b5', '#1b7f8a'),
+        ],
+        linkUrls: [],
+        status: 'FAILED',
+        contentHash: 'preview-vk-4244',
+        publishedContentHash: null,
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAtMax: null,
+        autoPublishedAt: null,
+        autoPublishError: 'MAX временно не принял одно из вложений.',
+        skippedAt: null,
+        skipReason: null,
+        lastSeenAt: addHours(now, -20).toISOString(),
+        missingSinceAt: null,
+        unavailableAt: null,
+        lastError: 'MAX временно не принял одно из вложений.',
+        createdAt: addDays(now, -1).toISOString(),
+        updatedAt: addHours(now, -20).toISOString(),
+      },
+    ],
+  });
 }
 
 function createPreviewImmunity(durationHours: number, dailyViolationLimit: number, used = 0) {
@@ -2156,6 +2390,7 @@ function createInitialState(): PreviewState {
       lastError: null,
     }),
   ];
+  const channelVkParsing = createPreviewVkParsingFeed(PREVIEW_CHANNEL_ID, now);
   const chatDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
     comments: {
       introText:
@@ -2479,6 +2714,7 @@ function createInitialState(): PreviewState {
         70.3, 88.4, 112.6, 138.8, 166.2, 199.1, 240.5, 296.2, 352.7, 490.4,
       ],
     ),
+    channelVkParsing,
     chatPrimaryBotId: PREVIEW_PRIMARY_BOT_ID,
     channelPrimaryBotId: PREVIEW_PRIMARY_BOT_ID,
     chatPartnerAssistEnabled: false,
@@ -4102,6 +4338,141 @@ async function handleChannelRequest(
     state.channelPartnerAssistEnabled =
       payload.enabled && payload.botId.trim() === PREVIEW_STANDBY_BOT_ID;
     return cloneJson(buildPreviewBotExecutionPlan(state, 'channel', channelId));
+  }
+
+  if (tail[0] === 'vk-parsing') {
+    if (tail[1] === 'capability' && method === 'GET') {
+      return vkParsingCapabilitySchema.parse({ enabled: true, canUse: true });
+    }
+
+    if (tail.length === 1 && method === 'GET') {
+      return cloneJson(state.channelVkParsing);
+    }
+
+    if (tail[1] === 'settings' && method === 'PATCH') {
+      const payload = updateVkParsingSettingsRequestSchema.parse(parseJsonBody(init));
+      state.channelVkParsing = vkParsingFeedSchema.parse({
+        ...state.channelVkParsing,
+        settings: {
+          ...state.channelVkParsing.settings,
+          ...payload,
+          chatId: channelId,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      return cloneJson(state.channelVkParsing);
+    }
+
+    if (tail[1] === 'sources' && tail.length === 2 && method === 'POST') {
+      const payload = addVkParsingSourceRequestSchema.parse(parseJsonBody(init));
+      const now = new Date();
+      const parsedUrl = new URL(payload.url);
+      const screenName = parsedUrl.pathname.split('/').filter(Boolean)[0] ?? 'vk_source';
+      const source: VkParsingSource = {
+        id: `preview-vk-source-${Date.now()}`,
+        chatId: channelId,
+        ownerId: 200900,
+        wallOwnerId: -200900,
+        screenName,
+        title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
+        url: parsedUrl.toString(),
+        status: 'ACTIVE',
+        syncStatus: 'QUEUED',
+        nextSyncAt: null,
+        lastSyncAt: null,
+        lastSuccessAt: null,
+        syncStartedAt: null,
+        consecutiveFailures: 0,
+        lastErrorCode: null,
+        lastImportedCount: 0,
+        lastFetchedCount: 0,
+        lastSyncDurationMs: null,
+        lastError: null,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      };
+      state.channelVkParsing = vkParsingFeedSchema.parse({
+        ...state.channelVkParsing,
+        sources: [source, ...state.channelVkParsing.sources],
+      });
+      return vkParsingRefreshResultSchema.parse({
+        ...state.channelVkParsing,
+        imported: 0,
+        queued: 1,
+      });
+    }
+
+    if (tail[1] === 'sources' && tail[2] && method === 'DELETE') {
+      const sourceId = decodeURIComponent(tail[2]);
+      state.channelVkParsing = vkParsingFeedSchema.parse({
+        ...state.channelVkParsing,
+        sources: state.channelVkParsing.sources.filter((source) => source.id !== sourceId),
+        posts: state.channelVkParsing.posts.filter((post) => post.sourceId !== sourceId),
+      });
+      return cloneJson(state.channelVkParsing);
+    }
+
+    if (tail[1] === 'refresh' && method === 'POST') {
+      const nowIso = new Date().toISOString();
+      state.channelVkParsing = vkParsingFeedSchema.parse({
+        ...state.channelVkParsing,
+        sources: state.channelVkParsing.sources.map((source) => ({
+          ...source,
+          syncStatus: 'IDLE',
+          lastSyncAt: nowIso,
+          lastSuccessAt: nowIso,
+          syncStartedAt: null,
+          consecutiveFailures: 0,
+          lastErrorCode: null,
+          lastError: null,
+          updatedAt: nowIso,
+        })),
+      });
+      return vkParsingRefreshResultSchema.parse({
+        ...state.channelVkParsing,
+        imported: 2,
+        queued: state.channelVkParsing.sources.length,
+      });
+    }
+
+    if (tail[1] === 'posts' && tail[2] && tail[3] === 'publish' && method === 'POST') {
+      const payload = publishVkParsingPostRequestSchema.parse(parseJsonBody(init));
+      const postId = decodeURIComponent(tail[2]);
+      const post = state.channelVkParsing.posts.find((item) => item.id === postId);
+      if (!post) {
+        throw new Error(`Preview VK post not found: ${postId}`);
+      }
+
+      const nowIso = new Date().toISOString();
+      const messageId = `preview-vk-published-${Date.now()}`;
+      const url = `https://max.ru/channels/yuzhnoe-news/message/${messageId}`;
+      const updatedPost: VkParsingPost = {
+        ...post,
+        text: payload.text,
+        photoUrls: payload.photoUrls,
+        linkUrls: payload.linkUrls,
+        status: 'PUBLISHED',
+        publishedContentHash: `preview-${messageId}`,
+        publishedMessageId: messageId,
+        publishedUrl: url,
+        publishedAtMax: nowIso,
+        autoPublishedAt: null,
+        autoPublishError: null,
+        lastError: null,
+        updatedAt: nowIso,
+      };
+      state.channelVkParsing = vkParsingFeedSchema.parse({
+        ...state.channelVkParsing,
+        posts: state.channelVkParsing.posts.map((item) =>
+          item.id === updatedPost.id ? updatedPost : item,
+        ),
+      });
+      return publishVkParsingPostResultSchema.parse({
+        post: updatedPost,
+        messageId,
+        url,
+      });
+    }
   }
 
   if (tail[0] === 'dialog' && tail[1]) {

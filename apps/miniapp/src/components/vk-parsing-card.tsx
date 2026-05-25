@@ -1,10 +1,18 @@
 import {
   Camera,
+  CheckCircle,
   EditPencil,
+  Filter,
+  Flash,
+  InfoCircleSolid,
   Link as IconoirLink,
+  OpenNewWindow,
   PlusCircle,
   RefreshCircle,
   SendDiagonal,
+  ShieldCheck,
+  Trash,
+  WarningCircle,
   Xmark,
 } from 'iconoir-react';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -42,12 +50,32 @@ type PublishPayload = {
 };
 
 type VkParsingSettingKey = 'autoPublishEnabled' | 'stripLinksEnabled' | 'skipAdsEnabled';
+type VkParsingHintKey = VkParsingSettingKey | 'source';
 
-const VK_PARSING_SETTING_TOGGLES: Array<{ key: VkParsingSettingKey; label: string }> = [
-  { key: 'autoPublishEnabled', label: 'Автопостинг' },
-  { key: 'stripLinksEnabled', label: 'Убирать ссылки' },
-  { key: 'skipAdsEnabled', label: 'Фильтр рекламы' },
+const VK_PARSING_SETTING_TOGGLES: Array<{
+  key: VkParsingSettingKey;
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: 'autoPublishEnabled',
+    label: 'Автопостинг',
+    hint: 'Новые посты из подключенных источников выходят в канал после очередного обновления.',
+  },
+  {
+    key: 'stripLinksEnabled',
+    label: 'Ссылки',
+    hint: 'Перед публикацией ссылки удаляются из текста, а вложения-ссылки не прикладываются.',
+  },
+  {
+    key: 'skipAdsEnabled',
+    label: 'Реклама',
+    hint: 'Посты с рекламной маркировкой или явными рекламными признаками остаются в ленте как пропущенные.',
+  },
 ];
+
+const SOURCE_HINT =
+  'Подключайте публичные сообщества VK. Первичный импорт не автопубликует старые посты.';
 
 function formatVkPostDate(value: string | null): string {
   if (!value) {
@@ -131,6 +159,26 @@ function formatVkSkipReason(reason: VkParsingPost['skipReason']): string | null 
   return null;
 }
 
+function formatVkPostStatus(post: VkParsingPost): string | null {
+  if (post.status === 'PUBLISHED') {
+    return post.autoPublishedAt ? 'Авто' : 'Опубликован';
+  }
+  if (post.status === 'CHANGED_AFTER_PUBLISH') {
+    return 'Изменён';
+  }
+  if (post.status === 'UNAVAILABLE') {
+    return 'Недоступен';
+  }
+  if (post.status === 'SKIPPED') {
+    return formatVkSkipReason(post.skipReason) ?? 'Пропущен';
+  }
+  if (post.status === 'FAILED') {
+    return 'Ошибка';
+  }
+
+  return null;
+}
+
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
@@ -144,6 +192,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   const [selectedPhotoUrls, setSelectedPhotoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
 
   const feedQuery = useQuery({
     queryKey: queryKeys.channelVkParsing(chatId),
@@ -329,23 +378,38 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     updateSettingsMutation.mutate({ [key]: checked });
   }
 
+  function toggleHint(key: VkParsingHintKey) {
+    setOpenHintKey((current) => (current === key ? null : key));
+  }
+
+  function renderSettingIcon(key: VkParsingSettingKey) {
+    if (key === 'autoPublishEnabled') {
+      return <Flash aria-hidden />;
+    }
+    if (key === 'stripLinksEnabled') {
+      return <Filter aria-hidden />;
+    }
+
+    return <ShieldCheck aria-hidden />;
+  }
+
   return (
     <div className="vk-parsing-card">
-      <div className="vk-parsing-card__toolbar">
+      <div className="vk-parsing-command">
         <form className="vk-parsing-card__source-form" onSubmit={submitSource}>
-          <label className="field vk-parsing-card__source-field">
-            <span>Источник</span>
+          <label className="vk-parsing-source-input">
+            <span className="vk-parsing-sr-only">Источник VK</span>
             <input
               type="url"
               value={sourceUrl}
               onChange={(event) => setSourceUrl(event.target.value)}
-              placeholder="https://vk.ru/..."
+              placeholder="vk.com/..."
               disabled={addSourceMutation.isPending}
             />
           </label>
           <button
             type="submit"
-            className="button button--accent vk-parsing-card__icon-button"
+            className="vk-parsing-icon-button vk-parsing-icon-button--accent"
             aria-label="Добавить источник"
             title="Добавить источник"
             disabled={addSourceMutation.isPending || !sourceUrl.trim()}
@@ -356,7 +420,19 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
 
         <button
           type="button"
-          className="button button--ghost vk-parsing-card__icon-button"
+          className={cn('vk-parsing-icon-button', openHintKey === 'source' && 'is-active')}
+          aria-label="О VK-источниках"
+          aria-expanded={openHintKey === 'source'}
+          aria-controls="vk-parsing-source-hint"
+          title="О VK-источниках"
+          onClick={() => toggleHint('source')}
+        >
+          <InfoCircleSolid aria-hidden />
+        </button>
+
+        <button
+          type="button"
+          className="vk-parsing-icon-button"
           aria-label="Обновить посты"
           title="Обновить посты"
           disabled={refreshMutation.isPending || sources.length === 0}
@@ -364,13 +440,37 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
         >
           <RefreshCircle aria-hidden />
         </button>
+        {openHintKey === 'source' ? (
+          <div id="vk-parsing-source-hint" className="vk-parsing-hint-popover" role="status">
+            {SOURCE_HINT}
+          </div>
+        ) : null}
       </div>
 
       {feed ? (
         <div className="vk-parsing-settings" aria-label="Настройки VK-парсинга">
           {VK_PARSING_SETTING_TOGGLES.map((item) => (
-            <div key={item.key} className="vk-parsing-setting-toggle">
-              <span>{item.label}</span>
+            <div
+              key={item.key}
+              className={cn('vk-parsing-setting-toggle', settings[item.key] && 'is-on')}
+            >
+              <div className="vk-parsing-setting-toggle__copy">
+                <span className="vk-parsing-setting-toggle__icon">
+                  {renderSettingIcon(item.key)}
+                </span>
+                <span>{item.label}</span>
+                <button
+                  type="button"
+                  className={cn('vk-parsing-info-button', openHintKey === item.key && 'is-active')}
+                  aria-label={`Подробнее: ${item.label}`}
+                  aria-expanded={openHintKey === item.key}
+                  aria-controls={`vk-parsing-setting-hint-${item.key}`}
+                  title={`Подробнее: ${item.label}`}
+                  onClick={() => toggleHint(item.key)}
+                >
+                  <InfoCircleSolid aria-hidden />
+                </button>
+              </div>
               <label className="settings-native-switch" aria-label={item.label}>
                 <input
                   type="checkbox"
@@ -382,6 +482,15 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                   <span className="toggle-switch__thumb" />
                 </span>
               </label>
+              {openHintKey === item.key ? (
+                <div
+                  id={`vk-parsing-setting-hint-${item.key}`}
+                  className="vk-parsing-hint-popover vk-parsing-hint-popover--setting"
+                  role="status"
+                >
+                  {item.hint}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
@@ -434,7 +543,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                   disabled={removeSourceMutation.isPending}
                   onClick={() => removeSourceMutation.mutate(source.id)}
                 >
-                  <Xmark aria-hidden />
+                  <Trash aria-hidden />
                 </button>
               </span>
             );
@@ -472,18 +581,32 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
             const isPublishing =
               publishMutation.isPending && publishMutation.variables?.postId === post.id;
             const dateLabel = formatVkPostDate(post.vkPublishedAt);
+            const statusLabel = formatVkPostStatus(post);
+            const photoCount = post.photoUrls.length;
+            const linkCount = post.linkUrls.length;
             return (
               <article
                 key={post.id}
-                className={cn('vk-parsing-post-card', isEditing && 'is-editing')}
+                className={cn(
+                  'vk-parsing-post-card',
+                  `vk-parsing-post-card--${post.status.toLowerCase().replace(/_/gu, '-')}`,
+                  isEditing && 'is-editing',
+                )}
               >
                 <div className="vk-parsing-post-card__head">
-                  <div>
+                  <div className="vk-parsing-post-card__source">
                     <strong>{post.sourceTitle}</strong>
                     <span>{dateLabel || 'VK'}</span>
                   </div>
-                  <a href={post.url} target="_blank" rel="noreferrer">
-                    VK
+                  <a
+                    className="vk-parsing-post-card__vk-link"
+                    href={post.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Открыть пост VK"
+                    title="Открыть пост VK"
+                  >
+                    <OpenNewWindow aria-hidden />
                   </a>
                 </div>
 
@@ -585,19 +708,36 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                     ) : null}
 
                     <div className="vk-parsing-post-card__facts">
-                      {post.photoUrls.length > 0 ? <span>{post.photoUrls.length} фото</span> : null}
-                      {post.linkUrls.length > 0 ? <span>{post.linkUrls.length} ссыл.</span> : null}
-                      {post.status === 'PUBLISHED' ? <span>Опубликован</span> : null}
-                      {post.autoPublishedAt ? <span>Авто</span> : null}
-                      {post.status === 'CHANGED_AFTER_PUBLISH' ? <span>Изменён в VK</span> : null}
-                      {post.status === 'UNAVAILABLE' ? <span>Недоступен в VK</span> : null}
-                      {post.status === 'SKIPPED' ? <span>Пропущен</span> : null}
-                      {post.status === 'SKIPPED' && formatVkSkipReason(post.skipReason) ? (
-                        <span>{formatVkSkipReason(post.skipReason)}</span>
+                      {photoCount > 0 ? (
+                        <span>
+                          <Camera aria-hidden />
+                          {photoCount}
+                        </span>
                       ) : null}
-                      {post.status === 'FAILED' ? (
-                        <span title={post.autoPublishError ?? post.lastError ?? undefined}>
-                          Ошибка
+                      {linkCount > 0 ? (
+                        <span>
+                          <IconoirLink aria-hidden />
+                          {linkCount}
+                        </span>
+                      ) : null}
+                      {statusLabel ? (
+                        <span
+                          className={cn(
+                            'vk-parsing-status-pill',
+                            post.status === 'PUBLISHED' && 'is-success',
+                            post.status === 'FAILED' && 'is-danger',
+                            post.status === 'SKIPPED' && 'is-muted',
+                            post.status === 'CHANGED_AFTER_PUBLISH' && 'is-warning',
+                          )}
+                          title={post.autoPublishError ?? post.lastError ?? undefined}
+                        >
+                          {post.status === 'FAILED' ? <WarningCircle aria-hidden /> : null}
+                          {post.status === 'PUBLISHED' ? <CheckCircle aria-hidden /> : null}
+                          {post.status === 'SKIPPED' ? <ShieldCheck aria-hidden /> : null}
+                          {post.status === 'CHANGED_AFTER_PUBLISH' ? (
+                            <RefreshCircle aria-hidden />
+                          ) : null}
+                          {statusLabel}
                         </span>
                       ) : null}
                     </div>
@@ -606,26 +746,35 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                       {post.status === 'PUBLISHED' ? (
                         post.publishedUrl ? (
                           <a
-                            className="button button--ghost"
+                            className="button button--ghost vk-parsing-action-button"
                             href={post.publishedUrl}
                             target="_blank"
                             rel="noreferrer"
                           >
-                            Открыть
+                            <OpenNewWindow aria-hidden />
+                            MAX
                           </a>
                         ) : null
                       ) : post.status === 'UNAVAILABLE' ? (
-                        <button type="button" className="button button--ghost" disabled>
+                        <button
+                          type="button"
+                          className="button button--ghost vk-parsing-action-button"
+                          disabled
+                        >
                           Недоступен
                         </button>
                       ) : post.status === 'SKIPPED' ? (
-                        <button type="button" className="button button--ghost" disabled>
+                        <button
+                          type="button"
+                          className="button button--ghost vk-parsing-action-button"
+                          disabled
+                        >
                           Пропущен
                         </button>
                       ) : (
                         <button
                           type="button"
-                          className="button button--accent"
+                          className="button button--accent vk-parsing-action-button"
                           onClick={() => startEditing(post)}
                         >
                           <EditPencil aria-hidden />

@@ -349,6 +349,19 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-settings-vk-parsing',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'vkParsing',
+    },
+    beforeShot: async (page) => {
+      await page
+        .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
+        .waitFor({ state: 'visible' });
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'channel-settings-broadcast',
     path: '/channel/preview-channel/settings',
     searchParams: {
