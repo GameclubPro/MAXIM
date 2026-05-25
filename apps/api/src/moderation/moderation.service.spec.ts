@@ -1,4 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
+import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { buildActiveMuteStateKey } from './moderation-state.util';
 import { ModerationService } from './moderation.service';
@@ -4665,6 +4666,16 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
       expect.stringContaining('Майор Максимов'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      {
+        ignoreFailureMetricStatuses: [403, 404],
+      },
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining(USER_AGREEMENT_SHORT_NOTICE),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),

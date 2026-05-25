@@ -68,6 +68,7 @@ import {
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
 import { raceWithTimeout } from '../common/promise-timeout.util';
+import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import {
@@ -4013,11 +4014,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildPrivateMenuPromptText(): string {
     const profile = this.resolveActiveBotSpeechProfile();
-
     return [
       profile.characterName,
       'Открывайте приложение для настроек, розыгрышей и модерации.',
-      this.buildPrivateMenuQuickActionText(profile.persona),
+      USER_AGREEMENT_SHORT_NOTICE, this.buildPrivateMenuQuickActionText(profile.persona),
     ].join('\n');
   }
 

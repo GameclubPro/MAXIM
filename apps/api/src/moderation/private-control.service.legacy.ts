@@ -36,6 +36,7 @@ import { AdminService } from '../admin/admin.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
+import { USER_AGREEMENT_SHORT_NOTICE, USER_AGREEMENT_START_NOTICE } from '../common/user-agreement-notice';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -10898,10 +10899,9 @@ export class PrivateControlService {
       this.markdownTitle(profile.characterName),
       '',
       '📱 Все настройки, розыгрыши и модерация открываются в приложении.',
-      this.buildLauncherQuickActionText(profile.persona),
+      USER_AGREEMENT_SHORT_NOTICE, this.buildLauncherQuickActionText(profile.persona),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
-
     return {
       text: lines.join('\n'),
       options: {
@@ -10918,9 +10918,8 @@ export class PrivateControlService {
       '',
       'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
       '',
-      'Если понадобится помощь, техподдержка ниже.',
+      USER_AGREEMENT_START_NOTICE, '', 'Если понадобится помощь, техподдержка ниже.',
     ];
-
     return {
       text: lines.join('\n'),
       options: {

@@ -8,6 +8,10 @@ import {
   type ManagedPoll,
   type MaxUpdate,
 } from '@maxim/contracts';
+import {
+  USER_AGREEMENT_SHORT_NOTICE,
+  USER_AGREEMENT_START_NOTICE,
+} from '../common/user-agreement-notice';
 import { PrivateControlService } from './private-control.service';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -1209,6 +1213,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain(
       'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
     );
+    expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_START_NOTICE);
     expect(getLastSentText(maxClient)).toContain('Если понадобится помощь, техподдержка ниже.');
     expect(
       getLastButtons(maxClient)
@@ -1222,6 +1227,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain(
       'Все настройки, розыгрыши и модерация открываются в приложении.',
     );
+    expect(getLastSentText(maxClient)).toContain(USER_AGREEMENT_SHORT_NOTICE);
     expect(getLastSentText(maxClient)).not.toContain('Техподдержка ниже.');
   });
 
