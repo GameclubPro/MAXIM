@@ -547,7 +547,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       error instanceof Error && error.message.trim()
         ? error.message.trim().toLowerCase()
         : String(error).trim().toLowerCase();
-    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('source limit exceeded') ||
+      message.includes('circuit breaker')
+    );
   }
 
   private isMaxApiNotFoundError(error: unknown): boolean {

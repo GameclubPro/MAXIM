@@ -9261,7 +9261,11 @@ describe('AdminService.listChannels', () => {
 
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
-      getChatAdminIds: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+      getChatAdminIds: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('MAX API managed_refresh source limit exceeded for bot id613002203036_bot'),
+        ),
     };
 
     const service = new AdminService(

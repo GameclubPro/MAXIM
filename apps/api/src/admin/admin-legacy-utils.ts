@@ -186,7 +186,11 @@ export function isMaxApiThrottleError(error: unknown): boolean {
   }
 
   const message = extractMaxErrorMessage(error);
-  return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  return (
+    message.includes('rate limit exceeded') ||
+    message.includes('source limit exceeded') ||
+    message.includes('circuit breaker')
+  );
 }
 
 export function isMaxApiTimeoutError(error: unknown): boolean {

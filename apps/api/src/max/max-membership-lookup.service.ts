@@ -1603,7 +1603,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     const message = this.extractErrorMessage(error);
-    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('source limit exceeded') ||
+      message.includes('circuit breaker')
+    );
   }
 
   private isMaxApiTimeoutError(error: unknown): boolean {

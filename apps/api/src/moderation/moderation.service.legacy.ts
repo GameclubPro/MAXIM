@@ -17066,7 +17066,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const message = this.extractMaxErrorMessage(error);
-    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('source limit exceeded') ||
+      message.includes('circuit breaker')
+    );
   }
 
   private isMaxApiTimeoutError(error: unknown): boolean {
