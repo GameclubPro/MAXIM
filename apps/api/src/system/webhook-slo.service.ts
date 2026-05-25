@@ -12,6 +12,7 @@ export type WebhookSloSnapshot = {
   failedEvents: number;
   sampledProcessedEvents: number;
   p95ProcessingMs: number | null;
+  p99ProcessingMs: number | null;
   underTargetRatio: number | null;
   oldestUnprocessedLagSec: number;
   oldestUnprocessedEventId: string | null;
@@ -20,7 +21,7 @@ export type WebhookSloSnapshot = {
 };
 
 const DEFAULT_WEBHOOK_SLO_WINDOW_SEC = 15 * 60;
-const DEFAULT_WEBHOOK_SLO_TARGET_MS = 1_000;
+const DEFAULT_WEBHOOK_SLO_TARGET_MS = 400;
 const DEFAULT_WEBHOOK_SLO_SAMPLE_LIMIT = 5_000;
 const WARNING_UNDER_TARGET_RATIO = 0.95;
 const CRITICAL_UNDER_TARGET_RATIO = 0.85;
@@ -134,6 +135,7 @@ export class WebhookSloService {
       .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
       .sort((left, right) => left - right);
     const p95ProcessingMs = this.percentile(durations, 0.95);
+    const p99ProcessingMs = this.percentile(durations, 0.99);
     const underTargetRatio =
       durations.length > 0
         ? Number(
@@ -150,6 +152,8 @@ export class WebhookSloService {
       failedEvents,
       underTargetRatio,
       oldestUnprocessedLagSec,
+      p95ProcessingMs,
+      p99ProcessingMs,
     });
 
     return {
@@ -161,6 +165,7 @@ export class WebhookSloService {
       failedEvents,
       sampledProcessedEvents: durations.length,
       p95ProcessingMs,
+      p99ProcessingMs,
       underTargetRatio,
       oldestUnprocessedLagSec,
       oldestUnprocessedEventId: oldestUnprocessed?.id ?? null,
@@ -173,10 +178,13 @@ export class WebhookSloService {
     failedEvents: number;
     underTargetRatio: number | null;
     oldestUnprocessedLagSec: number;
+    p95ProcessingMs: number | null;
+    p99ProcessingMs: number | null;
   }): WebhookSloSnapshot['status'] {
     if (
       params.oldestUnprocessedLagSec >= CRITICAL_UNPROCESSED_LAG_SEC ||
-      (params.underTargetRatio !== null && params.underTargetRatio < CRITICAL_UNDER_TARGET_RATIO)
+      (params.underTargetRatio !== null && params.underTargetRatio < CRITICAL_UNDER_TARGET_RATIO) ||
+      (params.p99ProcessingMs !== null && params.p99ProcessingMs > 1_000)
     ) {
       return 'critical';
     }
@@ -184,7 +192,8 @@ export class WebhookSloService {
     if (
       params.failedEvents > 0 ||
       params.oldestUnprocessedLagSec >= WARNING_UNPROCESSED_LAG_SEC ||
-      (params.underTargetRatio !== null && params.underTargetRatio < WARNING_UNDER_TARGET_RATIO)
+      (params.underTargetRatio !== null && params.underTargetRatio < WARNING_UNDER_TARGET_RATIO) ||
+      (params.p95ProcessingMs !== null && params.p95ProcessingMs > this.targetProcessingMs)
     ) {
       return 'warning';
     }

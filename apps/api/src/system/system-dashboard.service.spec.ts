@@ -179,7 +179,7 @@ describe('SystemDashboardService', () => {
         serviceName: 'api-all',
         queueProfile: 'all-in-one',
         topologySource: 'fallback',
-        targetWebhookP95Ms: 1000,
+        targetWebhookP95Ms: 400,
       },
       canaryState: {
         status: 'disabled',

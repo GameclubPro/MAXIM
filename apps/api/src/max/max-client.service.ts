@@ -281,6 +281,9 @@ type MaxApiRequestOptions = {
 
 export const MAX_API_SOURCE_TAGS = {
   MANAGED_REFRESH: 'managed_refresh',
+  MODERATION_DELETE: 'moderation_delete',
+  MODERATION_SANCTION: 'moderation_sanction',
+  MODERATION_NOTICE: 'moderation_notice',
   PARTICIPANT_SEARCH: 'participant_search',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
@@ -311,6 +314,8 @@ const DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS = 1_000;
 const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
+const DEFAULT_MAX_API_MANAGED_REFRESH_RPS = 2;
+const DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS = 4;
 const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
@@ -355,6 +360,8 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly criticalGlobalRpsLimit: number;
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
+  private readonly managedRefreshRpsLimit: number;
+  private readonly managedRefreshStackRpsLimit: number;
   private readonly chatRpsLimit: number;
   private readonly criticalRateLimitWaitMs: number;
   private readonly interactiveRateLimitWaitMs: number;
@@ -404,6 +411,16 @@ export class MaxClientService implements OnModuleDestroy {
         1,
         this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit,
       ),
+    );
+    this.managedRefreshRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_MANAGED_REFRESH_RPS'),
+      DEFAULT_MAX_API_MANAGED_REFRESH_RPS,
+      0,
+    );
+    this.managedRefreshStackRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_MANAGED_REFRESH_STACK_RPS'),
+      DEFAULT_MAX_API_MANAGED_REFRESH_STACK_RPS,
+      0,
     );
     this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
     this.criticalRateLimitWaitMs = this.readConfigInt(
@@ -4086,6 +4103,32 @@ export class MaxClientService implements OnModuleDestroy {
     const startedAtMs = Date.now();
 
     while (true) {
+      if (this.shouldApplyManagedRefreshSourceLimit(trafficClass, sourceTag)) {
+        const sourceReservation = await this.tryReserveManagedRefreshSourceSlot(botId);
+        if (!sourceReservation.ok) {
+          const elapsedMs = Date.now() - startedAtMs;
+          const remainingWaitMs = maxWaitMs - elapsedMs;
+          if (remainingWaitMs <= 0) {
+            await this.recordMaxApiProblemChat({
+              botId,
+              chatId,
+              trafficClass,
+              sourceTag,
+              reason: sourceReservation.reason,
+            });
+            throw new Error(sourceReservation.reason);
+          }
+
+          await this.sleep(
+            Math.max(
+              this.rateLimitRetryFloorMs,
+              Math.min(sourceReservation.retryAfterMs, remainingWaitMs),
+            ),
+          );
+          continue;
+        }
+      }
+
       const reservation = await this.tryReserveRateLimitSlot(botId, chatId, trafficClass);
       if (reservation.ok) {
         if (sourceTag) {
@@ -4111,6 +4154,74 @@ export class MaxClientService implements OnModuleDestroy {
         Math.max(this.rateLimitRetryFloorMs, Math.min(reservation.retryAfterMs, remainingWaitMs)),
       );
     }
+  }
+
+  private shouldApplyManagedRefreshSourceLimit(
+    trafficClass: MaxApiTrafficClass,
+    sourceTag?: string | null,
+  ): boolean {
+    return (
+      trafficClass !== 'critical' &&
+      this.normalizeMetricSourceTag(sourceTag) === MAX_API_SOURCE_TAGS.MANAGED_REFRESH &&
+      (this.managedRefreshRpsLimit > 0 || this.managedRefreshStackRpsLimit > 0)
+    );
+  }
+
+  private async tryReserveManagedRefreshSourceSlot(
+    botId: string,
+  ): Promise<
+    | { ok: true }
+    | {
+        ok: false;
+        retryAfterMs: number;
+        reason: string;
+      }
+  > {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const keys: string[] = [];
+    const limits: string[] = [];
+    if (this.managedRefreshRpsLimit > 0) {
+      keys.push(`maxapi:rps:source-limit:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`);
+      limits.push(String(this.managedRefreshRpsLimit));
+    }
+    if (this.managedRefreshStackRpsLimit > 0) {
+      keys.push(`maxapi:rps:source-limit:stack:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`);
+      limits.push(String(this.managedRefreshStackRpsLimit));
+    }
+    if (keys.length === 0) {
+      return { ok: true };
+    }
+
+    const raw = await this.limiterRedis.eval(
+      MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
+      keys.length,
+      ...keys,
+      ...limits,
+      String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
+    );
+    const result = Array.isArray(raw) ? raw : null;
+    const ok = typeof result?.[0] === 'number' ? result[0] : Number.NaN;
+    const rejectedKeyIndex = typeof result?.[1] === 'number' ? result[1] : Number.NaN;
+    const retryAfterMs = typeof result?.[2] === 'number' ? result[2] : Number.NaN;
+
+    if (ok === 1) {
+      return { ok: true };
+    }
+
+    if (ok !== 0 || !Number.isFinite(rejectedKeyIndex)) {
+      throw new Error('Failed to execute MAX API managed_refresh source reservation script');
+    }
+
+    return {
+      ok: false,
+      retryAfterMs: Number.isFinite(retryAfterMs)
+        ? Math.max(1, Math.trunc(retryAfterMs))
+        : MAX_API_RATE_LIMIT_SLOT_TTL_MS,
+      reason:
+        Math.trunc(rejectedKeyIndex) === 1
+          ? `MAX API managed_refresh source limit exceeded for bot ${botId}`
+          : 'MAX API managed_refresh source limit exceeded across all bots',
+    };
   }
 
   private async tryReserveRateLimitSlot(

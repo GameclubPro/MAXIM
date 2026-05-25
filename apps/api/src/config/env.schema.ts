@@ -171,7 +171,7 @@ const envSchema = z.object({
     .positive()
     .default(3600),
   SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().default(900),
-  SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(1000),
+  SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(400),
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
   MAX_ACTION_DISPATCH_ENABLED: envBoolean(true),
   APP_ROLE: z.enum(APP_ROLES).default('all'),

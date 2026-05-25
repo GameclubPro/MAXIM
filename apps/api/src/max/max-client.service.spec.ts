@@ -2962,6 +2962,57 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('applies the managed_refresh source budget before background reads consume the shared pool', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:01:05.000Z'));
+
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              title: 'Chat 1',
+              participants_count: 10,
+              status: 'active',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              title: 'Chat 1',
+              participants_count: 10,
+              status: 'active',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService, {
+      MAX_API_MANAGED_REFRESH_RPS: '1',
+      MAX_API_MANAGED_REFRESH_STACK_RPS: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '0',
+    });
+
+    await expect(
+      service.getChatSnapshot('chat-1', {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      } as never),
+    ).resolves.toEqual(expect.objectContaining({ chatId: 'chat-1' }));
+
+    await expect(
+      service.getChatSnapshot('chat-2', {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      } as never),
+    ).rejects.toThrow('MAX API managed_refresh source limit exceeded for bot 777000_bot');
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves source-level MAX API usage tags for immediate dispatched mutations', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:25.000Z'));
 

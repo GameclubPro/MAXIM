@@ -11431,7 +11431,7 @@ describe('AdminService.listChats', () => {
       1,
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'managed_refresh',
         timeoutMs: 350,
@@ -11496,7 +11496,7 @@ describe('AdminService.listChats', () => {
       expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
         'chat-1',
         expect.objectContaining({
-          trafficClass: 'interactive',
+          trafficClass: 'background',
           actionHealthLane: 'background',
           sourceTag: 'managed_refresh',
           timeoutMs: 350,
@@ -11544,7 +11544,7 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([]);
 
     expect(maxClient.listBotChats).toHaveBeenCalledWith({
-      trafficClass: 'interactive',
+      trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
       timeoutMs: 2500,
@@ -11554,7 +11554,7 @@ describe('AdminService.listChats', () => {
       1,
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'managed_refresh',
         timeoutMs: 1200,
@@ -13998,14 +13998,14 @@ describe('AdminService.listChats', () => {
     ]);
 
     expect(maxClient.listBotChats).toHaveBeenCalledWith({
-      trafficClass: 'interactive',
+      trafficClass: 'background',
       actionHealthLane: 'background',
       bypassCache: true,
       sourceTag: 'managed_refresh',
       timeoutMs: 2500,
     });
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-fresh', {
-      trafficClass: 'interactive',
+      trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
       timeoutMs: 1200,
@@ -14090,7 +14090,7 @@ describe('AdminService.listChats', () => {
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-target', {
-      trafficClass: 'interactive',
+      trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
       timeoutMs: 1200,
@@ -14971,7 +14971,7 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
-      trafficClass: 'interactive',
+      trafficClass: 'background',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
       timeoutMs: 1200,
@@ -15135,7 +15135,7 @@ describe('AdminService.listChats', () => {
       'admin-1',
       expect.objectContaining({
         bypassNegativeCache: true,
-        trafficClass: 'interactive',
+        trafficClass: 'background',
       }),
     );
     expect(fastLaneSpy).toHaveBeenCalledWith({
@@ -15242,7 +15242,7 @@ describe('AdminService.listChats', () => {
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
       'chat-fallback',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         sourceTag: 'managed_refresh',
         timeoutMs: 350,

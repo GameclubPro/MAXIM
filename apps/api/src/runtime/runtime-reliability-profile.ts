@@ -17,7 +17,7 @@ import {
 import { resolveRuntimeServiceProfile, type RuntimeRoleCapabilities } from './runtime-topology';
 import type { QueueCounters, QueueMetricsSnapshot } from '../system/queue-metrics.service';
 
-export const DEFAULT_WEBHOOK_P95_TARGET_MS = 1_000;
+export const DEFAULT_WEBHOOK_P95_TARGET_MS = 400;
 const QUEUE_GROUP_WAITING_WARNING = 1;
 const QUEUE_GROUP_WAITING_CRITICAL = 50;
 

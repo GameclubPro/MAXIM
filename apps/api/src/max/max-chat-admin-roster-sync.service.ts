@@ -877,7 +877,7 @@ export class MaxChatAdminRosterSyncService {
     botId: string,
   ): {
     botId: string;
-    trafficClass: 'interactive' | 'background';
+    trafficClass: 'background';
     actionHealthLane: 'background';
     sourceTag: string;
     timeoutMs: number;
@@ -890,7 +890,7 @@ export class MaxChatAdminRosterSyncService {
     ) {
       return {
         botId,
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         timeoutMs: CHAT_ADMIN_ROSTER_SYNC_FAST_LANE_TIMEOUT_MS,

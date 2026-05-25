@@ -582,7 +582,7 @@ export class SystemDashboardService {
         snapshot.status === 'critical'
           ? 'Webhook SLO просел критично'
           : 'Webhook SLO требует внимания',
-      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек.`,
+      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек.`,
       recommendedAction:
         'Проверьте backlog, MAX API rate limit и последние failed webhook events до расширения фоновых задач.',
     };

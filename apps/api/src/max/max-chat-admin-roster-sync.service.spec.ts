@@ -340,7 +340,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100125',
       expect.objectContaining({
         botId: 'bot-1',
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 1_500,
       }),
@@ -389,7 +389,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
-  it('uses the interactive fast lane to prewarm membership churn snapshots', async () => {
+  it('uses the background lane with a fast timeout to prewarm membership churn snapshots', async () => {
     const { service, maxClient } = createService();
     maxClient.getCurrentChatMemberAccess.mockResolvedValue({
       userId: 'bot-user-1',
@@ -413,7 +413,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100128',
       expect.objectContaining({
         botId: 'bot-1',
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 1_500,
       }),
@@ -422,14 +422,14 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100128',
       expect.objectContaining({
         botId: 'bot-1',
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 1_500,
       }),
     );
   });
 
-  it('uses the interactive fast lane for destructive moderation roster refreshes', async () => {
+  it('uses the background lane with a fast timeout for destructive moderation roster refreshes', async () => {
     const { service, queue, maxClient } = createService();
 
     await expect(
@@ -480,7 +480,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100129',
       expect.objectContaining({
         botId: 'bot-1',
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 1_500,
       }),
@@ -489,14 +489,14 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100129',
       expect.objectContaining({
         botId: 'bot-1',
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 1_500,
       }),
     );
   });
 
-  it('uses the interactive fast lane after read-only admin access validation', async () => {
+  it('keeps read-only admin access validation on the background refresh lane', async () => {
     const { service, queue } = createService();
 
     await expect(

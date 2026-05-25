@@ -373,6 +373,7 @@ export const systemDashboardWebhookSloSchema = z.object({
   failedEvents: z.number().int().min(0),
   sampledProcessedEvents: z.number().int().min(0),
   p95ProcessingMs: z.number().min(0).nullable(),
+  p99ProcessingMs: z.number().min(0).nullable(),
   underTargetRatio: z.number().min(0).max(1).nullable(),
   oldestUnprocessedLagSec: z.number().min(0),
   oldestUnprocessedEventId: z.string().nullable(),

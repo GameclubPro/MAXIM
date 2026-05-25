@@ -97,6 +97,7 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from './moderation-state.util';
+import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
 import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -253,6 +254,8 @@ type WebhookHotPathProfile = {
   latestStage: string;
   stages: Map<string, number>;
   stageTimelineMs: Map<string, number>;
+  successBoundaryReached: boolean;
+  successBoundaryStage: string | null;
 };
 
 type RulesButtonReference = {
@@ -380,24 +383,30 @@ const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
-const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 15;
-const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
+const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 90;
+const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 45;
 const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
-const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
+const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 10 * 60_000;
+const DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT = 3;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const INVITATION_ACCESS_ESCALATION_WINDOW_HOURS = 24;
 const INVITATION_ACCESS_NOTICE_COOLDOWN_SEC = 15 * 60;
 const INVITATION_ACCESS_RULE_CODE = 'INVITATION_ACCESS_REQUIRED';
 const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
-const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 5 * 60 * 1_000;
+const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 30 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS = 1_500;
 const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
-const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set(['violation-follow-up']);
+const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set([
+  'violation-follow-up',
+  'required-subscription.follow-up',
+]);
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
+const BOT_NOTICE_TOKEN_BUCKET_TTL_SEC = 60;
+const DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT = 6;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
@@ -490,7 +499,6 @@ const DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS = 1_000;
 const DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS = 10_000;
 const WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS = 5_000;
 const WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS = 1_500;
-const REQUIRED_SUBSCRIPTION_METADATA_REFRESH_MIN_REMAINING_MS = 2_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS = 1_000;
 const VIOLATION_ADMIN_RECHECK_RESERVE_MS = 250;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
@@ -740,6 +748,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly manualGroupCloseScanMaxMessageAgeMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
+  private readonly requiredSubscriptionHotPathChannelLimit: number;
+  private readonly botNoticeTokenBucketLimit: number;
   private readonly chatAdminLookupTimeoutMs: number;
   private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
   private readonly sharedChatExecutionLookupTimeoutMs: number;
@@ -849,6 +859,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
       2,
+    );
+    this.requiredSubscriptionHotPathChannelLimit = this.readPositiveConfigInt(
+      configService?.get<number>('REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT'),
+      DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT,
+      1,
+    );
+    this.botNoticeTokenBucketLimit = this.readPositiveConfigInt(
+      configService?.get<number>('BOT_NOTICE_TOKEN_BUCKET_LIMIT'),
+      DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
+      1,
     );
     this.chatAdminLookupTimeoutMs = this.readPositiveConfigInt(
       configService?.get<number>('CHAT_ADMIN_LOOKUP_TIMEOUT_MS'),
@@ -1825,6 +1845,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           });
+          this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-delete');
         }
       } else {
         await this.maxClient.notifyModerators(
@@ -1834,713 +1855,728 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.markWebhookHotPathStage(hotPathProfile, 'violation-follow-up');
-      const linkMessageOptions =
-        topViolation.ruleCode === 'LINK_BLOCKED'
+      const runViolationFollowUp = async () => {
+        const linkMessageOptions =
+          topViolation.ruleCode === 'LINK_BLOCKED'
+            ? this.buildBotMessageOptions(
+                chatId,
+                settings.linkBotButtons,
+                settings.linkBotButtonEnabled,
+                settings.linkBotButtonUrl,
+                settings.linkBotButtonText,
+                settings.rulesAttachViolationsEnabled,
+                rulesPublishedUrl,
+                rulesPublishedMessageId,
+              )
+            : null;
+        const linkViolationCount24h =
+          topViolation.ruleCode === 'LINK_BLOCKED'
+            ? await this.countRecentLinkViolations(
+                chatId,
+                senderId,
+                settings.linkEscalationWindowHours,
+              )
+            : null;
+        const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
+        const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
+        const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
+        const isMessageLimitsHit =
+          this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
+        const messageLimitsBlockedWord = this.extractMessageLimitsBlockedWord(
+          topViolation.metadata,
+        );
+        const textFilterEscalationSettings = isTextFilterHit
+          ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
+          : null;
+        const textFilterMessageOptions = isTextFilterHit
           ? this.buildBotMessageOptions(
               chatId,
-              settings.linkBotButtons,
-              settings.linkBotButtonEnabled,
-              settings.linkBotButtonUrl,
-              settings.linkBotButtonText,
+              settings.textFiltersBotButtons,
+              settings.textFiltersBotButtonEnabled,
+              settings.textFiltersBotButtonUrl,
+              settings.textFiltersBotButtonText,
               settings.rulesAttachViolationsEnabled,
               rulesPublishedUrl,
               rulesPublishedMessageId,
             )
           : null;
-      const linkViolationCount24h =
-        topViolation.ruleCode === 'LINK_BLOCKED'
-          ? await this.countRecentLinkViolations(
+        const limitsMessageOptions = isMessageLimitsHit
+          ? this.buildBotMessageOptions(
               chatId,
-              senderId,
-              settings.linkEscalationWindowHours,
+              settings.messageLimitsBotButtons,
+              settings.messageLimitsBotButtonEnabled,
+              settings.messageLimitsBotButtonUrl,
+              settings.messageLimitsBotButtonText,
+              settings.rulesAttachViolationsEnabled,
+              rulesPublishedUrl,
+              rulesPublishedMessageId,
             )
           : null;
-      const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
-      const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
-      const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
-      const isMessageLimitsHit =
-        this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
-      const messageLimitsBlockedWord = this.extractMessageLimitsBlockedWord(topViolation.metadata);
-      const textFilterEscalationSettings = isTextFilterHit
-        ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
-        : null;
-      const textFilterMessageOptions = isTextFilterHit
-        ? this.buildBotMessageOptions(
+        const phoneNumbersMessageOptions = isPhoneNumberHit
+          ? this.buildBotMessageOptions(
+              chatId,
+              [],
+              false,
+              '',
+              '',
+              settings.rulesAttachViolationsEnabled,
+              rulesPublishedUrl,
+              rulesPublishedMessageId,
+            )
+          : null;
+        const topicMessageOptions = isTopicFilterHit
+          ? this.buildBotMessageOptions(
+              chatId,
+              settings.thematicFiltersBotButtons,
+              settings.thematicFiltersBotButtonEnabled,
+              settings.thematicFiltersBotButtonUrl,
+              settings.thematicFiltersBotButtonText,
+              settings.rulesAttachViolationsEnabled,
+              rulesPublishedUrl,
+              rulesPublishedMessageId,
+            )
+          : null;
+        const textFilterViolationCount24h = isTextFilterHit
+          ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
+          : null;
+        const topicFilterViolationCount24h = isTopicFilterHit
+          ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode)
+          : null;
+        const messageLimitsViolationCount12h = isMessageLimitsHit
+          ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
+          : null;
+        const phoneNumbersViolationCount = isPhoneNumberHit
+          ? await this.countRecentPhoneNumberViolations(
+              chatId,
+              senderId,
+              settings.phoneNumbersEscalationWindowHours,
+            )
+          : null;
+        const sendChatBotMessage = async (
+          textValue: string,
+          messageOptions?: MaxSendMessageOptions,
+        ) =>
+          this.sendBotMessageWithOptionalAutoDelete({
             chatId,
-            settings.textFiltersBotButtons,
-            settings.textFiltersBotButtonEnabled,
-            settings.textFiltersBotButtonUrl,
-            settings.textFiltersBotButtonText,
-            settings.rulesAttachViolationsEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-          )
-        : null;
-      const limitsMessageOptions = isMessageLimitsHit
-        ? this.buildBotMessageOptions(
-            chatId,
-            settings.messageLimitsBotButtons,
-            settings.messageLimitsBotButtonEnabled,
-            settings.messageLimitsBotButtonUrl,
-            settings.messageLimitsBotButtonText,
-            settings.rulesAttachViolationsEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-          )
-        : null;
-      const phoneNumbersMessageOptions = isPhoneNumberHit
-        ? this.buildBotMessageOptions(
-            chatId,
-            [],
-            false,
-            '',
-            '',
-            settings.rulesAttachViolationsEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-          )
-        : null;
-      const topicMessageOptions = isTopicFilterHit
-        ? this.buildBotMessageOptions(
-            chatId,
-            settings.thematicFiltersBotButtons,
-            settings.thematicFiltersBotButtonEnabled,
-            settings.thematicFiltersBotButtonUrl,
-            settings.thematicFiltersBotButtonText,
-            settings.rulesAttachViolationsEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-          )
-        : null;
-      const textFilterViolationCount24h = isTextFilterHit
-        ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
-        : null;
-      const topicFilterViolationCount24h = isTopicFilterHit
-        ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode)
-        : null;
-      const messageLimitsViolationCount12h = isMessageLimitsHit
-        ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
-        : null;
-      const phoneNumbersViolationCount = isPhoneNumberHit
-        ? await this.countRecentPhoneNumberViolations(
-            chatId,
-            senderId,
-            settings.phoneNumbersEscalationWindowHours,
-          )
-        : null;
-      const sendChatBotMessage = async (
-        textValue: string,
-        messageOptions?: MaxSendMessageOptions,
-      ) =>
-        this.sendBotMessageWithOptionalAutoDelete({
-          chatId,
-          text: textValue,
-          messageOptions,
-          deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-        });
+            text: textValue,
+            messageOptions,
+            deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+          });
 
-      let action: SanctionAction = SanctionAction.NONE;
-      const actionMuteDurationHours = this.resolveAutomaticMuteDurationHours(
-        topViolation.ruleCode,
-        settings,
-      );
+        let action: SanctionAction = SanctionAction.NONE;
+        const actionMuteDurationHours = this.resolveAutomaticMuteDurationHours(
+          topViolation.ruleCode,
+          settings,
+        );
 
-      if (topViolation.ruleCode === 'LINK_BLOCKED') {
-        action = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
-          warnEnabled: settings.linkWarnEnabled,
-          banEnabled: settings.linkBanEnabled,
-          muteEnabled: settings.linkMuteEnabled,
-          warnMaxCount: settings.linkWarnMaxCount,
-          muteMaxCount: settings.linkMuteMaxCount,
-          banMaxCount: settings.linkBanMaxCount,
-        });
-      } else if (isPhoneNumberHit) {
-        action = this.resolveConfiguredEscalationAction(phoneNumbersViolationCount ?? 1, {
-          warnEnabled: settings.phoneNumbersWarnEnabled,
-          banEnabled: settings.phoneNumbersBanEnabled,
-          muteEnabled: settings.phoneNumbersMuteEnabled,
-          warnMaxCount: settings.phoneNumbersWarnMaxCount,
-          muteMaxCount: settings.phoneNumbersMuteMaxCount,
-          banMaxCount: settings.phoneNumbersBanMaxCount,
-        });
-      } else if (isTextFilterHit) {
-        action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
-          warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
-          banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
-          muteEnabled: Boolean(textFilterEscalationSettings?.muteEnabled),
-        });
-      } else if (isTopicFilterHit) {
-        action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
-          warnEnabled: settings.thematicFiltersWarnEnabled,
-          banEnabled: settings.thematicFiltersBanEnabled,
-          muteEnabled: settings.thematicFiltersMuteEnabled,
-        });
-      } else if (topViolation.ruleCode === 'MESSAGE_RATE_LIMIT') {
-        // Burst flooding can starve moderation workers, so this guard is enforced as a hard ban.
-        action = SanctionAction.BAN;
-      } else if (isMessageLimitsHit) {
-        action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
-          warnEnabled: settings.messageLimitsWarnEnabled,
-          banEnabled: settings.messageLimitsBanEnabled,
-          muteEnabled: settings.messageLimitsMuteEnabled,
-        });
-      } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
-        action = await this.sanctionService.resolveAction({
-          chatId,
-          userId: senderId,
-          warnThreshold: settings.warnThreshold,
-        });
-      }
+        if (topViolation.ruleCode === 'LINK_BLOCKED') {
+          action = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
+            warnEnabled: settings.linkWarnEnabled,
+            banEnabled: settings.linkBanEnabled,
+            muteEnabled: settings.linkMuteEnabled,
+            warnMaxCount: settings.linkWarnMaxCount,
+            muteMaxCount: settings.linkMuteMaxCount,
+            banMaxCount: settings.linkBanMaxCount,
+          });
+        } else if (isPhoneNumberHit) {
+          action = this.resolveConfiguredEscalationAction(phoneNumbersViolationCount ?? 1, {
+            warnEnabled: settings.phoneNumbersWarnEnabled,
+            banEnabled: settings.phoneNumbersBanEnabled,
+            muteEnabled: settings.phoneNumbersMuteEnabled,
+            warnMaxCount: settings.phoneNumbersWarnMaxCount,
+            muteMaxCount: settings.phoneNumbersMuteMaxCount,
+            banMaxCount: settings.phoneNumbersBanMaxCount,
+          });
+        } else if (isTextFilterHit) {
+          action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
+            warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
+            banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
+            muteEnabled: Boolean(textFilterEscalationSettings?.muteEnabled),
+          });
+        } else if (isTopicFilterHit) {
+          action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
+            warnEnabled: settings.thematicFiltersWarnEnabled,
+            banEnabled: settings.thematicFiltersBanEnabled,
+            muteEnabled: settings.thematicFiltersMuteEnabled,
+          });
+        } else if (topViolation.ruleCode === 'MESSAGE_RATE_LIMIT') {
+          // Burst flooding can starve moderation workers, so this guard is enforced as a hard ban.
+          action = SanctionAction.BAN;
+        } else if (isMessageLimitsHit) {
+          action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
+            warnEnabled: settings.messageLimitsWarnEnabled,
+            banEnabled: settings.messageLimitsBanEnabled,
+            muteEnabled: settings.messageLimitsMuteEnabled,
+          });
+        } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
+          action = await this.sanctionService.resolveAction({
+            chatId,
+            userId: senderId,
+            warnThreshold: settings.warnThreshold,
+          });
+        }
 
-      const isFirstLinkViolation =
-        topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
-      const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
-      const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
-      const isFirstMessageLimitsViolation =
-        isMessageLimitsHit && messageLimitsViolationCount12h === 1;
-      const isFirstPhoneNumberViolation = isPhoneNumberHit && phoneNumbersViolationCount === 1;
+        const isFirstLinkViolation =
+          topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
+        const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
+        const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
+        const isFirstMessageLimitsViolation =
+          isMessageLimitsHit && messageLimitsViolationCount12h === 1;
+        const isFirstPhoneNumberViolation = isPhoneNumberHit && phoneNumbersViolationCount === 1;
 
-      if (topViolation.ruleCode === 'LINK_BLOCKED') {
-        if (
-          action === SanctionAction.NONE &&
-          isFirstLinkViolation &&
-          settings.linkBotMessageEnabled
-        ) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildLinkExplanation(
-                  userLabel,
-                  messageDeleted,
-                  settings.linkBotMessageText,
-                  settings.botSpeechStyle,
-                  updateType === 'message_edited',
+        if (topViolation.ruleCode === 'LINK_BLOCKED') {
+          if (
+            action === SanctionAction.NONE &&
+            isFirstLinkViolation &&
+            settings.linkBotMessageEnabled
+          ) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildLinkExplanation(
+                    userLabel,
+                    messageDeleted,
+                    settings.linkBotMessageText,
+                    settings.botSpeechStyle,
+                    updateType === 'message_edited',
+                  ),
+                  settings.linkAdminContactButtonEnabled,
+                  settings.linkAdminContactButtonUrl,
                 ),
-                settings.linkAdminContactButtonEnabled,
-                settings.linkAdminContactButtonUrl,
-              ),
-              linkMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send link explanation message',
-            );
-          }
-        } else if (action === SanctionAction.WARN) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildLinkWarnExplanation(
-                  userLabel,
-                  settings.linkWarnMessageText,
-                  settings.botSpeechStyle,
-                  updateType === 'message_edited',
+                linkMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send link explanation message',
+              );
+            }
+          } else if (action === SanctionAction.WARN) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildLinkWarnExplanation(
+                    userLabel,
+                    settings.linkWarnMessageText,
+                    settings.botSpeechStyle,
+                    updateType === 'message_edited',
+                  ),
+                  settings.linkAdminContactButtonEnabled,
+                  settings.linkAdminContactButtonUrl,
                 ),
-                settings.linkAdminContactButtonEnabled,
-                settings.linkAdminContactButtonUrl,
-              ),
-              linkMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send link warning message',
-            );
+                linkMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send link warning message',
+              );
+            }
           }
         }
-      }
 
-      if (isPhoneNumberHit) {
-        if (
-          action === SanctionAction.NONE &&
-          isFirstPhoneNumberViolation &&
-          settings.phoneNumbersBotMessageEnabled
-        ) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildPhoneNumbersExplanation(
-                  userLabel,
-                  messageDeleted,
-                  settings.phoneNumbersBotMessageText,
-                  settings.botSpeechStyle,
+        if (isPhoneNumberHit) {
+          if (
+            action === SanctionAction.NONE &&
+            isFirstPhoneNumberViolation &&
+            settings.phoneNumbersBotMessageEnabled
+          ) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildPhoneNumbersExplanation(
+                    userLabel,
+                    messageDeleted,
+                    settings.phoneNumbersBotMessageText,
+                    settings.botSpeechStyle,
+                  ),
+                  settings.phoneNumbersAdminContactButtonEnabled,
+                  settings.phoneNumbersAdminContactButtonUrl,
                 ),
-                settings.phoneNumbersAdminContactButtonEnabled,
-                settings.phoneNumbersAdminContactButtonUrl,
-              ),
-              phoneNumbersMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send phone number explanation message',
-            );
-          }
-        } else if (action === SanctionAction.WARN) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildMessageLimitsWarnExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  null,
-                  settings.botSpeechStyle,
+                phoneNumbersMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send phone number explanation message',
+              );
+            }
+          } else if (action === SanctionAction.WARN) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildMessageLimitsWarnExplanation(
+                    userLabel,
+                    topViolation.ruleCode,
+                    null,
+                    settings.botSpeechStyle,
+                  ),
+                  settings.phoneNumbersAdminContactButtonEnabled,
+                  settings.phoneNumbersAdminContactButtonUrl,
                 ),
-                settings.phoneNumbersAdminContactButtonEnabled,
-                settings.phoneNumbersAdminContactButtonUrl,
-              ),
-              phoneNumbersMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send phone number warning message',
-            );
+                phoneNumbersMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send phone number warning message',
+              );
+            }
           }
         }
-      }
 
-      if (isMessageLimitsHit) {
-        if (
-          action === SanctionAction.NONE &&
-          isFirstMessageLimitsViolation &&
-          settings.messageLimitsBotMessageEnabled
-        ) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildMessageLimitsExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  messageDeleted,
-                  settings.messageCountLimitMessages,
-                  settings.messageCountLimitWindowHours,
-                  settings.photoMessageCooldownHours,
-                  settings.stickerMessageCooldownMinutes,
-                  effectiveMessageLength,
-                  settings.maxMessageLength,
-                  messageLimitsBlockedWord,
-                  settings.messageLimitsBotMessageText,
-                  settings.botSpeechStyle,
+        if (isMessageLimitsHit) {
+          if (
+            action === SanctionAction.NONE &&
+            isFirstMessageLimitsViolation &&
+            settings.messageLimitsBotMessageEnabled
+          ) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildMessageLimitsExplanation(
+                    userLabel,
+                    topViolation.ruleCode,
+                    messageDeleted,
+                    settings.messageCountLimitMessages,
+                    settings.messageCountLimitWindowHours,
+                    settings.photoMessageCooldownHours,
+                    settings.stickerMessageCooldownMinutes,
+                    effectiveMessageLength,
+                    settings.maxMessageLength,
+                    messageLimitsBlockedWord,
+                    settings.messageLimitsBotMessageText,
+                    settings.botSpeechStyle,
+                  ),
+                  settings.messageLimitsAdminContactButtonEnabled,
+                  settings.messageLimitsAdminContactButtonUrl,
                 ),
-                settings.messageLimitsAdminContactButtonEnabled,
-                settings.messageLimitsAdminContactButtonUrl,
-              ),
-              limitsMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send message limits explanation message',
-            );
-          }
-        } else if (action === SanctionAction.WARN) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildMessageLimitsWarnExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  messageLimitsBlockedWord,
-                  settings.botSpeechStyle,
+                limitsMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send message limits explanation message',
+              );
+            }
+          } else if (action === SanctionAction.WARN) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildMessageLimitsWarnExplanation(
+                    userLabel,
+                    topViolation.ruleCode,
+                    messageLimitsBlockedWord,
+                    settings.botSpeechStyle,
+                  ),
+                  settings.messageLimitsAdminContactButtonEnabled,
+                  settings.messageLimitsAdminContactButtonUrl,
                 ),
-                settings.messageLimitsAdminContactButtonEnabled,
-                settings.messageLimitsAdminContactButtonUrl,
-              ),
-              limitsMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send message limits warning message',
-            );
+                limitsMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send message limits warning message',
+              );
+            }
           }
         }
-      }
 
-      if (isTextFilterHit) {
-        if (
-          action === SanctionAction.NONE &&
-          isFirstTextFilterViolation &&
-          textFilterEscalationSettings?.botMessageEnabled
-        ) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildTextFilterExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  messageDeleted,
-                  textFilterEscalationSettings.botMessageText,
-                  settings.botSpeechStyle,
+        if (isTextFilterHit) {
+          if (
+            action === SanctionAction.NONE &&
+            isFirstTextFilterViolation &&
+            textFilterEscalationSettings?.botMessageEnabled
+          ) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildTextFilterExplanation(
+                    userLabel,
+                    topViolation.ruleCode,
+                    messageDeleted,
+                    textFilterEscalationSettings.botMessageText,
+                    settings.botSpeechStyle,
+                  ),
+                  textFilterEscalationSettings.adminContactButtonEnabled,
+                  textFilterEscalationSettings.adminContactButtonUrl,
                 ),
-                textFilterEscalationSettings.adminContactButtonEnabled,
-                textFilterEscalationSettings.adminContactButtonUrl,
-              ),
-              textFilterMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send text filter explanation message',
-            );
-          }
-        } else if (action === SanctionAction.WARN) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildTextFilterWarnExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  textFilterEscalationSettings?.warnMessageText ??
-                    settings.textFiltersWarnMessageText,
-                  settings.botSpeechStyle,
+                textFilterMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send text filter explanation message',
+              );
+            }
+          } else if (action === SanctionAction.WARN) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildTextFilterWarnExplanation(
+                    userLabel,
+                    topViolation.ruleCode,
+                    textFilterEscalationSettings?.warnMessageText ??
+                      settings.textFiltersWarnMessageText,
+                    settings.botSpeechStyle,
+                  ),
+                  textFilterEscalationSettings?.adminContactButtonEnabled ?? false,
+                  textFilterEscalationSettings?.adminContactButtonUrl ?? '',
                 ),
-                textFilterEscalationSettings?.adminContactButtonEnabled ?? false,
-                textFilterEscalationSettings?.adminContactButtonUrl ?? '',
-              ),
-              textFilterMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send text filter warning message',
-            );
+                textFilterMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send text filter warning message',
+              );
+            }
           }
         }
-      }
 
-      if (isTopicFilterHit) {
-        if (
-          action === SanctionAction.NONE &&
-          isFirstTopicFilterViolation &&
-          settings.thematicFiltersBotMessageEnabled
-        ) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildTopicFilterExplanation(
-                  userLabel,
-                  messageDeleted,
-                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                  settings.botSpeechStyle,
+        if (isTopicFilterHit) {
+          if (
+            action === SanctionAction.NONE &&
+            isFirstTopicFilterViolation &&
+            settings.thematicFiltersBotMessageEnabled
+          ) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildTopicFilterExplanation(
+                    userLabel,
+                    messageDeleted,
+                    this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                    settings.botSpeechStyle,
+                  ),
+                  settings.thematicFiltersAdminContactButtonEnabled,
+                  settings.thematicFiltersAdminContactButtonUrl,
                 ),
-                settings.thematicFiltersAdminContactButtonEnabled,
-                settings.thematicFiltersAdminContactButtonUrl,
-              ),
-              topicMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send thematic filter explanation message',
-            );
-          }
-        } else if (action === SanctionAction.WARN) {
-          try {
-            await sendChatBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                chatId,
-                this.buildTopicFilterWarnExplanation(
-                  userLabel,
-                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                  settings.botSpeechStyle,
+                topicMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send thematic filter explanation message',
+              );
+            }
+          } else if (action === SanctionAction.WARN) {
+            try {
+              await sendChatBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  chatId,
+                  this.buildTopicFilterWarnExplanation(
+                    userLabel,
+                    this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                    settings.botSpeechStyle,
+                  ),
+                  settings.thematicFiltersAdminContactButtonEnabled,
+                  settings.thematicFiltersAdminContactButtonUrl,
                 ),
-                settings.thematicFiltersAdminContactButtonEnabled,
-                settings.thematicFiltersAdminContactButtonUrl,
-              ),
-              topicMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send thematic filter warning message',
-            );
+                topicMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send thematic filter warning message',
+              );
+            }
           }
         }
-      }
 
-      if (action !== SanctionAction.NONE) {
-        await this.applySanctionAction({
-          chatId,
-          userId: senderId,
-          action,
-          userLabel,
-          messageId,
-          muteDurationHours: actionMuteDurationHours,
-          deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-          botMessageOptions:
-            topViolation.ruleCode === 'LINK_BLOCKED'
-              ? (linkMessageOptions ?? undefined)
-              : isTopicFilterHit
-                ? (topicMessageOptions ?? undefined)
-                : isPhoneNumberHit
-                  ? (phoneNumbersMessageOptions ?? undefined)
-                  : isMessageLimitsHit
-                    ? (limitsMessageOptions ?? undefined)
-                    : isTextFilterHit
-                      ? (textFilterMessageOptions ?? undefined)
-                      : undefined,
-          sanctionNoticeText:
-            isPhoneNumberHit && action === SanctionAction.BAN
-              ? this.buildMessageLimitsBanExplanation(
-                  userLabel,
-                  topViolation.ruleCode,
-                  actionMuteDurationHours,
-                  null,
-                  settings.botSpeechStyle,
-                )
-              : isMessageLimitsHit && action === SanctionAction.BAN
+        if (action !== SanctionAction.NONE) {
+          await this.applySanctionAction({
+            chatId,
+            userId: senderId,
+            action,
+            userLabel,
+            messageId,
+            muteDurationHours: actionMuteDurationHours,
+            deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+            botMessageOptions:
+              topViolation.ruleCode === 'LINK_BLOCKED'
+                ? (linkMessageOptions ?? undefined)
+                : isTopicFilterHit
+                  ? (topicMessageOptions ?? undefined)
+                  : isPhoneNumberHit
+                    ? (phoneNumbersMessageOptions ?? undefined)
+                    : isMessageLimitsHit
+                      ? (limitsMessageOptions ?? undefined)
+                      : isTextFilterHit
+                        ? (textFilterMessageOptions ?? undefined)
+                        : undefined,
+            sanctionNoticeText:
+              isPhoneNumberHit && action === SanctionAction.BAN
                 ? this.buildMessageLimitsBanExplanation(
                     userLabel,
                     topViolation.ruleCode,
                     actionMuteDurationHours,
-                    messageLimitsBlockedWord,
+                    null,
                     settings.botSpeechStyle,
                   )
-                : isTopicFilterHit && action === SanctionAction.BAN
-                  ? this.buildTopicFilterBanExplanation(
+                : isMessageLimitsHit && action === SanctionAction.BAN
+                  ? this.buildMessageLimitsBanExplanation(
                       userLabel,
-                      this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                      topViolation.ruleCode,
                       actionMuteDurationHours,
+                      messageLimitsBlockedWord,
                       settings.botSpeechStyle,
                     )
-                  : undefined,
-          botSpeechStyle: settings.botSpeechStyle,
+                  : isTopicFilterHit && action === SanctionAction.BAN
+                    ? this.buildTopicFilterBanExplanation(
+                        userLabel,
+                        this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                        actionMuteDurationHours,
+                        settings.botSpeechStyle,
+                      )
+                    : undefined,
+            botSpeechStyle: settings.botSpeechStyle,
+          });
+
+          if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.MUTE) {
+            try {
+              await sendChatBotMessage(
+                this.buildLinkMuteExplanation(userLabel, settings.botSpeechStyle),
+                linkMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send link mute message',
+              );
+            }
+          }
+
+          if (isTextFilterHit && action === SanctionAction.MUTE) {
+            try {
+              await sendChatBotMessage(
+                this.buildTextFilterMuteExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  settings.botSpeechStyle,
+                ),
+                textFilterMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send text filter mute message',
+              );
+            }
+          }
+
+          if (isTopicFilterHit && action === SanctionAction.MUTE) {
+            try {
+              await sendChatBotMessage(
+                this.buildTopicFilterMuteExplanation(
+                  userLabel,
+                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+                  settings.botSpeechStyle,
+                ),
+                topicMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send thematic filter mute message',
+              );
+            }
+          }
+
+          if (isMessageLimitsHit && action === SanctionAction.MUTE) {
+            try {
+              await sendChatBotMessage(
+                this.buildMessageLimitsMuteExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  messageLimitsBlockedWord,
+                  settings.botSpeechStyle,
+                ),
+                limitsMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send message limits mute message',
+              );
+            }
+          }
+
+          if (isPhoneNumberHit && action === SanctionAction.MUTE) {
+            try {
+              await sendChatBotMessage(
+                this.buildMessageLimitsMuteExplanation(
+                  userLabel,
+                  topViolation.ruleCode,
+                  null,
+                  settings.botSpeechStyle,
+                ),
+                phoneNumbersMessageOptions ?? undefined,
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId,
+                  userId: senderId,
+                  messageId,
+                  ruleCode: topViolation.ruleCode,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send phone number mute message',
+              );
+            }
+          }
+        }
+
+        await this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId: senderId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: topViolation.ruleCode,
+            action,
+            maskedExcerpt: maskText(text),
+            score: topViolation.score,
+            operator: Operator.BOT,
+            metadata: {
+              reason: topViolation.reason,
+              action,
+              ...(topViolation.metadata && typeof topViolation.metadata === 'object'
+                ? topViolation.metadata
+                : {}),
+              ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
+                ? {
+                    linkViolationCount24h,
+                    linkEscalationWindowHours: settings.linkEscalationWindowHours,
+                  }
+                : {}),
+              ...(isPhoneNumberHit && phoneNumbersViolationCount !== null
+                ? {
+                    phoneNumbersViolationCount,
+                    phoneNumbersEscalationWindowHours: settings.phoneNumbersEscalationWindowHours,
+                  }
+                : {}),
+              ...(isTextFilterHit && textFilterViolationCount24h !== null
+                ? {
+                    textFilterViolationCount24h,
+                    textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+                  }
+                : {}),
+              ...(isTopicFilterHit && topicFilterViolationCount24h !== null
+                ? {
+                    topicFilterViolationCount24h,
+                    topicFilterEscalationWindowHours: TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
+                  }
+                : {}),
+              ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
+                ? {
+                    messageLimitsViolationCount12h,
+                    messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
+                  }
+                : {}),
+            },
+          },
         });
-
-        if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.MUTE) {
-          try {
-            await sendChatBotMessage(
-              this.buildLinkMuteExplanation(userLabel, settings.botSpeechStyle),
-              linkMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send link mute message',
-            );
-          }
-        }
-
-        if (isTextFilterHit && action === SanctionAction.MUTE) {
-          try {
-            await sendChatBotMessage(
-              this.buildTextFilterMuteExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                settings.botSpeechStyle,
-              ),
-              textFilterMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send text filter mute message',
-            );
-          }
-        }
-
-        if (isTopicFilterHit && action === SanctionAction.MUTE) {
-          try {
-            await sendChatBotMessage(
-              this.buildTopicFilterMuteExplanation(
-                userLabel,
-                this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                settings.botSpeechStyle,
-              ),
-              topicMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send thematic filter mute message',
-            );
-          }
-        }
-
-        if (isMessageLimitsHit && action === SanctionAction.MUTE) {
-          try {
-            await sendChatBotMessage(
-              this.buildMessageLimitsMuteExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                messageLimitsBlockedWord,
-                settings.botSpeechStyle,
-              ),
-              limitsMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send message limits mute message',
-            );
-          }
-        }
-
-        if (isPhoneNumberHit && action === SanctionAction.MUTE) {
-          try {
-            await sendChatBotMessage(
-              this.buildMessageLimitsMuteExplanation(
-                userLabel,
-                topViolation.ruleCode,
-                null,
-                settings.botSpeechStyle,
-              ),
-              phoneNumbersMessageOptions ?? undefined,
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: senderId,
-                messageId,
-                ruleCode: topViolation.ruleCode,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send phone number mute message',
-            );
-          }
-        }
-      }
-
-      await this.createBotModerationEvent({
-        data: {
+      };
+      if (this.shouldDetachFollowUpForBudget(hotPathProfile, 'violation-follow-up')) {
+        this.scheduleDetachedWebhookFollowUp({
+          stage: 'violation-follow-up',
           chatId,
           userId: senderId,
           messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: topViolation.ruleCode,
-          action,
-          maskedExcerpt: maskText(text),
-          score: topViolation.score,
-          operator: Operator.BOT,
-          metadata: {
-            reason: topViolation.reason,
-            action,
-            ...(topViolation.metadata && typeof topViolation.metadata === 'object'
-              ? topViolation.metadata
-              : {}),
-            ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
-              ? {
-                  linkViolationCount24h,
-                  linkEscalationWindowHours: settings.linkEscalationWindowHours,
-                }
-              : {}),
-            ...(isPhoneNumberHit && phoneNumbersViolationCount !== null
-              ? {
-                  phoneNumbersViolationCount,
-                  phoneNumbersEscalationWindowHours: settings.phoneNumbersEscalationWindowHours,
-                }
-              : {}),
-            ...(isTextFilterHit && textFilterViolationCount24h !== null
-              ? {
-                  textFilterViolationCount24h,
-                  textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
-                }
-              : {}),
-            ...(isTopicFilterHit && topicFilterViolationCount24h !== null
-              ? {
-                  topicFilterViolationCount24h,
-                  topicFilterEscalationWindowHours: TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
-                }
-              : {}),
-            ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
-              ? {
-                  messageLimitsViolationCount12h,
-                  messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
-                }
-              : {}),
-          },
-        },
-      });
+          task: runViolationFollowUp,
+        });
+        return;
+      }
+      await runViolationFollowUp();
     } finally {
       if (sharedChatExecutionLock) {
         await this.releaseSharedChatExecutionLock(sharedChatExecutionLock);
@@ -2886,8 +2922,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ? 'ссылка появилась после тихой правки; в этом чате ссылки не проходят'
       : 'в этом чате ссылки не проходят, без ссылок';
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const hasTemplateOverride =
-      typeof templateText === 'string' && templateText.trim().length > 0;
+    const hasTemplateOverride = typeof templateText === 'string' && templateText.trim().length > 0;
     if (editedMessage && !hasTemplateOverride) {
       const editedFallback =
         '{user}, ссылку убрал. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь не проходят.';
@@ -3009,8 +3044,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const warning = editedMessage
       ? 'вынесено предупреждение за ссылку после редактирования'
       : 'вынесено предупреждение за ссылку';
-    const hasTemplateOverride =
-      typeof templateText === 'string' && templateText.trim().length > 0;
+    const hasTemplateOverride = typeof templateText === 'string' && templateText.trim().length > 0;
     if (editedMessage && !hasTemplateOverride) {
       const editedFallback =
         '{user}, предупреждение за ссылку. Расчёт на тихую правку был элегантный, но протокол внимательный: ссылки здесь всё ещё нельзя.';
@@ -3781,6 +3815,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       explicitBotId: options?.botId,
       operation: async (botId) => {
         await this.maxClient.deleteMessage(chatId, messageId, {
+          trafficClass: 'critical',
+          actionHealthLane: 'critical',
+          sourceTag: MAX_API_SOURCE_TAGS.MODERATION_DELETE,
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
           immediate: true,
@@ -3801,6 +3838,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       explicitBotId: options?.botId,
       operation: async (botId) => {
         await this.maxClient.kickMember(chatId, userId, {
+          trafficClass: 'critical',
+          actionHealthLane: 'critical',
+          sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
           immediate: true,
@@ -3821,6 +3861,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       explicitBotId: options?.botId,
       operation: async (botId) => {
         await this.maxClient.banMember(chatId, userId, {
+          trafficClass: 'critical',
+          actionHealthLane: 'critical',
+          sourceTag: MAX_API_SOURCE_TAGS.MODERATION_SANCTION,
           ...(options ?? {}),
           ...(botId ? { botId } : {}),
           immediate: true,
@@ -4859,44 +4902,116 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalized.slice(0, 32);
   }
 
+  private async countRecentViolationsWithEscalationCounter(params: {
+    chatId: string;
+    userId: string;
+    ruleKey: string;
+    windowMs: number;
+    loadCount: () => Promise<number>;
+  }): Promise<number> {
+    const windowSec = Math.max(1, Math.ceil(params.windowMs / 1_000));
+    const ttlSec = windowSec + 60;
+    const redisCounter = this.redisCounter as Partial<RedisCounterService> | undefined;
+    const getString = redisCounter?.getString;
+    const incrementWithTtl = redisCounter?.incrementWithTtl;
+    const setStringWithTtl = redisCounter?.setStringWithTtl;
+    if (!this.redisCounter || !getString || !incrementWithTtl || !setStringWithTtl) {
+      return this.normalizeRecentViolationCount(await params.loadCount());
+    }
+
+    const counterKey = buildModerationEscalationCounterKey({
+      chatId: params.chatId,
+      userId: params.userId,
+      ruleKey: params.ruleKey,
+      windowSec,
+    });
+
+    try {
+      const cachedValue = await getString.call(this.redisCounter, counterKey);
+      if (cachedValue !== null) {
+        return this.normalizeRecentViolationCount(
+          await incrementWithTtl.call(this.redisCounter, counterKey, ttlSec),
+        );
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          ruleKey: params.ruleKey,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read moderation escalation counter; falling back to persisted violations',
+      );
+      return this.normalizeRecentViolationCount(await params.loadCount());
+    }
+
+    const persistedCount = this.normalizeRecentViolationCount(await params.loadCount());
+    try {
+      await setStringWithTtl.call(this.redisCounter, counterKey, String(persistedCount), ttlSec);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          ruleKey: params.ruleKey,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to warm moderation escalation counter',
+      );
+    }
+
+    return persistedCount;
+  }
+
+  private normalizeRecentViolationCount(value: number): number {
+    return Number.isInteger(value) && value > 0 ? value : 1;
+  }
+
   private async countRecentLinkViolations(
     chatId: string,
     userId: string,
     windowHours: number,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs =
+      this.normalizeEscalationWindowHours(windowHours, LINK_ESCALATION_WINDOW_HOURS) *
+      60 *
+      60 *
+      1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      this.normalizeEscalationWindowHours(windowHours, LINK_ESCALATION_WINDOW_HOURS) *
-        60 *
-        60 *
-        1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode: 'LINK_BLOCKED',
-        createdAt: { gte: since },
+      ruleKey: 'LINK_BLOCKED',
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode: 'LINK_BLOCKED',
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async countRecentPhoneNumberViolations(
@@ -4904,39 +5019,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     windowHours: number,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs =
+      this.normalizeEscalationWindowHours(windowHours, MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS) *
+      60 *
+      60 *
+      1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      this.normalizeEscalationWindowHours(windowHours, MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS) *
-        60 *
-        60 *
-        1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode: 'PHONE_NUMBER_BLOCKED',
-        createdAt: { gte: since },
+      ruleKey: 'PHONE_NUMBER_BLOCKED',
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode: 'PHONE_NUMBER_BLOCKED',
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private normalizeEscalationWindowHours(value: number, fallback: number): number {
@@ -4947,72 +5068,82 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs = REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-        createdAt: { gte: since },
+      ruleKey: REQUIRED_SUBSCRIPTION_RULE_CODE,
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async countRecentInvitationAccessViolations(
     chatId: string,
     userId: string,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs = INVITATION_ACCESS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      INVITATION_ACCESS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode: INVITATION_ACCESS_RULE_CODE,
-        createdAt: { gte: since },
+      ruleKey: INVITATION_ACCESS_RULE_CODE,
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode: INVITATION_ACCESS_RULE_CODE,
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async countRecentTextFilterViolations(
@@ -5020,40 +5151,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     ruleCode: string,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string | { in: string[] };
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
-      chatId,
-      userId,
-      TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
+    const windowMs = TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
     const ruleCodeFilter =
       ruleCode === 'PROFANITY' || ruleCode === 'COMMERCIAL_AD'
         ? ruleCode
         : { in: ['PROFANITY', 'COMMERCIAL_AD'] };
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode: ruleCodeFilter,
-        createdAt: { gte: since },
+    const ruleKey =
+      typeof ruleCodeFilter === 'string' ? ruleCodeFilter : ruleCodeFilter.in.join('|');
+    return this.countRecentViolationsWithEscalationCounter({
+      chatId,
+      userId,
+      ruleKey,
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string | { in: string[] };
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode: ruleCodeFilter,
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async countRecentTopicFilterViolations(
@@ -5061,36 +5199,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     ruleCode: string,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs = TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode,
-        createdAt: { gte: since },
+      ruleKey: ruleCode,
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode,
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async countRecentMessageLimitsViolations(
@@ -5098,36 +5241,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     ruleCode: string,
   ): Promise<number> {
-    const violationModel = this.prisma.violation as unknown as {
-      count?: (args: {
-        where: {
-          chatId: string;
-          userId: string;
-          ruleCode: string;
-          createdAt: { gte: Date };
-        };
-      }) => Promise<number>;
-    };
-
-    if (typeof violationModel.count !== 'function') {
-      return 1;
-    }
-
-    const since = await this.resolveViolationResetSince(
+    const windowMs = MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000;
+    return this.countRecentViolationsWithEscalationCounter({
       chatId,
       userId,
-      MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
-    const count = await violationModel.count({
-      where: {
-        chatId,
-        userId,
-        ruleCode,
-        createdAt: { gte: since },
+      ruleKey: ruleCode,
+      windowMs,
+      loadCount: async () => {
+        const violationModel = this.prisma.violation as unknown as {
+          count?: (args: {
+            where: {
+              chatId: string;
+              userId: string;
+              ruleCode: string;
+              createdAt: { gte: Date };
+            };
+          }) => Promise<number>;
+        };
+
+        if (typeof violationModel.count !== 'function') {
+          return 1;
+        }
+
+        const since = await this.resolveViolationResetSince(chatId, userId, windowMs);
+        const count = await violationModel.count({
+          where: {
+            chatId,
+            userId,
+            ruleCode,
+            createdAt: { gte: since },
+          },
+        });
+
+        return Number.isInteger(count) && count > 0 ? count : 1;
       },
     });
-
-    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async resolveViolationResetSince(
@@ -8079,6 +8227,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (requiredMembershipChannelIds.length === 0) {
       return false;
     }
+    const membershipChannelIdsToCheck = requiredMembershipChannelIds.slice(
+      0,
+      this.requiredSubscriptionHotPathChannelLimit,
+    );
+    if (membershipChannelIdsToCheck.length < requiredMembershipChannelIds.length) {
+      this.recordOptionalWebhookStageSkip({
+        stage: 'required-subscription.membership-cap',
+        reason: `required subscription hot path capped at ${membershipChannelIdsToCheck.length}/${requiredMembershipChannelIds.length} channels`,
+      });
+    }
 
     const resolvedRequiredChannelsById = new Map(
       resolvedRequiredChannels.map((channel) => [channel.id, channel] as const),
@@ -8087,7 +8245,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const membership = await this.resolveRequiredSubscriptionMembership(
       params.chatId,
       params.userId,
-      requiredMembershipChannelIds,
+      membershipChannelIdsToCheck,
     );
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.membership');
     if (membership.missingChannelIds.length === 0) {
@@ -8115,40 +8273,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
       return !metadata || !metadata.usable;
     });
-    let refreshedMissingChannels: RequiredSubscriptionChannelMetadata[] = [];
     if (missingChannelIdsNeedingRefresh.length > 0) {
-      const metadataRefreshSkipReason = this.resolveOptionalWebhookStageSkipReason({
+      this.scheduleRequiredSubscriptionMetadataRefresh(missingChannelIdsNeedingRefresh);
+      this.recordOptionalWebhookStageSkip({
         stage: 'required-subscription.metadata-refresh',
-        hotPathProfile: params.hotPathProfile,
-        systemMode: params.systemMode,
-        hotChatBackoffActive: params.hotChatBackoffActive,
-        minRemainingMs: REQUIRED_SUBSCRIPTION_METADATA_REFRESH_MIN_REMAINING_MS,
+        reason: 'required subscription metadata refresh deferred outside the user-facing webhook',
+        failOpen: false,
       });
-      if (metadataRefreshSkipReason) {
-        this.recordOptionalWebhookStageSkip({
-          stage: 'required-subscription.metadata-refresh',
-          reason: metadataRefreshSkipReason,
-          failOpen: false,
-        });
-      } else {
-        refreshedMissingChannels = await this.resolveRequiredSubscriptionChannels(
-          missingChannelIdsNeedingRefresh,
-          {
-            allowRemoteFetch: true,
-          },
-        );
-      }
     }
-    const refreshedMissingChannelsById = new Map(
-      refreshedMissingChannels.map((channel) => [channel.id, channel] as const),
-    );
     const missingChannels = membership.missingChannelIds
-      .map(
-        (channelId) =>
-          refreshedMissingChannelsById.get(channelId) ??
-          resolvedRequiredChannelsById.get(channelId) ??
-          null,
-      )
+      .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== null);
     const missingChannelTitles = missingChannels
       .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
@@ -8196,138 +8330,94 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
+      this.markWebhookHotPathSuccessBoundary(params.hotPathProfile, 'required-subscription.delete');
     }
 
-    const requiredSubscriptionMessageOptions =
-      this.buildRequiredSubscriptionMessageOptions(
-        missingChannels,
-        params.settings.rulesAttachViolationsEnabled,
-        params.rulesPublishedUrl,
-        params.rulesPublishedMessageId,
-      ) ?? undefined;
+    const runRequiredSubscriptionFollowUp = async () => {
+      const requiredSubscriptionMessageOptions =
+        this.buildRequiredSubscriptionMessageOptions(
+          missingChannels,
+          params.settings.rulesAttachViolationsEnabled,
+          params.rulesPublishedUrl,
+          params.rulesPublishedMessageId,
+        ) ?? undefined;
 
-    const sendRequiredSubscriptionBotMessage = async (textValue: string) =>
-      this.sendBotMessageWithOptionalAutoDelete({
-        chatId: params.chatId,
-        text: textValue,
-        messageOptions: requiredSubscriptionMessageOptions,
-        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-      });
-    const requiredSubscriptionNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
-      stage: 'required-subscription.notice',
-      hotPathProfile: params.hotPathProfile,
-      systemMode: params.systemMode,
-      hotChatBackoffActive: params.hotChatBackoffActive,
-      minRemainingMs: REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
-    });
-    const canSendRequiredSubscriptionNotice = !requiredSubscriptionNoticeSkipReason;
-    if (requiredSubscriptionNoticeSkipReason) {
-      this.recordOptionalWebhookStageSkip({
+      const sendRequiredSubscriptionBotMessage = async (textValue: string) =>
+        this.sendBotMessageWithOptionalAutoDelete({
+          chatId: params.chatId,
+          text: textValue,
+          messageOptions: requiredSubscriptionMessageOptions,
+          deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+        });
+      const requiredSubscriptionNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
         stage: 'required-subscription.notice',
-        reason: requiredSubscriptionNoticeSkipReason,
+        hotPathProfile: params.hotPathProfile,
+        systemMode: params.systemMode,
+        hotChatBackoffActive: params.hotChatBackoffActive,
+        minRemainingMs: REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
       });
-    }
+      const canSendRequiredSubscriptionNotice = !requiredSubscriptionNoticeSkipReason;
+      if (requiredSubscriptionNoticeSkipReason) {
+        this.recordOptionalWebhookStageSkip({
+          stage: 'required-subscription.notice',
+          reason: requiredSubscriptionNoticeSkipReason,
+        });
+      }
 
-    if (action === SanctionAction.NONE) {
-      if (
-        isFirstRequiredSubscriptionViolation &&
-        params.settings.requiredSubscriptionBotMessageEnabled &&
-        canSendRequiredSubscriptionNotice
-      ) {
-        const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
-          params.chatId,
-          params.userId,
-        );
-        if (!noticeOnCooldown) {
-          try {
-            await sendRequiredSubscriptionBotMessage(
-              await this.appendAdminContactMarkdownLink(
-                params.chatId,
-                this.buildRequiredSubscriptionExplanation(
-                  params.userLabel,
-                  messageDeleted,
-                  missingChannelTitles,
-                  params.settings.requiredSubscriptionBotMessageText,
-                  params.settings.botSpeechStyle,
+      if (action === SanctionAction.NONE) {
+        if (
+          isFirstRequiredSubscriptionViolation &&
+          params.settings.requiredSubscriptionBotMessageEnabled &&
+          canSendRequiredSubscriptionNotice
+        ) {
+          const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
+            params.chatId,
+            params.userId,
+          );
+          if (!noticeOnCooldown) {
+            try {
+              await sendRequiredSubscriptionBotMessage(
+                await this.appendAdminContactMarkdownLink(
+                  params.chatId,
+                  this.buildRequiredSubscriptionExplanation(
+                    params.userLabel,
+                    messageDeleted,
+                    missingChannelTitles,
+                    params.settings.requiredSubscriptionBotMessageText,
+                    params.settings.botSpeechStyle,
+                  ),
+                  params.settings.requiredSubscriptionAdminContactButtonEnabled,
+                  params.settings.requiredSubscriptionAdminContactButtonUrl,
                 ),
-                params.settings.requiredSubscriptionAdminContactButtonEnabled,
-                params.settings.requiredSubscriptionAdminContactButtonUrl,
-              ),
-            );
-            await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId: params.chatId,
-                userId: params.userId,
-                messageId: params.messageId,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to send required subscription explanation message',
-            );
+              );
+              await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId: params.chatId,
+                  userId: params.userId,
+                  messageId: params.messageId,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to send required subscription explanation message',
+              );
+            }
           }
         }
-      }
-    } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
-      try {
-        await sendRequiredSubscriptionBotMessage(
-          await this.appendAdminContactMarkdownLink(
-            params.chatId,
-            this.buildRequiredSubscriptionWarnExplanation(
-              params.userLabel,
-              missingChannelTitles,
-              params.settings.requiredSubscriptionWarnMessageText,
-              params.settings.botSpeechStyle,
-            ),
-            params.settings.requiredSubscriptionAdminContactButtonEnabled,
-            params.settings.requiredSubscriptionAdminContactButtonUrl,
-          ),
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId: params.chatId,
-            userId: params.userId,
-            messageId: params.messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send required subscription warning message',
-        );
-      }
-    }
-
-    if (action !== SanctionAction.NONE) {
-      await this.applySanctionAction({
-        chatId: params.chatId,
-        userId: params.userId,
-        action,
-        userLabel: params.userLabel,
-        messageId: params.messageId,
-        muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
-        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-        botMessageOptions: requiredSubscriptionMessageOptions,
-        sanctionNoticeText:
-          action === SanctionAction.BAN
-            ? this.buildRequiredSubscriptionBanExplanation(
-                params.userLabel,
-                missingChannelTitles,
-                params.settings.requiredSubscriptionMuteDurationHours,
-                params.settings.botSpeechStyle,
-              )
-            : undefined,
-        botSpeechStyle: params.settings.botSpeechStyle,
-        trackAsGlobalSpammer: false,
-      });
-
-      if (action === SanctionAction.MUTE && canSendRequiredSubscriptionNotice) {
+      } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
         try {
           await sendRequiredSubscriptionBotMessage(
-            this.buildRequiredSubscriptionMuteExplanation(
-              params.userLabel,
-              missingChannelTitles,
-              params.settings.botSpeechStyle,
+            await this.appendAdminContactMarkdownLink(
+              params.chatId,
+              this.buildRequiredSubscriptionWarnExplanation(
+                params.userLabel,
+                missingChannelTitles,
+                params.settings.requiredSubscriptionWarnMessageText,
+                params.settings.botSpeechStyle,
+              ),
+              params.settings.requiredSubscriptionAdminContactButtonEnabled,
+              params.settings.requiredSubscriptionAdminContactButtonUrl,
             ),
           );
         } catch (error: unknown) {
@@ -8338,33 +8428,97 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               messageId: params.messageId,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send required subscription mute message',
+            'Failed to send required subscription warning message',
           );
         }
       }
-    }
 
-    await this.createBotModerationEvent({
-      data: {
+      if (action !== SanctionAction.NONE) {
+        await this.applySanctionAction({
+          chatId: params.chatId,
+          userId: params.userId,
+          action,
+          userLabel: params.userLabel,
+          messageId: params.messageId,
+          muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
+          deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+          botMessageOptions: requiredSubscriptionMessageOptions,
+          sanctionNoticeText:
+            action === SanctionAction.BAN
+              ? this.buildRequiredSubscriptionBanExplanation(
+                  params.userLabel,
+                  missingChannelTitles,
+                  params.settings.requiredSubscriptionMuteDurationHours,
+                  params.settings.botSpeechStyle,
+                )
+              : undefined,
+          botSpeechStyle: params.settings.botSpeechStyle,
+          trackAsGlobalSpammer: false,
+        });
+
+        if (action === SanctionAction.MUTE && canSendRequiredSubscriptionNotice) {
+          try {
+            await sendRequiredSubscriptionBotMessage(
+              this.buildRequiredSubscriptionMuteExplanation(
+                params.userLabel,
+                missingChannelTitles,
+                params.settings.botSpeechStyle,
+              ),
+            );
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: params.chatId,
+                userId: params.userId,
+                messageId: params.messageId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send required subscription mute message',
+            );
+          }
+        }
+      }
+
+      await this.createBotModerationEvent({
+        data: {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+          action,
+          maskedExcerpt: maskText(params.text),
+          score: 1,
+          operator: Operator.BOT,
+          metadata: {
+            action,
+            requiredChannelIds,
+            missingChannelIds: membership.missingChannelIds,
+            missingChannelTitles,
+            requiredSubscriptionViolationCount24h,
+            requiredSubscriptionEscalationWindowHours:
+              REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
+          },
+        },
+      });
+    };
+
+    if (
+      messageDeleted &&
+      this.shouldDetachFollowUpForBudget(params.hotPathProfile, 'required-subscription.follow-up')
+    ) {
+      this.scheduleDetachedWebhookFollowUp({
+        stage: 'required-subscription.follow-up',
         chatId: params.chatId,
         userId: params.userId,
         messageId: params.messageId,
-        eventType: EventType.MESSAGE,
-        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
-        action,
-        maskedExcerpt: maskText(params.text),
-        score: 1,
-        operator: Operator.BOT,
-        metadata: {
-          action,
-          requiredChannelIds,
-          missingChannelIds: membership.missingChannelIds,
-          missingChannelTitles,
-          requiredSubscriptionViolationCount24h,
-          requiredSubscriptionEscalationWindowHours: REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
-        },
-      },
-    });
+        task: runRequiredSubscriptionFollowUp,
+      });
+      return true;
+    }
+
+    await runRequiredSubscriptionFollowUp();
 
     return true;
   }
@@ -9373,13 +9527,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               : await this.resolveChatReadBotId(channelId)) ?? null;
           const snapshot = metadataBotId
             ? await this.maxClient.getChatSnapshot(channelId, {
-                trafficClass: 'interactive',
+                trafficClass: 'background',
                 timeoutMs: 2_500,
                 sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
                 botId: metadataBotId,
               })
             : await this.maxClient.getChatSnapshot(channelId, {
-                trafficClass: 'interactive',
+                trafficClass: 'background',
                 timeoutMs: 2_500,
                 sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
               });
@@ -9429,6 +9583,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return channelIds
       .map((channelId) => resolvedMetadataById.get(channelId))
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== undefined);
+  }
+
+  private scheduleRequiredSubscriptionMetadataRefresh(channelIds: readonly string[]): void {
+    const normalizedChannelIds = Array.from(
+      new Set(channelIds.map((channelId) => channelId.trim()).filter(Boolean)),
+    );
+    if (normalizedChannelIds.length === 0) {
+      return;
+    }
+
+    setImmediate(() => {
+      void this.resolveRequiredSubscriptionChannels(normalizedChannelIds, {
+        allowRemoteFetch: true,
+      }).catch((error: unknown) => {
+        this.logger.warn(
+          {
+            channelIds: normalizedChannelIds,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Deferred required subscription metadata refresh failed',
+        );
+      });
+    });
   }
 
   private readCachedRequiredSubscriptionChannelMetadata(
@@ -11030,18 +11207,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    let forcedSnapshotRefreshPerformed = false;
-    if (
-      !params.explicitBotId &&
-      (attempt.status === 'no_candidates' || attempt.status === 'backoff_blocked')
-    ) {
-      const forceRefresh = attempt.status === 'backoff_blocked';
+    if (!params.explicitBotId && attempt.status === 'no_candidates') {
       const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
         chatId: params.chatId,
         action: params.action,
-        force: forceRefresh,
       });
-      forcedSnapshotRefreshPerformed = forceRefresh;
       if (refreshedCandidateBotIds.length > 0) {
         attempt = await this.attemptModerationActionWithCandidateBots(
           params,
@@ -11053,42 +11223,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (
-      !params.explicitBotId &&
-      attempt.status === 'terminal_error' &&
-      !forcedSnapshotRefreshPerformed
-    ) {
-      const attemptedBotIds = attempt.attemptedBotIds;
-      const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
-        chatId: params.chatId,
-        action: params.action,
-        force: true,
-        skipBackoffClearBotIds: attemptedBotIds,
-      });
-      const retryCandidateBotIds = refreshedCandidateBotIds.filter(
-        (botId) => !attemptedBotIds.includes(botId),
-      );
-      if (retryCandidateBotIds.length > 0) {
-        const retryAttempt = await this.attemptModerationActionWithCandidateBots(
-          params,
-          retryCandidateBotIds,
-        );
-        if (retryAttempt.status === 'success') {
-          return true;
-        }
-        if (retryAttempt.status === 'terminal_error') {
-          attempt = {
-            status: 'terminal_error',
-            attemptedBotIds: Array.from(
-              new Set([...attemptedBotIds, ...retryAttempt.attemptedBotIds]),
-            ),
-            error: retryAttempt.error,
-          };
-        }
-      }
-    }
-
     if (attempt.status === 'terminal_error') {
+      this.scheduleModerationActionAccessRecheck(params.chatId, params.action);
       this.logSkippedModerationActionAfterTerminalError({
         chatId: params.chatId,
         action: params.action,
@@ -11098,6 +11234,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         error: attempt.error,
       });
       return false;
+    }
+
+    if (attempt.status === 'backoff_blocked') {
+      this.scheduleModerationActionAccessRecheck(params.chatId, params.action);
     }
 
     this.logSkippedModerationActionDueToPermissions({
@@ -12147,6 +12287,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             err: error instanceof Error ? error.message : String(error),
           },
           'Failed to schedule destructive moderation admin roster refresh',
+        );
+      });
+  }
+
+  private scheduleModerationActionAccessRecheck(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+  ): void {
+    if (typeof this.maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync !== 'function') {
+      return;
+    }
+
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const cacheKey = `${normalizedChatId}:${action}`;
+    const now = Date.now();
+    const lastScheduledAt = this.destructiveAdminRosterRefreshScheduledAtMs.get(cacheKey) ?? 0;
+    if (now - lastScheduledAt < DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS) {
+      return;
+    }
+    this.destructiveAdminRosterRefreshScheduledAtMs.set(cacheKey, now);
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId: normalizedChatId,
+        botIds: [],
+        title: null,
+        entityType: null,
+        source: 'moderation_destructive_path',
+        retryUntilMs: null,
+      })
+      .catch((error: unknown) => {
+        this.destructiveAdminRosterRefreshScheduledAtMs.delete(cacheKey);
+        this.logger.warn(
+          {
+            chatId: normalizedChatId,
+            action,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule moderation action access recheck',
         );
       });
   }
@@ -16341,6 +16524,54 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           outcome: 'timeout',
           failOpen: true,
         });
+        const successBoundaryReached = timeoutContext?.successBoundaryReached === true;
+        if (
+          successBoundaryReached &&
+          WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES.has(latestStage)
+        ) {
+          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+            stage: `${latestStage}.deferred`,
+            outcome: 'skip',
+            failOpen: true,
+          });
+          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+            stage: 'follow_up_deferred',
+            outcome: 'skip',
+            failOpen: true,
+          });
+          taskPromise.catch((followUpError: unknown) => {
+            void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+              stage: 'follow_up_failed',
+              outcome: 'timeout',
+              failOpen: true,
+            });
+            this.logger.warn(
+              {
+                webhookEventId,
+                updateType: this.readLowerString(update.type),
+                chatId: this.extractWebhookHotPathChatId(update),
+                activeBotId,
+                latestStage,
+                successBoundaryStage: timeoutContext?.successBoundaryStage,
+                err: followUpError instanceof Error ? followUpError.message : String(followUpError),
+              },
+              'Deferred webhook follow-up failed after the user-facing success boundary',
+            );
+          });
+          this.logger.warn(
+            {
+              webhookEventId,
+              updateType: this.readLowerString(update.type),
+              chatId: this.extractWebhookHotPathChatId(update),
+              activeBotId,
+              latestStage,
+              successBoundaryStage: timeoutContext?.successBoundaryStage,
+              timeoutMs,
+            },
+            'Detached webhook follow-up after the user-facing success boundary timed out',
+          );
+          return;
+        }
       }
       throw error;
     } finally {
@@ -16630,6 +16861,79 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private shouldDetachFollowUpForBudget(
+    hotPathProfile: WebhookHotPathProfile | null | undefined,
+    stage: string,
+  ): boolean {
+    const snapshot = this.readWebhookHotPathProfileSnapshot(hotPathProfile);
+    if (snapshot?.successBoundaryReached !== true) {
+      return false;
+    }
+
+    const elapsedMs =
+      typeof snapshot.elapsedMs === 'number' && Number.isFinite(snapshot.elapsedMs)
+        ? snapshot.elapsedMs
+        : null;
+    if (elapsedMs === null) {
+      return false;
+    }
+
+    const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs);
+    if (remainingMs >= 2_000) {
+      return false;
+    }
+
+    this.recordOptionalWebhookStageSkip({
+      stage: `${stage}.deferred`,
+      reason: `${stage} detached with ${remainingMs}ms remaining after the destructive action boundary`,
+      failOpen: true,
+    });
+    return true;
+  }
+
+  private scheduleDetachedWebhookFollowUp(params: {
+    stage: string;
+    chatId: string;
+    userId?: string | null;
+    messageId?: string | null;
+    task: () => Promise<void>;
+  }): void {
+    const stage = params.stage.trim() || 'follow-up';
+    void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+      stage: 'follow_up_deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
+
+    const immediate = setImmediate(() => {
+      void Promise.resolve()
+        .then(params.task)
+        .catch((error: unknown) => {
+          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+            stage: 'follow_up_failed',
+            outcome: 'timeout',
+            failOpen: true,
+          });
+          void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+            stage: `${stage}.failed`,
+            outcome: 'timeout',
+            failOpen: true,
+          });
+          this.logger.warn(
+            {
+              stage,
+              chatId: params.chatId,
+              userId: params.userId ?? null,
+              messageId: params.messageId ?? null,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Deferred webhook follow-up failed after the user-facing success boundary',
+          );
+        });
+    });
+    immediate.unref?.();
+  }
+
   private recordRuntimeStageObservation(stage: string, elapsedMs: number): void {
     if (!stage.trim()) {
       return;
@@ -16661,6 +16965,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestStage: 'start',
       stages: new Map(),
       stageTimelineMs: new Map(),
+      successBoundaryReached: false,
+      successBoundaryStage: null,
     };
   }
 
@@ -16679,6 +16985,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     profile.lastMarkedAtMs = now;
   }
 
+  private markWebhookHotPathSuccessBoundary(
+    profile: WebhookHotPathProfile | null | undefined,
+    stage: string,
+  ): void {
+    if (!profile) {
+      return;
+    }
+
+    profile.successBoundaryReached = true;
+    profile.successBoundaryStage = stage;
+  }
+
   private readWebhookHotPathProfileSnapshot(
     profile: WebhookHotPathProfile | null | undefined,
   ): Record<string, unknown> | null {
@@ -16690,6 +17008,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const stageTimelineMs = Object.fromEntries(profile.stageTimelineMs.entries());
     return {
       latestStage: profile.latestStage,
+      successBoundaryReached: profile.successBoundaryReached,
+      successBoundaryStage: profile.successBoundaryStage,
       elapsedMs: Date.now() - profile.startedAtMs,
       stageDurations,
       stageTimelineMs,
@@ -17084,7 +17404,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
   }): MaxActionDispatchOptions | undefined {
-    const dispatchOptions: MaxActionDispatchOptions = {};
+    const dispatchOptions: MaxActionDispatchOptions = {
+      trafficClass: params.immediate === true ? 'interactive' : 'background',
+      actionHealthLane: params.immediate === true ? 'interactive' : 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+    };
     if (params.immediate === true) {
       dispatchOptions.immediate = true;
     }
@@ -17114,6 +17438,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       immediate,
     } = params;
 
+    if (immediate !== true && !(await this.shouldSendBotNotice(chatId))) {
+      return;
+    }
+
     await this.maxClient.sendMessage(
       chatId,
       text,
@@ -17127,6 +17455,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         immediate,
       }),
     );
+  }
+
+  private async shouldSendBotNotice(chatId: string): Promise<boolean> {
+    const normalizedChatId = chatId.trim();
+    const incrementWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.incrementWithTtl;
+    if (!normalizedChatId || !this.redisCounter || typeof incrementWithTtl !== 'function') {
+      return true;
+    }
+
+    try {
+      const count = await incrementWithTtl.call(
+        this.redisCounter,
+        `moderation:bot-notice-bucket:v1:${normalizedChatId}`,
+        BOT_NOTICE_TOKEN_BUCKET_TTL_SEC,
+      );
+      if (count <= this.botNoticeTokenBucketLimit) {
+        return true;
+      }
+
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'bot-notice-token-bucket',
+        outcome: 'skip',
+        failOpen: false,
+      });
+      return false;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: normalizedChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to apply bot notice token bucket',
+      );
+      return true;
+    }
   }
 
   private async sendScheduledBotMessage(params: {

@@ -227,6 +227,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
+import { buildModerationEscalationCounterPattern } from '../moderation/moderation-escalation-state.util';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
@@ -5201,7 +5202,7 @@ export class AdminService implements OnModuleDestroy {
         bypassNegativeCache: true,
         allowPersistedFallback: false,
         entityType: hintedEntityType,
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
@@ -5627,7 +5628,7 @@ export class AdminService implements OnModuleDestroy {
     for (const botId of lookupOrder) {
       try {
         const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
-          trafficClass: 'interactive',
+          trafficClass: 'background',
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
@@ -5743,7 +5744,7 @@ export class AdminService implements OnModuleDestroy {
         bypassNegativeCache: true;
         allowPersistedFallback?: false;
         entityType?: ManagedEntityType;
-        trafficClass?: 'interactive';
+        trafficClass?: 'background';
         sourceTag?: string;
         timeoutMs?: number;
       };
@@ -5764,7 +5765,7 @@ export class AdminService implements OnModuleDestroy {
           bypassNegativeCache: true as const,
           allowPersistedFallback: false as const,
           entityType: candidate.chat.entityType,
-          trafficClass: 'interactive' as const,
+          trafficClass: 'background' as const,
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           timeoutMs: MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
         },
@@ -5997,7 +5998,7 @@ export class AdminService implements OnModuleDestroy {
             bypassNegativeCache: true,
             allowPersistedFallback: false,
             entityType: candidate.entityType,
-            trafficClass: options.fullScan ? 'background' : 'interactive',
+            trafficClass: 'background',
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             timeoutMs: MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
           });
@@ -6289,7 +6290,7 @@ export class AdminService implements OnModuleDestroy {
     },
   ): Promise<ManagedEntitiesListResult> {
     try {
-      const discoveryTrafficClass = options.fullScan ? 'background' : 'interactive';
+      const discoveryTrafficClass = 'background';
       const adminCheckSpacingMs = options.fullScan
         ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
         : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;
@@ -19700,10 +19701,16 @@ export class AdminService implements OnModuleDestroy {
     }
 
     try {
-      await deleteKeysByPattern.call(
-        this.redisCounter,
-        buildDuplicateUserPattern(chatId, targetUserId),
-      );
+      await Promise.all([
+        deleteKeysByPattern.call(
+          this.redisCounter,
+          buildDuplicateUserPattern(chatId, targetUserId),
+        ),
+        deleteKeysByPattern.call(
+          this.redisCounter,
+          buildModerationEscalationCounterPattern(chatId, targetUserId),
+        ),
+      ]);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -19711,7 +19718,7 @@ export class AdminService implements OnModuleDestroy {
           userId: targetUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to reset duplicate moderation state after manual release',
+        'Failed to reset cached moderation state after manual release',
       );
     }
   }

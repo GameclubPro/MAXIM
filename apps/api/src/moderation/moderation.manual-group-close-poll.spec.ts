@@ -156,9 +156,16 @@ describe('ModerationService manual group close polling', () => {
       }),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-user-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -402,12 +409,26 @@ describe('ModerationService manual group close polling', () => {
       }),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
-      immediate: true,
-    });
-    expect(maxClient.deleteMessage).not.toHaveBeenCalledWith('chat-1', 'mid-owner-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-user-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalledWith(
+      'chat-1',
+      'mid-owner-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
@@ -481,9 +502,16 @@ describe('ModerationService manual group close polling', () => {
     await (service as any).processManualGroupCloseChats();
 
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-user-1',
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
     dateNowSpy.mockRestore();
   });
 

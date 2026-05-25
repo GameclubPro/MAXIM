@@ -126,15 +126,42 @@ function topicFilterWarnNotice(name: string, reason: string): string {
 }
 
 function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, messageId: string) {
-  expect(mockFn).toHaveBeenCalledWith(chatId, messageId, { immediate: true });
+  expect(mockFn).toHaveBeenCalledWith(
+    chatId,
+    messageId,
+    expect.objectContaining({
+      immediate: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: 'moderation_delete',
+    }),
+  );
 }
 
 function expectImmediateKickMember(mockFn: jest.Mock, chatId: string, userId: string) {
-  expect(mockFn).toHaveBeenCalledWith(chatId, userId, { immediate: true });
+  expect(mockFn).toHaveBeenCalledWith(
+    chatId,
+    userId,
+    expect.objectContaining({
+      immediate: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: 'moderation_sanction',
+    }),
+  );
 }
 
 function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: string) {
-  expect(mockFn).toHaveBeenCalledWith(chatId, userId, { immediate: true });
+  expect(mockFn).toHaveBeenCalledWith(
+    chatId,
+    userId,
+    expect.objectContaining({
+      immediate: true,
+      trafficClass: 'critical',
+      actionHealthLane: 'critical',
+      sourceTag: 'moderation_sanction',
+    }),
+  );
 }
 
 function nightModeNotice(window: string, timezone: string): string {
@@ -1615,6 +1642,79 @@ describe('ModerationService', () => {
         }),
       ),
     ).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+  });
+
+  it('detaches violation follow-up timeouts after the destructive action boundary', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-1',
+      },
+    };
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+      recordHotPathProfile: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) => (key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined)),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
+
+    await expect(
+      (service as any).executeWebhookUpdateWithGuard(
+        'event-follow-up-detached',
+        update,
+        'id613002203036_bot',
+        () =>
+          new Promise<void>(() => {
+            // Intentionally never resolves after delete/sanction boundary.
+          }),
+        () => ({
+          latestStage: 'violation-follow-up',
+          elapsedMs: 10,
+          successBoundaryReached: true,
+          successBoundaryStage: 'violation-delete',
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+      stage: 'violation-follow-up.deferred',
+      outcome: 'skip',
+      failOpen: true,
+    });
 
     setTimeoutSpy.mockRestore();
   });
@@ -3888,9 +3988,12 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
-      {
+      expect.objectContaining({
         autoDeleteDelayMs: 30_000,
-      },
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3962,9 +4065,12 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
-      {
+      expect.objectContaining({
         autoDeleteDelayMs: 120_000,
-      },
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
@@ -3979,6 +4085,76 @@ describe('ModerationService', () => {
           reason: 'Greeting message sent for joined member',
         }),
       }),
+    });
+  });
+
+  it('skips non-immediate bot notices after the per-chat notice bucket is exhausted', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+    };
+    const redisCounter = {
+      incrementWithTtl: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2),
+    };
+    const runtimeDiagnosticsService = {
+      recordHotPathStageOutcome: jest.fn(),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string, fallback?: unknown) =>
+          key === 'BOT_NOTICE_TOKEN_BUCKET_LIMIT' ? 1 : fallback,
+        ),
+      } as never,
+      redisCounter as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+
+    await (service as any).sendBotMessageWithOptionalAutoDelete({
+      chatId: 'chat-1',
+      text: 'notice 1',
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 2,
+    });
+    await (service as any).sendBotMessageWithOptionalAutoDelete({
+      chatId: 'chat-1',
+      text: 'notice 2',
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 2,
+    });
+
+    expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
+      'moderation:bot-notice-bucket:v1:chat-1',
+      60,
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'notice 1',
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
+    );
+    expect(runtimeDiagnosticsService.recordHotPathStageOutcome).toHaveBeenCalledWith({
+      stage: 'bot-notice-token-bucket',
+      outcome: 'skip',
+      failOpen: false,
     });
   });
 
@@ -10130,7 +10306,11 @@ describe('ModerationService', () => {
       'chat-1',
       muteNotice('Алексей', '6ч'),
       expect.objectContaining({ textFormat: 'markdown' }),
-      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -11487,7 +11667,11 @@ describe('ModerationService', () => {
         'Объявление',
       ),
       expect.objectContaining({ textFormat: 'markdown' }),
-      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
     );
   });
 
@@ -13948,10 +14132,17 @@ describe('ModerationService', () => {
       action: 'delete_message',
       fallbackToPrimary: true,
     });
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-video-1', {
-      botId: 'id613002203036_4_bot',
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-video-1',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
+      }),
+    );
   });
 
   it('skips delete moderation cleanly when no bot has delete permission in the chat', async () => {
@@ -14658,7 +14849,7 @@ describe('ModerationService', () => {
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
       });
 
-      it('clears stale moderation action backoff after a successful permission refresh', async () => {
+      it('keeps stale moderation action backoff out of the hot path and schedules a recheck', async () => {
         const prisma = {
           chat: {
             findUnique: jest.fn().mockResolvedValue({
@@ -14683,6 +14874,9 @@ describe('ModerationService', () => {
             id: botId ?? 'id613002203036_bot',
           })),
         };
+        const maxChatAdminRosterSyncService = {
+          scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+        };
         const operation = jest.fn().mockResolvedValue(undefined);
         const service = new ModerationService(
           prisma as never,
@@ -14697,6 +14891,11 @@ describe('ModerationService', () => {
           undefined,
           undefined,
           maxBotLinkService as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxChatAdminRosterSyncService as never,
         );
 
         await (service as any).rememberModerationActionBotBackoff(
@@ -14712,20 +14911,28 @@ describe('ModerationService', () => {
             messageId: 'msg-1',
             operation,
           }),
-        ).resolves.toBe(true);
+        ).resolves.toBe(false);
 
-        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
-        expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+        expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+        expect(operation).not.toHaveBeenCalled();
+        expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+          chatId: 'chat-1',
+          botIds: [],
+          title: null,
+          entityType: null,
+          source: 'moderation_destructive_path',
+          retryUntilMs: null,
+        });
         await expect(
           (service as any).isModerationActionBotBackoffActive(
             'chat-1',
             'delete_message',
             'id613002203036_4_bot',
           ),
-        ).resolves.toBe(false);
+        ).resolves.toBe(true);
       });
 
-      it('refreshes snapshots after a terminal moderation error and retries a newly eligible bot', async () => {
+      it('schedules async access recheck after a terminal moderation error without retrying inline', async () => {
         const prisma = {
           chat: {
             findUnique: jest.fn().mockResolvedValue({
@@ -14756,6 +14963,9 @@ describe('ModerationService', () => {
             id: botId ?? 'id613002203036_bot',
           })),
         };
+        const maxChatAdminRosterSyncService = {
+          scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+        };
         const operation = jest.fn().mockImplementation(async (botId?: string) => {
           if (botId === 'id613002203036_bot') {
             throw createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
@@ -14774,6 +14984,11 @@ describe('ModerationService', () => {
           undefined,
           undefined,
           maxBotLinkService as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxChatAdminRosterSyncService as never,
         );
 
         await expect(
@@ -14783,10 +14998,18 @@ describe('ModerationService', () => {
             userId: 'user-1',
             operation,
           }),
-        ).resolves.toBe(true);
+        ).resolves.toBe(false);
 
-        expect(operation.mock.calls).toEqual([['id613002203036_bot'], ['id613002203036_4_bot']]);
-        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+        expect(operation.mock.calls).toEqual([['id613002203036_bot']]);
+        expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+        expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+          chatId: 'chat-1',
+          botIds: [],
+          title: null,
+          entityType: null,
+          source: 'moderation_destructive_path',
+          retryUntilMs: null,
+        });
       });
     });
 
@@ -15122,10 +15345,16 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(1, 'chat-1', 'msg-1', {
         botId: 'id613002203036_bot',
         immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
       });
       expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(2, 'chat-1', 'msg-1', {
         botId: 'id613002203036_4_bot',
         immediate: true,
+        trafficClass: 'critical',
+        actionHealthLane: 'critical',
+        sourceTag: 'moderation_delete',
       });
       expect(
         prisma.moderationEvent.create.mock.calls.some(
@@ -15263,7 +15492,7 @@ describe('ModerationService', () => {
       });
 
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
@@ -15346,7 +15575,7 @@ describe('ModerationService', () => {
         chatId: 'channel-1',
       });
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
         botId: 'id613002203036_bot',
@@ -15579,7 +15808,7 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('refreshes required subscription notice metadata after detecting a violation when chat context cache is missing', async () => {
+    it('defers required subscription notice metadata refresh outside the hot path', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const ruleEngine = {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
@@ -15632,12 +15861,7 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-        trafficClass: 'interactive',
-        timeoutMs: 2_500,
-        sourceTag: 'required_subscription_metadata',
-      });
+      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
       expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
         trafficClass: 'critical',
         timeoutMs: 2_000,
@@ -15646,7 +15870,7 @@ describe('ModerationService', () => {
       expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('Новости MAX');
+      expect(noticeText).toContain('обязательные чаты или каналы');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
           textFormat: 'markdown',
@@ -15654,17 +15878,26 @@ describe('ModerationService', () => {
             type: 'reply',
             mid: 'mid-rules-1',
           },
-          buttons: [
-            [
-              {
-                text: 'Новости MAX',
-                url: 'https://max.ru/channels/news-max',
-              },
-            ],
-          ],
         }),
       );
       expect(ruleEngine.detect).not.toHaveBeenCalled();
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'background',
+        timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
+      });
+      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+        }),
+      );
     });
 
     it('prefers a cached required subscription channel header over a stale persisted chat entity type', async () => {
@@ -15852,12 +16085,12 @@ describe('ModerationService', () => {
       });
       expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
       expect(maxClient.getChatSnapshot).toHaveBeenNthCalledWith(1, 'chat-2', {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
       expect(maxClient.getChatSnapshot).toHaveBeenNthCalledWith(2, 'channel-1', {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
@@ -15918,7 +16151,7 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
@@ -15978,7 +16211,7 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(channelId, {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
