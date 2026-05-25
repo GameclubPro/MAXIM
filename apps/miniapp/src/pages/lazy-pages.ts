@@ -63,6 +63,7 @@ export const preloadChannelDialogPage = () => import('./channel-dialog-page');
 export const preloadEventsPage = () => import('./events-page');
 export const preloadGiveawayPage = () => import('./giveaway-page');
 export const preloadSystemPage = () => import('./system-page');
+export const preloadLegalPage = () => import('./legal-page');
 
 export const LazyChatsPage = lazyPage<RoutedPageProps>(preloadChatsPage, 'ChatsPage');
 export const LazySettingsPage = lazyPage<RoutedPageProps>(preloadSettingsPage, 'SettingsPage');
@@ -81,3 +82,11 @@ export const LazyChannelDialogPage = lazyPage<RoutedPageProps>(
 export const LazyEventsPage = lazyPage<RoutedPageProps>(preloadEventsPage, 'EventsPage');
 export const LazyGiveawayPage = lazyPage<RoutedPageProps>(preloadGiveawayPage, 'GiveawayPage');
 export const LazySystemPage = lazyPage<RoutedPageProps>(preloadSystemPage, 'SystemPage');
+export const LazyLegalAgreementPage = lazyPage<Record<string, never>>(
+  preloadLegalPage,
+  'LegalAgreementPage',
+);
+export const LazyPrivacyPolicyPage = lazyPage<Record<string, never>>(
+  preloadLegalPage,
+  'PrivacyPolicyPage',
+);

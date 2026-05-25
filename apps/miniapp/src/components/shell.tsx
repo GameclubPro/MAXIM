@@ -116,6 +116,13 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
+  if (pathname.startsWith('/legal/')) {
+    return {
+      title: 'Правовые документы',
+      subtitle: 'Условия использования и обработка данных MAXIM.',
+    };
+  }
+
   if (pathname.includes('/giveaways/')) {
     return {
       title: 'Розыгрыш',
@@ -281,6 +288,7 @@ export function Shell() {
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
+  const isLegalRoute = location.pathname.startsWith('/legal/');
   const isDialogRoute =
     location.pathname.includes('/dialog/') &&
     (location.pathname.includes('/channel/') || location.pathname.includes('/chat/'));
@@ -297,7 +305,8 @@ export function Shell() {
     !isEventsRoute &&
     !isDialogRoute &&
     !isChannelStatsRoute &&
-    !isGiveawayRoute;
+    !isGiveawayRoute &&
+    !isLegalRoute;
 
   const screen = useMemo(
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),

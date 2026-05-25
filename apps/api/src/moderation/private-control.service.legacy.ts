@@ -41,7 +41,7 @@ import {
   buildBotStartQuickActionText,
 } from '../common/bot-start-greeting';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
-import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
+import { buildUserAgreementShortNotice } from '../common/user-agreement-notice';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -10904,7 +10904,7 @@ export class PrivateControlService {
       this.markdownTitle(profile.characterName),
       '',
       BOT_START_APP_LINE,
-      USER_AGREEMENT_SHORT_NOTICE,
+      buildUserAgreementShortNotice(this.appBaseUrl),
       buildBotStartQuickActionText(profile),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
@@ -10919,7 +10919,9 @@ export class PrivateControlService {
 
   private renderLauncherIntroView(): PrivateView {
     const profile = this.resolveActiveBotSpeechProfile();
-    const lines = buildBotStartIntroLines(profile, (title) => this.markdownTitle(title));
+    const lines = buildBotStartIntroLines(profile, (title) => this.markdownTitle(title), {
+      appBaseUrl: this.appBaseUrl,
+    });
     return {
       text: lines.join('\n'),
       options: {

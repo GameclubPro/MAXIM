@@ -32,6 +32,8 @@ import {
   LazyChatsPage,
   LazyEventsPage,
   LazyGiveawayPage,
+  LazyLegalAgreementPage,
+  LazyPrivacyPolicyPage,
   LazySettingsPage,
   LazySystemPage,
   preloadChannelDialogPage,
@@ -129,6 +131,27 @@ function buildWindowPathForRoute(pathname: string): string {
   }
 
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
+}
+
+function resolveRouterPathnameFromWindow(): string {
+  if (typeof window === 'undefined') {
+    return '/';
+  }
+
+  const pathname = window.location.pathname || '/';
+  if (
+    PUBLIC_ROUTER_BASENAME &&
+    (pathname === PUBLIC_ROUTER_BASENAME || pathname.startsWith(`${PUBLIC_ROUTER_BASENAME}/`))
+  ) {
+    const stripped = pathname.slice(PUBLIC_ROUTER_BASENAME.length);
+    return stripped || '/';
+  }
+
+  return pathname;
+}
+
+function isPublicLegalPathname(): boolean {
+  return /^\/legal\/(?:agreement|privacy)\/?$/u.test(resolveRouterPathnameFromWindow());
 }
 
 function preloadImageAsset(href: string, key: string): void {
@@ -296,11 +319,27 @@ function AppRoutes({
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
             <Route path="/system" element={<LazySystemPage api={apiClient} />} />
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+            <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
+            <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
       </Suspense>
     </>
+  );
+}
+
+function PublicLegalRoutes() {
+  return (
+    <Router basename={PUBLIC_ROUTER_BASENAME}>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
+          <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
+          <Route path="*" element={<Navigate to="/legal/agreement" replace />} />
+        </Routes>
+      </Suspense>
+    </Router>
   );
 }
 
@@ -386,6 +425,10 @@ export function App() {
       applyInitialLaunchRoute(launchRoute);
       preparedLaunchRouteRef.current = launchRoute;
     }
+  }
+
+  if (!apiClient && isPublicLegalPathname()) {
+    return <PublicLegalRoutes />;
   }
 
   if (!apiClient) {

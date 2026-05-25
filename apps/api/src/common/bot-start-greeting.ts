@@ -1,5 +1,5 @@
 import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
-import { USER_AGREEMENT_START_NOTICE } from './user-agreement-notice';
+import { buildUserAgreementStartNotice } from './user-agreement-notice';
 
 export type BotStartSpeechProfile = {
   persona: BotSpeechPersona;
@@ -15,7 +15,10 @@ export const BOT_PRIVATE_MENU_APP_LINE =
 export function buildBotStartIntroLines(
   profile: BotStartSpeechProfile,
   renderTitle: (title: string) => string,
+  options: { appBaseUrl?: string | null } = {},
 ): string[] {
+  const userAgreementNotice = buildUserAgreementStartNotice(options.appBaseUrl);
+
   if (isRexSpeechProfile(profile)) {
     return [
       renderTitle(`${profile.characterName} на посту.`),
@@ -24,7 +27,7 @@ export function buildBotStartIntroLines(
       '',
       BOT_START_APP_LINE,
       '',
-      USER_AGREEMENT_START_NOTICE,
+      userAgreementNotice,
       '',
       'Если понадобится помощь, техподдержка ниже.',
     ];
@@ -37,7 +40,7 @@ export function buildBotStartIntroLines(
     '',
     BOT_START_APP_LINE,
     '',
-    USER_AGREEMENT_START_NOTICE,
+    userAgreementNotice,
     '',
     'Если понадобится помощь, техподдержка ниже.',
   ];

@@ -72,7 +72,7 @@ import {
   buildBotStartQuickActionText,
 } from '../common/bot-start-greeting';
 import { raceWithTimeout } from '../common/promise-timeout.util';
-import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
+import { buildUserAgreementShortNotice } from '../common/user-agreement-notice';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import {
@@ -4021,7 +4021,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [
       profile.characterName,
       BOT_PRIVATE_MENU_APP_LINE,
-      USER_AGREEMENT_SHORT_NOTICE,
+      buildUserAgreementShortNotice(this.appBaseUrl),
       buildBotStartQuickActionText(profile),
     ].join('\n');
   }

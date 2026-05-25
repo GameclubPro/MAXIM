@@ -155,6 +155,9 @@
 - MAX `startapp` payloads are limited to 512 chars and `[A-Za-z0-9_-]`. Use `MaxBotLinkService`, `max-deep-link.util.ts`, and `apps/miniapp/src/lib/launch-route.ts` patterns instead of hand-built payloads.
 - Sanction explanations, warnings, and published chat rules use dedicated `*AdminContactButtonEnabled` / `*AdminContactButtonUrl` settings to append the fixed `Связь с админом` markdown link; mute/ban notices do not include that admin-contact link. Keep profile handoff links out of generic custom button fields.
 - In mini app code, use `window.WebApp.openMaxLink` only for `https://max.ru/...` deep links; use `openLink` for external links.
+- Public legal routes linked from bot greetings (`/app/legal/agreement` and `/app/legal/privacy`,
+  including prefixed standalone app paths) must render without MAX `initData`; keep them before the
+  mini app init-data gate when editing startup routing.
 - In hot moderation paths, prefer targeted MAX access checks such as `getCurrentChatMemberAccess` or `getChatMembersAccess` over full admin-list fetches unless the feature truly needs the full roster.
 - For `GET /chats/{chatId}/members`, send multiple `user_ids` as one comma-separated query value. Repeated `user_ids` parameters can be treated by MAX as only the first user.
 - After changing webhook host or domain, re-read `GET /subscriptions` and recreate the target subscription instead of assuming MAX updated its bound secret automatically.
