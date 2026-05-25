@@ -2192,8 +2192,21 @@ export const vkParsingPostStatusSchema = z.enum([
   'FAILED',
   'CHANGED_AFTER_PUBLISH',
   'UNAVAILABLE',
+  'SKIPPED',
 ]);
 export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
+
+export const vkParsingPostSkipReasonSchema = z.enum(['AD', 'EMPTY_AFTER_LINK_FILTER']);
+export type VkParsingPostSkipReason = z.infer<typeof vkParsingPostSkipReasonSchema>;
+
+export const vkParsingSettingsSchema = z.object({
+  chatId: z.string(),
+  autoPublishEnabled: z.boolean().default(false),
+  stripLinksEnabled: z.boolean().default(false),
+  skipAdsEnabled: z.boolean().default(false),
+  updatedAt: z.string().datetime().nullable().default(null),
+});
+export type VkParsingSettings = z.infer<typeof vkParsingSettingsSchema>;
 
 export const vkParsingSourceSchema = z.object({
   id: z.string(),
@@ -2239,6 +2252,10 @@ export const vkParsingPostSchema = z.object({
   publishedMessageId: z.string().nullable(),
   publishedUrl: z.string().url().nullable(),
   publishedAtMax: z.string().datetime().nullable(),
+  autoPublishedAt: z.string().datetime().nullable().default(null),
+  autoPublishError: z.string().nullable().default(null),
+  skippedAt: z.string().datetime().nullable().default(null),
+  skipReason: vkParsingPostSkipReasonSchema.nullable().default(null),
   lastSeenAt: z.string().datetime().nullable().default(null),
   missingSinceAt: z.string().datetime().nullable().default(null),
   unavailableAt: z.string().datetime().nullable().default(null),
@@ -2256,10 +2273,28 @@ export type VkParsingCapability = z.infer<typeof vkParsingCapabilitySchema>;
 
 export const vkParsingFeedSchema = z.object({
   capabilities: vkParsingCapabilitySchema.default({ enabled: false, canUse: false }),
+  settings: vkParsingSettingsSchema.default({
+    chatId: '',
+    autoPublishEnabled: false,
+    stripLinksEnabled: false,
+    skipAdsEnabled: false,
+    updatedAt: null,
+  }),
   sources: z.array(vkParsingSourceSchema).default([]),
   posts: z.array(vkParsingPostSchema).default([]),
 });
 export type VkParsingFeed = z.infer<typeof vkParsingFeedSchema>;
+
+export const updateVkParsingSettingsRequestSchema = z
+  .object({
+    autoPublishEnabled: z.boolean().optional(),
+    stripLinksEnabled: z.boolean().optional(),
+    skipAdsEnabled: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Передайте хотя бы одну настройку.',
+  });
+export type UpdateVkParsingSettingsRequest = z.infer<typeof updateVkParsingSettingsRequestSchema>;
 
 export const addVkParsingSourceRequestSchema = z.object({
   url: z.string().trim().min(2).max(512),

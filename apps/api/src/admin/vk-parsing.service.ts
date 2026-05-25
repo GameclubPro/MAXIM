@@ -1,6 +1,7 @@
 import {
   addVkParsingSourceRequestSchema,
   publishVkParsingPostRequestSchema,
+  updateVkParsingSettingsRequestSchema,
   VK_PARSING_MAX_LINKS,
   VK_PARSING_MAX_PHOTOS,
   VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
@@ -9,6 +10,7 @@ import {
   type VkParsingFeed,
   type VkParsingPost,
   type VkParsingRefreshResult,
+  type VkParsingSettings,
   type VkParsingSource,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -28,6 +30,7 @@ import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxAttachmentPayload,
+  type MaxApiTrafficClass,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -44,6 +47,7 @@ import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
 type VkParsingMediaCacheRow = Prisma.VkParsingMediaCacheGetPayload<Record<string, never>>;
+type VkParsingSettingsRow = Prisma.VkParsingSettingsGetPayload<Record<string, never>>;
 
 type VkWallGetResponse = {
   count?: number;
@@ -77,6 +81,27 @@ type NormalizedVkPost = {
   contentHash: string;
 };
 
+type VkParsingSettingsLike = {
+  chatId: string;
+  autoPublishEnabled: boolean;
+  stripLinksEnabled: boolean;
+  skipAdsEnabled: boolean;
+  updatedAt: Date | null;
+};
+
+type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER';
+
+type ImportedPostsBatchResult = {
+  imported: number;
+  importedPosts: VkParsingPostWithSource[];
+};
+
+type PreparedVkPublishPayload = {
+  text: string;
+  photoUrls: string[];
+  linkUrls: string[];
+};
+
 const VK_SOURCE_STATUS_ACTIVE = 'ACTIVE';
 const VK_SOURCE_STATUS_DISABLED = 'DISABLED';
 const VK_SOURCE_SYNC_STATUS_IDLE = 'IDLE';
@@ -89,6 +114,9 @@ const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_FAILED = 'FAILED';
 const VK_POST_STATUS_CHANGED_AFTER_PUBLISH = 'CHANGED_AFTER_PUBLISH';
 const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
+const VK_POST_STATUS_SKIPPED = 'SKIPPED';
+const VK_POST_SKIP_REASON_AD: VkParsingSkipReason = 'AD';
+const VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER: VkParsingSkipReason = 'EMPTY_AFTER_LINK_FILTER';
 const VK_MEDIA_STATUS_READY = 'READY';
 const VK_MEDIA_STATUS_FAILED = 'FAILED';
 const VK_MEDIA_STATUS_UNKNOWN = 'UNKNOWN';
@@ -98,6 +126,18 @@ const VK_API_RATE_LIMIT_ERROR_CODE = 6;
 const VK_API_RETRYABLE_ERROR_CODES = new Set([VK_API_RATE_LIMIT_ERROR_CODE, 10]);
 const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 100, 203]);
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
+const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
+const VK_INLINE_LINK_PATTERN =
+  /(?:https?:\/\/|www\.)[^\s<>()\]\["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]\["'`{}]+/giu;
+const VK_AD_DISCLOSURE_PATTERNS = [
+  /(^|[\s#(.,;:!?-])реклама($|[\s#).,;:!?-])/iu,
+  /на\s+правах\s+рекламы/iu,
+  /рекламодатель/iu,
+  /рекламн(?:ый|ая|ое|ые)\s+(?:материал|пост|публикац)/iu,
+  /партн[её]рск(?:ий|ая|ое|ие)\s+(?:материал|пост|публикац)/iu,
+  /\berid\s*[:=]?\s*[A-Za-zА-Яа-я0-9_-]{4,}/iu,
+  /токен\s+рекламы/iu,
+] as const;
 
 class VkApiRequestError extends ServiceUnavailableException {
   constructor(
@@ -186,6 +226,27 @@ export class VkParsingService {
 
   async listVkParsing(chatId: string, user: AuthUser): Promise<VkParsingFeed> {
     await this.assertVkParsingChannelAccess(chatId, user);
+    return this.buildFeed(chatId, { enabled: true, canUse: true });
+  }
+
+  async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
+    await this.assertVkParsingChannelAccess(chatId, user);
+    const parsed = updateVkParsingSettingsRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    await this.prisma.vkParsingSettings.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+        autoPublishEnabled: parsed.data.autoPublishEnabled ?? false,
+        stripLinksEnabled: parsed.data.stripLinksEnabled ?? false,
+        skipAdsEnabled: parsed.data.skipAdsEnabled ?? false,
+      },
+      update: parsed.data,
+    });
+
     return this.buildFeed(chatId, { enabled: true, canUse: true });
   }
 
@@ -321,36 +382,74 @@ export class VkParsingService {
     const storedLinkUrls = this.readStringArray(post.linkUrls);
     const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
     const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
-    const text = this.composePublishText(parsed.data.text, linkUrls);
-    if (text.length > VK_PARSING_MAX_PUBLISH_TEXT_LENGTH) {
-      throw new BadRequestException(
-        `Текст публикации слишком длинный. Максимум ${VK_PARSING_MAX_PUBLISH_TEXT_LENGTH} символов.`,
-      );
+    const settings = await this.getSettingsForChat(chatId);
+    const prepared = this.preparePublishPayload(
+      {
+        text: parsed.data.text,
+        photoUrls,
+        linkUrls,
+      },
+      settings,
+    );
+    const skipReason = this.resolvePostSkipReason(
+      {
+        text: post.text,
+        photoUrls: storedPhotoUrls,
+        linkUrls: storedLinkUrls,
+        attachments: this.readAttachments(post.attachments),
+        raw: this.asRecord(post.raw) ?? {},
+      },
+      settings,
+    );
+    if (skipReason) {
+      await this.markPostSkipped(post.id, skipReason);
+      throw new BadRequestException(this.describeSkipReason(skipReason));
     }
+    this.assertPreparedPublishPayload(prepared);
 
-    const botId = await this.maxBotLinkService.resolveBotId({ chatId });
+    return this.publishPreparedPostToMax(post, prepared, {
+      actorUserId: user.userId,
+      trafficClass: 'interactive',
+      debugAction: 'publish_post',
+      auto: false,
+    });
+  }
+
+  private async publishPreparedPostToMax(
+    post: VkParsingPostWithSource,
+    payload: PreparedVkPublishPayload,
+    params: {
+      actorUserId: string;
+      trafficClass: MaxApiTrafficClass;
+      debugAction: string;
+      auto: boolean;
+    },
+  ): Promise<PublishVkParsingPostResult> {
+    const storedPhotoUrls = this.readStringArray(post.photoUrls);
+    const storedLinkUrls = this.readStringArray(post.linkUrls);
+    const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
     const requestOptions = {
       botId,
-      trafficClass: 'interactive' as const,
+      trafficClass: params.trafficClass,
       sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
     };
     const options: MaxSendMessageOptions = {
       debugContext: {
         screen: 'vk_parsing',
-        action: 'publish_post',
+        action: params.debugAction,
       },
     };
 
     try {
       const engagementContext = await this.adminService.buildChannelPublicationEngagementContext(
-        chatId,
+        post.chatId,
         botId,
       );
       if (engagementContext.buttons.length > 0) {
         options.buttons = engagementContext.buttons;
       }
 
-      const imagePayloads = await this.downloadAndUploadImages(photoUrls, requestOptions);
+      const imagePayloads = await this.downloadAndUploadImages(payload.photoUrls, requestOptions);
 
       if (imagePayloads.length === 1) {
         options.imagePayload = imagePayloads[0];
@@ -364,14 +463,14 @@ export class VkParsingService {
       }
 
       const result = await this.maxClient.sendMessageImmediateWithResolvedLink(
-        chatId,
-        text || ' ',
+        post.chatId,
+        payload.text || ' ',
         options,
         requestOptions,
       );
       await this.recordChannelPublicationEngagementSafely({
-        chatId,
-        actorUserId: user.userId,
+        chatId: post.chatId,
+        actorUserId: params.actorUserId,
         messageId: result.messageId,
         engagementContext,
         botId,
@@ -390,6 +489,10 @@ export class VkParsingService {
           publishedMessageId: result.messageId,
           publishedUrl: result.url,
           publishedAtMax: new Date(),
+          autoPublishedAt: params.auto ? new Date() : post.autoPublishedAt,
+          autoPublishError: null,
+          skippedAt: null,
+          skipReason: null,
           lastError: null,
         },
         include: { source: true },
@@ -406,6 +509,7 @@ export class VkParsingService {
         data: {
           status: VK_POST_STATUS_FAILED,
           lastError: this.formatError(error),
+          autoPublishError: params.auto ? this.formatError(error) : post.autoPublishError,
         },
       });
       throw error;
@@ -465,7 +569,10 @@ export class VkParsingService {
     chatId: string,
     capabilities: VkParsingCapability = { enabled: false, canUse: false },
   ): Promise<VkParsingFeed> {
-    const [sources, posts] = await Promise.all([
+    const [settings, sources, posts] = await Promise.all([
+      this.prisma.vkParsingSettings.findUnique({
+        where: { chatId },
+      }),
       this.prisma.vkParsingSource.findMany({
         where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
         orderBy: [{ createdAt: 'asc' }],
@@ -480,6 +587,7 @@ export class VkParsingService {
 
     return {
       capabilities,
+      settings: this.mapSettings(chatId, settings),
       sources: sources.map((source) => this.mapSource(source)),
       posts: posts.map((post) => this.mapPost(post)),
     };
@@ -487,17 +595,20 @@ export class VkParsingService {
 
   async processSyncSourceJob(
     sourceId: string,
-    _reason: VkParsingSyncReason = 'scheduled',
+    reason: VkParsingSyncReason = 'scheduled',
   ): Promise<number> {
     const source = await this.acquireSourceLease(sourceId);
     if (!source) {
       return 0;
     }
 
-    return this.syncSource(source);
+    return this.syncSource(source, reason);
   }
 
-  private async syncSource(source: VkParsingSourceRow): Promise<number> {
+  private async syncSource(
+    source: VkParsingSourceRow,
+    reason: VkParsingSyncReason,
+  ): Promise<number> {
     const startedAt = new Date();
     try {
       const wall = await this.fetchWall({ ownerId: source.wallOwnerId, count: this.fetchCount });
@@ -505,8 +616,11 @@ export class VkParsingService {
         .map((item) => this.normalizePost(item))
         .filter((post): post is NormalizedVkPost => post !== null);
 
-      const imported = await this.upsertPostsBatch(source, posts, startedAt);
+      const importResult = await this.upsertPostsBatch(source, posts, startedAt);
       await this.preflightPostMediaSafely(posts);
+      if (this.shouldAutoPublishImportedPosts(reason)) {
+        await this.autoPublishImportedPosts(source.chatId, importResult.importedPosts);
+      }
       const completedAt = new Date();
 
       await this.prisma.vkParsingSource.update({
@@ -521,13 +635,13 @@ export class VkParsingService {
           syncLockedBy: null,
           consecutiveFailures: 0,
           lastErrorCode: null,
-          lastImportedCount: imported,
+          lastImportedCount: importResult.imported,
           lastFetchedCount: posts.length,
           lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
           lastError: null,
         },
       });
-      return imported;
+      return importResult.imported;
     } catch (error) {
       const completedAt = new Date();
       const classified = this.classifySyncError(error);
@@ -570,7 +684,7 @@ export class VkParsingService {
     source: VkParsingSourceRow,
     posts: NormalizedVkPost[],
     seenAt: Date,
-  ): Promise<number> {
+  ): Promise<ImportedPostsBatchResult> {
     const existingRows = posts.length
       ? await this.prisma.vkParsingPost.findMany({
           where: {
@@ -595,6 +709,15 @@ export class VkParsingService {
     const operations = posts.map((post) => {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
+      const resetTransientState =
+        status === VK_POST_STATUS_NEW
+          ? {
+              skippedAt: null,
+              skipReason: null,
+              autoPublishError: null,
+              lastError: null,
+            }
+          : {};
       return this.prisma.vkParsingPost.upsert({
         where: {
           chatId_vkOwnerId_vkPostId: {
@@ -635,6 +758,7 @@ export class VkParsingService {
           lastSeenAt: seenAt,
           missingSinceAt: null,
           unavailableAt: null,
+          ...resetTransientState,
         },
       });
     });
@@ -644,9 +768,27 @@ export class VkParsingService {
     }
     await this.markMissingPostsUnavailable(source, posts, seenAt);
 
-    return posts.filter(
+    const importedNormalizedPosts = posts.filter(
       (post) => !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
-    ).length;
+    );
+    const importedPosts =
+      importedNormalizedPosts.length > 0
+        ? await this.prisma.vkParsingPost.findMany({
+            where: {
+              chatId: source.chatId,
+              vkOwnerId: source.wallOwnerId,
+              vkPostId: { in: importedNormalizedPosts.map((post) => post.vkPostId) },
+              status: VK_POST_STATUS_NEW,
+            },
+            include: { source: true },
+            orderBy: [{ vkPublishedAt: 'asc' }, { createdAt: 'asc' }],
+          })
+        : [];
+
+    return {
+      imported: importedNormalizedPosts.length,
+      importedPosts,
+    };
   }
 
   private async enqueueSources(
@@ -747,6 +889,10 @@ export class VkParsingService {
       return VK_POST_STATUS_NEW;
     }
 
+    if (existing.status === VK_POST_STATUS_SKIPPED && existing.contentHash !== post.contentHash) {
+      return VK_POST_STATUS_NEW;
+    }
+
     return existing.status || VK_POST_STATUS_NEW;
   }
 
@@ -763,7 +909,9 @@ export class VkParsingService {
       if (!post.vkPublishedAt) {
         return oldest;
       }
-      return !oldest || post.vkPublishedAt.getTime() < oldest.getTime() ? post.vkPublishedAt : oldest;
+      return !oldest || post.vkPublishedAt.getTime() < oldest.getTime()
+        ? post.vkPublishedAt
+        : oldest;
     }, null);
     if (!oldestFetchedAt) {
       return;
@@ -775,17 +923,107 @@ export class VkParsingService {
         vkPublishedAt: { gte: oldestFetchedAt },
         vkPostId: { notIn: posts.map((post) => post.vkPostId) },
         status: {
-          in: [
-            VK_POST_STATUS_NEW,
-            VK_POST_STATUS_FAILED,
-            VK_POST_STATUS_CHANGED_AFTER_PUBLISH,
-          ],
+          in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED, VK_POST_STATUS_CHANGED_AFTER_PUBLISH],
         },
       },
       data: {
         status: VK_POST_STATUS_UNAVAILABLE,
         missingSinceAt: seenAt,
         unavailableAt: seenAt,
+      },
+    });
+  }
+
+  private shouldAutoPublishImportedPosts(reason: VkParsingSyncReason): boolean {
+    return reason !== 'source-added';
+  }
+
+  private async autoPublishImportedPosts(
+    chatId: string,
+    posts: VkParsingPostWithSource[],
+  ): Promise<void> {
+    if (posts.length === 0) {
+      return;
+    }
+
+    const settings = await this.getSettingsForChat(chatId);
+    if (!settings.autoPublishEnabled) {
+      return;
+    }
+
+    for (const post of posts) {
+      if (post.status !== VK_POST_STATUS_NEW) {
+        continue;
+      }
+
+      try {
+        await this.autoPublishPost(post, settings);
+      } catch (error) {
+        this.logger.warn(
+          {
+            postId: post.id,
+            chatId: post.chatId,
+            sourceId: post.sourceId,
+            err: error,
+          },
+          'VK post autopublish failed',
+        );
+      }
+    }
+  }
+
+  private async autoPublishPost(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+  ): Promise<void> {
+    const photoUrls = this.readStringArray(post.photoUrls);
+    const linkUrls = this.readStringArray(post.linkUrls);
+    const skipReason = this.resolvePostSkipReason(
+      {
+        text: post.text,
+        photoUrls,
+        linkUrls,
+        attachments: this.readAttachments(post.attachments),
+        raw: this.asRecord(post.raw) ?? {},
+      },
+      settings,
+    );
+    if (skipReason) {
+      await this.markPostSkipped(post.id, skipReason);
+      return;
+    }
+
+    const prepared = this.preparePublishPayload(
+      {
+        text: post.text,
+        photoUrls,
+        linkUrls,
+      },
+      settings,
+    );
+    try {
+      this.assertPreparedPublishPayload(prepared);
+    } catch (error) {
+      await this.markPostAutoPublishFailed(post.id, error);
+      throw error;
+    }
+
+    await this.publishPreparedPostToMax(post, prepared, {
+      actorUserId: VK_PARSING_SYSTEM_ACTOR_USER_ID,
+      trafficClass: 'background',
+      debugAction: 'auto_publish_post',
+      auto: true,
+    });
+  }
+
+  private async markPostAutoPublishFailed(postId: string, error: unknown): Promise<void> {
+    const message = this.formatError(error);
+    await this.prisma.vkParsingPost.update({
+      where: { id: postId },
+      data: {
+        status: VK_POST_STATUS_FAILED,
+        lastError: message,
+        autoPublishError: message,
       },
     });
   }
@@ -1148,7 +1386,7 @@ export class VkParsingService {
     photoUrls: string[],
     requestOptions: {
       botId?: string;
-      trafficClass: 'interactive';
+      trafficClass: MaxApiTrafficClass;
       sourceTag: string;
     },
   ): Promise<Record<string, unknown>[]> {
@@ -1200,7 +1438,11 @@ export class VkParsingService {
     const cached = await this.prisma.vkParsingMediaCache.findUnique({ where: { url: imageUrl } });
     if (cached?.lastCheckedAt) {
       const ageMs = Date.now() - cached.lastCheckedAt.getTime();
-      if (ageMs >= 0 && ageMs < this.mediaPreflightTtlMs && cached.status !== VK_MEDIA_STATUS_UNKNOWN) {
+      if (
+        ageMs >= 0 &&
+        ageMs < this.mediaPreflightTtlMs &&
+        cached.status !== VK_MEDIA_STATUS_UNKNOWN
+      ) {
         return cached;
       }
     }
@@ -1271,10 +1513,7 @@ export class VkParsingService {
     }
   }
 
-  private async fetchMediaPreflightResponse(
-    url: URL,
-    signal: AbortSignal,
-  ): Promise<Response> {
+  private async fetchMediaPreflightResponse(url: URL, signal: AbortSignal): Promise<Response> {
     const headResponse = await fetch(url, { method: 'HEAD', signal });
     if (headResponse.ok || !this.shouldFallbackMediaPreflight(headResponse.status)) {
       return headResponse;
@@ -1406,6 +1645,130 @@ export class VkParsingService {
     return [base, ...missingLinks].filter(Boolean).join('\n');
   }
 
+  private preparePublishPayload(
+    payload: PreparedVkPublishPayload,
+    settings: VkParsingSettingsLike,
+  ): PreparedVkPublishPayload {
+    const text = settings.stripLinksEnabled ? this.stripLinksFromText(payload.text) : payload.text;
+    const linkUrls = settings.stripLinksEnabled ? [] : payload.linkUrls;
+    return {
+      text: this.composePublishText(text, linkUrls),
+      photoUrls: payload.photoUrls,
+      linkUrls,
+    };
+  }
+
+  private assertPreparedPublishPayload(payload: PreparedVkPublishPayload): void {
+    if (
+      payload.text.trim().length === 0 &&
+      payload.photoUrls.length === 0 &&
+      payload.linkUrls.length === 0
+    ) {
+      throw new BadRequestException(
+        'После фильтрации в посте не осталось текста, фото или ссылок.',
+      );
+    }
+    if (payload.text.length > VK_PARSING_MAX_PUBLISH_TEXT_LENGTH) {
+      throw new BadRequestException(
+        `Текст публикации слишком длинный. Максимум ${VK_PARSING_MAX_PUBLISH_TEXT_LENGTH} символов.`,
+      );
+    }
+  }
+
+  private stripLinksFromText(text: string): string {
+    VK_INLINE_LINK_PATTERN.lastIndex = 0;
+    return text
+      .replace(VK_INLINE_LINK_PATTERN, '')
+      .replace(/[ \t]+\n/gu, '\n')
+      .replace(/\n[ \t]+/gu, '\n')
+      .replace(/[ \t]{2,}/gu, ' ')
+      .replace(/\n{3,}/gu, '\n\n')
+      .trim();
+  }
+
+  private resolvePostSkipReason(
+    post: {
+      text: string;
+      photoUrls: string[];
+      linkUrls: string[];
+      attachments: Array<Record<string, unknown>>;
+      raw: Record<string, unknown>;
+    },
+    settings: VkParsingSettingsLike,
+  ): VkParsingSkipReason | null {
+    if (settings.skipAdsEnabled && this.isAdvertisingPost(post)) {
+      return VK_POST_SKIP_REASON_AD;
+    }
+
+    if (
+      settings.stripLinksEnabled &&
+      post.photoUrls.length === 0 &&
+      this.stripLinksFromText(post.text).length === 0 &&
+      (post.linkUrls.length > 0 || this.hasInlineLinks(post.text))
+    ) {
+      return VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER;
+    }
+
+    return null;
+  }
+
+  private hasInlineLinks(text: string): boolean {
+    VK_INLINE_LINK_PATTERN.lastIndex = 0;
+    return VK_INLINE_LINK_PATTERN.test(text);
+  }
+
+  private isAdvertisingPost(post: {
+    text: string;
+    attachments: Array<Record<string, unknown>>;
+    raw: Record<string, unknown>;
+  }): boolean {
+    if (this.readBooleanFlag(post.raw.marked_as_ads)) {
+      return true;
+    }
+
+    const haystack = [post.text, ...this.extractAttachmentText(post.attachments)]
+      .filter(Boolean)
+      .join('\n')
+      .toLowerCase();
+
+    return VK_AD_DISCLOSURE_PATTERNS.some((pattern) => pattern.test(haystack));
+  }
+
+  private extractAttachmentText(attachments: Array<Record<string, unknown>>): string[] {
+    const values: string[] = [];
+    for (const attachment of attachments) {
+      const link = this.asRecord(attachment.link);
+      if (link) {
+        values.push(
+          this.readString(link.title),
+          this.readString(link.description),
+          this.readString(link.caption),
+        );
+      }
+    }
+
+    return values.filter((value) => value.trim().length > 0);
+  }
+
+  private describeSkipReason(reason: VkParsingSkipReason): string {
+    return reason === VK_POST_SKIP_REASON_AD
+      ? 'Пост пропущен фильтром рекламы.'
+      : 'Пост пропущен: после удаления ссылок не осталось содержимого.';
+  }
+
+  private async markPostSkipped(postId: string, reason: VkParsingSkipReason): Promise<void> {
+    await this.prisma.vkParsingPost.update({
+      where: { id: postId },
+      data: {
+        status: VK_POST_STATUS_SKIPPED,
+        skippedAt: new Date(),
+        skipReason: reason,
+        autoPublishError: null,
+        lastError: this.describeSkipReason(reason),
+      },
+    });
+  }
+
   private assertSelectedUrls(selected: string[], stored: string[], label: string): string[] {
     const storedSet = new Set(stored);
     const normalized = [...new Set(selected.map((url) => url.trim()).filter(Boolean))];
@@ -1451,6 +1814,34 @@ export class VkParsingService {
     );
   }
 
+  private mapSettings(
+    chatId: string,
+    settings: VkParsingSettingsRow | VkParsingSettingsLike | null,
+  ): VkParsingSettings {
+    return {
+      chatId,
+      autoPublishEnabled: settings?.autoPublishEnabled ?? false,
+      stripLinksEnabled: settings?.stripLinksEnabled ?? false,
+      skipAdsEnabled: settings?.skipAdsEnabled ?? false,
+      updatedAt: settings?.updatedAt ? settings.updatedAt.toISOString() : null,
+    };
+  }
+
+  private getDefaultSettings(chatId: string): VkParsingSettingsLike {
+    return {
+      chatId,
+      autoPublishEnabled: false,
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      updatedAt: null,
+    };
+  }
+
+  private async getSettingsForChat(chatId: string): Promise<VkParsingSettingsLike> {
+    const settings = await this.prisma.vkParsingSettings.findUnique({ where: { chatId } });
+    return settings ?? this.getDefaultSettings(chatId);
+  }
+
   private mapSource(source: VkParsingSourceRow): VkParsingSource {
     return {
       id: source.id,
@@ -1490,7 +1881,9 @@ export class VkParsingService {
             ? 'CHANGED_AFTER_PUBLISH'
             : post.status === VK_POST_STATUS_UNAVAILABLE
               ? 'UNAVAILABLE'
-              : 'NEW';
+              : post.status === VK_POST_STATUS_SKIPPED
+                ? 'SKIPPED'
+                : 'NEW';
     return {
       id: post.id,
       sourceId: post.sourceId,
@@ -1510,6 +1903,14 @@ export class VkParsingService {
       publishedMessageId: post.publishedMessageId,
       publishedUrl: post.publishedUrl,
       publishedAtMax: post.publishedAtMax ? post.publishedAtMax.toISOString() : null,
+      autoPublishedAt: post.autoPublishedAt ? post.autoPublishedAt.toISOString() : null,
+      autoPublishError: post.autoPublishError,
+      skippedAt: post.skippedAt ? post.skippedAt.toISOString() : null,
+      skipReason:
+        post.skipReason === VK_POST_SKIP_REASON_AD ||
+        post.skipReason === VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER
+          ? post.skipReason
+          : null,
       lastSeenAt: post.lastSeenAt ? post.lastSeenAt.toISOString() : null,
       missingSinceAt: post.missingSinceAt ? post.missingSinceAt.toISOString() : null,
       unavailableAt: post.unavailableAt ? post.unavailableAt.toISOString() : null,
@@ -1578,6 +1979,20 @@ export class VkParsingService {
       return Number.isFinite(parsed) ? parsed : null;
     }
     return null;
+  }
+
+  private readBooleanFlag(value: unknown): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value === 1;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return normalized === '1' || normalized === 'true' || normalized === 'yes';
+    }
+    return false;
   }
 
   private sleep(ms: number): Promise<void> {

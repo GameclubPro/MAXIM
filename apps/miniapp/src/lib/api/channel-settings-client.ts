@@ -21,6 +21,7 @@ import {
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
   sendBroadcastRequestSchema,
+  updateVkParsingSettingsRequestSchema,
   vkParsingCapabilitySchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
@@ -37,6 +38,7 @@ import {
   type PublishVkParsingPostResult,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
+  type UpdateVkParsingSettingsRequest,
   type VkParsingCapability,
   type VkParsingFeed,
   type VkParsingRefreshResult,
@@ -292,6 +294,19 @@ export async function getChannelVkParsingCapability(
 ): Promise<VkParsingCapability> {
   const response = await api.request(`/channels/${chatId}/vk-parsing/capability`);
   return vkParsingCapabilitySchema.parse(response);
+}
+
+export async function updateChannelVkParsingSettings(
+  api: ApiTransport,
+  chatId: string,
+  payload: UpdateVkParsingSettingsRequest,
+): Promise<VkParsingFeed> {
+  const requestBody = updateVkParsingSettingsRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/vk-parsing/settings`, {
+    method: 'PATCH',
+    body: JSON.stringify(requestBody),
+  });
+  return vkParsingFeedSchema.parse(response);
 }
 
 export async function addChannelVkParsingSource(

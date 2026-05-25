@@ -183,6 +183,7 @@ model Chat {
   channelStatsSyncState    ChannelStatsSyncState?
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
+  vkParsingSettings        VkParsingSettings?
   vkParsingSources         VkParsingSource[]
   vkParsingPosts           VkParsingPost[]
   botMemberships           ChatBotMembership[]
@@ -1001,6 +1002,20 @@ model VkParsingSource {
   @@map("vk_parsing_sources")
 }
 
+model VkParsingSettings {
+  id                 String   @id @default(cuid())
+  chatId             String   @unique @map("chat_id")
+  autoPublishEnabled Boolean  @default(false) @map("auto_publish_enabled")
+  stripLinksEnabled  Boolean  @default(false) @map("strip_links_enabled")
+  skipAdsEnabled     Boolean  @default(false) @map("skip_ads_enabled")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("vk_parsing_settings")
+}
+
 model VkParsingPost {
   id                   String    @id @default(cuid())
   sourceId             String    @map("source_id")
@@ -1020,6 +1035,10 @@ model VkParsingPost {
   publishedMessageId   String?   @map("published_message_id")
   publishedUrl         String?   @map("published_url")
   publishedAtMax       DateTime? @map("published_at_max")
+  autoPublishedAt      DateTime? @map("auto_published_at")
+  autoPublishError     String?   @map("auto_publish_error")
+  skippedAt            DateTime? @map("skipped_at")
+  skipReason           String?   @map("skip_reason")
   lastSeenAt           DateTime? @map("last_seen_at")
   missingSinceAt       DateTime? @map("missing_since_at")
   unavailableAt        DateTime? @map("unavailable_at")
@@ -1034,6 +1053,7 @@ model VkParsingPost {
   @@index([sourceId, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_source_published_at_idx")
   @@index([chatId, status, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_chat_status_published_idx")
   @@index([sourceId, lastSeenAt], map: "vk_parsing_posts_source_last_seen_at_idx")
+  @@index([status, skipReason], map: "vk_parsing_posts_status_skip_reason_idx")
   @@map("vk_parsing_posts")
 }
 

@@ -177,6 +177,7 @@
 - Channel statistics audience graphs should plot joined/left net growth from `series.membership`; use `series.participants` only as total-audience context. Period views should use observed `viewsDelta` when it exists, with `latestTotal`/`viewsTotal` only as the no-delta fallback.
 - Channel statistics screens should stay factual. Do not add "What to do next", smart recommendations, pseudo-AI advice, or coaching copy; prefer neutral metrics, freshness/source coverage, charts, top posts, and best publishing windows.
 - VK parsing is a channel-only admin feature. Mini app visibility comes from the server capability endpoint; do not reintroduce a hardcoded mini app allowlist. Backend endpoints must enforce the configured allowlist plus channel admin access. Current supported VK import media are text, photos, and links only, and source sync runs through the BullMQ `vk-parsing-sync` queue with DB source leases.
+- VK parsing automation settings are stored per channel in `vk_parsing_settings`. Scheduled/manual sync can autopublish newly imported posts, but the initial `source-added` backfill must not autopublish old fetched posts.
 
 ## Repo hygiene
 

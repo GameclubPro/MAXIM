@@ -470,6 +470,15 @@ export class AdminController {
     return this.vkParsingService.getCapability(chatId, user);
   }
 
+  @Patch('channels/:chatId/vk-parsing/settings')
+  updateChannelVkParsingSettings(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateSettings(chatId, user, body);
+  }
+
   @Post('channels/:chatId/vk-parsing/sources')
   addChannelVkParsingSource(
     @Param('chatId') chatId: string,

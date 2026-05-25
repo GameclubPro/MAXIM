@@ -9,13 +9,14 @@ import {
 } from 'iconoir-react';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { VkParsingPost } from '@maxim/contracts';
+import type { UpdateVkParsingSettingsRequest, VkParsingPost } from '@maxim/contracts';
 import {
   addChannelVkParsingSource,
   getChannelVkParsing,
   publishChannelVkParsingPost,
   refreshChannelVkParsing,
   removeChannelVkParsingSource,
+  updateChannelVkParsingSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
@@ -39,6 +40,14 @@ type PublishPayload = {
   photoUrls: string[];
   linkUrls: string[];
 };
+
+type VkParsingSettingKey = 'autoPublishEnabled' | 'stripLinksEnabled' | 'skipAdsEnabled';
+
+const VK_PARSING_SETTING_TOGGLES: Array<{ key: VkParsingSettingKey; label: string }> = [
+  { key: 'autoPublishEnabled', label: 'Автопостинг' },
+  { key: 'stripLinksEnabled', label: 'Убирать ссылки' },
+  { key: 'skipAdsEnabled', label: 'Фильтр рекламы' },
+];
 
 function formatVkPostDate(value: string | null): string {
   if (!value) {
@@ -111,6 +120,17 @@ function normalizeApiError(error: unknown): string {
   return text || 'Не удалось выполнить действие.';
 }
 
+function formatVkSkipReason(reason: VkParsingPost['skipReason']): string | null {
+  if (reason === 'AD') {
+    return 'Реклама';
+  }
+  if (reason === 'EMPTY_AFTER_LINK_FILTER') {
+    return 'Только ссылки';
+  }
+
+  return null;
+}
+
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
@@ -139,7 +159,11 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     onSuccess: () => {
       setSourceUrl('');
       void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
-      pushToast({ tone: 'success', title: 'Источник добавлен', description: 'Обновление запущено' });
+      pushToast({
+        tone: 'success',
+        title: 'Источник добавлен',
+        description: 'Обновление запущено',
+      });
       maxNotify('success');
     },
     onError: (error) => {
@@ -191,6 +215,24 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     },
   });
 
+  const updateSettingsMutation = useMutation({
+    mutationFn: (payload: UpdateVkParsingSettingsRequest) =>
+      updateChannelVkParsingSettings(api, chatId, payload),
+    onSuccess: (nextFeed) => {
+      queryClient.setQueryData(queryKeys.channelVkParsing(chatId), nextFeed);
+      pushToast({ tone: 'success', title: 'Настройки сохранены' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Настройки не сохранены',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const publishMutation = useMutation({
     mutationFn: (payload: PublishPayload) =>
       publishChannelVkParsingPost(api, chatId, payload.postId, {
@@ -215,11 +257,17 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   });
 
   const feed = feedQuery.data;
+  const settings = feed?.settings ?? {
+    chatId,
+    autoPublishEnabled: false,
+    stripLinksEnabled: false,
+    skipAdsEnabled: false,
+    updatedAt: null,
+  };
   const posts = feed?.posts ?? [];
   const sources = feed?.sources ?? [];
   const visiblePosts = useMemo(
-    () =>
-      selectedSourceId ? posts.filter((post) => post.sourceId === selectedSourceId) : posts,
+    () => (selectedSourceId ? posts.filter((post) => post.sourceId === selectedSourceId) : posts),
     [posts, selectedSourceId],
   );
   const editingPost = useMemo(
@@ -247,7 +295,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
     setEditingPostId(post.id);
     setDraftText(post.text);
     setSelectedPhotoUrls(post.photoUrls);
-    setSelectedLinkUrls(post.linkUrls);
+    setSelectedLinkUrls(settings.stripLinksEnabled ? [] : post.linkUrls);
   }
 
   function submitSource(event: FormEvent<HTMLFormElement>) {
@@ -271,6 +319,14 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
       photoUrls: selectedPhotoUrls,
       linkUrls: selectedLinkUrls,
     });
+  }
+
+  function toggleSetting(key: VkParsingSettingKey, checked: boolean) {
+    if (updateSettingsMutation.isPending) {
+      return;
+    }
+
+    updateSettingsMutation.mutate({ [key]: checked });
   }
 
   return (
@@ -310,6 +366,27 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
         </button>
       </div>
 
+      {feed ? (
+        <div className="vk-parsing-settings" aria-label="Настройки VK-парсинга">
+          {VK_PARSING_SETTING_TOGGLES.map((item) => (
+            <div key={item.key} className="vk-parsing-setting-toggle">
+              <span>{item.label}</span>
+              <label className="settings-native-switch" aria-label={item.label}>
+                <input
+                  type="checkbox"
+                  checked={settings[item.key]}
+                  disabled={updateSettingsMutation.isPending}
+                  onChange={(event) => toggleSetting(item.key, event.target.checked)}
+                />
+                <span className="toggle-switch" aria-hidden>
+                  <span className="toggle-switch__thumb" />
+                </span>
+              </label>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {sources.length > 0 ? (
         <div className="vk-parsing-card__sources" aria-label="VK источники">
           {sources.length > 1 ? (
@@ -346,7 +423,9 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                 >
                   <span>{source.title}</span>
                 </button>
-                {syncLabel ? <small title={source.lastError ?? undefined}>{syncLabel}</small> : null}
+                {syncLabel ? (
+                  <small title={source.lastError ?? undefined}>{syncLabel}</small>
+                ) : null}
                 <button
                   type="button"
                   className="vk-parsing-source-chip__remove"
@@ -445,7 +524,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                       </div>
                     ) : null}
 
-                    {post.linkUrls.length > 0 ? (
+                    {post.linkUrls.length > 0 && !settings.stripLinksEnabled ? (
                       <div className="vk-parsing-editor__links">
                         {post.linkUrls.map((url) => {
                           const checked = selectedLinkUrls.includes(url);
@@ -509,9 +588,18 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                       {post.photoUrls.length > 0 ? <span>{post.photoUrls.length} фото</span> : null}
                       {post.linkUrls.length > 0 ? <span>{post.linkUrls.length} ссыл.</span> : null}
                       {post.status === 'PUBLISHED' ? <span>Опубликован</span> : null}
+                      {post.autoPublishedAt ? <span>Авто</span> : null}
                       {post.status === 'CHANGED_AFTER_PUBLISH' ? <span>Изменён в VK</span> : null}
                       {post.status === 'UNAVAILABLE' ? <span>Недоступен в VK</span> : null}
-                      {post.status === 'FAILED' ? <span>Ошибка</span> : null}
+                      {post.status === 'SKIPPED' ? <span>Пропущен</span> : null}
+                      {post.status === 'SKIPPED' && formatVkSkipReason(post.skipReason) ? (
+                        <span>{formatVkSkipReason(post.skipReason)}</span>
+                      ) : null}
+                      {post.status === 'FAILED' ? (
+                        <span title={post.autoPublishError ?? post.lastError ?? undefined}>
+                          Ошибка
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="vk-parsing-post-card__actions">
@@ -529,6 +617,10 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
                       ) : post.status === 'UNAVAILABLE' ? (
                         <button type="button" className="button button--ghost" disabled>
                           Недоступен
+                        </button>
+                      ) : post.status === 'SKIPPED' ? (
+                        <button type="button" className="button button--ghost" disabled>
+                          Пропущен
                         </button>
                       ) : (
                         <button
