@@ -17824,6 +17824,62 @@ describe('AdminService.getChatParticipantsPage', () => {
     }
   });
 
+  it('checks participant immunity target through the resolved chat bot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'CHAT',
+      });
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        }),
+      };
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      (service as any).resolveBackgroundReadBotAssignment = jest.fn().mockResolvedValue('bot-2');
+
+      await service.updateChatParticipantImmunity(
+        'chat-1',
+        'user-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          enabled: true,
+          durationHours: 24,
+          dailyViolationLimit: 3,
+        },
+      );
+
+      expect((service as any).resolveBackgroundReadBotAssignment).toHaveBeenCalledWith('chat-1');
+      expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+        'chat-1',
+        'user-1',
+        expect.objectContaining({
+          botId: 'bot-2',
+        }),
+      );
+      expect(prisma.chatParticipantModerationImmunity.upsert).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('rejects participant immunity shorter than one day', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

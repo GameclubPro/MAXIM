@@ -17343,7 +17343,12 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    await this.assertTargetUserCanReceiveParticipantImmunity(chatId, targetUserId);
+    const participantLookupBotId = await this.resolveBackgroundReadBotAssignment(chatId);
+    await this.assertTargetUserCanReceiveParticipantImmunity(
+      chatId,
+      targetUserId,
+      participantLookupBotId,
+    );
 
     const [settings, now] = await Promise.all([
       this.prisma.chatSettings.findUnique({
@@ -19376,6 +19381,7 @@ export class AdminService implements OnModuleDestroy {
   private async assertTargetUserCanReceiveParticipantImmunity(
     chatId: string,
     targetUserId: string,
+    botId?: string,
   ): Promise<void> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (
@@ -19395,6 +19401,7 @@ export class AdminService implements OnModuleDestroy {
 
     const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId, {
       actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      ...(botId ? { botId } : {}),
     });
     if (!targetAccess) {
       throw new BadRequestException('Пользователь уже не состоит в этом чате.');
