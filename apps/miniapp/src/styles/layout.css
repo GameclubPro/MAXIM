@@ -23,25 +23,32 @@
 }
 
 .app-shell--immersive {
+  --immersive-height: var(--app-viewport-height);
+  --immersive-top-bleed: 0px;
+  --immersive-bottom-bleed: 0px;
   gap: 0;
   width: 100%;
   max-width: none;
-  min-height: var(--app-viewport-height);
+  min-height: calc(
+    var(--immersive-height) + var(--immersive-top-bleed) + var(--immersive-bottom-bleed)
+  );
   padding: 0;
   padding-bottom: 0;
-  height: var(--app-viewport-height);
+  height: calc(
+    var(--immersive-height) + var(--immersive-top-bleed) + var(--immersive-bottom-bleed)
+  );
+  margin-top: calc(-1 * var(--immersive-top-bleed));
+  margin-bottom: calc(-1 * var(--immersive-bottom-bleed));
   overflow: hidden;
   background: transparent;
 }
 
 .app-shell--immersive.app-shell--comments-dialog {
-  --comments-dialog-top-inset: max(
-    var(--app-safe-top, 0px),
-    var(--app-visual-viewport-top, 0px)
+  --comments-dialog-top-overscan: 4px;
+  --immersive-top-bleed: calc(
+    max(var(--app-safe-top, 0px), var(--app-visual-viewport-top, 0px)) +
+      var(--comments-dialog-top-overscan)
   );
-  min-height: calc(var(--app-viewport-height) + var(--comments-dialog-top-inset));
-  height: calc(var(--app-viewport-height) + var(--comments-dialog-top-inset));
-  margin-top: calc(-1 * var(--comments-dialog-top-inset));
 }
 
 .app-shell--immersive .shell-content {
@@ -503,22 +510,21 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 .design-preview .app-shell.app-shell--immersive {
-  min-height: 100%;
-  height: 100%;
+  --immersive-height: 100%;
+  --app-safe-top: var(--design-preview-safe-top, 0px);
+  min-height: calc(
+    var(--immersive-height) + var(--immersive-top-bleed) + var(--immersive-bottom-bleed)
+  );
+  height: calc(
+    var(--immersive-height) + var(--immersive-top-bleed) + var(--immersive-bottom-bleed)
+  );
   padding: 0;
   overflow: hidden;
   background: transparent;
 }
 
 .design-preview .app-shell.app-shell--immersive.app-shell--comments-dialog {
-  min-height: calc(
-    100% + var(--design-preview-safe-top, 0px) + var(--design-preview-safe-bottom, 0px)
-  );
-  height: calc(
-    100% + var(--design-preview-safe-top, 0px) + var(--design-preview-safe-bottom, 0px)
-  );
-  margin-top: calc(-1 * var(--design-preview-safe-top, 0px));
-  margin-bottom: calc(-1 * var(--design-preview-safe-bottom, 0px));
+  --immersive-bottom-bleed: var(--design-preview-safe-bottom, 0px);
 }
 
 .page-stack {
