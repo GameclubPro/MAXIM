@@ -299,12 +299,14 @@ export class MaxBotExecutionPlannerService {
         `Standby-бот ${activePartner.label} готов к promotion, но assist-режим для него ещё не включён.`,
       );
     } else {
-      reasons.push('В этом чате сейчас нет второго активного бота, поэтому режим остаётся owned.');
+      reasons.push('В этом чате сейчас нет активного standby-бота, поэтому режим остаётся owned.');
     }
 
     const warnings: string[] = [];
     if (!primaryBotId) {
-      warnings.push('У чата нет валидного owner-бота. До dual-bot rollout надо назначить primary.');
+      warnings.push(
+        'У чата нет валидного owner-бота. До multi-bot rollout надо назначить primary.',
+      );
     }
     if (activePartner && !assistPartner) {
       const snapshot = activePartner.permissionsSummary;

@@ -905,21 +905,19 @@ export function resolveHeaderAssignedBots(
     return [];
   }
 
-  return [...header.assignedBots]
-    .sort((left, right) => {
-      const leftPrimary = left.botId === header.primaryBotId ? 1 : 0;
-      const rightPrimary = right.botId === header.primaryBotId ? 1 : 0;
-      if (leftPrimary !== rightPrimary) {
-        return rightPrimary - leftPrimary;
-      }
+  return [...header.assignedBots].sort((left, right) => {
+    const leftPrimary = left.botId === header.primaryBotId ? 1 : 0;
+    const rightPrimary = right.botId === header.primaryBotId ? 1 : 0;
+    if (leftPrimary !== rightPrimary) {
+      return rightPrimary - leftPrimary;
+    }
 
-      if (left.role !== right.role) {
-        return left.role === 'primary' ? -1 : 1;
-      }
+    if (left.role !== right.role) {
+      return left.role === 'primary' ? -1 : 1;
+    }
 
-      return left.label.localeCompare(right.label, 'ru-RU');
-    })
-    .slice(0, 2);
+    return left.label.localeCompare(right.label, 'ru-RU');
+  });
 }
 
 export function parseHeaderBotLoadSnapshots(value: unknown): Record<string, HeaderBotLoadSnapshot> {

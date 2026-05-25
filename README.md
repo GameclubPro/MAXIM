@@ -23,7 +23,7 @@ The `.env.example` file now includes a multi-bot example:
 - the default bot stays the primary visible bot,
 - `MAX_ENTRY_BOT_ID` keeps `start` / `startapp` links on one canonical entry bot even when ownership is split across multiple bots,
 - additional bots are listed in `MAX_BOTS_JSON`,
-- use `state: "dormant"` for a pre-provisioned second bot that should appear in admin metadata but must not process webhooks or actions yet.
+- use `state: "dormant"` for pre-provisioned additional bots that should appear in admin metadata but must not process webhooks or actions yet.
 
 ## Standalone Bot On The Same VPS
 

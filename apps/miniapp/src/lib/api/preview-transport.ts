@@ -160,6 +160,8 @@ const PREVIEW_PRIMARY_BOT_ID = '777000_bot';
 const PREVIEW_PRIMARY_BOT_LABEL = 'MAXIM';
 const PREVIEW_STANDBY_BOT_ID = '777001_bot';
 const PREVIEW_STANDBY_BOT_LABEL = 'MAXIM 2';
+const PREVIEW_REX_BOT_ID = '777002_bot';
+const PREVIEW_REX_BOT_LABEL = 'Рэкс';
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
 type PreviewGiveawayParticipantVariant =
@@ -217,6 +219,23 @@ function buildPreviewAssignedBots(
         isOwner: primaryBotId === PREVIEW_STANDBY_BOT_ID,
         permissions:
           primaryBotId === PREVIEW_STANDBY_BOT_ID ? ['all'] : ['read', 'write', 'manage'],
+      },
+    },
+    {
+      botId: PREVIEW_REX_BOT_ID,
+      label: PREVIEW_REX_BOT_LABEL,
+      role: primaryBotId === PREVIEW_REX_BOT_ID ? 'primary' : 'standby',
+      membershipStatus: 'active',
+      lifecycleState: 'active',
+      speechPersona: 'male',
+      characterName: 'Рэкс',
+      avatarUrl: buildPreviewAvatarDataUrl('Рэкс', '#39c58f', '#178a68'),
+      capabilities: [],
+      permissionsSummary: {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: primaryBotId === PREVIEW_REX_BOT_ID,
+        permissions: primaryBotId === PREVIEW_REX_BOT_ID ? ['all'] : ['read', 'write'],
       },
     },
   ];
@@ -543,10 +562,10 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
     ownership: {
       generatedAt,
       bots: {
-        configured: 2,
-        adminVisible: 2,
-        active: 1,
-        dormant: 1,
+        configured: 3,
+        adminVisible: 3,
+        active: 3,
+        dormant: 0,
         draining: 0,
         disabled: 0,
       },

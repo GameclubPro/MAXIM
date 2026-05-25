@@ -11,6 +11,7 @@ import {
   canExecuteActionsForBotState,
   isOperationalBotState,
 } from './max-bot-state.util';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
 
 export type MaxBotDefinition = ResolvedMaxBotConfig & {
   webhookUrl: string | null;
@@ -95,16 +96,7 @@ export class MaxBotRegistryService {
   }
 
   getRequiredWebhookUpdateTypes(): readonly string[] {
-    return [
-      'message_created',
-      'message_edited',
-      'message_callback',
-      'user_added',
-      'bot_added',
-      'bot_started',
-      'user_removed',
-      'bot_removed',
-    ];
+    return [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES];
   }
 
   getValidationTokens(): readonly string[] {

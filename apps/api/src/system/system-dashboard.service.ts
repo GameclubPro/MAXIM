@@ -671,9 +671,9 @@ export class SystemDashboardService {
         code: 'ownership-repair-error',
         level: 'warning',
         title: 'Ownership foundation repair не завершился чисто',
-        detail: `Последняя ошибка repair: ${ownership.repair.lastError}. Snapshot остаётся доступным, но dual-bot rollout лучше не продолжать до исправления.`,
+        detail: `Последняя ошибка repair: ${ownership.repair.lastError}. Snapshot остаётся доступным, но multi-bot rollout лучше не продолжать до исправления.`,
         recommendedAction:
-          'Проверьте api-admin logs и состояние chats/chat_bot_memberships. Не активируйте второй бот, пока repair снова не станет зелёным.',
+          'Проверьте api-admin logs и состояние chats/chat_bot_memberships. Не активируйте новых ботов, пока repair снова не станет зелёным.',
       };
     }
 
@@ -692,7 +692,7 @@ export class SystemDashboardService {
       title: 'Ownership foundation snapshot устарел',
       detail: `Последний успешный repair был ${ownership.repair.lastSuccessAt}, что заметно старше ожидаемого окна ${Math.round(ownership.repair.intervalMs / 60_000)} мин.`,
       recommendedAction:
-        'Проверьте, что api-admin работает и Redis lock не завис. До обновления snapshot не используйте ownership цифры как основание для dual-bot rollout.',
+        'Проверьте, что api-admin работает и Redis lock не завис. До обновления snapshot не используйте ownership цифры как основание для multi-bot rollout.',
     };
   }
 
@@ -713,9 +713,9 @@ export class SystemDashboardService {
       return null;
     }
 
-    const secondBotPrepared = ownership.bots.configured > 1 || ownership.bots.dormant > 0;
+    const additionalBotsPrepared = ownership.bots.configured > 1 || ownership.bots.dormant > 0;
     const level =
-      unresolvedKnownIssues > 0 || (secondBotPrepared && totalGaps > 0) ? 'warning' : 'info';
+      unresolvedKnownIssues > 0 || (additionalBotsPrepared && totalGaps > 0) ? 'warning' : 'info';
     const parts = [
       `valid ownership coverage ${ownership.entities.total.withPrimary}/${ownership.entities.total.total}`,
       `without primary ${totalGaps}`,
@@ -736,7 +736,7 @@ export class SystemDashboardService {
       level,
       title:
         level === 'warning'
-          ? 'Ownership foundation ещё не готов к dual-bot rollout'
+          ? 'Ownership foundation ещё не готов к multi-bot rollout'
           : 'Ownership foundation ещё не доведён до полной coverage',
       detail: `${parts.join(', ')}.`,
       recommendedAction:

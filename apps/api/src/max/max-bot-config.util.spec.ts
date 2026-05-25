@@ -39,4 +39,51 @@ describe('max bot config util', () => {
       state: 'dormant',
     });
   });
+
+  it('resolves multiple additional bots without collapsing the registry to a pair', () => {
+    const bots = buildResolvedMaxBotConfigs({
+      defaultBot: {
+        id: 'id613002203036_bot',
+        token: 'token-primary-123456',
+        webhookSecretPath: 'primary-webhook-path-123456',
+        webhookHeaderSecret: 'primary-webhook-header-123456',
+      },
+      additionalBotsJson: JSON.stringify([
+        {
+          id: 'id613002203036_4_bot',
+          label: 'Майор Максимова',
+          characterName: 'Майор Максимова',
+          speechPersona: 'female',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-webhook-path-123456',
+          webhookHeaderSecret: 'secondary-webhook-header-123456',
+          state: 'active',
+        },
+        {
+          id: 'id613002203036_5_bot',
+          label: 'Рэкс',
+          characterName: 'Рэкс',
+          speechPersona: 'male',
+          token: 'token-rex-123456',
+          webhookSecretPath: 'rex-webhook-path-123456',
+          webhookHeaderSecret: 'rex-webhook-header-123456',
+          state: 'active',
+        },
+      ]),
+    });
+
+    expect(bots.map((bot) => bot.id)).toEqual([
+      'id613002203036_bot',
+      'id613002203036_4_bot',
+      'id613002203036_5_bot',
+    ]);
+    expect(bots.at(2)).toMatchObject({
+      label: 'Рэкс',
+      characterName: 'Рэкс',
+      speechPersona: 'male',
+      state: 'active',
+      visibleInAdmin: true,
+      isDefault: false,
+    });
+  });
 });

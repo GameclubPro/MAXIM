@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
 
 describe('MaxBotRegistryService webhook base URL', () => {
   function createService(overrides: Partial<Record<string, string>> = {}) {
@@ -44,5 +45,51 @@ describe('MaxBotRegistryService webhook base URL', () => {
       url: 'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
       maskedUrl: 'https://hook.maxim.play-team.ru/api/webhook/max/777000_bot/***',
     });
+  });
+
+  it('registers a third active bot with its own webhook target and validation token', () => {
+    const service = createService({
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'id613002203036_4_bot',
+          label: 'Майор Максимова',
+          characterName: 'Майор Максимова',
+          speechPersona: 'female',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-secret',
+          webhookHeaderSecret: 'secondary-header',
+          state: 'active',
+        },
+        {
+          id: 'id613002203036_5_bot',
+          label: 'Рэкс',
+          characterName: 'Рэкс',
+          speechPersona: 'male',
+          token: 'token-rex-123456',
+          webhookSecretPath: 'rex-secret',
+          webhookHeaderSecret: 'rex-header',
+          state: 'active',
+        },
+      ]),
+    });
+
+    expect(service.getAllBots().map((bot) => bot.id)).toEqual([
+      '777000_bot',
+      'id613002203036_4_bot',
+      'id613002203036_5_bot',
+    ]);
+    expect(service.getOperationalBots().map((bot) => bot.id)).toContain('id613002203036_5_bot');
+    expect(service.getValidationTokensForBot('id613002203036_5_bot')).toEqual(['token-rex-123456']);
+    expect(service.getConfiguredWebhookSubscriptionTarget('id613002203036_5_bot')).toEqual({
+      url: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_5_bot/rex-secret',
+      maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_5_bot/***',
+    });
+    expect(service.isKnownBotUserId('613002203036_5')).toBe(true);
+  });
+
+  it('keeps registry webhook requirements aligned with the shared subscription constants', () => {
+    const service = createService();
+
+    expect(service.getRequiredWebhookUpdateTypes()).toEqual([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES]);
   });
 });
