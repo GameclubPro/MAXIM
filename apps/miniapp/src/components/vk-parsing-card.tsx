@@ -83,6 +83,7 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   const [draftText, setDraftText] = useState('');
   const [selectedPhotoUrls, setSelectedPhotoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
   const feedQuery = useQuery({
     queryKey: queryKeys.channelVkParsing(chatId),
@@ -113,7 +114,10 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
 
   const removeSourceMutation = useMutation({
     mutationFn: (sourceId: string) => removeChannelVkParsingSource(api, chatId, sourceId),
-    onSuccess: () => {
+    onSuccess: (_feed, sourceId) => {
+      if (selectedSourceId === sourceId) {
+        setSelectedSourceId(null);
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.channelVkParsing(chatId) });
       pushToast({ tone: 'info', title: 'Источник удалён' });
     },
@@ -173,10 +177,23 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
   const feed = feedQuery.data;
   const posts = feed?.posts ?? [];
   const sources = feed?.sources ?? [];
+  const visiblePosts = useMemo(
+    () =>
+      selectedSourceId ? posts.filter((post) => post.sourceId === selectedSourceId) : posts,
+    [posts, selectedSourceId],
+  );
   const editingPost = useMemo(
     () => posts.find((post) => post.id === editingPostId) ?? null,
     [editingPostId, posts],
   );
+
+  useEffect(() => {
+    if (!selectedSourceId || sources.some((source) => source.id === selectedSourceId)) {
+      return;
+    }
+
+    setSelectedSourceId(null);
+  }, [selectedSourceId, sources]);
 
   useEffect(() => {
     if (!editingPostId || editingPost) {
@@ -255,14 +272,39 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
 
       {sources.length > 0 ? (
         <div className="vk-parsing-card__sources" aria-label="VK источники">
+          {sources.length > 1 ? (
+            <span className={cn('vk-parsing-source-chip', !selectedSourceId && 'is-selected')}>
+              <button
+                type="button"
+                className="vk-parsing-source-chip__select vk-parsing-source-chip__select--all"
+                aria-pressed={!selectedSourceId}
+                onClick={() => setSelectedSourceId(null)}
+              >
+                Все
+              </button>
+            </span>
+          ) : null}
           {sources.map((source) => (
-            <span key={source.id} className="vk-parsing-source-chip">
-              <a href={source.url} target="_blank" rel="noreferrer">
-                {source.title}
-              </a>
+            <span
+              key={source.id}
+              className={cn(
+                'vk-parsing-source-chip',
+                selectedSourceId === source.id && 'is-selected',
+              )}
+            >
+              <button
+                type="button"
+                className="vk-parsing-source-chip__select"
+                aria-pressed={selectedSourceId === source.id}
+                title={source.title}
+                onClick={() => setSelectedSourceId(source.id)}
+              >
+                <span>{source.title}</span>
+              </button>
               {source.lastError ? <small title={source.lastError}>Ошибка</small> : null}
               <button
                 type="button"
+                className="vk-parsing-source-chip__remove"
                 aria-label={`Удалить ${source.title}`}
                 title="Удалить источник"
                 disabled={removeSourceMutation.isPending}
@@ -294,13 +336,13 @@ export function VkParsingCard({ api, chatId, active }: VkParsingCardProps) {
         />
       ) : null}
 
-      {!feedQuery.isLoading && !feedQuery.error && posts.length === 0 ? (
+      {!feedQuery.isLoading && !feedQuery.error && visiblePosts.length === 0 ? (
         <div className="vk-parsing-card__empty">Постов пока нет</div>
       ) : null}
 
-      {posts.length > 0 ? (
+      {visiblePosts.length > 0 ? (
         <div className="vk-parsing-post-list">
-          {posts.map((post) => {
+          {visiblePosts.map((post) => {
             const isEditing = editingPostId === post.id;
             const isPublishing =
               publishMutation.isPending && publishMutation.variables?.postId === post.id;
