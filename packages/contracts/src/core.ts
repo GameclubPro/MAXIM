@@ -91,6 +91,9 @@ export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
 export const MAX_BROADCAST_IMAGES = 10;
 export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
+export const VK_PARSING_MAX_PHOTOS = 10;
+export const VK_PARSING_MAX_LINKS = 20;
+export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 2_000;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const escalationWindowHoursSchema = z.number().int().min(1).max(168);
@@ -2170,6 +2173,95 @@ export const managedBroadcastCalendarResponseSchema = z.object({
 export type ManagedBroadcastCalendarResponse = z.infer<
   typeof managedBroadcastCalendarResponseSchema
 >;
+
+export const vkParsingSourceStatusSchema = z.enum(['ACTIVE', 'DISABLED']);
+export type VkParsingSourceStatus = z.infer<typeof vkParsingSourceStatusSchema>;
+
+export const vkParsingPostStatusSchema = z.enum(['NEW', 'PUBLISHED', 'FAILED']);
+export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
+
+export const vkParsingSourceSchema = z.object({
+  id: z.string(),
+  chatId: z.string(),
+  ownerId: z.number().int(),
+  wallOwnerId: z.number().int(),
+  screenName: z.string(),
+  title: z.string(),
+  url: z.string().url(),
+  status: vkParsingSourceStatusSchema,
+  lastSyncAt: z.string().datetime().nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type VkParsingSource = z.infer<typeof vkParsingSourceSchema>;
+
+export const vkParsingPostSchema = z.object({
+  id: z.string(),
+  sourceId: z.string(),
+  chatId: z.string(),
+  sourceTitle: z.string(),
+  sourceUrl: z.string().url(),
+  vkOwnerId: z.number().int(),
+  vkPostId: z.number().int(),
+  vkPublishedAt: z.string().datetime().nullable(),
+  text: z.string(),
+  url: z.string().url(),
+  photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
+  linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
+  status: vkParsingPostStatusSchema,
+  publishedMessageId: z.string().nullable(),
+  publishedUrl: z.string().url().nullable(),
+  publishedAtMax: z.string().datetime().nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type VkParsingPost = z.infer<typeof vkParsingPostSchema>;
+
+export const vkParsingFeedSchema = z.object({
+  sources: z.array(vkParsingSourceSchema).default([]),
+  posts: z.array(vkParsingPostSchema).default([]),
+});
+export type VkParsingFeed = z.infer<typeof vkParsingFeedSchema>;
+
+export const addVkParsingSourceRequestSchema = z.object({
+  url: z.string().trim().min(2).max(512),
+});
+export type AddVkParsingSourceRequest = z.infer<typeof addVkParsingSourceRequestSchema>;
+
+export const publishVkParsingPostRequestSchema = z
+  .object({
+    text: z.string().max(VK_PARSING_MAX_PUBLISH_TEXT_LENGTH).default(''),
+    photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
+    linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.text.trim().length === 0 &&
+      value.photoUrls.length === 0 &&
+      value.linkUrls.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['text'],
+        message: 'Добавьте текст, фото или ссылку.',
+      });
+    }
+  });
+export type PublishVkParsingPostRequest = z.infer<typeof publishVkParsingPostRequestSchema>;
+
+export const vkParsingRefreshResultSchema = vkParsingFeedSchema.extend({
+  imported: z.number().int().min(0).default(0),
+});
+export type VkParsingRefreshResult = z.infer<typeof vkParsingRefreshResultSchema>;
+
+export const publishVkParsingPostResultSchema = z.object({
+  post: vkParsingPostSchema,
+  messageId: z.string(),
+  url: z.string().url().nullable(),
+});
+export type PublishVkParsingPostResult = z.infer<typeof publishVkParsingPostResultSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,

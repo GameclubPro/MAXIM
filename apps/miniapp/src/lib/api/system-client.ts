@@ -368,6 +368,9 @@ function parseSystemDashboardWebhookSlo(value: unknown): SystemDashboardWebhookS
     (value.p95ProcessingMs !== null &&
       value.p95ProcessingMs !== undefined &&
       typeof value.p95ProcessingMs !== 'number') ||
+    (value.p99ProcessingMs !== null &&
+      value.p99ProcessingMs !== undefined &&
+      typeof value.p99ProcessingMs !== 'number') ||
     (value.underTargetRatio !== null &&
       value.underTargetRatio !== undefined &&
       typeof value.underTargetRatio !== 'number') ||
@@ -392,6 +395,7 @@ function parseSystemDashboardWebhookSlo(value: unknown): SystemDashboardWebhookS
     failedEvents: value.failedEvents,
     sampledProcessedEvents: value.sampledProcessedEvents,
     p95ProcessingMs: typeof value.p95ProcessingMs === 'number' ? value.p95ProcessingMs : null,
+    p99ProcessingMs: typeof value.p99ProcessingMs === 'number' ? value.p99ProcessingMs : null,
     underTargetRatio: typeof value.underTargetRatio === 'number' ? value.underTargetRatio : null,
     oldestUnprocessedLagSec: value.oldestUnprocessedLagSec,
     oldestUnprocessedEventId:

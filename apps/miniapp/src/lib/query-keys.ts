@@ -45,4 +45,5 @@ export const queryKeys = {
     chatId: string | null | undefined,
     ...scope: readonly unknown[]
   ) => ['channel-managed-broadcast-calendar', chatId, ...scope] as const,
+  channelVkParsing: (chatId: string | null | undefined) => ['channel-vk-parsing', chatId] as const,
 };

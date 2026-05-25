@@ -289,6 +289,7 @@ export const MAX_API_SOURCE_TAGS = {
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',
+  VK_PARSING: 'vk_parsing',
   MANUAL_GROUP_CLOSE_SCAN: 'manual_group_close_scan',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
@@ -4167,9 +4168,7 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private async tryReserveManagedRefreshSourceSlot(
-    botId: string,
-  ): Promise<
+  private async tryReserveManagedRefreshSourceSlot(botId: string): Promise<
     | { ok: true }
     | {
         ok: false;
@@ -4181,7 +4180,9 @@ export class MaxClientService implements OnModuleDestroy {
     const keys: string[] = [];
     const limits: string[] = [];
     if (this.managedRefreshRpsLimit > 0) {
-      keys.push(`maxapi:rps:source-limit:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`);
+      keys.push(
+        `maxapi:rps:source-limit:${botId}:${MAX_API_SOURCE_TAGS.MANAGED_REFRESH}:${nowSec}`,
+      );
       limits.push(String(this.managedRefreshRpsLimit));
     }
     if (this.managedRefreshStackRpsLimit > 0) {

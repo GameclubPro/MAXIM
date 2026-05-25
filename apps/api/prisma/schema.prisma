@@ -183,6 +183,8 @@ model Chat {
   channelStatsSyncState    ChannelStatsSyncState?
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
+  vkParsingSources         VkParsingSource[]
+  vkParsingPosts           VkParsingPost[]
   botMemberships           ChatBotMembership[]
   accessEdges              ManagedEntityAccessEdge[]
   favorites                ManagedEntityFavorite[]
@@ -959,6 +961,60 @@ model ManagedBroadcastDelivery {
   @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
   @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
   @@map("managed_broadcast_deliveries")
+}
+
+model VkParsingSource {
+  id              String    @id @default(cuid())
+  chatId          String    @map("chat_id")
+  ownerId         Int       @map("owner_id")
+  wallOwnerId     Int       @map("wall_owner_id")
+  screenName      String    @map("screen_name")
+  title           String
+  url             String
+  status          String    @default("ACTIVE")
+  lastSyncAt      DateTime? @map("last_sync_at")
+  lastError       String?   @map("last_error")
+  createdByUserId String    @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  chat  Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  posts VkParsingPost[]
+
+  @@unique([chatId, wallOwnerId], map: "vk_parsing_sources_chat_wall_owner_key")
+  @@index([chatId, status], map: "vk_parsing_sources_chat_status_idx")
+  @@index([status, lastSyncAt], map: "vk_parsing_sources_status_last_sync_at_idx")
+  @@map("vk_parsing_sources")
+}
+
+model VkParsingPost {
+  id                 String    @id @default(cuid())
+  sourceId           String    @map("source_id")
+  chatId             String    @map("chat_id")
+  vkOwnerId          Int       @map("vk_owner_id")
+  vkPostId           Int       @map("vk_post_id")
+  vkPublishedAt      DateTime? @map("vk_published_at")
+  text               String    @default("")
+  url                String
+  photoUrls          Json      @default("[]") @map("photo_urls")
+  linkUrls           Json      @default("[]") @map("link_urls")
+  attachments        Json      @default("[]")
+  raw                Json?
+  status             String    @default("NEW")
+  publishedMessageId String?   @map("published_message_id")
+  publishedUrl       String?   @map("published_url")
+  publishedAtMax     DateTime? @map("published_at_max")
+  lastError          String?   @map("last_error")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  chat   Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  source VkParsingSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, vkOwnerId, vkPostId], map: "vk_parsing_posts_chat_vk_post_key")
+  @@index([sourceId, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_source_published_at_idx")
+  @@index([chatId, status, vkPublishedAt(sort: Desc)], map: "vk_parsing_posts_chat_status_published_idx")
+  @@map("vk_parsing_posts")
 }
 
 model ManagedGiveaway {

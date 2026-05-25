@@ -21,6 +21,7 @@ import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
+import { VkParsingService } from './vk-parsing.service';
 
 @Controller('v1')
 @UseGuards(InitDataGuard)
@@ -33,6 +34,7 @@ export class AdminController {
     @Optional() private readonly adminSettingsService?: AdminSettingsService,
     @Optional() private readonly manualModerationService?: ManualModerationService,
     @Optional() private readonly channelDialogService?: ChannelDialogService,
+    @Optional() private readonly vkParsingFeatureService?: VkParsingService,
   ) {}
 
   @Get('me')
@@ -456,6 +458,44 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.broadcastService.retryChannelManagedBroadcast(chatId, broadcastId, user);
+  }
+
+  @Get('channels/:chatId/vk-parsing')
+  getChannelVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.listVkParsing(chatId, user);
+  }
+
+  @Post('channels/:chatId/vk-parsing/sources')
+  addChannelVkParsingSource(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.addSource(chatId, user, body);
+  }
+
+  @Delete('channels/:chatId/vk-parsing/sources/:sourceId')
+  removeChannelVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.removeSource(chatId, sourceId, user);
+  }
+
+  @Post('channels/:chatId/vk-parsing/refresh')
+  refreshChannelVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.refresh(chatId, user);
+  }
+
+  @Post('channels/:chatId/vk-parsing/posts/:postId/publish')
+  publishChannelVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.publishPost(chatId, postId, user, body);
   }
 
   @Get('channels/:chatId/poll')
@@ -1094,6 +1134,14 @@ export class AdminController {
 
   private get dialogService(): ChannelDialogService | AdminService {
     return this.channelDialogService ?? this.adminService;
+  }
+
+  private get vkParsingService(): VkParsingService {
+    if (!this.vkParsingFeatureService) {
+      throw new BadRequestException('ВК-парсинг недоступен.');
+    }
+
+    return this.vkParsingFeatureService;
   }
 
   private resolveAllowlistDomain(

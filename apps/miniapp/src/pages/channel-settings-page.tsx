@@ -45,6 +45,7 @@ import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-his
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
+import { VkParsingCard } from '../components/vk-parsing-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -68,6 +69,7 @@ import {
   updateChannelManagedBroadcast,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
+import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/shared-types';
 import {
@@ -106,6 +108,7 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { queryKeys } from '../lib/query-keys';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
+import { canUseVkParsing } from '../lib/vk-parsing-access';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -157,7 +160,13 @@ function areBroadcastImagesReady(images: BroadcastImage[]): boolean {
   );
 }
 
-type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
+type ChannelSettingsSectionKey =
+  | 'comments'
+  | 'postSuggestions'
+  | 'vkParsing'
+  | 'broadcast'
+  | 'poll'
+  | 'giveaway';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
   | 'commentsModerationEnabled'
@@ -200,6 +209,7 @@ const DESKTOP_TOGGLE_ROW_BLOCKERS = [
 const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
   comments: false,
   postSuggestions: false,
+  vkParsing: false,
   broadcast: false,
   poll: false,
   giveaway: false,
@@ -933,6 +943,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         }
       : {}),
   });
+  const currentUserQuery = useQuery({
+    queryKey: queryKeys.currentUser(chatId),
+    queryFn: ({ signal }) => getMe(api, { chatId, entityType: 'channel', signal }),
+    enabled: Boolean(chatId),
+    staleTime: 300_000,
+    refetchOnWindowFocus: false,
+  });
   const broadcastHandoffStateQuery = useQuery({
     queryKey: queryKeys.channelBroadcastHandoff(chatId),
     queryFn: () => getChannelBroadcastHandoffState(api, chatId ?? ''),
@@ -950,7 +967,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'poll' &&
-      focusSection !== 'postSuggestions'
+      focusSection !== 'postSuggestions' &&
+      focusSection !== 'vkParsing'
     ) {
       return;
     }
@@ -961,11 +979,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? { comments: true }
         : focusSection === 'postSuggestions'
           ? { postSuggestions: true }
-          : focusSection === 'poll'
-            ? { poll: true }
-            : focusSection === 'giveaway'
-              ? { giveaway: true }
-              : { broadcast: true }),
+          : focusSection === 'vkParsing'
+            ? { vkParsing: true }
+            : focusSection === 'poll'
+              ? { poll: true }
+              : focusSection === 'giveaway'
+                ? { giveaway: true }
+                : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -985,6 +1005,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showSettingsHandoffError =
     Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
+  const canAccessVkParsing = canUseVkParsing(currentUserQuery.data?.userId);
   const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({
@@ -1271,6 +1292,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       (section === 'broadcast' && focusSection === 'broadcast') ||
       (section === 'comments' && focusSection === 'comments') ||
       (section === 'postSuggestions' && focusSection === 'postSuggestions') ||
+      (section === 'vkParsing' && focusSection === 'vkParsing') ||
       (section === 'poll' && focusSection === 'poll') ||
       (section === 'giveaway' && focusSection === 'giveaway')
     ) {
@@ -2789,6 +2811,44 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
+
+      {canAccessVkParsing ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <SettingsSectionToggle
+              title="ВК-парсинг"
+              summary=""
+              status="Импорт"
+              icon="links"
+              tone="ink"
+              open={expandedSections.vkParsing}
+              controls="channel-settings-vk-parsing"
+              onClick={() => toggleSection('vkParsing')}
+            />
+          </div>
+
+          <SettingsDrilldownPanel
+            id="channel-settings-vk-parsing"
+            open={expandedSections.vkParsing}
+            title="ВК-парсинг"
+            summary="Посты из VK"
+            tone="ink"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
+            onClose={() => toggleSection('vkParsing')}
+          >
+            <div
+              id="channel-settings-vk-parsing"
+              className={cn('settings-section__collapse', expandedSections.vkParsing && 'is-open')}
+            >
+              {expandedSections.vkParsing ? (
+                <div className="settings-section__collapse-inner">
+                  <VkParsingCard api={api} chatId={chatId} active={expandedSections.vkParsing} />
+                </div>
+              ) : null}
+            </div>
+          </SettingsDrilldownPanel>
+        </GlassCard>
+      ) : null}
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

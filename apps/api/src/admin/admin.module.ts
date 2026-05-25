@@ -24,6 +24,8 @@ import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service'
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
+import { VkParsingRunnerService } from './vk-parsing-runner.service';
+import { VkParsingService } from './vk-parsing.service';
 
 @Module({
   imports: [
@@ -49,6 +51,8 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
+    VkParsingService,
+    ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManagedEntitiesRefreshProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
@@ -62,6 +66,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
+    VkParsingService,
   ],
 })
 export class AdminModule {}
