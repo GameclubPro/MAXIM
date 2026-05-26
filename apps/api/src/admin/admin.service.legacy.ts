@@ -24427,7 +24427,7 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    const entityTitle = await this.resolveDialogNotificationEntityTitle({
+    const entityTarget = await this.resolveDialogNotificationEntityTarget({
       entityType: params.entityType,
       chatId: params.chatId,
       botId: deliveryBotId,
@@ -24460,7 +24460,8 @@ export class AdminService implements OnModuleDestroy {
             this.buildCommentDialogNotificationText({
               kind: recipient.kind,
               entityType: params.entityType,
-              entityTitle,
+              entityTitle: entityTarget.title,
+              entityLink: entityTarget.link,
               authorUserId,
               authorDisplayName: params.authorDisplayName,
               preview,
@@ -24561,33 +24562,26 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
-  private async resolveDialogNotificationEntityTitle(params: {
+  private async resolveDialogNotificationEntityTarget(params: {
     entityType: ManagedEntityType;
     chatId: string;
     botId?: string | null;
-  }): Promise<string> {
+  }): Promise<{ title: string; link: string | null }> {
     const local = await this.prisma.chat.findUnique({
       where: { id: params.chatId },
       select: { title: true },
     });
-    const localTitle = resolvePresentableManagedEntityTitle(params.chatId, local?.title);
-    if (localTitle) {
-      return localTitle;
-    }
+
+    let title = resolvePresentableManagedEntityTitle(params.chatId, local?.title);
+    let link: string | null = null;
 
     try {
-      const remoteTitle = await this.maxClient.getChatTitle(params.chatId, {
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
-        ...(params.botId ? { botId: params.botId } : {}),
-      });
-      const presentableRemoteTitle = resolvePresentableManagedEntityTitle(
+      const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
         params.chatId,
-        remoteTitle,
+        params.entityType,
       );
-      if (presentableRemoteTitle) {
-        return presentableRemoteTitle;
-      }
+      title ??= resolvePresentableManagedEntityTitle(params.chatId, cachedHeader?.title);
+      link = this.normalizeMaxEntityLink(cachedHeader?.link) ?? link;
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -24595,11 +24589,93 @@ export class AdminService implements OnModuleDestroy {
           entityType: params.entityType,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to resolve comment notification entity title',
+        'Failed to resolve cached comment notification entity link',
       );
     }
 
-    return `${params.entityType === 'channel' ? 'Канал' : 'Чат'} ${params.chatId}`;
+    if (!link) {
+      try {
+        const catalogRows = await this.prisma.managedBotChatCatalog.findMany({
+          where: {
+            chatId: params.chatId,
+            status: 'ACTIVE',
+          },
+          orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+          take: 5,
+          select: {
+            title: true,
+            link: true,
+          },
+        });
+
+        for (const row of catalogRows) {
+          title ??= resolvePresentableManagedEntityTitle(params.chatId, row.title);
+          link = this.normalizeMaxEntityLink(row.link) ?? link;
+          if (title && link) {
+            break;
+          }
+        }
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            chatId: params.chatId,
+            entityType: params.entityType,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve catalog comment notification entity link',
+        );
+      }
+    }
+
+    if (!title || !link) {
+      try {
+        const remoteSnapshot = await this.maxClient.getChatSnapshot(params.chatId, {
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+          ...(params.botId ? { botId: params.botId } : {}),
+        });
+        title ??= resolvePresentableManagedEntityTitle(params.chatId, remoteSnapshot.title);
+        link = this.normalizeMaxEntityLink(remoteSnapshot.link) ?? link;
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            chatId: params.chatId,
+            entityType: params.entityType,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve comment notification entity target',
+        );
+      }
+    }
+
+    return {
+      title: title ?? `${params.entityType === 'channel' ? 'Канал' : 'Чат'} ${params.chatId}`,
+      link,
+    };
+  }
+
+  private normalizeMaxEntityLink(value: string | null | undefined): string | null {
+    const normalized = this.readTrimmedString(value);
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return null;
+      }
+
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   private buildCommentDialogNotificationPreview(text: string, attachmentCount: number): string {
@@ -24626,6 +24702,7 @@ export class AdminService implements OnModuleDestroy {
     kind: CommentDialogNotificationKind;
     entityType: ManagedEntityType;
     entityTitle: string;
+    entityLink: string | null;
     authorUserId: string;
     authorDisplayName: string | null;
     preview: string;
@@ -24641,6 +24718,10 @@ export class AdminService implements OnModuleDestroy {
         )}</a>`
       : escapeHtml(authorName);
     const entityLabel = params.entityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = escapeHtml(params.entityTitle);
+    const entityTarget = params.entityLink
+      ? `<a href="${escapeHtmlAttribute(params.entityLink)}">${entityTitle}</a>`
+      : entityTitle;
     const title =
       params.kind === 'reply'
         ? 'Вам ответили в комментариях'
@@ -24648,7 +24729,7 @@ export class AdminService implements OnModuleDestroy {
 
     return [
       `<strong>${escapeHtml(title)}</strong>`,
-      `${entityLabel}: ${escapeHtml(params.entityTitle)}`,
+      `${entityLabel}: ${entityTarget}`,
       `${params.kind === 'reply' ? 'Ответил' : 'Автор'}: ${authorLink}`,
       `Комментарий: ${escapeHtml(params.preview)}`,
       `<a href="${escapeHtmlAttribute(params.dialogUrl)}">Открыть комментарии</a>`,

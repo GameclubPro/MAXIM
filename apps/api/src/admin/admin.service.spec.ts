@@ -40,6 +40,16 @@ type AdminServicePrivateAccess = {
     type: ChannelDialogType,
     token: string | null | undefined,
   ) => string | null;
+  buildCommentDialogNotificationText: (params: {
+    kind: 'reply' | 'all';
+    entityType: ManagedEntityType;
+    entityTitle: string;
+    entityLink: string | null;
+    authorUserId: string;
+    authorDisplayName: string | null;
+    preview: string;
+    dialogUrl: string;
+  }) => string;
 };
 
 function createChatSummaryFixture(
@@ -22437,10 +22447,20 @@ describe('AdminService.sendBroadcast', () => {
         url: null,
       }),
     };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue(
+        createManagedEntityHeaderFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          entityType: 'chat',
+          link: 'https://max.ru/chats/chat-1#comments',
+        }),
+      ),
+    });
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      createChatContextCacheMock() as never,
+      chatContextCache as never,
       createConfigMock() as never,
     );
     const commentsToken = (
@@ -22497,6 +22517,7 @@ describe('AdminService.sendBroadcast', () => {
     const [replyUserId, replyText, replyOptions] =
       maxClient.sendMessageImmediateToUser.mock.calls[0] ?? [];
     expect(replyUserId).toBe('user-1');
+    expect(replyText).toContain('Чат: <a href="https://max.ru/chats/chat-1">Команда MAX</a>');
     expect(replyText).toContain('<a href="max://user/user-2">Иван &lt;script&gt;</a>');
     expect(replyText).toContain('Комментарий: Ответ с &lt;тегом&gt;');
     expect(replyText).toContain('https://max.ru/777000_bot?startapp=');
@@ -22512,6 +22533,32 @@ describe('AdminService.sendBroadcast', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
+    );
+  });
+
+  it('renders linked channel titles in private comment notifications', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const text = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildCommentDialogNotificationText'>
+    ).buildCommentDialogNotificationText({
+      kind: 'all',
+      entityType: 'channel',
+      entityTitle: 'Новости <MAX>',
+      entityLink: 'https://max.ru/channels/news-max?ref=bot',
+      authorUserId: 'user-2',
+      authorDisplayName: 'Иван',
+      preview: 'Комментарий',
+      dialogUrl: 'https://max.ru/777000_bot?startapp=comments',
+    });
+
+    expect(text).toContain(
+      'Канал: <a href="https://max.ru/channels/news-max?ref=bot">Новости &lt;MAX&gt;</a>',
     );
   });
 
