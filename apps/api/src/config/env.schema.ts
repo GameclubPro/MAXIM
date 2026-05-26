@@ -225,6 +225,11 @@ const envSchema = z.object({
   VK_PARSING_QUEUE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
   VK_PARSING_LEASE_TTL_MS: z.coerce.number().int().positive().default(120_000),
   VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: z.coerce.number().int().positive().default(86_400_000),
+  VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
   MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS: z.coerce.number().int().positive().default(120_000),
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),

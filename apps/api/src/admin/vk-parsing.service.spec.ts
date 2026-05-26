@@ -123,6 +123,7 @@ describe('VkParsingService', () => {
         VK_PARSING_QUEUE_BATCH_SIZE: 100,
         VK_PARSING_LEASE_TTL_MS: 120_000,
         VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: 86_400_000,
+        VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: 120_000,
         VK_PARSING_MEDIA_CONCURRENCY: 3,
         ...config,
       }) as never,
@@ -450,6 +451,91 @@ describe('VkParsingService', () => {
     expect(imported).toBe(1);
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('retries transient failed VK autopublish posts on the next scheduled sync', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Повторная публикация',
+      status: 'NEW',
+      lastError: null,
+      autoPublishError: null,
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([
+        {
+          id: post.id,
+          vkOwnerId: post.vkOwnerId,
+          vkPostId: post.vkPostId,
+          status: 'FAILED',
+          contentHash: post.contentHash,
+          publishedContentHash: null,
+          lastError: 'Фото 1: VK вернул статус 404 для фото.',
+          autoPublishError: 'Фото 1: VK вернул статус 404 для фото.',
+        },
+      ])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Повторная публикация',
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          status: 'NEW',
+          lastError: null,
+          autoPublishError: null,
+        }),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Повторная публикация',
+      expect.any(Object),
+      {
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
   });
 
   it('skips advertising VK posts during autopublish without sending them to MAX', async () => {
@@ -925,6 +1011,72 @@ describe('VkParsingService', () => {
         }),
       }),
     );
+  });
+
+  it('rechecks expired failed media preflight cache before publishing', async () => {
+    const { service, prisma, maxClient } = createFixture({
+      VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: 1_000,
+    });
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      photoUrls: ['https://sun1.example/large.jpg'],
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    prisma.vkParsingMediaCache.findUnique.mockResolvedValue({
+      id: 'media-1',
+      url: 'https://sun1.example/large.jpg',
+      status: 'FAILED',
+      mimeType: null,
+      contentLength: null,
+      lastCheckedAt: new Date(Date.now() - 60_000),
+      lastError: 'VK вернул статус 404 для фото.',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    maxClient.uploadImage.mockResolvedValue({ token: 'image-token' });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: 'Мой текст',
+      photoUrls: ['https://sun1.example/large.jpg'],
+      linkUrls: [],
+    });
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from([1, 2, 3]),
+      'large.jpg',
+      'image/jpeg',
+      {
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalled();
   });
 
   it('falls back to a ranged GET when media preflight HEAD is blocked', async () => {

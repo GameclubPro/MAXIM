@@ -95,6 +95,17 @@ type ImportedPostsBatchResult = {
   importedPosts: VkParsingPostWithSource[];
 };
 
+type ExistingVkPostImportState = {
+  id: string;
+  vkOwnerId: number;
+  vkPostId: number;
+  status: string;
+  contentHash: string;
+  publishedContentHash: string | null;
+  lastError: string | null;
+  autoPublishError: string | null;
+};
+
 type PreparedVkPublishPayload = {
   text: string;
   photoUrls: string[];
@@ -161,6 +172,7 @@ export class VkParsingService {
   private readonly queueBatchSize: number;
   private readonly syncLeaseTtlMs: number;
   private readonly mediaPreflightTtlMs: number;
+  private readonly mediaFailedPreflightTtlMs: number;
   private readonly mediaConcurrency: number;
   private readonly workerId = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -186,6 +198,10 @@ export class VkParsingService {
     this.syncLeaseTtlMs = configService.get<number>('VK_PARSING_LEASE_TTL_MS') ?? 120_000;
     this.mediaPreflightTtlMs =
       configService.get<number>('VK_PARSING_MEDIA_PREFLIGHT_TTL_MS') ?? 86_400_000;
+    this.mediaFailedPreflightTtlMs = Math.min(
+      this.mediaPreflightTtlMs,
+      configService.get<number>('VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS') ?? 120_000,
+    );
     this.mediaConcurrency = configService.get<number>('VK_PARSING_MEDIA_CONCURRENCY') ?? 3;
   }
 
@@ -708,6 +724,8 @@ export class VkParsingService {
             status: true,
             contentHash: true,
             publishedContentHash: true,
+            lastError: true,
+            autoPublishError: true,
           },
         })
       : [];
@@ -715,9 +733,14 @@ export class VkParsingService {
       existingRows.map((row) => [this.buildPostKey(row.vkOwnerId, row.vkPostId), row]),
     );
 
+    const autoPublishCandidatePostKeys = new Set<string>();
     const operations = posts.map((post) => {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
+      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
+      if (!existing || this.shouldRetryImportedPost(existing, status)) {
+        autoPublishCandidatePostKeys.add(postKey);
+      }
       const resetTransientState =
         status === VK_POST_STATUS_NEW
           ? {
@@ -777,9 +800,12 @@ export class VkParsingService {
     }
     await this.markMissingPostsUnavailable(source, posts, seenAt);
 
-    const importedNormalizedPosts = posts.filter(
-      (post) => !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
+    const importedNormalizedPosts = posts.filter((post) =>
+      autoPublishCandidatePostKeys.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
     );
+    const importedCount = posts.filter(
+      (post) => !existingByPostKey.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
+    ).length;
     const importedPosts =
       importedNormalizedPosts.length > 0
         ? await this.prisma.vkParsingPost.findMany({
@@ -795,7 +821,7 @@ export class VkParsingService {
         : [];
 
     return {
-      imported: importedNormalizedPosts.length,
+      imported: importedCount,
       importedPosts,
     };
   }
@@ -871,11 +897,7 @@ export class VkParsingService {
   }
 
   private resolveImportedPostStatus(
-    existing: {
-      status: string;
-      contentHash: string;
-      publishedContentHash: string | null;
-    } | null,
+    existing: ExistingVkPostImportState | null,
     post: NormalizedVkPost,
   ): string {
     if (!existing) {
@@ -902,7 +924,18 @@ export class VkParsingService {
       return VK_POST_STATUS_NEW;
     }
 
+    if (
+      existing.status === VK_POST_STATUS_FAILED &&
+      this.isRetryablePublishFailure(existing.autoPublishError || existing.lastError)
+    ) {
+      return VK_POST_STATUS_NEW;
+    }
+
     return existing.status || VK_POST_STATUS_NEW;
+  }
+
+  private shouldRetryImportedPost(existing: ExistingVkPostImportState, nextStatus: string): boolean {
+    return existing.status === VK_POST_STATUS_FAILED && nextStatus === VK_POST_STATUS_NEW;
   }
 
   private async markMissingPostsUnavailable(
@@ -1447,9 +1480,13 @@ export class VkParsingService {
     const cached = await this.prisma.vkParsingMediaCache.findUnique({ where: { url: imageUrl } });
     if (cached?.lastCheckedAt) {
       const ageMs = Date.now() - cached.lastCheckedAt.getTime();
+      const cacheTtlMs =
+        cached.status === VK_MEDIA_STATUS_FAILED
+          ? this.mediaFailedPreflightTtlMs
+          : this.mediaPreflightTtlMs;
       if (
         ageMs >= 0 &&
-        ageMs < this.mediaPreflightTtlMs &&
+        ageMs < cacheTtlMs &&
         cached.status !== VK_MEDIA_STATUS_UNKNOWN
       ) {
         return cached;
@@ -1763,6 +1800,27 @@ export class VkParsingService {
     return reason === VK_POST_SKIP_REASON_AD
       ? 'Пост пропущен фильтром рекламы.'
       : 'Пост пропущен: после удаления ссылок не осталось содержимого.';
+  }
+
+  private isRetryablePublishFailure(message: string | null | undefined): boolean {
+    const normalized = (message ?? '').toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    return (
+      normalized.includes('rate limit exceeded') ||
+      normalized.includes('circuit breaker') ||
+      normalized.includes('vk вернул статус 404') ||
+      normalized.includes('vk вернул статус 429') ||
+      normalized.includes('не удалось скачать фото') ||
+      normalized.includes('fetch failed') ||
+      normalized.includes('не ответил') ||
+      normalized.includes('timeout') ||
+      normalized.includes('network') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('etimedout')
+    );
   }
 
   private async markPostSkipped(postId: string, reason: VkParsingSkipReason): Promise<void> {
