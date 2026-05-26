@@ -54,6 +54,7 @@ import {
   deleteChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
+  handoffEntityMemberProfile,
   updateChatDialogMessage,
   updateChannelDialogMessage,
   toggleChannelDialogReaction,
@@ -72,7 +73,13 @@ import {
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import { downloadMaxFile, maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import {
+  downloadMaxFile,
+  maxImpact,
+  maxSelectionChanged,
+  openMaxBotLink,
+  openMaxBotLinkAndClose,
+} from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
@@ -730,21 +737,45 @@ function toggleDialogReactionLocally(
 function DialogAvatar({
   avatarUrl,
   label,
+  onClick,
+  disabled = false,
 }: {
   avatarUrl: string | null | undefined;
   label: string | null | undefined;
+  onClick?: (() => void) | null;
+  disabled?: boolean;
 }) {
   const [imageBroken, setImageBroken] = useState(false);
   const resolvedAvatarUrl = avatarUrl?.trim() ?? '';
   const showImage = resolvedAvatarUrl.length > 0 && !imageBroken;
+  const normalizedLabel = label?.trim() || 'пользователя';
+  const avatarContent = showImage ? (
+    <img src={resolvedAvatarUrl} alt="" loading="lazy" onError={() => setImageBroken(true)} />
+  ) : (
+    buildAuthorBadge(label)
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={cn('channel-dialog-message__avatar', 'is-clickable', showImage && 'has-image')}
+        aria-label={`Открыть профиль ${normalizedLabel}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onClick();
+        }}
+        disabled={disabled}
+      >
+        {avatarContent}
+      </button>
+    );
+  }
 
   return (
     <div className={cn('channel-dialog-message__avatar', showImage && 'has-image')}>
-      {showImage ? (
-        <img src={resolvedAvatarUrl} alt="" loading="lazy" onError={() => setImageBroken(true)} />
-      ) : (
-        buildAuthorBadge(label)
-      )}
+      {avatarContent}
     </div>
   );
 }
@@ -2658,6 +2689,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const profileHandoffMutation = useMutation({
+    mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
+      handoffEntityMemberProfile(api, entityType, chatId, userId, { displayName }),
+    onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+        });
+      }
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть профиль',
+        description: error instanceof Error ? error.message : 'Попробуйте ещё раз.',
+      });
+    },
+  });
 
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
   const isCommentActionPending =
@@ -2938,6 +2988,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     if (options?.closePicker) {
       dismissMessageActions();
     }
+  };
+
+  const handleAuthorProfileActivate = (message: ChannelDialogMessage) => {
+    if (dialogType !== 'comments' || profileHandoffMutation.isPending) {
+      return;
+    }
+
+    const normalizedUserId = message.authorUserId.trim();
+    if (!normalizedUserId || !chatId) {
+      return;
+    }
+
+    const displayName = getAuthorLabel(message).trim() || 'Пользователь';
+    maxImpact('soft');
+    dismissMessageActions();
+    profileHandoffMutation.mutate({
+      userId: normalizedUserId,
+      displayName,
+    });
   };
 
   const scrollToMessage = (
@@ -3481,6 +3550,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               <DialogAvatar
                                 avatarUrl={message.avatarUrl}
                                 label={message.authorDisplayName || message.authorUserId}
+                                onClick={() => handleAuthorProfileActivate(message)}
+                                disabled={profileHandoffMutation.isPending}
                               />
                             )}
 
