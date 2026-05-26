@@ -907,6 +907,9 @@ export class WebhookParser {
     const content = this.asRecord(message.content);
     const payload = this.asRecord(message.payload);
     const messageNode = this.asRecord(message.message);
+    // Direct MAX share attachments can carry the user's link only in payload.url.
+    // Keep this scoped to current-message attachment collections; reply/forward previews
+    // under message.link are intentionally ignored so quoted service/buttons do not moderate.
     const candidates: Array<{ node: unknown; allowShareAttachmentUrls?: boolean }> = [
       { node: message.link },
       { node: message.markup },
