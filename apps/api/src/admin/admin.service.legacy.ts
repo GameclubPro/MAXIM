@@ -3654,13 +3654,7 @@ export class AdminService implements OnModuleDestroy {
     return !this.adminManagedEntitiesRefreshQueue;
   }
 
-  private buildManagedEntitiesRuntimeChatScopeFilter(): {
-    OR: Array<{
-      primaryBotId?: { in: string[] };
-      botId?: { in: string[] };
-      botMemberships?: { some: { botId: { in: string[] } } };
-    }>;
-  } | null {
+  private buildManagedEntitiesRuntimeChatScopeFilter(): Prisma.ChatWhereInput | null {
     const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
     if (runtimeBotIds.length === 0) {
       return null;
@@ -3672,6 +3666,11 @@ export class AdminService implements OnModuleDestroy {
         { primaryBotId: inRuntimeScope },
         { botId: inRuntimeScope },
         { botMemberships: { some: { botId: inRuntimeScope } } },
+        {
+          primaryBotId: null,
+          botId: null,
+          botMemberships: { none: {} },
+        },
       ],
     };
   }
@@ -3716,6 +3715,33 @@ export class AdminService implements OnModuleDestroy {
 
   private normalizeRuntimeManagedEntityBotId(botId: string | null | undefined): string | null {
     return this.maxBotRegistry?.getBotById(botId)?.id ?? this.readTrimmedString(botId) ?? null;
+  }
+
+  private resolveManagedEntityAccessRepairBotIds(chat: ChatSummary): string[] {
+    const explicitBotIds = Array.from(
+      new Set(
+        [
+          this.normalizeRuntimeManagedEntityBotId(chat.primaryBotId),
+          ...(chat.assignedBots ?? []).map((bot) =>
+            this.normalizeRuntimeManagedEntityBotId(bot.botId),
+          ),
+        ].filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+    if (explicitBotIds.length > 0) {
+      return explicitBotIds;
+    }
+
+    return Array.from(
+      new Set(
+        [
+          this.normalizeManagedEntityAccessBotId(null),
+          ...[...this.managedEntitiesRuntimeBotIds].map((botId) =>
+            this.normalizeRuntimeManagedEntityBotId(botId),
+          ),
+        ].filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
   }
 
   private cloneManagedEntitySummary(chat: ChatSummary): ChatSummary {
@@ -28164,16 +28190,7 @@ export class AdminService implements OnModuleDestroy {
         if (!allowlistedAt) {
           return null;
         }
-        const botIds = Array.from(
-          new Set(
-            [
-              this.normalizeRuntimeManagedEntityBotId(chat.primaryBotId),
-              ...(chat.assignedBots ?? []).map((bot) =>
-                this.normalizeRuntimeManagedEntityBotId(bot.botId),
-              ),
-            ].filter((botId): botId is string => Boolean(botId)),
-          ),
-        );
+        const botIds = this.resolveManagedEntityAccessRepairBotIds(chat);
 
         return { chat, botIds, allowlistedAt };
       })

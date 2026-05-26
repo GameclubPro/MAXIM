@@ -8553,6 +8553,106 @@ describe('AdminService.listChannels', () => {
     }
   });
 
+  it('repairs legacy allowlist channels without a persisted bot binding through the runtime bot', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce([
+          {
+            chat: {
+              id: 'channel-legacy',
+              title: 'Старый канал без botId',
+              createdAt: new Date('2026-03-01T10:00:00.000Z'),
+              entityType: 'CHANNEL',
+              primaryBotId: null,
+              botId: null,
+            },
+          },
+        ])
+        .mockResolvedValueOnce([
+          { chatId: 'channel-legacy', createdAt: new Date('2026-05-14T08:59:00.000Z') },
+        ]);
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const rosterSync = {
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock({ botId: '777000_bot' }) as never,
+      );
+      (service as any).maxChatAdminRosterSyncService = rosterSync;
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'channel-legacy',
+          title: 'Старый канал без botId',
+          createdAt: '2026-03-01T10:00:00.000Z',
+          entityType: 'channel',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+      ]);
+
+      expect(prisma.chatAdminAllowlist.findMany).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: expect.objectContaining({
+            chat: expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  primaryBotId: null,
+                  botId: null,
+                  botMemberships: { none: {} },
+                }),
+              ]),
+            }),
+          }),
+        }),
+      );
+      expect((prisma as any).managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            chatId: 'channel-legacy',
+            userId: 'admin-1',
+            botId: '777000_bot',
+            entityType: 'CHANNEL',
+            state: 'GRANTED',
+            source: 'allowlist_edge_repair',
+            expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+          }),
+        }),
+      );
+      expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+        chatId: 'channel-legacy',
+        botIds: ['777000_bot'],
+        title: 'Старый канал без botId',
+        entityType: 'channel',
+        source: 'admin_access_validation',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('repairs every allowlisted channel missing a fresh access edge in one response', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     try {
