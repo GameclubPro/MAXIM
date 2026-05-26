@@ -19,6 +19,10 @@ import { getAppRole, roleRunsAdmin } from '../runtime/app-role';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { createBotLifecycleStats } from './max-bot-state.util';
+import {
+  membershipExplicitlyLacksAccess,
+  resolvePreferredPrimaryBotId,
+} from './max-bot-access-policy.util';
 
 const BOT_OWNERSHIP_FOUNDATION_STATUS_KEY = 'system:bot-ownership:foundation:v1';
 const BOT_OWNERSHIP_FOUNDATION_LOCK_KEY = 'system:bot-ownership:foundation:repair-lock:v1';
@@ -47,53 +51,6 @@ type MembershipRecord = {
   status: ChatBotMembershipStatus;
   permissionsSnapshot: unknown | null;
 };
-
-type MembershipAccessSnapshot = {
-  isAdmin: boolean;
-  isOwner: boolean;
-  permissions: string[];
-};
-
-const PRIMARY_UNKNOWN_ACCESS_SCORE = 50_000;
-const PRIMARY_ADMIN_BASE_SCORE = 100_000;
-const PRIMARY_OWNER_BASE_SCORE = 1_000_000;
-const PRIMARY_PERMISSION_WEIGHTS = new Map<string, number>([
-  ['add_remove_members', 20_000],
-  ['can_add_remove_members', 20_000],
-  ['remove_members', 20_000],
-  ['can_remove_members', 20_000],
-  ['manage_members', 20_000],
-  ['can_manage_members', 20_000],
-  ['kick_members', 20_000],
-  ['can_kick_members', 20_000],
-  ['ban_members', 20_000],
-  ['can_ban_members', 20_000],
-  ['ban_users', 20_000],
-  ['can_ban_users', 20_000],
-  ['delete_members', 20_000],
-  ['can_delete_members', 20_000],
-  ['delete_message', 18_000],
-  ['delete_messages', 18_000],
-  ['can_delete_message', 18_000],
-  ['can_delete_messages', 18_000],
-  ['post_edit_delete_message', 18_000],
-  ['post_edit_delete_messages', 18_000],
-  ['can_post_edit_delete_message', 18_000],
-  ['can_post_edit_delete_messages', 18_000],
-  ['read_all_messages', 8_000],
-  ['write', 5_000],
-  ['edit_message', 4_000],
-  ['can_edit_message', 4_000],
-  ['add_admins', 3_000],
-  ['can_add_admins', 3_000],
-  ['change_chat_info', 2_000],
-  ['can_change_chat_info', 2_000],
-  ['pin_message', 1_500],
-  ['can_pin_message', 1_500],
-  ['edit_link', 1_000],
-  ['can_edit_link', 1_000],
-  ['can_call', 100],
-]);
 
 type RepairSignal = {
   chatId: string;
@@ -449,7 +406,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       }
     }
 
-    const strongestAccessBotId = this.resolvePreferredPrimaryBotId(
+    const strongestAccessBotId = resolvePreferredPrimaryBotId(
       nextPrimaryBotId,
       activeKnownMemberships,
     );
@@ -803,9 +760,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         primaryKnown !== null
           ? (activeKnownMemberships.find((membership) => membership.botId === primaryKnown) ?? null)
           : null;
-      if (
-        this.membershipExplicitlyLacksAccess(primaryActiveMembership?.permissionsSnapshot ?? null)
-      ) {
+      if (membershipExplicitlyLacksAccess(primaryActiveMembership?.permissionsSnapshot ?? null)) {
         anomalies.primaryWithoutAdminAccess += 1;
       }
 
@@ -1004,127 +959,6 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       primaryWithoutAdminAccess: 0,
       sharedChats: 0,
     };
-  }
-
-  private normalizeMembershipAccessSnapshot(value: unknown): MembershipAccessSnapshot | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const row = value as Record<string, unknown>;
-    const permissions = Array.isArray(row.permissions)
-      ? Array.from(
-          new Set(
-            row.permissions
-              .map((permission) => this.normalizePermissionName(permission))
-              .filter((permission): permission is string => permission.length > 0),
-          ),
-        )
-      : [];
-    return {
-      isAdmin: row.isAdmin === true,
-      isOwner: row.isOwner === true,
-      permissions,
-    };
-  }
-
-  private membershipExplicitlyLacksAccess(value: unknown): boolean {
-    const snapshot = this.normalizeMembershipAccessSnapshot(value);
-    return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
-  }
-
-  private resolvePreferredPrimaryBotId(
-    currentPrimaryBotId: string | null,
-    memberships: readonly MembershipRecord[],
-  ): string | null {
-    const activeMemberships = memberships.filter(
-      (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
-    );
-    if (activeMemberships.length === 0) {
-      return currentPrimaryBotId;
-    }
-
-    const fallback =
-      (currentPrimaryBotId &&
-      activeMemberships.some((membership) => membership.botId === currentPrimaryBotId)
-        ? currentPrimaryBotId
-        : null) ??
-      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-        ?.botId ??
-      activeMemberships[0]?.botId ??
-      null;
-    const scored = activeMemberships.map((membership, index) => {
-      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-      return {
-        membership,
-        index,
-        hasSnapshot: snapshot !== null,
-        score: this.calculatePrimaryAccessScore(snapshot),
-      };
-    });
-
-    if (!scored.some((candidate) => candidate.hasSnapshot)) {
-      return fallback;
-    }
-
-    scored.sort((left, right) => {
-      const scoreDiff = right.score - left.score;
-      if (scoreDiff !== 0) {
-        return scoreDiff;
-      }
-
-      if (currentPrimaryBotId) {
-        const leftIsCurrent = left.membership.botId === currentPrimaryBotId;
-        const rightIsCurrent = right.membership.botId === currentPrimaryBotId;
-        if (leftIsCurrent !== rightIsCurrent) {
-          return leftIsCurrent ? -1 : 1;
-        }
-      }
-
-      const leftIsPrimary = left.membership.role === ChatBotMembershipRole.PRIMARY;
-      const rightIsPrimary = right.membership.role === ChatBotMembershipRole.PRIMARY;
-      if (leftIsPrimary !== rightIsPrimary) {
-        return leftIsPrimary ? -1 : 1;
-      }
-
-      return left.index - right.index;
-    });
-
-    return scored[0]?.membership.botId ?? fallback;
-  }
-
-  private calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot | null): number {
-    if (!snapshot) {
-      return PRIMARY_UNKNOWN_ACCESS_SCORE;
-    }
-
-    const baseScore = snapshot.isOwner
-      ? PRIMARY_OWNER_BASE_SCORE
-      : snapshot.isAdmin
-        ? PRIMARY_ADMIN_BASE_SCORE
-        : 0;
-    return baseScore + this.calculatePrimaryPermissionScore(snapshot.permissions);
-  }
-
-  private calculatePrimaryPermissionScore(permissions: readonly string[]): number {
-    let score = 0;
-    for (const permission of new Set(
-      permissions.map((item) => this.normalizePermissionName(item)).filter(Boolean),
-    )) {
-      score += PRIMARY_PERMISSION_WEIGHTS.get(permission) ?? 0;
-    }
-    return score;
-  }
-
-  private normalizePermissionName(permission: unknown): string {
-    if (typeof permission !== 'string') {
-      return '';
-    }
-
-    return permission
-      .trim()
-      .toLowerCase()
-      .replace(/[-\s]+/gu, '_');
   }
 }
 

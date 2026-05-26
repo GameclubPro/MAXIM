@@ -11,6 +11,13 @@ import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
+import {
+  membershipExplicitlyLacksAccess,
+  normalizeMembershipAccessSnapshot,
+  normalizePermissionName,
+  resolvePreferredPrimaryBotId,
+  type MembershipAccessSnapshot,
+} from './max-bot-access-policy.util';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
@@ -41,58 +48,12 @@ const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
   'delete_members',
   'can_delete_members',
 ]);
-const PRIMARY_UNKNOWN_ACCESS_SCORE = 50_000;
-const PRIMARY_ADMIN_BASE_SCORE = 100_000;
-const PRIMARY_OWNER_BASE_SCORE = 1_000_000;
-const PRIMARY_PERMISSION_WEIGHTS = new Map<string, number>([
-  ['add_remove_members', 20_000],
-  ['can_add_remove_members', 20_000],
-  ['remove_members', 20_000],
-  ['can_remove_members', 20_000],
-  ['manage_members', 20_000],
-  ['can_manage_members', 20_000],
-  ['kick_members', 20_000],
-  ['can_kick_members', 20_000],
-  ['ban_members', 20_000],
-  ['can_ban_members', 20_000],
-  ['ban_users', 20_000],
-  ['can_ban_users', 20_000],
-  ['delete_members', 20_000],
-  ['can_delete_members', 20_000],
-  ['delete_message', 18_000],
-  ['delete_messages', 18_000],
-  ['can_delete_message', 18_000],
-  ['can_delete_messages', 18_000],
-  ['post_edit_delete_message', 18_000],
-  ['post_edit_delete_messages', 18_000],
-  ['can_post_edit_delete_message', 18_000],
-  ['can_post_edit_delete_messages', 18_000],
-  ['read_all_messages', 8_000],
-  ['write', 5_000],
-  ['edit_message', 4_000],
-  ['can_edit_message', 4_000],
-  ['add_admins', 3_000],
-  ['can_add_admins', 3_000],
-  ['change_chat_info', 2_000],
-  ['can_change_chat_info', 2_000],
-  ['pin_message', 1_500],
-  ['can_pin_message', 1_500],
-  ['edit_link', 1_000],
-  ['can_edit_link', 1_000],
-  ['can_call', 100],
-]);
 
 type ModerationActionPermission = 'delete_message' | 'moderate_member';
 
 type ChatBotBindingCacheEntry = {
   botId: string;
   expiresAtMs: number;
-};
-
-type MembershipAccessSnapshot = {
-  isAdmin: boolean;
-  isOwner: boolean;
-  permissions: string[];
 };
 
 export type ChatBotExecutionBinding = {
@@ -632,7 +593,7 @@ export class MaxBotLinkService {
         Boolean(this.botRegistry.getBotById(membership.botId)),
     );
     const primaryBotId =
-      this.resolvePreferredPrimaryBotId(
+      resolvePreferredPrimaryBotId(
         this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null,
         activeKnownMemberships,
       ) ??
@@ -1042,7 +1003,7 @@ export class MaxBotLinkService {
               return false;
             }
 
-            const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+            const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
             return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
           }) ?? null)
         : null;
@@ -1063,7 +1024,7 @@ export class MaxBotLinkService {
           return false;
         }
 
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
         return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
       }) ?? null;
     if (alternateAdminCapableMembership) {
@@ -1085,7 +1046,7 @@ export class MaxBotLinkService {
         : null;
     if (
       primaryActiveMembership &&
-      !this.membershipExplicitlyLacksAccess(primaryActiveMembership.permissionsSnapshot)
+      !membershipExplicitlyLacksAccess(primaryActiveMembership.permissionsSnapshot)
     ) {
       return this.buildRoute({
         purpose: 'member_access',
@@ -1101,7 +1062,7 @@ export class MaxBotLinkService {
       state.activeOperationalMemberships.find(
         (membership) =>
           membership.botId !== state.primaryBotId &&
-          !this.membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+          !membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
       ) ?? null;
     if (alternateMembership) {
       return this.buildRoute({
@@ -1281,7 +1242,7 @@ export class MaxBotLinkService {
     const storedPrimaryBotId =
       this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ?? null;
     const primaryBotId =
-      this.resolvePreferredPrimaryBotId(
+      resolvePreferredPrimaryBotId(
         storedPrimaryBotId,
         activeActionableMemberships.length > 0
           ? activeActionableMemberships
@@ -1307,94 +1268,6 @@ export class MaxBotLinkService {
     };
   }
 
-  private resolvePreferredPrimaryBotId(
-    currentPrimaryBotId: string | null,
-    memberships: readonly Pick<
-      ResolvedChatRouteMembership,
-      'botId' | 'role' | 'status' | 'permissionsSnapshot'
-    >[],
-  ): string | null {
-    const activeMemberships = memberships.filter(
-      (membership) =>
-        membership.status === ChatBotMembershipStatus.ACTIVE &&
-        Boolean(this.botRegistry.getBotById(membership.botId)),
-    );
-    if (activeMemberships.length === 0) {
-      return currentPrimaryBotId;
-    }
-
-    const fallback =
-      (currentPrimaryBotId &&
-      activeMemberships.some((membership) => membership.botId === currentPrimaryBotId)
-        ? currentPrimaryBotId
-        : null) ??
-      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
-        ?.botId ??
-      activeMemberships[0]?.botId ??
-      null;
-    const scored = activeMemberships.map((membership, index) => {
-      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-      return {
-        membership,
-        index,
-        hasSnapshot: snapshot !== null,
-        score: this.calculatePrimaryAccessScore(snapshot),
-      };
-    });
-
-    if (!scored.some((candidate) => candidate.hasSnapshot)) {
-      return fallback;
-    }
-
-    scored.sort((left, right) => {
-      const scoreDiff = right.score - left.score;
-      if (scoreDiff !== 0) {
-        return scoreDiff;
-      }
-
-      if (currentPrimaryBotId) {
-        const leftIsCurrent = left.membership.botId === currentPrimaryBotId;
-        const rightIsCurrent = right.membership.botId === currentPrimaryBotId;
-        if (leftIsCurrent !== rightIsCurrent) {
-          return leftIsCurrent ? -1 : 1;
-        }
-      }
-
-      const leftIsPrimary = left.membership.role === ChatBotMembershipRole.PRIMARY;
-      const rightIsPrimary = right.membership.role === ChatBotMembershipRole.PRIMARY;
-      if (leftIsPrimary !== rightIsPrimary) {
-        return leftIsPrimary ? -1 : 1;
-      }
-
-      return left.index - right.index;
-    });
-
-    return scored[0]?.membership.botId ?? fallback;
-  }
-
-  private calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot | null): number {
-    if (!snapshot) {
-      return PRIMARY_UNKNOWN_ACCESS_SCORE;
-    }
-
-    const baseScore = snapshot.isOwner
-      ? PRIMARY_OWNER_BASE_SCORE
-      : snapshot.isAdmin
-        ? PRIMARY_ADMIN_BASE_SCORE
-        : 0;
-    return baseScore + this.calculatePrimaryPermissionScore(snapshot.permissions);
-  }
-
-  private calculatePrimaryPermissionScore(permissions: readonly string[]): number {
-    let score = 0;
-    for (const permission of new Set(
-      permissions.map((item) => this.normalizePermissionName(item)).filter(Boolean),
-    )) {
-      score += PRIMARY_PERMISSION_WEIGHTS.get(permission) ?? 0;
-    }
-    return score;
-  }
-
   private buildModerationActionCandidateBotIdsFromState(
     state: ResolvedChatRouteState,
     action: ModerationActionPermission,
@@ -1415,12 +1288,12 @@ export class MaxBotLinkService {
           return false;
         }
 
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
         return this.hasModerationActionPermission(snapshot, action, state.entityType);
       })?.botId ?? null,
     );
     for (const membership of state.activeActionableMemberships) {
-      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
       if (this.hasModerationActionPermission(snapshot, action, state.entityType)) {
         pushCandidate(membership.botId);
       }
@@ -1495,7 +1368,7 @@ export class MaxBotLinkService {
     if (botId === state.primaryBotId) {
       const primaryMembership =
         state.activeActionableMemberships.find((membership) => membership.botId === botId) ?? null;
-      const primarySnapshot = this.normalizeMembershipAccessSnapshot(
+      const primarySnapshot = normalizeMembershipAccessSnapshot(
         primaryMembership?.permissionsSnapshot,
       );
       if (this.hasModerationActionPermission(primarySnapshot, action, state.entityType)) {
@@ -1516,7 +1389,7 @@ export class MaxBotLinkService {
 
     const selectedMembership =
       state.activeActionableMemberships.find((membership) => membership.botId === botId) ?? null;
-    const selectedSnapshot = this.normalizeMembershipAccessSnapshot(
+    const selectedSnapshot = normalizeMembershipAccessSnapshot(
       selectedMembership?.permissionsSnapshot,
     );
     if (this.hasModerationActionPermission(selectedSnapshot, action, state.entityType)) {
@@ -1645,33 +1518,6 @@ export class MaxBotLinkService {
     );
   }
 
-  private normalizeMembershipAccessSnapshot(value: unknown): MembershipAccessSnapshot | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const row = value as Record<string, unknown>;
-    const permissions = Array.isArray(row.permissions)
-      ? Array.from(
-          new Set(
-            row.permissions
-              .map((permission) => this.normalizePermissionName(permission))
-              .filter((permission): permission is string => permission.length > 0),
-          ),
-        )
-      : [];
-    return {
-      isAdmin: row.isAdmin === true,
-      isOwner: row.isOwner === true,
-      permissions,
-    };
-  }
-
-  private membershipExplicitlyLacksAccess(value: unknown): boolean {
-    const snapshot = this.normalizeMembershipAccessSnapshot(value);
-    return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
-  }
-
   private hasModerationActionPermission(
     snapshot: MembershipAccessSnapshot | null,
     action: ModerationActionPermission,
@@ -1699,7 +1545,7 @@ export class MaxBotLinkService {
     action: ModerationActionPermission,
     _entityType: ChatEntityType | null,
   ): boolean {
-    const snapshot = this.normalizeMembershipAccessSnapshot(value);
+    const snapshot = normalizeMembershipAccessSnapshot(value);
     if (!snapshot) {
       return false;
     }
@@ -1739,7 +1585,7 @@ export class MaxBotLinkService {
     permission: string,
     action: ModerationActionPermission,
   ): boolean {
-    const normalized = this.normalizePermissionName(permission);
+    const normalized = normalizePermissionName(permission);
     if (!normalized) {
       return false;
     }
@@ -1747,17 +1593,6 @@ export class MaxBotLinkService {
     return action === 'delete_message'
       ? DELETE_MESSAGE_PERMISSION_ALIASES.has(normalized)
       : MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
-  }
-
-  private normalizePermissionName(permission: unknown): string {
-    if (typeof permission !== 'string') {
-      return '';
-    }
-
-    return permission
-      .trim()
-      .toLowerCase()
-      .replace(/[-\s]+/gu, '_');
   }
 
   private async promoteActiveChatBotMembership(
@@ -1782,7 +1617,7 @@ export class MaxBotLinkService {
         this.botRegistry.getBotById(membership.botId),
     );
     const nextPrimaryBotId =
-      this.resolvePreferredPrimaryBotId(null, activeMemberships) ??
+      resolvePreferredPrimaryBotId(null, activeMemberships) ??
       activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
       activeMemberships[0]?.botId ??
