@@ -1426,6 +1426,9 @@ export class VkParsingService {
           missingSinceAt: seenAt,
           lastAvailabilityCheckedAt: seenAt,
           unavailableAt: foundPostKeys === null ? undefined : seenAt,
+          publishQueuedAt: foundPostKeys === null ? undefined : null,
+          publishLockedAt: foundPostKeys === null ? undefined : null,
+          publishIdempotencyKey: foundPostKeys === null ? undefined : null,
         },
       });
     });
@@ -1616,11 +1619,14 @@ export class VkParsingService {
     post: Pick<VkParsingPostWithSource, 'createdAt' | 'vkPublishedAt'>,
     enabledAt: Date,
   ): boolean {
+    if (!post.vkPublishedAt) {
+      return false;
+    }
     if (post.createdAt.getTime() < enabledAt.getTime()) {
       return false;
     }
 
-    return !post.vkPublishedAt || post.vkPublishedAt.getTime() >= enabledAt.getTime();
+    return post.vkPublishedAt.getTime() >= enabledAt.getTime();
   }
 
   private async clearQueuedAutoPublishForChat(chatId: string): Promise<void> {
@@ -2612,6 +2618,7 @@ export class VkParsingService {
         lastError: this.describeSkipReason(reason),
         publishLockedAt: null,
         publishQueuedAt: null,
+        publishIdempotencyKey: null,
       },
     });
   }

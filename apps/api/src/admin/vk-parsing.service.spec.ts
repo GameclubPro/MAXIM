@@ -708,6 +708,55 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
+  it('does not queue newly imported VK posts without a VK publish date', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Пост без даты VK',
+      createdAt: new Date('2026-05-25T12:10:00.000Z'),
+      vkPublishedAt: null,
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T12:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T12:00:00.000Z'),
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              text: 'Пост без даты VK',
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
   it('publishes queued scheduled VK posts with link filtering enabled', async () => {
     const { service, prisma, maxClient, adminService } = createFixture();
     const source = createSource();
@@ -1080,6 +1129,9 @@ describe('VkParsingService', () => {
         data: expect.objectContaining({
           status: 'SKIPPED',
           skipReason: 'AD',
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
         }),
       }),
     );
@@ -1361,6 +1413,9 @@ describe('VkParsingService', () => {
           status: 'UNAVAILABLE',
           missingSinceAt: expect.any(Date),
           unavailableAt: expect.any(Date),
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
         }),
       }),
     );
