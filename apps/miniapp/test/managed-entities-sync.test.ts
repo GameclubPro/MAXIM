@@ -10,6 +10,7 @@ import {
   resolveManagedEntitiesSettledPhase,
   resolveManagedEntitiesRefreshRequestOptions,
   resolveManagedEntitiesScopeTransitionState,
+  shouldContinueManagedEntitiesRefreshPolling,
   shouldUseFreshManagedEntitiesReload,
   shouldStartManagedEntitiesBackgroundRefresh,
   shouldSettleManagedEntitiesFreshReload,
@@ -334,6 +335,25 @@ test('can treat a user-visible refresh state as settled when explicitly configur
       treatUserVisibleCompleteAsSettled: false,
     }),
     'idle',
+  );
+});
+
+test('continues polling partial user-visible home refreshes until the full scan completes', () => {
+  const refreshState = createRefreshState({
+    userVisibleComplete: true,
+  });
+
+  assert.equal(
+    shouldContinueManagedEntitiesRefreshPolling(refreshState, {
+      treatUserVisibleCompleteAsSettled: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldContinueManagedEntitiesRefreshPolling(refreshState, {
+      treatUserVisibleCompleteAsSettled: true,
+    }),
+    false,
   );
 });
 

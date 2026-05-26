@@ -175,6 +175,22 @@ export function resolveManagedEntitiesSettledPhase(
   return refreshState?.backoffActive ? 'backoff' : 'idle';
 }
 
+export function shouldContinueManagedEntitiesRefreshPolling(
+  refreshState: ManagedEntitiesRefreshState,
+  options: {
+    treatUserVisibleCompleteAsSettled: boolean;
+  },
+): boolean {
+  if (refreshState.complete || refreshState.backoffActive) {
+    return false;
+  }
+
+  return !(
+    options.treatUserVisibleCompleteAsSettled &&
+    isManagedEntitiesUserVisibleComplete(refreshState)
+  );
+}
+
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Не удалось загрузить список.');
 }
@@ -1101,7 +1117,11 @@ export function useManagedEntitiesSync({
             hasLoadedFromServer: true,
           });
 
-          if (next.refresh.complete || userVisibleSettled || next.refresh.backoffActive) {
+          if (
+            !shouldContinueManagedEntitiesRefreshPolling(next.refresh, {
+              treatUserVisibleCompleteAsSettled,
+            })
+          ) {
             return;
           }
 

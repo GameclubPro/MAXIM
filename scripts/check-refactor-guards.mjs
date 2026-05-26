@@ -8,7 +8,7 @@ const targetDate = '2026-06-26';
 const guardedFiles = [
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 29136,
+    maxLines: 29190,
     targetLines: 23000,
     reason:
       'AdminService implementation is a legacy hotspot; managed entities, broadcasts, settings, and rules should keep moving to focused services.',

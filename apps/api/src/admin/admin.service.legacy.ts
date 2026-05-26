@@ -3717,6 +3717,27 @@ export class AdminService implements OnModuleDestroy {
     return this.maxBotRegistry?.getBotById(botId)?.id ?? this.readTrimmedString(botId) ?? null;
   }
 
+  private normalizeRuntimeManagedEntityBotIds(
+    botIds: ReadonlyArray<string | null | undefined>,
+  ): string[] {
+    return Array.from(
+      new Set(
+        botIds
+          .map((botId) => this.normalizeRuntimeManagedEntityBotId(botId))
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+  }
+
+  private resolveManagedEntityDiscoveryBotIds(
+    candidate: Pick<MaxBotChat, 'botId' | 'botIds'>,
+  ): string[] {
+    return this.normalizeRuntimeManagedEntityBotIds([
+      candidate.botId,
+      ...(candidate.botIds ?? []),
+    ]);
+  }
+
   private resolveManagedEntityAccessRepairBotIds(chat: ChatSummary): string[] {
     const explicitBotIds = Array.from(
       new Set(
@@ -6129,6 +6150,7 @@ export class AdminService implements OnModuleDestroy {
             bypassNegativeCache: true,
             allowPersistedFallback: false,
             entityType: candidate.entityType,
+            candidateBotIds: this.resolveManagedEntityDiscoveryBotIds(candidate),
             trafficClass: 'background',
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             timeoutMs: MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
@@ -6587,6 +6609,7 @@ export class AdminService implements OnModuleDestroy {
             bypassNegativeCache: true,
             allowPersistedFallback: false,
             entityType: remoteChat.entityType,
+            candidateBotIds: this.resolveManagedEntityDiscoveryBotIds(remoteChat),
             trafficClass: discoveryTrafficClass,
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             timeoutMs: adminCheckTimeoutMs,
@@ -6948,7 +6971,22 @@ export class AdminService implements OnModuleDestroy {
           );
         },
       );
-      return normalizedChats;
+      const membershipChats = await this.loadManagedBotChatMembershipCatalogSnapshot(
+        normalizedBotId,
+      ).catch((membershipError: unknown) => {
+        this.logger.warn(
+          {
+            botId: normalizedBotId,
+            err:
+              membershipError instanceof Error
+                ? membershipError.message
+                : String(membershipError),
+          },
+          'Failed to load managed bot chat membership discovery supplement',
+        );
+        return [];
+      });
+      return this.mergeManagedEntitiesDiscoverySnapshots(normalizedChats, membershipChats);
     } catch (error: unknown) {
       const fallbackChats = await this.loadManagedBotChatCatalogSnapshot(normalizedBotId).catch(
         (fallbackError: unknown) => {
@@ -26968,14 +27006,21 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     options: {
       entityType?: ManagedEntityType;
+      candidateBotIds?: readonly string[];
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
       timeoutMs?: number;
     } = {},
   ): Promise<AdminAccessResolution> {
-    const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId, {
+    const discoveryCandidateBotIds = this.normalizeRuntimeManagedEntityBotIds(
+      options.candidateBotIds ?? [],
+    );
+    const persistedCandidateBotIds = await this.resolveCandidateBotIdsForChat(chatId, {
       includeDiscoveryFallback: false,
     });
+    const candidateBotIds = Array.from(
+      new Set([...discoveryCandidateBotIds, ...persistedCandidateBotIds]),
+    );
     if (candidateBotIds.length === 0) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
       await this.recordRemoteManagedEntityAccessEdge(chatId, userId, null, options, resolution);
@@ -27122,6 +27167,7 @@ export class AdminService implements OnModuleDestroy {
     options: {
       bypassNegativeCache?: boolean;
       entityType?: ManagedEntityType;
+      candidateBotIds?: readonly string[];
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
       timeoutMs?: number;
@@ -27162,6 +27208,7 @@ export class AdminService implements OnModuleDestroy {
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
       entityType: options.entityType,
+      candidateBotIds: options.candidateBotIds,
       trafficClass: options.trafficClass,
       sourceTag: options.sourceTag,
       timeoutMs: options.timeoutMs,
@@ -27181,6 +27228,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     userId: string,
     options: {
+      candidateBotIds?: readonly string[];
       trafficClass?: 'critical' | 'interactive' | 'background';
       timeoutMs?: number;
     },
@@ -27191,7 +27239,13 @@ export class AdminService implements OnModuleDestroy {
         ? Math.max(1, Math.trunc(options.timeoutMs))
         : 'default';
 
-    return [chatId, userId, trafficClass, timeoutKey].join(':');
+    const candidateBotIdsKey = this.normalizeRuntimeManagedEntityBotIds(
+      options.candidateBotIds ?? [],
+    )
+      .sort()
+      .join(',');
+
+    return [chatId, userId, trafficClass, timeoutKey, candidateBotIdsKey].join(':');
   }
 
   private async withAllowlistFallback(

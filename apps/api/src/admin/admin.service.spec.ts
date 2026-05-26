@@ -1329,6 +1329,95 @@ describe('AdminService managed bot chat catalog', () => {
     });
   });
 
+  it('supplements successful MAX discovery with active chat bot memberships', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    const membershipLastSeenAt = new Date('2026-05-06T12:00:00.000Z');
+    const catalog = {
+      upsert: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      findMany: jest.fn(),
+    };
+    const chatBotMembership = {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          botId: 'bot-1',
+          lastSeenAt: membershipLastSeenAt,
+          lastWebhookAt: null,
+          chat: {
+            id: 'channel-old',
+            title: 'Old known channel',
+            entityType: ChatEntityType.CHANNEL,
+            botId: 'bot-1',
+            primaryBotId: 'bot-1',
+          },
+        },
+      ]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: catalog,
+      chatBotMembership,
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-live',
+          title: 'Live channel',
+          lastEventTime: 1778090000123,
+          entityType: 'channel',
+          link: null,
+          avatarUrl: null,
+        },
+      ]),
+    };
+
+    await expect(
+      service.loadManagedBotChatsForDiscovery('bot-1', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'channel-live',
+        title: 'Live channel',
+        lastEventTime: 1778090000123,
+        entityType: 'channel',
+        link: null,
+        avatarUrl: null,
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+      {
+        chatId: 'channel-old',
+        title: 'Old known channel',
+        link: null,
+        avatarUrl: null,
+        entityType: 'channel',
+        lastEventTime: membershipLastSeenAt.getTime(),
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(chatBotMembership.findMany).toHaveBeenCalledWith({
+      where: {
+        botId: 'bot-1',
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      select: {
+        botId: true,
+        lastSeenAt: true,
+        lastWebhookAt: true,
+        chat: {
+          select: {
+            id: true,
+            title: true,
+            entityType: true,
+            botId: true,
+            primaryBotId: true,
+          },
+        },
+      },
+      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+      take: 20000,
+    });
+  });
+
   it('keeps partial multi-bot discovery when one bot has no remote or catalog fallback', async () => {
     const service = createBareAdminServiceForCatalogTests();
     service.chatContextCache = {};
@@ -14707,6 +14796,46 @@ describe('AdminService.listChats', () => {
         source: 'remote',
       }),
     );
+  });
+
+  it('checks uncached managed discovery candidates with the bot that found them', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue(null);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock({ botId: 'bot-1' }) as never,
+    );
+
+    await expect(
+      (service as any).resolveUserAndBotAdminAccess('channel-old', 'admin-1', {
+        bypassNegativeCache: true,
+        allowPersistedFallback: false,
+        entityType: 'channel',
+        candidateBotIds: ['bot-2'],
+        trafficClass: 'background',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 1200,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'granted',
+        source: 'remote',
+      }),
+    );
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-old', {
+      actionHealthLane: 'background',
+      botId: 'bot-2',
+      sourceTag: 'managed_refresh',
+      timeoutMs: 1200,
+      trafficClass: 'background',
+    });
   });
 
   it('queues a durable managed entities refresh when refresh is requested and a queue is available', async () => {

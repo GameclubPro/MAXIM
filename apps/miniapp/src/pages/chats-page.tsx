@@ -369,7 +369,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     keepVisibleOnSameSnapshotVersion: true,
-    treatUserVisibleCompleteAsSettled: true,
+    treatUserVisibleCompleteAsSettled: false,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -384,7 +384,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     keepVisibleOnSameSnapshotVersion: true,
-    treatUserVisibleCompleteAsSettled: true,
+    treatUserVisibleCompleteAsSettled: false,
   });
 
   const activeEntities = useMemo(() => {
