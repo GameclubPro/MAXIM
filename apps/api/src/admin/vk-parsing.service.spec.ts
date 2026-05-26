@@ -538,6 +538,173 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('autopublishes text when VK photos are temporarily unavailable', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Текст останется',
+      photoUrls: ['https://sun1.example/missing.jpg'],
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingMediaCache.findUnique.mockResolvedValue({
+      id: 'media-1',
+      url: 'https://sun1.example/missing.jpg',
+      status: 'FAILED',
+      mimeType: null,
+      contentLength: null,
+      lastCheckedAt: new Date(),
+      lastError: 'VK вернул статус 404 для фото.',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Текст останется',
+              attachments: [
+                {
+                  type: 'photo',
+                  photo: {
+                    sizes: [
+                      { width: 1280, height: 960, url: 'https://sun1.example/missing.jpg' },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    const sendOptions = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[2];
+    expect(sendOptions).not.toHaveProperty('imagePayload');
+    expect(sendOptions).not.toHaveProperty('attachments');
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Текст останется',
+      expect.any(Object),
+      {
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+  });
+
+  it('keeps MAX media upload rate limits as autopublish retry failures', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Текст с фото',
+      photoUrls: ['https://sun1.example/large.jpg'],
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    maxClient.uploadImage.mockRejectedValue(
+      new Error('MAX API background rate limit exceeded across all bots'),
+    );
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 101,
+                date: 1_779_708_000,
+                text: 'Текст с фото',
+                attachments: [
+                  {
+                    type: 'photo',
+                    photo: {
+                      sizes: [
+                        { width: 1280, height: 960, url: 'https://sun1.example/large.jpg' },
+                      ],
+                    },
+                  },
+                ],
+              },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          autoPublishError: expect.stringContaining('MAX API background rate limit exceeded'),
+        }),
+      }),
+    );
+  });
+
   it('skips advertising VK posts during autopublish without sending them to MAX', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();

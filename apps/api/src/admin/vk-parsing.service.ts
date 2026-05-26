@@ -462,7 +462,10 @@ export class VkParsingService {
         }
       }
 
-      const imagePayloads = await this.downloadAndUploadImages(payload.photoUrls, requestOptions);
+      const imagePayloads = await this.downloadAndUploadImages(payload.photoUrls, requestOptions, {
+        allowPartialFailures: params.auto,
+        canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+      });
 
       if (imagePayloads.length === 1) {
         options.imagePayload = imagePayloads[0];
@@ -1431,9 +1434,16 @@ export class VkParsingService {
       trafficClass: MaxApiTrafficClass;
       sourceTag: string;
     },
+    options: {
+      allowPartialFailures?: boolean;
+      canPublishWithoutPhotos?: boolean;
+    } = {},
   ): Promise<Record<string, unknown>[]> {
-    const payloads = new Array<Record<string, unknown>>(photoUrls.length);
-    await this.mapWithConcurrency(photoUrls, this.mediaConcurrency, async (url, index) => {
+    const payloads = new Array<Record<string, unknown> | null>(photoUrls.length).fill(null);
+    const skippedErrors: string[] = [];
+    const uploadConcurrency =
+      requestOptions.trafficClass === 'background' ? 1 : this.mediaConcurrency;
+    await this.mapWithConcurrency(photoUrls, uploadConcurrency, async (url, index) => {
       try {
         await this.assertMediaReadyForPublish(url, index);
         const image = await this.downloadImage(url, index);
@@ -1444,11 +1454,27 @@ export class VkParsingService {
           requestOptions,
         );
       } catch (error) {
-        throw new BadRequestException(`Фото ${index + 1}: ${this.formatError(error)}`);
+        const message = `Фото ${index + 1}: ${this.formatError(error)}`;
+        if (!options.allowPartialFailures || !this.isSkippablePhotoPublishFailure(message)) {
+          throw new BadRequestException(message);
+        }
+        skippedErrors.push(message);
       }
     });
 
-    return payloads;
+    const uploadedPayloads = payloads.filter(
+      (payload): payload is Record<string, unknown> => payload !== null,
+    );
+    if (
+      photoUrls.length > 0 &&
+      uploadedPayloads.length === 0 &&
+      skippedErrors.length > 0 &&
+      !options.canPublishWithoutPhotos
+    ) {
+      throw new BadRequestException(skippedErrors[0]);
+    }
+
+    return uploadedPayloads;
   }
 
   private async preflightPostMediaSafely(posts: NormalizedVkPost[]): Promise<void> {
@@ -1820,6 +1846,28 @@ export class VkParsingService {
       normalized.includes('network') ||
       normalized.includes('econnreset') ||
       normalized.includes('etimedout')
+    );
+  }
+
+  private isSkippablePhotoPublishFailure(message: string): boolean {
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes('rate limit exceeded') ||
+      normalized.includes('circuit breaker') ||
+      normalized.includes('max api')
+    ) {
+      return false;
+    }
+
+    return (
+      normalized.includes('vk вернул статус') ||
+      normalized.includes('не удалось скачать фото') ||
+      normalized.includes('fetch failed') ||
+      normalized.includes('фото vk должно быть доступно по https') ||
+      normalized.includes('некорректная ссылка на фото vk') ||
+      normalized.includes('фото из vk слишком большое') ||
+      normalized.includes('vk вернул не изображение') ||
+      normalized.includes('vk не ответил')
     );
   }
 
