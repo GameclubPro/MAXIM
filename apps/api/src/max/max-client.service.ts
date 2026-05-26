@@ -289,6 +289,7 @@ export const MAX_API_SOURCE_TAGS = {
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',
+  COMMENT_NOTIFICATION: 'comment_notification',
   VK_PARSING: 'vk_parsing',
   MANUAL_GROUP_CLOSE_SCAN: 'manual_group_close_scan',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',

@@ -46,6 +46,8 @@ import {
   systemModeSnapshotSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateChannelDialogNotificationsRequestSchema,
+  updateChannelDialogNotificationsResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   updateManagedEntityFavoritesRequestSchema,
@@ -64,6 +66,7 @@ import {
   type ChatParticipantItem,
   type ChatParticipantsPage,
   type ChannelDialogMessage,
+  type ChannelDialogNotificationMode,
   type ChannelDialogResponse,
   type ChannelDialogType,
   type ChannelSettings,
@@ -151,6 +154,7 @@ type PreviewState = {
 type PreviewDialogBucket = {
   introText: string;
   messages: ChannelDialogMessage[];
+  notificationMode?: ChannelDialogNotificationMode;
 };
 
 type PreviewDialogThreadBuckets = Partial<
@@ -2104,6 +2108,10 @@ function buildPreviewDialogResponse(
     messages: normalizedBucket.messages.map((message) =>
       decoratePreviewDialogMessageAccess(message, viewerUserId),
     ),
+    notificationSettings: {
+      mode: normalizedBucket.notificationMode ?? 'off',
+      canUseAll: true,
+    },
   });
 }
 
@@ -4015,6 +4023,19 @@ async function handleChatRequest(
       });
     }
 
+    if (tail[2] === 'notifications' && method === 'PUT') {
+      const payload = updateChannelDialogNotificationsRequestSchema.parse(parseJsonBody(init));
+      const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
+      bucket.notificationMode = payload.mode;
+      return updateChannelDialogNotificationsResponseSchema.parse({
+        ok: true,
+        notificationSettings: {
+          mode: payload.mode,
+          canUseAll: true,
+        },
+      });
+    }
+
     if (tail[2] === 'messages' && tail[3] && method === 'PATCH') {
       const payload = updateChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
       const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
@@ -4748,6 +4769,19 @@ async function handleChannelRequest(
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
+      });
+    }
+
+    if (tail[2] === 'notifications' && method === 'PUT') {
+      const payload = updateChannelDialogNotificationsRequestSchema.parse(parseJsonBody(init));
+      const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
+      bucket.notificationMode = payload.mode;
+      return updateChannelDialogNotificationsResponseSchema.parse({
+        ok: true,
+        notificationSettings: {
+          mode: payload.mode,
+          canUseAll: true,
+        },
       });
     }
 

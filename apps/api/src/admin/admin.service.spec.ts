@@ -286,6 +286,14 @@ function createPrismaMock() {
       update: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn().mockResolvedValue(undefined),
     },
+    dialogNotificationSubscription: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockImplementation(async ({ create, update }: { create: any; update: any }) => ({
+        ...create,
+        ...update,
+      })),
+    },
     managedBroadcast: {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockImplementation(async () => managedBroadcastState),
@@ -22297,6 +22305,214 @@ describe('AdminService.sendBroadcast', () => {
       authorUserId: 'user-2',
       isAdmin: false,
     });
+  });
+
+  it('stores chat dialog notification mode for the current thread', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.dialogNotificationSubscription.upsert.mockResolvedValue({
+      mode: 'ALL',
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-notify-settings') as string;
+
+    const result = await service.updateChatDialogNotifications(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        mode: 'all',
+      },
+    );
+
+    expect(prisma.dialogNotificationSubscription.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          entityType_chatId_threadId_userId: {
+            entityType: 'CHAT',
+            chatId: 'chat-1',
+            threadId: 'chat-thread-notify-settings',
+            userId: 'user-1',
+          },
+        },
+        create: expect.objectContaining({
+          entityType: 'CHAT',
+          chatId: 'chat-1',
+          threadId: 'chat-thread-notify-settings',
+          userId: 'user-1',
+          mode: 'ALL',
+        }),
+        update: {
+          mode: 'ALL',
+        },
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      notificationSettings: {
+        mode: 'all',
+        canUseAll: true,
+      },
+    });
+  });
+
+  it('sends private notifications for comment replies and preserves explicit off subscriptions', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'chat-comment-parent-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-notify-replies',
+        text: 'Первый комментарий',
+        authorDisplayName: 'Марина',
+      },
+      createdAt: new Date('2026-03-06T08:00:00.000Z'),
+    });
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-reply-1',
+      actorUserId: 'user-2',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-notify-replies',
+        text: 'Ответ с <тегом>',
+        authorDisplayName: 'Иван',
+      },
+      createdAt: new Date('2026-03-06T08:05:00.000Z'),
+    });
+    prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
+      {
+        userId: 'user-1',
+        mode: 'REPLIES',
+      },
+      {
+        userId: 'user-3',
+        mode: 'ALL',
+      },
+      {
+        userId: 'user-4',
+        mode: 'OFF',
+      },
+      {
+        userId: 'user-2',
+        mode: 'ALL',
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'private-notification-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-notify-replies') as string;
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-2',
+        username: 'ivan',
+        displayName: 'Иван <script>',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Ответ с <тегом>',
+        replyToMessageId: 'chat-comment-parent-1',
+      },
+    );
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    expect(prisma.dialogNotificationSubscription.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-2',
+          mode: 'REPLIES',
+        }),
+        update: {},
+      }),
+    );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'user-1',
+      expect.stringContaining('Вам ответили в комментариях'),
+      expect.objectContaining({
+        textFormat: 'html',
+        buttons: [[expect.objectContaining({ text: 'Открыть комментарии' })]],
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: 'comment_notification',
+        botId: '777000_bot',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'user-3',
+      expect.stringContaining('Новый комментарий в обсуждении'),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    const [replyUserId, replyText, replyOptions] =
+      maxClient.sendMessageImmediateToUser.mock.calls[0] ?? [];
+    expect(replyUserId).toBe('user-1');
+    expect(replyText).toContain('<a href="max://user/user-2">Иван &lt;script&gt;</a>');
+    expect(replyText).toContain('Комментарий: Ответ с &lt;тегом&gt;');
+    expect(replyText).toContain('https://max.ru/777000_bot?startapp=');
+    expect(replyOptions.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
+      'user-2',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
+      'user-4',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it('allows the author to delete their own chat comment', async () => {

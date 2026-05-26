@@ -583,6 +583,16 @@ export class AdminController {
     return this.dialogService.createChannelDialogMessage(chatId, user, dialogType, body);
   }
 
+  @Put('channels/:chatId/dialog/:dialogType/notifications')
+  updateChannelDialogNotifications(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.dialogService.updateChannelDialogNotifications(chatId, user, dialogType, body);
+  }
+
   @Patch('channels/:chatId/dialog/:dialogType/messages/:messageId')
   updateChannelDialogMessage(
     @Param('chatId') chatId: string,
@@ -640,6 +650,16 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.dialogService.createChatDialogMessage(chatId, user, dialogType, body);
+  }
+
+  @Put('chats/:chatId/dialog/:dialogType/notifications')
+  updateChatDialogNotifications(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.dialogService.updateChatDialogNotifications(chatId, user, dialogType, body);
   }
 
   @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')

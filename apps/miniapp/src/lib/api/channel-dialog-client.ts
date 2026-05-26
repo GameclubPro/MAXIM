@@ -8,6 +8,8 @@ import {
   deleteChannelDialogMessageResponseSchema,
   broadcastHandoffResponseSchema,
   profileMentionHandoffRequestSchema,
+  updateChannelDialogNotificationsRequestSchema,
+  updateChannelDialogNotificationsResponseSchema,
   type BroadcastHandoffResponse,
   type ChannelDialogResponse,
   type ChannelSuggestionRedirectResponse,
@@ -15,6 +17,7 @@ import {
   type CreateChannelDialogMessageResponse,
   type DeleteChannelDialogMessageResponse,
   type ProfileMentionHandoffRequest,
+  type UpdateChannelDialogNotificationsResponse,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
   type ToggleChannelDialogReactionResponse,
@@ -26,6 +29,7 @@ import type {
   CreateChannelDialogMessagePayload,
   DeleteChannelDialogMessagePayload,
   ToggleChannelDialogReactionPayload,
+  UpdateChannelDialogNotificationsPayload,
   UpdateChannelDialogMessagePayload,
 } from './shared-types';
 import type { ApiTransport } from './transport';
@@ -67,6 +71,14 @@ function buildDialogReactionsApiPath(
   messageId: string,
 ): string {
   return `${buildDialogMessageApiPath(entityType, chatId, dialogType, messageId)}/reactions`;
+}
+
+function buildDialogNotificationsApiPath(
+  entityType: LastEntityType,
+  chatId: string,
+  dialogType: ChannelDialogType,
+): string {
+  return `${buildDialogApiPath(entityType, chatId, dialogType)}/notifications`;
 }
 
 function buildMemberProfileHandoffApiPath(
@@ -125,6 +137,24 @@ export async function toggleEntityDialogReaction(
     },
   );
   return toggleChannelDialogReactionResponseSchema.parse(response);
+}
+
+export async function updateEntityDialogNotifications(
+  api: ApiTransport,
+  entityType: LastEntityType,
+  chatId: string,
+  dialogType: ChannelDialogType,
+  payload: UpdateChannelDialogNotificationsPayload,
+): Promise<UpdateChannelDialogNotificationsResponse> {
+  const requestBody = updateChannelDialogNotificationsRequestSchema.parse(payload);
+  const response = await api.request(
+    buildDialogNotificationsApiPath(entityType, chatId, dialogType),
+    {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return updateChannelDialogNotificationsResponseSchema.parse(response);
 }
 
 export async function updateEntityDialogMessage(
@@ -222,6 +252,15 @@ export async function toggleChannelDialogReaction(
   return toggleEntityDialogReaction(api, 'channel', chatId, dialogType, messageId, payload);
 }
 
+export async function updateChannelDialogNotifications(
+  api: ApiTransport,
+  chatId: string,
+  dialogType: ChannelDialogType,
+  payload: UpdateChannelDialogNotificationsPayload,
+): Promise<UpdateChannelDialogNotificationsResponse> {
+  return updateEntityDialogNotifications(api, 'channel', chatId, dialogType, payload);
+}
+
 export async function updateChannelDialogMessage(
   api: ApiTransport,
   chatId: string,
@@ -269,6 +308,15 @@ export async function toggleChatDialogReaction(
   payload: ToggleChannelDialogReactionPayload,
 ): Promise<ToggleChannelDialogReactionResponse> {
   return toggleEntityDialogReaction(api, 'chat', chatId, dialogType, messageId, payload);
+}
+
+export async function updateChatDialogNotifications(
+  api: ApiTransport,
+  chatId: string,
+  dialogType: ChannelDialogType,
+  payload: UpdateChannelDialogNotificationsPayload,
+): Promise<UpdateChannelDialogNotificationsResponse> {
+  return updateEntityDialogNotifications(api, 'chat', chatId, dialogType, payload);
 }
 
 export async function updateChatDialogMessage(

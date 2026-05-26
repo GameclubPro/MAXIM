@@ -1,6 +1,7 @@
 import type {
   ChannelDialogAttachment,
   ChannelDialogMessage,
+  ChannelDialogNotificationMode,
   ChannelDialogResponse,
   ChannelDialogType,
 } from '@maxim/contracts';
@@ -13,6 +14,8 @@ import {
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
+  Bell as IconoirBell,
+  BellOff as IconoirBellOff,
   BubbleStar as IconoirEmoji,
   Camera as IconoirCamera,
   Link as IconoirLink,
@@ -55,7 +58,9 @@ import {
   getChatDialog,
   getChannelDialog,
   handoffEntityMemberProfile,
+  updateChatDialogNotifications,
   updateChatDialogMessage,
+  updateChannelDialogNotifications,
   updateChannelDialogMessage,
   toggleChannelDialogReaction,
   toggleChatDialogReaction,
@@ -205,6 +210,16 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   }
 
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function getNotificationModeLabel(mode: ChannelDialogNotificationMode): string {
+  if (mode === 'off') {
+    return 'Выключены';
+  }
+  if (mode === 'all') {
+    return 'Все комментарии';
+  }
+  return 'Ответы мне';
 }
 
 const COMMENT_IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/iu;
@@ -1309,6 +1324,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isComposeEmojiOpen, setIsComposeEmojiOpen] = useState(false);
+  const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
   const [activeComposeEmojiGroupId, setActiveComposeEmojiGroupId] =
     useState<CommentComposeEmojiGroupId>('frequent');
   const [isNearBottom, setIsNearBottom] = useState(true);
@@ -1451,6 +1467,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const notificationSettings = dialogQuery.data?.notificationSettings ?? {
+    mode: 'off' as const,
+    canUseAll: true,
+  };
+  const notificationMode = notificationSettings.mode;
+  const canUseAllNotifications =
+    notificationSettings.canUseAll === true || notificationMode === 'all';
   const messageIdSet = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
   const activeMessage = useMemo(
     () => messages.find((message) => message.id === activeMessageId) ?? null,
@@ -1983,6 +2006,36 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('touchstart', handlePointerDown);
     };
   }, [activeMessageId]);
+
+  useEffect(() => {
+    if (!isNotificationSettingsOpen || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.channel-dialog-notifications')) {
+        return;
+      }
+      setIsNotificationSettingsOpen(false);
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsNotificationSettingsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown, { passive: true });
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isNotificationSettingsOpen]);
 
   useEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
@@ -2708,10 +2761,74 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const notificationMutation = useMutation({
+    mutationFn: (mode: ChannelDialogNotificationMode) =>
+      entityType === 'channel'
+        ? updateChannelDialogNotifications(api, chatId, dialogType, {
+            token,
+            mode,
+          })
+        : updateChatDialogNotifications(api, chatId, dialogType, {
+            token,
+            mode,
+          }),
+    onMutate: async (mode) => {
+      await queryClient.cancelQueries({ queryKey: dialogQueryKey });
+      const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(
+        dialogQueryKey,
+      );
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        current
+          ? {
+              ...current,
+              notificationSettings: {
+                ...(current.notificationSettings ?? notificationSettings),
+                mode,
+              },
+            }
+          : current,
+      );
+      return { previousDialog };
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        current
+          ? {
+              ...current,
+              notificationSettings: result.notificationSettings,
+            }
+          : current,
+      );
+      pushToast({
+        tone: 'success',
+        title: 'Готово',
+        description:
+          result.notificationSettings.mode === 'off'
+            ? 'Уведомления выключены.'
+            : 'Уведомления включены.',
+      });
+    },
+    onError: (error, _mode, context) => {
+      if (context?.previousDialog) {
+        queryClient.setQueryData(dialogQueryKey, context.previousDialog);
+      }
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить уведомления',
+        description: normalizeApiError(error),
+      });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: dialogQueryKey,
+      });
+    },
+  });
 
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
   const isCommentActionPending =
     reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
+  const isNotificationPending = notificationMutation.isPending;
 
   const applySuggestTextModifier = (tool: MaxMarkdownTool) => {
     if (dialogType !== 'suggest' || isComposePending || isPreparingAttachment) {
@@ -2734,6 +2851,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     maxImpact(options?.haptic ?? 'light');
+    setIsNotificationSettingsOpen(false);
     setIsComposeEmojiOpen(false);
     clearSwipeReplyGesture();
     setIsReactionPickerExpanded(false);
@@ -2990,6 +3108,24 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   };
 
+  const handleNotificationModeSelect = (mode: ChannelDialogNotificationMode) => {
+    if (dialogType !== 'comments' || isNotificationPending) {
+      return;
+    }
+
+    if (mode === notificationMode) {
+      setIsNotificationSettingsOpen(false);
+      return;
+    }
+
+    maxImpact('soft');
+    notificationMutation.mutate(mode, {
+      onSuccess: () => {
+        setIsNotificationSettingsOpen(false);
+      },
+    });
+  };
+
   const handleAuthorProfileActivate = (message: ChannelDialogMessage) => {
     if (dialogType !== 'comments' || profileHandoffMutation.isPending) {
       return;
@@ -3127,6 +3263,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       attachments: draftAttachments,
     });
   };
+  const notificationOptions: ChannelDialogNotificationMode[] = [
+    'replies',
+    ...(canUseAllNotifications ? (['all'] as const) : []),
+    'off',
+  ];
+  const notificationToggleLabel =
+    notificationMode === 'off'
+      ? 'Уведомления выключены'
+      : `Уведомления: ${getNotificationModeLabel(notificationMode)}`;
 
   if (!chatId) {
     return (
@@ -3177,12 +3322,71 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         className={cn(
           'channel-dialog-shell',
           dialogType === 'suggest' && 'channel-dialog-shell--suggest',
+          dialogType === 'comments' && 'has-comments-header',
           dialogType === 'comments' && introText && 'has-thread-context',
         )}
       >
-        {dialogType === 'comments' && introText ? (
-          <div className="channel-dialog-thread-context channel-dialog-thread-context--summary">
-            <p>{introText}</p>
+        {dialogType === 'comments' ? (
+          <div className={cn('channel-dialog-comments-header', introText && 'has-context')}>
+            {introText ? (
+              <div className="channel-dialog-thread-context channel-dialog-thread-context--summary">
+                <p>{introText}</p>
+              </div>
+            ) : (
+              <span className="channel-dialog-comments-header__spacer" aria-hidden />
+            )}
+
+            <div className="channel-dialog-notifications">
+              <button
+                type="button"
+                className={cn(
+                  'channel-dialog-notifications__toggle',
+                  notificationMode !== 'off' && 'is-active',
+                  isNotificationSettingsOpen && 'is-open',
+                )}
+                onClick={() => {
+                  maxImpact('light');
+                  dismissMessageActions();
+                  setIsComposeEmojiOpen(false);
+                  setIsNotificationSettingsOpen((current) => !current);
+                }}
+                aria-label="Настройки уведомлений"
+                aria-expanded={isNotificationSettingsOpen}
+                title={notificationToggleLabel}
+                disabled={isNotificationPending}
+              >
+                {notificationMode === 'off' ? (
+                  <IconoirBellOff aria-hidden focusable="false" />
+                ) : (
+                  <IconoirBell aria-hidden focusable="false" />
+                )}
+              </button>
+
+              {isNotificationSettingsOpen ? (
+                <div className="channel-dialog-notifications__menu" role="menu">
+                  {notificationOptions.map((mode) => {
+                    const isSelected = notificationMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={cn(
+                          'channel-dialog-notifications__option',
+                          isSelected && 'is-selected',
+                        )}
+                        role="menuitemradio"
+                        aria-checked={isSelected}
+                        disabled={isNotificationPending}
+                        onClick={() => handleNotificationModeSelect(mode)}
+                      >
+                        <span>{getNotificationModeLabel(mode)}</span>
+                        <i aria-hidden />
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 

@@ -300,11 +300,32 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 
+export const channelDialogNotificationModeSchema = /*#__PURE__*/ z.enum([
+  'off',
+  'replies',
+  'all',
+]);
+export type ChannelDialogNotificationMode = z.infer<
+  typeof channelDialogNotificationModeSchema
+>;
+
+export const channelDialogNotificationSettingsSchema = /*#__PURE__*/ z.object({
+  mode: channelDialogNotificationModeSchema.default('off'),
+  canUseAll: z.boolean().default(true),
+});
+export type ChannelDialogNotificationSettings = z.infer<
+  typeof channelDialogNotificationSettingsSchema
+>;
+
 export const channelDialogResponseSchema = /*#__PURE__*/ z.object({
   chatId: z.string(),
   type: channelDialogTypeSchema,
   introText: z.string().nullable().default(null),
   messages: z.array(channelDialogMessageSchema),
+  notificationSettings: channelDialogNotificationSettingsSchema.default({
+    mode: 'off',
+    canUseAll: true,
+  }),
 });
 export type ChannelDialogResponse = z.infer<typeof channelDialogResponseSchema>;
 
@@ -354,6 +375,22 @@ export const toggleChannelDialogReactionResponseSchema = /*#__PURE__*/ z.object(
 });
 export type ToggleChannelDialogReactionResponse = z.infer<
   typeof toggleChannelDialogReactionResponseSchema
+>;
+
+export const updateChannelDialogNotificationsRequestSchema = /*#__PURE__*/ z.object({
+  token: z.string().trim().min(16).max(256),
+  mode: channelDialogNotificationModeSchema,
+});
+export type UpdateChannelDialogNotificationsRequest = z.infer<
+  typeof updateChannelDialogNotificationsRequestSchema
+>;
+
+export const updateChannelDialogNotificationsResponseSchema = /*#__PURE__*/ z.object({
+  ok: z.boolean(),
+  notificationSettings: channelDialogNotificationSettingsSchema,
+});
+export type UpdateChannelDialogNotificationsResponse = z.infer<
+  typeof updateChannelDialogNotificationsResponseSchema
 >;
 
 export const deleteChannelDialogMessageRequestSchema = /*#__PURE__*/ z.object({

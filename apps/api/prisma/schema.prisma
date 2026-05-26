@@ -160,6 +160,12 @@ enum ManagedEntityFavoriteType {
   SERVICE
 }
 
+enum DialogNotificationMode {
+  OFF
+  REPLIES
+  ALL
+}
+
 model Chat {
   id           String         @id
   botId        String?        @map("bot_id")
@@ -189,6 +195,7 @@ model Chat {
   botMemberships           ChatBotMembership[]
   accessEdges              ManagedEntityAccessEdge[]
   favorites                ManagedEntityFavorite[]
+  dialogNotificationSubscriptions DialogNotificationSubscription[]
   participantImmunities    ChatParticipantModerationImmunity[]
   invitationAccessProgress ChatInvitationAccessProgress[]
 
@@ -596,6 +603,24 @@ model ManagedEntityFavorite {
   @@index([userId, entityType, favoriteType, position], map: "managed_entity_favorites_user_type_position_idx")
   @@index([chatId], map: "managed_entity_favorites_chat_id_idx")
   @@map("managed_entity_favorites")
+}
+
+model DialogNotificationSubscription {
+  id         String                 @id @default(cuid())
+  chatId     String                 @map("chat_id")
+  entityType ChatEntityType         @default(CHAT) @map("entity_type")
+  threadId   String                 @default("") @map("thread_id")
+  userId     String                 @map("user_id")
+  mode       DialogNotificationMode @default(REPLIES)
+  createdAt  DateTime               @default(now()) @map("created_at")
+  updatedAt  DateTime               @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([entityType, chatId, threadId, userId], map: "dialog_notification_subscriptions_entity_chat_thread_user_key")
+  @@index([chatId, entityType, threadId, mode], map: "dialog_notification_subscriptions_thread_mode_idx")
+  @@index([userId, updatedAt], map: "dialog_notification_subscriptions_user_updated_idx")
+  @@map("dialog_notification_subscriptions")
 }
 
 model DomainAllowlist {

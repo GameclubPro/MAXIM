@@ -16,6 +16,8 @@ import {
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
+  type ChannelDialogNotificationMode,
+  type ChannelDialogNotificationSettings,
   channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
@@ -122,6 +124,8 @@ import {
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateChannelDialogNotificationsRequestSchema,
+  updateChannelDialogNotificationsResponseSchema,
   updateManagedEntityFavoritesRequestSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
@@ -148,6 +152,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import {
   ChatBotMembershipStatus,
   ChatEntityType,
+  DialogNotificationMode as PrismaDialogNotificationMode,
   ManagedEntityFavoriteType as PrismaManagedEntityFavoriteType,
   ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
   EventType,
@@ -734,6 +739,8 @@ const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS =
 const APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY = 4;
 const REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY = 3;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
+const COMMENT_NOTIFICATION_DELIVERY_CONCURRENCY = 4;
+const COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH = 180;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
@@ -1132,6 +1139,7 @@ class ManagedEntitiesRefreshThrottledError extends Error {
 
 type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
 type DialogMessageEntityType = 'chat' | 'channel';
+type CommentDialogNotificationKind = 'reply' | 'all';
 
 type ChannelSuggestionFromBotPayload = {
   token: string;
@@ -9103,7 +9111,7 @@ export class AdminService implements OnModuleDestroy {
     const threadId = this.dialogLinkHelper.resolveChannelDialogThreadId(chatId, dialogType, token);
     const action =
       dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
-    const [channelSettings, rows, adminUserIds] = await Promise.all([
+    const [channelSettings, rows, adminUserIds, notificationSettings] = await Promise.all([
       this.getPublicChannelSettings(chatId),
       this.prisma.auditLog.findMany({
         where: {
@@ -9127,6 +9135,14 @@ export class AdminService implements OnModuleDestroy {
       dialogType === 'comments'
         ? this.readPersistedDialogAdminUserIds(chatId, 'channel')
         : Promise.resolve(new Set<string>()),
+      dialogType === 'comments'
+        ? this.readEntityDialogNotificationSettings({
+            entityType: 'channel',
+            chatId,
+            threadId,
+            userId: user.userId,
+          })
+        : Promise.resolve(this.defaultDialogNotificationSettings()),
     ]);
 
     const messages = rows
@@ -9139,6 +9155,7 @@ export class AdminService implements OnModuleDestroy {
       type: dialogType,
       introText: this.resolveChannelDialogIntroText(channelSettings, dialogType),
       messages,
+      notificationSettings,
     });
   }
 
@@ -9552,7 +9569,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const threadId = this.dialogLinkHelper.resolveChatDialogThreadId(chatId, dialogType, token);
-    const [chatSettings, rows, adminUserIds] = await Promise.all([
+    const [chatSettings, rows, adminUserIds, notificationSettings] = await Promise.all([
       this.getPublicChatCommentSettings(chatId),
       this.prisma.auditLog.findMany({
         where: {
@@ -9573,6 +9590,12 @@ export class AdminService implements OnModuleDestroy {
         take: CHANNEL_DIALOG_MESSAGES_LIMIT,
       }),
       this.readPersistedDialogAdminUserIds(chatId, 'chat'),
+      this.readEntityDialogNotificationSettings({
+        entityType: 'chat',
+        chatId,
+        threadId,
+        userId: user.userId,
+      }),
     ]);
 
     if (!chatSettings.commentsEnabled) {
@@ -9589,6 +9612,7 @@ export class AdminService implements OnModuleDestroy {
       type: dialogType,
       introText: null,
       messages,
+      notificationSettings,
     });
   }
 
@@ -9605,6 +9629,54 @@ export class AdminService implements OnModuleDestroy {
       body,
       'miniapp_dialog',
     );
+  }
+
+  async updateChannelDialogNotifications(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+    if (dialogType !== 'comments') {
+      throw new BadRequestException('Уведомления доступны только в комментариях.');
+    }
+    if (!channelSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    return this.updateEntityDialogNotifications({
+      entityType: 'channel',
+      chatId,
+      userId: user.userId,
+      dialogType,
+      body,
+    });
+  }
+
+  async updateChatDialogNotifications(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    if (dialogType !== 'comments') {
+      throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    return this.updateEntityDialogNotifications({
+      entityType: 'chat',
+      chatId,
+      userId: user.userId,
+      dialogType,
+      body,
+    });
   }
 
   private async createChatDialogMessageInternal(
@@ -9746,9 +9818,79 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
+    await this.ensureEntityDialogReplySubscription({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      threadId: params.threadId,
+      userId: params.user.userId,
+    });
+    void this.deliverEntityDialogCommentNotifications({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      threadId: params.threadId,
+      messageId: created.id,
+      authorUserId: params.user.userId,
+      authorDisplayName: params.authorDisplayName,
+      text: params.text,
+      attachmentCount: uploadedAttachments.length,
+      replyToMessageId: params.replyTo?.messageId ?? null,
+    }).catch((error: unknown) => {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          messageId: created.id,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to schedule comment dialog notifications',
+      );
+    });
+
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
       message,
+    });
+  }
+
+  private async updateEntityDialogNotifications(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    userId: string;
+    dialogType: ChannelDialogType;
+    body: unknown;
+  }) {
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Уведомления доступны только в комментариях.');
+    }
+
+    const parsed = updateChannelDialogNotificationsRequestSchema.safeParse(params.body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const threadId =
+      params.entityType === 'channel'
+        ? this.dialogLinkHelper.resolveChannelDialogThreadId(
+            params.chatId,
+            params.dialogType,
+            parsed.data.token,
+          )
+        : this.dialogLinkHelper.resolveChatDialogThreadId(
+            params.chatId,
+            params.dialogType,
+            parsed.data.token,
+          );
+    const notificationSettings = await this.upsertEntityDialogNotificationSubscription({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      threadId,
+      userId: params.userId,
+      mode: parsed.data.mode,
+    });
+
+    return updateChannelDialogNotificationsResponseSchema.parse({
+      ok: true,
+      notificationSettings,
     });
   }
 
@@ -24050,6 +24192,467 @@ export class AdminService implements OnModuleDestroy {
         adminUserIds,
       ),
     });
+  }
+
+  private defaultDialogNotificationSettings(): ChannelDialogNotificationSettings {
+    return {
+      mode: 'off',
+      canUseAll: true,
+    };
+  }
+
+  private async readEntityDialogNotificationSettings(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    threadId: string | null;
+    userId: string;
+  }): Promise<ChannelDialogNotificationSettings> {
+    const row = await this.prisma.dialogNotificationSubscription.findUnique({
+      where: {
+        entityType_chatId_threadId_userId: {
+          entityType: toPrismaEntityType(params.entityType),
+          chatId: params.chatId,
+          threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+          userId: params.userId,
+        },
+      },
+      select: {
+        mode: true,
+      },
+    });
+
+    return {
+      mode: row ? this.fromPrismaDialogNotificationMode(row.mode) : 'off',
+      canUseAll: true,
+    };
+  }
+
+  private async upsertEntityDialogNotificationSubscription(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    threadId: string | null;
+    userId: string;
+    mode: ChannelDialogNotificationMode;
+  }): Promise<ChannelDialogNotificationSettings> {
+    const persistedMode = this.toPrismaDialogNotificationMode(params.mode);
+
+    const row = await this.prisma.dialogNotificationSubscription.upsert({
+      where: {
+        entityType_chatId_threadId_userId: {
+          entityType: toPrismaEntityType(params.entityType),
+          chatId: params.chatId,
+          threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+          userId: params.userId,
+        },
+      },
+      create: {
+        entityType: toPrismaEntityType(params.entityType),
+        chatId: params.chatId,
+        threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+        userId: params.userId,
+        mode: persistedMode,
+      },
+      update: {
+        mode: persistedMode,
+      },
+      select: {
+        mode: true,
+      },
+    });
+
+    return {
+      mode: this.fromPrismaDialogNotificationMode(row.mode),
+      canUseAll: true,
+    };
+  }
+
+  private async ensureEntityDialogReplySubscription(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    threadId: string | null;
+    userId: string;
+  }): Promise<void> {
+    try {
+      await this.prisma.dialogNotificationSubscription.upsert({
+        where: {
+          entityType_chatId_threadId_userId: {
+            entityType: toPrismaEntityType(params.entityType),
+            chatId: params.chatId,
+            threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+            userId: params.userId,
+          },
+        },
+        create: {
+          entityType: toPrismaEntityType(params.entityType),
+          chatId: params.chatId,
+          threadId: this.normalizeDialogNotificationThreadId(params.threadId),
+          userId: params.userId,
+          mode: PrismaDialogNotificationMode.REPLIES,
+        },
+        update: {},
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          userId: params.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to ensure comment dialog reply subscription',
+      );
+    }
+  }
+
+  private normalizeDialogNotificationThreadId(threadId: string | null | undefined): string {
+    return this.readTrimmedString(threadId) ?? '';
+  }
+
+  private toPrismaDialogNotificationMode(
+    mode: ChannelDialogNotificationMode,
+  ): PrismaDialogNotificationMode {
+    if (mode === 'all') {
+      return PrismaDialogNotificationMode.ALL;
+    }
+    if (mode === 'off') {
+      return PrismaDialogNotificationMode.OFF;
+    }
+    return PrismaDialogNotificationMode.REPLIES;
+  }
+
+  private fromPrismaDialogNotificationMode(value: unknown): ChannelDialogNotificationMode {
+    const normalized = this.readTrimmedString(value)?.toUpperCase();
+    if (normalized === PrismaDialogNotificationMode.ALL) {
+      return 'all';
+    }
+    if (normalized === PrismaDialogNotificationMode.OFF) {
+      return 'off';
+    }
+    return 'replies';
+  }
+
+  private async deliverEntityDialogCommentNotifications(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    threadId: string | null;
+    messageId: string;
+    authorUserId: string;
+    authorDisplayName: string | null;
+    text: string;
+    attachmentCount: number;
+    replyToMessageId: string | null;
+  }): Promise<void> {
+    const authorUserId = this.readTrimmedString(params.authorUserId);
+    if (!authorUserId) {
+      return;
+    }
+
+    const persistedEntityType = toPrismaEntityType(params.entityType);
+    const threadId = this.normalizeDialogNotificationThreadId(params.threadId);
+    const [replyTargetUserId, subscriptions] = await Promise.all([
+      this.resolveCommentDialogReplyTargetUserId({
+        chatId: params.chatId,
+        threadId: params.threadId,
+        replyToMessageId: params.replyToMessageId,
+      }),
+      this.prisma.dialogNotificationSubscription.findMany({
+        where: {
+          chatId: params.chatId,
+          entityType: persistedEntityType,
+          threadId,
+        },
+        select: {
+          userId: true,
+          mode: true,
+        },
+      }),
+    ]);
+
+    const subscriptionModes = new Map(
+      subscriptions
+        .map((subscription) => [
+          this.readTrimmedString(subscription.userId),
+          subscription.mode,
+        ] as const)
+        .filter((entry): entry is readonly [string, PrismaDialogNotificationMode] =>
+          Boolean(entry[0]),
+        ),
+    );
+    const recipients = new Map<string, CommentDialogNotificationKind>();
+    const normalizedReplyTargetUserId = this.readTrimmedString(replyTargetUserId);
+    if (normalizedReplyTargetUserId && normalizedReplyTargetUserId !== authorUserId) {
+      const targetMode = subscriptionModes.get(normalizedReplyTargetUserId);
+      if (
+        targetMode === PrismaDialogNotificationMode.REPLIES ||
+        targetMode === PrismaDialogNotificationMode.ALL
+      ) {
+        recipients.set(normalizedReplyTargetUserId, 'reply');
+      }
+    }
+
+    for (const subscription of subscriptions) {
+      const userId = this.readTrimmedString(subscription.userId);
+      if (
+        !userId ||
+        userId === authorUserId ||
+        recipients.has(userId) ||
+        subscription.mode !== PrismaDialogNotificationMode.ALL
+      ) {
+        continue;
+      }
+      recipients.set(userId, 'all');
+    }
+
+    if (recipients.size === 0) {
+      return;
+    }
+
+    const routeBotId = await this.resolveBotAssignment(params.chatId);
+    const deliveryBotId = this.resolvePrivateDeliveryBotId(routeBotId);
+    const dialogUrl = this.buildEntityDialogNotificationUrl({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      threadId,
+      botId: deliveryBotId,
+    });
+    if (!dialogUrl) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          threadId,
+        },
+        'Skipping comment dialog notifications without dialog url',
+      );
+      return;
+    }
+
+    const entityTitle = await this.resolveDialogNotificationEntityTitle({
+      entityType: params.entityType,
+      chatId: params.chatId,
+      botId: deliveryBotId,
+    });
+    const preview = this.buildCommentDialogNotificationPreview(
+      params.text,
+      params.attachmentCount,
+    );
+    const buttons: MaxMessageButton[][] = [
+      [
+        {
+          type: 'link',
+          text: 'Открыть комментарии',
+          url: dialogUrl,
+        },
+      ],
+    ];
+    const recipientEntries = Array.from(recipients.entries()).map(([userId, kind]) => ({
+      userId,
+      kind,
+    }));
+
+    await mapWithConcurrencyLimit(
+      recipientEntries,
+      COMMENT_NOTIFICATION_DELIVERY_CONCURRENCY,
+      async (recipient) => {
+        try {
+          await this.maxClient.sendMessageImmediateToUser(
+            recipient.userId,
+            this.buildCommentDialogNotificationText({
+              kind: recipient.kind,
+              entityType: params.entityType,
+              entityTitle,
+              authorUserId,
+              authorDisplayName: params.authorDisplayName,
+              preview,
+              dialogUrl,
+            }),
+            {
+              buttons,
+              textFormat: 'html',
+            },
+            {
+              trafficClass: 'background',
+              sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+              ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+            },
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: params.chatId,
+              entityType: params.entityType,
+              messageId: params.messageId,
+              recipientUserId: recipient.userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to deliver comment dialog notification',
+          );
+        }
+      },
+    );
+  }
+
+  private async resolveCommentDialogReplyTargetUserId(params: {
+    chatId: string;
+    threadId: string | null;
+    replyToMessageId: string | null;
+  }): Promise<string | null> {
+    const replyToMessageId = this.readTrimmedString(params.replyToMessageId);
+    if (!replyToMessageId) {
+      return null;
+    }
+
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        id: replyToMessageId,
+        chatId: params.chatId,
+        action: CHANNEL_DIALOG_ACTION_COMMENT,
+        ...(params.threadId
+          ? {
+              payload: {
+                path: ['threadId'],
+                equals: params.threadId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        actorUserId: true,
+      },
+    });
+
+    return this.readTrimmedString(row?.actorUserId);
+  }
+
+  private buildEntityDialogNotificationUrl(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    threadId: string;
+    botId?: string | null;
+  }): string | null {
+    if (params.entityType === 'channel') {
+      return (
+        this.dialogLinkHelper.buildChannelDialogLaunchUrl(
+          params.chatId,
+          'comments',
+          params.threadId,
+          params.botId,
+        ) ??
+        this.dialogLinkHelper.buildChannelDialogDirectWebAppUrl(
+          params.chatId,
+          'comments',
+          params.threadId,
+        )
+      );
+    }
+
+    return (
+      this.dialogLinkHelper.buildChatDialogLaunchUrl(
+        params.chatId,
+        'comments',
+        params.threadId,
+        params.botId,
+      ) ??
+      this.dialogLinkHelper.buildChatDialogDirectWebAppUrl(
+        params.chatId,
+        'comments',
+        params.threadId,
+      )
+    );
+  }
+
+  private async resolveDialogNotificationEntityTitle(params: {
+    entityType: ManagedEntityType;
+    chatId: string;
+    botId?: string | null;
+  }): Promise<string> {
+    const local = await this.prisma.chat.findUnique({
+      where: { id: params.chatId },
+      select: { title: true },
+    });
+    const localTitle = resolvePresentableManagedEntityTitle(params.chatId, local?.title);
+    if (localTitle) {
+      return localTitle;
+    }
+
+    try {
+      const remoteTitle = await this.maxClient.getChatTitle(params.chatId, {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+        ...(params.botId ? { botId: params.botId } : {}),
+      });
+      const presentableRemoteTitle = resolvePresentableManagedEntityTitle(
+        params.chatId,
+        remoteTitle,
+      );
+      if (presentableRemoteTitle) {
+        return presentableRemoteTitle;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve comment notification entity title',
+      );
+    }
+
+    return `${params.entityType === 'channel' ? 'Канал' : 'Чат'} ${params.chatId}`;
+  }
+
+  private buildCommentDialogNotificationPreview(text: string, attachmentCount: number): string {
+    const normalizedText = text.replace(/\s+/gu, ' ').trim();
+    if (normalizedText) {
+      const symbols = Array.from(normalizedText);
+      if (symbols.length <= COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH) {
+        return normalizedText;
+      }
+      return `${symbols
+        .slice(0, COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH - 1)
+        .join('')
+        .trimEnd()}…`;
+    }
+
+    if (attachmentCount > 0) {
+      return attachmentCount === 1 ? 'Вложение' : `Вложения: ${attachmentCount}`;
+    }
+
+    return 'Комментарий без текста';
+  }
+
+  private buildCommentDialogNotificationText(params: {
+    kind: CommentDialogNotificationKind;
+    entityType: ManagedEntityType;
+    entityTitle: string;
+    authorUserId: string;
+    authorDisplayName: string | null;
+    preview: string;
+    dialogUrl: string;
+  }): string {
+    const authorName =
+      this.readTrimmedString(params.authorDisplayName) ??
+      this.readTrimmedString(params.authorUserId) ??
+      'Пользователь';
+    const authorLink = this.readTrimmedString(params.authorUserId)
+      ? `<a href="max://user/${encodeURIComponent(params.authorUserId)}">${escapeHtml(
+          authorName,
+        )}</a>`
+      : escapeHtml(authorName);
+    const entityLabel = params.entityType === 'channel' ? 'Канал' : 'Чат';
+    const title =
+      params.kind === 'reply'
+        ? 'Вам ответили в комментариях'
+        : 'Новый комментарий в обсуждении';
+
+    return [
+      `<strong>${escapeHtml(title)}</strong>`,
+      `${entityLabel}: ${escapeHtml(params.entityTitle)}`,
+      `${params.kind === 'reply' ? 'Ответил' : 'Автор'}: ${authorLink}`,
+      `Комментарий: ${escapeHtml(params.preview)}`,
+      `<a href="${escapeHtmlAttribute(params.dialogUrl)}">Открыть комментарии</a>`,
+    ].join('\n');
   }
 
   private async readDialogAdminUserIds(chatId: string): Promise<Set<string>> {

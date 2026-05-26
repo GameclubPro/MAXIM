@@ -23,6 +23,12 @@ export class ChannelDialogService {
     return this.legacyAdminService.createChannelDialogMessage(...args);
   }
 
+  updateChannelDialogNotifications(
+    ...args: Parameters<AdminService['updateChannelDialogNotifications']>
+  ): ReturnType<AdminService['updateChannelDialogNotifications']> {
+    return this.legacyAdminService.updateChannelDialogNotifications(...args);
+  }
+
   updateChannelDialogMessage(
     ...args: Parameters<AdminService['updateChannelDialogMessage']>
   ): ReturnType<AdminService['updateChannelDialogMessage']> {
@@ -51,6 +57,12 @@ export class ChannelDialogService {
     ...args: Parameters<AdminService['createChatDialogMessage']>
   ): ReturnType<AdminService['createChatDialogMessage']> {
     return this.legacyAdminService.createChatDialogMessage(...args);
+  }
+
+  updateChatDialogNotifications(
+    ...args: Parameters<AdminService['updateChatDialogNotifications']>
+  ): ReturnType<AdminService['updateChatDialogNotifications']> {
+    return this.legacyAdminService.updateChatDialogNotifications(...args);
   }
 
   updateChatDialogMessage(
