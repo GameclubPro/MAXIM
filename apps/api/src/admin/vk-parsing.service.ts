@@ -940,7 +940,7 @@ export class VkParsingService {
       const posts = wallPages.posts;
 
       const importResult = await this.upsertPostsBatch(source, posts, startedAt);
-      if (this.shouldAutoPublishImportedPosts(reason)) {
+      if (this.shouldAutoPublishImportedPosts(source, reason)) {
         await this.enqueueAutoPublishImportedPosts(source.chatId, importResult.publishCandidates);
       }
       const completedAt = new Date();
@@ -1450,8 +1450,11 @@ export class VkParsingService {
     }
   }
 
-  private shouldAutoPublishImportedPosts(reason: VkParsingSyncReason): boolean {
-    return reason !== 'source-added';
+  private shouldAutoPublishImportedPosts(
+    source: Pick<VkParsingSourceRow, 'lastSuccessAt'>,
+    reason: VkParsingSyncReason,
+  ): boolean {
+    return reason !== 'source-added' && Boolean(source.lastSuccessAt);
   }
 
   private async enqueueAutoPublishImportedPosts(

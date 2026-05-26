@@ -592,7 +592,7 @@ describe('VkParsingService', () => {
 
   it('queues newly imported scheduled VK posts for background publish', async () => {
     const { service, prisma, maxClient, publishQueue } = createFixture();
-    const source = createSource();
+    const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:30:00.000Z') });
     const post = createPostRow({
       source,
       text: 'Продам авто https://example.com\nvk.com/club',
@@ -660,7 +660,7 @@ describe('VkParsingService', () => {
 
   it('does not queue newly imported VK posts published before autopublish was enabled', async () => {
     const { service, prisma, publishQueue } = createFixture();
-    const source = createSource();
+    const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:30:00.000Z') });
     const post = createPostRow({
       source,
       text: 'Старый пост из свежего импорта',
@@ -710,7 +710,7 @@ describe('VkParsingService', () => {
 
   it('does not queue newly imported VK posts without a VK publish date', async () => {
     const { service, prisma, publishQueue } = createFixture();
-    const source = createSource();
+    const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:30:00.000Z') });
     const post = createPostRow({
       source,
       text: 'Пост без даты VK',
@@ -896,6 +896,59 @@ describe('VkParsingService', () => {
     expect(imported).toBe(1);
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not autopublish a first successful sync retried as scheduled', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'BACKOFF',
+      lastSuccessAt: null,
+      consecutiveFailures: 1,
+      lastErrorCode: 'timeout',
+    });
+    const post = createPostRow({
+      source,
+      text: 'Первый успешный retry',
+      createdAt: new Date('2026-05-25T10:10:00.000Z'),
+      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T09:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T09:00:00.000Z'),
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Первый успешный retry',
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const imported = await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(imported).toBe(1);
+    expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+    expect(publishQueue.add).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('does not requeue failed VK autopublish posts on the next scheduled sync', async () => {
