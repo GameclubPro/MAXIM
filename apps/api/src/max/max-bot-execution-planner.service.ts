@@ -97,32 +97,10 @@ export class MaxBotExecutionPlannerService {
       throw new BadRequestException('Бот ещё не состоит в этом чате как активный участник.');
     }
 
-    await this.prisma.chat.update({
-      where: { id: chatId },
-      data: {
-        botId: targetBot.id,
-        primaryBotId: targetBot.id,
-        entityType: this.toPrismaEntityType(params.entityType),
-      },
-    });
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        role: ChatBotMembershipRole.STANDBY,
-      },
-    });
-    await this.prisma.chatBotMembership.updateMany({
-      where: {
-        chatId,
-        botId: targetBot.id,
-        status: ChatBotMembershipStatus.ACTIVE,
-      },
-      data: {
-        role: ChatBotMembershipRole.PRIMARY,
-      },
+    await this.persistPrimaryBotSelection({
+      chatId,
+      botId: targetBot.id,
+      entityType: params.entityType,
     });
 
     this.maxBotLinkService.rememberChatBotBinding(chatId, targetBot.id);
@@ -135,25 +113,29 @@ export class MaxBotExecutionPlannerService {
     botId?: string | null;
   }): Promise<ManagedEntityBotExecutionPlan> {
     const state = await this.loadChatState(params.chatId);
-    const requestedBotId = this.maxBotRegistry.getBotById(params.botId)?.id ?? null;
-    const candidateMembership =
-      state.memberships.find(
-        (membership) =>
-          membership.botId === requestedBotId &&
-          membership.status === ChatBotMembershipStatus.ACTIVE &&
-          membership.role === ChatBotMembershipRole.STANDBY,
-      ) ??
-      state.memberships.find(
-        (membership) =>
-          membership.status === ChatBotMembershipStatus.ACTIVE &&
-          membership.role === ChatBotMembershipRole.STANDBY &&
-          canExecuteActionsForBotState(
-            this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
-          ),
-      );
+    const requestedBotId = this.resolveRequestedBotId(params.botId);
+    const candidateMembership = requestedBotId
+      ? state.memberships.find(
+          (membership) =>
+            membership.botId === requestedBotId &&
+            membership.status === ChatBotMembershipStatus.ACTIVE &&
+            membership.role === ChatBotMembershipRole.STANDBY,
+        )
+      : state.memberships.find(
+          (membership) =>
+            membership.status === ChatBotMembershipStatus.ACTIVE &&
+            membership.role === ChatBotMembershipRole.STANDBY &&
+            canExecuteActionsForBotState(
+              this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
+            ),
+        );
 
     if (!candidateMembership) {
-      throw new BadRequestException('В этом чате нет активного standby-бота для promotion.');
+      throw new BadRequestException(
+        requestedBotId
+          ? 'Выбранный бот не является активным standby-ботом этого чата.'
+          : 'В этом чате нет активного standby-бота для promotion.',
+      );
     }
 
     return this.setPrimaryBot({
@@ -272,19 +254,10 @@ export class MaxBotExecutionPlannerService {
     const assignedBots = this.buildAssignedBots(state.memberships, state.primaryBotId);
     const sharedMode = this.resolveSharedMode(assignedBots);
     const activePartner =
-      assignedBots.find(
-        (bot) =>
-          bot.role === 'standby' &&
-          bot.membershipStatus === 'active' &&
-          this.isExecutableLifecycleState(bot.lifecycleState),
-      ) ?? null;
+      assignedBots.find((bot) => this.isActiveExecutableStandbyBot(bot)) ?? null;
     const assistPartner =
       assignedBots.find(
-        (bot) =>
-          bot.role === 'standby' &&
-          bot.membershipStatus === 'active' &&
-          bot.capabilities.length > 0 &&
-          this.isExecutableLifecycleState(bot.lifecycleState),
+        (bot) => this.isActiveExecutableStandbyBot(bot) && bot.capabilities.length > 0,
       ) ?? null;
     const partnerBotId = assistPartner?.botId ?? activePartner?.botId ?? null;
     const primaryBotId =
@@ -452,14 +425,15 @@ export class MaxBotExecutionPlannerService {
     assignedBots: readonly ManagedEntityAssignedBot[],
   ): ManagedEntityBotExecutionPlan['sharedMode'] {
     const activeBots = assignedBots.filter((bot) => bot.membershipStatus === 'active');
-    if (activeBots.length <= 1) {
+    const activeExecutableStandbyBots = activeBots.filter((bot) =>
+      this.isActiveExecutableStandbyBot(bot),
+    );
+    if (activeBots.length <= 1 || activeExecutableStandbyBots.length === 0) {
       return 'owned';
     }
 
     const primaryBot = activeBots.find((bot) => bot.role === 'primary') ?? activeBots[0] ?? null;
-    const assistPartner = activeBots.find(
-      (bot) => bot.role === 'standby' && bot.capabilities.length > 0,
-    );
+    const assistPartner = activeExecutableStandbyBots.find((bot) => bot.capabilities.length > 0);
     if (assistPartner) {
       return 'shared-assist';
     }
@@ -473,6 +447,64 @@ export class MaxBotExecutionPlannerService {
 
   private isExecutableLifecycleState(state: ManagedEntityAssignedBot['lifecycleState']): boolean {
     return canExecuteActionsForBotState(state);
+  }
+
+  private isActiveExecutableStandbyBot(bot: ManagedEntityAssignedBot): boolean {
+    return (
+      bot.role === 'standby' &&
+      bot.membershipStatus === 'active' &&
+      this.isExecutableLifecycleState(bot.lifecycleState)
+    );
+  }
+
+  private resolveRequestedBotId(botId: string | null | undefined): string | null {
+    const normalized = typeof botId === 'string' ? botId.trim() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    const bot = this.maxBotRegistry.getBotById(normalized);
+    if (!bot) {
+      throw new BadRequestException('Выбранный бот не найден.');
+    }
+
+    return bot.id;
+  }
+
+  private async persistPrimaryBotSelection(params: {
+    chatId: string;
+    botId: string;
+    entityType: ManagedEntityType;
+  }): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.chat.update({
+        where: { id: params.chatId },
+        data: {
+          botId: params.botId,
+          primaryBotId: params.botId,
+          entityType: this.toPrismaEntityType(params.entityType),
+        },
+      }),
+      this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId: params.chatId,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        data: {
+          role: ChatBotMembershipRole.STANDBY,
+        },
+      }),
+      this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId: params.chatId,
+          botId: params.botId,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        data: {
+          role: ChatBotMembershipRole.PRIMARY,
+        },
+      }),
+    ]);
   }
 
   private normalizeCapabilities(value: unknown): ManagedEntityBotCapability[] {

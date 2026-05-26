@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsAdmin } from '../runtime/app-role';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { createBotLifecycleStats } from './max-bot-state.util';
 
 const BOT_OWNERSHIP_FOUNDATION_STATUS_KEY = 'system:bot-ownership:foundation:v1';
 const BOT_OWNERSHIP_FOUNDATION_LOCK_KEY = 'system:bot-ownership:foundation:repair-lock:v1';
@@ -817,17 +818,9 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       }
     }
 
-    const bots = this.botRegistry.getAllBots();
     const parsed = botOwnershipFoundationSnapshotSchema.parse({
       generatedAt: new Date().toISOString(),
-      bots: {
-        configured: bots.length,
-        adminVisible: this.botRegistry.getAdminVisibleBots().length,
-        active: bots.filter((bot) => bot.state === 'active').length,
-        dormant: bots.filter((bot) => bot.state === 'dormant').length,
-        draining: bots.filter((bot) => bot.state === 'draining').length,
-        disabled: bots.filter((bot) => bot.state === 'disabled').length,
-      },
+      bots: createBotLifecycleStats(this.botRegistry.getAllBots()),
       entities: {
         total: this.finalizeCoverage(totalCoverage),
         chats: this.finalizeCoverage(chatCoverage),
@@ -852,14 +845,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
   private createFallbackSnapshot(lastError: string | null): BotOwnershipFoundationSnapshot {
     return {
       generatedAt: new Date().toISOString(),
-      bots: {
-        configured: this.botRegistry.getAllBots().length,
-        adminVisible: this.botRegistry.getAdminVisibleBots().length,
-        active: this.botRegistry.getAllBots().filter((bot) => bot.state === 'active').length,
-        dormant: this.botRegistry.getAllBots().filter((bot) => bot.state === 'dormant').length,
-        draining: this.botRegistry.getAllBots().filter((bot) => bot.state === 'draining').length,
-        disabled: this.botRegistry.getAllBots().filter((bot) => bot.state === 'disabled').length,
-      },
+      bots: createBotLifecycleStats(this.botRegistry.getAllBots()),
       entities: {
         total: this.finalizeCoverage(this.createCoverageAccumulator()),
         chats: this.finalizeCoverage(this.createCoverageAccumulator()),

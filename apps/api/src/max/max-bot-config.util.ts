@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { botSpeechPersonaSchema, type BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
+import { isAdminVisibleByDefaultForBotState } from './max-bot-state.util';
 
 export const maxBotLifecycleStateSchema = z.enum(['active', 'dormant', 'draining', 'disabled']);
 export type MaxBotLifecycleState = z.infer<typeof maxBotLifecycleStateSchema>;
@@ -165,7 +166,7 @@ export function buildResolvedMaxBotConfigs(input: {
       ),
       contactId: normalizeContactId(bot.contactId) ?? inferContactIdFromBotId(bot.id),
       state: bot.state,
-      visibleInAdmin: bot.visibleInAdmin ?? bot.state !== 'disabled',
+      visibleInAdmin: bot.visibleInAdmin ?? isAdminVisibleByDefaultForBotState(bot.state),
       isDefault: false,
     });
   }

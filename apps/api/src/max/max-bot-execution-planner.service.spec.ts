@@ -54,6 +54,7 @@ function createFixture() {
   ];
 
   const prisma = {
+    $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
     chat: {
       findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
         if (where.id !== chat.id) {
@@ -228,6 +229,53 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')?.role,
     ).toBe(ChatBotMembershipRole.PRIMARY);
+  });
+
+  it('does not fall back to another standby bot when the requested promotion target is not eligible', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.promoteStandby({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'missing-bot',
+      }),
+    ).rejects.toThrow('не найден');
+
+    await expect(
+      fixture.service.promoteStandby({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_bot',
+      }),
+    ).rejects.toThrow('standby');
+
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+    expect(fixture.maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalled();
+  });
+
+  it('keeps stale assist capabilities from non-executable standby bots out of shared mode', async () => {
+    const fixture = createFixture();
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!standbyBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    standbyBot.state = 'dormant';
+    const standbyMembership = fixture.memberships.find(
+      (membership) => membership.botId === 'id613002203036_4_bot',
+    );
+    if (!standbyMembership) {
+      throw new Error('standby membership fixture missing');
+    }
+    standbyMembership.capabilities = ['suggestion_delivery'];
+
+    const plan = await fixture.service.getManagedEntityExecutionPlan({
+      chatId: 'chat-1',
+      entityType: 'chat',
+    });
+
+    expect(plan.sharedMode).toBe('owned');
+    expect(plan.partnerBotId).toBeNull();
   });
 
   it('does not promote a draining standby bot to primary', async () => {

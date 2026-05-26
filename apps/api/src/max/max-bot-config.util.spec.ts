@@ -40,6 +40,32 @@ describe('max bot config util', () => {
     });
   });
 
+  it('keeps disabled additional bots hidden from admin by default', () => {
+    const bots = buildResolvedMaxBotConfigs({
+      defaultBot: {
+        id: 'id613002203036_bot',
+        token: 'token-primary-123456',
+        webhookSecretPath: 'primary-webhook-path-123456',
+        webhookHeaderSecret: 'primary-webhook-header-123456',
+      },
+      additionalBotsJson: JSON.stringify([
+        {
+          id: 'id613002203036_6_bot',
+          token: 'token-disabled-123456',
+          webhookSecretPath: 'disabled-webhook-path-123456',
+          webhookHeaderSecret: 'disabled-webhook-header-123456',
+          state: 'disabled',
+        },
+      ]),
+    });
+
+    expect(bots.at(1)).toMatchObject({
+      id: 'id613002203036_6_bot',
+      state: 'disabled',
+      visibleInAdmin: false,
+    });
+  });
+
   it('resolves multiple additional bots without collapsing the registry to a pair', () => {
     const bots = buildResolvedMaxBotConfigs({
       defaultBot: {
