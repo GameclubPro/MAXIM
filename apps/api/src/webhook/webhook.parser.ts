@@ -907,27 +907,29 @@ export class WebhookParser {
     const content = this.asRecord(message.content);
     const payload = this.asRecord(message.payload);
     const messageNode = this.asRecord(message.message);
-    const candidates: unknown[] = [
-      message.link,
-      message.markup,
-      message.attachments,
-      body?.link,
-      body?.markup,
-      body?.attachments,
-      content?.link,
-      content?.markup,
-      content?.attachments,
-      payload?.link,
-      payload?.markup,
-      payload?.attachments,
-      messageNode?.link,
-      messageNode?.markup,
-      messageNode?.attachments,
+    const candidates: Array<{ node: unknown; allowShareAttachmentUrls?: boolean }> = [
+      { node: message.link },
+      { node: message.markup },
+      { node: message.attachments, allowShareAttachmentUrls: true },
+      { node: body?.link },
+      { node: body?.markup },
+      { node: body?.attachments, allowShareAttachmentUrls: true },
+      { node: content?.link },
+      { node: content?.markup },
+      { node: content?.attachments, allowShareAttachmentUrls: true },
+      { node: payload?.link },
+      { node: payload?.markup },
+      { node: payload?.attachments, allowShareAttachmentUrls: true },
+      { node: messageNode?.link },
+      { node: messageNode?.markup },
+      { node: messageNode?.attachments, allowShareAttachmentUrls: true },
     ];
 
     const acc = new Set<string>();
     for (const candidate of candidates) {
-      this.collectLinkUrlsFromEntities(candidate, acc);
+      this.collectLinkUrlsFromEntities(candidate.node, acc, '', 0, false, {
+        allowShareAttachmentUrls: Boolean(candidate.allowShareAttachmentUrls),
+      });
     }
 
     return [...acc];
@@ -1008,6 +1010,7 @@ export class WebhookParser {
     parentKey = '',
     depth = 0,
     trustedLinkContext = false,
+    options: { allowShareAttachmentUrls?: boolean } = {},
   ) {
     if (depth > 8 || node === null || node === undefined) {
       return;
@@ -1015,7 +1018,14 @@ export class WebhookParser {
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectLinkUrlsFromEntities(item, acc, parentKey, depth + 1, trustedLinkContext);
+        this.collectLinkUrlsFromEntities(
+          item,
+          acc,
+          parentKey,
+          depth + 1,
+          trustedLinkContext,
+          options,
+        );
       }
       return;
     }
@@ -1026,15 +1036,18 @@ export class WebhookParser {
     }
 
     const type = this.readEntityType(row);
-    if (this.shouldSkipSupplementalEntity(type)) {
+    if (this.shouldSkipSupplementalEntity(type, options)) {
       return;
     }
 
     const parent = parentKey.toLowerCase();
+    const isDirectShareAttachment =
+      options.allowShareAttachmentUrls === true && type === 'share';
     const isExplicitLinkEntity =
       type === 'link' ||
       type === 'url' ||
       type === 'hyperlink' ||
+      isDirectShareAttachment ||
       parent === 'link' ||
       parent === 'links' ||
       parent === 'markup' ||
@@ -1079,7 +1092,7 @@ export class WebhookParser {
       }
 
       if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectLinkUrlsFromEntities(value, acc, key, depth + 1, hasLinkContext);
+        this.collectLinkUrlsFromEntities(value, acc, key, depth + 1, hasLinkContext, options);
       }
     }
   }
@@ -1320,7 +1333,14 @@ export class WebhookParser {
     return undefined;
   }
 
-  private shouldSkipSupplementalEntity(entityType: string | undefined): boolean {
-    return entityType === 'reply' || entityType === 'share' || entityType === 'inline_keyboard';
+  private shouldSkipSupplementalEntity(
+    entityType: string | undefined,
+    options: { allowShareAttachmentUrls?: boolean } = {},
+  ): boolean {
+    return (
+      entityType === 'reply' ||
+      (entityType === 'share' && !options.allowShareAttachmentUrls) ||
+      entityType === 'inline_keyboard'
+    );
   }
 }

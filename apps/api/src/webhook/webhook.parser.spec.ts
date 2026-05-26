@@ -268,6 +268,32 @@ describe('WebhookParser', () => {
     );
   });
 
+  it('extracts urls from direct share attachments on the current message', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-direct-share-1',
+        chat_id: 'chat-direct-share-1',
+        sender_id: 'user-direct-share-1',
+        created_at: '2026-03-09T09:11:10.174Z',
+        body: {
+          text: '',
+          attachments: [
+            {
+              type: 'share',
+              title: 'Внешняя ссылка',
+              payload: {
+                url: 'https://example.com/direct-share-link',
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain('https://example.com/direct-share-link');
+  });
+
   it('does not append reply quote text or buttons to the current message', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
