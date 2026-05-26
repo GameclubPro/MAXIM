@@ -15826,7 +15826,7 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('defers required subscription notice metadata refresh outside the hot path', async () => {
+    it('refreshes cold required subscription metadata before sending the user notice', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const ruleEngine = {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
@@ -15879,16 +15879,21 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
       expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
         trafficClass: 'critical',
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
       expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'background',
+        timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
+      });
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('обязательные чаты или каналы');
+      expect(noticeText).toContain('Новости MAX');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
           textFormat: 'markdown',
@@ -15896,17 +15901,17 @@ describe('ModerationService', () => {
             type: 'reply',
             mid: 'mid-rules-1',
           },
+          buttons: [
+            [
+              {
+                text: 'Новости MAX',
+                url: 'https://max.ru/channels/news-max',
+              },
+            ],
+          ],
         }),
       );
       expect(ruleEngine.detect).not.toHaveBeenCalled();
-
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-        trafficClass: 'background',
-        timeoutMs: 2_500,
-        sourceTag: 'required_subscription_metadata',
-      });
       expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'channel-1',
@@ -15915,6 +15920,52 @@ describe('ModerationService', () => {
           link: 'https://max.ru/channels/news-max',
           participantsCount: 100,
         }),
+      );
+    });
+
+    it('keeps required subscription notices out of the generic bot-notice bucket', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.incrementWithTtl.mockResolvedValue(999);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+        'moderation:bot-notice-bucket:v1:chat-1',
+        60,
       );
     });
 

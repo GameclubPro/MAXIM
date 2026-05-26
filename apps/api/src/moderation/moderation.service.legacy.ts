@@ -8210,9 +8210,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const allowInitialRequiredSubscriptionMetadataFetch = !this.chatContextCache;
     const resolvedRequiredChannels = await this.resolveRequiredSubscriptionChannels(
       requiredChannelIds,
-      { allowRemoteFetch: !this.chatContextCache },
+      { allowRemoteFetch: allowInitialRequiredSubscriptionMetadataFetch },
     );
     const requiredMembershipChannelIds = resolvedRequiredChannels
       .filter((channel) => channel.checkMembership)
@@ -8262,18 +8263,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
 
-    const missingChannelIdsNeedingRefresh = membership.missingChannelIds.filter((channelId) => {
-      const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
-      return !metadata || !metadata.usable;
-    });
-    if (missingChannelIdsNeedingRefresh.length > 0) {
-      this.scheduleRequiredSubscriptionMetadataRefresh(missingChannelIdsNeedingRefresh);
-      this.recordOptionalWebhookStageSkip({
-        stage: 'required-subscription.metadata-refresh',
-        reason: 'required subscription metadata refresh deferred outside the user-facing webhook',
-        failOpen: false,
-      });
-    }
+    const missingChannelIdsNeedingRefresh = allowInitialRequiredSubscriptionMetadataFetch
+      ? []
+      : membership.missingChannelIds.filter((channelId) => {
+          const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
+          return !metadata || !metadata.usable;
+        });
     const missingChannels = membership.missingChannelIds
       .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== null);
@@ -8327,22 +8322,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const runRequiredSubscriptionFollowUp = async () => {
-      const requiredSubscriptionMessageOptions =
-        this.buildRequiredSubscriptionMessageOptions(
-          missingChannels,
+      let noticeContextPrepared = false;
+      let followUpMissingChannelTitles = missingChannelTitles;
+      let requiredSubscriptionMessageOptions: MaxSendMessageOptions | undefined;
+      const prepareRequiredSubscriptionNoticeContext = async () => {
+        if (noticeContextPrepared) {
+          return;
+        }
+
+        noticeContextPrepared = true;
+        const followUpMissingChannels = await this.resolveRequiredSubscriptionNoticeChannels({
+          channels: missingChannels,
+          channelIdsNeedingRefresh: missingChannelIdsNeedingRefresh,
+        });
+        followUpMissingChannelTitles = followUpMissingChannels
+          .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
+          .filter((title) => title.length > 0);
+        requiredSubscriptionMessageOptions = this.buildRequiredSubscriptionMessageOptions(
+          followUpMissingChannels,
           params.settings.rulesAttachViolationsEnabled,
           params.rulesPublishedUrl,
           params.rulesPublishedMessageId,
         ) ?? undefined;
+      };
 
-      const sendRequiredSubscriptionBotMessage = async (textValue: string) =>
-        this.sendBotMessageWithOptionalAutoDelete({
+      const sendRequiredSubscriptionBotMessage = async (textValue: string) => {
+        await prepareRequiredSubscriptionNoticeContext();
+        return this.sendBotMessageWithOptionalAutoDelete({
           chatId: params.chatId,
           text: textValue,
           messageOptions: requiredSubscriptionMessageOptions,
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+          bypassNoticeBucket: true,
         });
+      };
       const requiredSubscriptionNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
         stage: 'required-subscription.notice',
         hotPathProfile: params.hotPathProfile,
@@ -8370,13 +8384,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
           if (!noticeOnCooldown) {
             try {
-              await sendRequiredSubscriptionBotMessage(
+              await prepareRequiredSubscriptionNoticeContext();
+              const noticeSent = await sendRequiredSubscriptionBotMessage(
                 await this.appendAdminContactMarkdownLink(
                   params.chatId,
                   this.buildRequiredSubscriptionExplanation(
                     params.userLabel,
                     messageDeleted,
-                    missingChannelTitles,
+                    followUpMissingChannelTitles,
                     params.settings.requiredSubscriptionBotMessageText,
                     params.settings.botSpeechStyle,
                   ),
@@ -8384,7 +8399,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   params.settings.requiredSubscriptionAdminContactButtonUrl,
                 ),
               );
-              await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
+              if (noticeSent) {
+                await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
+              }
             } catch (error: unknown) {
               this.logger.warn(
                 {
@@ -8405,7 +8422,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               params.chatId,
               this.buildRequiredSubscriptionWarnExplanation(
                 params.userLabel,
-                missingChannelTitles,
+                followUpMissingChannelTitles,
                 params.settings.requiredSubscriptionWarnMessageText,
                 params.settings.botSpeechStyle,
               ),
@@ -8426,6 +8443,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      if (action === SanctionAction.MUTE || action === SanctionAction.BAN) {
+        await prepareRequiredSubscriptionNoticeContext();
+      }
+
       if (action !== SanctionAction.NONE) {
         await this.applySanctionAction({
           chatId: params.chatId,
@@ -8441,7 +8462,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             action === SanctionAction.BAN
               ? this.buildRequiredSubscriptionBanExplanation(
                   params.userLabel,
-                  missingChannelTitles,
+                  followUpMissingChannelTitles,
                   params.settings.requiredSubscriptionMuteDurationHours,
                   params.settings.botSpeechStyle,
                 )
@@ -8455,7 +8476,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             await sendRequiredSubscriptionBotMessage(
               this.buildRequiredSubscriptionMuteExplanation(
                 params.userLabel,
-                missingChannelTitles,
+                followUpMissingChannelTitles,
                 params.settings.botSpeechStyle,
               ),
             );
@@ -8488,7 +8509,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             action,
             requiredChannelIds,
             missingChannelIds: membership.missingChannelIds,
-            missingChannelTitles,
+            missingChannelTitles: followUpMissingChannelTitles,
             requiredSubscriptionViolationCount24h,
             requiredSubscriptionEscalationWindowHours:
               REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
@@ -9210,6 +9231,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return { missingChannelIds };
   }
 
+  private async resolveRequiredSubscriptionNoticeChannels(params: {
+    channels: readonly RequiredSubscriptionChannelMetadata[];
+    channelIdsNeedingRefresh: readonly string[];
+  }): Promise<RequiredSubscriptionChannelMetadata[]> {
+    const channelIdsNeedingRefresh = Array.from(
+      new Set(params.channelIdsNeedingRefresh.map((channelId) => channelId.trim()).filter(Boolean)),
+    );
+    if (channelIdsNeedingRefresh.length === 0) {
+      return [...params.channels];
+    }
+
+    const refreshedChannels = await this.resolveRequiredSubscriptionChannels(
+      channelIdsNeedingRefresh,
+      { allowRemoteFetch: true },
+    );
+    const refreshedChannelsById = new Map(
+      refreshedChannels.map((channel) => [channel.id, channel] as const),
+    );
+
+    return params.channels.map((channel) => refreshedChannelsById.get(channel.id) ?? channel);
+  }
+
   private logRequiredSubscriptionUnresolved(params: {
     chatId: string;
     userId: string;
@@ -9576,29 +9619,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return channelIds
       .map((channelId) => resolvedMetadataById.get(channelId))
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== undefined);
-  }
-
-  private scheduleRequiredSubscriptionMetadataRefresh(channelIds: readonly string[]): void {
-    const normalizedChannelIds = Array.from(
-      new Set(channelIds.map((channelId) => channelId.trim()).filter(Boolean)),
-    );
-    if (normalizedChannelIds.length === 0) {
-      return;
-    }
-
-    setImmediate(() => {
-      void this.resolveRequiredSubscriptionChannels(normalizedChannelIds, {
-        allowRemoteFetch: true,
-      }).catch((error: unknown) => {
-        this.logger.warn(
-          {
-            channelIds: normalizedChannelIds,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Deferred required subscription metadata refresh failed',
-        );
-      });
-    });
   }
 
   private readCachedRequiredSubscriptionChannelMetadata(
@@ -17426,7 +17446,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
-  }) {
+    bypassNoticeBucket?: boolean;
+  }): Promise<boolean> {
     const {
       chatId,
       text,
@@ -17434,10 +17455,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       immediate,
+      bypassNoticeBucket,
     } = params;
 
-    if (immediate !== true && !(await this.shouldSendBotNotice(chatId))) {
-      return;
+    if (
+      immediate !== true &&
+      bypassNoticeBucket !== true &&
+      !(await this.shouldSendBotNotice(chatId))
+    ) {
+      return false;
     }
 
     await this.maxClient.sendMessage(
@@ -17453,6 +17479,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         immediate,
       }),
     );
+    return true;
   }
 
   private async shouldSendBotNotice(chatId: string): Promise<boolean> {
