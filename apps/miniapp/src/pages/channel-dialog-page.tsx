@@ -77,6 +77,7 @@ import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
+import '../styles/channel-dialog-native-comments.css';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -1436,7 +1437,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const draftAttachmentCount = draftAttachments.length;
   const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
   const isPreparingAttachment = preparingAttachmentState !== null;
-  const showComposeMeta = isPreparingAttachment || draftLength > 0 || Boolean(editingMessage);
+  const showComposeMeta = isPreparingAttachment || draftLength > 0 || editingAttachmentCount > 0;
   const canSubmitMessage =
     !isPreparingAttachment &&
     (draftLength > 0 || draftAttachmentCount > 0 || editingAttachmentCount > 0);
@@ -1502,7 +1503,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       ? suggestPreparingImageLabel || 'Готовим фото'
       : 'Готовим вложения'
     : editingMessage
-      ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
+      ? editingAttachmentSummary
       : draftAttachmentSummary;
   const activeComposeEmojiGroup = useMemo(
     () =>
