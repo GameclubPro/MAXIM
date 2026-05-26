@@ -8553,6 +8553,223 @@ describe('AdminService.listChannels', () => {
     }
   });
 
+  it('repairs every allowlisted channel missing a fresh access edge in one response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      const channels = Array.from({ length: 15 }, (_, index) => {
+        const channelNumber = index + 1;
+        const createdDay = String(20 - index).padStart(2, '0');
+        return {
+          chat: {
+            id: `channel-${String(channelNumber).padStart(2, '0')}`,
+            title: `Канал ${channelNumber}`,
+            createdAt: new Date(`2026-03-${createdDay}T10:00:00.000Z`),
+            entityType: 'CHANNEL',
+            primaryBotId: '777000_bot',
+            botId: '777000_bot',
+          },
+        };
+      });
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce(channels)
+        .mockResolvedValueOnce(
+          channels.map(({ chat }) => ({
+            chatId: chat.id,
+            createdAt: new Date('2026-05-14T08:59:00.000Z'),
+          })),
+        );
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const rosterSync = {
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      (service as any).maxChatAdminRosterSyncService = rosterSync;
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual(
+        channels.map(({ chat }) =>
+          createChatSummaryFixture({
+            id: chat.id,
+            title: chat.title,
+            createdAt: chat.createdAt.toISOString(),
+            entityType: 'channel',
+            channelOverview: {
+              enabledScenariosCount: 0,
+              commentsEnabled: false,
+              postSuggestionsEnabled: false,
+              commentsModerationEnabled: false,
+            },
+          }),
+        ),
+      );
+
+      expect((prisma as any).managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(channels.length);
+      expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledTimes(channels.length);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('merges allowlisted channels missing from a published snapshot response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      const cachedChannel = {
+        chat: {
+          id: 'channel-1',
+          title: 'Канал из snapshot',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        },
+      };
+      const missingChannel = {
+        chat: {
+          id: 'channel-2',
+          title: 'Канал вне snapshot',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        },
+      };
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce([cachedChannel, missingChannel])
+        .mockResolvedValueOnce([
+          { chatId: 'channel-2', createdAt: new Date('2026-05-14T08:59:00.000Z') },
+        ]);
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([{ chatId: 'channel-1', botId: '777000_bot' }])
+          .mockResolvedValueOnce([{ chatId: 'channel-1', botId: '777000_bot' }])
+          .mockResolvedValueOnce([]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const chatContextCache = createChatContextCacheMock({
+        getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+          version: 'snapshot-v1',
+          builtAt: '2026-04-04T10:00:00.000Z',
+          lastSyncedAt: '2026-04-04T09:59:30.000Z',
+          itemCount: 1,
+          itemsHash: 'hash-v1',
+          items: [
+            createChatSummaryFixture({
+              id: 'channel-1',
+              title: 'Канал из snapshot',
+              createdAt: '2026-03-02T10:00:00.000Z',
+              entityType: 'channel',
+              primaryBotId: '777000_bot',
+            }),
+          ],
+        }),
+      });
+      const rosterSync = {
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+      );
+      (service as any).maxChatAdminRosterSyncService = rosterSync;
+      const rebuildSpy = jest
+        .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+        .mockImplementation(() => undefined);
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'channel-1',
+          title: 'Канал из snapshot',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          primaryBotId: '777000_bot',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+        createChatSummaryFixture({
+          id: 'channel-2',
+          title: 'Канал вне snapshot',
+          createdAt: '2026-03-01T10:00:00.000Z',
+          entityType: 'channel',
+          primaryBotId: '777000_bot',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+      ]);
+
+      expect((prisma as any).managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            chatId: 'channel-2',
+            userId: 'admin-1',
+            botId: '777000_bot',
+            state: 'GRANTED',
+            source: 'allowlist_edge_repair',
+          }),
+        }),
+      );
+      expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+        'admin-1',
+        'channel',
+        expect.objectContaining({
+          itemCount: 2,
+          items: [
+            expect.objectContaining({ id: 'channel-1' }),
+            expect.objectContaining({ id: 'channel-2' }),
+          ],
+        }),
+        expect.any(Number),
+      );
+      expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'channel');
+      expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+        chatId: 'channel-2',
+        botIds: ['777000_bot'],
+        title: 'Канал вне snapshot',
+        entityType: 'channel',
+        source: 'admin_access_validation',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not repair allowlist access edges over fresh denied edge states', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     try {

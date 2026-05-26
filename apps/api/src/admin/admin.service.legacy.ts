@@ -687,7 +687,7 @@ const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 3;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
-const MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_LIMIT = 12;
+const MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE = 50;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT = 3;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS = 300;
 const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
@@ -2172,14 +2172,19 @@ export class AdminService implements OnModuleDestroy {
         userId,
         edgeVisibleItems,
       );
+      const responseItems = await this.mergeManagedEntitiesPublishedSnapshotWithAllowlistItems(
+        userId,
+        entityType,
+        filteredItems,
+      );
       let responseSnapshot = snapshot;
-      if (filteredItems.length !== runtimeScopedItems.length) {
+      if (!this.haveSameManagedEntityIds(responseItems, runtimeScopedItems)) {
         try {
           responseSnapshot = await this.writeManagedEntitiesPublishedSnapshotPatched(
             userId,
             entityType,
             snapshot,
-            filteredItems,
+            responseItems,
           );
         } catch (error: unknown) {
           this.logger.warn(
@@ -2188,14 +2193,14 @@ export class AdminService implements OnModuleDestroy {
               userId,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Failed to patch denied managed entities out of published snapshot',
+            'Failed to patch filtered managed entities into published snapshot',
           );
           this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
         }
       }
 
       return {
-        items: filteredItems,
+        items: responseItems,
         version: responseSnapshot.version,
         builtAt: responseSnapshot.builtAt,
         lastSyncedAt: responseSnapshot.lastSyncedAt,
@@ -2286,6 +2291,51 @@ export class AdminService implements OnModuleDestroy {
     return sourceItems
       .filter((item) => visibleIds.has(item.id))
       .map((item) => this.cloneManagedEntitySummary(item));
+  }
+
+  private haveSameManagedEntityIds(
+    leftItems: readonly ChatSummary[],
+    rightItems: readonly ChatSummary[],
+  ): boolean {
+    return (
+      leftItems.length === rightItems.length &&
+      leftItems.every((item, index) => item.id === rightItems[index]?.id)
+    );
+  }
+
+  private async mergeManagedEntitiesPublishedSnapshotWithAllowlistItems(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    const snapshotItems = items.map((item) => this.cloneManagedEntitySummary(item));
+    if (entityType !== 'channel') {
+      return snapshotItems;
+    }
+
+    try {
+      const allowlistItems = await this.listChatsFromAllowlist(userId, entityType);
+      const snapshotIds = new Set(snapshotItems.map((item) => item.id));
+      if (allowlistItems.every((item) => snapshotIds.has(item.id))) {
+        return snapshotItems;
+      }
+
+      this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+      return this.filterManagedEntitiesByCachedDeniedAccess(
+        userId,
+        this.mergeManagedEntityGroups(snapshotItems, allowlistItems),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to merge allowlisted managed entities into published snapshot response',
+      );
+      return snapshotItems;
+    }
   }
 
   private async filterManagedEntitiesByStrictAccessEdges(
@@ -28090,8 +28140,7 @@ export class AdminService implements OnModuleDestroy {
 
     const visibleChatIds = new Set(visibleChats.map((chat) => chat.id));
     const missingEdgeCandidates = candidates
-      .filter((chat) => !visibleChatIds.has(chat.id))
-      .slice(0, MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_LIMIT);
+      .filter((chat) => !visibleChatIds.has(chat.id));
     if (missingEdgeCandidates.length === 0) {
       return [];
     }
@@ -28143,27 +28192,17 @@ export class AdminService implements OnModuleDestroy {
       repairCandidates,
       client,
     );
-    const repairedChats: ChatSummary[] = [];
+    const repairedChatIds = new Set<string>();
+    const repairWrites: Array<{ chat: ChatSummary; botId: string }> = [];
     for (const { chat, botIds } of repairCandidates) {
       const repairableBotIds = botIds.filter(
         (botId) => !deniedRepairKeys.has(this.buildManagedEntityRepairEdgeKey(chat.id, botId)),
       );
       if (client?.upsert && repairableBotIds.length > 0) {
-        await Promise.all(
-          repairableBotIds.map((botId) =>
-            this.upsertManagedEntityAccessEdge({
-              chatId: chat.id,
-              userId,
-              botId,
-              entityType: chat.entityType,
-              state: 'GRANTED',
-              userRole: 'ADMIN',
-              botRole: 'ADMIN',
-              source: 'allowlist_edge_repair',
-            }),
-          ),
-        );
-        repairedChats.push(this.cloneManagedEntitySummary(chat));
+        repairedChatIds.add(chat.id);
+        for (const botId of repairableBotIds) {
+          repairWrites.push({ chat, botId });
+        }
       }
       if (this.maxChatAdminRosterSyncService) {
         void this.maxChatAdminRosterSyncService
@@ -28188,7 +28227,32 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    return repairedChats;
+    for (
+      let index = 0;
+      index < repairWrites.length;
+      index += MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE
+    ) {
+      await Promise.all(
+        repairWrites
+          .slice(index, index + MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE)
+          .map(({ chat, botId }) =>
+            this.upsertManagedEntityAccessEdge({
+              chatId: chat.id,
+              userId,
+              botId,
+              entityType: chat.entityType,
+              state: 'GRANTED',
+              userRole: 'ADMIN',
+              botRole: 'ADMIN',
+              source: 'allowlist_edge_repair',
+            }),
+          ),
+      );
+    }
+
+    return repairCandidates
+      .filter(({ chat }) => repairedChatIds.has(chat.id))
+      .map(({ chat }) => this.cloneManagedEntitySummary(chat));
   }
 
   private async findAllowlistedManagedEntityRepairChats(
