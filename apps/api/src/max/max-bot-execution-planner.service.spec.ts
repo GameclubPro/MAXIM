@@ -184,6 +184,7 @@ function createFixture() {
       maxBotRegistry as never,
     ),
     chat,
+    bots,
     memberships,
     maxBotLinkService,
   };
@@ -227,5 +228,47 @@ describe('MaxBotExecutionPlannerService', () => {
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')?.role,
     ).toBe(ChatBotMembershipRole.PRIMARY);
+  });
+
+  it('does not promote a draining standby bot to primary', async () => {
+    const fixture = createFixture();
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!standbyBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    standbyBot.state = 'draining';
+
+    await expect(
+      fixture.service.setPrimaryBot({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+      }),
+    ).rejects.toThrow('ещё не готов');
+
+    expect(fixture.chat.primaryBotId).toBe('id613002203036_bot');
+  });
+
+  it('does not enable assist mode for a draining standby bot', async () => {
+    const fixture = createFixture();
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!standbyBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    standbyBot.state = 'draining';
+
+    await expect(
+      fixture.service.setPartnerAssist({
+        chatId: 'chat-1',
+        entityType: 'chat',
+        botId: 'id613002203036_4_bot',
+        enabled: true,
+      }),
+    ).rejects.toThrow('active-бота');
+
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot')
+        ?.capabilities,
+    ).toEqual([]);
   });
 });

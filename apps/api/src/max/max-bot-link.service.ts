@@ -10,10 +10,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
+import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
-const ACTIONABLE_BOT_LIFECYCLE_STATES = new Set(['active', 'draining']);
 const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   'delete',
   'delete_message',
@@ -190,6 +190,7 @@ type ResolvedChatRouteState = {
   primaryBotId: string | null;
   memberships: ResolvedChatRouteMembership[];
   activeKnownMemberships: ResolvedChatRouteMembership[];
+  activeOperationalMemberships: ResolvedChatRouteMembership[];
   activeActionableMemberships: ResolvedChatRouteMembership[];
 };
 
@@ -1036,7 +1037,7 @@ export class MaxBotLinkService {
 
     const primaryAdminCapableMembership =
       state.primaryBotId !== null
-        ? (state.activeKnownMemberships.find((membership) => {
+        ? (state.activeOperationalMemberships.find((membership) => {
             if (membership.botId !== state.primaryBotId) {
               return false;
             }
@@ -1057,7 +1058,7 @@ export class MaxBotLinkService {
     }
 
     const alternateAdminCapableMembership =
-      state.activeKnownMemberships.find((membership) => {
+      state.activeOperationalMemberships.find((membership) => {
         if (membership.botId === state.primaryBotId) {
           return false;
         }
@@ -1078,7 +1079,7 @@ export class MaxBotLinkService {
 
     const primaryActiveMembership =
       state.primaryBotId !== null
-        ? (state.activeKnownMemberships.find(
+        ? (state.activeOperationalMemberships.find(
             (membership) => membership.botId === state.primaryBotId,
           ) ?? null)
         : null;
@@ -1097,7 +1098,7 @@ export class MaxBotLinkService {
     }
 
     const alternateMembership =
-      state.activeKnownMemberships.find(
+      state.activeOperationalMemberships.find(
         (membership) =>
           membership.botId !== state.primaryBotId &&
           !this.membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
@@ -1113,7 +1114,12 @@ export class MaxBotLinkService {
       });
     }
 
-    const fallbackBotId = state.primaryBotId ?? state.activeKnownMemberships[0]?.botId ?? null;
+    const fallbackBotId =
+      state.activeOperationalMemberships.find(
+        (membership) => membership.botId === state.primaryBotId,
+      )?.botId ??
+      state.activeOperationalMemberships[0]?.botId ??
+      null;
     return this.buildRoute({
       purpose: 'member_access',
       chatId: normalizedChatId,
@@ -1264,9 +1270,13 @@ export class MaxBotLinkService {
     const activeKnownMemberships = memberships.filter(
       (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
     );
+    const activeOperationalMemberships = activeKnownMemberships.filter((membership) => {
+      const bot = this.botRegistry.getBotById(membership.botId);
+      return Boolean(bot && canDiscoverChatsForBotState(bot.state));
+    });
     const activeActionableMemberships = activeKnownMemberships.filter((membership) => {
       const bot = this.botRegistry.getBotById(membership.botId);
-      return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
+      return Boolean(bot && canExecuteActionsForBotState(bot.state));
     });
     const storedPrimaryBotId =
       this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ?? null;
@@ -1275,7 +1285,9 @@ export class MaxBotLinkService {
         storedPrimaryBotId,
         activeActionableMemberships.length > 0
           ? activeActionableMemberships
-          : activeKnownMemberships,
+          : activeOperationalMemberships.length > 0
+            ? activeOperationalMemberships
+            : activeKnownMemberships,
       ) ??
       storedPrimaryBotId ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
@@ -1290,6 +1302,7 @@ export class MaxBotLinkService {
       primaryBotId,
       memberships,
       activeKnownMemberships,
+      activeOperationalMemberships,
       activeActionableMemberships,
     };
   }

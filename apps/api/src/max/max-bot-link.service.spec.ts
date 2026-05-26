@@ -203,6 +203,7 @@ function createServiceFixture() {
     service: new MaxBotLinkService(prisma as never, botRegistry as never, botContext as never),
     prisma,
     botContext,
+    bots,
     chats,
     memberships,
   };
@@ -592,6 +593,61 @@ describe('MaxBotLinkService', () => {
 
     await expect(
       fixture.service.resolveBotIdForMemberAccess({ chatId: 'channel-1' }),
+    ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('uses an operational draining bot for member-access reads instead of a dormant primary', async () => {
+    const fixture = createServiceFixture();
+    const primaryBot = fixture.bots.find((bot) => bot.id === 'id613002203036_bot');
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!primaryBot || !standbyBot) {
+      throw new Error('bot fixture missing');
+    }
+    primaryBot.state = 'dormant';
+    standbyBot.state = 'draining';
+    fixture.chats.set('channel-operational-read', {
+      id: 'channel-operational-read',
+      title: 'Shared channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'channel-operational-read',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-26T08:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-26T08:00:00.000Z'),
+        updatedAt: new Date('2026-05-26T08:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-26T08:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-26T08:00:00.000Z'),
+      },
+      {
+        chatId: 'channel-operational-read',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-26T08:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-26T08:00:01.000Z'),
+        updatedAt: new Date('2026-05-26T08:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-26T08:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-26T08:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForMemberAccess({ chatId: 'channel-operational-read' }),
     ).resolves.toBe('id613002203036_4_bot');
   });
 
@@ -1045,6 +1101,109 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toEqual(['id613002203036_4_bot']);
+  });
+
+  it('does not route moderation actions to a draining standby bot', async () => {
+    const fixture = createServiceFixture();
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!standbyBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    standbyBot.state = 'draining';
+    fixture.chats.set('chat-draining-action', {
+      id: 'chat-draining-action',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-draining-action',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-26T09:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-26T09:00:00.000Z'),
+        updatedAt: new Date('2026-05-26T09:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-26T09:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-26T09:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-draining-action',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-26T09:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        },
+        createdAt: new Date('2026-05-26T09:00:01.000Z'),
+        updatedAt: new Date('2026-05-26T09:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-26T09:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-26T09:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdsForModerationAction({
+        chatId: 'chat-draining-action',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('does not route assist capabilities to a draining standby bot', async () => {
+    const fixture = createServiceFixture();
+    const standbyBot = fixture.bots.find((bot) => bot.id === 'id613002203036_4_bot');
+    if (!standbyBot) {
+      throw new Error('standby bot fixture missing');
+    }
+    standbyBot.state = 'draining';
+    fixture.chats.set('chat-draining-capability', {
+      id: 'chat-draining-capability',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-draining-capability',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-05-26T09:10:00.000Z'),
+        updatedAt: new Date('2026-05-26T09:10:00.000Z'),
+        lastSeenAt: new Date('2026-05-26T09:10:00.000Z'),
+        lastWebhookAt: new Date('2026-05-26T09:10:00.000Z'),
+      },
+      {
+        chatId: 'chat-draining-capability',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        capabilities: ['suggestion_delivery'],
+        createdAt: new Date('2026-05-26T09:10:01.000Z'),
+        updatedAt: new Date('2026-05-26T09:10:01.000Z'),
+        lastSeenAt: new Date('2026-05-26T09:10:01.000Z'),
+        lastWebhookAt: new Date('2026-05-26T09:10:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForCapability({
+        chatId: 'chat-draining-capability',
+        capability: 'suggestion_delivery',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBeNull();
   });
 
   it('returns a structured moderation route for the confirmed delete-capable bot', async () => {

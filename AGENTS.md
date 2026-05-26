@@ -167,6 +167,7 @@
 
 - Multi-bot chat ownership is modeled as `Chat.primaryBotId` plus `ChatBotMembership`. Treat `Chat.botId` as transitional compatibility only.
 - Multi-bot UI, diagnostics, and tests should stay list-oriented. Avoid copy, caps, or assumptions that only one extra/standby bot exists.
+- Multi-bot lifecycle policy lives in `apps/api/src/max/max-bot-state.util.ts`: `active` bots may execute actions, assist, and primary promotion; `draining` bots stay usable for webhooks/read/discovery only; `dormant`/`disabled` bots should not be selected for routes.
 - Managed entities are aggregated per unique chat or channel. Do not duplicate cards per bot.
 - The public mini app should not expose internal primary, standby, or execution-owner details.
 - Home readiness is user-scoped. Keep user-visible completion separate from long-running global discovery completion.

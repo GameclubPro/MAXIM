@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaxClientService, type MaxChatMemberAccess } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
 
 type PersistedMembership = {
   botId: string;
@@ -41,8 +42,6 @@ const ASSIST_CAPABILITIES_BY_ENTITY: Record<
     'access_prewarm',
   ],
 };
-
-const ACTIONABLE_LIFECYCLE_STATES = new Set(['active', 'draining']);
 
 @Injectable()
 export class MaxBotExecutionPlannerService {
@@ -85,7 +84,7 @@ export class MaxBotExecutionPlannerService {
     if (!chatId || !targetBot) {
       throw new BadRequestException('Выбранный бот не найден.');
     }
-    if (!ACTIONABLE_LIFECYCLE_STATES.has(targetBot.state)) {
+    if (!canExecuteActionsForBotState(targetBot.state)) {
       throw new BadRequestException('Выбранный бот ещё не готов к выполнению действий.');
     }
 
@@ -148,7 +147,7 @@ export class MaxBotExecutionPlannerService {
         (membership) =>
           membership.status === ChatBotMembershipStatus.ACTIVE &&
           membership.role === ChatBotMembershipRole.STANDBY &&
-          ACTIONABLE_LIFECYCLE_STATES.has(
+          canExecuteActionsForBotState(
             this.maxBotRegistry.getBotById(membership.botId)?.state ?? 'disabled',
           ),
       );
@@ -180,6 +179,12 @@ export class MaxBotExecutionPlannerService {
     const membership = state.memberships.find((item) => item.botId === botId) ?? null;
     if (!membership || membership.status !== ChatBotMembershipStatus.ACTIVE) {
       throw new BadRequestException('Бот не является активным участником этого чата.');
+    }
+    if (params.enabled) {
+      const bot = this.maxBotRegistry.getBotById(botId);
+      if (!bot || !canExecuteActionsForBotState(bot.state)) {
+        throw new BadRequestException('Assist-режим можно включить только для active-бота.');
+      }
     }
     if (membership.role === ChatBotMembershipRole.PRIMARY) {
       throw new BadRequestException(
@@ -234,7 +239,7 @@ export class MaxBotExecutionPlannerService {
         continue;
       }
       const bot = this.maxBotRegistry.getBotById(membership.botId);
-      if (!bot || !ACTIONABLE_LIFECYCLE_STATES.has(bot.state)) {
+      if (!bot || !canDiscoverChatsForBotState(bot.state)) {
         continue;
       }
       const snapshot = await this.refreshBotAccessSnapshot(chatId, bot.id);
@@ -271,7 +276,7 @@ export class MaxBotExecutionPlannerService {
         (bot) =>
           bot.role === 'standby' &&
           bot.membershipStatus === 'active' &&
-          bot.lifecycleState !== 'disabled',
+          this.isExecutableLifecycleState(bot.lifecycleState),
       ) ?? null;
     const assistPartner =
       assignedBots.find(
@@ -279,7 +284,7 @@ export class MaxBotExecutionPlannerService {
           bot.role === 'standby' &&
           bot.membershipStatus === 'active' &&
           bot.capabilities.length > 0 &&
-          bot.lifecycleState !== 'disabled',
+          this.isExecutableLifecycleState(bot.lifecycleState),
       ) ?? null;
     const partnerBotId = assistPartner?.botId ?? activePartner?.botId ?? null;
     const primaryBotId =
@@ -464,6 +469,10 @@ export class MaxBotExecutionPlannerService {
     }
 
     return 'shared-standby';
+  }
+
+  private isExecutableLifecycleState(state: ManagedEntityAssignedBot['lifecycleState']): boolean {
+    return canExecuteActionsForBotState(state);
   }
 
   private normalizeCapabilities(value: unknown): ManagedEntityBotCapability[] {
