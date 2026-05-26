@@ -2,15 +2,18 @@ import {
   addVkParsingSourceRequestSchema,
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
+  retryVkParsingPostResultSchema,
   updateVkParsingSettingsRequestSchema,
   vkParsingCapabilitySchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
   type PublishVkParsingPostRequest,
   type PublishVkParsingPostResult,
+  type RetryVkParsingPostResult,
   type UpdateVkParsingSettingsRequest,
   type VkParsingCapability,
   type VkParsingFeed,
+  type VkParsingFeedQuery,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
@@ -22,12 +25,40 @@ function buildVkParsingPath(entityType: VkParsingEntityType, chatId: string): st
   return `/${prefix}/${chatId}/vk-parsing`;
 }
 
+function buildVkParsingQuery(query: Partial<VkParsingFeedQuery> | undefined): string {
+  const status = query?.status ?? 'ALL';
+  const sourceId = query?.sourceId?.trim();
+  const rawLimit = Number(query?.limit ?? 50);
+  const rawOffset = Number(query?.offset ?? 0);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.trunc(rawLimit))) : 50;
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
+  const params = new URLSearchParams();
+  if (status !== 'ALL') {
+    params.set('status', status);
+  }
+  if (sourceId) {
+    params.set('sourceId', sourceId);
+  }
+  if (limit !== 50) {
+    params.set('limit', String(limit));
+  }
+  if (offset > 0) {
+    params.set('offset', String(offset));
+  }
+
+  const value = params.toString();
+  return value ? `?${value}` : '';
+}
+
 export async function getVkParsing(
   api: ApiTransport,
   entityType: VkParsingEntityType,
   chatId: string,
+  query?: Partial<VkParsingFeedQuery>,
 ): Promise<VkParsingFeed> {
-  const response = await api.request(buildVkParsingPath(entityType, chatId));
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}${buildVkParsingQuery(query)}`,
+  );
   return vkParsingFeedSchema.parse(response);
 }
 
@@ -110,4 +141,19 @@ export async function publishVkParsingPost(
     },
   );
   return publishVkParsingPostResultSchema.parse(response);
+}
+
+export async function retryVkParsingPost(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  postId: string,
+): Promise<RetryVkParsingPostResult> {
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/posts/${postId}/retry`,
+    {
+      method: 'POST',
+    },
+  );
+  return retryVkParsingPostResultSchema.parse(response);
 }

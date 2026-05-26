@@ -93,7 +93,7 @@ export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 export const VK_PARSING_MAX_PHOTOS = 10;
 export const VK_PARSING_MAX_LINKS = 20;
-export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 2_000;
+export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const escalationWindowHoursSchema = z.number().int().min(1).max(168);
@@ -2199,6 +2199,24 @@ export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
 export const vkParsingPostSkipReasonSchema = z.enum(['AD', 'EMPTY_AFTER_LINK_FILTER']);
 export type VkParsingPostSkipReason = z.infer<typeof vkParsingPostSkipReasonSchema>;
 
+export const vkParsingPostFilterStatusSchema = z.union([
+  z.literal('ALL'),
+  vkParsingPostStatusSchema,
+]);
+export type VkParsingPostFilterStatus = z.infer<typeof vkParsingPostFilterStatusSchema>;
+
+export const vkParsingUnsupportedAttachmentSchema = z
+  .object({
+    type: z.string().min(1),
+    label: z.string().default(''),
+    title: z.string().nullable().default(null),
+    url: z.string().url().nullable().default(null),
+    count: z.number().int().min(1).default(1),
+    reason: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type VkParsingUnsupportedAttachment = z.infer<typeof vkParsingUnsupportedAttachmentSchema>;
+
 export const vkParsingSettingsSchema = z.object({
   chatId: z.string(),
   autoPublishEnabled: z.boolean().default(false),
@@ -2226,6 +2244,11 @@ export const vkParsingSourceSchema = z.object({
   lastErrorCode: z.string().nullable().default(null),
   lastImportedCount: z.number().int().min(0).default(0),
   lastFetchedCount: z.number().int().min(0).default(0),
+  lastFetchedPages: z.number().int().min(0).default(0),
+  lastFetchedOffsets: z.array(z.number().int().min(0)).default([]),
+  lastVkNewestPostId: z.number().int().nullable().default(null),
+  lastVkNewestPublishedAt: z.string().datetime().nullable().default(null),
+  adaptiveIntervalMs: z.number().int().min(0).nullable().default(null),
   lastSyncDurationMs: z.number().int().min(0).nullable().default(null),
   lastError: z.string().nullable(),
   createdAt: z.string().datetime(),
@@ -2246,6 +2269,11 @@ export const vkParsingPostSchema = z.object({
   url: z.string().url(),
   photoUrls: z.array(z.string().url()).max(VK_PARSING_MAX_PHOTOS).default([]),
   linkUrls: z.array(z.string().url()).max(VK_PARSING_MAX_LINKS).default([]),
+  attachmentTypes: z.array(z.string()).default([]),
+  unsupportedAttachments: z.array(vkParsingUnsupportedAttachmentSchema).default([]),
+  hasUnsupportedAttachments: z.boolean().default(false),
+  isAdvertising: z.boolean().default(false),
+  advertisingMarkers: z.array(z.string()).default([]),
   status: vkParsingPostStatusSchema,
   contentHash: z.string().default(''),
   publishedContentHash: z.string().nullable().default(null),
@@ -2258,7 +2286,12 @@ export const vkParsingPostSchema = z.object({
   skipReason: vkParsingPostSkipReasonSchema.nullable().default(null),
   lastSeenAt: z.string().datetime().nullable().default(null),
   missingSinceAt: z.string().datetime().nullable().default(null),
+  missingSeenCount: z.number().int().min(0).default(0),
+  lastAvailabilityCheckedAt: z.string().datetime().nullable().default(null),
   unavailableAt: z.string().datetime().nullable().default(null),
+  publishQueuedAt: z.string().datetime().nullable().default(null),
+  publishLockedAt: z.string().datetime().nullable().default(null),
+  publishAttemptCount: z.number().int().min(0).default(0),
   lastError: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -2271,6 +2304,37 @@ export const vkParsingCapabilitySchema = z.object({
 });
 export type VkParsingCapability = z.infer<typeof vkParsingCapabilitySchema>;
 
+export const vkParsingFeedPaginationSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0),
+  total: z.number().int().min(0).default(0),
+  hasMore: z.boolean().default(false),
+  nextOffset: z.number().int().min(0).nullable().default(null),
+});
+export type VkParsingFeedPagination = z.infer<typeof vkParsingFeedPaginationSchema>;
+
+export const vkParsingHealthSummarySchema = z.object({
+  chatId: z.string(),
+  generatedAt: z.string().datetime(),
+  vkApiRps: z.number().min(0).default(0),
+  vkApiErrorRate: z.number().min(0).max(1).default(0),
+  sourceCount: z.number().int().min(0).default(0),
+  staleSourceCount: z.number().int().min(0).default(0),
+  importLagSeconds: z.number().int().min(0).nullable().default(null),
+  publishLagSeconds: z.number().int().min(0).nullable().default(null),
+  publishBacklog: z.number().int().min(0).default(0),
+  mediaFailureRatio: z.number().min(0).max(1).default(0),
+  recentErrors: z
+    .array(
+      z.object({
+        code: z.string(),
+        count: z.number().int().min(0),
+      }),
+    )
+    .default([]),
+});
+export type VkParsingHealthSummary = z.infer<typeof vkParsingHealthSummarySchema>;
+
 export const vkParsingFeedSchema = z.object({
   capabilities: vkParsingCapabilitySchema.default({ enabled: false, canUse: false }),
   settings: vkParsingSettingsSchema.default({
@@ -2282,8 +2346,24 @@ export const vkParsingFeedSchema = z.object({
   }),
   sources: z.array(vkParsingSourceSchema).default([]),
   posts: z.array(vkParsingPostSchema).default([]),
+  pagination: vkParsingFeedPaginationSchema.default({
+    limit: 50,
+    offset: 0,
+    total: 0,
+    hasMore: false,
+    nextOffset: null,
+  }),
+  summary: vkParsingHealthSummarySchema.nullable().default(null),
 });
 export type VkParsingFeed = z.infer<typeof vkParsingFeedSchema>;
+
+export const vkParsingFeedQuerySchema = z.object({
+  status: vkParsingPostFilterStatusSchema.default('ALL'),
+  sourceId: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+export type VkParsingFeedQuery = z.infer<typeof vkParsingFeedQuerySchema>;
 
 export const updateVkParsingSettingsRequestSchema = z
   .object({
@@ -2334,6 +2414,12 @@ export const publishVkParsingPostResultSchema = z.object({
   url: z.string().url().nullable(),
 });
 export type PublishVkParsingPostResult = z.infer<typeof publishVkParsingPostResultSchema>;
+
+export const retryVkParsingPostResultSchema = z.object({
+  post: vkParsingPostSchema,
+  queued: z.number().int().min(0).default(0),
+});
+export type RetryVkParsingPostResult = z.infer<typeof retryVkParsingPostResultSchema>;
 
 export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,

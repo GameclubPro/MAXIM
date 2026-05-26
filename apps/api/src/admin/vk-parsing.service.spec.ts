@@ -46,6 +46,7 @@ describe('VkParsingService', () => {
         findUnique: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn(),
+        count: jest.fn().mockResolvedValue(0),
       },
       vkParsingPost: {
         findUnique: jest.fn(),
@@ -54,6 +55,11 @@ describe('VkParsingService', () => {
         findFirst: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({
+          _max: { lastSeenAt: null },
+          _min: { publishQueuedAt: null },
+        }),
       },
       vkParsingSettings: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -61,13 +67,38 @@ describe('VkParsingService', () => {
       },
       vkParsingMediaCache: {
         findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockImplementation((payload) =>
+          Promise.resolve({
+            id: payload.where.id,
+            url: payload.data.url ?? 'https://sun1.example/large.jpg',
+            status: payload.data.status,
+            mimeType: payload.data.mimeType ?? null,
+            contentLength: payload.data.contentLength ?? null,
+            mediaIdentity: payload.data.mediaIdentity ?? null,
+            maxUploadPayload: payload.data.maxUploadPayload ?? null,
+            maxUploadToken: payload.data.maxUploadToken ?? null,
+            maxUploadedAt: payload.data.maxUploadedAt ?? null,
+            uploadAttemptCount: 1,
+            lastCheckedAt: payload.data.lastCheckedAt,
+            lastError: payload.data.lastError ?? null,
+            createdAt: new Date('2026-05-25T10:00:00.000Z'),
+            updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+          }),
+        ),
+        count: jest.fn().mockResolvedValue(0),
         upsert: jest.fn().mockImplementation((payload) =>
           Promise.resolve({
             id: 'media-1',
             url: payload.create.url,
+            mediaIdentity: payload.create.mediaIdentity ?? null,
             status: payload.create.status,
             mimeType: payload.create.mimeType ?? null,
             contentLength: payload.create.contentLength ?? null,
+            maxUploadPayload: payload.create.maxUploadPayload ?? null,
+            maxUploadToken: payload.create.maxUploadToken ?? null,
+            maxUploadedAt: payload.create.maxUploadedAt ?? null,
+            uploadAttemptCount: payload.create.uploadAttemptCount ?? 0,
             lastCheckedAt: payload.create.lastCheckedAt,
             lastError: payload.create.lastError ?? null,
             createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -100,8 +131,16 @@ describe('VkParsingService', () => {
     const vkRateLimitService = {
       reserveVkApiSlot: jest.fn().mockResolvedValue(undefined),
       recordVkApiOutcome: jest.fn().mockResolvedValue(undefined),
+      getRecentVkApiMetrics: jest.fn().mockResolvedValue({
+        rps: 0,
+        errorRate: 0,
+        recentErrors: [],
+      }),
     };
     const syncQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const publishQueue = {
       add: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -112,12 +151,16 @@ describe('VkParsingService', () => {
       maxBotLinkService as never,
       vkRateLimitService as never,
       syncQueue as never,
+      publishQueue as never,
       createConfig({
         VK_SERVICE_TOKEN: 'vk-service-token',
         VK_API_BASE_URL: 'https://api.vk.ru',
-        VK_API_VERSION: '5.131',
+        VK_API_VERSION: '5.199',
         VK_PARSING_SYNC_INTERVAL_MS: 600_000,
         VK_PARSING_FETCH_COUNT: 100,
+        VK_PARSING_MIN_PAGES: 1,
+        VK_PARSING_MAX_PAGES: 1,
+        VK_PARSING_MISSING_CONFIRMATION_THRESHOLD: 3,
         VK_API_TIMEOUT_MS: 10_000,
         VK_API_MAX_ATTEMPTS: 3,
         VK_PARSING_QUEUE_BATCH_SIZE: 100,
@@ -137,6 +180,7 @@ describe('VkParsingService', () => {
       maxBotLinkService,
       vkRateLimitService,
       syncQueue,
+      publishQueue,
     };
   }
 
@@ -162,6 +206,11 @@ describe('VkParsingService', () => {
       lastErrorCode: null,
       lastImportedCount: 0,
       lastFetchedCount: 0,
+      lastFetchedPages: 0,
+      lastFetchedOffsets: [],
+      lastVkNewestPostId: null,
+      lastVkNewestPublishedAt: null,
+      adaptiveIntervalMs: null,
       lastSyncDurationMs: null,
       lastError: null,
       createdByUserId: '183470701',
@@ -186,6 +235,11 @@ describe('VkParsingService', () => {
       photoUrls: [],
       linkUrls: [],
       attachments: [],
+      attachmentTypes: [],
+      unsupportedAttachments: [],
+      hasUnsupportedAttachments: false,
+      isAdvertising: false,
+      advertisingMarkers: [],
       raw: {},
       contentHash: 'content-hash',
       publishedContentHash: null,
@@ -199,7 +253,13 @@ describe('VkParsingService', () => {
       skipReason: null,
       lastSeenAt: new Date('2026-05-25T10:00:00.000Z'),
       missingSinceAt: null,
+      missingSeenCount: 0,
+      lastAvailabilityCheckedAt: new Date('2026-05-25T10:00:00.000Z'),
       unavailableAt: null,
+      publishQueuedAt: null,
+      publishLockedAt: null,
+      publishAttemptCount: 0,
+      publishIdempotencyKey: null,
       lastError: null,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -345,8 +405,138 @@ describe('VkParsingService', () => {
     expect(upsertPayload.create.linkUrls).toEqual(['https://example.com/car']);
   });
 
-  it('autopublishes newly imported scheduled VK posts with link filtering enabled', async () => {
-    const { service, prisma, maxClient, adminService } = createFixture();
+  it('imports modern VK attachment facts from src photos, copy history, ads and unsupported types', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 102,
+              date: 1_779_708_000,
+              text: 'Рекламный материал ERID abc123',
+              marked_as_ads: 1,
+              attachments: [
+                {
+                  type: 'photo',
+                  photo: {
+                    id: 11,
+                    owner_id: -36819802,
+                    sizes: [{ width: 640, height: 480, src: 'https://sun2.example/src.jpg' }],
+                  },
+                },
+                { type: 'photos_list', photos_list: ['-36819802_12', '-36819802_13'] },
+                { type: 'video', video: { title: 'Видеообзор' } },
+                { type: 'doc', doc: { title: 'Прайс.pdf', url: 'https://vk.ru/doc.pdf' } },
+                { type: 'poll', poll: { question: 'Брать?' } },
+                { type: 'article', article: { title: 'Разбор', url: 'https://vk.ru/@club-post' } },
+              ],
+              copy_history: [
+                {
+                  owner_id: -1,
+                  id: 1,
+                  text: 'Текст репоста',
+                  attachments: [{ type: 'link', link: { url: 'https://example.com/from-copy' } }],
+                },
+              ],
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    const upsertPayload = prisma.vkParsingPost.upsert.mock.calls[0]?.[0];
+    expect(upsertPayload.create.photoUrls).toEqual(['https://sun2.example/src.jpg']);
+    expect(upsertPayload.create.linkUrls).toEqual(['https://example.com/from-copy']);
+    expect(upsertPayload.create.attachmentTypes).toEqual(
+      expect.arrayContaining(['photo', 'photos_list', 'video', 'doc', 'poll', 'article', 'link']),
+    );
+    expect(upsertPayload.create.unsupportedAttachments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'photos_list' }),
+        expect.objectContaining({ type: 'video', title: 'Видеообзор' }),
+        expect.objectContaining({ type: 'doc', title: 'Прайс.pdf' }),
+        expect.objectContaining({ type: 'poll', title: 'Брать?' }),
+        expect.objectContaining({ type: 'article', title: 'Разбор' }),
+        expect.objectContaining({ type: 'copy_history' }),
+      ]),
+    );
+    expect(upsertPayload.create.hasUnsupportedAttachments).toBe(true);
+    expect(upsertPayload.create.isAdvertising).toBe(true);
+    expect(upsertPayload.create.advertisingMarkers).toEqual(
+      expect.arrayContaining(['VK marked_as_ads']),
+    );
+  });
+
+  it('uses VK API 5.199 and overlap pagination offsets for scheduled sync', async () => {
+    const { service, prisma } = createFixture({
+      VK_PARSING_FETCH_COUNT: 2,
+      VK_PARSING_MIN_PAGES: 3,
+      VK_PARSING_MAX_PAGES: 3,
+    });
+    const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:00:00.000Z') });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              { owner_id: -36819802, id: 103, date: 1_779_708_003, text: 'Пост 103' },
+              { owner_id: -36819802, id: 102, date: 1_779_708_002, text: 'Пост 102' },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              { owner_id: -36819802, id: 101, date: 1_779_708_001, text: 'Пост 101' },
+              { owner_id: -36819802, id: 100, date: 1_779_708_000, text: 'Пост 100' },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [{ owner_id: -36819802, id: 99, date: 1_779_707_999, text: 'Пост 99' }],
+            groups: [],
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    const requestedUrls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
+    expect(requestedUrls[0]).toContain('v=5.199');
+    expect(requestedUrls[0]).not.toContain('offset=');
+    expect(requestedUrls[1]).toContain('offset=2');
+    expect(requestedUrls[2]).toContain('offset=4');
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          lastFetchedPages: 3,
+          lastFetchedOffsets: [0, 2, 4],
+          adaptiveIntervalMs: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it('queues newly imported scheduled VK posts for background publish', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({
       source,
@@ -354,7 +544,73 @@ describe('VkParsingService', () => {
       linkUrls: ['https://example.com/car'],
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      stripLinksEnabled: true,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Продам авто https://example.com\nvk.com/club',
+              attachments: [{ type: 'link', link: { url: 'https://example.com/car' } }],
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          publishQueuedAt: expect.any(Date),
+          publishIdempotencyKey: expect.any(String),
+        }),
+      }),
+    );
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        retryPolicyName: 'vk-parsing-publish',
+      }),
+      expect.objectContaining({
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+  });
+
+  it('publishes queued scheduled VK posts with link filtering enabled', async () => {
+    const { service, prisma, maxClient, adminService } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Продам авто https://example.com\nvk.com/club',
+      linkUrls: ['https://example.com/car'],
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -376,24 +632,13 @@ describe('VkParsingService', () => {
       messageId: 'mid-1',
       url: 'https://max.ru/channels/channel-1/message/mid-1',
     });
-    global.fetch = jest.fn().mockResolvedValue(
-      createJsonFetchResponse({
-        response: {
-          items: [
-            {
-              owner_id: -36819802,
-              id: 101,
-              date: 1_779_708_000,
-              text: 'Продам авто https://example.com\nvk.com/club',
-              attachments: [{ type: 'link', link: { url: 'https://example.com/car' } }],
-            },
-          ],
-          groups: [],
-        },
-      }),
-    ) as unknown as typeof fetch;
 
-    await service.processSyncSourceJob('source-1', 'scheduled');
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
@@ -412,6 +657,7 @@ describe('VkParsingService', () => {
           status: 'PUBLISHED',
           autoPublishedAt: expect.any(Date),
           autoPublishError: null,
+          publishQueuedAt: null,
         }),
       }),
     );
@@ -428,6 +674,7 @@ describe('VkParsingService', () => {
     const source = createSource();
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
     prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([createPostRow()]);
     global.fetch = jest.fn().mockResolvedValue(
@@ -453,8 +700,8 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
   });
 
-  it('retries transient failed VK autopublish posts on the next scheduled sync', async () => {
-    const { service, prisma, maxClient } = createFixture();
+  it('requeues transient failed VK autopublish posts on the next scheduled sync', async () => {
+    const { service, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({
       source,
@@ -477,6 +724,7 @@ describe('VkParsingService', () => {
           autoPublishError: 'Фото 1: VK вернул статус 404 для фото.',
         },
       ])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([post]);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
@@ -486,18 +734,6 @@ describe('VkParsingService', () => {
       skipAdsEnabled: false,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-    });
-    prisma.vkParsingPost.update.mockResolvedValue({
-      ...post,
-      status: 'PUBLISHED',
-      publishedMessageId: 'mid-1',
-      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
-      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
-      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
-    });
-    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
-      messageId: 'mid-1',
-      url: 'https://max.ru/channels/channel-1/message/mid-1',
     });
     global.fetch = jest.fn().mockResolvedValue(
       createJsonFetchResponse({
@@ -526,16 +762,16 @@ describe('VkParsingService', () => {
         }),
       }),
     );
-    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      'channel-1',
-      'Повторная публикация',
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+      }),
       expect.any(Object),
-      {
-        botId: 'bot-1',
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
-      },
     );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('autopublishes text when VK photos are temporarily unavailable', async () => {
@@ -546,8 +782,8 @@ describe('VkParsingService', () => {
       text: 'Текст останется',
       photoUrls: ['https://sun1.example/missing.jpg'],
     });
-    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -560,9 +796,14 @@ describe('VkParsingService', () => {
     prisma.vkParsingMediaCache.findUnique.mockResolvedValue({
       id: 'media-1',
       url: 'https://sun1.example/missing.jpg',
+      mediaIdentity: null,
       status: 'FAILED',
       mimeType: null,
       contentLength: null,
+      maxUploadPayload: null,
+      maxUploadToken: null,
+      maxUploadedAt: null,
+      uploadAttemptCount: 0,
       lastCheckedAt: new Date(),
       lastError: 'VK вернул статус 404 для фото.',
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -580,33 +821,13 @@ describe('VkParsingService', () => {
       messageId: 'mid-1',
       url: 'https://max.ru/channels/channel-1/message/mid-1',
     });
-    global.fetch = jest.fn().mockResolvedValue(
-      createJsonFetchResponse({
-        response: {
-          items: [
-            {
-              owner_id: -36819802,
-              id: 101,
-              date: 1_779_708_000,
-              text: 'Текст останется',
-              attachments: [
-                {
-                  type: 'photo',
-                  photo: {
-                    sizes: [
-                      { width: 1280, height: 960, url: 'https://sun1.example/missing.jpg' },
-                    ],
-                  },
-                },
-              ],
-            },
-          ],
-          groups: [],
-        },
-      }),
-    ) as unknown as typeof fetch;
 
-    await service.processSyncSourceJob('source-1', 'scheduled');
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
 
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
     const sendOptions = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0]?.[2];
@@ -631,9 +852,19 @@ describe('VkParsingService', () => {
       source,
       text: 'Текст с фото',
       photoUrls: ['https://sun1.example/large.jpg'],
+      attachments: [
+        {
+          type: 'photo',
+          photo: {
+            id: 11,
+            owner_id: -36819802,
+            sizes: [{ width: 1280, height: 960, url: 'https://sun1.example/large.jpg' }],
+          },
+        },
+      ],
     });
-    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([post]);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -648,37 +879,6 @@ describe('VkParsingService', () => {
     );
     global.fetch = jest
       .fn()
-      .mockResolvedValueOnce(
-        createJsonFetchResponse({
-          response: {
-            items: [
-              {
-                owner_id: -36819802,
-                id: 101,
-                date: 1_779_708_000,
-                text: 'Текст с фото',
-                attachments: [
-                  {
-                    type: 'photo',
-                    photo: {
-                      sizes: [
-                        { width: 1280, height: 960, url: 'https://sun1.example/large.jpg' },
-                      ],
-                    },
-                  },
-                ],
-              },
-            ],
-            groups: [],
-          },
-        }),
-      )
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
-        body: { cancel: async () => undefined },
-      } satisfies MockFetchResponse)
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -691,7 +891,14 @@ describe('VkParsingService', () => {
         arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
       } satisfies MockFetchResponse) as unknown as typeof fetch;
 
-    await service.processSyncSourceJob('source-1', 'scheduled');
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+    ).rejects.toThrow('MAX API background rate limit exceeded');
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
@@ -708,12 +915,14 @@ describe('VkParsingService', () => {
   it('skips advertising VK posts during autopublish without sending them to MAX', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
-    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      createPostRow({
-        raw: { marked_as_ads: true },
-      }),
-    ]);
+    const post = createPostRow({
+      source,
+      isAdvertising: true,
+      advertisingMarkers: ['VK marked_as_ads'],
+      raw: { marked_as_ads: true },
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
     prisma.vkParsingSettings.findUnique.mockResolvedValue({
       id: 'settings-1',
       chatId: 'channel-1',
@@ -723,24 +932,13 @@ describe('VkParsingService', () => {
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
     });
-    global.fetch = jest.fn().mockResolvedValue(
-      createJsonFetchResponse({
-        response: {
-          items: [
-            {
-              owner_id: -36819802,
-              id: 101,
-              date: 1_779_708_000,
-              text: 'Промо-пост',
-              marked_as_ads: true,
-            },
-          ],
-          groups: [],
-        },
-      }),
-    ) as unknown as typeof fetch;
 
-    await service.processSyncSourceJob('source-1', 'scheduled');
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
@@ -782,6 +980,90 @@ describe('VkParsingService', () => {
       method: 'wall.get',
       outcome: 'success',
     });
+  });
+
+  it.each([6, 9, 10, 29])('retries retryable VK error code %i', async (code) => {
+    const { service, prisma, vkRateLimitService } = createFixture({ VK_API_MAX_ATTEMPTS: 2 });
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          error: { error_code: code, error_msg: `Retryable ${code}` },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({ response: { items: [], groups: [] } }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(vkRateLimitService.reserveVkApiSlot).toHaveBeenCalledTimes(2);
+    expect(vkRateLimitService.recordVkApiOutcome).toHaveBeenCalledWith({
+      method: 'wall.get',
+      outcome: 'error',
+      code: `vk_${code}`,
+    });
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          syncStatus: 'IDLE',
+          lastErrorCode: null,
+        }),
+      }),
+    );
+  });
+
+  it.each([30, 203, 210])('treats VK source error code %i as terminal', async (code) => {
+    const { service, prisma, vkRateLimitService } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        error: { error_code: code, error_msg: `Terminal ${code}` },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(vkRateLimitService.reserveVkApiSlot).toHaveBeenCalledTimes(1);
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'source-1' },
+        data: expect.objectContaining({
+          syncStatus: 'ERROR',
+          nextSyncAt: null,
+          lastErrorCode: `vk_${code}`,
+          lastError: expect.stringContaining(`(${code})`),
+        }),
+      }),
+    );
+  });
+
+  it('treats VK captcha code 14 as terminal with an actionable token message', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        error: { error_code: 14, error_msg: 'Captcha needed' },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          syncStatus: 'ERROR',
+          nextSyncAt: null,
+          lastErrorCode: 'vk_14',
+          lastError: expect.stringContaining('капчу или токен не подходит'),
+        }),
+      }),
+    );
   });
 
   it('handles an empty VK wall without importing posts', async () => {
@@ -897,11 +1179,74 @@ describe('VkParsingService', () => {
     expect(upsertPayload.update.status).toBe('CHANGED_AFTER_PUBLISH');
   });
 
-  it('marks fetched-window missing VK posts as unavailable', async () => {
+  it('only marks fetched-window missing VK posts unavailable after threshold and spot-check', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'missing-post-1',
+          vkOwnerId: -36819802,
+          vkPostId: 100,
+          missingSeenCount: 2,
+        },
+      ]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: {
+            items: [
+              {
+                owner_id: -36819802,
+                id: 101,
+                date: 1_779_708_000,
+                text: 'Оставшийся пост',
+              },
+            ],
+            groups: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonFetchResponse({
+          response: { items: [] },
+        }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0] ?? '')).toContain(
+      'wall.getById',
+    );
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'missing-post-1' },
+        data: expect.objectContaining({
+          status: 'UNAVAILABLE',
+          missingSinceAt: expect.any(Date),
+          unavailableAt: expect.any(Date),
+        }),
+      }),
+    );
+  });
+
+  it('does not mark fetched-window missing VK posts unavailable before confirmation threshold', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'missing-post-1',
+          vkOwnerId: -36819802,
+          vkPostId: 100,
+          missingSeenCount: 0,
+        },
+      ]);
     global.fetch = jest.fn().mockResolvedValue(
       createJsonFetchResponse({
         response: {
@@ -920,16 +1265,21 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(1);
     expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          sourceId: 'source-1',
-          vkPostId: { notIn: [101] },
+        where: { id: { in: ['missing-post-1'] } },
+        data: expect.objectContaining({
+          missingSeenCount: { increment: 1 },
+          missingSinceAt: expect.any(Date),
+          lastAvailabilityCheckedAt: expect.any(Date),
         }),
+      }),
+    );
+    expect(prisma.vkParsingPost.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
         data: expect.objectContaining({
           status: 'UNAVAILABLE',
-          missingSinceAt: expect.any(Date),
-          unavailableAt: expect.any(Date),
         }),
       }),
     );

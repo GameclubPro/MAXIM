@@ -17,13 +17,20 @@ import {
 } from 'iconoir-react';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { UpdateVkParsingSettingsRequest, VkParsingPost } from '@maxim/contracts';
+import {
+  VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
+  type UpdateVkParsingSettingsRequest,
+  type VkParsingFeedQuery,
+  type VkParsingPost,
+  type VkParsingPostFilterStatus,
+} from '@maxim/contracts';
 import {
   addVkParsingSource,
   getVkParsing,
   publishVkParsingPost,
   refreshVkParsing,
   removeVkParsingSource,
+  retryVkParsingPost,
   updateVkParsingSettings,
   type VkParsingEntityType,
 } from '../lib/api/vk-parsing-client';
@@ -54,6 +61,19 @@ type PublishPayload = {
 type VkParsingSettingKey = 'autoPublishEnabled' | 'stripLinksEnabled' | 'skipAdsEnabled';
 type VkParsingHintKey = VkParsingSettingKey | 'source';
 
+const VK_PARSING_PAGE_SIZE = 50;
+
+const VK_PARSING_STATUS_FILTERS: Array<{
+  value: VkParsingPostFilterStatus;
+  label: string;
+}> = [
+  { value: 'ALL', label: 'Все' },
+  { value: 'NEW', label: 'Новые' },
+  { value: 'FAILED', label: 'Ошибка' },
+  { value: 'SKIPPED', label: 'Пропущены' },
+  { value: 'CHANGED_AFTER_PUBLISH', label: 'Изменены' },
+];
+
 const VK_PARSING_SETTING_TOGGLES: Array<{
   key: VkParsingSettingKey;
   label: string;
@@ -71,7 +91,7 @@ const VK_PARSING_SETTING_TOGGLES: Array<{
   },
   {
     key: 'skipAdsEnabled',
-    label: 'Реклама',
+    label: 'Без рекламы',
     hint: 'Посты с рекламной маркировкой или явными рекламными признаками остаются в ленте как пропущенные.',
   },
 ];
@@ -115,6 +135,29 @@ function formatVkSourceRetry(value: string | null): string {
   }).format(date);
 }
 
+function formatDurationSeconds(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  if (value < 60) {
+    return `${value}с`;
+  }
+  const minutes = Math.floor(value / 60);
+  if (minutes < 60) {
+    return `${minutes}м`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}ч`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '0%';
+  }
+
+  return `${Math.round(value * 100)}%`;
+}
+
 function formatVkSourceSyncLabel(source: {
   syncStatus: string;
   nextSyncAt: string | null;
@@ -135,6 +178,20 @@ function formatVkSourceSyncLabel(source: {
   }
 
   return null;
+}
+
+function formatUnsupportedAttachmentSummary(post: VkParsingPost): string | null {
+  if (!post.unsupportedAttachments.length) {
+    return null;
+  }
+
+  return post.unsupportedAttachments
+    .slice(0, 3)
+    .map((item) => {
+      const count = item.count > 1 ? ` x${item.count}` : '';
+      return `${item.label || item.type}${count}`;
+    })
+    .join(', ');
 }
 
 function normalizeApiError(error: unknown): string {
@@ -194,11 +251,22 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
   const [selectedPhotoUrls, setSelectedPhotoUrls] = useState<string[]>([]);
   const [selectedLinkUrls, setSelectedLinkUrls] = useState<string[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<VkParsingPostFilterStatus>('ALL');
+  const [pageOffset, setPageOffset] = useState(0);
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
+  const feedQueryScope = useMemo<Partial<VkParsingFeedQuery>>(
+    () => ({
+      status: statusFilter,
+      sourceId: selectedSourceId ?? undefined,
+      limit: VK_PARSING_PAGE_SIZE,
+      offset: pageOffset,
+    }),
+    [pageOffset, selectedSourceId, statusFilter],
+  );
 
   const feedQuery = useQuery({
-    queryKey: queryKeys.vkParsing(entityType, chatId),
-    queryFn: () => getVkParsing(api, entityType, chatId),
+    queryKey: queryKeys.vkParsing(entityType, chatId, feedQueryScope),
+    queryFn: () => getVkParsing(api, entityType, chatId, feedQueryScope),
     enabled: Boolean(chatId) && active,
     staleTime: 30_000,
     refetchInterval: active ? 15_000 : false,
@@ -270,7 +338,8 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
     mutationFn: (payload: UpdateVkParsingSettingsRequest) =>
       updateVkParsingSettings(api, entityType, chatId, payload),
     onSuccess: (nextFeed) => {
-      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId), nextFeed);
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
       pushToast({ tone: 'success', title: 'Настройки сохранены' });
       maxNotify('success');
     },
@@ -307,6 +376,23 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
     },
   });
 
+  const retryMutation = useMutation({
+    mutationFn: (postId: string) => retryVkParsingPost(api, entityType, chatId, postId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Повтор поставлен в очередь' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Повтор не запущен',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const feed = feedQuery.data;
   const settings = feed?.settings ?? {
     chatId,
@@ -317,14 +403,14 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
   };
   const posts = feed?.posts ?? [];
   const sources = feed?.sources ?? [];
-  const visiblePosts = useMemo(
-    () => (selectedSourceId ? posts.filter((post) => post.sourceId === selectedSourceId) : posts),
-    [posts, selectedSourceId],
-  );
   const editingPost = useMemo(
     () => posts.find((post) => post.id === editingPostId) ?? null,
     [editingPostId, posts],
   );
+
+  useEffect(() => {
+    setPageOffset(0);
+  }, [selectedSourceId, statusFilter]);
 
   useEffect(() => {
     if (!selectedSourceId || sources.some((source) => source.id === selectedSourceId)) {
@@ -382,6 +468,14 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
 
   function toggleHint(key: VkParsingHintKey) {
     setOpenHintKey((current) => (current === key ? null : key));
+  }
+
+  function selectSource(sourceId: string | null) {
+    setSelectedSourceId(sourceId);
+  }
+
+  function selectStatusFilter(value: VkParsingPostFilterStatus) {
+    setStatusFilter(value);
   }
 
   function renderSettingIcon(key: VkParsingSettingKey) {
@@ -498,6 +592,13 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         </div>
       ) : null}
 
+      {feed && settings.autoPublishEnabled ? (
+        <div className="vk-parsing-compliance" role="status">
+          Первичный импорт не публикует старые материалы. Рекламные посты остаются в ленте, если
+          включён режим «Без рекламы».
+        </div>
+      ) : null}
+
       {sources.length > 0 ? (
         <div className="vk-parsing-card__sources" aria-label="VK источники">
           {sources.length > 1 ? (
@@ -506,7 +607,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                 type="button"
                 className="vk-parsing-source-chip__select vk-parsing-source-chip__select--all"
                 aria-pressed={!selectedSourceId}
-                onClick={() => setSelectedSourceId(null)}
+                onClick={() => selectSource(null)}
               >
                 Все
               </button>
@@ -530,7 +631,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                   className="vk-parsing-source-chip__select"
                   aria-pressed={selectedSourceId === source.id}
                   title={source.title}
-                  onClick={() => setSelectedSourceId(source.id)}
+                  onClick={() => selectSource(source.id)}
                 >
                   <span>{source.title}</span>
                 </button>
@@ -553,6 +654,46 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         </div>
       ) : null}
 
+      {feed?.summary ? (
+        <div className="vk-parsing-summary" aria-label="Состояние VK-парсинга">
+          <span title="Средние запросы VK API за последние минуты">
+            VK {feed.summary.vkApiRps.toFixed(1)}/с
+          </span>
+          <span title="Доля ошибок VK API">{formatPercent(feed.summary.vkApiErrorRate)}</span>
+          <span title="Источники, которые требуют внимания">
+            {feed.summary.staleSourceCount}/{feed.summary.sourceCount}
+          </span>
+          <span title="Задержка импорта">
+            {formatDurationSeconds(feed.summary.importLagSeconds)}
+          </span>
+          <span title="Задержка публикации">
+            {formatDurationSeconds(feed.summary.publishLagSeconds)}
+          </span>
+          {feed.summary.publishBacklog > 0 ? (
+            <span title="Посты ждут публикации">{feed.summary.publishBacklog}</span>
+          ) : null}
+          {feed.summary.mediaFailureRatio > 0 ? (
+            <span title="Доля ошибок медиа">{formatPercent(feed.summary.mediaFailureRatio)}</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {feed ? (
+        <div className="vk-parsing-filter-bar" aria-label="Фильтр VK-постов">
+          {VK_PARSING_STATUS_FILTERS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={cn('vk-parsing-filter-chip', statusFilter === item.value && 'is-active')}
+              aria-pressed={statusFilter === item.value}
+              onClick={() => selectStatusFilter(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {feedQuery.isLoading ? <SkeletonCard lines={5} /> : null}
 
       {feedQuery.error ? (
@@ -572,20 +713,22 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         />
       ) : null}
 
-      {!feedQuery.isLoading && !feedQuery.error && visiblePosts.length === 0 ? (
+      {!feedQuery.isLoading && !feedQuery.error && posts.length === 0 ? (
         <div className="vk-parsing-card__empty">Постов пока нет</div>
       ) : null}
 
-      {visiblePosts.length > 0 ? (
+      {posts.length > 0 ? (
         <div className="vk-parsing-post-list">
-          {visiblePosts.map((post) => {
+          {posts.map((post) => {
             const isEditing = editingPostId === post.id;
             const isPublishing =
               publishMutation.isPending && publishMutation.variables?.postId === post.id;
+            const isRetrying = retryMutation.isPending && retryMutation.variables === post.id;
             const dateLabel = formatVkPostDate(post.vkPublishedAt);
             const statusLabel = formatVkPostStatus(post);
             const photoCount = post.photoUrls.length;
             const linkCount = post.linkUrls.length;
+            const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
             return (
               <article
                 key={post.id}
@@ -621,7 +764,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                         value={draftText}
                         onChange={(event) => setDraftText(event.target.value)}
                         disabled={isPublishing}
-                        maxLength={2000}
+                        maxLength={VK_PARSING_MAX_PUBLISH_TEXT_LENGTH}
                       />
                     </label>
 
@@ -710,6 +853,16 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                     ) : null}
 
                     <div className="vk-parsing-post-card__facts">
+                      <a
+                        href={post.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="vk-parsing-fact-link"
+                        title="Оригинал VK"
+                      >
+                        <OpenNewWindow aria-hidden />
+                        Оригинал
+                      </a>
                       {photoCount > 0 ? (
                         <span>
                           <Camera aria-hidden />
@@ -720,6 +873,21 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                         <span>
                           <IconoirLink aria-hidden />
                           {linkCount}
+                        </span>
+                      ) : null}
+                      {post.isAdvertising ? (
+                        <span
+                          className="vk-parsing-status-pill is-warning"
+                          title={post.advertisingMarkers.join(', ') || undefined}
+                        >
+                          <ShieldCheck aria-hidden />
+                          Реклама
+                        </span>
+                      ) : null}
+                      {unsupportedSummary ? (
+                        <span title={unsupportedSummary}>
+                          <WarningCircle aria-hidden />
+                          {unsupportedSummary}
                         </span>
                       ) : null}
                       {statusLabel ? (
@@ -774,14 +942,27 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
                           Пропущен
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          className="button button--accent vk-parsing-action-button"
-                          onClick={() => startEditing(post)}
-                        >
-                          <EditPencil aria-hidden />
-                          Редактировать
-                        </button>
+                        <>
+                          {post.status === 'FAILED' ? (
+                            <button
+                              type="button"
+                              className="button button--ghost vk-parsing-action-button"
+                              disabled={isRetrying}
+                              onClick={() => retryMutation.mutate(post.id)}
+                            >
+                              <RefreshCircle aria-hidden />
+                              {isRetrying ? 'В очереди...' : 'Повторить'}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="button button--accent vk-parsing-action-button"
+                            onClick={() => startEditing(post)}
+                          >
+                            <EditPencil aria-hidden />
+                            Редактировать
+                          </button>
+                        </>
                       )}
                     </div>
                   </>
@@ -789,6 +970,32 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
               </article>
             );
           })}
+        </div>
+      ) : null}
+
+      {feed?.pagination && (feed.pagination.hasMore || feed.pagination.offset > 0) ? (
+        <div className="vk-parsing-pagination">
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={feed.pagination.offset === 0 || feedQuery.isFetching}
+            onClick={() => setPageOffset(Math.max(0, pageOffset - VK_PARSING_PAGE_SIZE))}
+          >
+            Назад
+          </button>
+          <span>
+            {feed.pagination.offset + 1}-
+            {Math.min(feed.pagination.total, feed.pagination.offset + feed.posts.length)} из{' '}
+            {feed.pagination.total}
+          </span>
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={!feed.pagination.hasMore || feedQuery.isFetching}
+            onClick={() => setPageOffset(feed.pagination.nextOffset ?? pageOffset)}
+          >
+            Ещё
+          </button>
         </div>
       ) : null}
     </div>

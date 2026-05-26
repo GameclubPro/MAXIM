@@ -87,6 +87,7 @@
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.
+- Keep `VkParsingCard` lazy-loaded from chat/channel settings pages; static importing it into those settings routes can push the settings JS chunk over budget.
 - For native mini app behavior, prefer shared helpers over raw bridge calls:
   - register overlay/sheet/editor close behavior with `apps/miniapp/src/lib/native-back.ts`
   - mirror durable device-local state through `apps/miniapp/src/lib/native-storage.ts`

@@ -250,6 +250,69 @@
   background: rgba(31, 124, 209, 0.1);
 }
 
+.vk-parsing-compliance {
+  padding: 9px 11px;
+  border: 1px solid rgba(193, 132, 30, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 249, 236, 0.86);
+  color: #6f4e12;
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.38;
+}
+
+.vk-parsing-summary,
+.vk-parsing-filter-bar,
+.vk-parsing-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.vk-parsing-summary span {
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 1px solid rgba(45, 58, 84, 0.1);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  color: #314357;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.vk-parsing-filter-bar {
+  padding: 2px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vk-parsing-filter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.vk-parsing-filter-chip {
+  min-height: 32px;
+  border: 1px solid rgba(45, 58, 84, 0.12);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #3b4e65;
+  background: rgba(255, 255, 255, 0.8);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.vk-parsing-filter-chip.is-active {
+  border-color: rgba(31, 124, 209, 0.34);
+  color: #155f9b;
+  background: rgba(235, 246, 255, 0.94);
+}
+
 .vk-parsing-card__sources {
   display: flex;
   flex-wrap: nowrap;
@@ -502,7 +565,27 @@
   line-height: 1;
 }
 
+.vk-parsing-fact-link {
+  min-height: 26px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(31, 124, 209, 0.08);
+  color: #17639e;
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1;
+  text-decoration: none;
+}
+
 .vk-parsing-post-card__facts svg {
+  width: 14px;
+  height: 14px;
+}
+
+.vk-parsing-fact-link svg {
   width: 14px;
   height: 14px;
 }
@@ -603,6 +686,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vk-parsing-pagination {
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.vk-parsing-pagination span {
+  min-width: 96px;
+  color: #657184;
+  font-size: 12px;
+  font-weight: 720;
+  text-align: center;
 }
 
 @media (max-width: 720px) {

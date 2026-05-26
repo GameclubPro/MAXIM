@@ -461,8 +461,12 @@ export class AdminController {
   }
 
   @Get('channels/:chatId/vk-parsing')
-  getChannelVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.vkParsingService.listVkParsing(chatId, user);
+  getChannelVkParsing(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.vkParsingService.listVkParsing(chatId, user, query);
   }
 
   @Get('channels/:chatId/vk-parsing/capability')
@@ -500,6 +504,20 @@ export class AdminController {
   @Post('channels/:chatId/vk-parsing/refresh')
   refreshChannelVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.vkParsingService.refresh(chatId, user);
+  }
+
+  @Get('channels/:chatId/vk-parsing/summary')
+  getChannelVkParsingSummary(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.getHealthSummary(chatId, user);
+  }
+
+  @Post('channels/:chatId/vk-parsing/posts/:postId/retry')
+  retryChannelVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.retryPost(chatId, postId, user);
   }
 
   @Post('channels/:chatId/vk-parsing/posts/:postId/publish')
@@ -754,8 +772,12 @@ export class AdminController {
   }
 
   @Get('chats/:chatId/vk-parsing')
-  getChatVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.vkParsingService.listVkParsing(chatId, user);
+  getChatVkParsing(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.vkParsingService.listVkParsing(chatId, user, query);
   }
 
   @Get('chats/:chatId/vk-parsing/capability')
@@ -793,6 +815,20 @@ export class AdminController {
   @Post('chats/:chatId/vk-parsing/refresh')
   refreshChatVkParsing(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.vkParsingService.refresh(chatId, user);
+  }
+
+  @Get('chats/:chatId/vk-parsing/summary')
+  getChatVkParsingSummary(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.vkParsingService.getHealthSummary(chatId, user);
+  }
+
+  @Post('chats/:chatId/vk-parsing/posts/:postId/retry')
+  retryChatVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.retryPost(chatId, postId, user);
   }
 
   @Post('chats/:chatId/vk-parsing/posts/:postId/publish')

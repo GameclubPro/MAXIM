@@ -89,6 +89,63 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
     }
   }
 
+  async getRecentVkApiMetrics(windowSec = 300): Promise<{
+    rps: number;
+    errorRate: number;
+    recentErrors: Array<{ code: string; count: number }>;
+  }> {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const cutoffSec = Math.max(0, nowSec - Math.max(1, Math.trunc(windowSec)));
+    const counts = new Map<string, number>();
+    let cursor = '0';
+
+    do {
+      const [nextCursor, keys] = (await this.redis.scan(
+        cursor,
+        'MATCH',
+        'vkapi:metrics:v1:*',
+        'COUNT',
+        200,
+      )) as [string, string[]];
+      cursor = nextCursor;
+      if (keys.length === 0) {
+        continue;
+      }
+
+      const values = await this.redis.mget(...keys);
+      keys.forEach((key, index) => {
+        const parsed = this.parseMetricKey(key);
+        const count = Number(values[index] ?? 0);
+        if (!parsed || !Number.isFinite(count) || count <= 0 || parsed.second < cutoffSec) {
+          return;
+        }
+        const bucketKey = `${parsed.outcome}:${parsed.code}`;
+        counts.set(bucketKey, (counts.get(bucketKey) ?? 0) + count);
+      });
+    } while (cursor !== '0');
+
+    const success = [...counts.entries()].reduce(
+      (total, [key, count]) => (key.startsWith('success:') ? total + count : total),
+      0,
+    );
+    const error = [...counts.entries()].reduce(
+      (total, [key, count]) => (key.startsWith('error:') ? total + count : total),
+      0,
+    );
+    const total = success + error;
+    const recentErrors = [...counts.entries()]
+      .filter(([key]) => key.startsWith('error:'))
+      .map(([key, count]) => ({ code: key.slice('error:'.length), count }))
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 10);
+
+    return {
+      rps: total / Math.max(1, Math.trunc(windowSec)),
+      errorRate: total > 0 ? error / total : 0,
+      recentErrors,
+    };
+  }
+
   private async tryReserveVkApiSlot(method: string): Promise<
     | { ok: true }
     | {
@@ -134,6 +191,21 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
       .slice(0, 80);
   }
 
+  private parseMetricKey(
+    key: string,
+  ): { outcome: 'success' | 'error'; code: string; second: number } | null {
+    const match = key.match(/^vkapi:metrics:v1:(success|error):([^:]+):([^:]+):(\d+)$/u);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      outcome: match[1] as 'success' | 'error',
+      code: match[3] ?? 'unknown',
+      second: Number(match[4] ?? 0),
+    };
+  }
+
   private readPositiveInt(value: unknown, fallback: number): number {
     const numericValue =
       typeof value === 'number'
@@ -141,9 +213,7 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
         : typeof value === 'string' && value.trim()
           ? Number(value)
           : Number.NaN;
-    return Number.isFinite(numericValue) && numericValue > 0
-      ? Math.trunc(numericValue)
-      : fallback;
+    return Number.isFinite(numericValue) && numericValue > 0 ? Math.trunc(numericValue) : fallback;
   }
 
   private readNonNegativeInt(value: unknown, fallback: number): number {
@@ -153,9 +223,7 @@ export class VkParsingRateLimitService implements OnModuleDestroy {
         : typeof value === 'string' && value.trim()
           ? Number(value)
           : Number.NaN;
-    return Number.isFinite(numericValue) && numericValue >= 0
-      ? Math.trunc(numericValue)
-      : fallback;
+    return Number.isFinite(numericValue) && numericValue >= 0 ? Math.trunc(numericValue) : fallback;
   }
 
   private sleep(ms: number): Promise<void> {

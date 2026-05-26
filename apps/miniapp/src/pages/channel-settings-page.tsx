@@ -45,7 +45,6 @@ import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-his
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
-import { VkParsingCard } from '../components/vk-parsing-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -246,6 +245,9 @@ const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-
 const LazyBroadcastButtonsSheet = lazy(() => import('../components/broadcast-buttons-sheet'));
 const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../components/broadcast-publish-review-sheet'),
+);
+const LazyVkParsingCard = lazy(() =>
+  import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
 
 function formatDateTimeInTimeZone(
@@ -2841,7 +2843,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             >
               {expandedSections.vkParsing ? (
                 <div className="settings-section__collapse-inner">
-                  <VkParsingCard api={api} chatId={chatId} active={expandedSections.vkParsing} />
+                  <Suspense fallback={null}>
+                    <LazyVkParsingCard
+                      api={api}
+                      chatId={chatId}
+                      active={expandedSections.vkParsing}
+                    />
+                  </Suspense>
                 </div>
               ) : null}
             </div>

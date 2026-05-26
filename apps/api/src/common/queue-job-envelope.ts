@@ -6,7 +6,8 @@ export type QueueRetryPolicyName =
   | 'managed-entities-refresh'
   | 'suggestion-delivery'
   | 'chat-admin-roster-sync'
-  | 'vk-parsing-sync';
+  | 'vk-parsing-sync'
+  | 'vk-parsing-publish';
 
 export type QueueJobMetadata = {
   idempotencyKey?: string;

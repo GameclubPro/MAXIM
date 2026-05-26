@@ -38,6 +38,7 @@ import {
   publishChatRulesResultSchema,
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
+  retryVkParsingPostResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
@@ -52,7 +53,9 @@ import {
   updateManagedEntityPrimaryBotRequestSchema,
   updateVkParsingSettingsRequestSchema,
   vkParsingCapabilitySchema,
+  vkParsingFeedQuerySchema,
   vkParsingFeedSchema,
+  vkParsingHealthSummarySchema,
   vkParsingRefreshResultSchema,
   type ApplySettingsTarget,
   type BroadcastHandoffResponse,
@@ -768,6 +771,11 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     lastErrorCode: null,
     lastImportedCount: 4,
     lastFetchedCount: 9,
+    lastFetchedPages: 3,
+    lastFetchedOffsets: [0, 50, 100],
+    lastVkNewestPostId: 4281,
+    lastVkNewestPublishedAt: addHours(now, -2.4).toISOString(),
+    adaptiveIntervalMs: 600_000,
     lastSyncDurationMs: 1240,
     lastError: null,
     createdAt,
@@ -791,6 +799,11 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     lastErrorCode: 'RATE_LIMIT',
     lastImportedCount: 1,
     lastFetchedCount: 5,
+    lastFetchedPages: 2,
+    lastFetchedOffsets: [0, 50],
+    lastVkNewestPostId: 119,
+    lastVkNewestPublishedAt: addHours(now, -10).toISOString(),
+    adaptiveIntervalMs: 1_800_000,
     lastSyncDurationMs: 1890,
     lastError: 'VK временно ограничил запросы к источнику.',
     createdAt: addDays(now, -9).toISOString(),
@@ -966,6 +979,57 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         updatedAt: addHours(now, -20).toISOString(),
       },
     ],
+    pagination: {
+      limit: 50,
+      offset: 0,
+      total: 5,
+      hasMore: false,
+      nextOffset: null,
+    },
+    summary: {
+      chatId,
+      generatedAt: now.toISOString(),
+      vkApiRps: 2.1,
+      vkApiErrorRate: 0.08,
+      sourceCount: 2,
+      staleSourceCount: 1,
+      importLagSeconds: 90 * 60,
+      publishLagSeconds: 12 * 60,
+      publishBacklog: 1,
+      mediaFailureRatio: 0.14,
+      recentErrors: [{ code: 'vk_6', count: 3 }],
+    },
+  });
+}
+
+function buildPreviewVkParsingPage(
+  feed: VkParsingFeed,
+  searchParams: URLSearchParams,
+): VkParsingFeed {
+  const query = vkParsingFeedQuerySchema.parse(Object.fromEntries(searchParams.entries()));
+  const filteredPosts = feed.posts.filter((post) => {
+    if (query.status !== 'ALL' && post.status !== query.status) {
+      return false;
+    }
+    if (query.sourceId && post.sourceId !== query.sourceId) {
+      return false;
+    }
+
+    return true;
+  });
+  const posts = filteredPosts.slice(query.offset, query.offset + query.limit);
+  const nextOffset = query.offset + query.limit;
+
+  return vkParsingFeedSchema.parse({
+    ...feed,
+    posts,
+    pagination: {
+      limit: query.limit,
+      offset: query.offset,
+      total: filteredPosts.length,
+      hasMore: nextOffset < filteredPosts.length,
+      nextOffset: nextOffset < filteredPosts.length ? nextOffset : null,
+    },
   });
 }
 
@@ -976,6 +1040,7 @@ function handleVkParsingPreviewRequest(
   entityType: 'chat' | 'channel',
   chatId: string,
   tail: string[],
+  url: URL,
   method: string,
   init?: RequestInit,
 ): PreviewVkParsingRouteResult {
@@ -1000,7 +1065,17 @@ function handleVkParsingPreviewRequest(
   }
 
   if (tail.length === 1 && method === 'GET') {
-    return { handled: true, value: cloneJson(readFeed()) };
+    return {
+      handled: true,
+      value: cloneJson(buildPreviewVkParsingPage(readFeed(), url.searchParams)),
+    };
+  }
+
+  if (tail[1] === 'summary' && method === 'GET') {
+    return {
+      handled: true,
+      value: vkParsingHealthSummarySchema.parse(readFeed().summary),
+    };
   }
 
   if (tail[1] === 'settings' && method === 'PATCH') {
@@ -1041,6 +1116,11 @@ function handleVkParsingPreviewRequest(
       lastErrorCode: null,
       lastImportedCount: 0,
       lastFetchedCount: 0,
+      lastFetchedPages: 0,
+      lastFetchedOffsets: [],
+      lastVkNewestPostId: null,
+      lastVkNewestPublishedAt: null,
+      adaptiveIntervalMs: null,
       lastSyncDurationMs: null,
       lastError: null,
       createdAt: now.toISOString(),
@@ -1099,6 +1179,38 @@ function handleVkParsingPreviewRequest(
     };
   }
 
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'retry' && method === 'POST') {
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatedPost: VkParsingPost = {
+      ...post,
+      status: 'NEW',
+      publishQueuedAt: nowIso,
+      publishLockedAt: null,
+      publishAttemptCount: post.publishAttemptCount + 1,
+      autoPublishError: null,
+      lastError: null,
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: retryVkParsingPostResultSchema.parse({
+        post: updatedPost,
+        queued: 1,
+      }),
+    };
+  }
+
   if (tail[1] === 'posts' && tail[2] && tail[3] === 'publish' && method === 'POST') {
     const payload = publishVkParsingPostRequestSchema.parse(parseJsonBody(init));
     const postId = decodeURIComponent(tail[2]);
@@ -1123,6 +1235,8 @@ function handleVkParsingPreviewRequest(
       publishedAtMax: nowIso,
       autoPublishedAt: null,
       autoPublishError: null,
+      publishQueuedAt: null,
+      publishLockedAt: null,
       lastError: null,
       updatedAt: nowIso,
     };
@@ -3936,6 +4050,7 @@ async function handleChatRequest(
     'chat',
     chatId,
     tail,
+    url,
     method,
     init,
   );
@@ -4556,6 +4671,7 @@ async function handleChannelRequest(
     'channel',
     channelId,
     tail,
+    url,
     method,
     init,
   );

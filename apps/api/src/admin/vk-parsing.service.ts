@@ -1,17 +1,22 @@
 import {
   addVkParsingSourceRequestSchema,
   publishVkParsingPostRequestSchema,
+  retryVkParsingPostResultSchema,
   updateVkParsingSettingsRequestSchema,
   VK_PARSING_MAX_LINKS,
   VK_PARSING_MAX_PHOTOS,
   VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
   type PublishVkParsingPostResult,
+  type RetryVkParsingPostResult,
   type VkParsingCapability,
   type VkParsingFeed,
+  type VkParsingFeedQuery,
+  type VkParsingHealthSummary,
   type VkParsingPost,
   type VkParsingRefreshResult,
   type VkParsingSettings,
   type VkParsingSource,
+  vkParsingFeedQuerySchema,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -37,7 +42,15 @@ import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 import {
+  parseVkWallPostAttachments,
+  type VkParsingPhotoMediaIdentity,
+  type VkParsingUnsupportedAttachmentSummary,
+} from './vk-parsing-attachments';
+import {
+  VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_SYNC_QUEUE,
+  type VkParsingPublishJob,
+  type VkParsingPublishReason,
   type VkParsingSyncJob,
   type VkParsingSyncReason,
 } from './vk-parsing.queue';
@@ -76,6 +89,13 @@ type NormalizedVkPost = {
   photoUrls: string[];
   linkUrls: string[];
   attachments: Array<Record<string, unknown>>;
+  attachmentTypes: string[];
+  unsupportedAttachments: VkParsingUnsupportedAttachmentSummary[];
+  hasUnsupportedAttachments: boolean;
+  isAdvertising: boolean;
+  advertisingMarkers: string[];
+  photoMedia: VkParsingPhotoMediaIdentity[];
+  copyHistoryText: string[];
   raw: Record<string, unknown>;
   contentHash: string;
 };
@@ -93,6 +113,7 @@ type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER';
 type ImportedPostsBatchResult = {
   imported: number;
   importedPosts: VkParsingPostWithSource[];
+  publishCandidates: VkParsingPostWithSource[];
 };
 
 type ExistingVkPostImportState = {
@@ -133,21 +154,13 @@ const VK_MEDIA_STATUS_UNKNOWN = 'UNKNOWN';
 const VK_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const VK_IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const VK_API_RATE_LIMIT_ERROR_CODE = 6;
-const VK_API_RETRYABLE_ERROR_CODES = new Set([VK_API_RATE_LIMIT_ERROR_CODE, 10]);
-const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 100, 203]);
+const VK_API_RETRYABLE_ERROR_CODES = new Set([VK_API_RATE_LIMIT_ERROR_CODE, 9, 10, 29]);
+const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 30, 100, 203, 210]);
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
+const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.)[^\s<>()\]["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]["'`{}]+/giu;
-const VK_AD_DISCLOSURE_PATTERNS = [
-  /(^|[\s#(.,;:!?-])реклама($|[\s#).,;:!?-])/iu,
-  /на\s+правах\s+рекламы/iu,
-  /рекламодатель/iu,
-  /рекламн(?:ый|ая|ое|ые)\s+(?:материал|пост|публикац)/iu,
-  /партн[её]рск(?:ий|ая|ое|ие)\s+(?:материал|пост|публикац)/iu,
-  /\berid\s*[:=]?\s*[A-Za-zА-Яа-я0-9_-]{4,}/iu,
-  /токен\s+рекламы/iu,
-] as const;
 
 class VkApiRequestError extends ServiceUnavailableException {
   constructor(
@@ -168,7 +181,12 @@ export class VkParsingService {
   private readonly vkApiTimeoutMs: number;
   private readonly vkApiMaxAttempts: number;
   private readonly syncIntervalMs: number;
+  private readonly minSyncIntervalMs: number;
+  private readonly maxSyncIntervalMs: number;
   private readonly fetchCount: number;
+  private readonly minFetchPages: number;
+  private readonly maxFetchPages: number;
+  private readonly missingConfirmationThreshold: number;
   private readonly queueBatchSize: number;
   private readonly syncLeaseTtlMs: number;
   private readonly mediaPreflightTtlMs: number;
@@ -184,16 +202,29 @@ export class VkParsingService {
     private readonly vkRateLimitService: VkParsingRateLimitService,
     @InjectQueue(VK_PARSING_SYNC_QUEUE)
     private readonly syncQueue: Queue<VkParsingSyncJob>,
+    @InjectQueue(VK_PARSING_PUBLISH_QUEUE)
+    private readonly publishQueue: Queue<VkParsingPublishJob>,
     private readonly configService: ConfigService,
   ) {
     this.vkApiBaseUrl = this.normalizeBaseUrl(
       configService.get<string>('VK_API_BASE_URL') ?? 'https://api.vk.ru',
     );
-    this.vkApiVersion = configService.get<string>('VK_API_VERSION') ?? '5.131';
+    this.vkApiVersion = configService.get<string>('VK_API_VERSION') ?? '5.199';
     this.vkApiTimeoutMs = configService.get<number>('VK_API_TIMEOUT_MS') ?? 10_000;
     this.vkApiMaxAttempts = configService.get<number>('VK_API_MAX_ATTEMPTS') ?? 3;
     this.syncIntervalMs = configService.get<number>('VK_PARSING_SYNC_INTERVAL_MS') ?? 600_000;
+    this.minSyncIntervalMs =
+      configService.get<number>('VK_PARSING_MIN_SYNC_INTERVAL_MS') ?? 120_000;
+    this.maxSyncIntervalMs =
+      configService.get<number>('VK_PARSING_MAX_SYNC_INTERVAL_MS') ?? 3_600_000;
     this.fetchCount = configService.get<number>('VK_PARSING_FETCH_COUNT') ?? 100;
+    this.minFetchPages = configService.get<number>('VK_PARSING_MIN_PAGES') ?? 3;
+    this.maxFetchPages = Math.max(
+      this.minFetchPages,
+      configService.get<number>('VK_PARSING_MAX_PAGES') ?? 5,
+    );
+    this.missingConfirmationThreshold =
+      configService.get<number>('VK_PARSING_MISSING_CONFIRMATION_THRESHOLD') ?? 3;
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.syncLeaseTtlMs = configService.get<number>('VK_PARSING_LEASE_TTL_MS') ?? 120_000;
     this.mediaPreflightTtlMs =
@@ -231,9 +262,9 @@ export class VkParsingService {
     return { enabled: true, canUse: true };
   }
 
-  async listVkParsing(chatId: string, user: AuthUser): Promise<VkParsingFeed> {
+  async listVkParsing(chatId: string, user: AuthUser, query: unknown = {}): Promise<VkParsingFeed> {
     await this.assertVkParsingAccess(chatId, user);
-    return this.buildFeed(chatId, { enabled: true, canUse: true });
+    return this.buildFeed(chatId, { enabled: true, canUse: true }, query);
   }
 
   async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
@@ -255,6 +286,11 @@ export class VkParsingService {
     });
 
     return this.buildFeed(chatId, { enabled: true, canUse: true });
+  }
+
+  async getHealthSummary(chatId: string, user: AuthUser): Promise<VkParsingHealthSummary> {
+    await this.assertVkParsingAccess(chatId, user);
+    return this.buildHealthSummary(chatId);
   }
 
   async addSource(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingRefreshResult> {
@@ -405,6 +441,8 @@ export class VkParsingService {
         linkUrls: storedLinkUrls,
         attachments: this.readAttachments(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
+        isAdvertising: this.readBooleanFlag(post.isAdvertising),
+        advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       },
       settings,
     );
@@ -419,6 +457,37 @@ export class VkParsingService {
       trafficClass: 'interactive',
       debugAction: 'publish_post',
       auto: false,
+    });
+  }
+
+  async retryPost(
+    chatId: string,
+    postId: string,
+    user: AuthUser,
+  ): Promise<RetryVkParsingPostResult> {
+    await this.assertVkParsingAccess(chatId, user);
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: { id: postId, chatId },
+      include: { source: true },
+    });
+    if (!post) {
+      throw new NotFoundException('VK-пост не найден.');
+    }
+    if (post.status === VK_POST_STATUS_PUBLISHED) {
+      throw new BadRequestException('Этот VK-пост уже опубликован.');
+    }
+    if (post.status === VK_POST_STATUS_UNAVAILABLE) {
+      throw new BadRequestException('VK-пост недоступен в исходном источнике.');
+    }
+
+    const queued = await this.enqueuePostPublish(post, 'manual-retry');
+    const updated = await this.prisma.vkParsingPost.findFirst({
+      where: { id: post.id, chatId },
+      include: { source: true },
+    });
+    return retryVkParsingPostResultSchema.parse({
+      post: this.mapPost(updated ?? post),
+      queued,
     });
   }
 
@@ -462,10 +531,20 @@ export class VkParsingService {
         }
       }
 
-      const imagePayloads = await this.downloadAndUploadImages(payload.photoUrls, requestOptions, {
-        allowPartialFailures: params.auto,
-        canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+      const photoMediaIdentityByUrl = this.resolvePhotoMediaIdentityMap({
+        attachments: post.attachments,
+        raw: post.raw,
+        text: post.text,
       });
+      const imagePayloads = await this.downloadAndUploadImages(
+        payload.photoUrls,
+        requestOptions,
+        {
+          allowPartialFailures: params.auto,
+          canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
+        },
+        photoMediaIdentityByUrl,
+      );
 
       if (imagePayloads.length === 1) {
         options.imagePayload = imagePayloads[0];
@@ -478,9 +557,9 @@ export class VkParsingService {
         );
       }
 
-      const result = await this.maxClient.sendMessageImmediateWithResolvedLink(
+      const result = await this.sendMessageWithAttachmentRetry(
         post.chatId,
-        payload.text || ' ',
+        payload.text,
         options,
         requestOptions,
       );
@@ -509,6 +588,9 @@ export class VkParsingService {
           publishedAtMax: new Date(),
           autoPublishedAt: params.auto ? new Date() : post.autoPublishedAt,
           autoPublishError: null,
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
           skippedAt: null,
           skipReason: null,
           lastError: null,
@@ -526,6 +608,7 @@ export class VkParsingService {
         where: { id: post.id },
         data: {
           status: VK_POST_STATUS_FAILED,
+          publishLockedAt: null,
           lastError: this.formatError(error),
           autoPublishError: params.auto ? this.formatError(error) : post.autoPublishError,
         },
@@ -564,6 +647,48 @@ export class VkParsingService {
     }
   }
 
+  private async sendMessageWithAttachmentRetry(
+    chatId: string,
+    text: string,
+    options: MaxSendMessageOptions,
+    requestOptions: {
+      botId?: string;
+      trafficClass: MaxApiTrafficClass;
+      sourceTag: string;
+    },
+  ): Promise<Awaited<ReturnType<MaxClientService['sendMessageImmediateWithResolvedLink']>>> {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.maxClient.sendMessageImmediateWithResolvedLink(
+          chatId,
+          text || ' ',
+          options,
+          requestOptions,
+        );
+      } catch (error) {
+        lastError = error;
+        if (!this.isAttachmentNotReadyError(error) || attempt >= 3) {
+          throw error;
+        }
+        await this.sleep(750 * 2 ** (attempt - 1));
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('MAX attachment is not ready.');
+  }
+
+  private isAttachmentNotReadyError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (typeof status === 'number' && status !== 400) {
+      return false;
+    }
+
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    const normalized = JSON.stringify(responseData ?? error ?? '').toLowerCase();
+    return normalized.includes('attachment.not.ready') || normalized.includes('not ready');
+  }
+
   private async assertVkParsingAccess(chatId: string, user: AuthUser): Promise<ChatEntityType> {
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
@@ -596,8 +721,20 @@ export class VkParsingService {
   private async buildFeed(
     chatId: string,
     capabilities: VkParsingCapability = { enabled: false, canUse: false },
+    rawQuery: unknown = {},
   ): Promise<VkParsingFeed> {
-    const [settings, sources, posts] = await Promise.all([
+    const parsedQuery = vkParsingFeedQuerySchema.safeParse(rawQuery);
+    const query: VkParsingFeedQuery = parsedQuery.success
+      ? parsedQuery.data
+      : { status: 'ALL', limit: 50, offset: 0 };
+    const postWhere: Prisma.VkParsingPostWhereInput = {
+      chatId,
+      source: { status: VK_SOURCE_STATUS_ACTIVE },
+      ...(query.status !== 'ALL' ? { status: query.status } : {}),
+      ...(query.sourceId ? { sourceId: query.sourceId } : {}),
+    };
+
+    const [settings, sources, posts, total, summary] = await Promise.all([
       this.prisma.vkParsingSettings.findUnique({
         where: { chatId },
       }),
@@ -606,18 +743,102 @@ export class VkParsingService {
         orderBy: [{ createdAt: 'asc' }],
       }),
       this.prisma.vkParsingPost.findMany({
-        where: { chatId, source: { status: VK_SOURCE_STATUS_ACTIVE } },
+        where: postWhere,
         include: { source: true },
         orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
-        take: 50,
+        skip: query.offset,
+        take: query.limit,
       }),
+      this.prisma.vkParsingPost.count({ where: postWhere }),
+      this.buildHealthSummary(chatId),
     ]);
+    const nextOffset = query.offset + query.limit;
 
     return {
       capabilities,
       settings: this.mapSettings(chatId, settings),
       sources: sources.map((source) => this.mapSource(source)),
       posts: posts.map((post) => this.mapPost(post)),
+      pagination: {
+        limit: query.limit,
+        offset: query.offset,
+        total,
+        hasMore: nextOffset < total,
+        nextOffset: nextOffset < total ? nextOffset : null,
+      },
+      summary,
+    };
+  }
+
+  private async buildHealthSummary(chatId: string): Promise<VkParsingHealthSummary> {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - this.maxSyncIntervalMs * 2);
+    const [
+      sourceCount,
+      staleSourceCount,
+      latestSeen,
+      oldestQueued,
+      publishBacklog,
+      mediaTotal,
+      mediaFailed,
+      vkApiMetrics,
+    ] = await Promise.all([
+      this.prisma.vkParsingSource.count({
+        where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
+      }),
+      this.prisma.vkParsingSource.count({
+        where: {
+          chatId,
+          status: VK_SOURCE_STATUS_ACTIVE,
+          OR: [
+            { syncStatus: VK_SOURCE_SYNC_STATUS_ERROR },
+            { lastSuccessAt: null },
+            { lastSuccessAt: { lt: staleBefore } },
+          ],
+        },
+      }),
+      this.prisma.vkParsingPost.aggregate({
+        where: { chatId, lastSeenAt: { not: null } },
+        _max: { lastSeenAt: true },
+      }),
+      this.prisma.vkParsingPost.aggregate({
+        where: { chatId, publishQueuedAt: { not: null } },
+        _min: { publishQueuedAt: true },
+      }),
+      this.prisma.vkParsingPost.count({
+        where: {
+          chatId,
+          publishQueuedAt: { not: null },
+          status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        },
+      }),
+      this.prisma.vkParsingMediaCache.count(),
+      this.prisma.vkParsingMediaCache.count({ where: { status: VK_MEDIA_STATUS_FAILED } }),
+      this.vkRateLimitService.getRecentVkApiMetrics(300).catch(() => ({
+        rps: 0,
+        errorRate: 0,
+        recentErrors: [],
+      })),
+    ]);
+
+    const lastSeenAt = latestSeen._max.lastSeenAt;
+    const firstQueuedAt = oldestQueued._min.publishQueuedAt;
+    return {
+      chatId,
+      generatedAt: now.toISOString(),
+      vkApiRps: vkApiMetrics.rps,
+      vkApiErrorRate: vkApiMetrics.errorRate,
+      sourceCount,
+      staleSourceCount,
+      importLagSeconds: lastSeenAt
+        ? Math.max(0, Math.floor((now.getTime() - lastSeenAt.getTime()) / 1_000))
+        : null,
+      publishLagSeconds: firstQueuedAt
+        ? Math.max(0, Math.floor((now.getTime() - firstQueuedAt.getTime()) / 1_000))
+        : null,
+      publishBacklog,
+      mediaFailureRatio: mediaTotal > 0 ? Math.min(1, mediaFailed / mediaTotal) : 0,
+      recentErrors: vkApiMetrics.recentErrors,
     };
   }
 
@@ -633,29 +854,74 @@ export class VkParsingService {
     return this.syncSource(source, reason);
   }
 
+  async processPublishPostJob(params: {
+    postId: string;
+    chatId: string;
+    reason: VkParsingPublishReason;
+    idempotencyKey: string;
+  }): Promise<void> {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
+    const locked = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: params.postId,
+        chatId: params.chatId,
+        publishIdempotencyKey: params.idempotencyKey,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        OR: [{ publishLockedAt: null }, { publishLockedAt: { lt: staleLockBefore } }],
+      },
+      data: {
+        publishLockedAt: now,
+        publishAttemptCount: { increment: 1 },
+      },
+    });
+    if (locked.count === 0) {
+      return;
+    }
+
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: {
+        id: params.postId,
+        chatId: params.chatId,
+        publishIdempotencyKey: params.idempotencyKey,
+      },
+      include: { source: true },
+    });
+    if (!post || post.status === VK_POST_STATUS_PUBLISHED) {
+      return;
+    }
+
+    try {
+      const settings = await this.getSettingsForChat(post.chatId);
+      await this.autoPublishPost(post, settings);
+    } catch (error) {
+      await this.markPostAutoPublishFailed(post.id, error);
+      throw error;
+    }
+  }
+
   private async syncSource(
     source: VkParsingSourceRow,
     reason: VkParsingSyncReason,
   ): Promise<number> {
     const startedAt = new Date();
     try {
-      const wall = await this.fetchWall({ ownerId: source.wallOwnerId, count: this.fetchCount });
-      const posts = (wall.items ?? [])
-        .map((item) => this.normalizePost(item))
-        .filter((post): post is NormalizedVkPost => post !== null);
+      const wallPages = await this.fetchWallPages(source, reason);
+      const posts = wallPages.posts;
 
       const importResult = await this.upsertPostsBatch(source, posts, startedAt);
-      await this.preflightPostMediaSafely(posts);
       if (this.shouldAutoPublishImportedPosts(reason)) {
-        await this.autoPublishImportedPosts(source.chatId, importResult.importedPosts);
+        await this.enqueueAutoPublishImportedPosts(source.chatId, importResult.publishCandidates);
       }
       const completedAt = new Date();
+      const adaptiveIntervalMs = this.resolveAdaptiveSyncIntervalMs(source, posts, completedAt);
+      const newestPost = this.resolveNewestPost(posts);
 
       await this.prisma.vkParsingSource.update({
         where: { id: source.id },
         data: {
           syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
-          nextSyncAt: new Date(completedAt.getTime() + this.syncIntervalMs),
+          nextSyncAt: new Date(completedAt.getTime() + adaptiveIntervalMs),
           lastSyncAt: completedAt,
           lastSuccessAt: completedAt,
           syncStartedAt: null,
@@ -665,10 +931,16 @@ export class VkParsingService {
           lastErrorCode: null,
           lastImportedCount: importResult.imported,
           lastFetchedCount: posts.length,
+          lastFetchedPages: wallPages.pages,
+          lastFetchedOffsets: this.toJsonInput(wallPages.offsets),
+          lastVkNewestPostId: newestPost?.vkPostId ?? source.lastVkNewestPostId,
+          lastVkNewestPublishedAt: newestPost?.vkPublishedAt ?? source.lastVkNewestPublishedAt,
+          adaptiveIntervalMs,
           lastSyncDurationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
           lastError: null,
         },
       });
+      void this.preflightPostMediaSafely(posts);
       return importResult.imported;
     } catch (error) {
       const completedAt = new Date();
@@ -706,6 +978,103 @@ export class VkParsingService {
       );
       return 0;
     }
+  }
+
+  private async fetchWallPages(
+    source: VkParsingSourceRow,
+    reason: VkParsingSyncReason,
+  ): Promise<{ posts: NormalizedVkPost[]; pages: number; offsets: number[] }> {
+    const postsByKey = new Map<string, NormalizedVkPost>();
+    const offsets: number[] = [];
+    const maxPages = this.resolveFetchPageLimit(source, reason);
+    const minPages = Math.min(this.minFetchPages, maxPages);
+
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const offset = pageIndex * this.fetchCount;
+      offsets.push(offset);
+      const wall = await this.fetchWall({
+        ownerId: source.wallOwnerId,
+        count: this.fetchCount,
+        offset,
+      });
+      const pagePosts = (wall.items ?? [])
+        .map((item) => this.normalizePost(item))
+        .filter((post): post is NormalizedVkPost => post !== null);
+      for (const post of pagePosts) {
+        postsByKey.set(this.buildPostKey(post.vkOwnerId, post.vkPostId), post);
+      }
+
+      const fetchedPages = pageIndex + 1;
+      if (fetchedPages < minPages) {
+        if ((wall.items ?? []).length === 0) {
+          break;
+        }
+        continue;
+      }
+      if ((wall.items ?? []).length < this.fetchCount) {
+        break;
+      }
+      if (
+        typeof source.lastVkNewestPostId === 'number' &&
+        pagePosts.some((post) => post.vkPostId === source.lastVkNewestPostId)
+      ) {
+        break;
+      }
+    }
+
+    return {
+      posts: [...postsByKey.values()],
+      pages: offsets.length,
+      offsets,
+    };
+  }
+
+  private resolveFetchPageLimit(source: VkParsingSourceRow, reason: VkParsingSyncReason): number {
+    if (reason === 'source-added' || reason === 'manual' || !source.lastSuccessAt) {
+      return this.maxFetchPages;
+    }
+    return Math.max(this.minFetchPages, Math.min(this.maxFetchPages, 3));
+  }
+
+  private resolveNewestPost(posts: NormalizedVkPost[]): NormalizedVkPost | null {
+    return posts.reduce<NormalizedVkPost | null>((newest, post) => {
+      if (!newest) {
+        return post;
+      }
+      const left = post.vkPublishedAt?.getTime() ?? 0;
+      const right = newest.vkPublishedAt?.getTime() ?? 0;
+      return left > right || (left === right && post.vkPostId > newest.vkPostId) ? post : newest;
+    }, null);
+  }
+
+  private resolveAdaptiveSyncIntervalMs(
+    source: VkParsingSourceRow,
+    posts: NormalizedVkPost[],
+    now: Date,
+  ): number {
+    const newestPost = this.resolveNewestPost(posts);
+    const newestAgeMs = newestPost?.vkPublishedAt
+      ? Math.max(0, now.getTime() - newestPost.vkPublishedAt.getTime())
+      : Number.POSITIVE_INFINITY;
+    let baseMs = this.syncIntervalMs;
+    if (newestAgeMs <= 60 * 60_000) {
+      baseMs = this.minSyncIntervalMs;
+    } else if (newestAgeMs <= 6 * 60 * 60_000) {
+      baseMs = Math.max(this.minSyncIntervalMs, Math.floor(this.syncIntervalMs / 2));
+    } else if (newestAgeMs >= 7 * 24 * 60 * 60_000) {
+      baseMs = this.maxSyncIntervalMs;
+    } else if (newestAgeMs >= 24 * 60 * 60_000) {
+      baseMs = Math.min(this.maxSyncIntervalMs, this.syncIntervalMs * 3);
+    }
+
+    const bounded = Math.max(this.minSyncIntervalMs, Math.min(this.maxSyncIntervalMs, baseMs));
+    return Math.max(this.minSyncIntervalMs, bounded + this.resolveSourceJitterMs(source.id));
+  }
+
+  private resolveSourceJitterMs(sourceId: string): number {
+    const hash = createHash('sha256').update(sourceId).digest();
+    const ratio = hash[0]! / 255;
+    return Math.floor((ratio - 0.5) * Math.min(30_000, this.syncIntervalMs * 0.1));
   }
 
   private async upsertPostsBatch(
@@ -772,11 +1141,18 @@ export class VkParsingService {
           photoUrls: post.photoUrls,
           linkUrls: post.linkUrls,
           attachments: this.toJsonInput(post.attachments),
+          attachmentTypes: this.toJsonInput(post.attachmentTypes),
+          unsupportedAttachments: this.toJsonInput(post.unsupportedAttachments),
+          hasUnsupportedAttachments: post.hasUnsupportedAttachments,
+          isAdvertising: post.isAdvertising,
+          advertisingMarkers: this.toJsonInput(post.advertisingMarkers),
           raw: this.toJsonInput(post.raw),
           contentHash: post.contentHash,
           status,
           lastSeenAt: seenAt,
           missingSinceAt: null,
+          missingSeenCount: 0,
+          lastAvailabilityCheckedAt: seenAt,
           unavailableAt: null,
         },
         update: {
@@ -787,11 +1163,18 @@ export class VkParsingService {
           photoUrls: post.photoUrls,
           linkUrls: post.linkUrls.slice(0, VK_PARSING_MAX_LINKS),
           attachments: this.toJsonInput(post.attachments),
+          attachmentTypes: this.toJsonInput(post.attachmentTypes),
+          unsupportedAttachments: this.toJsonInput(post.unsupportedAttachments),
+          hasUnsupportedAttachments: post.hasUnsupportedAttachments,
+          isAdvertising: post.isAdvertising,
+          advertisingMarkers: this.toJsonInput(post.advertisingMarkers),
           raw: this.toJsonInput(post.raw),
           contentHash: post.contentHash,
           status,
           lastSeenAt: seenAt,
           missingSinceAt: null,
+          missingSeenCount: 0,
+          lastAvailabilityCheckedAt: seenAt,
           unavailableAt: null,
           ...resetTransientState,
         },
@@ -826,6 +1209,7 @@ export class VkParsingService {
     return {
       imported: importedCount,
       importedPosts,
+      publishCandidates: importedPosts,
     };
   }
 
@@ -937,7 +1321,10 @@ export class VkParsingService {
     return existing.status || VK_POST_STATUS_NEW;
   }
 
-  private shouldRetryImportedPost(existing: ExistingVkPostImportState, nextStatus: string): boolean {
+  private shouldRetryImportedPost(
+    existing: ExistingVkPostImportState,
+    nextStatus: string,
+  ): boolean {
     return existing.status === VK_POST_STATUS_FAILED && nextStatus === VK_POST_STATUS_NEW;
   }
 
@@ -962,7 +1349,7 @@ export class VkParsingService {
       return;
     }
 
-    await this.prisma.vkParsingPost.updateMany({
+    const candidates = await this.prisma.vkParsingPost.findMany({
       where: {
         sourceId: source.id,
         vkPublishedAt: { gte: oldestFetchedAt },
@@ -971,19 +1358,86 @@ export class VkParsingService {
           in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED, VK_POST_STATUS_CHANGED_AFTER_PUBLISH],
         },
       },
-      data: {
-        status: VK_POST_STATUS_UNAVAILABLE,
-        missingSinceAt: seenAt,
-        unavailableAt: seenAt,
+      select: {
+        id: true,
+        vkOwnerId: true,
+        vkPostId: true,
+        missingSeenCount: true,
       },
     });
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const belowThreshold = candidates.filter(
+      (post) => post.missingSeenCount + 1 < this.missingConfirmationThreshold,
+    );
+    if (belowThreshold.length > 0) {
+      await this.prisma.vkParsingPost.updateMany({
+        where: { id: { in: belowThreshold.map((post) => post.id) } },
+        data: {
+          missingSeenCount: { increment: 1 },
+          missingSinceAt: seenAt,
+          lastAvailabilityCheckedAt: seenAt,
+        },
+      });
+    }
+
+    const thresholdCandidates = candidates.filter(
+      (post) => post.missingSeenCount + 1 >= this.missingConfirmationThreshold,
+    );
+    if (thresholdCandidates.length === 0) {
+      return;
+    }
+
+    const foundPostKeys = await this.spotCheckMissingPosts(thresholdCandidates);
+    const updateOperations = thresholdCandidates.map((post) => {
+      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
+      if (foundPostKeys?.has(postKey)) {
+        return this.prisma.vkParsingPost.update({
+          where: { id: post.id },
+          data: {
+            missingSeenCount: 0,
+            missingSinceAt: null,
+            lastAvailabilityCheckedAt: seenAt,
+          },
+        });
+      }
+
+      return this.prisma.vkParsingPost.update({
+        where: { id: post.id },
+        data: {
+          status: foundPostKeys === null ? undefined : VK_POST_STATUS_UNAVAILABLE,
+          missingSeenCount: { increment: 1 },
+          missingSinceAt: seenAt,
+          lastAvailabilityCheckedAt: seenAt,
+          unavailableAt: foundPostKeys === null ? undefined : seenAt,
+        },
+      });
+    });
+
+    await this.prisma.$transaction(updateOperations);
+  }
+
+  private async spotCheckMissingPosts(
+    posts: Array<{ vkOwnerId: number; vkPostId: number }>,
+  ): Promise<Set<string> | null> {
+    try {
+      return await this.fetchWallPostKeySet(posts);
+    } catch (error) {
+      if (error instanceof VkApiRequestError && !error.retryable) {
+        return new Set();
+      }
+      this.logger.warn({ err: error }, 'VK missing post spot-check failed');
+      return null;
+    }
   }
 
   private shouldAutoPublishImportedPosts(reason: VkParsingSyncReason): boolean {
     return reason !== 'source-added';
   }
 
-  private async autoPublishImportedPosts(
+  private async enqueueAutoPublishImportedPosts(
     chatId: string,
     posts: VkParsingPostWithSource[],
   ): Promise<void> {
@@ -1002,7 +1456,7 @@ export class VkParsingService {
       }
 
       try {
-        await this.autoPublishPost(post, settings);
+        await this.enqueuePostPublish(post, 'autopublish');
       } catch (error) {
         this.logger.warn(
           {
@@ -1011,10 +1465,65 @@ export class VkParsingService {
             sourceId: post.sourceId,
             err: error,
           },
-          'VK post autopublish failed',
+          'VK post autopublish enqueue failed',
         );
       }
     }
+  }
+
+  private async enqueuePostPublish(
+    post: VkParsingPostWithSource,
+    reason: VkParsingPublishReason,
+  ): Promise<number> {
+    const idempotencyKey = this.buildPublishIdempotencyKey(post);
+    const now = new Date();
+    await this.prisma.vkParsingPost.update({
+      where: { id: post.id },
+      data: {
+        status: post.status === VK_POST_STATUS_FAILED ? VK_POST_STATUS_NEW : post.status,
+        publishQueuedAt: now,
+        publishLockedAt: null,
+        publishIdempotencyKey: idempotencyKey,
+        lastError: null,
+        autoPublishError: reason === 'autopublish' ? null : post.autoPublishError,
+      },
+    });
+
+    await this.publishQueue.add(
+      VK_PUBLISH_JOB_NAME,
+      {
+        postId: post.id,
+        chatId: post.chatId,
+        reason,
+        idempotencyKey,
+        retryPolicyName: 'vk-parsing-publish',
+        createdAt: now.toISOString(),
+      },
+      {
+        jobId: this.buildPublishJobId(post.id, idempotencyKey),
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+        removeOnComplete: true,
+        removeOnFail: 500,
+      },
+    );
+
+    return 1;
+  }
+
+  private resolvePhotoMediaIdentityMap(post: {
+    attachments: Prisma.JsonValue | unknown;
+    raw: Prisma.JsonValue | unknown;
+    text: string;
+  }): Map<string, string> {
+    const parsed = parseVkWallPostAttachments({
+      attachments: this.readAttachments(post.attachments),
+      rawPost: this.asRecord(post.raw) ?? {},
+      text: post.text,
+      maxPhotos: VK_PARSING_MAX_PHOTOS,
+      maxLinks: VK_PARSING_MAX_LINKS,
+    });
+    return new Map(parsed.photoMedia.map(({ url, mediaIdentity }) => [url, mediaIdentity]));
   }
 
   private async autoPublishPost(
@@ -1030,6 +1539,8 @@ export class VkParsingService {
         linkUrls,
         attachments: this.readAttachments(post.attachments),
         raw: this.asRecord(post.raw) ?? {},
+        isAdvertising: this.readBooleanFlag(post.isAdvertising),
+        advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       },
       settings,
     );
@@ -1069,6 +1580,8 @@ export class VkParsingService {
         status: VK_POST_STATUS_FAILED,
         lastError: message,
         autoPublishError: message,
+        publishLockedAt: null,
+        publishQueuedAt: null,
       },
     });
   }
@@ -1102,6 +1615,24 @@ export class VkParsingService {
 
   private buildSyncJobId(sourceId: string): string {
     return `vk-parsing-sync__${sourceId}`;
+  }
+
+  private buildPublishJobId(postId: string, idempotencyKey: string): string {
+    return `vk-parsing-publish__${postId}__${idempotencyKey}`;
+  }
+
+  private buildPublishIdempotencyKey(post: VkParsingPostWithSource): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          postId: post.id,
+          chatId: post.chatId,
+          contentHash: post.contentHash,
+          status: post.status,
+        }),
+      )
+      .digest('hex')
+      .slice(0, 32);
   }
 
   private buildPostKey(ownerId: number, postId: number): string {
@@ -1197,10 +1728,21 @@ export class VkParsingService {
     }
 
     const attachments = this.readAttachments(post.attachments);
-    const photoUrls = this.extractPhotoUrls(attachments);
-    const linkUrls = this.extractLinkUrls(attachments);
     const text = this.readString(post.text);
-    if (!text.trim() && photoUrls.length === 0 && linkUrls.length === 0) {
+    const parsedAttachments = parseVkWallPostAttachments({
+      attachments,
+      rawPost: post,
+      text,
+      maxPhotos: VK_PARSING_MAX_PHOTOS,
+      maxLinks: VK_PARSING_MAX_LINKS,
+    });
+    const { photoUrls, linkUrls } = parsedAttachments;
+    if (
+      !text.trim() &&
+      photoUrls.length === 0 &&
+      linkUrls.length === 0 &&
+      !parsedAttachments.hasUnsupportedAttachments
+    ) {
       return null;
     }
 
@@ -1219,8 +1761,23 @@ export class VkParsingService {
       photoUrls,
       linkUrls,
       attachments,
+      attachmentTypes: parsedAttachments.attachmentTypes,
+      unsupportedAttachments: parsedAttachments.unsupportedAttachments,
+      hasUnsupportedAttachments: parsedAttachments.hasUnsupportedAttachments,
+      isAdvertising: parsedAttachments.isAdvertising,
+      advertisingMarkers: parsedAttachments.advertisingMarkers,
+      photoMedia: parsedAttachments.photoMedia,
+      copyHistoryText: parsedAttachments.copyHistoryText,
       raw: post,
-      contentHash: this.computePostContentHash({ text, photoUrls, linkUrls }),
+      contentHash: this.computePostContentHash({
+        text,
+        photoUrls,
+        linkUrls,
+        attachmentTypes: parsedAttachments.attachmentTypes,
+        unsupportedAttachments: parsedAttachments.unsupportedAttachments,
+        copyHistoryText: parsedAttachments.copyHistoryText,
+        advertisingMarkers: parsedAttachments.advertisingMarkers,
+      }),
     };
   }
 
@@ -1234,56 +1791,11 @@ export class VkParsingService {
       .filter((item): item is Record<string, unknown> => item !== null);
   }
 
-  private extractPhotoUrls(attachments: Array<Record<string, unknown>>): string[] {
-    const urls = new Set<string>();
-    for (const attachment of attachments) {
-      if (this.readString(attachment.type) !== 'photo') {
-        continue;
-      }
-
-      const photo = this.asRecord(attachment.photo);
-      const sizes = Array.isArray(photo?.sizes) ? photo.sizes : [];
-      const best = sizes
-        .map((item) => this.asRecord(item))
-        .filter((item): item is Record<string, unknown> => item !== null)
-        .map((size) => ({
-          url: this.normalizeHttpUrl(this.readString(size.url)),
-          area:
-            Math.max(0, this.readNumber(size.width) ?? 0) *
-            Math.max(0, this.readNumber(size.height) ?? 0),
-        }))
-        .filter((size): size is { url: string; area: number } => Boolean(size.url))
-        .sort((left, right) => right.area - left.area)[0];
-
-      if (best?.url) {
-        urls.add(best.url);
-      }
-    }
-
-    return [...urls].slice(0, VK_PARSING_MAX_PHOTOS);
-  }
-
-  private extractLinkUrls(attachments: Array<Record<string, unknown>>): string[] {
-    const urls = new Set<string>();
-    for (const attachment of attachments) {
-      if (this.readString(attachment.type) !== 'link') {
-        continue;
-      }
-
-      const link = this.asRecord(attachment.link);
-      const url = this.normalizeHttpUrl(this.readString(link?.url));
-      if (url) {
-        urls.add(url);
-      }
-    }
-
-    return [...urls].slice(0, VK_PARSING_MAX_LINKS);
-  }
-
   private async fetchWall(options: {
     domain?: string;
     ownerId?: number;
     count: number;
+    offset?: number;
   }): Promise<VkWallGetResponse> {
     const params: Record<string, string> = {
       count: String(Math.max(1, Math.min(options.count, 100))),
@@ -1296,6 +1808,9 @@ export class VkParsingService {
     if (typeof options.ownerId === 'number') {
       params.owner_id = String(options.ownerId);
     }
+    if (typeof options.offset === 'number' && options.offset > 0) {
+      params.offset = String(Math.max(0, Math.trunc(options.offset)));
+    }
 
     const response = await this.requestVk('wall.get', params);
     if (!this.asRecord(response)) {
@@ -1303,6 +1818,36 @@ export class VkParsingService {
     }
 
     return response as VkWallGetResponse;
+  }
+
+  private async fetchWallPostKeySet(
+    posts: Array<{ vkOwnerId: number; vkPostId: number }>,
+  ): Promise<Set<string>> {
+    if (posts.length === 0) {
+      return new Set();
+    }
+    const response = await this.requestVk('wall.getById', {
+      posts: posts.map((post) => `${post.vkOwnerId}_${post.vkPostId}`).join(','),
+      extended: '0',
+    });
+    const record = this.asRecord(response);
+    const items = Array.isArray(response)
+      ? response
+      : Array.isArray(record?.items)
+        ? record.items
+        : [];
+
+    const found = new Set<string>();
+    for (const item of items) {
+      const post = this.asRecord(item);
+      const ownerId = this.readNumber(post?.owner_id);
+      const postId = this.readNumber(post?.id);
+      if (typeof ownerId === 'number' && typeof postId === 'number') {
+        found.add(this.buildPostKey(ownerId, postId));
+      }
+    }
+
+    return found;
   }
 
   private async requestVk(method: string, params: Record<string, string>): Promise<unknown> {
@@ -1329,7 +1874,10 @@ export class VkParsingService {
         const error = this.asRecord(record?.error);
         if (error) {
           const code = this.readNumber(error.error_code);
-          const message = this.readString(error.error_msg) || 'VK API отклонил запрос.';
+          const message =
+            code === 14
+              ? 'VK требует капчу или токен не подходит для запроса.'
+              : this.readString(error.error_msg) || 'VK API отклонил запрос.';
           throw new VkApiRequestError(
             code ? `VK API: ${message} (${code})` : `VK API: ${message}`,
             code ? `vk_${code}` : 'vk_unknown',
@@ -1438,6 +1986,7 @@ export class VkParsingService {
       allowPartialFailures?: boolean;
       canPublishWithoutPhotos?: boolean;
     } = {},
+    photoMediaIdentityByUrl: Map<string, string> = new Map(),
   ): Promise<Record<string, unknown>[]> {
     const payloads = new Array<Record<string, unknown> | null>(photoUrls.length).fill(null);
     const skippedErrors: string[] = [];
@@ -1445,13 +1994,12 @@ export class VkParsingService {
       requestOptions.trafficClass === 'background' ? 1 : this.mediaConcurrency;
     await this.mapWithConcurrency(photoUrls, uploadConcurrency, async (url, index) => {
       try {
-        await this.assertMediaReadyForPublish(url, index);
-        const image = await this.downloadImage(url, index);
-        payloads[index] = await this.maxClient.uploadImage(
-          image.buffer,
-          image.fileName,
-          image.mimeType,
+        const mediaIdentity = photoMediaIdentityByUrl.get(url) ?? null;
+        payloads[index] = await this.resolveUploadPayloadForMedia(
+          url,
+          index,
           requestOptions,
+          mediaIdentity,
         );
       } catch (error) {
         const message = `Фото ${index + 1}: ${this.formatError(error)}`;
@@ -1477,15 +2025,60 @@ export class VkParsingService {
     return uploadedPayloads;
   }
 
+  private async resolveUploadPayloadForMedia(
+    imageUrl: string,
+    index: number,
+    requestOptions: {
+      botId?: string;
+      trafficClass: MaxApiTrafficClass;
+      sourceTag: string;
+    },
+    mediaIdentity: string | null,
+  ): Promise<Record<string, unknown>> {
+    const cache = await this.assertMediaReadyForPublish(imageUrl, index, mediaIdentity);
+    const cachedPayload = this.readUploadPayload(cache);
+    if (cachedPayload) {
+      return cachedPayload;
+    }
+
+    const image = await this.downloadImage(imageUrl, index);
+    const payload = await this.maxClient.uploadImage(
+      image.buffer,
+      image.fileName,
+      image.mimeType,
+      requestOptions,
+    );
+    await this.writeMediaCache(
+      imageUrl,
+      {
+        status: VK_MEDIA_STATUS_READY,
+        mimeType: image.mimeType,
+        contentLength: image.buffer.length,
+        lastError: null,
+        maxUploadPayload: payload,
+        maxUploadToken: this.readUploadToken(payload),
+        maxUploadedAt: new Date(),
+      },
+      mediaIdentity,
+    );
+
+    return payload;
+  }
+
   private async preflightPostMediaSafely(posts: NormalizedVkPost[]): Promise<void> {
     const photoUrls = [...new Set(posts.flatMap((post) => post.photoUrls))];
     if (photoUrls.length === 0) {
       return;
     }
+    const mediaIdentityByUrl = new Map(
+      posts.flatMap((post) =>
+        post.photoMedia.map((item) => [item.url, item.mediaIdentity] as const),
+      ),
+    );
 
     try {
       await this.mapWithConcurrency(photoUrls, this.mediaConcurrency, async (url) => {
-        await this.preflightMediaUrl(url);
+        await this.preflightMediaUrl(url, mediaIdentityByUrl.get(url) ?? null);
       });
     } catch (error) {
       this.logger.warn(
@@ -1495,26 +2088,30 @@ export class VkParsingService {
     }
   }
 
-  private async assertMediaReadyForPublish(imageUrl: string, index: number): Promise<void> {
-    const cache = await this.preflightMediaUrl(imageUrl);
+  private async assertMediaReadyForPublish(
+    imageUrl: string,
+    index: number,
+    mediaIdentity: string | null = null,
+  ): Promise<VkParsingMediaCacheRow> {
+    const cache = await this.preflightMediaUrl(imageUrl, mediaIdentity);
     if (cache.status === VK_MEDIA_STATUS_FAILED) {
       throw new BadRequestException(cache.lastError || `Фото ${index + 1} недоступно.`);
     }
+    return cache;
   }
 
-  private async preflightMediaUrl(imageUrl: string): Promise<VkParsingMediaCacheRow> {
-    const cached = await this.prisma.vkParsingMediaCache.findUnique({ where: { url: imageUrl } });
+  private async preflightMediaUrl(
+    imageUrl: string,
+    mediaIdentity: string | null = null,
+  ): Promise<VkParsingMediaCacheRow> {
+    const cached = await this.findMediaCache(imageUrl, mediaIdentity);
     if (cached?.lastCheckedAt) {
       const ageMs = Date.now() - cached.lastCheckedAt.getTime();
       const cacheTtlMs =
         cached.status === VK_MEDIA_STATUS_FAILED
           ? this.mediaFailedPreflightTtlMs
           : this.mediaPreflightTtlMs;
-      if (
-        ageMs >= 0 &&
-        ageMs < cacheTtlMs &&
-        cached.status !== VK_MEDIA_STATUS_UNKNOWN
-      ) {
+      if (ageMs >= 0 && ageMs < cacheTtlMs && cached.status !== VK_MEDIA_STATUS_UNKNOWN) {
         return cached;
       }
     }
@@ -1523,16 +2120,24 @@ export class VkParsingService {
     try {
       parsed = new URL(imageUrl);
       if (parsed.protocol !== 'https:') {
-        return this.writeMediaCache(imageUrl, {
-          status: VK_MEDIA_STATUS_FAILED,
-          lastError: 'Фото VK должно быть доступно по HTTPS.',
-        });
+        return this.writeMediaCache(
+          imageUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            lastError: 'Фото VK должно быть доступно по HTTPS.',
+          },
+          mediaIdentity,
+        );
       }
     } catch {
-      return this.writeMediaCache(imageUrl, {
-        status: VK_MEDIA_STATUS_FAILED,
-        lastError: 'Некорректная ссылка на фото VK.',
-      });
+      return this.writeMediaCache(
+        imageUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError: 'Некорректная ссылка на фото VK.',
+        },
+        mediaIdentity,
+      );
     }
 
     const controller = new AbortController();
@@ -1540,46 +2145,66 @@ export class VkParsingService {
     try {
       const response = await this.fetchMediaPreflightResponse(parsed, controller.signal);
       if (!response.ok) {
-        return this.writeMediaCache(imageUrl, {
-          status: VK_MEDIA_STATUS_FAILED,
-          lastError: `VK вернул статус ${response.status} для фото.`,
-        });
+        return this.writeMediaCache(
+          imageUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            lastError: `VK вернул статус ${response.status} для фото.`,
+          },
+          mediaIdentity,
+        );
       }
 
       const headers = response.headers ?? new Headers();
       const contentLength = this.readMediaContentLength(headers, response.status);
       if ((contentLength ?? 0) > VK_IMAGE_MAX_BYTES) {
-        return this.writeMediaCache(imageUrl, {
-          status: VK_MEDIA_STATUS_FAILED,
-          contentLength,
-          lastError: 'Фото из VK слишком большое.',
-        });
+        return this.writeMediaCache(
+          imageUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            contentLength,
+            lastError: 'Фото из VK слишком большое.',
+          },
+          mediaIdentity,
+        );
       }
 
       const mimeType = (headers.get('content-type') ?? '').split(';')[0]!.trim();
       if (mimeType && !mimeType.toLowerCase().startsWith('image/')) {
-        return this.writeMediaCache(imageUrl, {
-          status: VK_MEDIA_STATUS_FAILED,
-          mimeType,
-          contentLength: contentLength || null,
-          lastError: 'VK вернул не изображение.',
-        });
+        return this.writeMediaCache(
+          imageUrl,
+          {
+            status: VK_MEDIA_STATUS_FAILED,
+            mimeType,
+            contentLength: contentLength || null,
+            lastError: 'VK вернул не изображение.',
+          },
+          mediaIdentity,
+        );
       }
 
-      return this.writeMediaCache(imageUrl, {
-        status: VK_MEDIA_STATUS_READY,
-        mimeType: mimeType || null,
-        contentLength,
-        lastError: null,
-      });
+      return this.writeMediaCache(
+        imageUrl,
+        {
+          status: VK_MEDIA_STATUS_READY,
+          mimeType: mimeType || null,
+          contentLength,
+          lastError: null,
+        },
+        mediaIdentity,
+      );
     } catch (error) {
-      return this.writeMediaCache(imageUrl, {
-        status: VK_MEDIA_STATUS_FAILED,
-        lastError:
-          error instanceof Error && error.name === 'AbortError'
-            ? 'VK не ответил на проверку фото вовремя.'
-            : this.formatError(error),
-      });
+      return this.writeMediaCache(
+        imageUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError:
+            error instanceof Error && error.name === 'AbortError'
+              ? 'VK не ответил на проверку фото вовремя.'
+              : this.formatError(error),
+        },
+        mediaIdentity,
+      );
     } finally {
       clearTimeout(timeout);
     }
@@ -1636,26 +2261,93 @@ export class VkParsingService {
       mimeType?: string | null;
       contentLength?: number | null;
       lastError?: string | null;
+      maxUploadPayload?: Record<string, unknown> | null;
+      maxUploadToken?: string | null;
+      maxUploadedAt?: Date | null;
     },
+    mediaIdentity: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
+    const lastCheckedAt = new Date();
+    const updateData: Prisma.VkParsingMediaCacheUpdateInput = {
+      status: data.status,
+      mimeType: data.mimeType ?? null,
+      contentLength: data.contentLength ?? null,
+      lastCheckedAt,
+      lastError: data.lastError ?? null,
+      ...(mediaIdentity ? { mediaIdentity } : {}),
+      ...(data.maxUploadPayload
+        ? { maxUploadPayload: this.toJsonInput(data.maxUploadPayload) }
+        : {}),
+      ...(typeof data.maxUploadToken === 'string' ? { maxUploadToken: data.maxUploadToken } : {}),
+      ...(data.maxUploadedAt ? { maxUploadedAt: data.maxUploadedAt } : {}),
+      ...(data.maxUploadPayload ? { uploadAttemptCount: { increment: 1 } } : {}),
+    };
+    const createData: Prisma.VkParsingMediaCacheCreateInput = {
+      url,
+      mediaIdentity,
+      status: data.status,
+      mimeType: data.mimeType ?? null,
+      contentLength: data.contentLength ?? null,
+      lastCheckedAt,
+      lastError: data.lastError ?? null,
+      ...(data.maxUploadPayload
+        ? { maxUploadPayload: this.toJsonInput(data.maxUploadPayload) }
+        : {}),
+      ...(typeof data.maxUploadToken === 'string' ? { maxUploadToken: data.maxUploadToken } : {}),
+      ...(data.maxUploadedAt ? { maxUploadedAt: data.maxUploadedAt } : {}),
+      uploadAttemptCount: data.maxUploadPayload ? 1 : 0,
+    };
+
+    if (mediaIdentity) {
+      const existing = await this.prisma.vkParsingMediaCache.findFirst({
+        where: { OR: [{ mediaIdentity }, { url }] },
+      });
+      if (existing) {
+        return this.prisma.vkParsingMediaCache.update({
+          where: { id: existing.id },
+          data: {
+            url,
+            ...updateData,
+          },
+        });
+      }
+    }
+
     return this.prisma.vkParsingMediaCache.upsert({
       where: { url },
-      create: {
-        url,
-        status: data.status,
-        mimeType: data.mimeType ?? null,
-        contentLength: data.contentLength ?? null,
-        lastCheckedAt: new Date(),
-        lastError: data.lastError ?? null,
-      },
-      update: {
-        status: data.status,
-        mimeType: data.mimeType ?? null,
-        contentLength: data.contentLength ?? null,
-        lastCheckedAt: new Date(),
-        lastError: data.lastError ?? null,
-      },
+      create: createData,
+      update: updateData,
     });
+  }
+
+  private async findMediaCache(
+    url: string,
+    mediaIdentity: string | null,
+  ): Promise<VkParsingMediaCacheRow | null> {
+    if (mediaIdentity) {
+      const cached = await this.prisma.vkParsingMediaCache.findFirst({
+        where: { OR: [{ mediaIdentity }, { url }] },
+      });
+      if (cached) {
+        return cached;
+      }
+    }
+
+    return this.prisma.vkParsingMediaCache.findUnique({ where: { url } });
+  }
+
+  private readUploadPayload(cache: VkParsingMediaCacheRow): Record<string, unknown> | null {
+    const payload = this.asRecord(cache.maxUploadPayload);
+    if (!payload || Object.keys(payload).length === 0) {
+      return null;
+    }
+
+    return payload;
+  }
+
+  private readUploadToken(payload: Record<string, unknown>): string | null {
+    const token = this.readString(payload.token);
+    return token || null;
   }
 
   private async downloadImage(
@@ -1765,6 +2457,8 @@ export class VkParsingService {
       linkUrls: string[];
       attachments: Array<Record<string, unknown>>;
       raw: Record<string, unknown>;
+      isAdvertising?: boolean;
+      advertisingMarkers?: string[];
     },
     settings: VkParsingSettingsLike,
   ): VkParsingSkipReason | null {
@@ -1793,33 +2487,23 @@ export class VkParsingService {
     text: string;
     attachments: Array<Record<string, unknown>>;
     raw: Record<string, unknown>;
+    isAdvertising?: boolean;
+    advertisingMarkers?: string[];
   }): boolean {
-    if (this.readBooleanFlag(post.raw.marked_as_ads)) {
+    if (post.isAdvertising) {
       return true;
     }
 
-    const haystack = [post.text, ...this.extractAttachmentText(post.attachments)]
-      .filter(Boolean)
-      .join('\n')
-      .toLowerCase();
-
-    return VK_AD_DISCLOSURE_PATTERNS.some((pattern) => pattern.test(haystack));
-  }
-
-  private extractAttachmentText(attachments: Array<Record<string, unknown>>): string[] {
-    const values: string[] = [];
-    for (const attachment of attachments) {
-      const link = this.asRecord(attachment.link);
-      if (link) {
-        values.push(
-          this.readString(link.title),
-          this.readString(link.description),
-          this.readString(link.caption),
-        );
-      }
-    }
-
-    return values.filter((value) => value.trim().length > 0);
+    const markers = post.advertisingMarkers?.length
+      ? post.advertisingMarkers
+      : parseVkWallPostAttachments({
+          attachments: post.attachments,
+          rawPost: post.raw,
+          text: post.text,
+          maxPhotos: 0,
+          maxLinks: 0,
+        }).advertisingMarkers;
+    return markers.length > 0 || this.readBooleanFlag(post.raw.marked_as_ads);
   }
 
   private describeSkipReason(reason: VkParsingSkipReason): string {
@@ -1880,6 +2564,8 @@ export class VkParsingService {
         skipReason: reason,
         autoPublishError: null,
         lastError: this.describeSkipReason(reason),
+        publishLockedAt: null,
+        publishQueuedAt: null,
       },
     });
   }
@@ -1899,6 +2585,10 @@ export class VkParsingService {
     text: string;
     photoUrls: string[];
     linkUrls: string[];
+    attachmentTypes?: string[];
+    unsupportedAttachments?: VkParsingUnsupportedAttachmentSummary[];
+    copyHistoryText?: string[];
+    advertisingMarkers?: string[];
   }): string {
     return createHash('sha256')
       .update(
@@ -1906,6 +2596,10 @@ export class VkParsingService {
           text: params.text.trim(),
           photoUrls: params.photoUrls,
           linkUrls: params.linkUrls,
+          attachmentTypes: params.attachmentTypes ?? [],
+          unsupportedAttachments: params.unsupportedAttachments ?? [],
+          copyHistoryText: params.copyHistoryText ?? [],
+          advertisingMarkers: params.advertisingMarkers ?? [],
         }),
       )
       .digest('hex');
@@ -1976,6 +2670,16 @@ export class VkParsingService {
       lastErrorCode: source.lastErrorCode,
       lastImportedCount: Math.max(0, source.lastImportedCount),
       lastFetchedCount: Math.max(0, source.lastFetchedCount),
+      lastFetchedPages: Math.max(0, source.lastFetchedPages ?? 0),
+      lastFetchedOffsets: this.readNumberArray(source.lastFetchedOffsets),
+      lastVkNewestPostId: source.lastVkNewestPostId ?? null,
+      lastVkNewestPublishedAt: source.lastVkNewestPublishedAt
+        ? source.lastVkNewestPublishedAt.toISOString()
+        : null,
+      adaptiveIntervalMs:
+        typeof source.adaptiveIntervalMs === 'number' && source.adaptiveIntervalMs >= 0
+          ? source.adaptiveIntervalMs
+          : null,
       lastSyncDurationMs:
         typeof source.lastSyncDurationMs === 'number' && source.lastSyncDurationMs >= 0
           ? source.lastSyncDurationMs
@@ -2012,6 +2716,11 @@ export class VkParsingService {
       url: post.url,
       photoUrls: this.readStringArray(post.photoUrls),
       linkUrls: this.readStringArray(post.linkUrls),
+      attachmentTypes: this.readStringArray(post.attachmentTypes),
+      unsupportedAttachments: this.readUnsupportedAttachments(post.unsupportedAttachments),
+      hasUnsupportedAttachments: Boolean(post.hasUnsupportedAttachments),
+      isAdvertising: Boolean(post.isAdvertising),
+      advertisingMarkers: this.readStringArray(post.advertisingMarkers),
       status,
       contentHash: post.contentHash,
       publishedContentHash: post.publishedContentHash,
@@ -2028,7 +2737,14 @@ export class VkParsingService {
           : null,
       lastSeenAt: post.lastSeenAt ? post.lastSeenAt.toISOString() : null,
       missingSinceAt: post.missingSinceAt ? post.missingSinceAt.toISOString() : null,
+      missingSeenCount: Math.max(0, post.missingSeenCount ?? 0),
+      lastAvailabilityCheckedAt: post.lastAvailabilityCheckedAt
+        ? post.lastAvailabilityCheckedAt.toISOString()
+        : null,
       unavailableAt: post.unavailableAt ? post.unavailableAt.toISOString() : null,
+      publishQueuedAt: post.publishQueuedAt ? post.publishQueuedAt.toISOString() : null,
+      publishLockedAt: post.publishLockedAt ? post.publishLockedAt.toISOString() : null,
+      publishAttemptCount: Math.max(0, post.publishAttemptCount ?? 0),
       lastError: post.lastError,
       createdAt: post.createdAt.toISOString(),
       updatedAt: post.updatedAt.toISOString(),
@@ -2055,6 +2771,36 @@ export class VkParsingService {
     return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
   }
 
+  private readNumberArray(value: Prisma.JsonValue | unknown): number[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (item): item is number => typeof item === 'number' && Number.isFinite(item) && item >= 0,
+    );
+  }
+
+  private readUnsupportedAttachments(
+    value: Prisma.JsonValue | unknown,
+  ): VkParsingUnsupportedAttachmentSummary[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        type: this.readString(item.type) || 'unknown',
+        label: this.readString(item.label) || this.readString(item.type) || 'unknown',
+        title: this.readString(item.title) || null,
+        url: this.normalizeHttpUrl(this.readString(item.url)) ?? null,
+        count: Math.max(1, this.readNumber(item.count) ?? 1),
+        reason: this.readString(item.reason) || null,
+      }));
+  }
+
   private toJsonInput(value: unknown): Prisma.InputJsonValue {
     return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
   }
@@ -2064,12 +2810,15 @@ export class VkParsingService {
   }
 
   private normalizeHttpUrl(value: string): string | null {
+    if (!value) {
+      return null;
+    }
     try {
-      const url = new URL(value);
+      const url = new URL(value.startsWith('//') ? `https:${value}` : value);
       if (url.protocol !== 'http:' && url.protocol !== 'https:') {
         return null;
       }
-      return url.href;
+      return url.toString();
     } catch {
       return null;
     }

@@ -41,6 +41,7 @@ import './settings-page.css';
 import '../styles/broadcast-autopost-polish.css';
 import {
   Suspense,
+  lazy,
   startTransition,
   useEffect,
   useMemo,
@@ -67,7 +68,6 @@ import {
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
-import { VkParsingCard } from '../components/vk-parsing-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -329,6 +329,10 @@ import {
   areBroadcastPlannerStatesEqual,
   WarnMessageEditor,
 } from './settings/settings-page-helpers';
+
+const LazyVkParsingCard = lazy(() =>
+  import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
+);
 
 type DuplicateDetectionPreset = ChatSettings['duplicateDetectionPreset'];
 
@@ -9987,12 +9991,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   >
                     {expandedSections.vkParsing ? (
                       <div className="settings-section__collapse-inner">
-                        <VkParsingCard
-                          api={api}
-                          chatId={chatId ?? ''}
-                          active={expandedSections.vkParsing}
-                          entityType="chat"
-                        />
+                        <Suspense fallback={null}>
+                          <LazyVkParsingCard
+                            api={api}
+                            chatId={chatId ?? ''}
+                            active={expandedSections.vkParsing}
+                            entityType="chat"
+                          />
+                        </Suspense>
                       </div>
                     ) : null}
                   </div>
