@@ -7,6 +7,10 @@ import type {
   MembershipActivityQuery,
   ModerationFeedQuery,
 } from '@maxim/contracts';
+import {
+  isPrivateDirectChatId,
+  parseChatIdAsBigInt as parseChatIdAsBigIntValue,
+} from '../common/chat-id.util';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 
 export function readTrimmedString(value: unknown): string | null {
@@ -208,25 +212,11 @@ export function isMaxApiTimeoutError(error: unknown): boolean {
 }
 
 export function parseChatIdAsBigInt(chatId: string): bigint | null {
-  if (typeof chatId !== 'string') {
-    return null;
-  }
-
-  const normalized = chatId.trim();
-  if (!/^-?\d+$/u.test(normalized)) {
-    return null;
-  }
-
-  try {
-    return BigInt(normalized);
-  } catch {
-    return null;
-  }
+  return parseChatIdAsBigIntValue(chatId);
 }
 
 export function isPrivateDirectChat(chatId: string): boolean {
-  const numericChatId = parseChatIdAsBigInt(chatId);
-  return numericChatId !== null && numericChatId > 0n;
+  return isPrivateDirectChatId(chatId);
 }
 
 export function isUnsupportedManagedChat(chatId: string, entityType: ManagedEntityType): boolean {

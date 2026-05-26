@@ -524,6 +524,34 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('does not enqueue private direct chats as managed roster sync jobs', async () => {
+    const { service, queue } = createService();
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '214007512',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(false);
+
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('skips private direct roster sync jobs that were already queued', async () => {
+    const { service, maxClient, maxBotLinkService } = createService();
+
+    await expect(
+      service.processJob({
+        chatId: '214007512',
+        botIds: ['bot-1'],
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(false);
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
+  });
+
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

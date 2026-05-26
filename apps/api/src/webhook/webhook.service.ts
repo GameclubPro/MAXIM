@@ -4,6 +4,7 @@ import { type ChatSummary } from '@maxim/contracts';
 import { ChatEntityType, Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
@@ -1216,13 +1217,17 @@ export class WebhookService {
             : CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES.has(normalizedType)
               ? 'webhook_membership_churn'
               : null;
+    const entityType = update.message?.entityType ?? null;
+    if (this.isUnsupportedManagedRosterSyncChat(chatId, entityType)) {
+      return;
+    }
 
     void this.maxChatAdminRosterSyncService
       .scheduleChatAdminRosterSync({
         chatId,
         botIds: update.botId ? [update.botId] : [],
         title: update.message?.chatTitle ?? null,
-        entityType: update.message?.entityType ?? null,
+        entityType,
         source,
         retryUntilMs:
           normalizedType === 'bot_added'
@@ -1240,6 +1245,13 @@ export class WebhookService {
           'Failed to enqueue chat admin roster sync from webhook',
         );
       });
+  }
+
+  private isUnsupportedManagedRosterSyncChat(
+    chatId: string,
+    entityType: 'chat' | 'channel' | null | undefined,
+  ): boolean {
+    return entityType !== 'channel' && isPrivateDirectChatId(chatId);
   }
 
   private attachExecutionOwnerBotId(update: MaxUpdate, botId: string | null): void {

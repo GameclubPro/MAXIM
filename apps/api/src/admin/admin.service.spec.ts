@@ -8447,6 +8447,181 @@ describe('AdminService.listChannels', () => {
     );
   });
 
+  it('repairs missing allowlist access edges inline and queues roster validation', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce([
+          {
+            chat: {
+              id: 'channel-1',
+              title: 'Подтверждённый канал',
+              createdAt: new Date('2026-03-02T10:00:00.000Z'),
+              entityType: 'CHANNEL',
+              primaryBotId: '777000_bot',
+              botId: '777000_bot',
+            },
+          },
+          {
+            chat: {
+              id: 'channel-2',
+              title: 'Канал без свежего edge',
+              createdAt: new Date('2026-03-01T10:00:00.000Z'),
+              entityType: 'CHANNEL',
+              primaryBotId: '777000_bot',
+              botId: '777000_bot',
+            },
+          },
+        ])
+        .mockResolvedValueOnce([
+          { chatId: 'channel-2', createdAt: new Date('2026-05-14T08:59:00.000Z') },
+        ]);
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest.fn().mockResolvedValue([{ chatId: 'channel-1', botId: '777000_bot' }]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const rosterSync = {
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      (service as any).maxChatAdminRosterSyncService = rosterSync;
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'channel-1',
+          title: 'Подтверждённый канал',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+        createChatSummaryFixture({
+          id: 'channel-2',
+          title: 'Канал без свежего edge',
+          createdAt: '2026-03-01T10:00:00.000Z',
+          entityType: 'channel',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+      ]);
+
+      expect((prisma as any).managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            chatId: 'channel-2',
+            userId: 'admin-1',
+            botId: '777000_bot',
+            entityType: 'CHANNEL',
+            state: 'GRANTED',
+            source: 'allowlist_edge_repair',
+            expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+          }),
+        }),
+      );
+      expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+        chatId: 'channel-2',
+        botIds: ['777000_bot'],
+        title: 'Канал без свежего edge',
+        entityType: 'channel',
+        source: 'admin_access_validation',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not repair allowlist access edges over fresh denied edge states', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce([
+          {
+            chat: {
+              id: 'channel-denied',
+              title: 'Снятый канал',
+              createdAt: new Date('2026-03-01T10:00:00.000Z'),
+              entityType: 'CHANNEL',
+              primaryBotId: '777000_bot',
+              botId: '777000_bot',
+            },
+          },
+        ])
+        .mockResolvedValueOnce([
+          { chatId: 'channel-denied', createdAt: new Date('2026-05-14T08:55:00.000Z') },
+        ]);
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            {
+              chatId: 'channel-denied',
+              botId: '777000_bot',
+              state: 'BOT_DENIED',
+              checkedAt: new Date('2026-05-14T08:59:00.000Z'),
+            },
+          ]),
+        upsert: jest.fn().mockResolvedValue(undefined),
+      };
+      const rosterSync = {
+        scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      (service as any).maxChatAdminRosterSyncService = rosterSync;
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([]);
+
+      expect((prisma as any).managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+      expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+        chatId: 'channel-denied',
+        botIds: ['777000_bot'],
+        title: 'Снятый канал',
+        entityType: 'channel',
+        source: 'admin_access_validation',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not block default channel load on live snapshot hydration', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

@@ -160,6 +160,7 @@
   mini app init-data gate when editing startup routing.
 - In hot moderation paths, prefer targeted MAX access checks such as `getCurrentChatMemberAccess` or `getChatMembersAccess` over full admin-list fetches unless the feature truly needs the full roster.
 - For `GET /chats/{chatId}/members`, send multiple `user_ids` as one comma-separated query value. Repeated `user_ids` parameters can be treated by MAX as only the first user.
+- Managed-entity roster/admin sync should skip private direct dialogs (positive numeric chat IDs) unless the update is explicitly channel-typed; those IDs are not managed chat/channel roster targets.
 - After changing webhook host or domain, re-read `GET /subscriptions` and recreate the target subscription instead of assuming MAX updated its bound secret automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned when the intended canonical prod host is `https://maxim.play-team.ru`.
 
@@ -173,6 +174,7 @@
 - The public mini app should not expose internal primary, standby, or execution-owner details.
 - Home readiness is user-scoped. Keep user-visible completion separate from long-running global discovery completion.
 - Home visibility is access-edge scoped: show managed entities only from fresh `GRANTED` `managed_entity_access_edges` for the current user and runtime bot.
+- Inline repair of missing managed-entity access edges must be allowlist-backed, preserve fresh denied edge states, and queue roster validation instead of trusting published snapshots alone.
 - Fresh `bot_added` candidates must not appear on home until MAX confirms that both the user and at least one runtime bot have admin rights.
 - New managed chats should reach home through `bot_added` signals, recent bootstrap, allowlist, and published snapshots. Do not reintroduce launch-context assumptions for target chat discovery.
 - When recent hydration resolves better chat metadata, keep the user-scoped published snapshot aligned so home does not linger on fallback titles like `Chat <id>`.

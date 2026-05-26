@@ -451,8 +451,15 @@ type AdminAccessResolution =
 
 type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
 type ManagedEntityAccessStateValue = 'GRANTED' | 'USER_DENIED' | 'BOT_DENIED';
+type ManagedEntityAccessEdgeRow = {
+  chatId: string;
+  botId: string;
+  state?: ManagedEntityAccessStateValue;
+  checkedAt?: Date | null;
+  expiresAt?: Date | null;
+};
 type ManagedEntityAccessEdgeClient = {
-  findMany: (args: unknown) => Promise<Array<{ chatId: string; botId: string }>>;
+  findMany: (args: unknown) => Promise<ManagedEntityAccessEdgeRow[]>;
   upsert?: (args: unknown) => Promise<unknown>;
   updateMany?: (args: unknown) => Promise<unknown>;
 };
@@ -680,6 +687,7 @@ const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 3;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
+const MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_LIMIT = 12;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT = 3;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS = 300;
 const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
@@ -2146,9 +2154,23 @@ export class AdminService implements OnModuleDestroy {
       if (runtimeScopedItems.length !== snapshot.items.length) {
         this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
       }
-      const filteredItems = await this.filterManagedEntitiesPublishedSnapshotDeniedItems(
+      const strictVisibleItems = await this.filterManagedEntitiesByStrictAccessEdges(
         userId,
         runtimeScopedItems,
+      );
+      const repairedItems = await this.repairManagedEntityAccessEdgesFromAllowlist(
+        userId,
+        runtimeScopedItems,
+        strictVisibleItems,
+      );
+      const edgeVisibleItems = this.filterManagedEntitiesByVisibleIdsInSourceOrder(
+        runtimeScopedItems,
+        strictVisibleItems,
+        repairedItems,
+      );
+      const filteredItems = await this.filterManagedEntitiesByCachedDeniedAccess(
+        userId,
+        edgeVisibleItems,
       );
       let responseSnapshot = snapshot;
       if (filteredItems.length !== runtimeScopedItems.length) {
@@ -2215,15 +2237,22 @@ export class AdminService implements OnModuleDestroy {
     items: readonly ChatSummary[],
   ): Promise<ChatSummary[]> {
     const strictVisibleItems = await this.filterManagedEntitiesByStrictAccessEdges(userId, items);
+    return this.filterManagedEntitiesByCachedDeniedAccess(userId, strictVisibleItems);
+  }
+
+  private async filterManagedEntitiesByCachedDeniedAccess(
+    userId: string,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
     if (
-      strictVisibleItems.length === 0 ||
+      items.length === 0 ||
       typeof this.chatContextCache.getAdminAccess !== 'function'
     ) {
-      return strictVisibleItems;
+      return items.map((item) => this.cloneManagedEntitySummary(item));
     }
 
     const accessStates = await Promise.all(
-      strictVisibleItems.map(async (item) => {
+      items.map(async (item) => {
         try {
           return {
             item,
@@ -2240,7 +2269,23 @@ export class AdminService implements OnModuleDestroy {
 
     return accessStates
       .filter(({ access }) => access !== 'user_denied' && access !== 'bot_denied')
-      .map(({ item }) => item);
+      .map(({ item }) => this.cloneManagedEntitySummary(item));
+  }
+
+  private filterManagedEntitiesByVisibleIdsInSourceOrder(
+    sourceItems: readonly ChatSummary[],
+    ...visibleGroups: readonly ChatSummary[][]
+  ): ChatSummary[] {
+    const visibleIds = new Set<string>();
+    for (const group of visibleGroups) {
+      for (const item of group) {
+        visibleIds.add(item.id);
+      }
+    }
+
+    return sourceItems
+      .filter((item) => visibleIds.has(item.id))
+      .map((item) => this.cloneManagedEntitySummary(item));
   }
 
   private async filterManagedEntitiesByStrictAccessEdges(
@@ -28019,9 +28064,251 @@ export class AdminService implements OnModuleDestroy {
       userId,
       supportedChats,
     );
-    this.rememberManagedEntitiesLastSuccessChats(userId, strictVisibleChats);
+    const repairedChats = await this.repairManagedEntityAccessEdgesFromAllowlist(
+      userId,
+      supportedChats,
+      strictVisibleChats,
+    );
+    const visibleChats = this.filterManagedEntitiesByVisibleIdsInSourceOrder(
+      supportedChats,
+      strictVisibleChats,
+      repairedChats,
+    );
+    this.rememberManagedEntitiesLastSuccessChats(userId, visibleChats);
 
-    return strictVisibleChats;
+    return visibleChats;
+  }
+
+  private async repairManagedEntityAccessEdgesFromAllowlist(
+    userId: string,
+    candidates: readonly ChatSummary[],
+    visibleChats: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    const visibleChatIds = new Set(visibleChats.map((chat) => chat.id));
+    const missingEdgeCandidates = candidates
+      .filter((chat) => !visibleChatIds.has(chat.id))
+      .slice(0, MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_LIMIT);
+    if (missingEdgeCandidates.length === 0) {
+      return [];
+    }
+
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client?.upsert && !this.maxChatAdminRosterSyncService) {
+      return [];
+    }
+
+    const allowlistedChats = await this.findAllowlistedManagedEntityRepairChats(
+      userId,
+      missingEdgeCandidates,
+    );
+    if (allowlistedChats.size === 0) {
+      return [];
+    }
+
+    const repairCandidates = missingEdgeCandidates
+      .map((chat) => {
+        const allowlistedAt = allowlistedChats.get(chat.id);
+        if (!allowlistedAt) {
+          return null;
+        }
+        const botIds = Array.from(
+          new Set(
+            [
+              this.normalizeRuntimeManagedEntityBotId(chat.primaryBotId),
+              ...(chat.assignedBots ?? []).map((bot) =>
+                this.normalizeRuntimeManagedEntityBotId(bot.botId),
+              ),
+            ].filter((botId): botId is string => Boolean(botId)),
+          ),
+        );
+
+        return { chat, botIds, allowlistedAt };
+      })
+      .filter(
+        (
+          candidate,
+        ): candidate is { chat: ChatSummary; botIds: string[]; allowlistedAt: Date } =>
+          candidate !== null,
+      );
+    if (repairCandidates.length === 0) {
+      return [];
+    }
+
+    const deniedRepairKeys = await this.findFreshDeniedManagedEntityRepairKeys(
+      userId,
+      repairCandidates,
+      client,
+    );
+    const repairedChats: ChatSummary[] = [];
+    for (const { chat, botIds } of repairCandidates) {
+      const repairableBotIds = botIds.filter(
+        (botId) => !deniedRepairKeys.has(this.buildManagedEntityRepairEdgeKey(chat.id, botId)),
+      );
+      if (client?.upsert && repairableBotIds.length > 0) {
+        await Promise.all(
+          repairableBotIds.map((botId) =>
+            this.upsertManagedEntityAccessEdge({
+              chatId: chat.id,
+              userId,
+              botId,
+              entityType: chat.entityType,
+              state: 'GRANTED',
+              userRole: 'ADMIN',
+              botRole: 'ADMIN',
+              source: 'allowlist_edge_repair',
+            }),
+          ),
+        );
+        repairedChats.push(this.cloneManagedEntitySummary(chat));
+      }
+      if (this.maxChatAdminRosterSyncService) {
+        void this.maxChatAdminRosterSyncService
+          .scheduleChatAdminRosterSync({
+            chatId: chat.id,
+            botIds,
+            title: chat.title,
+            entityType: chat.entityType,
+            source: 'admin_access_validation',
+          })
+          .catch((error: unknown) => {
+            this.logger.warn(
+              {
+                chatId: chat.id,
+                entityType: chat.entityType,
+                userId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to enqueue managed entity access edge repair from allowlist',
+            );
+          });
+      }
+    }
+
+    return repairedChats;
+  }
+
+  private async findAllowlistedManagedEntityRepairChats(
+    userId: string,
+    candidates: readonly ChatSummary[],
+  ): Promise<Map<string, Date>> {
+    const chatIds = Array.from(
+      new Set(candidates.map((chat) => chat.id.trim()).filter((chatId) => chatId.length > 0)),
+    );
+    if (chatIds.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const rows = await this.prisma.chatAdminAllowlist.findMany({
+        where: {
+          userId,
+          chatId: {
+            in: chatIds,
+          },
+        },
+        select: {
+          chatId: true,
+          createdAt: true,
+        },
+      });
+      const allowlistedChats = new Map<string, Date>();
+      for (const row of rows as Array<{ chatId: string; createdAt: Date }>) {
+        const chatId = row.chatId.trim();
+        if (chatId.length > 0) {
+          allowlistedChats.set(chatId, row.createdAt);
+        }
+      }
+      return allowlistedChats;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          requestedItems: chatIds.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to confirm allowlist rows for managed entity access edge repair',
+      );
+      return new Map();
+    }
+  }
+
+  private async findFreshDeniedManagedEntityRepairKeys(
+    userId: string,
+    candidates: ReadonlyArray<{
+      chat: ChatSummary;
+      botIds: readonly string[];
+      allowlistedAt: Date;
+    }>,
+    client: ManagedEntityAccessEdgeClient | null,
+  ): Promise<Set<string>> {
+    if (!client?.findMany || candidates.length === 0) {
+      return new Set();
+    }
+
+    const chatIds = Array.from(new Set(candidates.map((candidate) => candidate.chat.id)));
+    const botIds = Array.from(new Set(candidates.flatMap((candidate) => candidate.botIds)));
+    if (chatIds.length === 0 || botIds.length === 0) {
+      return new Set();
+    }
+
+    const allowlistedAtByChatId = new Map(
+      candidates.map((candidate) => [candidate.chat.id, candidate.allowlistedAt] as const),
+    );
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          userId,
+          chatId: {
+            in: chatIds,
+          },
+          botId: {
+            in: botIds,
+          },
+          state: {
+            in: ['USER_DENIED', 'BOT_DENIED'],
+          },
+        },
+        select: {
+          chatId: true,
+          botId: true,
+          state: true,
+          checkedAt: true,
+        },
+      });
+      const deniedKeys = new Set<string>();
+      for (const row of rows) {
+        if (row.state !== 'USER_DENIED' && row.state !== 'BOT_DENIED') {
+          continue;
+        }
+        const allowlistedAt = allowlistedAtByChatId.get(row.chatId);
+        if (!allowlistedAt) {
+          continue;
+        }
+        if (!row.checkedAt || row.checkedAt.getTime() >= allowlistedAt.getTime()) {
+          deniedKeys.add(this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId));
+        }
+      }
+      return deniedKeys;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          requestedItems: candidates.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to inspect denied managed entity access edges before allowlist repair',
+      );
+      return new Set();
+    }
+  }
+
+  private buildManagedEntityRepairEdgeKey(chatId: string, botId: string): string {
+    return `${chatId}:${botId}`;
   }
 
   private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {

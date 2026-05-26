@@ -8,6 +8,7 @@ import {
   ChatContextCacheService,
   type ManagedEntitiesPublishedSnapshot,
 } from '../chat-context/chat-context-cache.service';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
@@ -331,6 +332,9 @@ export class MaxChatAdminRosterSyncService {
       typeof params?.retryUntilMs === 'number' && Number.isFinite(params.retryUntilMs)
         ? Math.max(0, Math.trunc(params.retryUntilMs))
         : null;
+    if (this.isUnsupportedManagedRosterSyncChat(chatId, entityType)) {
+      return null;
+    }
 
     return {
       chatId,
@@ -340,6 +344,13 @@ export class MaxChatAdminRosterSyncService {
       source,
       retryUntilMs,
     };
+  }
+
+  private isUnsupportedManagedRosterSyncChat(
+    chatId: string,
+    entityType: 'chat' | 'channel' | null,
+  ): boolean {
+    return entityType !== 'channel' && isPrivateDirectChatId(chatId);
   }
 
   private areJobDataEqual(

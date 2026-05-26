@@ -1562,4 +1562,44 @@ describe('WebhookService', () => {
       retryUntilMs: null,
     });
   });
+
+  it('does not enqueue admin roster sync for private direct membership updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-private-1' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-private-bot-started-1',
+          type: 'bot_started',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_started:u-private-bot-started-1',
+            chatId: '214007512',
+            senderId: '214007512',
+            text: '',
+            createdAt: new Date('2026-04-03T12:07:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+  });
 });
