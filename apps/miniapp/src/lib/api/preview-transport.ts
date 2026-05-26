@@ -812,6 +812,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
   const settings: VkParsingSettings = {
     chatId,
     autoPublishEnabled: true,
+    autoPublishEnabledAt: addHours(now, -2).toISOString(),
     stripLinksEnabled: true,
     skipAdsEnabled: true,
     updatedAt: addHours(now, -2).toISOString(),

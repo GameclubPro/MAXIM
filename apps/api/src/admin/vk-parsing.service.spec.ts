@@ -301,6 +301,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
       stripLinksEnabled: true,
       skipAdsEnabled: true,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -318,11 +319,13 @@ describe('VkParsingService', () => {
       create: {
         chatId: 'channel-1',
         autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
         stripLinksEnabled: true,
         skipAdsEnabled: true,
       },
       update: {
         autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
         stripLinksEnabled: true,
         skipAdsEnabled: true,
       },
@@ -330,10 +333,62 @@ describe('VkParsingService', () => {
     expect(feed.settings).toEqual({
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: '2026-05-25T10:01:00.000Z',
       stripLinksEnabled: true,
       skipAdsEnabled: true,
       updatedAt: '2026-05-25T10:05:00.000Z',
     });
+  });
+
+  it('clears queued VK autopublish state when autoposting is disabled', async () => {
+    const { service, prisma } = createFixture();
+    prisma.vkParsingSettings.findUnique
+      .mockResolvedValueOnce({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:05:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: false,
+        autoPublishEnabledAt: null,
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:06:00.000Z'),
+      });
+
+    await service.updateSettings('channel-1', { userId: '183470701' } as never, {
+      autoPublishEnabled: false,
+    });
+
+    expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          autoPublishEnabled: false,
+          autoPublishEnabledAt: null,
+        },
+      }),
+    );
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'channel-1',
+          status: { in: ['NEW', 'FAILED'] },
+        }),
+        data: {
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+        },
+      }),
+    );
   });
 
   it('imports text, photos and links from a public VK community without videos', async () => {
@@ -544,6 +599,7 @@ describe('VkParsingService', () => {
       linkUrls: ['https://example.com/car'],
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.findMany
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -552,6 +608,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
       stripLinksEnabled: true,
       skipAdsEnabled: false,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -576,9 +633,9 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: expect.objectContaining({ id: 'post-1' }),
         data: expect.objectContaining({
           publishQueuedAt: expect.any(Date),
           publishIdempotencyKey: expect.any(String),
@@ -601,6 +658,56 @@ describe('VkParsingService', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
+  it('does not queue newly imported VK posts published before autopublish was enabled', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Старый пост из свежего импорта',
+      createdAt: new Date('2026-05-25T12:10:00.000Z'),
+      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T12:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T12:00:00.000Z'),
+    });
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Старый пост из свежего импорта',
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'post-1' }),
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
+  });
+
   it('publishes queued scheduled VK posts with link filtering enabled', async () => {
     const { service, prisma, maxClient, adminService } = createFixture();
     const source = createSource();
@@ -615,6 +722,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
       stripLinksEnabled: true,
       skipAdsEnabled: false,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -669,6 +777,47 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('drops queued autopublish jobs for posts before the enable baseline', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T10:05:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: {
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+        },
+      }),
+    );
+  });
+
   it('does not autopublish the initial source-added backfill', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
@@ -700,15 +849,15 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
   });
 
-  it('requeues transient failed VK autopublish posts on the next scheduled sync', async () => {
+  it('does not requeue failed VK autopublish posts on the next scheduled sync', async () => {
     const { service, prisma, maxClient, publishQueue } = createFixture();
     const source = createSource();
     const post = createPostRow({
       source,
       text: 'Повторная публикация',
-      status: 'NEW',
-      lastError: null,
-      autoPublishError: null,
+      status: 'FAILED',
+      lastError: 'Фото 1: VK вернул статус 404 для фото.',
+      autoPublishError: 'Фото 1: VK вернул статус 404 для фото.',
     });
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
     prisma.vkParsingPost.findMany
@@ -724,17 +873,7 @@ describe('VkParsingService', () => {
           autoPublishError: 'Фото 1: VK вернул статус 404 для фото.',
         },
       ])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([post]);
-    prisma.vkParsingSettings.findUnique.mockResolvedValue({
-      id: 'settings-1',
-      chatId: 'channel-1',
-      autoPublishEnabled: true,
-      stripLinksEnabled: false,
-      skipAdsEnabled: false,
-      createdAt: new Date('2026-05-25T10:00:00.000Z'),
-      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-    });
+      .mockResolvedValueOnce([]);
     global.fetch = jest.fn().mockResolvedValue(
       createJsonFetchResponse({
         response: {
@@ -756,21 +895,12 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingPost.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: expect.objectContaining({
-          status: 'NEW',
-          lastError: null,
-          autoPublishError: null,
+          status: 'FAILED',
         }),
       }),
     );
-    expect(publishQueue.add).toHaveBeenCalledWith(
-      'publish-vk-post',
-      expect.objectContaining({
-        postId: 'post-1',
-        chatId: 'channel-1',
-        reason: 'autopublish',
-      }),
-      expect.any(Object),
-    );
+    expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+    expect(publishQueue.add).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
@@ -788,6 +918,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
       stripLinksEnabled: false,
       skipAdsEnabled: false,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -869,6 +1000,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
       stripLinksEnabled: false,
       skipAdsEnabled: false,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -927,6 +1059,7 @@ describe('VkParsingService', () => {
       id: 'settings-1',
       chatId: 'channel-1',
       autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
       stripLinksEnabled: false,
       skipAdsEnabled: true,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),

@@ -2220,6 +2220,7 @@ export type VkParsingUnsupportedAttachment = z.infer<typeof vkParsingUnsupported
 export const vkParsingSettingsSchema = z.object({
   chatId: z.string(),
   autoPublishEnabled: z.boolean().default(false),
+  autoPublishEnabledAt: z.string().datetime().nullable().default(null),
   stripLinksEnabled: z.boolean().default(false),
   skipAdsEnabled: z.boolean().default(false),
   updatedAt: z.string().datetime().nullable().default(null),
@@ -2340,6 +2341,7 @@ export const vkParsingFeedSchema = z.object({
   settings: vkParsingSettingsSchema.default({
     chatId: '',
     autoPublishEnabled: false,
+    autoPublishEnabledAt: null,
     stripLinksEnabled: false,
     skipAdsEnabled: false,
     updatedAt: null,

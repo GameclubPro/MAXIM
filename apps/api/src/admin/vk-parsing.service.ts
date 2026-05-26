@@ -103,6 +103,7 @@ type NormalizedVkPost = {
 type VkParsingSettingsLike = {
   chatId: string;
   autoPublishEnabled: boolean;
+  autoPublishEnabledAt: Date | null;
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
   updatedAt: Date | null;
@@ -123,8 +124,6 @@ type ExistingVkPostImportState = {
   status: string;
   contentHash: string;
   publishedContentHash: string | null;
-  lastError: string | null;
-  autoPublishError: string | null;
 };
 
 type PreparedVkPublishPayload = {
@@ -274,16 +273,38 @@ export class VkParsingService {
       throw new BadRequestException(parsed.error.format());
     }
 
+    const existingSettings = await this.prisma.vkParsingSettings.findUnique({ where: { chatId } });
+    const now = new Date();
+    const nextAutoPublishEnabled =
+      parsed.data.autoPublishEnabled ?? existingSettings?.autoPublishEnabled ?? false;
+    const autoPublishEnabledAt =
+      typeof parsed.data.autoPublishEnabled === 'boolean'
+        ? parsed.data.autoPublishEnabled
+          ? existingSettings?.autoPublishEnabled
+            ? (existingSettings.autoPublishEnabledAt ?? now)
+            : now
+          : null
+        : undefined;
+    const updateData = {
+      ...parsed.data,
+      ...(autoPublishEnabledAt !== undefined ? { autoPublishEnabledAt } : {}),
+    };
+
     await this.prisma.vkParsingSettings.upsert({
       where: { chatId },
       create: {
         chatId,
-        autoPublishEnabled: parsed.data.autoPublishEnabled ?? false,
+        autoPublishEnabled: nextAutoPublishEnabled,
+        autoPublishEnabledAt: nextAutoPublishEnabled ? (autoPublishEnabledAt ?? now) : null,
         stripLinksEnabled: parsed.data.stripLinksEnabled ?? false,
         skipAdsEnabled: parsed.data.skipAdsEnabled ?? false,
       },
-      update: parsed.data,
+      update: updateData,
     });
+
+    if (parsed.data.autoPublishEnabled === false) {
+      await this.clearQueuedAutoPublishForChat(chatId);
+    }
 
     return this.buildFeed(chatId, { enabled: true, canUse: true });
   }
@@ -893,6 +914,15 @@ export class VkParsingService {
 
     try {
       const settings = await this.getSettingsForChat(post.chatId);
+      if (
+        params.reason === 'autopublish' &&
+        (!settings.autoPublishEnabled ||
+          !settings.autoPublishEnabledAt ||
+          !this.isPostEligibleForAutoPublish(post, settings.autoPublishEnabledAt))
+      ) {
+        await this.clearQueuedAutoPublishPost(post.id);
+        return;
+      }
       await this.autoPublishPost(post, settings);
     } catch (error) {
       await this.markPostAutoPublishFailed(post.id, error);
@@ -1096,8 +1126,6 @@ export class VkParsingService {
             status: true,
             contentHash: true,
             publishedContentHash: true,
-            lastError: true,
-            autoPublishError: true,
           },
         })
       : [];
@@ -1110,7 +1138,7 @@ export class VkParsingService {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
       const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
-      if (!existing || this.shouldRetryImportedPost(existing, status)) {
+      if (!existing) {
         autoPublishCandidatePostKeys.add(postKey);
       }
       const resetTransientState =
@@ -1311,21 +1339,7 @@ export class VkParsingService {
       return VK_POST_STATUS_NEW;
     }
 
-    if (
-      existing.status === VK_POST_STATUS_FAILED &&
-      this.isRetryablePublishFailure(existing.autoPublishError || existing.lastError)
-    ) {
-      return VK_POST_STATUS_NEW;
-    }
-
     return existing.status || VK_POST_STATUS_NEW;
-  }
-
-  private shouldRetryImportedPost(
-    existing: ExistingVkPostImportState,
-    nextStatus: string,
-  ): boolean {
-    return existing.status === VK_POST_STATUS_FAILED && nextStatus === VK_POST_STATUS_NEW;
   }
 
   private async markMissingPostsUnavailable(
@@ -1446,12 +1460,15 @@ export class VkParsingService {
     }
 
     const settings = await this.getSettingsForChat(chatId);
-    if (!settings.autoPublishEnabled) {
+    if (!settings.autoPublishEnabled || !settings.autoPublishEnabledAt) {
       return;
     }
 
     for (const post of posts) {
       if (post.status !== VK_POST_STATUS_NEW) {
+        continue;
+      }
+      if (!this.isPostEligibleForAutoPublish(post, settings.autoPublishEnabledAt)) {
         continue;
       }
 
@@ -1477,8 +1494,13 @@ export class VkParsingService {
   ): Promise<number> {
     const idempotencyKey = this.buildPublishIdempotencyKey(post);
     const now = new Date();
-    await this.prisma.vkParsingPost.update({
-      where: { id: post.id },
+    const queued = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: post.id,
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        ...(reason === 'autopublish' ? { publishIdempotencyKey: null } : {}),
+      },
       data: {
         status: post.status === VK_POST_STATUS_FAILED ? VK_POST_STATUS_NEW : post.status,
         publishQueuedAt: now,
@@ -1488,6 +1510,9 @@ export class VkParsingService {
         autoPublishError: reason === 'autopublish' ? null : post.autoPublishError,
       },
     });
+    if (queued.count === 0) {
+      return 0;
+    }
 
     await this.publishQueue.add(
       VK_PUBLISH_JOB_NAME,
@@ -1582,6 +1607,48 @@ export class VkParsingService {
         autoPublishError: message,
         publishLockedAt: null,
         publishQueuedAt: null,
+        publishIdempotencyKey: null,
+      },
+    });
+  }
+
+  private isPostEligibleForAutoPublish(
+    post: Pick<VkParsingPostWithSource, 'createdAt' | 'vkPublishedAt'>,
+    enabledAt: Date,
+  ): boolean {
+    if (post.createdAt.getTime() < enabledAt.getTime()) {
+      return false;
+    }
+
+    return !post.vkPublishedAt || post.vkPublishedAt.getTime() >= enabledAt.getTime();
+  }
+
+  private async clearQueuedAutoPublishForChat(chatId: string): Promise<void> {
+    await this.prisma.vkParsingPost.updateMany({
+      where: {
+        chatId,
+        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        OR: [
+          { publishQueuedAt: { not: null } },
+          { publishLockedAt: { not: null } },
+          { publishIdempotencyKey: { not: null } },
+        ],
+      },
+      data: {
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+      },
+    });
+  }
+
+  private async clearQueuedAutoPublishPost(postId: string): Promise<void> {
+    await this.prisma.vkParsingPost.update({
+      where: { id: postId },
+      data: {
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
       },
     });
   }
@@ -2512,27 +2579,6 @@ export class VkParsingService {
       : 'Пост пропущен: после удаления ссылок не осталось содержимого.';
   }
 
-  private isRetryablePublishFailure(message: string | null | undefined): boolean {
-    const normalized = (message ?? '').toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-
-    return (
-      normalized.includes('rate limit exceeded') ||
-      normalized.includes('circuit breaker') ||
-      normalized.includes('vk вернул статус 404') ||
-      normalized.includes('vk вернул статус 429') ||
-      normalized.includes('не удалось скачать фото') ||
-      normalized.includes('fetch failed') ||
-      normalized.includes('не ответил') ||
-      normalized.includes('timeout') ||
-      normalized.includes('network') ||
-      normalized.includes('econnreset') ||
-      normalized.includes('etimedout')
-    );
-  }
-
   private isSkippablePhotoPublishFailure(message: string): boolean {
     const normalized = message.toLowerCase();
     if (
@@ -2630,6 +2676,9 @@ export class VkParsingService {
     return {
       chatId,
       autoPublishEnabled: settings?.autoPublishEnabled ?? false,
+      autoPublishEnabledAt: settings?.autoPublishEnabledAt
+        ? settings.autoPublishEnabledAt.toISOString()
+        : null,
       stripLinksEnabled: settings?.stripLinksEnabled ?? false,
       skipAdsEnabled: settings?.skipAdsEnabled ?? false,
       updatedAt: settings?.updatedAt ? settings.updatedAt.toISOString() : null,
@@ -2640,6 +2689,7 @@ export class VkParsingService {
     return {
       chatId,
       autoPublishEnabled: false,
+      autoPublishEnabledAt: null,
       stripLinksEnabled: false,
       skipAdsEnabled: false,
       updatedAt: null,

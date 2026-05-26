@@ -1008,13 +1008,14 @@ model VkParsingSource {
 }
 
 model VkParsingSettings {
-  id                 String   @id @default(cuid())
-  chatId             String   @unique @map("chat_id")
-  autoPublishEnabled Boolean  @default(false) @map("auto_publish_enabled")
-  stripLinksEnabled  Boolean  @default(false) @map("strip_links_enabled")
-  skipAdsEnabled     Boolean  @default(false) @map("skip_ads_enabled")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                   String    @id @default(cuid())
+  chatId               String    @unique @map("chat_id")
+  autoPublishEnabled   Boolean   @default(false) @map("auto_publish_enabled")
+  autoPublishEnabledAt DateTime? @map("auto_publish_enabled_at")
+  stripLinksEnabled    Boolean   @default(false) @map("strip_links_enabled")
+  skipAdsEnabled       Boolean   @default(false) @map("skip_ads_enabled")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
