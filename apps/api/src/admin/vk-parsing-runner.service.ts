@@ -31,6 +31,7 @@ export class VkParsingRunnerService implements OnModuleInit, OnModuleDestroy {
     this.inFlight = true;
     try {
       await this.vkParsingService.syncDueSources(reason);
+      await this.vkParsingService.recoverStalePublishJobs();
     } catch (error) {
       this.logger.warn({ err: error, reason }, 'VK parsing runner failed');
     } finally {

@@ -302,6 +302,7 @@ describe('VkParsingService', () => {
       publishLockedAt: null,
       publishAttemptCount: 0,
       publishIdempotencyKey: null,
+      publishReason: null,
       lastError: null,
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
@@ -428,6 +429,7 @@ describe('VkParsingService', () => {
           publishQueuedAt: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,
+          publishReason: null,
         },
       }),
     );
@@ -700,6 +702,7 @@ describe('VkParsingService', () => {
         data: expect.objectContaining({
           publishQueuedAt: expect.any(Date),
           publishIdempotencyKey: expect.any(String),
+          publishReason: 'autopublish',
         }),
       }),
     );
@@ -818,6 +821,124 @@ describe('VkParsingService', () => {
     expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
+  it('recovers legacy stale autopublish rows by re-adding publish jobs', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: null,
+    });
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+
+    await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+      expect.objectContaining({
+        jobId: 'vk-parsing-publish__post-1__publish-key-1',
+        attempts: 3,
+      }),
+    );
+  });
+
+  it('recovers stale manual retry rows without the autopublish eligibility gate', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'manual-retry',
+    });
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: false,
+      autoPublishEnabledAt: null,
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+
+    await expect(service.recoverStalePublishJobs()).resolves.toBe(1);
+
+    expect(publishQueue.add).toHaveBeenCalledWith(
+      'publish-vk-post',
+      expect.objectContaining({
+        reason: 'manual-retry',
+        idempotencyKey: 'publish-key-1',
+      }),
+      expect.any(Object),
+    );
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ publishIdempotencyKey: null }),
+      }),
+    );
+  });
+
+  it('clears stale autopublish rows that no longer pass the enable baseline', async () => {
+    const { service, prisma, publishQueue } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T10:01:00.000Z'),
+      publishLockedAt: new Date('2026-05-25T10:01:05.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'autopublish',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      vkPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([post]);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T10:05:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+
+    await expect(service.recoverStalePublishJobs()).resolves.toBe(0);
+
+    expect(publishQueue.add).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1', publishIdempotencyKey: 'publish-key-1' },
+        data: {
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        },
+      }),
+    );
+  });
+
   it('publishes queued scheduled VK posts with link filtering enabled', async () => {
     const { service, prisma, maxClient, adminService } = createFixture();
     const source = createSource();
@@ -876,6 +997,7 @@ describe('VkParsingService', () => {
           autoPublishedAt: expect.any(Date),
           autoPublishError: null,
           publishQueuedAt: null,
+          publishReason: null,
         }),
       }),
     );
@@ -916,13 +1038,14 @@ describe('VkParsingService', () => {
     });
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
-    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'post-1' },
+        where: { id: 'post-1', publishIdempotencyKey: 'publish-key-1' },
         data: {
           publishQueuedAt: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,
+          publishReason: null,
         },
       }),
     );
@@ -1240,6 +1363,7 @@ describe('VkParsingService', () => {
           publishQueuedAt: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,
+          publishReason: null,
         }),
       }),
     );
@@ -1551,6 +1675,7 @@ describe('VkParsingService', () => {
           publishQueuedAt: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,
+          publishReason: null,
         }),
       }),
     );

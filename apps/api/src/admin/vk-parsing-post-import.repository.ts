@@ -180,6 +180,7 @@ export class VkParsingPostImportRepository {
           publishQueuedAt: foundPostKeys === null ? undefined : null,
           publishLockedAt: foundPostKeys === null ? undefined : null,
           publishIdempotencyKey: foundPostKeys === null ? undefined : null,
+          publishReason: foundPostKeys === null ? undefined : null,
         },
       });
     });

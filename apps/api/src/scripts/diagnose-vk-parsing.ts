@@ -261,6 +261,7 @@ async function loadStuckPublishPosts(prisma: PrismaClient, limit: number): Promi
       chat_id as "chatId",
       source_id as "sourceId",
       status,
+      publish_reason as "publishReason",
       publish_queued_at as "publishQueuedAt",
       publish_locked_at as "publishLockedAt",
       publish_attempt_count as "publishAttemptCount",
