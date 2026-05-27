@@ -928,7 +928,6 @@ const SETTINGS_SECTION_KEYS = {
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
-    'messageLimitsBlockedWords',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
@@ -943,6 +942,7 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
+  stopWords: ['messageLimitsBlockedWords'],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',

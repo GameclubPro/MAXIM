@@ -90,6 +90,8 @@ test('SECTION_SETTING_KEYS includes button arrays for every multi-button section
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateBotButtons'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('photoMessagesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('messageLimitsBotButtons'));
+  assert.ok(SECTION_SETTING_KEYS.stopWords.includes('messageLimitsBlockedWords'));
+  assert.ok(!SECTION_SETTING_KEYS.limits.includes('messageLimitsBlockedWords'));
   assert.ok(SECTION_SETTING_KEYS.night.includes('nightModeBotButtons'));
 });
 
@@ -190,4 +192,22 @@ test('mergeSectionSettings preserves advanced duplicate and link tuning plus pho
   const limitsMerged = mergeSectionSettings(current, saved, 'limits');
   assert.equal(limitsMerged.phoneNumbersEnabled, false);
   assert.equal(limitsMerged.phoneNumbersEscalationWindowHours, 12);
+});
+
+test('mergeSectionSettings syncs stop words without copying limit sanctions', () => {
+  const current = createSettings({
+    antiSpamEnabled: true,
+    messageLimitsBlockedWords: ['старое'],
+    messageLimitsBotMessageEnabled: false,
+  });
+  const saved = createSettings({
+    antiSpamEnabled: false,
+    messageLimitsBlockedWords: ['казино', 'ставки'],
+    messageLimitsBotMessageEnabled: true,
+  });
+
+  const merged = mergeSectionSettings(current, saved, 'stopWords');
+  assert.deepEqual(merged.messageLimitsBlockedWords, ['казино', 'ставки']);
+  assert.equal(merged.messageLimitsBotMessageEnabled, false);
+  assert.equal(merged.antiSpamEnabled, true);
 });

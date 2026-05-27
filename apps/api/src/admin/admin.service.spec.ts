@@ -16573,7 +16573,29 @@ describe('AdminService settings screen endpoints', () => {
     );
     const limitsSettingKeys = applySpy.mock.calls.at(-1)?.[5] as string[];
     expect(limitsSettingKeys).not.toContain('phoneNumbersEscalationWindowHours');
+    expect(limitsSettingKeys).not.toContain('messageLimitsBlockedWords');
     expect(limitsResult.section).toBe('limits');
+
+    const stopWordsResult = await service.applySettingsSectionToAllChats(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { section: 'stopWords' },
+    );
+
+    expect(applySpy).toHaveBeenLastCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      settings,
+      'miniapp',
+      { mode: 'all', favoriteTypes: [], chatIds: [] },
+      ['messageLimitsBlockedWords'],
+    );
+    expect(stopWordsResult.section).toBe('stopWords');
   });
 
   it('syncs allowlist entries when applying links section to all chats', async () => {

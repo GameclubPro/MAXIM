@@ -8,6 +8,7 @@ export type ApplySectionKey =
   | 'thematicFilters'
   | 'duplicates'
   | 'limits'
+  | 'stopWords'
   | 'phones'
   | 'night'
   | 'requiredSubscription'
@@ -153,7 +154,6 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
-    'messageLimitsBlockedWords',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
@@ -168,6 +168,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
+  stopWords: ['messageLimitsBlockedWords'],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',

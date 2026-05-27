@@ -2479,8 +2479,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? {
             ...current,
             messageLimitsBlockedWords: nextWords,
-            messageLimitsBotMessageEnabled:
-              nextWords.length > 0 ? true : current.messageLimitsBotMessageEnabled,
           }
         : current,
     );
@@ -2494,8 +2492,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? {
             ...current,
             messageLimitsBlockedWords: nextWords,
-            messageLimitsBotMessageEnabled:
-              nextWords.length > 0 ? true : current.messageLimitsBotMessageEnabled,
           }
         : current,
     );
@@ -4039,9 +4035,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
     draft ? !draft.phoneNumbersEnabled : false,
-    draft ? draft.messageLimitsBlockedWords.length > 0 : false,
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
+  const stopWordsHeaderSummary =
+    messageLimitsBlockedWords.length > 0
+      ? `Слов в списке: ${messageLimitsBlockedWords.length}`
+      : 'Список пуст';
+  const stopWordsCardStatus =
+    messageLimitsBlockedWords.length > 0 ? `${messageLimitsBlockedWords.length}` : 'Выкл';
   const nightTimezoneLabel =
     RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
     'Москва (UTC+3)';
@@ -7132,7 +7133,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             {canSeeThematicFilters ? (
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-                style={{ animationDelay: '157ms', order: 13 }}
+                style={{ animationDelay: '157ms', order: 14 }}
                 aria-label="Кодовые слова"
               >
                 <div
@@ -7407,7 +7408,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '180ms', order: 14 }}
+              style={{ animationDelay: '180ms', order: 15 }}
               aria-label="Повторы"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -8561,109 +8562,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       <div
-                        className={cn(
-                          'settings-word-banlist',
-                          messageLimitsBlockedWordsError && 'settings-word-banlist--error',
-                        )}
-                      >
-                        <div className="settings-word-banlist__head">
-                          <span className="settings-native-toggle__title">Стоп-слова</span>
-                          {messageLimitsBlockedWords.length > 0 ? (
-                            <span className="chip chip--danger">
-                              {messageLimitsBlockedWords.length}
-                            </span>
-                          ) : null}
-                        </div>
-
-                        <Suspense fallback={null}>
-                          <LazyMessageLimitsBlockedWordPresets
-                            selectedWords={draft.messageLimitsBlockedWords}
-                            remainingSlots={messageLimitsBlockedWordsRemaining}
-                            onApplyWords={applyMessageLimitsBlockedWords}
-                          />
-                        </Suspense>
-
-                        <div className="settings-word-banlist__add-row">
-                          <input
-                            type="text"
-                            value={messageLimitsBlockedWordsInput}
-                            onChange={(event) => {
-                              setMessageLimitsBlockedWordsInput(event.target.value);
-                              clearFieldError('messageLimitsBlockedWords');
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ',') {
-                                event.preventDefault();
-                                addMessageLimitsBlockedWords();
-                              }
-                            }}
-                            placeholder="Слово, +слово или -слово"
-                            maxLength={240}
-                            aria-label="Изменить стоп-слова"
-                          />
-                          <button
-                            type="button"
-                            className="button button--accent settings-word-banlist__add-button"
-                            onClick={addMessageLimitsBlockedWords}
-                            disabled={isMessageLimitsBlockedWordsApplyDisabled}
-                          >
-                            Применить
-                          </button>
-                        </div>
-
-                        {messageLimitsBlockedWords.length > 0 ? (
-                          <>
-                            <div className="settings-word-banlist__chips-head">
-                              <small className="settings-word-banlist__chips-caption">
-                                {hasMessageLimitsBlockedWordsOverflow &&
-                                !messageLimitsBlockedWordsExpanded
-                                  ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${messageLimitsBlockedWords.length}`
-                                  : `Все ${messageLimitsBlockedWords.length} слов`}
-                              </small>
-                              {hasMessageLimitsBlockedWordsOverflow ? (
-                                <button
-                                  type="button"
-                                  className="settings-word-banlist__toggle"
-                                  onClick={() =>
-                                    setMessageLimitsBlockedWordsExpanded((current) => !current)
-                                  }
-                                  aria-expanded={messageLimitsBlockedWordsExpanded}
-                                  aria-controls="settings-message-limits-blocked-words"
-                                >
-                                  {messageLimitsBlockedWordsExpanded
-                                    ? 'Свернуть'
-                                    : `Показать все ${messageLimitsBlockedWords.length}`}
-                                </button>
-                              ) : null}
-                            </div>
-
-                            <div
-                              className="settings-word-banlist__chips"
-                              id="settings-message-limits-blocked-words"
-                              aria-label="Стоп-слова"
-                            >
-                              {visibleMessageLimitsBlockedWords.map((word) => (
-                                <button
-                                  key={word}
-                                  type="button"
-                                  className="settings-word-banlist__chip"
-                                  onClick={() => removeMessageLimitsBlockedWord(word)}
-                                  aria-label={`Удалить слово ${word}`}
-                                >
-                                  <span>{word}</span>
-                                  <span aria-hidden>+</span>
-                                </button>
-                              ))}
-                            </div>
-                          </>
-                        ) : null}
-
-                        <small className="field__hint">
-                          {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
-                        </small>
-                      </div>
-
-                      <div
                         className="settings-subsection-divider"
                         role="separator"
                         aria-label="Блок действий бота"
@@ -8901,7 +8799,152 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '250ms', order: 15 }}
+              style={{ animationDelay: '214ms', order: 13 }}
+              aria-label="Стоп-слова"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <SettingsSectionToggle
+                  title="Стоп-слова"
+                  summary={stopWordsHeaderSummary}
+                  status={stopWordsCardStatus}
+                  icon="keywords"
+                  tone="rose"
+                  open={expandedSections.stopWords}
+                  controls="settings-stop-words-content"
+                  onClick={() => toggleSection('stopWords')}
+                />
+              </div>
+
+              <SettingsDrilldownPanel
+                id="settings-stop-words-content"
+                open={expandedSections.stopWords}
+                title="Стоп-слова"
+                summary={stopWordsHeaderSummary}
+                tone="rose"
+                className="settings-drilldown__panel--board settings-drilldown__panel--stop-words"
+                onClose={() => toggleSection('stopWords')}
+                footer={renderSectionSaveFooter('stopWords')}
+              >
+                <div
+                  id="settings-stop-words-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.stopWords && 'is-open',
+                  )}
+                >
+                  {expandedSections.stopWords ? (
+                    <div className="settings-section__collapse-inner">
+                      <div
+                        className={cn(
+                          'settings-word-banlist',
+                          messageLimitsBlockedWordsError && 'settings-word-banlist--error',
+                        )}
+                      >
+                        <div className="settings-word-banlist__head">
+                          <span className="settings-native-toggle__title">Стоп-слова</span>
+                          {messageLimitsBlockedWords.length > 0 ? (
+                            <span className="chip chip--danger">
+                              {messageLimitsBlockedWords.length}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <Suspense fallback={null}>
+                          <LazyMessageLimitsBlockedWordPresets
+                            selectedWords={draft.messageLimitsBlockedWords}
+                            remainingSlots={messageLimitsBlockedWordsRemaining}
+                            onApplyWords={applyMessageLimitsBlockedWords}
+                          />
+                        </Suspense>
+
+                        <div className="settings-word-banlist__add-row">
+                          <input
+                            type="text"
+                            value={messageLimitsBlockedWordsInput}
+                            onChange={(event) => {
+                              setMessageLimitsBlockedWordsInput(event.target.value);
+                              clearFieldError('messageLimitsBlockedWords');
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ',') {
+                                event.preventDefault();
+                                addMessageLimitsBlockedWords();
+                              }
+                            }}
+                            placeholder="Слово, +слово или -слово"
+                            maxLength={240}
+                            aria-label="Изменить стоп-слова"
+                          />
+                          <button
+                            type="button"
+                            className="button button--accent settings-word-banlist__add-button"
+                            onClick={addMessageLimitsBlockedWords}
+                            disabled={isMessageLimitsBlockedWordsApplyDisabled}
+                          >
+                            Применить
+                          </button>
+                        </div>
+
+                        {messageLimitsBlockedWords.length > 0 ? (
+                          <>
+                            <div className="settings-word-banlist__chips-head">
+                              <small className="settings-word-banlist__chips-caption">
+                                {hasMessageLimitsBlockedWordsOverflow &&
+                                !messageLimitsBlockedWordsExpanded
+                                  ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${messageLimitsBlockedWords.length}`
+                                  : `Все ${messageLimitsBlockedWords.length} слов`}
+                              </small>
+                              {hasMessageLimitsBlockedWordsOverflow ? (
+                                <button
+                                  type="button"
+                                  className="settings-word-banlist__toggle"
+                                  onClick={() =>
+                                    setMessageLimitsBlockedWordsExpanded((current) => !current)
+                                  }
+                                  aria-expanded={messageLimitsBlockedWordsExpanded}
+                                  aria-controls="settings-stop-words-list"
+                                >
+                                  {messageLimitsBlockedWordsExpanded
+                                    ? 'Свернуть'
+                                    : `Показать все ${messageLimitsBlockedWords.length}`}
+                                </button>
+                              ) : null}
+                            </div>
+
+                            <div
+                              className="settings-word-banlist__chips"
+                              id="settings-stop-words-list"
+                              aria-label="Стоп-слова"
+                            >
+                              {visibleMessageLimitsBlockedWords.map((word) => (
+                                <button
+                                  key={word}
+                                  type="button"
+                                  className="settings-word-banlist__chip"
+                                  onClick={() => removeMessageLimitsBlockedWord(word)}
+                                  aria-label={`Удалить слово ${word}`}
+                                >
+                                  <span>{word}</span>
+                                  <span aria-hidden>+</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        ) : null}
+
+                        <small className="field__hint">
+                          {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
+                        </small>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </SettingsDrilldownPanel>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '250ms', order: 16 }}
               aria-label="Ночной режим"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

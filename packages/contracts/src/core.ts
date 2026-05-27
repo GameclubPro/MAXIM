@@ -56,6 +56,7 @@ export const applySettingsSectionSchema = z.enum([
   'thematicFilters',
   'duplicates',
   'limits',
+  'stopWords',
   'phones',
   'night',
   'requiredSubscription',

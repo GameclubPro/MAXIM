@@ -3809,6 +3809,7 @@ body.channel-settings-page-open {
 .settings-drilldown__panel--commercial,
 .settings-drilldown__panel--duplicates,
 .settings-drilldown__panel--limits,
+.settings-drilldown__panel--stop-words,
 .settings-drilldown__panel--required-subscription,
 .settings-drilldown__panel--night {
   min-height: min(420px, calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)));
