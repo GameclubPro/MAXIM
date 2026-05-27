@@ -34,6 +34,8 @@ import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
 import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
 import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from './vk-parsing.queue';
+import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
+import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import { VkParsingService } from './vk-parsing.service';
 
@@ -72,6 +74,8 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
+    VkParsingMediaCacheService,
+    VkParsingPostImportRepository,
     VkParsingService,
     ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
@@ -90,6 +94,8 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
     VkParsingRateLimitService,
+    VkParsingMediaCacheService,
+    VkParsingPostImportRepository,
     VkParsingService,
   ],
 })

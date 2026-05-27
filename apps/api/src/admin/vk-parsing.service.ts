@@ -42,10 +42,32 @@ import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 import {
+  classifyVkParsingMediaPreflightError,
+  classifyVkParsingPublishError,
+  classifyVkParsingSyncError,
+  formatVkParsingClassifiedErrorMessage,
+  formatVkParsingError,
+  isMaxAttachmentNotReadyError,
+  VkApiRequestError,
+} from './vk-parsing-errors';
+import {
   parseVkWallPostAttachments,
   type VkParsingPhotoMediaIdentity,
   type VkParsingUnsupportedAttachmentSummary,
 } from './vk-parsing-attachments';
+import {
+  VK_IMAGE_FETCH_TIMEOUT_MS,
+  VK_IMAGE_MAX_BYTES,
+  VK_MEDIA_STATUS_FAILED,
+  VK_MEDIA_STATUS_READY,
+  VkParsingMediaCacheService,
+  type VkParsingMediaCacheRow,
+} from './vk-parsing-media-cache.service';
+import {
+  VkParsingPostImportRepository,
+  type ExistingVkPostImportState,
+  type PreparedVkPostImport,
+} from './vk-parsing-post-import.repository';
 import {
   VK_PARSING_PUBLISH_QUEUE,
   VK_PARSING_SYNC_QUEUE,
@@ -58,7 +80,6 @@ import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
-type VkParsingMediaCacheRow = Prisma.VkParsingMediaCacheGetPayload<Record<string, never>>;
 type VkParsingSettingsRow = Prisma.VkParsingSettingsGetPayload<Record<string, never>>;
 
 type VkWallGetResponse = {
@@ -117,15 +138,6 @@ type ImportedPostsBatchResult = {
   publishCandidates: VkParsingPostWithSource[];
 };
 
-type ExistingVkPostImportState = {
-  id: string;
-  vkOwnerId: number;
-  vkPostId: number;
-  status: string;
-  contentHash: string;
-  publishedContentHash: string | null;
-};
-
 type PreparedVkPublishPayload = {
   text: string;
   photoUrls: string[];
@@ -147,30 +159,15 @@ const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const VK_POST_SKIP_REASON_AD: VkParsingSkipReason = 'AD';
 const VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER: VkParsingSkipReason = 'EMPTY_AFTER_LINK_FILTER';
-const VK_MEDIA_STATUS_READY = 'READY';
-const VK_MEDIA_STATUS_FAILED = 'FAILED';
-const VK_MEDIA_STATUS_UNKNOWN = 'UNKNOWN';
-const VK_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-const VK_IMAGE_FETCH_TIMEOUT_MS = 15_000;
 const VK_API_RATE_LIMIT_ERROR_CODE = 6;
 const VK_API_RETRYABLE_ERROR_CODES = new Set([VK_API_RATE_LIMIT_ERROR_CODE, 9, 10, 29]);
 const VK_API_TERMINAL_ERROR_CODES = new Set([5, 14, 15, 18, 19, 30, 100, 203, 210]);
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
+const VK_PARSING_WARNING_DEDUPE_MS = 60_000;
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.)[^\s<>()\]["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]["'`{}]+/giu;
-
-class VkApiRequestError extends ServiceUnavailableException {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly retryable: boolean,
-  ) {
-    super(message);
-    this.name = 'VkApiRequestError';
-  }
-}
 
 @Injectable()
 export class VkParsingService {
@@ -188,10 +185,9 @@ export class VkParsingService {
   private readonly missingConfirmationThreshold: number;
   private readonly queueBatchSize: number;
   private readonly syncLeaseTtlMs: number;
-  private readonly mediaPreflightTtlMs: number;
-  private readonly mediaFailedPreflightTtlMs: number;
   private readonly mediaConcurrency: number;
   private readonly workerId = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  private readonly warningDedupe = new Map<string, { loggedAtMs: number; suppressed: number }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -199,6 +195,8 @@ export class VkParsingService {
     private readonly maxClient: MaxClientService,
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly vkRateLimitService: VkParsingRateLimitService,
+    private readonly mediaCache: VkParsingMediaCacheService,
+    private readonly postImportRepository: VkParsingPostImportRepository,
     @InjectQueue(VK_PARSING_SYNC_QUEUE)
     private readonly syncQueue: Queue<VkParsingSyncJob>,
     @InjectQueue(VK_PARSING_PUBLISH_QUEUE)
@@ -226,12 +224,6 @@ export class VkParsingService {
       configService.get<number>('VK_PARSING_MISSING_CONFIRMATION_THRESHOLD') ?? 3;
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.syncLeaseTtlMs = configService.get<number>('VK_PARSING_LEASE_TTL_MS') ?? 120_000;
-    this.mediaPreflightTtlMs =
-      configService.get<number>('VK_PARSING_MEDIA_PREFLIGHT_TTL_MS') ?? 86_400_000;
-    this.mediaFailedPreflightTtlMs = Math.min(
-      this.mediaPreflightTtlMs,
-      configService.get<number>('VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS') ?? 120_000,
-    );
     this.mediaConcurrency = configService.get<number>('VK_PARSING_MEDIA_CONCURRENCY') ?? 3;
   }
 
@@ -625,13 +617,15 @@ export class VkParsingService {
         url: result.url,
       };
     } catch (error) {
+      const classified = classifyVkParsingPublishError(error);
+      const formattedError = formatVkParsingClassifiedErrorMessage(classified);
       await this.prisma.vkParsingPost.update({
         where: { id: post.id },
         data: {
           status: VK_POST_STATUS_FAILED,
           publishLockedAt: null,
-          lastError: this.formatError(error),
-          autoPublishError: params.auto ? this.formatError(error) : post.autoPublishError,
+          lastError: formattedError,
+          autoPublishError: params.auto ? formattedError : post.autoPublishError,
         },
       });
       throw error;
@@ -689,7 +683,7 @@ export class VkParsingService {
         );
       } catch (error) {
         lastError = error;
-        if (!this.isAttachmentNotReadyError(error) || attempt >= 3) {
+        if (!isMaxAttachmentNotReadyError(error) || attempt >= 3) {
           throw error;
         }
         await this.sleep(750 * 2 ** (attempt - 1));
@@ -697,17 +691,6 @@ export class VkParsingService {
     }
 
     throw lastError instanceof Error ? lastError : new Error('MAX attachment is not ready.');
-  }
-
-  private isAttachmentNotReadyError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (typeof status === 'number' && status !== 400) {
-      return false;
-    }
-
-    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-    const normalized = JSON.stringify(responseData ?? error ?? '').toLowerCase();
-    return normalized.includes('attachment.not.ready') || normalized.includes('not ready');
   }
 
   private async assertVkParsingAccess(chatId: string, user: AuthUser): Promise<ChatEntityType> {
@@ -970,11 +953,11 @@ export class VkParsingService {
           lastError: null,
         },
       });
-      void this.preflightPostMediaSafely(posts);
+      void this.preflightPostMediaSafely(source, posts);
       return importResult.imported;
     } catch (error) {
       const completedAt = new Date();
-      const classified = this.classifySyncError(error);
+      const classified = classifyVkParsingSyncError(error);
       const failureCount = source.consecutiveFailures + 1;
       const backoffMs = classified.retryable ? this.resolveSyncBackoffMs(failureCount) : null;
       await this.prisma.vkParsingSource.update({
@@ -996,7 +979,8 @@ export class VkParsingService {
           lastError: classified.message,
         },
       });
-      this.logger.warn(
+      this.logDedupedWarning(
+        `vk-sync:${source.id}:${classified.code}`,
         {
           sourceId: source.id,
           chatId: source.chatId,
@@ -1112,107 +1096,27 @@ export class VkParsingService {
     posts: NormalizedVkPost[],
     seenAt: Date,
   ): Promise<ImportedPostsBatchResult> {
-    const existingRows = posts.length
-      ? await this.prisma.vkParsingPost.findMany({
-          where: {
-            chatId: source.chatId,
-            vkOwnerId: source.wallOwnerId,
-            vkPostId: { in: posts.map((post) => post.vkPostId) },
-          },
-          select: {
-            id: true,
-            vkOwnerId: true,
-            vkPostId: true,
-            status: true,
-            contentHash: true,
-            publishedContentHash: true,
-          },
-        })
-      : [];
+    const existingRows = await this.postImportRepository.findExistingPosts(source, posts);
     const existingByPostKey = new Map(
       existingRows.map((row) => [this.buildPostKey(row.vkOwnerId, row.vkPostId), row]),
     );
 
     const autoPublishCandidatePostKeys = new Set<string>();
-    const operations = posts.map((post) => {
+    const preparedPosts = posts.map((post): PreparedVkPostImport => {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
       const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
       if (!existing) {
         autoPublishCandidatePostKeys.add(postKey);
       }
-      const resetTransientState =
-        status === VK_POST_STATUS_NEW
-          ? {
-              skippedAt: null,
-              skipReason: null,
-              autoPublishError: null,
-              lastError: null,
-            }
-          : {};
-      return this.prisma.vkParsingPost.upsert({
-        where: {
-          chatId_vkOwnerId_vkPostId: {
-            chatId: source.chatId,
-            vkOwnerId: post.vkOwnerId,
-            vkPostId: post.vkPostId,
-          },
-        },
-        create: {
-          sourceId: source.id,
-          chatId: source.chatId,
-          vkOwnerId: post.vkOwnerId,
-          vkPostId: post.vkPostId,
-          vkPublishedAt: post.vkPublishedAt,
-          text: post.text,
-          url: post.url,
-          photoUrls: post.photoUrls,
-          linkUrls: post.linkUrls,
-          attachments: this.toJsonInput(post.attachments),
-          attachmentTypes: this.toJsonInput(post.attachmentTypes),
-          unsupportedAttachments: this.toJsonInput(post.unsupportedAttachments),
-          hasUnsupportedAttachments: post.hasUnsupportedAttachments,
-          isAdvertising: post.isAdvertising,
-          advertisingMarkers: this.toJsonInput(post.advertisingMarkers),
-          raw: this.toJsonInput(post.raw),
-          contentHash: post.contentHash,
-          status,
-          lastSeenAt: seenAt,
-          missingSinceAt: null,
-          missingSeenCount: 0,
-          lastAvailabilityCheckedAt: seenAt,
-          unavailableAt: null,
-        },
-        update: {
-          sourceId: source.id,
-          vkPublishedAt: post.vkPublishedAt,
-          text: post.text,
-          url: post.url,
-          photoUrls: post.photoUrls,
-          linkUrls: post.linkUrls.slice(0, VK_PARSING_MAX_LINKS),
-          attachments: this.toJsonInput(post.attachments),
-          attachmentTypes: this.toJsonInput(post.attachmentTypes),
-          unsupportedAttachments: this.toJsonInput(post.unsupportedAttachments),
-          hasUnsupportedAttachments: post.hasUnsupportedAttachments,
-          isAdvertising: post.isAdvertising,
-          advertisingMarkers: this.toJsonInput(post.advertisingMarkers),
-          raw: this.toJsonInput(post.raw),
-          contentHash: post.contentHash,
-          status,
-          lastSeenAt: seenAt,
-          missingSinceAt: null,
-          missingSeenCount: 0,
-          lastAvailabilityCheckedAt: seenAt,
-          unavailableAt: null,
-          ...resetTransientState,
-        },
-      });
+      return { post, status };
     });
 
-    if (operations.length > 0) {
-      await this.prisma.$transaction(operations);
-    }
-    await this.markMissingPostsUnavailable(source, posts, seenAt);
+    await this.postImportRepository.persistImportedPosts(source, preparedPosts, seenAt);
+    await this.postImportRepository.markMissingPostsUnavailable(source, posts, seenAt, {
+      missingConfirmationThreshold: this.missingConfirmationThreshold,
+      spotCheckMissingPosts: (missingPosts) => this.spotCheckMissingPosts(missingPosts),
+    });
 
     const importedNormalizedPosts = posts.filter((post) =>
       autoPublishCandidatePostKeys.has(this.buildPostKey(post.vkOwnerId, post.vkPostId)),
@@ -1340,100 +1244,6 @@ export class VkParsingService {
     }
 
     return existing.status || VK_POST_STATUS_NEW;
-  }
-
-  private async markMissingPostsUnavailable(
-    source: VkParsingSourceRow,
-    posts: NormalizedVkPost[],
-    seenAt: Date,
-  ): Promise<void> {
-    if (posts.length === 0) {
-      return;
-    }
-
-    const oldestFetchedAt = posts.reduce<Date | null>((oldest, post) => {
-      if (!post.vkPublishedAt) {
-        return oldest;
-      }
-      return !oldest || post.vkPublishedAt.getTime() < oldest.getTime()
-        ? post.vkPublishedAt
-        : oldest;
-    }, null);
-    if (!oldestFetchedAt) {
-      return;
-    }
-
-    const candidates = await this.prisma.vkParsingPost.findMany({
-      where: {
-        sourceId: source.id,
-        vkPublishedAt: { gte: oldestFetchedAt },
-        vkPostId: { notIn: posts.map((post) => post.vkPostId) },
-        status: {
-          in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED, VK_POST_STATUS_CHANGED_AFTER_PUBLISH],
-        },
-      },
-      select: {
-        id: true,
-        vkOwnerId: true,
-        vkPostId: true,
-        missingSeenCount: true,
-      },
-    });
-    if (candidates.length === 0) {
-      return;
-    }
-
-    const belowThreshold = candidates.filter(
-      (post) => post.missingSeenCount + 1 < this.missingConfirmationThreshold,
-    );
-    if (belowThreshold.length > 0) {
-      await this.prisma.vkParsingPost.updateMany({
-        where: { id: { in: belowThreshold.map((post) => post.id) } },
-        data: {
-          missingSeenCount: { increment: 1 },
-          missingSinceAt: seenAt,
-          lastAvailabilityCheckedAt: seenAt,
-        },
-      });
-    }
-
-    const thresholdCandidates = candidates.filter(
-      (post) => post.missingSeenCount + 1 >= this.missingConfirmationThreshold,
-    );
-    if (thresholdCandidates.length === 0) {
-      return;
-    }
-
-    const foundPostKeys = await this.spotCheckMissingPosts(thresholdCandidates);
-    const updateOperations = thresholdCandidates.map((post) => {
-      const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
-      if (foundPostKeys?.has(postKey)) {
-        return this.prisma.vkParsingPost.update({
-          where: { id: post.id },
-          data: {
-            missingSeenCount: 0,
-            missingSinceAt: null,
-            lastAvailabilityCheckedAt: seenAt,
-          },
-        });
-      }
-
-      return this.prisma.vkParsingPost.update({
-        where: { id: post.id },
-        data: {
-          status: foundPostKeys === null ? undefined : VK_POST_STATUS_UNAVAILABLE,
-          missingSeenCount: { increment: 1 },
-          missingSinceAt: seenAt,
-          lastAvailabilityCheckedAt: seenAt,
-          unavailableAt: foundPostKeys === null ? undefined : seenAt,
-          publishQueuedAt: foundPostKeys === null ? undefined : null,
-          publishLockedAt: foundPostKeys === null ? undefined : null,
-          publishIdempotencyKey: foundPostKeys === null ? undefined : null,
-        },
-      });
-    });
-
-    await this.prisma.$transaction(updateOperations);
   }
 
   private async spotCheckMissingPosts(
@@ -1604,7 +1414,7 @@ export class VkParsingService {
   }
 
   private async markPostAutoPublishFailed(postId: string, error: unknown): Promise<void> {
-    const message = this.formatError(error);
+    const message = formatVkParsingClassifiedErrorMessage(classifyVkParsingPublishError(error));
     await this.prisma.vkParsingPost.update({
       where: { id: postId },
       data: {
@@ -1660,26 +1470,6 @@ export class VkParsingService {
         publishIdempotencyKey: null,
       },
     });
-  }
-
-  private classifySyncError(error: unknown): {
-    code: string;
-    message: string;
-    retryable: boolean;
-  } {
-    if (error instanceof VkApiRequestError) {
-      return {
-        code: error.code,
-        message: error.message,
-        retryable: error.retryable,
-      };
-    }
-
-    return {
-      code: 'unknown',
-      message: this.formatError(error),
-      retryable: true,
-    };
   }
 
   private resolveSyncBackoffMs(failureCount: number): number {
@@ -2124,7 +1914,7 @@ export class VkParsingService {
       image.mimeType,
       requestOptions,
     );
-    await this.writeMediaCache(
+    await this.mediaCache.writeMediaCache(
       imageUrl,
       {
         status: VK_MEDIA_STATUS_READY,
@@ -2141,7 +1931,10 @@ export class VkParsingService {
     return payload;
   }
 
-  private async preflightPostMediaSafely(posts: NormalizedVkPost[]): Promise<void> {
+  private async preflightPostMediaSafely(
+    source: Pick<VkParsingSourceRow, 'id' | 'chatId'>,
+    posts: NormalizedVkPost[],
+  ): Promise<void> {
     const photoUrls = [...new Set(posts.flatMap((post) => post.photoUrls))];
     if (photoUrls.length === 0) {
       return;
@@ -2154,11 +1947,19 @@ export class VkParsingService {
 
     try {
       await this.mapWithConcurrency(photoUrls, this.mediaConcurrency, async (url) => {
-        await this.preflightMediaUrl(url, mediaIdentityByUrl.get(url) ?? null);
+        await this.mediaCache.preflightMediaUrl(url, mediaIdentityByUrl.get(url) ?? null);
       });
     } catch (error) {
-      this.logger.warn(
-        { err: error },
+      const classified = classifyVkParsingMediaPreflightError(error);
+      this.logDedupedWarning(
+        `vk-media-preflight:${source.id}:${classified.code}`,
+        {
+          sourceId: source.id,
+          chatId: source.chatId,
+          reason: classified.code,
+          retryable: classified.retryable,
+          err: error,
+        },
         'VK media preflight failed unexpectedly after per-url safeguards',
       );
     }
@@ -2169,247 +1970,11 @@ export class VkParsingService {
     index: number,
     mediaIdentity: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
-    const cache = await this.preflightMediaUrl(imageUrl, mediaIdentity);
+    const cache = await this.mediaCache.preflightMediaUrl(imageUrl, mediaIdentity);
     if (cache.status === VK_MEDIA_STATUS_FAILED) {
       throw new BadRequestException(cache.lastError || `Фото ${index + 1} недоступно.`);
     }
     return cache;
-  }
-
-  private async preflightMediaUrl(
-    imageUrl: string,
-    mediaIdentity: string | null = null,
-  ): Promise<VkParsingMediaCacheRow> {
-    const cached = await this.findMediaCache(imageUrl, mediaIdentity);
-    if (cached?.lastCheckedAt) {
-      const ageMs = Date.now() - cached.lastCheckedAt.getTime();
-      const cacheTtlMs =
-        cached.status === VK_MEDIA_STATUS_FAILED
-          ? this.mediaFailedPreflightTtlMs
-          : this.mediaPreflightTtlMs;
-      if (ageMs >= 0 && ageMs < cacheTtlMs && cached.status !== VK_MEDIA_STATUS_UNKNOWN) {
-        return cached;
-      }
-    }
-
-    let parsed: URL;
-    try {
-      parsed = new URL(imageUrl);
-      if (parsed.protocol !== 'https:') {
-        return this.writeMediaCache(
-          imageUrl,
-          {
-            status: VK_MEDIA_STATUS_FAILED,
-            lastError: 'Фото VK должно быть доступно по HTTPS.',
-          },
-          mediaIdentity,
-        );
-      }
-    } catch {
-      return this.writeMediaCache(
-        imageUrl,
-        {
-          status: VK_MEDIA_STATUS_FAILED,
-          lastError: 'Некорректная ссылка на фото VK.',
-        },
-        mediaIdentity,
-      );
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), VK_IMAGE_FETCH_TIMEOUT_MS);
-    try {
-      const response = await this.fetchMediaPreflightResponse(parsed, controller.signal);
-      if (!response.ok) {
-        return this.writeMediaCache(
-          imageUrl,
-          {
-            status: VK_MEDIA_STATUS_FAILED,
-            lastError: `VK вернул статус ${response.status} для фото.`,
-          },
-          mediaIdentity,
-        );
-      }
-
-      const headers = response.headers ?? new Headers();
-      const contentLength = this.readMediaContentLength(headers, response.status);
-      if ((contentLength ?? 0) > VK_IMAGE_MAX_BYTES) {
-        return this.writeMediaCache(
-          imageUrl,
-          {
-            status: VK_MEDIA_STATUS_FAILED,
-            contentLength,
-            lastError: 'Фото из VK слишком большое.',
-          },
-          mediaIdentity,
-        );
-      }
-
-      const mimeType = (headers.get('content-type') ?? '').split(';')[0]!.trim();
-      if (mimeType && !mimeType.toLowerCase().startsWith('image/')) {
-        return this.writeMediaCache(
-          imageUrl,
-          {
-            status: VK_MEDIA_STATUS_FAILED,
-            mimeType,
-            contentLength: contentLength || null,
-            lastError: 'VK вернул не изображение.',
-          },
-          mediaIdentity,
-        );
-      }
-
-      return this.writeMediaCache(
-        imageUrl,
-        {
-          status: VK_MEDIA_STATUS_READY,
-          mimeType: mimeType || null,
-          contentLength,
-          lastError: null,
-        },
-        mediaIdentity,
-      );
-    } catch (error) {
-      return this.writeMediaCache(
-        imageUrl,
-        {
-          status: VK_MEDIA_STATUS_FAILED,
-          lastError:
-            error instanceof Error && error.name === 'AbortError'
-              ? 'VK не ответил на проверку фото вовремя.'
-              : this.formatError(error),
-        },
-        mediaIdentity,
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async fetchMediaPreflightResponse(url: URL, signal: AbortSignal): Promise<Response> {
-    const headResponse = await fetch(url, { method: 'HEAD', signal });
-    if (headResponse.ok || !this.shouldFallbackMediaPreflight(headResponse.status)) {
-      return headResponse;
-    }
-
-    await headResponse.body?.cancel().catch(() => undefined);
-    const rangeResponse = await fetch(url, {
-      method: 'GET',
-      headers: { Range: 'bytes=0-0' },
-      signal,
-    });
-    await rangeResponse.body?.cancel().catch(() => undefined);
-    return rangeResponse;
-  }
-
-  private shouldFallbackMediaPreflight(status: number): boolean {
-    return status === 403 || status === 405 || status === 501;
-  }
-
-  private readMediaContentLength(headers: Headers, status: number): number | null {
-    const contentRangeTotal = this.readContentRangeTotal(headers.get('content-range'));
-    if (contentRangeTotal !== null) {
-      return contentRangeTotal;
-    }
-
-    if (status === 206) {
-      return null;
-    }
-
-    const contentLength = Number(headers.get('content-length') ?? 0);
-    return Number.isFinite(contentLength) && contentLength > 0 ? contentLength : null;
-  }
-
-  private readContentRangeTotal(value: string | null): number | null {
-    const match = value?.match(/\/(\d+)$/u);
-    if (!match) {
-      return null;
-    }
-
-    const total = Number(match[1]);
-    return Number.isFinite(total) && total >= 0 ? total : null;
-  }
-
-  private async writeMediaCache(
-    url: string,
-    data: {
-      status: string;
-      mimeType?: string | null;
-      contentLength?: number | null;
-      lastError?: string | null;
-      maxUploadPayload?: Record<string, unknown> | null;
-      maxUploadToken?: string | null;
-      maxUploadedAt?: Date | null;
-    },
-    mediaIdentity: string | null = null,
-  ): Promise<VkParsingMediaCacheRow> {
-    const lastCheckedAt = new Date();
-    const updateData: Prisma.VkParsingMediaCacheUpdateInput = {
-      status: data.status,
-      mimeType: data.mimeType ?? null,
-      contentLength: data.contentLength ?? null,
-      lastCheckedAt,
-      lastError: data.lastError ?? null,
-      ...(mediaIdentity ? { mediaIdentity } : {}),
-      ...(data.maxUploadPayload
-        ? { maxUploadPayload: this.toJsonInput(data.maxUploadPayload) }
-        : {}),
-      ...(typeof data.maxUploadToken === 'string' ? { maxUploadToken: data.maxUploadToken } : {}),
-      ...(data.maxUploadedAt ? { maxUploadedAt: data.maxUploadedAt } : {}),
-      ...(data.maxUploadPayload ? { uploadAttemptCount: { increment: 1 } } : {}),
-    };
-    const createData: Prisma.VkParsingMediaCacheCreateInput = {
-      url,
-      mediaIdentity,
-      status: data.status,
-      mimeType: data.mimeType ?? null,
-      contentLength: data.contentLength ?? null,
-      lastCheckedAt,
-      lastError: data.lastError ?? null,
-      ...(data.maxUploadPayload
-        ? { maxUploadPayload: this.toJsonInput(data.maxUploadPayload) }
-        : {}),
-      ...(typeof data.maxUploadToken === 'string' ? { maxUploadToken: data.maxUploadToken } : {}),
-      ...(data.maxUploadedAt ? { maxUploadedAt: data.maxUploadedAt } : {}),
-      uploadAttemptCount: data.maxUploadPayload ? 1 : 0,
-    };
-
-    if (mediaIdentity) {
-      const existing = await this.prisma.vkParsingMediaCache.findFirst({
-        where: { OR: [{ mediaIdentity }, { url }] },
-      });
-      if (existing) {
-        return this.prisma.vkParsingMediaCache.update({
-          where: { id: existing.id },
-          data: {
-            url,
-            ...updateData,
-          },
-        });
-      }
-    }
-
-    return this.prisma.vkParsingMediaCache.upsert({
-      where: { url },
-      create: createData,
-      update: updateData,
-    });
-  }
-
-  private async findMediaCache(
-    url: string,
-    mediaIdentity: string | null,
-  ): Promise<VkParsingMediaCacheRow | null> {
-    if (mediaIdentity) {
-      const cached = await this.prisma.vkParsingMediaCache.findFirst({
-        where: { OR: [{ mediaIdentity }, { url }] },
-      });
-      if (cached) {
-        return cached;
-      }
-    }
-
-    return this.prisma.vkParsingMediaCache.findUnique({ where: { url } });
   }
 
   private readUploadPayload(cache: VkParsingMediaCacheRow): Record<string, unknown> | null {
@@ -2923,11 +2488,26 @@ export class VkParsingService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private formatError(error: unknown): string {
-    if (error instanceof Error && error.message.trim()) {
-      return error.message.trim().slice(0, 500);
+  private logDedupedWarning(key: string, context: Record<string, unknown>, message: string): void {
+    const now = Date.now();
+    const current = this.warningDedupe.get(key);
+    if (current && now - current.loggedAtMs < VK_PARSING_WARNING_DEDUPE_MS) {
+      current.suppressed += 1;
+      return;
     }
 
-    return 'Неизвестная ошибка VK-парсинга.';
+    const suppressedSimilarWarnings = current?.suppressed ?? 0;
+    this.warningDedupe.set(key, { loggedAtMs: now, suppressed: 0 });
+    this.logger.warn(
+      {
+        ...context,
+        ...(suppressedSimilarWarnings > 0 ? { suppressedSimilarWarnings } : {}),
+      },
+      message,
+    );
+  }
+
+  private formatError(error: unknown): string {
+    return formatVkParsingError(error);
   }
 }

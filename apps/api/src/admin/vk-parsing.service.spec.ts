@@ -1,5 +1,7 @@
 import { ChatEntityType } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
+import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingService } from './vk-parsing.service';
 
 type MockFetchResponse = {
@@ -24,6 +26,13 @@ function createJsonFetchResponse(payload: unknown): MockFetchResponse {
     ok: true,
     json: async () => payload,
   };
+}
+
+function readExecuteRawValues(prisma: { $executeRaw: jest.Mock }): unknown[] {
+  return prisma.$executeRaw.mock.calls.flatMap(([query]) => {
+    const values = (query as { values?: unknown[] })?.values;
+    return Array.isArray(values) ? values : [];
+  });
 }
 
 describe('VkParsingService', () => {
@@ -68,6 +77,25 @@ describe('VkParsingService', () => {
       vkParsingMediaCache: {
         findUnique: jest.fn().mockResolvedValue(null),
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockImplementation((payload) =>
+          Promise.resolve({
+            id: 'media-1',
+            url: payload.data.url,
+            mediaIdentity: payload.data.mediaIdentity ?? null,
+            status: payload.data.status,
+            mimeType: payload.data.mimeType ?? null,
+            contentLength: payload.data.contentLength ?? null,
+            maxUploadPayload: payload.data.maxUploadPayload ?? null,
+            maxUploadToken: payload.data.maxUploadToken ?? null,
+            maxUploadedAt: payload.data.maxUploadedAt ?? null,
+            uploadAttemptCount: payload.data.uploadAttemptCount ?? 0,
+            lastCheckedAt: payload.data.lastCheckedAt,
+            lastError: payload.data.lastError ?? null,
+            createdAt: new Date('2026-05-25T10:00:00.000Z'),
+            updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+          }),
+        ),
         update: jest.fn().mockImplementation((payload) =>
           Promise.resolve({
             id: payload.where.id,
@@ -86,6 +114,7 @@ describe('VkParsingService', () => {
             updatedAt: new Date('2026-05-25T10:00:00.000Z'),
           }),
         ),
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
         count: jest.fn().mockResolvedValue(0),
         upsert: jest.fn().mockImplementation((payload) =>
           Promise.resolve({
@@ -106,8 +135,14 @@ describe('VkParsingService', () => {
           }),
         ),
       },
-      $transaction: jest.fn((operations: unknown[]) => Promise.all(operations)),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      $transaction: jest.fn(),
     };
+    prisma.$transaction.mockImplementation((operation: unknown) =>
+      typeof operation === 'function'
+        ? (operation as (tx: unknown) => Promise<unknown>)(prisma)
+        : Promise.all(operation as Promise<unknown>[]),
+    );
     const adminService = {
       assertChatAdmin: jest.fn().mockResolvedValue(undefined),
       buildChannelPublicationEngagementContext: jest.fn().mockResolvedValue({
@@ -143,6 +178,26 @@ describe('VkParsingService', () => {
     const publishQueue = {
       add: jest.fn().mockResolvedValue(undefined),
     };
+    const configService = createConfig({
+      VK_SERVICE_TOKEN: 'vk-service-token',
+      VK_API_BASE_URL: 'https://api.vk.ru',
+      VK_API_VERSION: '5.199',
+      VK_PARSING_SYNC_INTERVAL_MS: 600_000,
+      VK_PARSING_FETCH_COUNT: 100,
+      VK_PARSING_MIN_PAGES: 1,
+      VK_PARSING_MAX_PAGES: 1,
+      VK_PARSING_MISSING_CONFIRMATION_THRESHOLD: 3,
+      VK_API_TIMEOUT_MS: 10_000,
+      VK_API_MAX_ATTEMPTS: 3,
+      VK_PARSING_QUEUE_BATCH_SIZE: 100,
+      VK_PARSING_LEASE_TTL_MS: 120_000,
+      VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: 86_400_000,
+      VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: 120_000,
+      VK_PARSING_MEDIA_CONCURRENCY: 3,
+      ...config,
+    });
+    const mediaCache = new VkParsingMediaCacheService(prisma as never, configService as never);
+    const postImportRepository = new VkParsingPostImportRepository(prisma as never);
 
     const service = new VkParsingService(
       prisma as never,
@@ -150,26 +205,11 @@ describe('VkParsingService', () => {
       maxClient as never,
       maxBotLinkService as never,
       vkRateLimitService as never,
+      mediaCache,
+      postImportRepository,
       syncQueue as never,
       publishQueue as never,
-      createConfig({
-        VK_SERVICE_TOKEN: 'vk-service-token',
-        VK_API_BASE_URL: 'https://api.vk.ru',
-        VK_API_VERSION: '5.199',
-        VK_PARSING_SYNC_INTERVAL_MS: 600_000,
-        VK_PARSING_FETCH_COUNT: 100,
-        VK_PARSING_MIN_PAGES: 1,
-        VK_PARSING_MAX_PAGES: 1,
-        VK_PARSING_MISSING_CONFIRMATION_THRESHOLD: 3,
-        VK_API_TIMEOUT_MS: 10_000,
-        VK_API_MAX_ATTEMPTS: 3,
-        VK_PARSING_QUEUE_BATCH_SIZE: 100,
-        VK_PARSING_LEASE_TTL_MS: 120_000,
-        VK_PARSING_MEDIA_PREFLIGHT_TTL_MS: 86_400_000,
-        VK_PARSING_MEDIA_FAILED_PREFLIGHT_TTL_MS: 120_000,
-        VK_PARSING_MEDIA_CONCURRENCY: 3,
-        ...config,
-      }) as never,
+      configService as never,
     );
 
     return {
@@ -181,6 +221,8 @@ describe('VkParsingService', () => {
       vkRateLimitService,
       syncQueue,
       publishQueue,
+      mediaCache,
+      postImportRepository,
     };
   }
 
@@ -453,11 +495,11 @@ describe('VkParsingService', () => {
     });
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    expect(prisma.vkParsingPost.upsert).toHaveBeenCalledTimes(1);
-    const upsertPayload = prisma.vkParsingPost.upsert.mock.calls[0]?.[0];
-    expect(upsertPayload.create.text).toBe('Продам авто');
-    expect(upsertPayload.create.photoUrls).toEqual(['https://sun1.example/large.jpg']);
-    expect(upsertPayload.create.linkUrls).toEqual(['https://example.com/car']);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const rawValues = readExecuteRawValues(prisma);
+    expect(rawValues).toContain('Продам авто');
+    expect(rawValues).toContain(JSON.stringify(['https://sun1.example/large.jpg']));
+    expect(rawValues).toContain(JSON.stringify(['https://example.com/car']));
   });
 
   it('imports modern VK attachment facts from src photos, copy history, ads and unsupported types', async () => {
@@ -507,13 +549,32 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    const upsertPayload = prisma.vkParsingPost.upsert.mock.calls[0]?.[0];
-    expect(upsertPayload.create.photoUrls).toEqual(['https://sun2.example/src.jpg']);
-    expect(upsertPayload.create.linkUrls).toEqual(['https://example.com/from-copy']);
-    expect(upsertPayload.create.attachmentTypes).toEqual(
+    const rawValues = readExecuteRawValues(prisma);
+    expect(rawValues).toContain(JSON.stringify(['https://sun2.example/src.jpg']));
+    expect(rawValues).toContain(JSON.stringify(['https://example.com/from-copy']));
+    const parsedJsonValues = rawValues
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => {
+        try {
+          return JSON.parse(value) as unknown;
+        } catch {
+          return null;
+        }
+      });
+    const attachmentTypes = parsedJsonValues.find(
+      (value): value is string[] =>
+        Array.isArray(value) && value.includes('photos_list') && value.includes('link'),
+    );
+    expect(attachmentTypes).toEqual(
       expect.arrayContaining(['photo', 'photos_list', 'video', 'doc', 'poll', 'article', 'link']),
     );
-    expect(upsertPayload.create.unsupportedAttachments).toEqual(
+    const unsupportedAttachments = parsedJsonValues.find(
+      (value): value is Array<{ type: string }> =>
+        Array.isArray(value) &&
+        value.some((item) => item?.type === 'photos_list') &&
+        value.some((item) => item?.type === 'copy_history'),
+    );
+    expect(unsupportedAttachments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'photos_list' }),
         expect.objectContaining({ type: 'video', title: 'Видеообзор' }),
@@ -523,11 +584,11 @@ describe('VkParsingService', () => {
         expect.objectContaining({ type: 'copy_history' }),
       ]),
     );
-    expect(upsertPayload.create.hasUnsupportedAttachments).toBe(true);
-    expect(upsertPayload.create.isAdvertising).toBe(true);
-    expect(upsertPayload.create.advertisingMarkers).toEqual(
-      expect.arrayContaining(['VK marked_as_ads']),
+    expect(rawValues).toContain(true);
+    const advertisingMarkers = parsedJsonValues.find(
+      (value): value is string[] => Array.isArray(value) && value.includes('VK marked_as_ads'),
     );
+    expect(advertisingMarkers).toEqual(expect.arrayContaining(['VK marked_as_ads']));
   });
 
   it('uses VK API 5.199 and overlap pagination offsets for scheduled sync', async () => {
@@ -994,13 +1055,7 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    expect(prisma.vkParsingPost.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          status: 'FAILED',
-        }),
-      }),
-    );
+    expect(readExecuteRawValues(prisma)).toContain('FAILED');
     expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
     expect(publishQueue.add).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
@@ -1273,7 +1328,7 @@ describe('VkParsingService', () => {
         data: expect.objectContaining({
           syncStatus: 'ERROR',
           nextSyncAt: null,
-          lastErrorCode: `vk_${code}`,
+          lastErrorCode: `vk_api.vk_${code}`,
           lastError: expect.stringContaining(`(${code})`),
         }),
       }),
@@ -1297,7 +1352,7 @@ describe('VkParsingService', () => {
         data: expect.objectContaining({
           syncStatus: 'ERROR',
           nextSyncAt: null,
-          lastErrorCode: 'vk_14',
+          lastErrorCode: 'vk_api.vk_14',
           lastError: expect.stringContaining('капчу или токен не подходит'),
         }),
       }),
@@ -1317,7 +1372,7 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    expect(prisma.vkParsingPost.upsert).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1350,13 +1405,13 @@ describe('VkParsingService', () => {
           syncStatus: 'ERROR',
           nextSyncAt: null,
           consecutiveFailures: 1,
-          lastErrorCode: 'vk_19',
+          lastErrorCode: 'vk_api.vk_19',
         }),
       }),
     );
   });
 
-  it('imports up to 100 posts in one batch', async () => {
+  it('imports up to 100 posts through chunked bulk inserts', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
     const posts = Array.from({ length: 100 }, (_, index) => ({
@@ -1377,8 +1432,40 @@ describe('VkParsingService', () => {
 
     const firstUrl = String((global.fetch as jest.Mock).mock.calls[0]?.[0] ?? '');
     expect(firstUrl).toContain('count=100');
-    expect(prisma.vkParsingPost.upsert).toHaveBeenCalledTimes(100);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('classifies bulk import transaction timeouts as retryable DB sync errors', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    prisma.$executeRaw.mockRejectedValueOnce(
+      Object.assign(new Error('Transaction API error: timeout'), { code: 'P2028' }),
+    );
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [{ owner_id: -36819802, id: 101, date: 1_779_708_000, text: 'Пост' }],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const imported = await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(imported).toBe(0);
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'source-1' },
+        data: expect.objectContaining({
+          syncStatus: 'BACKOFF',
+          lastErrorCode: 'db.transaction_timeout',
+          nextSyncAt: expect.any(Date),
+        }),
+      }),
+    );
   });
 
   it('marks a published VK post as changed after VK edits its source content', async () => {
@@ -1413,24 +1500,21 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    const upsertPayload = prisma.vkParsingPost.upsert.mock.calls[0]?.[0];
-    expect(upsertPayload.update.status).toBe('CHANGED_AFTER_PUBLISH');
+    expect(readExecuteRawValues(prisma)).toContain('CHANGED_AFTER_PUBLISH');
   });
 
   it('only marks fetched-window missing VK posts unavailable after threshold and spot-check', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          id: 'missing-post-1',
-          vkOwnerId: -36819802,
-          vkPostId: 100,
-          missingSeenCount: 2,
-        },
-      ]);
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 'missing-post-1',
+        vkOwnerId: -36819802,
+        vkPostId: 100,
+        missingSeenCount: 2,
+      },
+    ]);
     global.fetch = jest
       .fn()
       .mockResolvedValueOnce(
@@ -1456,9 +1540,7 @@ describe('VkParsingService', () => {
 
     await service.processSyncSourceJob('source-1', 'scheduled');
 
-    expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0] ?? '')).toContain(
-      'wall.getById',
-    );
+    expect(String((global.fetch as jest.Mock).mock.calls[1]?.[0] ?? '')).toContain('wall.getById');
     expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'missing-post-1' },
@@ -1478,16 +1560,14 @@ describe('VkParsingService', () => {
     const { service, prisma } = createFixture();
     const source = createSource();
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
-    prisma.vkParsingPost.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          id: 'missing-post-1',
-          vkOwnerId: -36819802,
-          vkPostId: 100,
-          missingSeenCount: 0,
-        },
-      ]);
+    prisma.vkParsingPost.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 'missing-post-1',
+        vkOwnerId: -36819802,
+        vkPostId: 100,
+        missingSeenCount: 0,
+      },
+    ]);
     global.fetch = jest.fn().mockResolvedValue(
       createJsonFetchResponse({
         response: {
@@ -1835,6 +1915,89 @@ describe('VkParsingService', () => {
       },
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalled();
+  });
+
+  it('merges media cache rows by URL and VK media identity under advisory lock', async () => {
+    const { mediaCache, prisma } = createFixture();
+    const urlRow = {
+      id: 'media-url',
+      url: 'https://sun1.example/large.jpg',
+      mediaIdentity: null,
+      status: 'READY',
+      mimeType: 'image/jpeg',
+      contentLength: 3,
+      maxUploadPayload: { token: 'cached-token' },
+      maxUploadToken: 'cached-token',
+      maxUploadedAt: new Date('2026-05-25T10:00:00.000Z'),
+      uploadAttemptCount: 1,
+      lastCheckedAt: new Date('2026-05-25T10:00:00.000Z'),
+      lastError: null,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    };
+    const identityRow = {
+      ...urlRow,
+      id: 'media-identity',
+      url: 'https://sun1.example/old.jpg',
+      mediaIdentity: 'photo:-36819802_11',
+      maxUploadPayload: null,
+      maxUploadToken: null,
+      maxUploadedAt: null,
+    };
+    prisma.vkParsingMediaCache.findMany.mockResolvedValue([identityRow, urlRow]);
+
+    await mediaCache.writeMediaCache(
+      'https://sun1.example/large.jpg',
+      { status: 'READY', mimeType: 'image/jpeg', contentLength: 3 },
+      'photo:-36819802_11',
+    );
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.vkParsingMediaCache.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['media-identity'] } },
+    });
+    expect(prisma.vkParsingMediaCache.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'media-url' },
+        data: expect.objectContaining({
+          url: 'https://sun1.example/large.jpg',
+          mediaIdentity: 'photo:-36819802_11',
+          status: 'READY',
+        }),
+      }),
+    );
+  });
+
+  it('retries media cache writes after unique conflicts', async () => {
+    const { mediaCache, prisma } = createFixture();
+    prisma.vkParsingMediaCache.upsert
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Unique constraint failed'), { code: 'P2002' }),
+      )
+      .mockResolvedValueOnce({
+        id: 'media-1',
+        url: 'https://sun1.example/large.jpg',
+        mediaIdentity: null,
+        status: 'READY',
+        mimeType: 'image/jpeg',
+        contentLength: 3,
+        maxUploadPayload: null,
+        maxUploadToken: null,
+        maxUploadedAt: null,
+        uploadAttemptCount: 0,
+        lastCheckedAt: new Date(),
+        lastError: null,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+      });
+
+    await mediaCache.writeMediaCache('https://sun1.example/large.jpg', {
+      status: 'READY',
+      mimeType: 'image/jpeg',
+      contentLength: 3,
+    });
+
+    expect(prisma.vkParsingMediaCache.upsert).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to a ranged GET when media preflight HEAD is blocked', async () => {
