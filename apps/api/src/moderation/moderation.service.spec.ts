@@ -232,6 +232,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     voiceMessagesEnabled: true,
     phoneNumbersEnabled: true,
     messageLimitsBlockedWords: [],
+    messageLimitsBlockedDomains: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,

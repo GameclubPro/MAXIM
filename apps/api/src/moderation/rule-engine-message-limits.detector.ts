@@ -2,6 +2,7 @@ import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import type { RuleViolation } from './rule-engine.service';
 import { RedisCounterService } from './redis-counter.service';
+import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
 import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
 
 export const ANTI_SPAM_BURST_LIMIT = 5;
@@ -13,6 +14,7 @@ const PHONE_CONTEXT_WORD_PATTERN =
 
 export class RuleEngineMessageLimitsDetector {
   private readonly blockedWordDetector = new MessageLimitsBlockedWordDetector();
+  private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
 
   constructor(private readonly redisCounter: RedisCounterService) {}
 
@@ -108,6 +110,26 @@ export class RuleEngineMessageLimitsDetector {
       reason: `Blocked word detected: ${blockedWord.blockedWord}`,
       metadata: {
         blockedWord: blockedWord.blockedWord,
+      },
+    };
+  }
+
+  detectBlockedDomainLimit(params: { text: string; settings: ChatSettings }): RuleViolation | null {
+    const blockedDomain = this.blockedDomainDetector.detect(
+      params.text,
+      params.settings.messageLimitsBlockedDomains,
+    );
+    if (!blockedDomain) {
+      return null;
+    }
+
+    return {
+      ruleCode: 'MESSAGE_BLOCKED_DOMAIN',
+      score: 0.9,
+      reason: `Blocked domain detected: ${blockedDomain.blockedDomain}`,
+      metadata: {
+        blockedDomain: blockedDomain.blockedDomain,
+        matchedDomain: blockedDomain.matchedDomain,
       },
     };
   }

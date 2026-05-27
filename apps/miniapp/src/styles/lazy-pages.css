@@ -5191,6 +5191,28 @@
   gap: 10px;
 }
 
+.settings-word-banlist__segments {
+  padding: 4px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(244, 248, 252, 0.82)),
+    rgba(255, 255, 255, 0.78);
+}
+
+.settings-word-banlist__segments .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+
+.settings-word-banlist__mode-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
 .settings-word-banlist__preset-grid {
   display: flex;
   flex-wrap: wrap;
@@ -5431,6 +5453,8 @@
 }
 
 .settings-word-banlist__chip {
+  max-width: 100%;
+  min-width: 0;
   border: 0;
   border-radius: 999px;
   background: rgba(18, 30, 45, 0.92);
@@ -5445,7 +5469,18 @@
   cursor: pointer;
 }
 
+.settings-word-banlist__chip--domain {
+  background: #164e5c;
+}
+
+.settings-word-banlist__chip span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .settings-word-banlist__chip span:last-child {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5493,6 +5528,14 @@
 
   .settings-word-banlist__preset-card {
     flex-basis: auto;
+  }
+
+  .settings-word-banlist__add-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-word-banlist__add-button {
+    width: 100%;
   }
 }
 

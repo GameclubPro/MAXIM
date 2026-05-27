@@ -85,6 +85,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     phoneNumbersAdminContactButtonEnabled: false,
     phoneNumbersAdminContactButtonUrl: '',
     messageLimitsBlockedWords: [],
+    messageLimitsBlockedDomains: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
@@ -2559,6 +2560,71 @@ describe('RuleEngineService', () => {
         expect.objectContaining({
           ruleCode: 'MESSAGE_BLOCKED_WORD',
           metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+  });
+
+  it('detects MESSAGE_BLOCKED_DOMAIN for configured forbidden domains', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Бонусы тут: https://promo.casino.example/path',
+      settings: buildSettings({ messageLimitsBlockedDomains: ['casino.example'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_DOMAIN',
+          metadata: expect.objectContaining({
+            blockedDomain: 'casino.example',
+            matchedDomain: 'promo.casino.example',
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it('does not detect MESSAGE_BLOCKED_DOMAIN inside unrelated domains', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Новости тут: https://notcasino.example/path',
+      settings: buildSettings({ messageLimitsBlockedDomains: ['casino.example'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN')).toBe(
+      false,
+    );
+  });
+
+  it('detects MESSAGE_BLOCKED_DOMAIN when link policy only alerts', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Бонусы тут: https://casino.example/landing',
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.ALERT_ONLY,
+        messageLimitsBlockedDomains: ['casino.example'],
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_DOMAIN',
+          metadata: expect.objectContaining({
+            blockedDomain: 'casino.example',
+            matchedDomain: 'casino.example',
+          }),
         }),
       ]),
     );

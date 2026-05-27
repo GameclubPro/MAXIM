@@ -1,4 +1,5 @@
 import {
+  MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
@@ -71,7 +72,7 @@ import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
-import { SegmentedControl } from '../components/ui/segmented-control';
+import { SegmentedControl, type SegmentedOption } from '../components/ui/segmented-control';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
@@ -152,7 +153,9 @@ import {
   toManagedBroadcastTargetPreview,
 } from '../lib/broadcast-audience-presentation';
 import {
+  applyMessageLimitsBlockedDomainsInput,
   applyMessageLimitsBlockedWordsInput,
+  splitMessageLimitsBlockedDomainsInput,
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
 import { resolveAdminContactProfileUrl } from '../lib/admin-contact-profile-url';
@@ -370,6 +373,8 @@ type NumericChatSettingKey =
   | 'phoneNumbersMuteMaxCount'
   | 'phoneNumbersBanMaxCount';
 
+type StopWordsMode = 'words' | 'domains';
+
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -389,8 +394,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [domainInput, setDomainInput] = useState('');
   const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
   const [domainInputError, setDomainInputError] = useState('');
+  const [stopWordsMode, setStopWordsMode] = useState<StopWordsMode>('words');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
+  const [messageLimitsBlockedDomainsInput, setMessageLimitsBlockedDomainsInput] = useState('');
   const [messageLimitsBlockedWordsExpanded, setMessageLimitsBlockedWordsExpanded] = useState(false);
+  const [messageLimitsBlockedDomainsExpanded, setMessageLimitsBlockedDomainsExpanded] =
+    useState(false);
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
@@ -2513,6 +2522,69 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function addMessageLimitsBlockedDomains() {
+    if (!draft) {
+      return;
+    }
+
+    const { actions, addedDomains, nextDomains, removedDomains } =
+      applyMessageLimitsBlockedDomainsInput(
+        draft.messageLimitsBlockedDomains,
+        messageLimitsBlockedDomainsInput,
+        MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
+      );
+
+    if (actions.length === 0) {
+      if (messageLimitsBlockedDomainsInput.trim()) {
+        setFieldErrors((current) => ({
+          ...current,
+          messageLimitsBlockedDomains: 'Укажите домен или ссылку.',
+        }));
+      }
+      return;
+    }
+
+    if (addedDomains.length === 0 && removedDomains.length === 0) {
+      const hasAddActions = actions.some((action) => action.operation === 'add');
+      if (
+        hasAddActions &&
+        draft.messageLimitsBlockedDomains.length >= MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX
+      ) {
+        setFieldErrors((current) => ({
+          ...current,
+          messageLimitsBlockedDomains: 'Лимит доменов достигнут.',
+        }));
+      } else {
+        clearFieldError('messageLimitsBlockedDomains');
+      }
+      return;
+    }
+
+    clearFieldError('messageLimitsBlockedDomains');
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            messageLimitsBlockedDomains: nextDomains,
+          }
+        : current,
+    );
+    setMessageLimitsBlockedDomainsInput('');
+  }
+
+  function removeMessageLimitsBlockedDomain(domainToRemove: string) {
+    if (!draft) {
+      return;
+    }
+
+    setFieldValue(
+      'messageLimitsBlockedDomains',
+      draft.messageLimitsBlockedDomains.filter(
+        (domain) => domain !== domainToRemove,
+      ) as ChatSettings['messageLimitsBlockedDomains'],
+    );
+  }
+
   useEffect(() => {
     if (!rulesFailedSnapshot || rulesFailedSnapshot === rulesDraftSnapshot) {
       return;
@@ -3691,28 +3763,68 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
   );
   const messageLimitsBlockedWords = draft?.messageLimitsBlockedWords ?? [];
+  const messageLimitsBlockedDomains = draft?.messageLimitsBlockedDomains ?? [];
   const messageLimitsBlockedWordsError = fieldErrors.messageLimitsBlockedWords;
+  const messageLimitsBlockedDomainsError = fieldErrors.messageLimitsBlockedDomains;
   const messageLimitsBlockedWordsInputActions = splitMessageLimitsBlockedWordsInput(
     messageLimitsBlockedWordsInput,
+  );
+  const messageLimitsBlockedDomainsInputActions = splitMessageLimitsBlockedDomainsInput(
+    messageLimitsBlockedDomainsInput,
   );
   const hasMessageLimitsBlockedWordsRemoveInputActions = messageLimitsBlockedWordsInputActions.some(
     (action) => action.operation === 'remove',
   );
+  const hasMessageLimitsBlockedDomainsRemoveInputActions =
+    messageLimitsBlockedDomainsInputActions.some((action) => action.operation === 'remove');
   const messageLimitsBlockedWordsRemaining = Math.max(
     0,
     MESSAGE_LIMITS_BLOCKED_WORDS_MAX - messageLimitsBlockedWords.length,
+  );
+  const messageLimitsBlockedDomainsRemaining = Math.max(
+    0,
+    MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX - messageLimitsBlockedDomains.length,
   );
   const isMessageLimitsBlockedWordsApplyDisabled =
     !messageLimitsBlockedWordsInput.trim() ||
     (messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX &&
       messageLimitsBlockedWordsInputActions.length > 0 &&
       !hasMessageLimitsBlockedWordsRemoveInputActions);
+  const isMessageLimitsBlockedDomainsApplyDisabled =
+    !messageLimitsBlockedDomainsInput.trim() ||
+    (messageLimitsBlockedDomains.length >= MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX &&
+      messageLimitsBlockedDomainsInputActions.length > 0 &&
+      !hasMessageLimitsBlockedDomainsRemoveInputActions);
   const hasMessageLimitsBlockedWordsOverflow =
     messageLimitsBlockedWords.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
+  const hasMessageLimitsBlockedDomainsOverflow =
+    messageLimitsBlockedDomains.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
   const visibleMessageLimitsBlockedWords =
     hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
       ? messageLimitsBlockedWords.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
       : messageLimitsBlockedWords;
+  const visibleMessageLimitsBlockedDomains =
+    hasMessageLimitsBlockedDomainsOverflow && !messageLimitsBlockedDomainsExpanded
+      ? messageLimitsBlockedDomains.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
+      : messageLimitsBlockedDomains;
+  const messageLimitsBlockedWordsCaption =
+    hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
+      ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${formatRussianCountLabel(messageLimitsBlockedWords.length, 'слова', 'слов', 'слов')}`
+      : `Все ${formatRussianCountLabel(messageLimitsBlockedWords.length, 'слово', 'слова', 'слов')}`;
+  const messageLimitsBlockedDomainsCaption =
+    hasMessageLimitsBlockedDomainsOverflow && !messageLimitsBlockedDomainsExpanded
+      ? `Показаны последние ${visibleMessageLimitsBlockedDomains.length} из ${formatRussianCountLabel(messageLimitsBlockedDomains.length, 'домена', 'доменов', 'доменов')}`
+      : `Все ${formatRussianCountLabel(messageLimitsBlockedDomains.length, 'домен', 'домена', 'доменов')}`;
+  const stopWordsError =
+    stopWordsMode === 'words' ? messageLimitsBlockedWordsError : messageLimitsBlockedDomainsError;
+  const stopWordsTotalCount = messageLimitsBlockedWords.length + messageLimitsBlockedDomains.length;
+  const stopWordsSegmentOptions = useMemo<Array<SegmentedOption<StopWordsMode>>>(
+    () => [
+      { value: 'words', label: 'Слова', count: messageLimitsBlockedWords.length },
+      { value: 'domains', label: 'Домены', count: messageLimitsBlockedDomains.length },
+    ],
+    [messageLimitsBlockedDomains.length, messageLimitsBlockedWords.length],
+  );
   const messageLimitsBotButtonErrors =
     showMessageLimitsBotButtonErrors && fieldErrors.messageLimitsBotButtons
       ? validateBroadcastLinkButtons(draft?.messageLimitsBotButtons ?? [])
@@ -3724,6 +3836,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMessageLimitsBlockedWordsExpanded(false);
     }
   }, [hasMessageLimitsBlockedWordsOverflow, messageLimitsBlockedWordsExpanded]);
+
+  useEffect(() => {
+    if (!hasMessageLimitsBlockedDomainsOverflow && messageLimitsBlockedDomainsExpanded) {
+      setMessageLimitsBlockedDomainsExpanded(false);
+    }
+  }, [hasMessageLimitsBlockedDomainsOverflow, messageLimitsBlockedDomainsExpanded]);
   const showTextFiltersBotButtonErrors = Boolean(
     draft?.textFiltersBotMessageEnabled && draft?.textFiltersBotButtonEnabled,
   );
@@ -4041,11 +4159,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter(Boolean).length;
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
   const stopWordsHeaderSummary =
-    messageLimitsBlockedWords.length > 0
-      ? `Слов в списке: ${messageLimitsBlockedWords.length}`
+    stopWordsTotalCount > 0
+      ? `Слова: ${messageLimitsBlockedWords.length} · Домены: ${messageLimitsBlockedDomains.length}`
       : 'Список пуст';
-  const stopWordsCardStatus =
-    messageLimitsBlockedWords.length > 0 ? `${messageLimitsBlockedWords.length}` : 'Выкл';
+  const stopWordsCardStatus = stopWordsTotalCount > 0 ? `${stopWordsTotalCount}` : 'Выкл';
   const nightTimezoneLabel =
     RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
     'Москва (UTC+3)';
@@ -8840,104 +8957,200 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div
                         className={cn(
                           'settings-word-banlist',
-                          messageLimitsBlockedWordsError && 'settings-word-banlist--error',
+                          stopWordsError && 'settings-word-banlist--error',
                         )}
                       >
                         <div className="settings-word-banlist__head">
                           <span className="settings-native-toggle__title">Стоп-слова</span>
-                          {messageLimitsBlockedWords.length > 0 ? (
-                            <span className="chip chip--danger">
-                              {messageLimitsBlockedWords.length}
-                            </span>
+                          {stopWordsTotalCount > 0 ? (
+                            <span className="chip chip--danger">{stopWordsTotalCount}</span>
                           ) : null}
                         </div>
 
-                        <Suspense fallback={null}>
-                          <LazyMessageLimitsBlockedWordPresets
-                            selectedWords={draft.messageLimitsBlockedWords}
-                            remainingSlots={messageLimitsBlockedWordsRemaining}
-                            onApplyWords={applyMessageLimitsBlockedWords}
-                          />
-                        </Suspense>
+                        <SegmentedControl
+                          value={stopWordsMode}
+                          options={stopWordsSegmentOptions}
+                          onChange={setStopWordsMode}
+                          className="settings-word-banlist__segments"
+                          ariaLabel="Список стоп-фильтра"
+                        />
 
-                        <div className="settings-word-banlist__add-row">
-                          <input
-                            type="text"
-                            value={messageLimitsBlockedWordsInput}
-                            onChange={(event) => {
-                              setMessageLimitsBlockedWordsInput(event.target.value);
-                              clearFieldError('messageLimitsBlockedWords');
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ',') {
-                                event.preventDefault();
-                                addMessageLimitsBlockedWords();
-                              }
-                            }}
-                            placeholder="Слово, +слово или -слово"
-                            maxLength={240}
-                            aria-label="Изменить стоп-слова"
-                          />
-                          <button
-                            type="button"
-                            className="button button--accent settings-word-banlist__add-button"
-                            onClick={addMessageLimitsBlockedWords}
-                            disabled={isMessageLimitsBlockedWordsApplyDisabled}
+                        {stopWordsMode === 'words' ? (
+                          <div
+                            className="settings-word-banlist__mode-panel"
+                            role="tabpanel"
+                            aria-label="Стоп-слова"
                           >
-                            Применить
-                          </button>
-                        </div>
+                            <Suspense fallback={null}>
+                              <LazyMessageLimitsBlockedWordPresets
+                                selectedWords={draft.messageLimitsBlockedWords}
+                                remainingSlots={messageLimitsBlockedWordsRemaining}
+                                onApplyWords={applyMessageLimitsBlockedWords}
+                              />
+                            </Suspense>
 
-                        {messageLimitsBlockedWords.length > 0 ? (
-                          <>
-                            <div className="settings-word-banlist__chips-head">
-                              <small className="settings-word-banlist__chips-caption">
-                                {hasMessageLimitsBlockedWordsOverflow &&
-                                !messageLimitsBlockedWordsExpanded
-                                  ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${messageLimitsBlockedWords.length}`
-                                  : `Все ${messageLimitsBlockedWords.length} слов`}
-                              </small>
-                              {hasMessageLimitsBlockedWordsOverflow ? (
-                                <button
-                                  type="button"
-                                  className="settings-word-banlist__toggle"
-                                  onClick={() =>
-                                    setMessageLimitsBlockedWordsExpanded((current) => !current)
+                            <div className="settings-word-banlist__add-row">
+                              <input
+                                type="text"
+                                value={messageLimitsBlockedWordsInput}
+                                onChange={(event) => {
+                                  setMessageLimitsBlockedWordsInput(event.target.value);
+                                  clearFieldError('messageLimitsBlockedWords');
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ',') {
+                                    event.preventDefault();
+                                    addMessageLimitsBlockedWords();
                                   }
-                                  aria-expanded={messageLimitsBlockedWordsExpanded}
-                                  aria-controls="settings-stop-words-list"
-                                >
-                                  {messageLimitsBlockedWordsExpanded
-                                    ? 'Свернуть'
-                                    : `Показать все ${messageLimitsBlockedWords.length}`}
-                                </button>
-                              ) : null}
+                                }}
+                                placeholder="Слово, +слово или -слово"
+                                maxLength={240}
+                                aria-label="Изменить стоп-слова"
+                              />
+                              <button
+                                type="button"
+                                className="button button--accent settings-word-banlist__add-button"
+                                onClick={addMessageLimitsBlockedWords}
+                                disabled={isMessageLimitsBlockedWordsApplyDisabled}
+                              >
+                                Применить
+                              </button>
                             </div>
 
-                            <div
-                              className="settings-word-banlist__chips"
-                              id="settings-stop-words-list"
-                              aria-label="Стоп-слова"
-                            >
-                              {visibleMessageLimitsBlockedWords.map((word) => (
-                                <button
-                                  key={word}
-                                  type="button"
-                                  className="settings-word-banlist__chip"
-                                  onClick={() => removeMessageLimitsBlockedWord(word)}
-                                  aria-label={`Удалить слово ${word}`}
-                                >
-                                  <span>{word}</span>
-                                  <span aria-hidden>+</span>
-                                </button>
-                              ))}
-                            </div>
-                          </>
-                        ) : null}
+                            {messageLimitsBlockedWords.length > 0 ? (
+                              <>
+                                <div className="settings-word-banlist__chips-head">
+                                  <small className="settings-word-banlist__chips-caption">
+                                    {messageLimitsBlockedWordsCaption}
+                                  </small>
+                                  {hasMessageLimitsBlockedWordsOverflow ? (
+                                    <button
+                                      type="button"
+                                      className="settings-word-banlist__toggle"
+                                      onClick={() =>
+                                        setMessageLimitsBlockedWordsExpanded((current) => !current)
+                                      }
+                                      aria-expanded={messageLimitsBlockedWordsExpanded}
+                                      aria-controls="settings-stop-words-list"
+                                    >
+                                      {messageLimitsBlockedWordsExpanded
+                                        ? 'Свернуть'
+                                        : `Показать все ${messageLimitsBlockedWords.length}`}
+                                    </button>
+                                  ) : null}
+                                </div>
 
-                        <small className="field__hint">
-                          {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
-                        </small>
+                                <div
+                                  className="settings-word-banlist__chips"
+                                  id="settings-stop-words-list"
+                                  aria-label="Стоп-слова"
+                                >
+                                  {visibleMessageLimitsBlockedWords.map((word) => (
+                                    <button
+                                      key={word}
+                                      type="button"
+                                      className="settings-word-banlist__chip"
+                                      onClick={() => removeMessageLimitsBlockedWord(word)}
+                                      aria-label={`Удалить слово ${word}`}
+                                    >
+                                      <span>{word}</span>
+                                      <span aria-hidden>+</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            ) : null}
+
+                            <small className="field__hint">
+                              {messageLimitsBlockedWordsError ?? 'Слово, +слово или -слово.'}
+                            </small>
+                          </div>
+                        ) : (
+                          <div
+                            className="settings-word-banlist__mode-panel"
+                            role="tabpanel"
+                            aria-label="Запрещенные домены"
+                          >
+                            <div className="settings-word-banlist__add-row">
+                              <input
+                                type="text"
+                                value={messageLimitsBlockedDomainsInput}
+                                onChange={(event) => {
+                                  setMessageLimitsBlockedDomainsInput(event.target.value);
+                                  clearFieldError('messageLimitsBlockedDomains');
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ',') {
+                                    event.preventDefault();
+                                    addMessageLimitsBlockedDomains();
+                                  }
+                                }}
+                                placeholder="Домен, +домен или -домен"
+                                maxLength={320}
+                                aria-label="Изменить запрещенные домены"
+                              />
+                              <button
+                                type="button"
+                                className="button button--accent settings-word-banlist__add-button"
+                                onClick={addMessageLimitsBlockedDomains}
+                                disabled={isMessageLimitsBlockedDomainsApplyDisabled}
+                              >
+                                Применить
+                              </button>
+                            </div>
+
+                            {messageLimitsBlockedDomains.length > 0 ? (
+                              <>
+                                <div className="settings-word-banlist__chips-head">
+                                  <small className="settings-word-banlist__chips-caption">
+                                    {messageLimitsBlockedDomainsCaption}
+                                  </small>
+                                  {hasMessageLimitsBlockedDomainsOverflow ? (
+                                    <button
+                                      type="button"
+                                      className="settings-word-banlist__toggle"
+                                      onClick={() =>
+                                        setMessageLimitsBlockedDomainsExpanded(
+                                          (current) => !current,
+                                        )
+                                      }
+                                      aria-expanded={messageLimitsBlockedDomainsExpanded}
+                                      aria-controls="settings-stop-domains-list"
+                                    >
+                                      {messageLimitsBlockedDomainsExpanded
+                                        ? 'Свернуть'
+                                        : `Показать все ${messageLimitsBlockedDomains.length}`}
+                                    </button>
+                                  ) : null}
+                                </div>
+
+                                <div
+                                  className="settings-word-banlist__chips"
+                                  id="settings-stop-domains-list"
+                                  aria-label="Запрещенные домены"
+                                >
+                                  {visibleMessageLimitsBlockedDomains.map((domain) => (
+                                    <button
+                                      key={domain}
+                                      type="button"
+                                      className="settings-word-banlist__chip settings-word-banlist__chip--domain"
+                                      onClick={() => removeMessageLimitsBlockedDomain(domain)}
+                                      aria-label={`Удалить домен ${domain}`}
+                                    >
+                                      <span>{domain}</span>
+                                      <span aria-hidden>+</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            ) : null}
+
+                            <small className="field__hint">
+                              {messageLimitsBlockedDomainsError ??
+                                'Домен, ссылка, +домен или -домен.'}
+                            </small>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ) : null}

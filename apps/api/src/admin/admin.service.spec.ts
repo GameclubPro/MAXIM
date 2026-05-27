@@ -16574,6 +16574,7 @@ describe('AdminService settings screen endpoints', () => {
     const limitsSettingKeys = applySpy.mock.calls.at(-1)?.[5] as string[];
     expect(limitsSettingKeys).not.toContain('phoneNumbersEscalationWindowHours');
     expect(limitsSettingKeys).not.toContain('messageLimitsBlockedWords');
+    expect(limitsSettingKeys).not.toContain('messageLimitsBlockedDomains');
     expect(limitsResult.section).toBe('limits');
 
     const stopWordsResult = await service.applySettingsSectionToAllChats(
@@ -16593,7 +16594,7 @@ describe('AdminService settings screen endpoints', () => {
       settings,
       'miniapp',
       { mode: 'all', favoriteTypes: [], chatIds: [] },
-      ['messageLimitsBlockedWords'],
+      ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
     );
     expect(stopWordsResult.section).toBe('stopWords');
   });

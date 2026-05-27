@@ -905,6 +905,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'voiceMessagesEnabled', label: 'Разрешить голосовые', type: 'boolean' },
     { key: 'phoneNumbersEnabled', label: 'Разрешить телефоны', type: 'boolean' },
     { key: 'messageLimitsBlockedWords', label: 'Стоп-слова', type: 'text' },
+    { key: 'messageLimitsBlockedDomains', label: 'Запрещенные домены', type: 'text' },
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
@@ -1100,6 +1101,7 @@ const SECTION_CARD_FIELDS: Record<
       'voiceMessagesEnabled',
       'phoneNumbersEnabled',
       'messageLimitsBlockedWords',
+      'messageLimitsBlockedDomains',
     ],
     advanced: [
       'photoMessageCooldownEnabled',
@@ -8687,7 +8689,7 @@ export class PrivateControlService {
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
           `Контент: фото ${this.describeBooleanCompact(settings.photoMessagesEnabled)} • видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)} • телефоны ${this.describeBooleanCompact(settings.phoneNumbersEnabled)}`,
-          `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'}`,
+          `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'} • домены ${settings.messageLimitsBlockedDomains.length > 0 ? settings.messageLimitsBlockedDomains.length : 'выкл'}`,
           `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
         ];

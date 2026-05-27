@@ -103,6 +103,11 @@ import {
   type CachedActiveMuteState,
 } from './moderation-state.util';
 import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
+import {
+  buildMessageLimitsBlockedReason,
+  extractMessageLimitsBlockedToken,
+  isMessageLimitsBlockedListRuleCode,
+} from './message-limits-blocked-reason.util';
 import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -545,6 +550,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'COMMERCIAL_AD',
   'TOPIC_FILTER_MISMATCH',
   'MESSAGE_BLOCKED_WORD',
+  'MESSAGE_BLOCKED_DOMAIN',
   'PHONE_NUMBER_BLOCKED',
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
@@ -558,6 +564,7 @@ const NON_SANCTION_RULE_CODES = new Set([
 ]);
 const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_BLOCKED_WORD',
+  'MESSAGE_BLOCKED_DOMAIN',
   'PHONE_NUMBER_BLOCKED',
   'MESSAGE_TOO_LONG',
   'MESSAGE_RATE_LIMIT',
@@ -1801,6 +1808,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'PROFANITY') ??
         violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
+        violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') ??
         violations.find((item) => item.ruleCode === 'PHONE_NUMBER_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
         violations.find((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT') ??
@@ -1887,9 +1895,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
         const isMessageLimitsHit =
           this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;
-        const messageLimitsBlockedWord = this.extractMessageLimitsBlockedWord(
-          topViolation.metadata,
-        );
+        const messageLimitsBlockedWord = extractMessageLimitsBlockedToken(topViolation.metadata);
         const textFilterEscalationSettings = isTextFilterHit
           ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
           : null;
@@ -4312,8 +4318,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
 
-    if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
-      const reason = blockedWord ? `стоп-слово: ${blockedWord}` : 'слово из стоп-листа';
+    if (isMessageLimitsBlockedListRuleCode(ruleCode)) {
+      const reason = buildMessageLimitsBlockedReason(ruleCode, blockedWord);
       return this.renderEditableBotSpeechTemplate({
         style: botSpeechStyle ?? null,
         fieldKey: 'messageLimitsBotMessageText',
@@ -4604,8 +4610,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 'слишком длинное сообщение';
     }
 
-    if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
-      return blockedWord ? `стоп-слово: ${blockedWord}` : 'слово из стоп-листа';
+    if (isMessageLimitsBlockedListRuleCode(ruleCode)) {
+      return buildMessageLimitsBlockedReason(ruleCode, blockedWord);
     }
 
     if (ruleCode === 'PHONE_NUMBER_BLOCKED') {
@@ -4625,17 +4631,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return 'нарушение ограничений сообщений';
-  }
-
-  private extractMessageLimitsBlockedWord(metadata: unknown): string | null {
-    if (!metadata || typeof metadata !== 'object') {
-      return null;
-    }
-
-    const blockedWord = (metadata as { blockedWord?: unknown }).blockedWord;
-    return typeof blockedWord === 'string' && blockedWord.trim().length > 0
-      ? blockedWord.trim()
-      : null;
   }
 
   private buildBotMessageOptions(

@@ -1574,6 +1574,15 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'blocked-words');
 
+    const blockedDomainViolation = this.messageLimitsDetector.detectBlockedDomainLimit({
+      text,
+      settings,
+    });
+    if (blockedDomainViolation) {
+      violations.push(blockedDomainViolation);
+    }
+    markRuleEngineDetectStage(profile, 'blocked-domains');
+
     const phoneNumberViolation = this.messageLimitsDetector.detectPhoneNumberLimit({
       text,
       settings,

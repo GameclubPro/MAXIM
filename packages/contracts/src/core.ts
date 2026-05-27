@@ -86,6 +86,7 @@ export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT = 7;
 export const INVITATION_ACCESS_REQUIRED_COUNT_MIN = 1;
 export const INVITATION_ACCESS_REQUIRED_COUNT_MAX = 10;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
+export const MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX = 300;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
 export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
@@ -367,6 +368,14 @@ const messageLimitsBlockedWordsSchema = z
   .array(messageLimitsBlockedWordSchema)
   .max(MESSAGE_LIMITS_BLOCKED_WORDS_MAX, `До ${MESSAGE_LIMITS_BLOCKED_WORDS_MAX} слов.`)
   .default([]);
+const messageLimitsBlockedDomainSchema = z.string().trim().max(253);
+const messageLimitsBlockedDomainsSchema = z
+  .array(messageLimitsBlockedDomainSchema)
+  .max(
+    MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
+    `До ${MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX} доменов.`,
+  )
+  .default([]);
 const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
 const requiredSubscriptionChannelIdsSchema = z
   .array(z.string().trim().min(1).max(128))
@@ -425,6 +434,32 @@ export function normalizeMessageLimitsBlockedWordCandidate(value: string): strin
 
   const [candidate] = fragments;
   return candidate.length >= 2 && candidate.length <= 32 ? candidate : null;
+}
+
+export function normalizeMessageLimitsBlockedDomainCandidate(value: string): string | null {
+  const normalizedDomain = normalizeAllowlistDomain(value);
+  if (!normalizedDomain) {
+    return null;
+  }
+
+  const candidate = normalizedDomain
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/u, '')
+    .replace(/^www\./u, '');
+  if (candidate.length < 4 || candidate.length > 253 || !candidate.includes('.')) {
+    return null;
+  }
+
+  const labels = candidate.split('.');
+  if (
+    labels.length < 2 ||
+    labels.some((label) => label.length === 0 || label.length > 63)
+  ) {
+    return null;
+  }
+
+  return candidate;
 }
 
 function parseHttpButtonUrl(value: string): URL | null {
@@ -622,6 +657,7 @@ export const chatSettingsSchema = z
       phoneNumbersAdminContactButtonEnabled: z.boolean().default(false),
       phoneNumbersAdminContactButtonUrl: botButtonUrlSchema,
       messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
+      messageLimitsBlockedDomains: messageLimitsBlockedDomainsSchema,
       messageLimitsBotMessageEnabled: z.boolean().default(false),
       messageLimitsBotMessageText: botMessageTextSchema,
       messageLimitsWarnEnabled: z.boolean().default(false),
@@ -866,6 +902,30 @@ export const chatSettingsSchema = z
       }
 
       normalizedMessageLimitsBlockedWords.add(normalizedWord);
+    }
+
+    const normalizedMessageLimitsBlockedDomains = new Set<string>();
+    for (const rawDomain of value.messageLimitsBlockedDomains) {
+      const normalizedDomain = normalizeMessageLimitsBlockedDomainCandidate(rawDomain);
+      if (!normalizedDomain) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['messageLimitsBlockedDomains'],
+          message: 'Укажите домен или ссылку.',
+        });
+        break;
+      }
+
+      if (normalizedMessageLimitsBlockedDomains.has(normalizedDomain)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['messageLimitsBlockedDomains'],
+          message: 'Этот домен уже есть в списке.',
+        });
+        break;
+      }
+
+      normalizedMessageLimitsBlockedDomains.add(normalizedDomain);
     }
 
     const textFiltersBotButtons = resolveStoredLinkButtons({

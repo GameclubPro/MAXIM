@@ -25,6 +25,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageCountLimitMessages: 5,
     messageCountLimitWindowHours: 1,
     messageLimitsBlockedWords: [],
+    messageLimitsBlockedDomains: [],
     photoMessagesEnabled: true,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
@@ -85,6 +86,34 @@ describe('RuleEngineMessageLimitsDetector', () => {
       expect.objectContaining({ ruleCode: 'FILE_BLOCKED' }),
       expect.objectContaining({ ruleCode: 'VOICE_BLOCKED' }),
     ]);
+  });
+
+  it('detects blocked domains on exact hosts and subdomains', () => {
+    const detector = new RuleEngineMessageLimitsDetector(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      messageLimitsBlockedDomains: ['casino.example'],
+    });
+
+    expect(
+      detector.detectBlockedDomainLimit({
+        text: 'Бонусы тут: https://promo.casino.example/path',
+        settings,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        ruleCode: 'MESSAGE_BLOCKED_DOMAIN',
+        metadata: {
+          blockedDomain: 'casino.example',
+          matchedDomain: 'promo.casino.example',
+        },
+      }),
+    );
+    expect(
+      detector.detectBlockedDomainLimit({
+        text: 'Нейтральный домен: https://notcasino.example/path',
+        settings,
+      }),
+    ).toBeNull();
   });
 
   it('extracts formatted and contextual phone numbers without duplicates', () => {

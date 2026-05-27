@@ -213,6 +213,7 @@ function buildSettings(chatId: string): ChatSettings {
     phoneNumbersAdminContactButtonEnabled: false,
     phoneNumbersAdminContactButtonUrl: '',
     messageLimitsBlockedWords: [],
+    messageLimitsBlockedDomains: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,

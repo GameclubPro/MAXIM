@@ -1,6 +1,7 @@
 export {
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
+  MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
@@ -21,6 +22,7 @@ export {
   domainAllowlistEntrySchema,
   linkPolicySchema,
   normalizeMessageLimitsBlockedWordCandidate,
+  normalizeMessageLimitsBlockedDomainCandidate,
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,

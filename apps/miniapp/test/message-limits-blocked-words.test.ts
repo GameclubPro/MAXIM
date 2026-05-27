@@ -6,7 +6,10 @@ import {
 } from '../src/lib/message-limits-blocked-word-presets';
 import {
   applyMessageLimitsBlockedWordsInput,
+  applyMessageLimitsBlockedDomainsInput,
+  mergeMessageLimitsBlockedDomains,
   mergeMessageLimitsBlockedWords,
+  normalizeMessageLimitsBlockedDomains,
   splitMessageLimitsBlockedWordsInput,
   subtractMessageLimitsBlockedWords,
 } from '../src/lib/message-limits-blocked-words';
@@ -32,6 +35,41 @@ test('mergeMessageLimitsBlockedWords respects the max size and skips duplicates'
 
   assert.deepEqual(result.addedWords, ['ставка']);
   assert.deepEqual(result.nextWords, ['казино', 'ставка']);
+});
+
+test('blocked domains normalize urls and collapse covered subdomains', () => {
+  assert.deepEqual(
+    normalizeMessageLimitsBlockedDomains([
+      'https://www.casino.example/path',
+      'promo.casino.example',
+      'casino.example',
+      'bad.test',
+    ]),
+    ['casino.example', 'bad.test'],
+  );
+});
+
+test('applyMessageLimitsBlockedDomainsInput can remove and add domains', () => {
+  const result = applyMessageLimitsBlockedDomainsInput(
+    ['old.example', 'promo.casino.example'],
+    '-old.example +https://casino.example/landing',
+    10,
+  );
+
+  assert.deepEqual(result.removedDomains, ['old.example']);
+  assert.deepEqual(result.addedDomains, ['casino.example']);
+  assert.deepEqual(result.nextDomains, ['casino.example']);
+});
+
+test('mergeMessageLimitsBlockedDomains respects parent domain coverage', () => {
+  const result = mergeMessageLimitsBlockedDomains(
+    ['casino.example'],
+    ['promo.casino.example', 'spam.example'],
+    2,
+  );
+
+  assert.deepEqual(result.addedDomains, ['spam.example']);
+  assert.deepEqual(result.nextDomains, ['casino.example', 'spam.example']);
 });
 
 test('subtractMessageLimitsBlockedWords removes all matching words from a preset', () => {

@@ -1893,6 +1893,27 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   font-size: 0.76rem;
 }
 
+.settings-drilldown .settings-word-banlist__segments {
+  padding: 4px;
+  border-radius: 16px;
+}
+
+.settings-drilldown .settings-word-banlist__segments .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+
+.settings-drilldown .settings-word-banlist__mode-panel {
+  gap: 10px;
+}
+
+.settings-drilldown .settings-word-banlist__chip--domain {
+  background: #164e5c;
+}
+
 .settings-drilldown .bot-message-editor {
   padding: 9px;
   gap: 8px;

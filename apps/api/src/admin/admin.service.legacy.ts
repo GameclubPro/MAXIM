@@ -114,6 +114,7 @@ import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   inferAllowlistMatchType,
+  normalizeMessageLimitsBlockedDomainCandidate,
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeStoredAllowlistEntry,
   parseStoredAllowlistEntry,
@@ -942,7 +943,7 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
-  stopWords: ['messageLimitsBlockedWords'],
+  stopWords: ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',
@@ -10357,7 +10358,7 @@ export class AdminService implements OnModuleDestroy {
   ): ChatSettings {
     const normalized = this.normalizeNightModeSettings(
       this.normalizeInvitationAccessSettings(
-        this.normalizeMessageLimitsBlockedWords(
+        this.normalizeMessageLimitsBlockedLists(
           this.normalizeRequiredSubscriptionSettings(settings, currentState, options),
         ),
       ),
@@ -10550,18 +10551,17 @@ export class AdminService implements OnModuleDestroy {
     return currentExpiresAt;
   }
 
-  private normalizeMessageLimitsBlockedWords(settings: ChatSettings): ChatSettings {
+  private normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSettings {
     const messageLimitsBlockedWords = Array.from(
-      new Set(
-        settings.messageLimitsBlockedWords
-          .map((item) => normalizeMessageLimitsBlockedWordCandidate(item) ?? null)
-          .filter((item): item is string => Boolean(item)),
-      ),
+      new Set(settings.messageLimitsBlockedWords.flatMap((item) => normalizeMessageLimitsBlockedWordCandidate(item) ?? [])),
     );
-
+    const messageLimitsBlockedDomains = Array.from(
+      new Set(settings.messageLimitsBlockedDomains.flatMap((item) => normalizeMessageLimitsBlockedDomainCandidate(item) ?? [])),
+    );
     return {
       ...settings,
       messageLimitsBlockedWords,
+      messageLimitsBlockedDomains,
     };
   }
 
