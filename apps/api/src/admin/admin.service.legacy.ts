@@ -133,13 +133,9 @@ import {
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
-  type BroadcastScheduleMode,
   type BroadcastImage,
-  type BroadcastMediaType,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_IMAGES,
-  MAX_BROADCAST_IMAGE_BASE64_LENGTH,
-  MAX_BROADCAST_IMAGES_TOTAL_BASE64,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -154,7 +150,6 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   DialogNotificationMode as PrismaDialogNotificationMode,
-  ManagedEntityFavoriteType as PrismaManagedEntityFavoriteType,
   ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
   EventType,
   ManagedBroadcastStatus as PrismaManagedBroadcastStatus,
@@ -228,7 +223,6 @@ import {
   escapeHtmlAttribute,
   escapeHtmlPreservingWhitespace,
   renderMaxTextMarkupAsHtml,
-  type MaxTextMarkup,
 } from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
@@ -302,869 +296,241 @@ import {
   selectModerationFeedReadModelRows,
   type ChannelStatsContentBucketRow,
   type ChannelStatsMembershipBucketRow,
-  type ModerationFeedReadModelRow,
 } from './stats-read-model-selectors';
 
-type ApplySettingsToAllChatsResult = {
-  sourceChatId: string;
-  updatedChats: number;
-  appliedChatIds: string[];
-};
-
-type ManagedEntityTypeFilter = ManagedEntityType | 'all';
-
-type ManagedEntitiesListResult = {
-  items: ChatSummary[];
-  refresh: ManagedEntitiesRefreshState | null;
-  fullScanCandidateIds?: string[];
-  snapshot?: ManagedEntitiesResponseSnapshot | null;
-  diff?: ManagedEntitiesResponseDiff | null;
-};
-
-type ManagedEntitiesRefreshPresentation = {
-  totalCandidates: number | null;
-  lastSyncedAt: string | null;
-};
-
-type ManagedEntitiesRefreshJobOutcome = {
-  continueAfterMs: number;
-} | null;
-
-type ManagedEntitiesManualRefreshBlockReason = 'in_progress' | 'recent_sync' | 'backoff';
-
-type ManagedEntitiesPublishedSnapshotReadResult = {
-  items: ChatSummary[];
-  version: string;
-  builtAt: string;
-  lastSyncedAt: string | null;
-};
-
-type ManagedEntitiesPublishedDiffReadResult = {
-  baseVersion: string;
-  nextVersion: string;
-  added: ChatSummary[];
-  updated: ChatSummary[];
-  removedIds: string[];
-  orderedIds: string[];
-};
-
-export type ChannelPublicationEngagementContext = {
-  buttons: MaxMessageButton[][];
-  threadId: string | null;
-  includeCommentsButton: boolean;
-  includeSuggestButton: boolean;
-  suggestButtonText: string | null;
-  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
-  suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
-};
-
-const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
-const ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS = 30_000;
-
-type ManagedEntitiesListOptions = {
-  refresh?: boolean;
-  includeRefreshState?: boolean;
-  bypassRemoteCache?: boolean;
-  resetRefreshCursor?: boolean;
-  fresh?: boolean;
-  sinceVersion?: string;
-};
-
-type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
-type ManagedBotChatCatalogSnapshotRow = {
-  botId: string;
-  chatId: string;
-  entityType: ChatEntityType;
-  title: string | null;
-  link: string | null;
-  avatarUrl: string | null;
-  lastEventTime: string | null;
-  lastSeenAt: Date;
-};
-type ManagedBotChatMembershipSnapshotRow = {
-  botId: string;
-  lastSeenAt: Date | null;
-  lastWebhookAt: Date | null;
-  chat: {
-    id: string;
-    title: string;
-    entityType: ChatEntityType;
-    botId: string | null;
-    primaryBotId: string | null;
-  };
-};
-type ManagedEntityBotProfileSnapshot = {
-  avatarUrl: string | null;
-};
-
-type AssertChatAdminOptions = {
-  syncPersistedAccess?: boolean;
-  trafficClass?: 'critical' | 'interactive' | 'background';
-  timeoutMs?: number;
-  allowPersistedFallback?: boolean;
-};
-
-type AdminReadBypassOptions = {
-  skipAdminCheck?: boolean;
-  skipEntityCheck?: boolean;
-};
-
-type TimedPromiseCacheEntry<T> = {
-  expiresAtMs: number;
-  promise: Promise<T>;
-};
-
-type TimedValueCacheEntry<T> = {
-  expiresAtMs: number;
-  value: T;
-};
-
-type ManagedEntityBotAssignmentsRow = {
-  id: string;
-  botId: string | null;
-  primaryBotId: string | null;
-  botMemberships: Array<{
-    botId: string;
-    role: 'PRIMARY' | 'STANDBY';
-    status: 'ACTIVE' | 'REMOVED';
-    capabilities: unknown;
-    permissionsSnapshot: unknown;
-  }>;
-};
-
-type AdminAccessResolution =
-  | {
-      status: 'granted';
-      source: 'cache' | 'remote' | 'allowlist_fallback';
-      userRole?: ManagedEntityAccessRoleValue;
-      botRole?: ManagedEntityAccessRoleValue;
-    }
-  | {
-      status: 'denied';
-      source: 'cache' | 'remote';
-      reason: 'user_not_admin' | 'bot_not_admin';
-      userRole?: ManagedEntityAccessRoleValue;
-      botRole?: ManagedEntityAccessRoleValue;
-    }
-  | {
-      status: 'unknown';
-      error: unknown;
-    }
-  | {
-      status: 'throttled';
-      error: unknown;
-    };
-
-type ManagedEntityAccessRoleValue = 'OWNER' | 'ADMIN' | 'MEMBER' | 'UNKNOWN';
-type ManagedEntityAccessStateValue = 'GRANTED' | 'USER_DENIED' | 'BOT_DENIED';
-type ManagedEntityAccessEdgeRow = {
-  chatId: string;
-  botId: string;
-  state?: ManagedEntityAccessStateValue;
-  checkedAt?: Date | null;
-  expiresAt?: Date | null;
-};
-type ManagedEntityAccessEdgeClient = {
-  findMany: (args: unknown) => Promise<ManagedEntityAccessEdgeRow[]>;
-  upsert?: (args: unknown) => Promise<unknown>;
-  updateMany?: (args: unknown) => Promise<unknown>;
-};
-
-export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
-type ManualBanFollowUpSource = Extract<
-  AdminActionSource,
-  'miniapp' | 'group_command' | 'private_command'
->;
-
-type AdoptChatRulesFromMessageInput = {
-  sourceMessageId?: string | null;
-  sourceMessageUrl?: string | null;
-  text?: string | null;
-};
-
-type ManualMemberModerationAction = 'MUTE' | 'BAN';
-type ManualMemberManageMembersAction = ManualMemberModerationAction | 'UNBAN';
-type ManualModerationBotAction = 'delete_message' | 'moderate_member';
-type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
-type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
-type ManualModerationExecutionOptions = {
-  actorAlreadyVerified?: boolean;
-  preferredBotId?: string | null;
-  targetDisplayNameHint?: string | null;
-  allowTargetDisplayNameRemoteLookup?: boolean;
-};
-type ResolveManualModerationActionBotAssignmentOptions = {
-  preferredBotId?: string | null;
-};
-
-type ResolvedUserProfile = {
-  displayName: string | null;
-  avatarUrl: string | null;
-  profileUrl: string | null;
-  profileHandoffUrl: string | null;
-};
-
-type ResolveUserProfilesOptions = {
-  allowRemoteLookup?: boolean;
-};
-
-type ModerationFeedCursor = {
-  createdAt: Date;
-  id: string;
-};
-
-type ChatParticipantsSearchCursor = {
-  marker: string | null;
-  skip: number;
-  search: string;
-};
-
-type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
-  username?: string | null;
-  displayName?: string | null;
-  avatarUrl?: string | null;
-};
-
-type ChannelSuggestionImageAsset = {
-  base64?: string | null;
-  payload?: Record<string, unknown> | null;
-  mimeType?: string | null;
-  fileName?: string | null;
-};
-
-type ChannelDialogAttachmentAsset = {
-  kind: 'image' | 'file';
-  payload?: Record<string, unknown> | null;
-  base64?: string | null;
-  mimeType?: string | null;
-  fileName?: string | null;
-  previewBase64?: string | null;
-  width?: number | null;
-  height?: number | null;
-};
-
-type ChannelSuggestionTextMarkup = MaxTextMarkup;
-
-type ChannelSuggestionDeliveryInput = {
-  text: string;
-  textFormat?: BroadcastTextFormat | null;
-  textMarkup?: ChannelSuggestionTextMarkup[] | null;
-  images?: ChannelSuggestionImageAsset[] | null;
-  imageBase64?: string | null;
-  imageMimeType?: string | null;
-  imageFileName?: string | null;
-  mediaType?: 'image' | 'video' | null;
-  mediaPayload?: Record<string, unknown> | null;
-  mediaMimeType?: string | null;
-  mediaFileName?: string | null;
-};
-
-type ModerationViolationRow = ModerationFeedReadModelRow;
-
-type PreparedManagedBroadcastRequest = {
-  payload: SendBroadcastRequest;
-  targetChatIds: string[];
-  normalizedSourceText: string;
-};
-
-type ManagedBroadcastResolvedMedia = {
-  imagePayload?: Record<string, unknown>;
-  attachments?: MaxAttachmentPayload[];
-};
-
-type ManagedBroadcastMaxApiOptions = Pick<
-  MaxActionDispatchOptions,
-  'trafficClass' | 'actionHealthLane' | 'sourceTag'
->;
-
-type ManagedBroadcastSchedulePlan = {
-  scheduleMode: BroadcastScheduleMode;
-  scheduleTimezone: string;
-  upcomingSlots: Date[];
-  nextSendAt: Date | null;
-  cycleEnabled: boolean;
-  cycleEveryHours: number;
-  cycleCount: number;
-  sendAt: string | null;
-  sentCount: number;
-};
-
-type ManagedBroadcastBackgroundDecision = {
-  action: 'run' | 'slow' | 'pause';
-  reason: string;
-  retryAfterMs: number;
-};
-
-type ParsedManagedBroadcastCalendarSlots = {
-  upcomingSlots: Date[];
-  sentCount: number;
-};
-
-type BroadcastOccurrenceResult = {
-  status: PrismaManagedBroadcastStatus;
-  currentOccurrence: number;
-  sentChatIds: string[];
-  failedChatIds: string[];
-  pendingChatIds: string[];
-  canRetry: boolean;
-  firstSendError: unknown;
-  nextSendAt: Date | null;
-};
-
-type ManagedBroadcastDeliverySnapshot = {
-  currentOccurrence: number;
-  deliveredChats: number;
-  failedChats: number;
-  pendingChats: number;
-  blockedChats: number;
-  failureBreakdown: ManagedBroadcastFailureBreakdown;
-  canRetry: boolean;
-};
-
-type ManagedBroadcastTargetPreviewBundle = {
-  previews: ManagedBroadcastTargetPreview[];
-  overflowCount: number;
-};
-
-type ManagedBroadcastFailureBreakdown = {
-  transient: number;
-  permanentTarget: number;
-  quarantined: number;
-  unknown: number;
-};
-
-type MembershipEventRow = {
-  id: string;
-  created_at: Date | string;
-  event_type: string | null;
-  user_id: string | null;
-  sender_name: string | null;
-};
-
-const MAX_UPLOADED_IMAGE_BYTES = Math.floor((MAX_BROADCAST_IMAGE_BASE64_LENGTH * 3) / 4);
-const RULES_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
-const BROADCAST_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
-const BROADCAST_IMAGES_TOTAL_MAX_BYTES = Math.floor((MAX_BROADCAST_IMAGES_TOTAL_BASE64 * 3) / 4);
-const BROADCAST_MIN_DELAY_MS = 30_000;
-const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
-const MANAGED_BROADCAST_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const MANAGED_BROADCAST_HISTORY_LIMIT = 8;
-const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
-const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
-const BROADCAST_TIMEOUT_RETRY_DELAYS_MS = [1_500, 4_000, 10_000];
-const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
-const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
-const MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE = 2;
-const MANAGED_BROADCAST_RECOVERY_BATCH_SIZE = 2;
-const MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE = 1;
-const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
-const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
-const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
-const MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS = 6;
-const MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES = 3;
-const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS = MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
-const MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX =
-  'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки';
-const MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS = 15_000;
-const MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
-const MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT = 3;
-const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
-const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
-const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
-const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
-const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
-const CHANNEL_STATS_RESPONSE_CACHE_TTL_MS = 30_000;
-const CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS = 5_000;
-const SLOW_CHANNEL_STATS_THRESHOLD_MS = 1_500;
-const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
-const CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE = 2;
-const CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS = 700;
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
-const DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE = 'Europe/Moscow';
-const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
-const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
-const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 350;
-const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 550;
-const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 3;
-const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
-const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 6;
-const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 3;
-const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
-const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
-const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
-const MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE = 50;
-const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT = 3;
-const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS = 300;
-const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
-const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
-const MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS = 1_500;
-const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
-const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 1_200;
-const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_800;
-const MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS = 2_500;
-const MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS = 4_000;
-const MANAGED_ENTITIES_PRIORITY_ALLOWLIST_WARMUP_LIMIT = 12;
-const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
-const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
-const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
-const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
-const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
-const MANAGED_ENTITIES_PUBLISHED_DIFF_MAX_CHANGE_RATIO = 0.3;
-const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
-const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 45_000;
-const MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS = 30_000;
-const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
-const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
-const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 1_500;
-const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 3_000;
-const MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS = 15_000;
-const MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC = 30;
-const MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
-const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_COOLDOWN_MS = 60_000;
-const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_CONCURRENCY = 24;
-const MANAGED_BOT_CHAT_CATALOG_WRITE_CONCURRENCY = 8;
-const MANAGED_BOT_CHAT_CATALOG_FALLBACK_LIMIT = 20_000;
-const MANAGED_BOT_CHAT_CATALOG_MARK_MISSING_MAX_SEEN = 10_000;
-const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
-const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 8;
-const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
-const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
-const ADMIN_ACTION_HEALTH_LANE = 'background' as const;
-const ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY = 1;
-const ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY = 20;
-const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
-const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY = 2;
-const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS =
-  process.env.NODE_ENV === 'test' ? 0 : 250;
-const APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY = 4;
-const REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY = 3;
-const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
-const COMMENT_NOTIFICATION_DELIVERY_CONCURRENCY = 4;
-const COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH = 180;
-const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
-const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
-const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
-const CHANNEL_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
-const CHAT_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHAT_COMMENTS';
-const MANAGED_POLL_ACTION_UPDATE = 'UPDATE_MANAGED_POLL';
-const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
-const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
-const PRIVATE_CONTROL_CALLBACK_PREFIX = 'pc2';
-const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
-const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
-const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
-const CHAT_SETTINGS_BUTTON_GROUPS = [
-  {
-    buttons: 'linkBotButtons',
-    enabled: 'linkBotButtonEnabled',
-    url: 'linkBotButtonUrl',
-    text: 'linkBotButtonText',
-  },
-  {
-    buttons: 'greetingBotButtons',
-    enabled: 'greetingBotButtonEnabled',
-    url: 'greetingBotButtonUrl',
-    text: 'greetingBotButtonText',
-  },
-  {
-    buttons: 'textFiltersBotButtons',
-    enabled: 'textFiltersBotButtonEnabled',
-    url: 'textFiltersBotButtonUrl',
-    text: 'textFiltersBotButtonText',
-  },
-  {
-    buttons: 'thematicFiltersBotButtons',
-    enabled: 'thematicFiltersBotButtonEnabled',
-    url: 'thematicFiltersBotButtonUrl',
-    text: 'thematicFiltersBotButtonText',
-  },
-  {
-    buttons: 'duplicateBotButtons',
-    enabled: 'duplicateBotButtonEnabled',
-    url: 'duplicateBotButtonUrl',
-    text: 'duplicateBotButtonText',
-  },
-  {
-    buttons: 'messageLimitsBotButtons',
-    enabled: 'messageLimitsBotButtonEnabled',
-    url: 'messageLimitsBotButtonUrl',
-    text: 'messageLimitsBotButtonText',
-  },
-  {
-    buttons: 'nightModeBotButtons',
-    enabled: 'nightModeBotButtonEnabled',
-    url: 'nightModeBotButtonUrl',
-    text: 'nightModeBotButtonText',
-  },
-] as const satisfies ReadonlyArray<{
-  buttons: keyof ChatSettings;
-  enabled: keyof ChatSettings;
-  url: keyof ChatSettings;
-  text: keyof ChatSettings;
-}>;
-const CHANNEL_SETTINGS_BUTTON_URL_KEYS = [
-  'postSuggestionsButtonUrl',
-] as const satisfies readonly (keyof ChannelSettings)[];
-const CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY = {
-  postSuggestionsButtonUrl: 'postSuggestionsButtonEnabled',
-} as const satisfies Record<
-  (typeof CHANNEL_SETTINGS_BUTTON_URL_KEYS)[number],
-  keyof ChannelSettings
->;
-const SETTINGS_SECTION_KEYS = {
-  links: [
-    'linkPolicy',
-    'linkEscalationWindowHours',
-    'linkWarnMaxCount',
-    'linkMuteMaxCount',
-    'linkBanMaxCount',
-    'linkBotMessageEnabled',
-    'linkBotMessageText',
-    'linkWarnEnabled',
-    'linkWarnMessageText',
-    'linkBanEnabled',
-    'linkMuteEnabled',
-    'linkMuteDurationHours',
-    'linkBotButtons',
-    'linkBotButtonEnabled',
-    'linkBotButtonUrl',
-    'linkBotButtonText',
-    'linkAdminContactButtonEnabled',
-    'linkAdminContactButtonUrl',
-  ],
-  greeting: [
-    'greetingEnabled',
-    'greetingBotMessageEnabled',
-    'greetingDeleteBotMessageEnabled',
-    'greetingDeleteBotMessageDelayMinutes',
-    'greetingBotMessageText',
-    'greetingBotButtons',
-    'greetingBotButtonEnabled',
-    'greetingBotButtonUrl',
-    'greetingBotButtonText',
-    'greetingRulesButtonEnabled',
-  ],
-  profanityFilter: [
-    'russianProfanityFilterEnabled',
-    'profanityBotMessageEnabled',
-    'profanityWarnEnabled',
-    'profanityBanEnabled',
-    'profanityMuteEnabled',
-    'profanityMuteDurationHours',
-    'profanityAdminContactButtonEnabled',
-    'profanityAdminContactButtonUrl',
-  ],
-  commercialFilter: [
-    'commercialAdsFilterEnabled',
-    'commercialAdsSensitivity',
-    'commercialAdsWarnThreshold',
-    'commercialAdsDeleteThreshold',
-    'textFiltersBotMessageEnabled',
-    'textFiltersBotMessageText',
-    'textFiltersWarnEnabled',
-    'textFiltersWarnMessageText',
-    'textFiltersBanEnabled',
-    'textFiltersMuteEnabled',
-    'textFiltersMuteDurationHours',
-    'textFiltersBotButtons',
-    'textFiltersBotButtonEnabled',
-    'textFiltersBotButtonUrl',
-    'textFiltersBotButtonText',
-    'textFiltersAdminContactButtonEnabled',
-    'textFiltersAdminContactButtonUrl',
-  ],
-  thematicFilters: [
-    'thematicCodewordEnabled',
-    'thematicCodeword',
-    'thematicFiltersBotMessageEnabled',
-    'thematicFiltersWarnEnabled',
-    'thematicFiltersBanEnabled',
-    'thematicFiltersMuteEnabled',
-    'thematicFiltersMuteDurationHours',
-    'thematicFiltersBotButtons',
-    'thematicFiltersBotButtonEnabled',
-    'thematicFiltersBotButtonUrl',
-    'thematicFiltersBotButtonText',
-    'thematicFiltersAdminContactButtonEnabled',
-    'thematicFiltersAdminContactButtonUrl',
-  ],
-  duplicates: [
-    'antiDuplicateEnabled',
-    'duplicateDetectionPreset',
-    'duplicateIgnoreLinksEnabled',
-    'duplicateIgnorePhonesEnabled',
-    'duplicateNearMatchEnabled',
-    'duplicateWarnEnabled',
-    'duplicateMuteEnabled',
-    'duplicateBanEnabled',
-    'duplicateWarnWindowSec',
-    'duplicateWarnMaxCount',
-    'duplicateMuteWindowSec',
-    'duplicateMuteMaxCount',
-    'duplicateMuteDurationHours',
-    'duplicateBanWindowSec',
-    'duplicateBanMaxCount',
-    'duplicateBotMessageEnabled',
-    'duplicateBotMessageText',
-    'duplicateBotButtons',
-    'duplicateBotButtonEnabled',
-    'duplicateBotButtonUrl',
-    'duplicateBotButtonText',
-    'duplicateAdminContactButtonEnabled',
-    'duplicateAdminContactButtonUrl',
-  ],
-  limits: [
-    'antiSpamEnabled',
-    'messageCountLimitEnabled',
-    'messageCountLimitMessages',
-    'messageCountLimitWindowHours',
-    'maxMessageLengthEnabled',
-    'maxMessageLength',
-    'photoMessageCooldownEnabled',
-    'photoMessageCooldownHours',
-    'stickerMessageCooldownEnabled',
-    'stickerMessageCooldownMinutes',
-    'photoMessagesEnabled',
-    'videoMessagesEnabled',
-    'fileMessagesEnabled',
-    'voiceMessagesEnabled',
-    'messageLimitsBotMessageEnabled',
-    'messageLimitsBotMessageText',
-    'messageLimitsWarnEnabled',
-    'messageLimitsBanEnabled',
-    'messageLimitsMuteEnabled',
-    'messageLimitsMuteDurationHours',
-    'messageLimitsBotButtons',
-    'messageLimitsBotButtonEnabled',
-    'messageLimitsBotButtonUrl',
-    'messageLimitsBotButtonText',
-    'messageLimitsAdminContactButtonEnabled',
-    'messageLimitsAdminContactButtonUrl',
-    'phoneNumbersEnabled',
-  ],
-  stopWords: ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
-  phones: [
-    'phoneNumbersEnabled',
-    'phoneNumbersBotMessageEnabled',
-    'phoneNumbersBotMessageText',
-    'phoneNumbersWarnEnabled',
-    'phoneNumbersMuteEnabled',
-    'phoneNumbersMuteDurationHours',
-    'phoneNumbersBanEnabled',
-    'phoneNumbersEscalationWindowHours',
-    'phoneNumbersWarnMaxCount',
-    'phoneNumbersMuteMaxCount',
-    'phoneNumbersBanMaxCount',
-    'phoneNumbersAdminContactButtonEnabled',
-    'phoneNumbersAdminContactButtonUrl',
-  ],
-  night: [
-    'nightModeEnabled',
-    'nightModeStartTimeMinutes',
-    'nightModeEndTimeMinutes',
-    'nightModeTimezone',
-    'nightModeBotMessageEnabled',
-    'nightModeBotMessageText',
-    'nightModeCommentsEnabled',
-    'nightModeOpenMessageEnabled',
-    'nightModeOpenMessageText',
-    'nightModeBotButtons',
-    'nightModeBotButtonEnabled',
-    'nightModeBotButtonUrl',
-    'nightModeBotButtonText',
-    'nightModeRulesButtonEnabled',
-    'nightModeForceCloseEnabled',
-    'nightModeForceCloseForever',
-    'nightModeForceCloseHours',
-    'nightModeForceCloseDays',
-    'nightModeForceCloseUntil',
-  ],
-  requiredSubscription: [
-    'requiredSubscriptionEnabled',
-    'requiredSubscriptionChannelIds',
-    'requiredSubscriptionDurationDays',
-    'requiredSubscriptionExpiresAt',
-    'requiredSubscriptionBotMessageEnabled',
-    'requiredSubscriptionBotMessageText',
-    'requiredSubscriptionAdminContactButtonEnabled',
-    'requiredSubscriptionAdminContactButtonUrl',
-    'requiredSubscriptionWarnEnabled',
-    'requiredSubscriptionWarnMessageText',
-    'requiredSubscriptionBanEnabled',
-    'requiredSubscriptionMuteEnabled',
-    'requiredSubscriptionMuteDurationHours',
-  ],
-  invitationAccess: [
-    'invitationAccessEnabled',
-    'invitationAccessRequiredCount',
-    'invitationAccessBotMessageEnabled',
-    'invitationAccessBotMessageText',
-    'invitationAccessAdminContactButtonEnabled',
-    'invitationAccessAdminContactButtonUrl',
-    'invitationAccessWarnEnabled',
-    'invitationAccessWarnMessageText',
-    'invitationAccessBanEnabled',
-    'invitationAccessMuteEnabled',
-    'invitationAccessMuteDurationHours',
-  ],
-  extra: [
-    'deleteSpammersEnabled',
-    'deleteBotMessagesEnabled',
-    'deleteBotMessagesDelayMinutes',
-    'removeBotsFromGroupEnabled',
-  ],
-} as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
-const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
-const MANAGED_ENTITY_FAVORITE_TYPE_ORDER: ManagedEntityFavoriteType[] = [
-  'important',
-  'watch',
-  'broadcast',
-  'test',
-  'partner',
-  'service',
-];
-const PRISMA_FAVORITE_TYPE_BY_CONTRACT = {
-  important: PrismaManagedEntityFavoriteType.IMPORTANT,
-  watch: PrismaManagedEntityFavoriteType.WATCH,
-  broadcast: PrismaManagedEntityFavoriteType.BROADCAST,
-  test: PrismaManagedEntityFavoriteType.TEST,
-  partner: PrismaManagedEntityFavoriteType.PARTNER,
-  service: PrismaManagedEntityFavoriteType.SERVICE,
-} as const satisfies Record<ManagedEntityFavoriteType, PrismaManagedEntityFavoriteType>;
-const CONTRACT_FAVORITE_TYPE_BY_PRISMA = {
-  [PrismaManagedEntityFavoriteType.IMPORTANT]: 'important',
-  [PrismaManagedEntityFavoriteType.WATCH]: 'watch',
-  [PrismaManagedEntityFavoriteType.BROADCAST]: 'broadcast',
-  [PrismaManagedEntityFavoriteType.TEST]: 'test',
-  [PrismaManagedEntityFavoriteType.PARTNER]: 'partner',
-  [PrismaManagedEntityFavoriteType.SERVICE]: 'service',
-} as const satisfies Record<PrismaManagedEntityFavoriteType, ManagedEntityFavoriteType>;
-const APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT = 8;
-const REQUIRED_SUBSCRIPTION_DURATION_DAY_MS = 24 * 60 * 60 * 1_000;
-const CHANNEL_STATS_POST_ACTIONS = [
-  CHANNEL_DIALOG_ACTION_PUBLISH,
-  CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
-] as const;
-const CHANNEL_STATS_ACTIVITY_ACTIONS = [
-  ...CHANNEL_STATS_POST_ACTIONS,
+import {
+  DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
+  ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS,
+  RULES_IMAGE_MAX_BYTES,
+  BROADCAST_IMAGE_MAX_BYTES,
+  BROADCAST_IMAGES_TOTAL_MAX_BYTES,
+  BROADCAST_MIN_DELAY_MS,
+  BROADCAST_MAX_DELAY_MS,
+  MANAGED_BROADCAST_HISTORY_WINDOW_MS,
+  MANAGED_BROADCAST_HISTORY_LIMIT,
+  BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
+  BROADCAST_THROTTLE_RETRY_DELAYS_MS,
+  BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
+  BROADCAST_CALENDAR_SLOT_MINUTES,
+  MANAGED_BROADCAST_DUE_BATCH_SIZE,
+  MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE,
+  MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
+  MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE,
+  MANAGED_BROADCAST_DUE_MAX_PASSES,
+  MANAGED_BROADCAST_LOCK_STALE_MS,
+  MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS,
+  MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS,
+  MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES,
+  MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS,
+  MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX,
+  MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS,
+  MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS,
+  MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT,
+  LOGS_DASHBOARD_VIOLATIONS_LIMIT,
+  MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+  LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
+  SLOW_LOGS_DASHBOARD_THRESHOLD_MS,
+  EVENTS_FEED_PAGE_CACHE_TTL_MS,
+  CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
+  CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS,
+  SLOW_CHANNEL_STATS_THRESHOLD_MS,
+  RESOLVED_USER_PROFILE_CACHE_TTL_MS,
+  CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE,
+  CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS,
+  ONE_HOUR_MS,
+  TWENTY_FOUR_HOURS_MS,
+  DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE,
+  MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT,
+  LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+  MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS,
+  MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS,
+  MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE,
+  MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT,
+  MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
+  MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE,
+  MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE,
+  MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS,
+  MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS,
+  MANAGED_ENTITIES_ALLOWLIST_EDGE_REPAIR_BATCH_SIZE,
+  MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT,
+  MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
+  MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS,
+  MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
+  MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
+  MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
+  MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS,
+  MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS,
+  MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS,
+  MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS,
+  MANAGED_ENTITIES_PRIORITY_ALLOWLIST_WARMUP_LIMIT,
+  MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+  MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC,
+  MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC,
+  MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC,
+  MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC,
+  MANAGED_ENTITIES_PUBLISHED_DIFF_MAX_CHANGE_RATIO,
+  MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+  MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS,
+  MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS,
+  MANAGED_ENTITIES_REFRESH_BACKOFF_MS,
+  MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS,
+  MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
+  MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS,
+  MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
+  MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC,
+  MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS,
+  MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_COOLDOWN_MS,
+  MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_CONCURRENCY,
+  MANAGED_BOT_CHAT_CATALOG_WRITE_CONCURRENCY,
+  MANAGED_BOT_CHAT_CATALOG_FALLBACK_LIMIT,
+  MANAGED_BOT_CHAT_CATALOG_MARK_MISSING_MAX_SEEN,
+  MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES,
+  MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE,
+  MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY,
+  ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+  ADMIN_ACTION_HEALTH_LANE,
+  ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY,
+  ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY,
+  APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
+  APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
+  APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS,
+  APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
+  REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+  CHANNEL_DIALOG_MESSAGES_LIMIT,
+  COMMENT_NOTIFICATION_DELIVERY_CONCURRENCY,
+  COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH,
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
-] as const;
-const CHANNEL_STATS_MISSING_METRICS = ['reach', 'uniqueViews'] as const;
-const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
-type ChannelStatsViewMode = 'observedDelta' | 'latestTotal';
-type ChannelStatsPostRow = {
-  id: string;
-  messageId: string;
-  publishedAt: Date;
-  url: string | null;
-  latestViews: number;
-  latestReactions: Prisma.JsonValue | null;
-  latestReactionsTotal: number;
-  latestSnapshotAt: Date | null;
-};
-type ChannelStatsViewSnapshotRow = {
-  channelPostId: string;
-  views: number;
-  capturedAt: Date;
-};
-type ChannelStatsPostViewMetric = {
-  post: ChannelStatsPostRow;
-  viewsDelta: number;
-  viewsCurrent: number;
-  hasObservedDelta: boolean;
-};
-type ChannelStatsContentBucketPoint = {
-  at: string;
-  posts: number;
-  viewsDelta: number;
-  viewsTotal: number;
-  reactions: number;
-};
-type ChannelStatsPeriodTotals = {
-  joined: number;
-  left: number;
-  net: number;
-  posts: number;
-  views: number;
-  viewsTotal: number;
-  averageViewsPerPost: number;
-  reactions: number;
-};
-type ChannelStatsComparisonSeries = NonNullable<ChannelStatsResponse['comparison']['series']>;
-type ChannelStatsPreviousPeriodSnapshot = {
-  totals: ChannelStatsPeriodTotals;
-  series: ChannelStatsComparisonSeries;
-};
-type ChannelStatsDeltaMetric = ChannelStatsResponse['comparison']['deltas']['views'];
-type ChannelStatsSignalTone = ChannelStatsResponse['signals']['insights'][number]['tone'];
-type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
-type ChannelStatsGraphMarker = ChannelStatsResponse['signals']['markers'][number];
-type ChannelStatsBestWindow = ChannelStatsResponse['signals']['bestWindows'][number];
-const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
-const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
-const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
-const PROFILE_MENTION_START_PREFIX = 'pmh-';
-const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 30;
-const RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT = 100;
-const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 500;
-const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 2_500;
-const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 8;
-const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 350;
-const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 300;
-const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS = 350;
-const RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS = 120_000;
-const SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS = 1_500;
-const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
-const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
-const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * TWENTY_FOUR_HOURS_MS;
-const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * TWENTY_FOUR_HOURS_MS;
-const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
-  'message_created',
-  'message_callback',
-  'bot_started',
-  'bot_added',
-] as const;
-const LOCAL_USER_DISPLAY_NAME_EVENT_TYPES = [
-  ...MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
-  'user_added',
-  'user_removed',
-] as const;
-class ManagedEntitiesRefreshThrottledError extends Error {
-  constructor(readonly cause: unknown) {
-    super('Managed entity refresh throttled');
-    this.name = 'ManagedEntitiesRefreshThrottledError';
-  }
-}
-
-type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
-type DialogMessageEntityType = 'chat' | 'channel';
-type CommentDialogNotificationKind = 'reply' | 'all';
-
-type ChannelSuggestionFromBotPayload = {
-  token: string;
-  images: ChannelSuggestionImageAsset[];
-  text: string;
-  textFormat: BroadcastTextFormat;
-  textMarkup: ChannelSuggestionTextMarkup[];
-  imageBase64: string | null;
-  imageMimeType: string | null;
-  imageFileName: string | null;
-  mediaType: 'image' | 'video' | null;
-  mediaPayload: Record<string, unknown> | null;
-  mediaMimeType: string | null;
-  mediaFileName: string | null;
-};
-
-type ChannelSuggestionReviewAction = 'publish' | 'cancel';
-
-type ChannelSuggestionAdminDelivery = {
-  adminUserId: string;
-  privateChatId: string;
-  messageId: string;
-  botId?: string;
-};
+  CHANNEL_DIALOG_ACTION_PUBLISH,
+  CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+  CHAT_DIALOG_ACTION_AUTO_ATTACH,
+  MANAGED_POLL_ACTION_UPDATE,
+  MANAGED_POLL_ACTION_PUBLISH,
+  MANAGED_POLL_ACTION_CLOSE,
+  PRIVATE_CONTROL_CALLBACK_PREFIX,
+  CHANNEL_DIALOG_START_PARAM_PREFIX,
+  DEFAULT_CHAT_SETTINGS,
+  DEFAULT_CHANNEL_SETTINGS,
+  CHAT_SETTINGS_BUTTON_GROUPS,
+  CHANNEL_SETTINGS_BUTTON_URL_KEYS,
+  CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY,
+  SETTINGS_SECTION_KEYS,
+  REQUIRED_SUBSCRIPTION_SETTING_KEYS,
+  MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
+  PRISMA_FAVORITE_TYPE_BY_CONTRACT,
+  CONTRACT_FAVORITE_TYPE_BY_PRISMA,
+  APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT,
+  REQUIRED_SUBSCRIPTION_DURATION_DAY_MS,
+  CHANNEL_STATS_POST_ACTIONS,
+  CHANNEL_STATS_ACTIVITY_ACTIONS,
+  CHANNEL_STATS_MISSING_METRICS,
+  CHANNEL_STATS_REFRESH_STALE_MS,
+  CHANNEL_COMMENT_DUPLICATE_WINDOW_MS,
+  CHANNEL_COMMENT_MAX_CONSECUTIVE,
+  CHANNEL_COMMENT_LINK_PATTERN,
+  PROFILE_MENTION_START_PREFIX,
+  RECENT_BOT_ADDED_BOOTSTRAP_LIMIT,
+  RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT,
+  RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT,
+  RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS,
+  RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS,
+  RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
+  RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS,
+  RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS,
+  RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS,
+  SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+  MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT,
+  MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS,
+  MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS,
+  MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
+  MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
+  LOCAL_USER_DISPLAY_NAME_EVENT_TYPES,
+  ManagedEntitiesRefreshThrottledError,
+  mapManagedEntityTypeToChatEntityType,
+  normalizeBroadcastScheduleMode,
+  readBooleanConfigFlag,
+  readManagedBroadcastMediaType,
+  readNonNegativeConfigInt,
+  sleep,
+  sleepIfNeeded,
+  type ApplySettingsToAllChatsResult,
+  type ManagedEntityTypeFilter,
+  type ManagedEntitiesListResult,
+  type ManagedEntitiesRefreshPresentation,
+  type ManagedEntitiesRefreshJobOutcome,
+  type ManagedEntitiesManualRefreshBlockReason,
+  type ManagedEntitiesPublishedSnapshotReadResult,
+  type ManagedEntitiesPublishedDiffReadResult,
+  type ChannelPublicationEngagementContext,
+  type ManagedEntitiesListOptions,
+  type ManagedEntitiesDiscoverySnapshot,
+  type ManagedBotChatCatalogSnapshotRow,
+  type ManagedBotChatMembershipSnapshotRow,
+  type ManagedEntityBotProfileSnapshot,
+  type AssertChatAdminOptions,
+  type AdminReadBypassOptions,
+  type TimedPromiseCacheEntry,
+  type TimedValueCacheEntry,
+  type ManagedEntityBotAssignmentsRow,
+  type AdminAccessResolution,
+  type ManagedEntityAccessRoleValue,
+  type ManagedEntityAccessStateValue,
+  type ManagedEntityAccessEdgeClient,
+  type AdminActionSource,
+  type ManualBanFollowUpSource,
+  type AdoptChatRulesFromMessageInput,
+  type ManualMemberModerationAction,
+  type ManualMemberManageMembersAction,
+  type ManualModerationBotAction,
+  type ManualBanExecutionMode,
+  type ManualUnbanExecutionMode,
+  type ManualModerationExecutionOptions,
+  type ResolveManualModerationActionBotAssignmentOptions,
+  type ResolvedUserProfile,
+  type ResolveUserProfilesOptions,
+  type ModerationFeedCursor,
+  type ChatParticipantsSearchCursor,
+  type ChannelSuggestionActor,
+  type ChannelSuggestionImageAsset,
+  type ChannelDialogAttachmentAsset,
+  type ChannelSuggestionTextMarkup,
+  type ChannelSuggestionDeliveryInput,
+  type ModerationViolationRow,
+  type PreparedManagedBroadcastRequest,
+  type ManagedBroadcastResolvedMedia,
+  type ManagedBroadcastMaxApiOptions,
+  type ManagedBroadcastSchedulePlan,
+  type ManagedBroadcastBackgroundDecision,
+  type ParsedManagedBroadcastCalendarSlots,
+  type BroadcastOccurrenceResult,
+  type ManagedBroadcastDeliverySnapshot,
+  type ManagedBroadcastTargetPreviewBundle,
+  type ManagedBroadcastFailureBreakdown,
+  type MembershipEventRow,
+  type ChannelStatsViewMode,
+  type ChannelStatsPostRow,
+  type ChannelStatsViewSnapshotRow,
+  type ChannelStatsPostViewMetric,
+  type ChannelStatsContentBucketPoint,
+  type ChannelStatsPeriodTotals,
+  type ChannelStatsComparisonSeries,
+  type ChannelStatsPreviousPeriodSnapshot,
+  type ChannelStatsDeltaMetric,
+  type ChannelStatsSignalTone,
+  type ChannelStatsSignal,
+  type ChannelStatsGraphMarker,
+  type ChannelStatsBestWindow,
+  type ChannelDialogMessageSource,
+  type DialogMessageEntityType,
+  type CommentDialogNotificationKind,
+  type ChannelSuggestionFromBotPayload,
+  type ChannelSuggestionReviewAction,
+  type ChannelSuggestionAdminDelivery,
+} from './admin.service.support';
+export type {
+  AdminActionSource,
+  ChannelPublicationEngagementContext,
+} from './admin.service.support';
 
 @Injectable()
 export class AdminService implements OnModuleDestroy {
@@ -1307,27 +673,27 @@ export class AdminService implements OnModuleDestroy {
       ),
     );
     this.systemAccessConfig = readSystemAccessConfig(configService);
-    this.manualFanoutLookupSpacingMs = this.readNonNegativeConfigInt(
+    this.manualFanoutLookupSpacingMs = readNonNegativeConfigInt(
       configService.get<number>('MANUAL_FANOUT_LOOKUP_SPACING_MS'),
       process.env.NODE_ENV === 'test' ? 0 : 180,
     );
-    this.manualFanoutActionSpacingMs = this.readNonNegativeConfigInt(
+    this.manualFanoutActionSpacingMs = readNonNegativeConfigInt(
       configService.get<number>('MANUAL_FANOUT_ACTION_SPACING_MS'),
       process.env.NODE_ENV === 'test' ? 0 : 120,
     );
-    this.managedEntitiesPublishedSnapshotReadEnabled = this.readBooleanConfigFlag(
+    this.managedEntitiesPublishedSnapshotReadEnabled = readBooleanConfigFlag(
       configService.get<string>('MANAGED_ENTITIES_SNAPSHOT_READ_ENABLED'),
       true,
     );
-    this.managedEntitiesPublishedSnapshotWriteEnabled = this.readBooleanConfigFlag(
+    this.managedEntitiesPublishedSnapshotWriteEnabled = readBooleanConfigFlag(
       configService.get<string>('MANAGED_ENTITIES_SNAPSHOT_WRITE_ENABLED'),
       true,
     );
-    this.managedEntitiesPublishedDiffReadEnabled = this.readBooleanConfigFlag(
+    this.managedEntitiesPublishedDiffReadEnabled = readBooleanConfigFlag(
       configService.get<string>('MANAGED_ENTITIES_DIFF_READ_ENABLED'),
       true,
     );
-    this.managedEntitiesPublishedDiffWriteEnabled = this.readBooleanConfigFlag(
+    this.managedEntitiesPublishedDiffWriteEnabled = readBooleanConfigFlag(
       configService.get<string>('MANAGED_ENTITIES_DIFF_WRITE_ENABLED'),
       true,
     );
@@ -2258,10 +1624,7 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     items: readonly ChatSummary[],
   ): Promise<ChatSummary[]> {
-    if (
-      items.length === 0 ||
-      typeof this.chatContextCache.getAdminAccess !== 'function'
-    ) {
+    if (items.length === 0 || typeof this.chatContextCache.getAdminAccess !== 'function') {
       return items.map((item) => this.cloneManagedEntitySummary(item));
     }
 
@@ -3741,10 +3104,7 @@ export class AdminService implements OnModuleDestroy {
   private resolveManagedEntityDiscoveryBotIds(
     candidate: Pick<MaxBotChat, 'botId' | 'botIds'>,
   ): string[] {
-    return this.normalizeRuntimeManagedEntityBotIds([
-      candidate.botId,
-      ...(candidate.botIds ?? []),
-    ]);
+    return this.normalizeRuntimeManagedEntityBotIds([candidate.botId, ...(candidate.botIds ?? [])]);
   }
 
   private resolveManagedEntityAccessRepairBotIds(chat: ChatSummary): string[] {
@@ -6987,9 +6347,7 @@ export class AdminService implements OnModuleDestroy {
           {
             botId: normalizedBotId,
             err:
-              membershipError instanceof Error
-                ? membershipError.message
-                : String(membershipError),
+              membershipError instanceof Error ? membershipError.message : String(membershipError),
           },
           'Failed to load managed bot chat membership discovery supplement',
         );
@@ -10553,10 +9911,18 @@ export class AdminService implements OnModuleDestroy {
 
   private normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSettings {
     const messageLimitsBlockedWords = Array.from(
-      new Set(settings.messageLimitsBlockedWords.flatMap((item) => normalizeMessageLimitsBlockedWordCandidate(item) ?? [])),
+      new Set(
+        settings.messageLimitsBlockedWords.flatMap(
+          (item) => normalizeMessageLimitsBlockedWordCandidate(item) ?? [],
+        ),
+      ),
     );
     const messageLimitsBlockedDomains = Array.from(
-      new Set(settings.messageLimitsBlockedDomains.flatMap((item) => normalizeMessageLimitsBlockedDomainCandidate(item) ?? [])),
+      new Set(
+        settings.messageLimitsBlockedDomains.flatMap(
+          (item) => normalizeMessageLimitsBlockedDomainCandidate(item) ?? [],
+        ),
+      ),
     );
     return {
       ...settings,
@@ -10977,7 +10343,7 @@ export class AdminService implements OnModuleDestroy {
 
     const link = snapshot.link?.trim() || null;
     const entityType = snapshot.entityType;
-    const prismaEntityType = this.mapManagedEntityTypeToChatEntityType(entityType);
+    const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
 
     const header = this.createManagedEntityHeader({
       id: normalizedChatId,
@@ -11740,7 +11106,7 @@ export class AdminService implements OnModuleDestroy {
 
     const baseWhere = {
       sourceChatId,
-      entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+      entityType: mapManagedEntityTypeToChatEntityType(entityType),
     };
     const [activeRows, recentRows] = await Promise.all([
       this.prisma.managedBroadcast.findMany({
@@ -11868,7 +11234,7 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    const prismaEntityType = this.mapManagedEntityTypeToChatEntityType(entityType);
+    const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
     const occurrences = await this.prisma.managedBroadcastOccurrence.findMany({
       where: {
         entityType: prismaEntityType,
@@ -11945,7 +11311,7 @@ export class AdminService implements OnModuleDestroy {
           fromPrismaEntityType(row.entityType),
         );
         const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
-        const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
+        const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
         const hasImage = this.readManagedBroadcastImagesFromRow(row).length > 0;
 
         return {
@@ -11987,7 +11353,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+        entityType: mapManagedEntityTypeToChatEntityType(entityType),
       },
     });
     if (!row) {
@@ -12022,7 +11388,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+        entityType: mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -12061,7 +11427,7 @@ export class AdminService implements OnModuleDestroy {
 
     const schedulePlan = await this.planManagedBroadcastSchedule(
       sourceChatId,
-      this.mapManagedEntityTypeToChatEntityType(entityType),
+      mapManagedEntityTypeToChatEntityType(entityType),
       request.payload,
       existing.sentCount,
       existing.id,
@@ -12137,7 +11503,7 @@ export class AdminService implements OnModuleDestroy {
         await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
           broadcastId: existing.id,
           sourceChatId,
-          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          entityType: mapManagedEntityTypeToChatEntityType(entityType),
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
           targetChatIds: request.targetChatIds,
@@ -12202,7 +11568,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+        entityType: mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -12290,7 +11656,7 @@ export class AdminService implements OnModuleDestroy {
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+        entityType: mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
         },
@@ -12888,7 +12254,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<SendBroadcastResult> {
     const schedulePlan = await this.planManagedBroadcastSchedule(
       sourceChatId,
-      this.mapManagedEntityTypeToChatEntityType(entityType),
+      mapManagedEntityTypeToChatEntityType(entityType),
       request.payload,
       0,
       null,
@@ -12902,7 +12268,7 @@ export class AdminService implements OnModuleDestroy {
       const createdBroadcast = await tx.managedBroadcast.create({
         data: {
           sourceChatId,
-          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          entityType: mapManagedEntityTypeToChatEntityType(entityType),
           actorUserId: user.userId,
           text: request.payload.text,
           textFormat: request.payload.textFormat,
@@ -12950,7 +12316,7 @@ export class AdminService implements OnModuleDestroy {
         await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
           broadcastId: createdBroadcast.id,
           sourceChatId,
-          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          entityType: mapManagedEntityTypeToChatEntityType(entityType),
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
           targetChatIds: request.targetChatIds,
@@ -13143,11 +12509,11 @@ export class AdminService implements OnModuleDestroy {
           imageMimeType: row.imageMimeType,
           imageFileName: row.imageFileName,
           images: this.readManagedBroadcastImagesFromRow(row),
-          mediaType: this.readManagedBroadcastMediaType(row.mediaType),
+          mediaType: readManagedBroadcastMediaType(row.mediaType),
           mediaPayload: this.readObjectPayloadOrNull(row.mediaPayload),
           mediaMimeType: row.mediaMimeType,
           mediaFileName: row.mediaFileName,
-          scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+          scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
           scheduleTimezone: row.scheduleTimezone,
           scheduledSlots: [],
           replaceConflictingSlots: false,
@@ -13670,7 +13036,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private readManagedBroadcastImagesFromRow(row: PersistedManagedBroadcast): BroadcastImage[] {
-    if (this.readManagedBroadcastMediaType(row.mediaType) === 'image') {
+    if (readManagedBroadcastMediaType(row.mediaType) === 'image') {
       const payloadImages = this.readManagedBroadcastMediaPayloadImages(row.mediaPayload);
       if (payloadImages.length > 0) {
         return payloadImages;
@@ -13797,19 +13163,6 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private mapManagedEntityTypeToChatEntityType(entityType: ManagedEntityType): ChatEntityType {
-    return entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
-  }
-
-  private normalizeBroadcastScheduleMode(value: string): BroadcastScheduleMode {
-    return value === 'calendar' ? 'calendar' : 'legacy';
-  }
-
-  private readManagedBroadcastMediaType(value: unknown): BroadcastMediaType | null {
-    const normalized = this.readLowerString(value);
-    return normalized === 'image' || normalized === 'video' ? normalized : null;
-  }
-
   private buildManagedBroadcastMaxApiOptions(
     trafficClass: NonNullable<ManagedBroadcastMaxApiOptions['trafficClass']>,
   ): ManagedBroadcastMaxApiOptions {
@@ -13847,7 +13200,7 @@ export class AdminService implements OnModuleDestroy {
     sentCount: number,
     excludeBroadcastId: string | null,
   ): Promise<ManagedBroadcastSchedulePlan> {
-    const scheduleMode = this.normalizeBroadcastScheduleMode(payload.scheduleMode);
+    const scheduleMode = normalizeBroadcastScheduleMode(payload.scheduleMode);
     const scheduleTimezone = payload.scheduleTimezone.trim() || 'Europe/Moscow';
 
     if (scheduleMode === 'calendar') {
@@ -14216,7 +13569,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<void> {
     if (
       overwrittenSlotsMs.size === 0 ||
-      this.normalizeBroadcastScheduleMode(row.scheduleMode) !== 'calendar'
+      normalizeBroadcastScheduleMode(row.scheduleMode) !== 'calendar'
     ) {
       return;
     }
@@ -14313,7 +13666,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const calendarRows = rows.filter(
-      (row) => this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar',
+      (row) => normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar',
     );
     const occurrences =
       calendarRows.length > 0
@@ -14336,7 +13689,7 @@ export class AdminService implements OnModuleDestroy {
 
     const result = new Map<string, Date[]>();
     for (const row of rows) {
-      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
         const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
         const upcoming = (groupedOccurrences.get(row.id) ?? [])
           .filter((occurrence) => occurrence.occurrenceIndex >= currentOccurrence)
@@ -15110,7 +14463,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
-    if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+    if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
       await this.prisma.managedBroadcastOccurrence.updateMany({
         where: {
           broadcastId: row.id,
@@ -15249,7 +14602,7 @@ export class AdminService implements OnModuleDestroy {
           firstSendError,
         );
       }
-      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
         await this.prisma.managedBroadcastOccurrence.updateMany({
           where: {
             broadcastId: row.id,
@@ -15296,7 +14649,7 @@ export class AdminService implements OnModuleDestroy {
           firstSendError,
         );
       }
-      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
         await this.prisma.managedBroadcastOccurrence.updateMany({
           where: {
             broadcastId: row.id,
@@ -15325,7 +14678,7 @@ export class AdminService implements OnModuleDestroy {
     const nextSentCount = currentOccurrence;
     let nextSendAt: Date | null;
     let isComplete: boolean;
-    if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+    if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
       const nextOccurrence = await this.getManagedBroadcastOccurrenceAtIndex(
         row.id,
         currentOccurrence + 1,
@@ -15526,7 +14879,7 @@ export class AdminService implements OnModuleDestroy {
       buttonText: row.buttonText,
     });
     const images = this.readManagedBroadcastImagesFromRow(row);
-    const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
+    const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
     const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
 
     return {
@@ -15551,7 +14904,7 @@ export class AdminService implements OnModuleDestroy {
       hasVideo,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,
-      scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+      scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
       scheduleTimezone: row.scheduleTimezone,
       scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
@@ -15593,7 +14946,7 @@ export class AdminService implements OnModuleDestroy {
       buttonUrl: row.buttonUrl,
       buttonText: row.buttonText,
     });
-    const mediaType = this.readManagedBroadcastMediaType(row.mediaType);
+    const mediaType = readManagedBroadcastMediaType(row.mediaType);
     const images = this.readManagedBroadcastImagesFromRow(row);
     const firstImage = images[0];
     const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
@@ -15621,7 +14974,7 @@ export class AdminService implements OnModuleDestroy {
       mediaPayload: mediaType ? this.readObjectPayloadOrNull(row.mediaPayload) : null,
       mediaMimeType: mediaType ? row.mediaMimeType : '',
       mediaFileName: mediaType ? row.mediaFileName : '',
-      scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+      scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
       scheduleTimezone: row.scheduleTimezone,
       scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
@@ -15789,60 +15142,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private async sleepIfNeeded(ms: number): Promise<void> {
-    if (!Number.isFinite(ms) || ms <= 0) {
-      return;
-    }
-
-    await this.sleep(ms);
-  }
-
-  private readNonNegativeConfigInt(value: unknown, fallback: number): number {
-    const numericValue =
-      typeof value === 'number'
-        ? value
-        : typeof value === 'string' && value.trim().length > 0
-          ? Number(value)
-          : Number.NaN;
-
-    if (Number.isFinite(numericValue) && numericValue >= 0) {
-      return Math.trunc(numericValue);
-    }
-
-    return fallback;
-  }
-
-  private readBooleanConfigFlag(value: unknown, fallback: boolean): boolean {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-
-    if (typeof value !== 'string') {
-      return fallback;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    if (
-      normalized === '1' ||
-      normalized === 'true' ||
-      normalized === 'yes' ||
-      normalized === 'on'
-    ) {
-      return true;
-    }
-    if (
-      normalized === '0' ||
-      normalized === 'false' ||
-      normalized === 'no' ||
-      normalized === 'off'
-    ) {
-      return false;
-    }
-
-    return fallback;
+    return sleep(ms);
   }
 
   private async safeDeleteManagedBroadcast(broadcastId: string): Promise<void> {
@@ -19196,7 +18496,7 @@ export class AdminService implements OnModuleDestroy {
 
     for (const [index, chat] of chats.entries()) {
       if (index > 0) {
-        await this.sleepIfNeeded(this.manualFanoutLookupSpacingMs);
+        await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
       }
 
       const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
@@ -19302,7 +18602,7 @@ export class AdminService implements OnModuleDestroy {
 
     for (const [index, chat] of chats.entries()) {
       if (index > 0) {
-        await this.sleepIfNeeded(this.manualFanoutLookupSpacingMs);
+        await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
       }
 
       const resolvedBotId = await this.resolveManualModerationActionBotAssignment(
@@ -19355,7 +18655,7 @@ export class AdminService implements OnModuleDestroy {
       }
 
       try {
-        await this.sleepIfNeeded(this.manualFanoutActionSpacingMs);
+        await sleepIfNeeded(this.manualFanoutActionSpacingMs);
         const executionMode = await this.resolveManualBanExecutionMode(chat.id, resolvedBotId);
         if (executionMode === 'MAX_REMOVE_ONLY') {
           await this.maxClient.kickMember(chat.id, targetUserId, {
@@ -19488,7 +18788,7 @@ export class AdminService implements OnModuleDestroy {
 
     for (const [index, messageId] of candidateMessageIds.entries()) {
       if (index > 0) {
-        await this.sleepIfNeeded(options.spacingMs ?? 0);
+        await sleepIfNeeded(options.spacingMs ?? 0);
       }
 
       try {
@@ -24370,10 +23670,10 @@ export class AdminService implements OnModuleDestroy {
 
     const subscriptionModes = new Map(
       subscriptions
-        .map((subscription) => [
-          this.readTrimmedString(subscription.userId),
-          subscription.mode,
-        ] as const)
+        .map(
+          (subscription) =>
+            [this.readTrimmedString(subscription.userId), subscription.mode] as const,
+        )
         .filter((entry): entry is readonly [string, PrismaDialogNotificationMode] =>
           Boolean(entry[0]),
         ),
@@ -24432,10 +23732,7 @@ export class AdminService implements OnModuleDestroy {
       chatId: params.chatId,
       botId: deliveryBotId,
     });
-    const preview = this.buildCommentDialogNotificationPreview(
-      params.text,
-      params.attachmentCount,
-    );
+    const preview = this.buildCommentDialogNotificationPreview(params.text, params.attachmentCount);
     const buttons: MaxMessageButton[][] = [
       [
         {
@@ -24723,9 +24020,7 @@ export class AdminService implements OnModuleDestroy {
       ? `<a href="${escapeHtmlAttribute(params.entityLink)}">${entityTitle}</a>`
       : entityTitle;
     const title =
-      params.kind === 'reply'
-        ? 'Вам ответили в комментариях'
-        : 'Новый комментарий в обсуждении';
+      params.kind === 'reply' ? 'Вам ответили в комментариях' : 'Новый комментарий в обсуждении';
 
     return [
       `<strong>${escapeHtml(title)}</strong>`,
@@ -27350,7 +26645,7 @@ export class AdminService implements OnModuleDestroy {
       [...params.chatIds],
       APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
       async (chatId) => {
-        await this.sleepIfNeeded(APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS);
+        await sleepIfNeeded(APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS);
         await this.refreshManagedEntityBotAccessSnapshots(
           chatId,
           'chat',
@@ -28903,8 +28198,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const visibleChatIds = new Set(visibleChats.map((chat) => chat.id));
-    const missingEdgeCandidates = candidates
-      .filter((chat) => !visibleChatIds.has(chat.id));
+    const missingEdgeCandidates = candidates.filter((chat) => !visibleChatIds.has(chat.id));
     if (missingEdgeCandidates.length === 0) {
       return [];
     }
@@ -28933,9 +28227,7 @@ export class AdminService implements OnModuleDestroy {
         return { chat, botIds, allowlistedAt };
       })
       .filter(
-        (
-          candidate,
-        ): candidate is { chat: ChatSummary; botIds: string[]; allowlistedAt: Date } =>
+        (candidate): candidate is { chat: ChatSummary; botIds: string[]; allowlistedAt: Date } =>
           candidate !== null,
       );
     if (repairCandidates.length === 0) {

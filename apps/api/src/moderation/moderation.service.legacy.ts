@@ -21,7 +21,6 @@ import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   type BotSpeechEditableFieldKey,
-  type BotSpeechPersona,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
 } from '@maxim/contracts/bot-speech';
@@ -75,15 +74,7 @@ import { raceWithTimeout } from '../common/promise-timeout.util';
 import { buildUserAgreementShortNotice } from '../common/user-agreement-notice';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
-import {
-  getJoinWebhookShardConcurrencies,
-  moderationBackgroundTasksEnabled,
-} from '../runtime/moderation-runtime';
-import {
-  readPositiveInt,
-  resolveModerationConcurrencySplit,
-  resolveShardConcurrencyDistribution,
-} from './moderation-concurrency.util';
+import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
@@ -153,494 +144,167 @@ import {
   WEBHOOK_QUEUE_CRITICAL,
 } from '../webhook/webhook-queues';
 
-const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
-const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
-const BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
-type ActiveMute = {
-  eventId: string;
-  issuedAt: Date;
-  expiresAt: Date | null;
-  durationHours: number | null;
-  permanent: boolean;
-};
-type ActiveMuteCacheReadResult =
-  | { status: 'active'; mute: ActiveMute }
-  | { status: 'inactive' }
-  | { status: 'miss' };
-type ChatAdminCheckSource = 'remote' | 'local' | 'remote+local' | 'local_fallback';
-type ChatAdminCheckResult = {
-  isAdmin: boolean;
-  source: ChatAdminCheckSource;
-};
-type RequiredSubscriptionChannelMetadata = {
-  id: string;
-  title: string;
-  link: string | null;
-  usable: boolean;
-  checkMembership: boolean;
-};
-type SharedChatExecutionGuard =
-  | {
-      mode: 'allow';
-      activeBotId: string | null;
-      primaryBotId: string | null;
-      assignedBotIds: string[];
-      requiresExecutionLock: boolean;
-      lockScope?: 'owner' | 'chat';
-    }
-  | {
-      mode: 'skip' | 'blocked-join-check-only';
-      activeBotId: string | null;
-      primaryBotId: string | null;
-      assignedBotIds: string[];
-      reason: 'non-primary-bot' | 'removed-membership';
-    };
-type RemoteChatAdminAccessState = 'granted' | 'user_denied';
-type ManagedChannelContext = {
-  channelSettings: PersistedChannelSettings;
-  adminUserIds: string[];
-};
-type ChannelAutoPostMessageText = {
-  text: string | null;
-  textFormat: MaxSendMessageOptions['textFormat'] | null;
-};
-type ChannelAutoPostScanState = {
-  latestTimestampMs: number;
-  latestMessageIdsAtTimestamp: string[];
-  idleStreak: number;
-  nextScanAtMs: number;
-  terminalFailureClosedAtMs: number | null;
-  terminalFailureReason: string | null;
-};
-type ManualGroupCloseListedMessage = {
-  messageId: string;
-  text: string | null;
-  timestampMs: number;
-  senderId: string | null;
-};
-type ChannelAutoPostExecutionPlan = {
-  batchSize: number;
-  interChannelDelayMs: number;
-  maxNewMessagesPerScan: number;
-};
-type PendingChatAdminLookup = {
-  cacheKey: string;
-  userId: string;
-  staleCached: RemoteChatAdminAccessState | null;
-  resolve: (value: RemoteChatAdminAccessState | null) => void;
-};
-type PendingChatAdminLookupBatch = {
-  chatId: string;
-  lookups: Map<string, PendingChatAdminLookup>;
-  scheduled: boolean;
-};
-type PendingChatAdminSharedCacheRead = {
-  cacheKey: string;
-  userId: string;
-  resolve: (value: RemoteChatAdminAccessState | null) => void;
-  reject: (reason?: unknown) => void;
-};
-type PendingChatAdminSharedCacheBatch = {
-  chatId: string;
-  reads: Map<string, PendingChatAdminSharedCacheRead>;
-  scheduled: boolean;
-};
-type PendingGlobalSpammerExemptionLookup = {
-  userId: string;
-  resolve: (value: boolean) => void;
-  reject: (reason?: unknown) => void;
-};
-
-type PendingGlobalSpammerExemptionLookupBatch = {
-  scopeKey: string;
-  adminUserIds: string[];
-  lookups: Map<string, PendingGlobalSpammerExemptionLookup>;
-  scheduled: boolean;
-};
-
-type WebhookHotPathProfile = {
-  startedAtMs: number;
-  lastMarkedAtMs: number;
-  latestStage: string;
-  stages: Map<string, number>;
-  stageTimelineMs: Map<string, number>;
-  successBoundaryReached: boolean;
-  successBoundaryStage: string | null;
-};
-
-type RulesButtonReference = {
-  publishedUrl: string | null;
-  publishedMessageId: string | null;
-};
-
-type RequiredSubscriptionMembershipLookupOptions = {
-  forceFresh?: boolean;
-  allowStaleOnError?: boolean;
-};
-
-type InvitationAccessProgressSnapshot = {
-  invitedUserIds: string[];
-  invitedCount: number;
-  completedAt: Date | null;
-};
-
-type InvitationAccessProgressUpdateResult = InvitationAccessProgressSnapshot & {
-  addedInviteeUserIds: string[];
-  completed: boolean;
-};
-
-type InvitationAccessProgressDelegate = {
-  findUnique?: (args: {
-    where: { chatId_userId: { chatId: string; userId: string } };
-    select: { invitedUserIds: true; completedAt: true };
-  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null } | null>;
-  create?: (args: {
-    data: {
-      chatId: string;
-      userId: string;
-      invitedUserIds: string[];
-      completedAt?: Date;
-    };
-    select: { invitedUserIds: true; completedAt: true };
-  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null }>;
-  update?: (args: {
-    where: { chatId_userId: { chatId: string; userId: string } };
-    data: {
-      invitedUserIds: { set: string[] };
-      completedAt?: Date;
-    };
-    select: { invitedUserIds: true; completedAt: true };
-  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null }>;
-};
-
-type ChannelDialogType = 'comments' | 'suggest';
-
-type ModerationActionAttemptResult =
-  | { status: 'success' }
-  | { status: 'no_candidates' }
-  | { status: 'backoff_blocked' }
-  | {
-      status: 'terminal_error';
-      attemptedBotIds: string[];
-      error: unknown;
-    };
-
-type AdminForwardedModerationCommand =
-  | {
-      action: 'BAN';
-    }
-  | {
-      action: 'MUTE';
-      muteDurationHours?: number;
-      mutePermanent?: true;
-    }
-  | {
-      action: 'RULES';
-    };
-
-type ForwardedModerationTarget = {
-  chatId: string;
-  chatTitle: string | null;
-  userId: string;
-  senderName: string | null;
-  messageId: string | null;
-};
-
-type ForwardedRulesSource = {
-  chatId: string;
-  chatTitle: string | null;
-  messageId: string | null;
-  url: string | null;
-  text: string | null;
-};
-
-const DEFAULT_MUTE_DURATION_HOURS = 6;
-const MAX_ACTIVE_MUTE_DURATION_HOURS = 336;
-const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
-const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
-  'delete',
-  'delete_message',
-  'delete_messages',
-  'can_delete_message',
-  'can_delete_messages',
-  'post_edit_delete_message',
-  'post_edit_delete_messages',
-  'can_post_edit_delete_message',
-  'can_post_edit_delete_messages',
-]);
-const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
-  'add_remove_members',
-  'can_add_remove_members',
-  'remove_members',
-  'can_remove_members',
-  'manage_members',
-  'can_manage_members',
-  'kick_members',
-  'can_kick_members',
-  'ban_members',
-  'can_ban_members',
-  'delete_members',
-  'can_delete_members',
-]);
-const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
-const RULES_BOT_BUTTON_TEXT = 'Правила';
-const RULES_CALLBACK_PAYLOAD = 'rules:open';
-const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
-const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
-const NIGHT_MODE_OPEN_NOTICE_RULE_CODE = 'NIGHT_MODE_OPEN_NOTICE';
-const LINK_ESCALATION_WINDOW_HOURS = 24;
-const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
-const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
-const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
-const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
-const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 90;
-const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 45;
-const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
-const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
-const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 10 * 60_000;
-const DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT = 3;
-const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
-const INVITATION_ACCESS_ESCALATION_WINDOW_HOURS = 24;
-const INVITATION_ACCESS_NOTICE_COOLDOWN_SEC = 15 * 60;
-const INVITATION_ACCESS_RULE_CODE = 'INVITATION_ACCESS_REQUIRED';
-const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
-const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 30 * 60 * 1_000;
-const MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS = 1_500;
-const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
-const REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS = 5 * 60 * 1_000;
-const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
-const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
-const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set([
-  'violation-follow-up',
-  'required-subscription.follow-up',
-]);
-const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
-const BOT_NOTICE_TOKEN_BUCKET_TTL_SEC = 60;
-const DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT = 6;
-const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
-const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
-const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
-const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
-const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
-const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
-const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
-const ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS = 10 * 60_000;
-const ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS = 450;
-const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
-const DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS = 30_000;
-const CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS = 5_000;
-const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
-const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
-const CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS = 750;
-const CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
-const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
-const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
-  readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
-);
-const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(process.env.MODERATION_CONCURRENCY_LEGACY, 1);
-const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_CRITICAL,
-  MODERATION_CONCURRENCY_SPLIT.critical,
-);
-const JOIN_MODERATION_SHARD_CONCURRENCIES_BY_NAME = getJoinWebhookShardConcurrencies();
-const JOIN_MODERATION_SHARD_CONCURRENCIES = JOIN_WEBHOOK_QUEUE_NAMES.map(
-  (queueName) => JOIN_MODERATION_SHARD_CONCURRENCIES_BY_NAME[queueName],
-);
-const DEFAULT_MODERATION_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_DEFAULT,
-  MODERATION_CONCURRENCY_SPLIT.default,
-);
-const DEFAULT_MODERATION_SHARD_CONCURRENCY_DEFAULTS = resolveShardConcurrencyDistribution(
-  DEFAULT_MODERATION_CONCURRENCY,
-  DEFAULT_WEBHOOK_QUEUE_NAMES.length,
-);
-const DEFAULT_MODERATION_SHARD_CONCURRENCIES = DEFAULT_WEBHOOK_QUEUE_NAMES.map((_, index) =>
-  readPositiveInt(
-    process.env[`MODERATION_CONCURRENCY_DEFAULT_SHARD_${index}`],
-    DEFAULT_MODERATION_SHARD_CONCURRENCY_DEFAULTS[index] ?? 1,
-  ),
-);
-const BACKGROUND_MODERATION_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_BACKGROUND,
-  MODERATION_CONCURRENCY_SPLIT.background,
-);
-const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
-const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
-const PRIVATE_MENU_CALLBACK_MENU = 'private_menu:menu';
-const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
-const PRIVATE_MENU_CALLBACK_CHANNELS = 'private_menu:channels';
-const PRIVATE_MENU_CALLBACK_HELP = 'private_menu:help';
-const PRIVATE_BOT_CHATS_PREVIEW_LIMIT = 12;
-const MAX_FORWARD_SCAN_DEPTH = 8;
-const DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 30_000;
-const DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS = 8;
-const DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS = 150;
-const DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
-const DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS = 30_000;
-const DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS = 15_000;
-const DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN = 3;
-const DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS = 10 * 60 * 1_000;
-const CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR = 2;
-const CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS = 500;
-const CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN = 1;
-const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS = 15_000;
-const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS = 8;
-const DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS = 150;
-const DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS = 2 * 60 * 1_000;
-const DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS = 5_000;
-const DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN = 10;
-const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS = 2 * 60 * 1_000;
-const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
-const MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC = Math.ceil(
-  MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS / 1_000,
-);
-const MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS = 60_000;
-const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
-const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
-const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
-const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC = 5;
-const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE = 0.75;
-const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE = 4;
-const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
-const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
-const SHARED_CHAT_EXECUTION_LOCK_TTL_MS = 45_000;
-const DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS = 1_000;
-const DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS = 1_000;
-const DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS = 10_000;
-const WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS = 5_000;
-const WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS = 1_500;
-const REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS = 1_000;
-const VIOLATION_ADMIN_RECHECK_RESERVE_MS = 250;
-const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
-const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
-const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
-const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
-const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
-const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
-const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
-const GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS = GLOBAL_SPAMMER_REDIS_TTL_SEC * 1_000;
-const GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS = 60_000;
-const GLOBAL_SPAMMER_WARN_MIN_CHATS = 5;
-const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 6;
-const GLOBAL_SPAMMER_WARN_THRESHOLD = 2;
-const GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC = 7 * 24 * 60 * 60;
-const GREETING_BURST_WINDOW_SEC = 60;
-const GREETING_BURST_LIMIT = 3;
-const GREETING_AUTO_DISABLE_SEC = 60 * 60;
-const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
-  'chat_id',
-  'chatid',
-  'message_id',
-  'messageid',
-  'sender_id',
-  'senderid',
-  'user_id',
-  'userid',
-  'update_id',
-  'updateid',
-  'created_at',
-  'createdat',
-  'timestamp',
-  'seq',
-  'mid',
-]);
-const NON_SANCTION_RULE_CODES = new Set([
-  'LINK_BLOCKED',
-  'PROFANITY',
-  'COMMERCIAL_AD',
-  'TOPIC_FILTER_MISMATCH',
-  'MESSAGE_BLOCKED_WORD',
-  'MESSAGE_BLOCKED_DOMAIN',
-  'PHONE_NUMBER_BLOCKED',
-  'MESSAGE_TOO_LONG',
-  'MESSAGE_RATE_LIMIT',
-  'MESSAGE_COUNT_LIMIT',
-  'PHOTO_BLOCKED',
-  'VIDEO_BLOCKED',
-  'FILE_BLOCKED',
-  'VOICE_BLOCKED',
-  'PHOTO_RATE_LIMIT',
-  'STICKER_RATE_LIMIT',
-]);
-const MESSAGE_LIMITS_RULE_CODES = new Set([
-  'MESSAGE_BLOCKED_WORD',
-  'MESSAGE_BLOCKED_DOMAIN',
-  'PHONE_NUMBER_BLOCKED',
-  'MESSAGE_TOO_LONG',
-  'MESSAGE_RATE_LIMIT',
-  'MESSAGE_COUNT_LIMIT',
-  'PHOTO_BLOCKED',
-  'VIDEO_BLOCKED',
-  'FILE_BLOCKED',
-  'VOICE_BLOCKED',
-  'PHOTO_RATE_LIMIT',
-  'STICKER_RATE_LIMIT',
-]);
-type GlobalSpammerTrackingResult = {
-  handled: boolean;
-  skipKnownSpammerCheck: boolean;
-};
-const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
-const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
-type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
-type ActiveBotSpeechProfile = {
-  persona: BotSpeechPersona;
-  characterName: string;
-};
-
-function normalizeRequiredSubscriptionExpiresAt(value: string | null | undefined): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const normalized = value.trim();
-  if (!normalized) {
-    return '';
-  }
-
-  const timestampMs = Date.parse(normalized);
-  if (!Number.isFinite(timestampMs)) {
-    return '';
-  }
-
-  return new Date(timestampMs).toISOString();
-}
-
-function hasRequiredSubscriptionExpired(
-  settings: Pick<ChatSettings, 'requiredSubscriptionExpiresAt'>,
-): boolean {
-  const expiresAt = normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
-  if (!expiresAt) {
-    return false;
-  }
-
-  return Date.parse(expiresAt) <= Date.now();
-}
-
-function isRequiredSubscriptionCurrentlyActive(
-  settings: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionExpiresAt'
-  >,
-): boolean {
-  const channelIds = Array.isArray(settings.requiredSubscriptionChannelIds)
-    ? settings.requiredSubscriptionChannelIds
-    : [];
-
-  return (
-    settings.requiredSubscriptionEnabled &&
-    channelIds.length > 0 &&
-    !hasRequiredSubscriptionExpired(settings)
-  );
-}
-
-function isInvitationAccessCurrentlyActive(
-  _settings: Pick<ChatSettings, 'invitationAccessEnabled' | 'invitationAccessRequiredCount'>,
-): boolean {
-  return false;
-}
+import {
+  CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+  PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+  BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES,
+  DEFAULT_MUTE_DURATION_HOURS,
+  MAX_ACTIVE_MUTE_DURATION_HOURS,
+  PERMANENT_MUTE_COMMAND_DURATION_HOURS,
+  DELETE_MESSAGE_PERMISSION_ALIASES,
+  MODERATE_MEMBER_PERMISSION_ALIASES,
+  DEFAULT_BOT_BUTTON_TEXT,
+  RULES_BOT_BUTTON_TEXT,
+  RULES_CALLBACK_PAYLOAD,
+  DEFAULT_NIGHT_MODE_TIMEZONE,
+  NIGHT_MODE_NOTICE_RULE_CODE,
+  NIGHT_MODE_OPEN_NOTICE_RULE_CODE,
+  LINK_ESCALATION_WINDOW_HOURS,
+  TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+  TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
+  MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
+  REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
+  REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC,
+  REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC,
+  REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
+  REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
+  REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS,
+  DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT,
+  REQUIRED_SUBSCRIPTION_RULE_CODE,
+  INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
+  INVITATION_ACCESS_NOTICE_COOLDOWN_SEC,
+  INVITATION_ACCESS_RULE_CODE,
+  MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS,
+  MODERATION_ACTION_PERMISSION_BACKOFF_MS,
+  MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,
+  MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
+  REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS,
+  WEBHOOK_HOT_CHAT_BACKOFF_MS,
+  WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS,
+  WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES,
+  REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC,
+  BOT_NOTICE_TOKEN_BUCKET_TTL_SEC,
+  DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
+  NIGHT_MODE_NOTICE_LOCK_TTL_MS,
+  NIGHT_MODE_NOTICE_MARKER_TTL_SEC,
+  NIGHT_MODE_SESSION_MARKER_TTL_SEC,
+  NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC,
+  NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+  CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
+  CHAT_ADMIN_CACHE_TTL_MS,
+  ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
+  ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
+  CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
+  DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS,
+  CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS,
+  CHAT_ADMIN_LOOKUP_BACKOFF_MS,
+  DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
+  CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS,
+  CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS,
+  BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS,
+  LEGACY_MODERATION_CONCURRENCY,
+  CRITICAL_MODERATION_CONCURRENCY,
+  JOIN_MODERATION_SHARD_CONCURRENCIES,
+  DEFAULT_MODERATION_SHARD_CONCURRENCIES,
+  BACKGROUND_MODERATION_CONCURRENCY,
+  SUPPORT_CHAT_URL,
+  MINIAPP_ROUTE_START_PARAM_PREFIX,
+  PRIVATE_MENU_CALLBACK_MENU,
+  PRIVATE_MENU_CALLBACK_CHATS,
+  PRIVATE_MENU_CALLBACK_CHANNELS,
+  PRIVATE_MENU_CALLBACK_HELP,
+  PRIVATE_BOT_CHATS_PREVIEW_LIMIT,
+  MAX_FORWARD_SCAN_DEPTH,
+  DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS,
+  DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS,
+  DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS,
+  DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS,
+  DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS,
+  DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS,
+  DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN,
+  DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS,
+  CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR,
+  CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS,
+  CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
+  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS,
+  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS,
+  DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS,
+  DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS,
+  DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS,
+  DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN,
+  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS,
+  MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS,
+  MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC,
+  MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS,
+  DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
+  CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
+  DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
+  DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
+  DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE,
+  DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE,
+  CHANNEL_DIALOG_START_PARAM_PREFIX,
+  CHANNEL_DIALOG_TOKEN_PREFIX,
+  SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+  DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS,
+  DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS,
+  DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS,
+  WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS,
+  WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS,
+  REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
+  VIOLATION_ADMIN_RECHECK_RESERVE_MS,
+  CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
+  CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
+  CHAT_DIALOG_AUTO_ATTACH_ACTION,
+  CHAT_COMMENTS_REPLY_TEXT,
+  CHANNEL_FORWARD_REPLY_TEXT,
+  GLOBAL_SPAMMER_WINDOW_SEC,
+  GLOBAL_SPAMMER_REDIS_TTL_SEC,
+  GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
+  GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
+  GLOBAL_SPAMMER_WARN_MIN_CHATS,
+  GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
+  GLOBAL_SPAMMER_WARN_THRESHOLD,
+  GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
+  GREETING_BURST_WINDOW_SEC,
+  GREETING_BURST_LIMIT,
+  GREETING_AUTO_DISABLE_SEC,
+  CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS,
+  NON_SANCTION_RULE_CODES,
+  MESSAGE_LIMITS_RULE_CODES,
+  TEXT_FILTER_RULE_CODES,
+  TOPIC_FILTER_RULE_CODES,
+  isRequiredSubscriptionCurrentlyActive,
+  isInvitationAccessCurrentlyActive,
+  type ActiveMute,
+  type ActiveMuteCacheReadResult,
+  type ChatAdminCheckSource,
+  type ChatAdminCheckResult,
+  type RequiredSubscriptionChannelMetadata,
+  type SharedChatExecutionGuard,
+  type RemoteChatAdminAccessState,
+  type ManagedChannelContext,
+  type ChannelAutoPostMessageText,
+  type ChannelAutoPostScanState,
+  type ManualGroupCloseListedMessage,
+  type ChannelAutoPostExecutionPlan,
+  type PendingChatAdminLookupBatch,
+  type PendingChatAdminSharedCacheBatch,
+  type PendingGlobalSpammerExemptionLookupBatch,
+  type WebhookHotPathProfile,
+  type RulesButtonReference,
+  type RequiredSubscriptionMembershipLookupOptions,
+  type InvitationAccessProgressSnapshot,
+  type InvitationAccessProgressUpdateResult,
+  type InvitationAccessProgressDelegate,
+  type ChannelDialogType,
+  type ModerationActionAttemptResult,
+  type AdminForwardedModerationCommand,
+  type ForwardedModerationTarget,
+  type ForwardedRulesSource,
+  type GlobalSpammerTrackingResult,
+  type PrivateControlCommand,
+  type ActiveBotSpeechProfile,
+} from './moderation.service.support';
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -8333,12 +7997,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         followUpMissingChannelTitles = followUpMissingChannels
           .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
           .filter((title) => title.length > 0);
-        requiredSubscriptionMessageOptions = this.buildRequiredSubscriptionMessageOptions(
-          followUpMissingChannels,
-          params.settings.rulesAttachViolationsEnabled,
-          params.rulesPublishedUrl,
-          params.rulesPublishedMessageId,
-        ) ?? undefined;
+        requiredSubscriptionMessageOptions =
+          this.buildRequiredSubscriptionMessageOptions(
+            followUpMissingChannels,
+            params.settings.rulesAttachViolationsEnabled,
+            params.rulesPublishedUrl,
+            params.rulesPublishedMessageId,
+          ) ?? undefined;
       };
 
       const sendRequiredSubscriptionBotMessage = async (textValue: string) => {
