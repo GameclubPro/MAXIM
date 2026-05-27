@@ -15,11 +15,13 @@ import {
   type CommercialThresholdProfile,
 } from './rule-engine-commercial-thresholds';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
-import {
-  RuleEngineDuplicateDetector,
-  type DuplicateDecision,
-  type DuplicateHit,
-} from './rule-engine-duplicate-detector';
+import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
+import type {
+  CommercialDecisionBand,
+  CommercialSubtype,
+  DetectionResult,
+  RuleViolation,
+} from './rule-engine.contract';
 import { detectBlockedLink, extractUrlsFromText } from './rule-engine-link-detector';
 import {
   extractDetectedPhoneNumbers,
@@ -37,40 +39,6 @@ import {
   recordRuleEngineDetectProfile,
 } from './rule-engine-profile';
 import { detectTopicFilterMismatch } from './rule-engine-topic-filter';
-
-export type {
-  DuplicateAction,
-  DuplicateDecision,
-  DuplicateHit,
-} from './rule-engine-duplicate-detector';
-
-export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
-export type CommercialSubtype =
-  | 'CHANNEL_PLACEMENT'
-  | 'PROPERTY_AGENT'
-  | 'PROPERTY_COMMERCIAL'
-  | 'RECRUITMENT'
-  | 'INFO_PRODUCT'
-  | 'BUYOUT'
-  | 'SERVICES'
-  | 'GOODS_RETAIL'
-  | 'GOODS'
-  | 'GROUP_PROMOTION'
-  | 'GENERIC';
-
-export type RuleViolation = {
-  ruleCode: string;
-  score: number;
-  reason: string;
-  metadata?: Record<string, unknown>;
-};
-
-export type DetectionResult = {
-  violations: RuleViolation[];
-  duplicateHit?: DuplicateHit;
-  duplicateDecision?: DuplicateDecision;
-  duplicateStateSkipped?: boolean;
-};
 
 type ProfanityCandidate = {
   value: string;

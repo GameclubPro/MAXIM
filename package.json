@@ -30,7 +30,7 @@
     "typecheck:api": "npm run typecheck --workspace @maxim/api",
     "typecheck:contracts": "npm run typecheck --workspace @maxim/contracts",
     "typecheck:miniapp": "npm run typecheck --workspace @maxim/miniapp",
-    "test": "npm run test --workspace @maxim/api",
+    "test": "npm run test:api && npm run test:miniapp",
     "test:api": "npm run test --workspace @maxim/api",
     "test:miniapp": "npm run test --workspace @maxim/miniapp",
     "format": "prettier --check .",

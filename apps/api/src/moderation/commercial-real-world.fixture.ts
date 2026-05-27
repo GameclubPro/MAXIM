@@ -1,5 +1,5 @@
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import type { CommercialSubtype } from './rule-engine.service';
+import type { CommercialSubtype } from './rule-engine.contract';
 
 type CommercialFixtureOverrides = {
   commercialAdsSensitivity?: 'BALANCED' | 'STRICT';

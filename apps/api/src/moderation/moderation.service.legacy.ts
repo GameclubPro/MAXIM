@@ -100,7 +100,7 @@ import {
   isMessageLimitsBlockedListRuleCode,
 } from './message-limits-blocked-reason.util';
 import { RedisCounterService } from './redis-counter.service';
-import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
+import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.contract';
 import { RuleEngineService } from './rule-engine.service';
 import {
   ANTI_SPAM_BURST_LIMIT,

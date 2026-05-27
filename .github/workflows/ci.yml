@@ -21,11 +21,17 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Refactor guards
+        run: npm run check:refactor-guards
+
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm run test
+      - name: Test API
+        run: npm run test:api
+
+      - name: Test mini app
+        run: npm run test:miniapp
 
       - name: Build
         run: npm run build

@@ -1,7 +1,7 @@
 import type { ChatSettings } from '../prisma/prisma-client';
 import { raceWithTimeout } from '../common/promise-timeout.util';
-import type { RuleViolation } from './rule-engine.service';
 import { RedisCounterService } from './redis-counter.service';
+import type { RuleViolation } from './rule-engine.contract';
 import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
 import { MessageLimitsBlockedWordDetector } from './rule-engine-blocked-words.detector';
 

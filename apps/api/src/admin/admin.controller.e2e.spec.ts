@@ -5,9 +5,8 @@ import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fa
 import { InitDataGuard } from '../auth/init-data.guard';
 import { InitDataService } from '../auth/init-data.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
-import { AdminController } from './admin.controller';
-import { AdminService } from './admin.service';
-import { ManagedGiveawayService } from './managed-giveaway.service';
+import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
+import { ManagedEntitiesService } from './managed-entities.service';
 
 function createSignedInitData(botToken: string, userId: string, authDateSec: number): string {
   const entries: Array<[string, string]> = [
@@ -57,7 +56,7 @@ describe('AdminController chats refresh auth e2e', () => {
     });
 
     const moduleRef = await Test.createTestingModule({
-      controllers: [AdminController],
+      controllers: [AdminManagedEntitiesController],
       providers: [
         InitDataGuard,
         InitDataService,
@@ -82,14 +81,10 @@ describe('AdminController chats refresh auth e2e', () => {
           },
         },
         {
-          provide: AdminService,
+          provide: ManagedEntitiesService,
           useValue: {
             listChatsWithRefreshState,
           },
-        },
-        {
-          provide: ManagedGiveawayService,
-          useValue: {},
         },
       ],
     }).compile();

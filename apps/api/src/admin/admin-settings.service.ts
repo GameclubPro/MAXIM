@@ -1,143 +1,565 @@
-import { Injectable } from '@nestjs/common';
+import {
+  channelSettingsScreenResponseSchema,
+  chatSettingsScreenResponseSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
+  type ApplySectionTargetPreviewResponse,
+  type ApplySectionToAllResponse,
+  type ApplySettingsTarget,
+  type ChannelSettings,
+  type ChannelSettingsScreenResponse,
+  type ChatRules,
+  type ChatSettings,
+  type ChatSettingsScreenResponse,
+  type ManagedPoll,
+  type PublishChannelEngagementResult,
+  type PublishChatRulesResult,
+  type ResolveRequiredSubscriptionChannelResponse,
+} from '@maxim/contracts';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MaxClientService } from '../max/max-client.service';
+import { PrismaService } from '../prisma/prisma.service';
+import {
+  publishChatRules,
+  readChatRules,
+  resetPublishedChatRules,
+  saveChatRulesDraft,
+} from './admin-chat-rules';
+import {
+  publishChannelEngagementMessage as publishChannelEngagementMessageValue,
+} from './admin-channel-engagement';
+import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
+import { readChatSettings, saveChatSettings } from './admin-chat-settings';
+import {
+  closeManagedPoll,
+  publishManagedPoll,
+  readManagedPoll,
+  saveManagedPollDraft,
+} from './admin-managed-poll';
+import {
+  applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
+  applySettingsToAllChats as applySettingsToAllChatsValue,
+  previewApplySettingsSectionTarget as previewApplySettingsSectionTargetValue,
+} from './admin-settings-apply';
 import { AdminService } from './admin.service';
+import {
+  SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+  type AdminActionSource,
+  type AdminReadBypassOptions,
+  type ApplySettingsToAllChatsResult,
+} from './admin.service.support';
+import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedEntitiesService } from './managed-entities.service';
+import { ManualModerationService } from './manual-moderation.service';
 
 @Injectable()
 export class AdminSettingsService {
-  constructor(private readonly legacyAdminService: AdminService) {}
+  private readonly logger = new Logger(AdminSettingsService.name);
 
-  getSettings(
-    ...args: Parameters<AdminService['getSettings']>
-  ): ReturnType<AdminService['getSettings']> {
-    return this.legacyAdminService.getSettings(...args);
+  constructor(
+    private readonly legacyAdminService: AdminService,
+    private readonly prisma: PrismaService,
+    private readonly chatContextCache: ChatContextCacheService,
+    private readonly maxClient: MaxClientService,
+    private readonly managedEntitiesService: ManagedEntitiesService,
+    private readonly manualModerationService: ManualModerationService,
+    private readonly managedBroadcastService: ManagedBroadcastService,
+  ) {}
+
+  async getSettings(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChatSettings> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(
+      chatId,
+      user.userId,
+      'chat',
+      options,
+    );
+    const botAssignmentData =
+      await this.legacyAdminService.resolveChatSettingsReadBotAssignmentData(chatId);
+    return readChatSettings({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      logger: this.logger,
+      chatId,
+      botAssignmentData,
+    });
   }
 
-  getChatSettingsScreen(
-    ...args: Parameters<AdminService['getChatSettingsScreen']>
-  ): ReturnType<AdminService['getChatSettingsScreen']> {
-    return this.legacyAdminService.getChatSettingsScreen(...args);
+  async getChatSettingsScreen(
+    chatId: string,
+    user: AuthUser,
+    options: { liveAdminCheck?: boolean } = {},
+  ): Promise<ChatSettingsScreenResponse> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
+      forceRemote: options.liveAdminCheck !== false,
+      timeoutMs:
+        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+    });
+
+    const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
+      this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.managedEntitiesService.getChatHeader(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
+      this.manualModerationService.getDomainAllowlistDetails(chatId, user, {
+        skipAdminCheck: true,
+      }),
+      this.managedBroadcastService.listManagedBroadcasts(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
+    ]);
+    const requiredSubscriptionChannels =
+      await this.legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings(
+        settings.requiredSubscriptionChannelIds,
+      );
+
+    return chatSettingsScreenResponseSchema.parse({
+      settings,
+      rules,
+      header,
+      requiredSubscriptionChannels,
+      domains,
+      managedBroadcasts,
+    });
   }
 
-  resolveRequiredSubscriptionChannel(
-    ...args: Parameters<AdminService['resolveRequiredSubscriptionChannel']>
-  ): ReturnType<AdminService['resolveRequiredSubscriptionChannel']> {
-    return this.legacyAdminService.resolveRequiredSubscriptionChannel(...args);
+  async resolveRequiredSubscriptionChannel(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ResolveRequiredSubscriptionChannelResponse> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    const parsed = resolveRequiredSubscriptionChannelRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const channel = await this.legacyAdminService.resolveRequiredSubscriptionChannelReferenceValue(
+      parsed.data.value,
+    );
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
   }
 
-  updateSettings(
-    ...args: Parameters<AdminService['updateSettings']>
-  ): ReturnType<AdminService['updateSettings']> {
-    return this.legacyAdminService.updateSettings(...args);
+  async updateSettings(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatSettings> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveChatSettings({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      source,
+      resolveBotAssignmentData: () =>
+        this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId),
+      assertRequiredSubscriptionSettings: (settings) =>
+        this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      refreshExecutionReadiness: (settings) =>
+        this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings),
+    });
   }
 
-  getRules(...args: Parameters<AdminService['getRules']>): ReturnType<AdminService['getRules']> {
-    return this.legacyAdminService.getRules(...args);
+  async getRules(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChatRules> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(
+      chatId,
+      user.userId,
+      'chat',
+      options,
+    );
+    return readChatRules({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+    });
   }
 
-  updateRules(
-    ...args: Parameters<AdminService['updateRules']>
-  ): ReturnType<AdminService['updateRules']> {
-    return this.legacyAdminService.updateRules(...args);
+  async updateRules(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatRules> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveChatRulesDraft({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      source,
+    });
   }
 
-  publishRules(
-    ...args: Parameters<AdminService['publishRules']>
-  ): ReturnType<AdminService['publishRules']> {
-    return this.legacyAdminService.publishRules(...args);
+  async publishRules(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<PublishChatRulesResult> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return publishChatRules({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+      actorUserId: user.userId,
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
+      buildAutofilledText: () =>
+        this.legacyAdminService.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
+      buildFormattedText: (sourceText, options) =>
+        this.legacyAdminService.buildFormattedChatRulesPublicationText(
+          chatId,
+          sourceText,
+          options,
+        ),
+      sendPrivateConfirmation: (publishedUrl) =>
+        this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
+    });
   }
 
-  resetPublishedRules(
-    ...args: Parameters<AdminService['resetPublishedRules']>
-  ): ReturnType<AdminService['resetPublishedRules']> {
-    return this.legacyAdminService.resetPublishedRules(...args);
+  async resetPublishedRules(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatRules> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return resetPublishedChatRules({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveChatRulesActionBotId(chatId),
+    });
   }
 
-  getChatPoll(
-    ...args: Parameters<AdminService['getChatPoll']>
-  ): ReturnType<AdminService['getChatPoll']> {
-    return this.legacyAdminService.getChatPoll(...args);
+  async getChatPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat');
+    return readManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+      resolveReadBotId: () => this.legacyAdminService.resolveManagedPollReadBotId(chatId),
+    });
   }
 
-  updateChatPoll(
-    ...args: Parameters<AdminService['updateChatPoll']>
-  ): ReturnType<AdminService['updateChatPoll']> {
-    return this.legacyAdminService.updateChatPoll(...args);
+  async updateChatPoll(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveManagedPollDraft({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      body,
+      source,
+    });
   }
 
-  publishChatPoll(
-    ...args: Parameters<AdminService['publishChatPoll']>
-  ): ReturnType<AdminService['publishChatPoll']> {
-    return this.legacyAdminService.publishChatPoll(...args);
+  async publishChatPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return publishManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveManagedPollActionBotId(chatId),
+    });
   }
 
-  closeChatPoll(
-    ...args: Parameters<AdminService['closeChatPoll']>
-  ): ReturnType<AdminService['closeChatPoll']> {
-    return this.legacyAdminService.closeChatPoll(...args);
+  async closeChatPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return closeManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveManagedPollActionBotId(chatId),
+    });
   }
 
-  getChannelSettings(
-    ...args: Parameters<AdminService['getChannelSettings']>
-  ): ReturnType<AdminService['getChannelSettings']> {
-    return this.legacyAdminService.getChannelSettings(...args);
+  async getChannelSettings(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChannelSettings> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(
+      chatId,
+      user.userId,
+      'channel',
+      options,
+    );
+    const botAssignmentData =
+      await this.legacyAdminService.resolveChannelSettingsReadBotAssignmentData(chatId);
+    return readChannelSettings({
+      prisma: this.prisma,
+      logger: this.logger,
+      chatId,
+      botAssignmentData,
+    });
   }
 
-  getChannelSettingsScreen(
-    ...args: Parameters<AdminService['getChannelSettingsScreen']>
-  ): ReturnType<AdminService['getChannelSettingsScreen']> {
-    return this.legacyAdminService.getChannelSettingsScreen(...args);
+  async getChannelSettingsScreen(
+    chatId: string,
+    user: AuthUser,
+    options: { liveAdminCheck?: boolean } = {},
+  ): Promise<ChannelSettingsScreenResponse> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
+      forceRemote: options.liveAdminCheck !== false,
+      timeoutMs:
+        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+    });
+
+    const [settings, header, managedBroadcasts] = await Promise.all([
+      this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.managedEntitiesService.getChannelHeader(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
+      this.managedBroadcastService.listChannelManagedBroadcasts(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
+    ]);
+
+    return channelSettingsScreenResponseSchema.parse({
+      settings,
+      header,
+      managedBroadcasts,
+    });
   }
 
-  updateChannelSettings(
-    ...args: Parameters<AdminService['updateChannelSettings']>
-  ): ReturnType<AdminService['updateChannelSettings']> {
-    return this.legacyAdminService.updateChannelSettings(...args);
+  async updateChannelSettings(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChannelSettings> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return saveChannelSettings({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      source,
+      resolveBotAssignmentData: () =>
+        this.legacyAdminService.resolveChannelSettingsWriteBotAssignmentData(chatId),
+      refreshExecutionReadiness: () =>
+        this.legacyAdminService.refreshChannelSettingsExecutionReadiness(chatId),
+    });
   }
 
-  publishChannelEngagementMessage(
-    ...args: Parameters<AdminService['publishChannelEngagementMessage']>
-  ): ReturnType<AdminService['publishChannelEngagementMessage']> {
-    return this.legacyAdminService.publishChannelEngagementMessage(...args);
+  async publishChannelEngagementMessage(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<PublishChannelEngagementResult> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return publishChannelEngagementMessageValue({
+      prisma: this.prisma,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      resolveBotId: () => this.legacyAdminService.resolveChannelEngagementActionBotId(chatId),
+      buildDialogArtifacts: (params) =>
+        this.legacyAdminService.buildChannelEngagementDialogArtifacts(params),
+    });
   }
 
-  getChannelPoll(
-    ...args: Parameters<AdminService['getChannelPoll']>
-  ): ReturnType<AdminService['getChannelPoll']> {
-    return this.legacyAdminService.getChannelPoll(...args);
+  async getChannelPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    return readManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+      resolveReadBotId: () => this.legacyAdminService.resolveManagedPollReadBotId(chatId),
+    });
   }
 
-  updateChannelPoll(
-    ...args: Parameters<AdminService['updateChannelPoll']>
-  ): ReturnType<AdminService['updateChannelPoll']> {
-    return this.legacyAdminService.updateChannelPoll(...args);
+  async updateChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return saveManagedPollDraft({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      body,
+      source,
+    });
   }
 
-  publishChannelPoll(
-    ...args: Parameters<AdminService['publishChannelPoll']>
-  ): ReturnType<AdminService['publishChannelPoll']> {
-    return this.legacyAdminService.publishChannelPoll(...args);
+  async publishChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return publishManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveManagedPollActionBotId(chatId),
+    });
   }
 
-  closeChannelPoll(
-    ...args: Parameters<AdminService['closeChannelPoll']>
-  ): ReturnType<AdminService['closeChannelPoll']> {
-    return this.legacyAdminService.closeChannelPoll(...args);
+  async closeChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return closeManagedPoll({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      source,
+      resolveBotId: () => this.legacyAdminService.resolveManagedPollActionBotId(chatId),
+    });
   }
 
-  applySettingsToAllChats(
-    ...args: Parameters<AdminService['applySettingsToAllChats']>
-  ): ReturnType<AdminService['applySettingsToAllChats']> {
-    return this.legacyAdminService.applySettingsToAllChats(...args);
+  async applySettingsToAllChats(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+    targetOrSettingKeys: ApplySettingsTarget | readonly (keyof ChatSettings)[] = {
+      mode: 'all',
+      favoriteTypes: [],
+      chatIds: [],
+    },
+    settingKeys?: readonly (keyof ChatSettings)[],
+  ): Promise<ApplySettingsToAllChatsResult> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(
+      sourceChatId,
+      user.userId,
+      'chat',
+    );
+    return applySettingsToAllChatsValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      sourceChatId,
+      actorUserId: user.userId,
+      body,
+      source,
+      targetOrSettingKeys,
+      settingKeys,
+      normalizeSettings: (settings) =>
+        this.legacyAdminService.normalizeChatSettingsForApply(sourceChatId, settings),
+      resolveTargetChats: (target) =>
+        this.legacyAdminService.resolveSettingsApplyTargetChatsForSettings(
+          sourceChatId,
+          user,
+          target,
+        ),
+      resolveBotAssignmentData: (chatId) =>
+        this.legacyAdminService.resolveSettingsApplyBotAssignmentData(chatId),
+      assertRequiredSubscriptionSettings: (settings) =>
+        this.legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      isRequiredSubscriptionCurrentlyActive: (settings) =>
+        this.legacyAdminService.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
+      scheduleReadinessRefresh: (params) =>
+        this.legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
+    });
   }
 
-  applySettingsSectionToAllChats(
-    ...args: Parameters<AdminService['applySettingsSectionToAllChats']>
-  ): ReturnType<AdminService['applySettingsSectionToAllChats']> {
-    return this.legacyAdminService.applySettingsSectionToAllChats(...args);
+  async applySettingsSectionToAllChats(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ApplySectionToAllResponse> {
+    return applySettingsSectionToAllChatsValue({
+      sourceChatId,
+      body,
+      source,
+      getSourceSettings: () => this.getSettings(sourceChatId, user),
+      applySettings: (settings, target, settingKeys) =>
+        this.applySettingsToAllChats(sourceChatId, user, settings, source, target, settingKeys),
+      syncDomainAllowlistToChats: (targetChatIds) =>
+        this.legacyAdminService.syncDomainAllowlistToChatsForSettings(
+          sourceChatId,
+          targetChatIds,
+        ),
+    });
   }
 
-  previewApplySettingsSectionTarget(
-    ...args: Parameters<AdminService['previewApplySettingsSectionTarget']>
-  ): ReturnType<AdminService['previewApplySettingsSectionTarget']> {
-    return this.legacyAdminService.previewApplySettingsSectionTarget(...args);
+  async previewApplySettingsSectionTarget(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ApplySectionTargetPreviewResponse> {
+    await this.legacyAdminService.assertManagedEntityAdminAccess(
+      sourceChatId,
+      user.userId,
+      'chat',
+    );
+    return previewApplySettingsSectionTargetValue({
+      sourceChatId,
+      body,
+      resolveTargetChats: (target) =>
+        this.legacyAdminService.resolveSettingsApplyTargetChatsForSettings(
+          sourceChatId,
+          user,
+          target,
+        ),
+    });
   }
 }

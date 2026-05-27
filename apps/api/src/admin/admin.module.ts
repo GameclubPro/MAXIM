@@ -12,8 +12,14 @@ import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
+import { AdminBroadcastController } from './admin-broadcast.controller';
+import { AdminDialogController } from './admin-dialog.controller';
+import { AdminGiveawayController } from './admin-giveaway.controller';
+import { AdminManualModerationController } from './admin-manual-moderation.controller';
 import { AdminSettingsService } from './admin-settings.service';
-import { AdminController } from './admin.controller';
+import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
+import { AdminSettingsController } from './admin-settings.controller';
+import { AdminVkParsingController } from './admin-vk-parsing.controller';
 import { ChannelDialogService } from './channel-dialog.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
@@ -43,7 +49,15 @@ import { VkParsingService } from './vk-parsing.service';
     ChatContextModule,
     SystemModule,
   ],
-  controllers: [AdminController],
+  controllers: [
+    AdminManagedEntitiesController,
+    AdminSettingsController,
+    AdminBroadcastController,
+    AdminVkParsingController,
+    AdminDialogController,
+    AdminGiveawayController,
+    AdminManualModerationController,
+  ],
   providers: [
     AdminService,
     AdminSettingsService,

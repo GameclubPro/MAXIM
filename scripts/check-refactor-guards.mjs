@@ -1,5 +1,5 @@
+import { dirname, relative, resolve } from 'node:path';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -8,7 +8,7 @@ const targetDate = '2026-06-26';
 const guardedFiles = [
   {
     path: 'apps/api/src/admin/admin.service.legacy.ts',
-    maxLines: 29190,
+    maxLines: 23000,
     targetLines: 23000,
     reason:
       'AdminService implementation is a legacy hotspot; managed entities, broadcasts, settings, and rules should keep moving to focused services.',
@@ -60,6 +60,45 @@ const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
 const ignoredDirectoryNames = new Set(['.git', 'coverage', 'dist', 'node_modules']);
 const legacyImportPattern =
   /\b(?:import|export)\b[\s\S]*?\bfrom\s+['"][^'"]*\.legacy(?:\.[^'"]+)?['"]|import\s*\(\s*['"][^'"]*\.legacy(?:\.[^'"]+)?['"]\s*\)/u;
+const importStatementPattern =
+  /\b(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/gu;
+const typeOnlyImportStatementPattern = /^\s*(?:import|export)\s+type\b/u;
+const productionSourcePathPattern =
+  /^(?:apps|packages)\/[^/]+\/src\/(?!generated\/).*?\.(?:ts|tsx|js|mjs|cjs)$/u;
+const testSourcePathPattern = /(?:^|\/)(?:test|__tests__)\/|(?:\.spec|\.test)\.[cm]?[tj]sx?$/u;
+
+const allowedImportCycles = [
+  {
+    name: 'AdminService temporary legacy facade',
+    paths: [
+      'apps/api/src/admin/admin.service.ts',
+      'apps/api/src/admin/admin.service.impl.ts',
+      'apps/api/src/admin/admin.service.legacy.ts',
+    ],
+  },
+  {
+    name: 'ModerationService temporary legacy facade',
+    paths: [
+      'apps/api/src/moderation/moderation.service.ts',
+      'apps/api/src/moderation/moderation.service.impl.ts',
+      'apps/api/src/moderation/moderation.service.legacy.ts',
+    ],
+  },
+  {
+    name: 'PrivateControlService temporary legacy facade',
+    paths: [
+      'apps/api/src/moderation/private-control.service.ts',
+      'apps/api/src/moderation/private-control.service.legacy.ts',
+    ],
+  },
+  {
+    name: 'SettingsPage temporary legacy facade',
+    paths: [
+      'apps/miniapp/src/pages/settings-page.tsx',
+      'apps/miniapp/src/pages/settings-page.legacy.tsx',
+    ],
+  },
+];
 
 const runtimeEntrypointBoundaryGuards = [
   {
@@ -174,6 +213,17 @@ for (const violation of findRuntimeEntrypointBoundaryViolations(root)) {
   );
 }
 
+for (const violation of findImportCycleViolations(root)) {
+  failed = true;
+  console.error(
+    [
+      `Import cycle detected: ${violation.cycle.join(' -> ')}`,
+      'Production modules should stay acyclic so extraction work can move code behind stable boundaries.',
+      `Allowed temporary facade cycles: ${allowedImportCycles.map((cycle) => cycle.name).join(', ')}`,
+    ].join('\n'),
+  );
+}
+
 if (failed) {
   process.exitCode = 1;
 }
@@ -222,6 +272,130 @@ function findRuntimeEntrypointBoundaryViolations(directory) {
   }
 
   return violations;
+}
+
+function findImportCycleViolations(directory) {
+  const sourceFiles = walkSourceFiles(directory)
+    .filter((filePath) => isProductionSourceFile(toRepoPath(filePath)))
+    .map((filePath) => resolve(filePath));
+  const sourceFileSet = new Set(sourceFiles);
+  const graph = new Map(sourceFiles.map((filePath) => [filePath, []]));
+
+  for (const filePath of sourceFiles) {
+    const contents = readFileSync(filePath, 'utf8');
+    for (const specifier of findRuntimeImportSpecifiers(contents)) {
+      const resolvedImport = resolveLocalSourceImport(filePath, specifier, sourceFileSet);
+      if (resolvedImport) {
+        graph.get(filePath)?.push(resolvedImport);
+      }
+    }
+  }
+
+  const violations = [];
+  const visited = new Set();
+  const visiting = new Set();
+  const stack = [];
+  const seenCycles = new Set();
+
+  for (const filePath of sourceFiles) {
+    visit(filePath);
+  }
+
+  return violations;
+
+  function visit(filePath) {
+    if (visited.has(filePath)) {
+      return;
+    }
+    if (visiting.has(filePath)) {
+      return;
+    }
+
+    visiting.add(filePath);
+    stack.push(filePath);
+
+    for (const dependency of graph.get(filePath) ?? []) {
+      if (visiting.has(dependency)) {
+        const startIndex = stack.indexOf(dependency);
+        if (startIndex < 0) {
+          continue;
+        }
+
+        const cycle = [...stack.slice(startIndex), dependency].map(toRepoPath);
+        const cycleKey = canonicalizeCycle(cycle);
+        if (seenCycles.has(cycleKey) || isAllowedImportCycle(cycle)) {
+          continue;
+        }
+
+        seenCycles.add(cycleKey);
+        violations.push({ cycle });
+      } else if (!visited.has(dependency)) {
+        visit(dependency);
+      }
+    }
+
+    stack.pop();
+    visiting.delete(filePath);
+    visited.add(filePath);
+  }
+}
+
+function findRuntimeImportSpecifiers(contents) {
+  const specifiers = [];
+  for (const match of contents.matchAll(importStatementPattern)) {
+    const statement = match[0];
+    if (typeOnlyImportStatementPattern.test(statement)) {
+      continue;
+    }
+
+    const specifier = match[1] ?? match[2] ?? '';
+    if (specifier.startsWith('.')) {
+      specifiers.push(specifier);
+    }
+  }
+
+  return specifiers;
+}
+
+function resolveLocalSourceImport(fromFilePath, specifier, sourceFileSet) {
+  const basePath = resolve(dirname(fromFilePath), specifier);
+  for (const candidate of buildImportCandidates(basePath)) {
+    if (sourceFileSet.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function buildImportCandidates(basePath) {
+  const extensions = Array.from(sourceExtensions);
+  return [
+    basePath,
+    ...extensions.map((extension) => `${basePath}${extension}`),
+    ...extensions.map((extension) => resolve(basePath, `index${extension}`)),
+  ].map((candidate) => resolve(candidate));
+}
+
+function canonicalizeCycle(cycle) {
+  const uniqueCycle = cycle.slice(0, -1);
+  const rotations = uniqueCycle.map((_, index) => [
+    ...uniqueCycle.slice(index),
+    ...uniqueCycle.slice(0, index),
+  ]);
+  rotations.sort((left, right) => left.join('\n').localeCompare(right.join('\n')));
+  return rotations[0].join(' -> ');
+}
+
+function isAllowedImportCycle(cycle) {
+  const cyclePaths = new Set(cycle);
+  return allowedImportCycles.some((allowedCycle) =>
+    allowedCycle.paths.every((filePath) => cyclePaths.has(filePath)),
+  );
+}
+
+function isProductionSourceFile(repoPath) {
+  return productionSourcePathPattern.test(repoPath) && !testSourcePathPattern.test(repoPath);
 }
 
 function walkSourceFiles(directory) {

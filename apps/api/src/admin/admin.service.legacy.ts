@@ -1,8 +1,4 @@
 import {
-  applySectionTargetPreviewRequestSchema,
-  applySectionTargetPreviewResponseSchema,
-  applySectionToAllRequestSchema,
-  applySectionToAllResponseSchema,
   addDomainRequestSchema,
   chatParticipantImmunitySchema,
   chatParticipantImmunityUpdateRequestSchema,
@@ -11,14 +7,12 @@ import {
   chatParticipantsPageSchema,
   chatParticipantsQuerySchema,
   chatSettingsScreenResponseSchema,
-  chatRulesSchema,
   channelSettingsScreenResponseSchema,
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
   type ChannelDialogNotificationMode,
   type ChannelDialogNotificationSettings,
-  channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
   createChannelDialogMessageRequestSchema,
@@ -35,11 +29,6 @@ import {
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   managedEntityBotCapabilitySchema,
-  managedEntityBotExecutionPlanSchema,
-  managedEntityFavoritesResponseSchema,
-  managedEntityTypeSchema,
-  publishChatRulesResultSchema,
-  promoteManagedEntityStandbyRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
@@ -47,6 +36,7 @@ import {
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
   type ChannelDialogSuggestionReviewStatus,
+  type ToggleChannelDialogReactionResponse,
   type ChatParticipantImmunity,
   type ChatParticipantItem,
   type ChatParticipantImmunityUpdateResult,
@@ -66,13 +56,8 @@ import {
   type ManagedEntityFavoriteType,
   type MembershipActivityPage,
   type MembershipActivityQuery,
-  managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
-  type ManagedBroadcastTargetPreview,
   type ManagedEntityBotCapability,
-  type ManagedEntityBotExecutionPlan,
-  managedBroadcastCalendarResponseSchema,
-  managedBroadcastSummarySchema,
   type ChannelSettings,
   type ChatSettingsScreenResponse,
   type ChatRules,
@@ -85,32 +70,22 @@ import {
   type LogsDashboardResponse,
   type ManagedEntityType,
   type ManualModerationActionResult,
-  type Me,
   type ModerationFeedPage,
   type ModerationFeedQuery,
   type ModerationEvent,
-  publishChannelEngagementRequestSchema,
-  publishChannelEngagementResultSchema,
-  type UpdateChatRulesRequest,
-  updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
-  type BroadcastTargetMode,
   type BroadcastLinkButton,
   type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
   type ManagedEntitiesResponseDiff,
   type ManagedEntitiesResponseSnapshot,
   type ManagedEntitiesRefreshState,
-  type SendBroadcastRequest,
   type SendBroadcastResult,
   type SendBroadcastTestResult,
   type ChatSummary,
   type ManagedEntityHeader,
-  type UpdateManagedEntityPartnerAssistRequest,
-  type UpdateManagedEntityPrimaryBotRequest,
   type ResolveRequiredSubscriptionChannelResponse,
-  managedPollSchema,
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   inferAllowlistMatchType,
@@ -118,29 +93,19 @@ import {
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeStoredAllowlistEntry,
   parseStoredAllowlistEntry,
-  updateManagedPollRequestSchema,
   type ManagedPoll,
-  sendBroadcastRequestSchema,
-  sendBroadcastTestResultSchema,
   scheduleDomainRemovalRequestSchema,
-  toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
   updateChannelDialogNotificationsRequestSchema,
   updateChannelDialogNotificationsResponseSchema,
-  updateManagedEntityFavoritesRequestSchema,
-  updateManagedEntityPartnerAssistRequestSchema,
-  updateManagedEntityPrimaryBotRequestSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
-  type BroadcastImage,
   DEFAULT_BROADCAST_BUTTON_TEXT,
-  MAX_BROADCAST_IMAGES,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   normalizeDeleteBotMessagesDelayMinutes,
@@ -150,20 +115,12 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   DialogNotificationMode as PrismaDialogNotificationMode,
-  ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
   EventType,
-  ManagedBroadcastStatus as PrismaManagedBroadcastStatus,
-  ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
   PrismaClient,
   SanctionAction,
   createPrismaClient,
-  type ManagedBroadcast as PersistedManagedBroadcast,
-  type ManagedBroadcastDelivery as PersistedManagedBroadcastDelivery,
-  type ManagedBroadcastOccurrence as PersistedManagedBroadcastOccurrence,
-  type ChatRules as PersistedChatRules,
-  type ManagedPoll as PersistedManagedPoll,
 } from '../prisma/prisma-client';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -184,10 +141,6 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import {
-  appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
-  resolveAdminContactMentionTarget,
-} from '../common/admin-contact-link.util';
 import { buildChannelStatsIntelligence } from './channel-stats-intelligence';
 import {
   MAX_API_SOURCE_TAGS,
@@ -209,13 +162,6 @@ import {
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
-import {
-  buildManagedPollButtons,
-  buildManagedPollMessageText,
-  buildManagedPollOptionSummaries,
-  normalizeManagedPollDraft,
-  validateManagedPollForPublish,
-} from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
@@ -236,11 +182,6 @@ import {
   type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
 import { RedisCounterService } from '../moderation/redis-counter.service';
-import {
-  canUserAccessSystem,
-  readSystemAccessConfig,
-  type SystemAccessConfig,
-} from '../system/system-access.util';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -263,6 +204,57 @@ import {
   type AdminSuggestionDeliveryJob,
 } from './admin-suggestion-delivery.queue';
 import { AdminDialogLinkHelper } from './admin-dialog-link-helper';
+import { toggleDialogReactionValue } from './admin-channel-dialog-reaction';
+import { getChannelSuggestionRedirectValue } from './admin-channel-dialog-redirect';
+import {
+  buildStoredLinkButtonState as buildStoredLinkButtonStateValue,
+  decodeRulesImageBase64 as decodeRulesImageBase64Value,
+  extractMaxApiErrorMessage as extractMaxApiErrorMessageValue,
+  isMaxMessageMissingError as isMaxMessageMissingErrorValue,
+  normalizeStoredLinkButtons as normalizeStoredLinkButtonsValue,
+  publishChatRules,
+  resetPublishedChatRules,
+  resolveRulesImageFileName as resolveRulesImageFileNameValue,
+  saveChatRulesDraft,
+} from './admin-chat-rules';
+import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
+import {
+  publishChannelEngagementMessage as publishChannelEngagementMessageValue,
+  type BuildChannelEngagementDialogArtifactsParams,
+  type ChannelEngagementDialogArtifacts,
+} from './admin-channel-engagement';
+import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
+import {
+  applySettingsSectionToAllChats as applySettingsSectionToAllChatsValue,
+  applySettingsToAllChats as applySettingsToAllChatsValue,
+  previewApplySettingsSectionTarget as previewApplySettingsSectionTargetValue,
+} from './admin-settings-apply';
+import {
+  readChannelSettings as readChannelSettingsValue,
+  saveChannelSettings as saveChannelSettingsValue,
+} from './admin-channel-settings';
+import {
+  readChatSettings as readChatSettingsValue,
+  saveChatSettings as saveChatSettingsValue,
+  type ResolvedBotAssignmentData,
+} from './admin-chat-settings';
+import {
+  closeManagedPoll as closeManagedPollValue,
+  publishManagedPoll as publishManagedPollValue,
+  readManagedPoll as readManagedPollValue,
+  saveManagedPollDraft as saveManagedPollDraftValue,
+} from './admin-managed-poll';
+import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
+import {
+  listManagedEntitiesValue,
+  listManagedEntitiesWithRefreshStateValue,
+} from './admin-managed-entities-list';
+import {
+  buildProfileMentionHandoffUrl,
+  buildUserProfileUrl,
+  normalizeLegacyProfileButtonUrl,
+  normalizeMaxProfileUrl,
+} from './admin-profile-links';
 import {
   buildChannelOverview,
   buildChatParticipantsPageCacheKey,
@@ -301,31 +293,9 @@ import {
 import {
   DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
   ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS,
-  RULES_IMAGE_MAX_BYTES,
-  BROADCAST_IMAGE_MAX_BYTES,
-  BROADCAST_IMAGES_TOTAL_MAX_BYTES,
-  BROADCAST_MIN_DELAY_MS,
-  BROADCAST_MAX_DELAY_MS,
-  MANAGED_BROADCAST_HISTORY_WINDOW_MS,
-  MANAGED_BROADCAST_HISTORY_LIMIT,
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
-  BROADCAST_CALENDAR_SLOT_MINUTES,
-  MANAGED_BROADCAST_DUE_BATCH_SIZE,
-  MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE,
-  MANAGED_BROADCAST_RECOVERY_BATCH_SIZE,
-  MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE,
-  MANAGED_BROADCAST_DUE_MAX_PASSES,
-  MANAGED_BROADCAST_LOCK_STALE_MS,
-  MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS,
-  MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS,
-  MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES,
-  MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS,
-  MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX,
-  MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS,
-  MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS,
-  MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT,
   LOGS_DASHBOARD_VIOLATIONS_LIMIT,
   MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
   LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
@@ -391,7 +361,6 @@ import {
   ADMIN_ACTION_HEALTH_LANE,
   ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY,
   ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY,
-  APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS,
   APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
@@ -404,9 +373,6 @@ import {
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
   CHAT_DIALOG_ACTION_AUTO_ATTACH,
-  MANAGED_POLL_ACTION_UPDATE,
-  MANAGED_POLL_ACTION_PUBLISH,
-  MANAGED_POLL_ACTION_CLOSE,
   PRIVATE_CONTROL_CALLBACK_PREFIX,
   CHANNEL_DIALOG_START_PARAM_PREFIX,
   DEFAULT_CHAT_SETTINGS,
@@ -414,12 +380,9 @@ import {
   CHAT_SETTINGS_BUTTON_GROUPS,
   CHANNEL_SETTINGS_BUTTON_URL_KEYS,
   CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY,
-  SETTINGS_SECTION_KEYS,
-  REQUIRED_SUBSCRIPTION_SETTING_KEYS,
   MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
   PRISMA_FAVORITE_TYPE_BY_CONTRACT,
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
-  APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT,
   REQUIRED_SUBSCRIPTION_DURATION_DAY_MS,
   CHANNEL_STATS_POST_ACTIONS,
   CHANNEL_STATS_ACTIVITY_ACTIONS,
@@ -428,7 +391,6 @@ import {
   CHANNEL_COMMENT_DUPLICATE_WINDOW_MS,
   CHANNEL_COMMENT_MAX_CONSECUTIVE,
   CHANNEL_COMMENT_LINK_PATTERN,
-  PROFILE_MENTION_START_PREFIX,
   RECENT_BOT_ADDED_BOOTSTRAP_LIMIT,
   RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT,
   RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT,
@@ -447,9 +409,7 @@ import {
   LOCAL_USER_DISPLAY_NAME_EVENT_TYPES,
   ManagedEntitiesRefreshThrottledError,
   mapManagedEntityTypeToChatEntityType,
-  normalizeBroadcastScheduleMode,
   readBooleanConfigFlag,
-  readManagedBroadcastMediaType,
   readNonNegativeConfigInt,
   sleep,
   sleepIfNeeded,
@@ -496,16 +456,6 @@ import {
   type ChannelSuggestionTextMarkup,
   type ChannelSuggestionDeliveryInput,
   type ModerationViolationRow,
-  type PreparedManagedBroadcastRequest,
-  type ManagedBroadcastResolvedMedia,
-  type ManagedBroadcastMaxApiOptions,
-  type ManagedBroadcastSchedulePlan,
-  type ManagedBroadcastBackgroundDecision,
-  type ParsedManagedBroadcastCalendarSlots,
-  type BroadcastOccurrenceResult,
-  type ManagedBroadcastDeliverySnapshot,
-  type ManagedBroadcastTargetPreviewBundle,
-  type ManagedBroadcastFailureBreakdown,
   type MembershipEventRow,
   type ChannelStatsViewMode,
   type ChannelStatsPostRow,
@@ -535,6 +485,8 @@ export type {
 @Injectable()
 export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
+  private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(this);
+  private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(this);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
@@ -542,7 +494,6 @@ export class AdminService implements OnModuleDestroy {
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
   private readonly dialogLinkHelper: AdminDialogLinkHelper;
-  private readonly systemAccessConfig: SystemAccessConfig;
   private readonly manualFanoutLookupSpacingMs: number;
   private readonly manualFanoutActionSpacingMs: number;
   private readonly managedEntitiesPublishedSnapshotReadEnabled: boolean;
@@ -672,7 +623,6 @@ export class AdminService implements OnModuleDestroy {
         (botId): botId is string => Boolean(botId),
       ),
     );
-    this.systemAccessConfig = readSystemAccessConfig(configService);
     this.manualFanoutLookupSpacingMs = readNonNegativeConfigInt(
       configService.get<number>('MANUAL_FANOUT_LOOKUP_SPACING_MS'),
       process.env.NODE_ENV === 'test' ? 0 : 180,
@@ -737,96 +687,11 @@ export class AdminService implements OnModuleDestroy {
     return this.managedEntitiesReadPrisma ?? this.prisma;
   }
 
-  async getMe(
-    user: AuthUser,
-    options: { chatId?: string; entityType?: ManagedEntityType; enrichFromMax?: boolean } = {},
-  ): Promise<Me> {
-    const canAccessSystem =
-      this.systemAccessConfig.requireSystemAdmin &&
-      canUserAccessSystem(user.userId, this.systemAccessConfig);
-    const contextChatId =
-      this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
-    const contextEntityType: ManagedEntityType =
-      options.entityType ?? (user.chatType === 'channel' ? 'channel' : 'chat');
-    const fallbackDisplayName = this.readTrimmedString(user.displayName) ?? null;
-    const fallbackUsername = this.readTrimmedString(user.username) ?? null;
-    const fallback: Me = {
-      userId: user.userId,
-      username: fallbackUsername,
-      displayName: fallbackDisplayName,
-      avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
-      profileUrl:
-        this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
-        this.buildUserProfileUrl(fallbackUsername),
-      profileHandoffUrl: contextChatId
-        ? this.buildProfileMentionHandoffUrl(
-            contextChatId,
-            contextEntityType,
-            user.userId,
-            fallbackDisplayName ?? fallbackUsername,
-          )
-        : null,
-      ...(canAccessSystem ? { canAccessSystem: true } : {}),
-    };
-    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
-
-    if (
-      options.enrichFromMax !== true ||
-      !contextChatId ||
-      typeof loadProfiles !== 'function' ||
-      (fallback.username && fallback.displayName && fallback.avatarUrl && fallback.profileUrl)
-    ) {
-      return fallback;
-    }
-
-    try {
-      const profiles = await loadProfiles(contextChatId, [user.userId], {
-        trafficClass: 'interactive',
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-      });
-      const profile = profiles.get(user.userId);
-      const username = this.readTrimmedString(profile?.username) ?? fallback.username;
-      const displayName =
-        fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null;
-      const avatarUrl = fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null;
-      const profileUrl =
-        this.normalizeMaxProfileUrl(this.readTrimmedString(profile?.profileUrl) ?? null) ??
-        fallback.profileUrl ??
-        this.buildUserProfileUrl(username);
-
-      return {
-        userId: user.userId,
-        username,
-        displayName,
-        avatarUrl,
-        profileUrl,
-        profileHandoffUrl: this.buildProfileMentionHandoffUrl(
-          contextChatId,
-          contextEntityType,
-          user.userId,
-          displayName ?? username,
-        ),
-        ...(canAccessSystem ? { canAccessSystem: true } : {}),
-      };
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: contextChatId,
-          userId: user.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve current admin profile from MAX',
-      );
-      return fallback;
-    }
-  }
-
   async listChats(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    const result = await this.listManagedEntitiesDetailed(user, 'chat', options);
-    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
+    return this.listManagedEntities(user, 'chat', options);
   }
 
   async listChatsForMassBroadcast(
@@ -844,66 +709,39 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    const result = await this.listManagedEntitiesDetailed(user, 'channel', options);
-    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
+    return this.listManagedEntities(user, 'channel', options);
   }
 
   async listChatsWithRefreshState(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    const result = await this.listManagedEntitiesDetailed(user, 'chat', {
-      ...options,
-      includeRefreshState: true,
-    });
-    const refresh = this.attachManagedEntitiesUserVisibleRefreshState(
-      result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
-      {
-        items: result.items,
-        diff: result.diff,
-      },
-    );
-    const items = await this.attachManagedEntityFavoriteTypes(user.userId, result.items);
-    const response: ManagedEntitiesListResponse = {
-      items,
-      refresh,
-    };
-    if (result.snapshot) {
-      response.snapshot = result.snapshot;
-    }
-    if (result.diff) {
-      response.diff = await this.attachManagedEntityFavoriteTypesToDiff(user.userId, result.diff);
-    }
-    return response;
+    return this.listManagedEntitiesWithRefreshStateForType(user, 'chat', options);
   }
 
   async listChannelsWithRefreshState(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    const result = await this.listManagedEntitiesDetailed(user, 'channel', {
-      ...options,
-      includeRefreshState: true,
+    return this.listManagedEntitiesWithRefreshStateForType(user, 'channel', options);
+  }
+
+  private listManagedEntitiesWithRefreshStateForType(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: ManagedEntitiesListOptions = {},
+  ): Promise<ManagedEntitiesListResponse> {
+    return listManagedEntitiesWithRefreshStateValue({
+      user,
+      entityType,
+      options,
+      listDetailed: (listUser, entityType, listOptions) =>
+        this.listManagedEntitiesDetailed(listUser, entityType, listOptions),
+      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+      attachFavoriteTypesToDiff: (userId, diff) =>
+        this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
+      createIdleRefreshState: () => this.createManagedEntitiesRefreshState(null, false),
     });
-    const refresh = this.attachManagedEntitiesUserVisibleRefreshState(
-      result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
-      {
-        items: result.items,
-        diff: result.diff,
-      },
-    );
-    const items = await this.attachManagedEntityFavoriteTypes(user.userId, result.items);
-    const response: ManagedEntitiesListResponse = {
-      items,
-      refresh,
-    };
-    if (result.snapshot) {
-      response.snapshot = result.snapshot;
-    }
-    if (result.diff) {
-      response.diff = await this.attachManagedEntityFavoriteTypesToDiff(user.userId, result.diff);
-    }
-    return response;
   }
 
   async listManagedEntities(
@@ -911,85 +749,26 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    const result = await this.listManagedEntitiesDetailed(user, entityType, options);
-    return this.attachManagedEntityFavoriteTypes(user.userId, result.items);
+    return listManagedEntitiesValue({
+      user,
+      entityType,
+      options,
+      listDetailed: (listUser, listEntityType, listOptions) =>
+        this.listManagedEntitiesDetailed(listUser, listEntityType, listOptions),
+      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+    });
   }
 
-  async updateManagedEntityFavorites(
-    entityTypeRaw: string,
-    entityId: string,
+  listManagedEntitiesDetailedForManagedEntities(
     user: AuthUser,
-    body: unknown,
-  ) {
-    const entityType = managedEntityTypeSchema.parse(entityTypeRaw);
-    const parsed = updateManagedEntityFavoritesRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
+    entityType: ManagedEntityTypeFilter = 'all',
+    options: ManagedEntitiesListOptions = {},
+  ): Promise<ManagedEntitiesListResult> {
+    return this.listManagedEntitiesDetailed(user, entityType, options);
+  }
 
-    await this.assertChatAdmin(entityId, user.userId, entityType);
-    await this.ensureEntityType(entityId, user.userId, entityType);
-
-    const favoriteTypes = parsed.data.favoriteTypes;
-    const prismaEntityType = toPrismaEntityType(entityType);
-    const prismaFavoriteTypes = favoriteTypes.map(
-      (favoriteType) => PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-    );
-
-    await this.prisma.$transaction([
-      this.prisma.managedEntityFavorite.deleteMany({
-        where: {
-          userId: user.userId,
-          chatId: entityId,
-          entityType: prismaEntityType,
-          favoriteType:
-            prismaFavoriteTypes.length > 0
-              ? {
-                  notIn: prismaFavoriteTypes,
-                }
-              : undefined,
-        },
-      }),
-      ...favoriteTypes.map((favoriteType, index) =>
-        this.prisma.managedEntityFavorite.upsert({
-          where: {
-            userId_entityType_chatId_favoriteType: {
-              userId: user.userId,
-              entityType: prismaEntityType,
-              chatId: entityId,
-              favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-            },
-          },
-          create: {
-            userId: user.userId,
-            entityType: prismaEntityType,
-            chatId: entityId,
-            favoriteType: PRISMA_FAVORITE_TYPE_BY_CONTRACT[favoriteType],
-            position: index,
-          },
-          update: {
-            position: index,
-          },
-        }),
-      ),
-      this.prisma.auditLog.create({
-        data: {
-          chatId: entityId,
-          actorUserId: user.userId,
-          action: 'UPDATE_MANAGED_ENTITY_FAVORITES',
-          payload: {
-            entityType,
-            favoriteTypes,
-          },
-        },
-      }),
-    ]);
-
-    return managedEntityFavoritesResponseSchema.parse({
-      entityType,
-      entityId,
-      favoriteTypes,
-    });
+  createIdleManagedEntitiesRefreshStateForManagedEntities(): ManagedEntitiesRefreshState {
+    return this.createManagedEntitiesRefreshState(null, false);
   }
 
   async previewApplySettingsSectionTarget(
@@ -997,43 +776,13 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     body: unknown,
   ): Promise<ApplySectionTargetPreviewResponse> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
-    const parsed = applySectionTargetPreviewRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const target = parsed.data.target;
-    const targetChats = await this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
-
-    return applySectionTargetPreviewResponseSchema.parse({
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
+    return previewApplySettingsSectionTargetValue({
       sourceChatId,
-      targetMode: target.mode,
-      favoriteTypes: target.favoriteTypes,
-      updatedChats: targetChats.length,
-      appliedChatIds: targetChats.map((chat) => chat.id),
-      sampleChats: targetChats.slice(0, APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT),
+      body,
+      resolveTargetChats: (target) =>
+        this.resolveSettingsApplyTargetChatsForSettings(sourceChatId, user, target),
     });
-  }
-
-  private attachManagedEntitiesUserVisibleRefreshState(
-    refresh: ManagedEntitiesRefreshState,
-    options: {
-      items: readonly ChatSummary[];
-      diff?: ManagedEntitiesResponseDiff | null;
-    },
-  ): ManagedEntitiesRefreshState {
-    const userVisibleComplete =
-      refresh.complete === true || options.items.length > 0 || options.diff != null;
-    if (refresh.userVisibleComplete === userVisibleComplete) {
-      return refresh;
-    }
-
-    return {
-      ...refresh,
-      userVisibleComplete,
-    };
   }
 
   async getChatHeader(
@@ -1050,174 +799,6 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
     return this.getManagedEntityHeader(chatId, user, 'channel', options);
-  }
-
-  async getChatBotExecutionPlan(
-    chatId: string,
-    user: AuthUser,
-    options: { refresh?: boolean } = {},
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.getManagedEntityBotExecutionPlan(chatId, user, 'chat', options);
-  }
-
-  async getChannelBotExecutionPlan(
-    chatId: string,
-    user: AuthUser,
-    options: { refresh?: boolean } = {},
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.getManagedEntityBotExecutionPlan(chatId, user, 'channel', options);
-  }
-
-  async updateChatPrimaryBot(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.updateManagedEntityPrimaryBot(chatId, user, 'chat', body);
-  }
-
-  async updateChannelPrimaryBot(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.updateManagedEntityPrimaryBot(chatId, user, 'channel', body);
-  }
-
-  async updateChatPartnerAssist(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.updateManagedEntityPartnerAssist(chatId, user, 'chat', body);
-  }
-
-  async updateChannelPartnerAssist(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.updateManagedEntityPartnerAssist(chatId, user, 'channel', body);
-  }
-
-  async promoteChatStandbyBot(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.promoteManagedEntityStandbyBot(chatId, user, 'chat', body);
-  }
-
-  async promoteChannelStandbyBot(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    return this.promoteManagedEntityStandbyBot(chatId, user, 'channel', body);
-  }
-
-  private async getManagedEntityBotExecutionPlan(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    options: { refresh?: boolean } = {},
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException(
-        'Bot execution planner is not available on this runtime.',
-      );
-    }
-
-    return managedEntityBotExecutionPlanSchema.parse(
-      await this.maxBotExecutionPlanner.getManagedEntityExecutionPlan({
-        chatId,
-        entityType,
-        refreshCapabilities: options.refresh === true,
-      }),
-    );
-  }
-
-  private async updateManagedEntityPrimaryBot(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException(
-        'Bot execution planner is not available on this runtime.',
-      );
-    }
-
-    const request = updateManagedEntityPrimaryBotRequestSchema.parse(
-      body,
-    ) as UpdateManagedEntityPrimaryBotRequest;
-    const plan = await this.maxBotExecutionPlanner.setPrimaryBot({
-      chatId,
-      entityType,
-      botId: request.botId,
-    });
-    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
-    return managedEntityBotExecutionPlanSchema.parse(plan);
-  }
-
-  private async updateManagedEntityPartnerAssist(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException(
-        'Bot execution planner is not available on this runtime.',
-      );
-    }
-
-    const request = updateManagedEntityPartnerAssistRequestSchema.parse(
-      body,
-    ) as UpdateManagedEntityPartnerAssistRequest;
-    const plan = await this.maxBotExecutionPlanner.setPartnerAssist({
-      chatId,
-      entityType,
-      botId: request.botId,
-      enabled: request.enabled,
-    });
-    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
-    return managedEntityBotExecutionPlanSchema.parse(plan);
-  }
-
-  private async promoteManagedEntityStandbyBot(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    body: unknown,
-  ): Promise<ManagedEntityBotExecutionPlan> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException(
-        'Bot execution planner is not available on this runtime.',
-      );
-    }
-
-    const request = promoteManagedEntityStandbyRequestSchema.parse(body);
-    const plan = await this.maxBotExecutionPlanner.promoteStandby({
-      chatId,
-      entityType,
-      botId: request.botId ?? null,
-    });
-    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
-    return managedEntityBotExecutionPlanSchema.parse(plan);
   }
 
   private async listManagedEntitiesDetailed(
@@ -2592,9 +2173,23 @@ export class AdminService implements OnModuleDestroy {
       chatTitle: null,
     };
 
-    return this.runManagedEntitiesRemoteFullRefresh(user, job.entityType, {
+    return this.runManagedEntitiesRemoteFullRefreshForManagedEntities(user, job.entityType, {
       bypassRemoteCache: job.bypassRemoteCache,
       resetRefreshCursor: job.resetRefreshCursor,
+    });
+  }
+
+  runManagedEntitiesRemoteFullRefreshForManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    return this.runManagedEntitiesRemoteFullRefresh(user, entityType, {
+      bypassRemoteCache: options.bypassRemoteCache,
+      resetRefreshCursor: options.resetRefreshCursor,
     });
   }
 
@@ -7392,81 +6987,14 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChatSettings> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(chatId, user.userId, 'chat');
-    }
-    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
-
-    const chat = await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Chat ${chatId}`,
-        entityType: ChatEntityType.CHAT,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          create: {},
-        },
-      },
-      update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          upsert: {
-            update: {},
-            create: {},
-          },
-        },
-      },
-      include: { settings: true },
+    await this.assertManagedEntityReadAccess(chatId, user.userId, 'chat', options);
+    return readChatSettingsValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      logger: this.logger,
+      chatId,
+      botAssignmentData: await this.resolveChatSettingsReadBotAssignmentData(chatId),
     });
-
-    if (!chat.settings) {
-      throw new Error('Chat settings missing after upsert');
-    }
-
-    const sanitizedStoredSettings = this.sanitizeStoredChatSettings(chat.settings);
-    const parsed = chatSettingsSchema.safeParse(sanitizedStoredSettings);
-    if (parsed.success) {
-      const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, chatId);
-      const normalizationChanges = {
-        ...this.getStoredChatSettingsSanitizationChanges(chat.settings, parsed.data),
-        ...this.getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
-      };
-      if (Object.keys(normalizationChanges).length > 0) {
-        await this.prisma.chatSettings.update({
-          where: { chatId },
-          data: normalizationChanges,
-        });
-        await this.chatContextCache.invalidate(chatId);
-      }
-
-      return normalizedSettings;
-    }
-
-    this.logger.warn(
-      {
-        chatId,
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join('.'),
-          message: issue.message,
-        })),
-      },
-      'Invalid chat settings found in DB, applying defaults',
-    );
-
-    const fallback = DEFAULT_CHAT_SETTINGS;
-    await this.prisma.chatSettings.update({
-      where: { chatId },
-      data: {
-        ...fallback,
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return fallback;
   }
 
   async getChatSettingsScreen(
@@ -7531,98 +7059,20 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ChatSettings> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-    const parsed = chatSettingsSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    const currentSettings = await this.prisma.chatSettings.findUnique({
-      where: { chatId },
-      select: {
-        nightModeForceCloseEnabled: true,
-        nightModeForceCloseForever: true,
-        nightModeForceCloseHours: true,
-        nightModeForceCloseDays: true,
-        nightModeForceCloseUntil: true,
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: true,
-        requiredSubscriptionDurationDays: true,
-        requiredSubscriptionExpiresAt: true,
-      },
-    });
-    const normalizedSettings = this.normalizeChatSettings(
-      parsed.data,
-      {
-        nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
-        nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
-        nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
-        nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
-        nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
-        requiredSubscriptionEnabled: currentSettings?.requiredSubscriptionEnabled ?? false,
-        requiredSubscriptionChannelIds: Array.isArray(
-          currentSettings?.requiredSubscriptionChannelIds,
-        )
-          ? currentSettings.requiredSubscriptionChannelIds
-              .filter((item): item is string => typeof item === 'string')
-              .map((item) => item.trim())
-              .filter((item) => item.length > 0)
-          : [],
-        requiredSubscriptionDurationDays:
-          currentSettings?.requiredSubscriptionDurationDays ??
-          REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
-        requiredSubscriptionExpiresAt: this.normalizeRequiredSubscriptionExpiresAt(
-          currentSettings?.requiredSubscriptionExpiresAt,
-        ),
-      },
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveChatSettingsValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
       chatId,
-    );
-    await this.assertRequiredSubscriptionSettings(normalizedSettings);
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Chat ${chatId}`,
-        entityType: ChatEntityType.CHAT,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          create: {
-            ...normalizedSettings,
-          },
-        },
-      },
-      update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        settings: {
-          upsert: {
-            update: {
-              ...normalizedSettings,
-            },
-            create: {
-              ...normalizedSettings,
-            },
-          },
-        },
-      },
+      actorUserId: user.userId,
+      body,
+      source,
+      resolveBotAssignmentData: () => this.resolveChatSettingsWriteBotAssignmentData(chatId),
+      assertRequiredSubscriptionSettings: (settings) =>
+        this.assertRequiredSubscriptionSettings(settings),
+      refreshExecutionReadiness: (settings) =>
+        this.refreshExecutionReadinessAfterChatSettingsUpdate(chatId, settings),
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'UPDATE_SETTINGS',
-        payload: {
-          ...normalizedSettings,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-    await this.refreshExecutionReadinessAfterChatSettingsUpdate(chatId, normalizedSettings);
-
-    return normalizedSettings;
   }
 
   async getRules(
@@ -7630,12 +7080,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChatRules> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(chatId, user.userId, 'chat');
-    }
+    await this.assertManagedEntityReadAccess(chatId, user.userId, 'chat', options);
 
     const rules = await this.upsertChatRules(chatId);
     const hydratedRules = await this.hydratePublishedRulesUrl(chatId, rules);
@@ -7648,54 +7093,15 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ChatRules> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const parsed = updateChatRulesRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const normalizedDraft = this.normalizeChatRulesDraft(parsed.data);
-    if (normalizedDraft.imageBase64) {
-      const imageBuffer = this.decodeRulesImageBase64(normalizedDraft.imageBase64);
-      if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото правил слишком большое.');
-      }
-      if (!normalizedDraft.imageMimeType.toLowerCase().startsWith('image/')) {
-        throw new BadRequestException('Поддерживаются только изображения.');
-      }
-    }
-
-    const rules = await this.prisma.chatRules.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        ...normalizedDraft,
-      },
-      update: {
-        ...normalizedDraft,
-      },
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveChatRulesDraft({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      source,
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'UPDATE_CHAT_RULES',
-        payload: {
-          autoTextEnabled: normalizedDraft.autoTextEnabled,
-          buttonEnabled: normalizedDraft.buttonEnabled,
-          adminContactButtonEnabled: normalizedDraft.adminContactButtonEnabled,
-          hasImage: Boolean(normalizedDraft.imageBase64),
-          textLength: normalizedDraft.text.length,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache?.invalidate(chatId);
-
-    return this.mapChatRules(rules);
   }
 
   async adoptChatRulesFromMessage(
@@ -7832,160 +7238,22 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<PublishChatRulesResult> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const rules = await this.upsertChatRules(chatId);
-    const previousPublishedMessageId = rules.publishedMessageId?.trim() || null;
-    const autofilledText =
-      rules.autoTextEnabled && !rules.text.trim()
-        ? await this.buildAutofilledRulesTextFromCurrentSettings(chatId, user)
-        : null;
-    const messageText = (autofilledText ?? rules.text).trim();
-    if (!messageText) {
-      throw new BadRequestException('Сначала заполните текст правил.');
-    }
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    let imagePayload: Record<string, unknown> | undefined;
-    if (rules.imageBase64.trim()) {
-      const imageMimeType = rules.imageMimeType.trim().toLowerCase();
-      if (!imageMimeType.startsWith('image/')) {
-        throw new BadRequestException('Поддерживаются только изображения.');
-      }
-
-      const imageBuffer = this.decodeRulesImageBase64(rules.imageBase64);
-      if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото правил слишком большое.');
-      }
-
-      try {
-        imagePayload = resolvedBotId
-          ? await this.maxClient.uploadImage(
-              imageBuffer,
-              this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
-              imageMimeType,
-              { botId: resolvedBotId },
-            )
-          : await this.maxClient.uploadImage(
-              imageBuffer,
-              this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
-              imageMimeType,
-            );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            actorUserId: user.userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Rules image upload failed',
-        );
-        throw new BadRequestException(
-          'Не удалось загрузить фото правил. Попробуйте другое изображение.',
-        );
-      }
-    }
-
-    let published: { messageId: string; url: string | null };
-    const buttonRows = this.buildChatRulesButtonRows(rules);
-    const formattedMessage = await this.buildFormattedRulesPublicationText(chatId, messageText, {
-      adminContactButtonEnabled: rules.adminContactButtonEnabled,
-      adminContactButtonUrl: rules.adminContactButtonUrl,
-    });
-    try {
-      published = await this.publishMessageWithRetry(
-        chatId,
-        formattedMessage.text,
-        {
-          textFormat: formattedMessage.textFormat,
-          ...(imagePayload ? { imagePayload } : {}),
-          ...(buttonRows ? { buttons: buttonRows } : {}),
-        },
-        resolvedBotId,
-      );
-    } catch (error: unknown) {
-      const maxApiMessage = this.extractMaxApiErrorMessage(error);
-      throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
-    }
-
-    if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
-      try {
-        if (resolvedBotId) {
-          await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, {
-            immediate: true,
-            botId: resolvedBotId,
-          });
-        } else {
-          await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, {
-            immediate: true,
-          });
-        }
-      } catch (error: unknown) {
-        if (!this.isMaxMessageMissingError(error)) {
-          this.logger.warn(
-            {
-              chatId,
-              actorUserId: user.userId,
-              messageId: previousPublishedMessageId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to delete previous published chat rules post during republish',
-          );
-        }
-      }
-    }
-
-    const publishedAt = new Date();
-    await this.prisma.chatRules.update({
-      where: { chatId },
-      data: {
-        ...(autofilledText !== null ? { text: autofilledText } : {}),
-        publishedMessageId: published.messageId,
-        publishedUrl: published.url,
-        publishedAt,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'PUBLISH_CHAT_RULES',
-        payload: {
-          messageId: published.messageId,
-          url: published.url,
-          publishedAt: publishedAt.toISOString(),
-          buttonEnabled: rules.buttonEnabled,
-          adminContactButtonEnabled: rules.adminContactButtonEnabled,
-          hasImage: Boolean(imagePayload),
-          autofilledTextApplied: autofilledText !== null,
-          replacedPreviousPost: Boolean(
-            previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
-          ),
-          source,
-        },
-      },
-    });
-
-    const hydratedRules = await this.hydratePublishedRulesUrl(chatId, {
-      ...rules,
-      ...(autofilledText !== null ? { text: autofilledText } : {}),
-      publishedMessageId: published.messageId,
-      publishedUrl: published.url,
-      publishedAt,
-    });
-    await this.chatContextCache?.invalidate(chatId);
-
-    if (source === 'miniapp') {
-      await this.sendRulesPublishedPrivateConfirmation(user, hydratedRules.publishedUrl);
-    }
-
-    return publishChatRulesResultSchema.parse({
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return publishChatRules({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
       chatId,
-      messageId: published.messageId,
-      url: hydratedRules.publishedUrl,
-      publishedAt: publishedAt.toISOString(),
+      actorUserId: user.userId,
+      source,
+      resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
+      buildAutofilledText: () =>
+        this.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
+      buildFormattedText: (sourceText, options) =>
+        this.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
+      sendPrivateConfirmation: (publishedUrl) =>
+        this.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
     });
   }
 
@@ -7994,61 +7262,28 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<ChatRules> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const rules = await this.upsertChatRules(chatId);
-    const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    if (publishedMessageId) {
-      try {
-        if (resolvedBotId) {
-          await this.maxClient.deleteMessage(chatId, publishedMessageId, {
-            immediate: true,
-            botId: resolvedBotId,
-          });
-        } else {
-          await this.maxClient.deleteMessage(chatId, publishedMessageId, { immediate: true });
-        }
-      } catch (error: unknown) {
-        if (!this.isMaxMessageMissingError(error)) {
-          const maxApiMessage = this.extractMaxApiErrorMessage(error);
-          throw new BadRequestException(
-            maxApiMessage || 'Не удалось удалить опубликованный пост правил.',
-          );
-        }
-      }
-    }
-
-    const updatedRules = await this.prisma.chatRules.update({
-      where: { chatId },
-      data: {
-        publishedMessageId: null,
-        publishedUrl: null,
-        publishedAt: null,
-      },
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return resetPublishedChatRules({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      source,
+      resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'RESET_CHAT_RULES_PUBLICATION',
-        payload: {
-          deletedPost: Boolean(publishedMessageId),
-          messageId: publishedMessageId || null,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache?.invalidate(chatId);
-
-    return this.mapChatRules(updatedRules);
   }
 
   async getChatPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
-    return this.getManagedPoll(chatId, user, 'chat');
+    await this.assertManagedEntityReadAccess(chatId, user.userId, 'chat');
+    return readManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+      resolveReadBotId: () => this.resolveManagedPollReadBotId(chatId),
+    });
   }
 
   async updateChatPoll(
@@ -8057,7 +7292,16 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.updateManagedPoll(chatId, user, 'chat', body, source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return saveManagedPollDraftValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      body,
+      source,
+    });
   }
 
   async publishChatPoll(
@@ -8065,7 +7309,17 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.publishManagedPoll(chatId, user, 'chat', source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return publishManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      source,
+      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
+    });
   }
 
   async closeChatPoll(
@@ -8073,11 +7327,29 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.closeManagedPoll(chatId, user, 'chat', source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
+    return closeManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'chat',
+      source,
+      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
+    });
   }
 
   async getChannelPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
-    return this.getManagedPoll(chatId, user, 'channel');
+    await this.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
+    return readManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
+      resolveReadBotId: () => this.resolveManagedPollReadBotId(chatId),
+    });
   }
 
   async updateChannelPoll(
@@ -8086,7 +7358,16 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.updateManagedPoll(chatId, user, 'channel', body, source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return saveManagedPollDraftValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      body,
+      source,
+    });
   }
 
   async publishChannelPoll(
@@ -8094,7 +7375,17 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.publishManagedPoll(chatId, user, 'channel', source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return publishManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      source,
+      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
+    });
   }
 
   async closeChannelPoll(
@@ -8102,7 +7393,17 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManagedPoll> {
-    return this.closeManagedPoll(chatId, user, 'channel', source);
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return closeManagedPollValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      chatId,
+      actorUserId: user.userId,
+      entityType: 'channel',
+      source,
+      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
+    });
   }
 
   async getChannelSettings(
@@ -8110,83 +7411,14 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ChannelSettings> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel');
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(chatId, user.userId, 'channel');
-    }
-    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
-
-    const chat = await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Channel ${chatId}`,
-        entityType: ChatEntityType.CHANNEL,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        channelSettings: {
-          create: {
-            commentsEnabled: false,
-          },
-        },
-      },
-      update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        entityType: ChatEntityType.CHANNEL,
-        channelSettings: {
-          upsert: {
-            update: {},
-            create: {
-              commentsEnabled: false,
-            },
-          },
-        },
-      },
-      include: { channelSettings: true },
+    await this.assertManagedEntityReadAccess(chatId, user.userId, 'channel', options);
+    const botAssignmentData = await this.resolveChannelSettingsReadBotAssignmentData(chatId);
+    return readChannelSettingsValue({
+      prisma: this.prisma,
+      logger: this.logger,
+      chatId,
+      botAssignmentData,
     });
-
-    if (!chat.channelSettings) {
-      throw new Error('Channel settings missing after upsert');
-    }
-
-    const sanitizedStoredSettings = this.sanitizeStoredChannelSettings(chat.channelSettings);
-    const parsed = channelSettingsSchema.safeParse(sanitizedStoredSettings);
-    if (parsed.success) {
-      const normalized = this.normalizeChannelSettings(parsed.data, chatId);
-      const normalizationChanges = {
-        ...this.getStoredChannelSettingsSanitizationChanges(chat.channelSettings, parsed.data),
-        ...this.getChannelSettingsNormalizationChanges(parsed.data, normalized),
-      };
-      if (Object.keys(normalizationChanges).length > 0) {
-        await this.prisma.channelSettings.update({
-          where: { chatId },
-          data: normalizationChanges,
-        });
-      }
-      return normalized;
-    }
-
-    this.logger.warn(
-      {
-        chatId,
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join('.'),
-          message: issue.message,
-        })),
-      },
-      'Invalid channel settings found in DB, applying defaults',
-    );
-
-    const fallback = channelSettingsSchema.parse({});
-    await this.prisma.channelSettings.update({
-      where: { chatId },
-      data: {
-        ...fallback,
-      },
-    });
-
-    return fallback;
   }
 
   async getChannelSettingsScreen(
@@ -8226,237 +7458,29 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ChannelSettings> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
-    await this.ensureEntityType(chatId, user.userId, 'channel');
-    const parsed = channelSettingsSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    const normalizedSettings = this.normalizeChannelSettings(parsed.data, chatId);
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: `Channel ${chatId}`,
-        entityType: ChatEntityType.CHANNEL,
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        channelSettings: {
-          create: {
-            ...normalizedSettings,
-          },
-        },
-      },
-      update: {
-        ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        entityType: ChatEntityType.CHANNEL,
-        channelSettings: {
-          upsert: {
-            update: {
-              ...normalizedSettings,
-            },
-            create: {
-              ...normalizedSettings,
-            },
-          },
-        },
-      },
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return saveChannelSettingsValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      chatId,
+      actorUserId: user.userId,
+      body,
+      source,
+      resolveBotAssignmentData: () => this.resolveChannelSettingsWriteBotAssignmentData(chatId),
+      refreshExecutionReadiness: () => this.refreshChannelSettingsExecutionReadiness(chatId),
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'UPDATE_CHANNEL_SETTINGS',
-        payload: {
-          ...normalizedSettings,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-    await this.refreshExecutionReadinessAfterChannelSettingsUpdate(chatId);
-
-    return normalizedSettings;
   }
 
   async publishChannelEngagementMessage(chatId: string, user: AuthUser, body: unknown) {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
-    await this.ensureEntityType(chatId, user.userId, 'channel');
-
-    const parsed = publishChannelEngagementRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const persistedSettings = await this.prisma.channelSettings.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        commentsEnabled: false,
-      },
-      update: {},
-      select: {
-        engagementPublishedMessageId: true,
-        engagementPublishedThreadId: true,
-        engagementPublishedAt: true,
-        postSuggestionsEntryMode: true,
-      },
-    });
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
-    const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
-    const threadId = existingThreadId || randomUUID();
-    const commentsUrl = this.dialogLinkHelper.buildChannelDialogLaunchUrl(
+    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
+    return publishChannelEngagementMessageValue({
+      prisma: this.prisma,
+      maxClient: this.maxClient,
       chatId,
-      'comments',
-      threadId,
-      resolvedBotId,
-    );
-    const suggestPayload = this.dialogLinkHelper.buildChannelSuggestionStartPayload(
-      chatId,
-      threadId,
-    );
-    const suggestUrl =
-      persistedSettings.postSuggestionsEntryMode === 'MINIAPP'
-        ? this.dialogLinkHelper.buildChannelDialogLaunchUrl(
-            chatId,
-            'suggest',
-            threadId,
-            resolvedBotId,
-          )
-        : (this.dialogLinkHelper.buildBotStartUrl(suggestPayload, resolvedBotId) ??
-          this.dialogLinkHelper.buildChannelDialogLaunchUrl(
-            chatId,
-            'suggest',
-            threadId,
-            resolvedBotId,
-          ));
-    const commentsButton = this.buildChannelDialogButton(
-      chatId,
-      'comments',
-      threadId,
-      formatCommentsButtonText(parsed.data.commentsButtonText, 0),
-      resolvedBotId,
-    );
-    const suggestButton = this.buildChannelDialogButton(
-      chatId,
-      'suggest',
-      threadId,
-      parsed.data.suggestButtonText,
-      resolvedBotId,
-      persistedSettings.postSuggestionsEntryMode,
-    );
-    const buttons: MaxMessageButton[][] = [];
-    if (parsed.data.includeCommentsButton) {
-      buttons.push([commentsButton]);
-    }
-    if (parsed.data.includeSuggestButton) {
-      buttons.push([suggestButton]);
-    }
-
-    let messageId = existingPublishedMessageId;
-    let updatedExisting = false;
-    let recreatedFromMessageId: string | null = null;
-    let publishedAt = persistedSettings.engagementPublishedAt ?? null;
-
-    if (messageId) {
-      try {
-        if (resolvedBotId) {
-          await this.maxClient.editMessageInlineKeyboard(
-            chatId,
-            messageId,
-            parsed.data.text,
-            {
-              buttons,
-            } satisfies Pick<MaxSendMessageOptions, 'buttons'>,
-            { botId: resolvedBotId },
-          );
-        } else {
-          await this.maxClient.editMessageInlineKeyboard(chatId, messageId, parsed.data.text, {
-            buttons,
-          } satisfies Pick<MaxSendMessageOptions, 'buttons'>);
-        }
-        updatedExisting = true;
-      } catch (error: unknown) {
-        if (!this.shouldRecreateEditableMessage(error)) {
-          const maxApiMessage = this.extractMaxApiErrorMessage(error);
-          throw new BadRequestException(
-            maxApiMessage || 'Не удалось обновить опубликованный пост с кнопками.',
-          );
-        }
-
-        recreatedFromMessageId = messageId;
-        messageId = '';
-      }
-    }
-
-    if (!messageId) {
-      try {
-        const published = resolvedBotId
-          ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-              chatId,
-              parsed.data.text,
-              {
-                buttons,
-              } satisfies MaxSendMessageOptions,
-              { botId: resolvedBotId },
-            )
-          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, parsed.data.text, {
-              buttons,
-            } satisfies MaxSendMessageOptions);
-        messageId = published.messageId;
-      } catch (error: unknown) {
-        const maxApiMessage = this.extractMaxApiErrorMessage(error);
-        throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать пост с кнопками.');
-      }
-      publishedAt = new Date();
-      updatedExisting = false;
-    } else if (!publishedAt) {
-      publishedAt = new Date();
-    }
-
-    await this.prisma.channelSettings.update({
-      where: { chatId },
-      data: {
-        engagementPublishedMessageId: messageId,
-        engagementPublishedThreadId: threadId,
-        engagementPublishedAt: publishedAt,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: CHANNEL_DIALOG_ACTION_PUBLISH,
-        payload: {
-          messageId,
-          text: parsed.data.text,
-          commentsButtonText: parsed.data.commentsButtonText,
-          suggestButtonText: parsed.data.suggestButtonText,
-          includeCommentsButton: parsed.data.includeCommentsButton,
-          includeSuggestButton: parsed.data.includeSuggestButton,
-          threadId,
-          updatedExisting,
-          recreatedFromMessageId,
-          commentsUrl,
-          suggestPayload,
-          suggestUrl,
-          suggestionEntryMode: persistedSettings.postSuggestionsEntryMode,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        },
-      },
-    });
-
-    return publishChannelEngagementResultSchema.parse({
-      chatId,
-      sent: true,
-      messageId,
-      updatedExisting,
-      publishedAt: publishedAt?.toISOString() ?? null,
+      actorUserId: user.userId,
+      body,
+      resolveBotId: () => this.resolveChannelEngagementActionBotId(chatId),
+      buildDialogArtifacts: (params) => this.buildChannelEngagementDialogArtifacts(params),
     });
   }
 
@@ -8519,24 +7543,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async getChannelSuggestionRedirect(chatId: string, token: string | null) {
-    const threadId = this.dialogLinkHelper.resolveChannelDialogThreadId(chatId, 'suggest', token);
-    const channelSettings = await this.getPublicChannelSettings(chatId);
-
-    if (!channelSettings.postSuggestionsEnabled && !threadId) {
-      throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
-    }
-
-    const startPayload = threadId
-      ? this.dialogLinkHelper.buildChannelSuggestionStartPayload(chatId, threadId)
-      : this.dialogLinkHelper.buildChannelDialogStartParam(chatId, 'suggest', '');
-    const url = this.dialogLinkHelper.buildBotStartUrl(startPayload);
-    if (!url) {
-      throw new BadRequestException('Не удалось открыть диалог с ботом.');
-    }
-
-    return channelSuggestionRedirectResponseSchema.parse({
-      url,
-      title: null,
+    return getChannelSuggestionRedirectValue({
+      chatId,
+      token,
+      dialogLinkHelper: this.dialogLinkHelper,
+      loadChannelSettings: (channelId) => this.getPublicChannelSettings(channelId),
     });
   }
 
@@ -8600,6 +7611,28 @@ export class AdminService implements OnModuleDestroy {
   async getPublicChannelSuggestionIntroText(chatId: string): Promise<string | null> {
     const channelSettings = await this.getPublicChannelSettings(chatId);
     return this.resolveChannelDialogIntroText(channelSettings, 'suggest');
+  }
+
+  getPublicChannelSettingsForDialog(chatId: string): Promise<ChannelSettings> {
+    return this.getPublicChannelSettings(chatId);
+  }
+
+  getPublicChatCommentSettingsForDialog(
+    chatId: string,
+  ): Promise<Pick<ChatSettings, 'commentsEnabled'>> {
+    return this.getPublicChatCommentSettings(chatId);
+  }
+
+  toggleEntityDialogReactionForDialog(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    dialogType: ChannelDialogType;
+    messageId: string;
+    token: string;
+    emoji: string;
+  }): Promise<ToggleChannelDialogReactionResponse> {
+    return this.toggleEntityDialogReaction(params);
   }
 
   async getPublicChannelSuggestionTarget(
@@ -9374,25 +8407,15 @@ export class AdminService implements OnModuleDestroy {
     messageId: string,
     body: unknown,
   ) {
-    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
-    const parsed = toggleChannelDialogReactionRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const channelSettings = await this.getPublicChannelSettings(chatId);
-    if (!channelSettings.commentsEnabled) {
-      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
-    }
-
-    return this.toggleEntityDialogReaction({
+    return toggleDialogReactionValue({
       chatId,
       entityType: 'channel',
-      userId: user.userId,
-      dialogType,
       messageId,
-      token: parsed.data.token,
-      emoji: parsed.data.emoji,
+      user,
+      dialogTypeRaw,
+      body,
+      loadCommentSettings: (channelId) => this.getPublicChannelSettings(channelId),
+      toggleReaction: (options) => this.toggleEntityDialogReaction(options),
     });
   }
 
@@ -9403,25 +8426,15 @@ export class AdminService implements OnModuleDestroy {
     messageId: string,
     body: unknown,
   ) {
-    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
-    const parsed = toggleChannelDialogReactionRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
-    if (!chatSettings.commentsEnabled) {
-      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
-    }
-
-    return this.toggleEntityDialogReaction({
+    return toggleDialogReactionValue({
       chatId,
       entityType: 'chat',
-      userId: user.userId,
-      dialogType,
       messageId,
-      token: parsed.data.token,
-      emoji: parsed.data.emoji,
+      user,
+      dialogTypeRaw,
+      body,
+      loadCommentSettings: (chatId) => this.getPublicChatCommentSettings(chatId),
+      toggleReaction: (options) => this.toggleEntityDialogReaction(options),
     });
   }
 
@@ -9437,139 +8450,27 @@ export class AdminService implements OnModuleDestroy {
     },
     settingKeys?: readonly (keyof ChatSettings)[],
   ): Promise<ApplySettingsToAllChatsResult> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
-    const parsed = chatSettingsSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, sourceChatId, {
-      resetRequiredSubscriptionExpiration: true,
-    });
-
-    const usesLegacySettingKeys = Array.isArray(targetOrSettingKeys);
-    const target: ApplySettingsTarget = usesLegacySettingKeys
-      ? { mode: 'all' as const, favoriteTypes: [], chatIds: [] }
-      : (targetOrSettingKeys as ApplySettingsTarget);
-    const effectiveSettingKeys = usesLegacySettingKeys
-      ? (targetOrSettingKeys as readonly (keyof ChatSettings)[])
-      : settingKeys;
-    const targetChats = await this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
-    if (targetChats.length === 0) {
-      throw new BadRequestException('Нет доступных чатов для применения настроек.');
-    }
-    const appliedChatIds = targetChats.map((chat) => chat.id);
-    const filteredSettingKeys = Array.isArray(effectiveSettingKeys)
-      ? Array.from(new Set(effectiveSettingKeys)).filter(
-          (key): key is keyof ChatSettings => typeof key === 'string' && key in normalizedSettings,
-        )
-      : [];
-    const settingsUpdatePayload: Partial<ChatSettings> =
-      filteredSettingKeys.length > 0
-        ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
-            (acc as Record<keyof ChatSettings, ChatSettings[keyof ChatSettings]>)[key] =
-              normalizedSettings[key];
-            return acc;
-          }, {})
-        : normalizedSettings;
-    const settingsCreatePayload =
-      filteredSettingKeys.length > 0
-        ? {
-            ...DEFAULT_CHAT_SETTINGS,
-            ...settingsUpdatePayload,
-          }
-        : normalizedSettings;
-    const shouldValidateRequiredSubscription =
-      filteredSettingKeys.length === 0 ||
-      filteredSettingKeys.some((key) =>
-        REQUIRED_SUBSCRIPTION_SETTING_KEYS.includes(
-          key as (typeof REQUIRED_SUBSCRIPTION_SETTING_KEYS)[number],
-        ),
-      );
-    if (shouldValidateRequiredSubscription) {
-      await this.assertRequiredSubscriptionSettings(normalizedSettings);
-    }
-
-    await mapWithConcurrencyLimit(
-      appliedChatIds,
-      APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
-      async (chatId) => {
-        const resolvedBotId = await this.resolveBotAssignment(chatId);
-        await this.prisma.$transaction([
-          this.prisma.chat.upsert({
-            where: { id: chatId },
-            create: {
-              id: chatId,
-              title: `Chat ${chatId}`,
-              entityType: ChatEntityType.CHAT,
-              ...this.buildResolvedBotAssignmentData(resolvedBotId),
-              settings: {
-                create: {
-                  ...settingsCreatePayload,
-                },
-              },
-            },
-            update: {
-              ...this.buildResolvedBotAssignmentData(resolvedBotId),
-              settings: {
-                upsert: {
-                  update: {
-                    ...settingsUpdatePayload,
-                  },
-                  create: {
-                    ...settingsCreatePayload,
-                  },
-                },
-              },
-            },
-          }),
-          this.prisma.chatAdminAllowlist.upsert({
-            where: {
-              chatId_userId: {
-                chatId,
-                userId: user.userId,
-              },
-            },
-            create: {
-              chatId,
-              userId: user.userId,
-            },
-            update: {},
-          }),
-          this.prisma.auditLog.create({
-            data: {
-              chatId,
-              actorUserId: user.userId,
-              action: 'APPLY_SETTINGS_TO_ALL_CHATS',
-              payload: {
-                sourceChatId,
-                targetChatId: chatId,
-                source,
-                targetMode: target.mode,
-                ...(target.favoriteTypes.length > 0 ? { favoriteTypes: target.favoriteTypes } : {}),
-                ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
-              },
-            },
-          }),
-        ]);
-
-        await this.chatContextCache.invalidate(chatId);
-      },
-    );
-
-    this.scheduleApplySettingsToAllReadinessRefresh({
-      chatIds: appliedChatIds,
-      shouldRefreshRequiredSubscription:
-        shouldValidateRequiredSubscription &&
-        this.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
-      requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
-    });
-
-    return {
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
+    return applySettingsToAllChatsValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
       sourceChatId,
-      updatedChats: appliedChatIds.length,
-      appliedChatIds,
-    };
+      actorUserId: user.userId,
+      body,
+      source,
+      targetOrSettingKeys,
+      settingKeys,
+      normalizeSettings: (settings) => this.normalizeChatSettingsForApply(sourceChatId, settings),
+      resolveTargetChats: (target) =>
+        this.resolveSettingsApplyTargetChatsForSettings(sourceChatId, user, target),
+      resolveBotAssignmentData: (chatId) => this.resolveSettingsApplyBotAssignmentData(chatId),
+      assertRequiredSubscriptionSettings: (settings) =>
+        this.assertRequiredSubscriptionSettingsForChatSettings(settings),
+      isRequiredSubscriptionCurrentlyActive: (settings) =>
+        this.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
+      scheduleReadinessRefresh: (params) =>
+        this.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
+    });
   }
 
   async applySettingsSectionToAllChats(
@@ -9578,30 +8479,15 @@ export class AdminService implements OnModuleDestroy {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ApplySectionToAllResponse> {
-    const parsed = applySectionToAllRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const sourceSettings = await this.getSettings(sourceChatId, user);
-    const result = await this.applySettingsToAllChats(
+    return applySettingsSectionToAllChatsValue({
       sourceChatId,
-      user,
-      sourceSettings,
+      body,
       source,
-      parsed.data.target,
-      SETTINGS_SECTION_KEYS[parsed.data.section],
-    );
-
-    if (parsed.data.section === 'links') {
-      await this.syncDomainAllowlistToChats(sourceChatId, result.appliedChatIds);
-    }
-
-    return applySectionToAllResponseSchema.parse({
-      section: parsed.data.section,
-      targetMode: parsed.data.target.mode,
-      favoriteTypes: parsed.data.target.favoriteTypes,
-      ...result,
+      getSourceSettings: () => this.getSettings(sourceChatId, user),
+      applySettings: (settings, target, settingKeys) =>
+        this.applySettingsToAllChats(sourceChatId, user, settings, source, target, settingKeys),
+      syncDomainAllowlistToChats: (targetChatIds) =>
+        this.syncDomainAllowlistToChatsForSettings(sourceChatId, targetChatIds),
     });
   }
 
@@ -9938,51 +8824,7 @@ export class AdminService implements OnModuleDestroy {
       buttonText?: string | null;
     },
   ): BroadcastLinkButton[] {
-    const normalizedButtons: BroadcastLinkButton[] = [];
-
-    if (Array.isArray(rawButtons)) {
-      for (const item of rawButtons) {
-        if (!item || typeof item !== 'object') {
-          continue;
-        }
-
-        const row = item as { text?: unknown; url?: unknown };
-        const url = this.normalizeLegacyProfileButtonUrl(
-          typeof row.url === 'string' ? row.url : '',
-        );
-        if (!url) {
-          continue;
-        }
-
-        normalizedButtons.push({
-          text:
-            typeof row.text === 'string' && row.text.trim().length > 0
-              ? row.text.trim()
-              : DEFAULT_BROADCAST_BUTTON_TEXT,
-          url,
-        });
-
-        if (normalizedButtons.length >= MAX_BROADCAST_LINK_BUTTONS) {
-          break;
-        }
-      }
-    }
-
-    if (normalizedButtons.length > 0) {
-      return normalizedButtons;
-    }
-
-    const legacyUrl = this.normalizeLegacyProfileButtonUrl(legacy?.buttonUrl ?? '');
-    if (!legacyUrl) {
-      return [];
-    }
-
-    return [
-      {
-        text: legacy?.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
-        url: legacyUrl,
-      },
-    ];
+    return normalizeStoredLinkButtonsValue(rawButtons, legacy);
   }
 
   private buildStoredLinkButtonState(
@@ -9996,14 +8838,7 @@ export class AdminService implements OnModuleDestroy {
     buttonUrl: string;
     buttonText: string;
   } {
-    const buttons = this.normalizeStoredLinkButtons(rawButtons, legacy);
-    const primaryButton = buttons[0];
-
-    return {
-      buttons,
-      buttonUrl: primaryButton?.url ?? '',
-      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-    };
+    return buildStoredLinkButtonStateValue(rawButtons, legacy);
   }
 
   private areBroadcastButtonsEqual(left: readonly BroadcastLinkButton[], right: unknown): boolean {
@@ -10787,4311 +9622,185 @@ export class AdminService implements OnModuleDestroy {
     return changes;
   }
 
-  async sendBroadcast(
+  sendBroadcast(
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.sendManagedBroadcast(sourceChatId, user, body, {
-      entityType: 'chat',
-      source,
-      resolveTargets: (actor) =>
-        this.listChatsForMassBroadcast(actor, { discoveryMode: 'cached-first' }),
-    });
+    return this.managedBroadcastRuntime.sendBroadcast(sourceChatId, user, body, source);
   }
 
-  async sendChannelBroadcast(
+  sendChannelBroadcast(
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.sendManagedBroadcast(sourceChatId, user, body, {
-      entityType: 'channel',
-      source,
-    });
+    return this.managedBroadcastRuntime.sendChannelBroadcast(sourceChatId, user, body, source);
   }
 
-  async sendBroadcastTest(
+  sendBroadcastTest(
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.sendManagedBroadcastTest(sourceChatId, user, body, 'chat');
+    return this.managedBroadcastRuntime.sendBroadcastTest(sourceChatId, user, body);
   }
 
-  async sendChannelBroadcastTest(
+  sendChannelBroadcastTest(
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.sendManagedBroadcastTest(sourceChatId, user, body, 'channel');
+    return this.managedBroadcastRuntime.sendChannelBroadcastTest(sourceChatId, user, body);
   }
 
-  async listManagedBroadcasts(
+  listManagedBroadcasts(
     sourceChatId: string,
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'chat', options);
+    return this.managedBroadcastRuntime.listManagedBroadcasts(sourceChatId, user, options);
   }
 
-  async listChannelManagedBroadcasts(
+  listChannelManagedBroadcasts(
     sourceChatId: string,
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'channel', options);
+    return this.managedBroadcastRuntime.listChannelManagedBroadcasts(sourceChatId, user, options);
   }
 
-  async getManagedBroadcastCalendar(
+  getManagedBroadcastCalendar(
     sourceChatId: string,
     user: AuthUser,
     query: unknown,
   ): Promise<ManagedBroadcastCalendarResponse> {
-    return this.getManagedBroadcastCalendarForEntity(sourceChatId, user, 'chat', query);
+    return this.managedBroadcastRuntime.getManagedBroadcastCalendar(sourceChatId, user, query);
   }
 
-  async getChannelManagedBroadcastCalendar(
+  getChannelManagedBroadcastCalendar(
     sourceChatId: string,
     user: AuthUser,
     query: unknown,
   ): Promise<ManagedBroadcastCalendarResponse> {
-    return this.getManagedBroadcastCalendarForEntity(sourceChatId, user, 'channel', query);
-  }
-
-  async getManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.getManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
-  }
-
-  async getChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.getManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
-  }
-
-  async updateManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.updateManagedBroadcastForEntity(sourceChatId, broadcastId, user, body, 'chat');
-  }
-
-  async updateChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.updateManagedBroadcastForEntity(sourceChatId, broadcastId, user, body, 'channel');
-  }
-
-  async cancelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.cancelManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
-  }
-
-  async cancelChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.cancelManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
-  }
-
-  async retryManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.retryManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
-  }
-
-  async retryChannelManagedBroadcast(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-  ): Promise<ManagedBroadcastDetails> {
-    return this.retryManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
-  }
-
-  async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
-    for (let pass = 0; pass < MANAGED_BROADCAST_DUE_MAX_PASSES; pass += 1) {
-      const governorDecision = await this.resolveManagedBroadcastBackgroundDecision(reason);
-      if (governorDecision.action === 'pause') {
-        return;
-      }
-
-      const dueBatchSize =
-        governorDecision.action === 'slow'
-          ? MANAGED_BROADCAST_DUE_SLOW_BATCH_SIZE
-          : MANAGED_BROADCAST_DUE_BATCH_SIZE;
-      const recoveryBatchSize =
-        governorDecision.action === 'slow'
-          ? MANAGED_BROADCAST_RECOVERY_SLOW_BATCH_SIZE
-          : MANAGED_BROADCAST_RECOVERY_BATCH_SIZE;
-      const now = new Date();
-      const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
-      const autoRetryBefore = new Date(now.getTime() - MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS);
-      const activeDueRows = await this.prisma.managedBroadcast.findMany({
-        where: {
-          status: PrismaManagedBroadcastStatus.ACTIVE,
-          nextSendAt: { lte: now },
-          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-        },
-        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: dueBatchSize,
-        select: { id: true },
-      });
-      const retryableDueRows = await this.prisma.managedBroadcast.findMany({
-        where: {
-          status: {
-            in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
-          },
-          nextSendAt: { lte: now },
-          updatedAt: { lte: autoRetryBefore },
-          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-        },
-        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: dueBatchSize,
-        select: { id: true },
-      });
-      const reservedRecoveryCount = Math.min(
-        retryableDueRows.length,
-        Math.min(recoveryBatchSize, dueBatchSize),
-      );
-      const dueRows = [
-        ...activeDueRows.slice(0, dueBatchSize - reservedRecoveryCount),
-        ...retryableDueRows.slice(0, reservedRecoveryCount),
-      ];
-      if (dueRows.length < dueBatchSize) {
-        const remainingSlots = dueBatchSize - dueRows.length;
-        const activeOverflowOffset = dueBatchSize - reservedRecoveryCount;
-        dueRows.push(
-          ...activeDueRows.slice(activeOverflowOffset, activeOverflowOffset + remainingSlots),
-        );
-      }
-      if (dueRows.length < dueBatchSize) {
-        const remainingSlots = dueBatchSize - dueRows.length;
-        dueRows.push(
-          ...retryableDueRows.slice(reservedRecoveryCount, reservedRecoveryCount + remainingSlots),
-        );
-      }
-
-      if (dueRows.length === 0) {
-        return;
-      }
-
-      for (const row of dueRows) {
-        await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
-          PrismaManagedBroadcastStatus.ACTIVE,
-          PrismaManagedBroadcastStatus.PARTIAL,
-          PrismaManagedBroadcastStatus.FAILED,
-        ]);
-      }
-
-      if (governorDecision.action === 'slow') {
-        return;
-      }
-    }
-
-    this.logger.warn(
-      `Managed broadcast due backlog was not fully drained after ${MANAGED_BROADCAST_DUE_MAX_PASSES} passes.`,
-    );
-  }
-
-  private async resolveManagedBroadcastBackgroundDecision(
-    reason: 'startup' | 'scheduled',
-  ): Promise<ManagedBroadcastBackgroundDecision> {
-    if (this.backgroundRuntimeGovernorService) {
-      const decision = await this.backgroundRuntimeGovernorService.decide({
-        component: 'managed-broadcast',
-        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-      });
-      if (decision.action !== 'run') {
-        return this.logManagedBroadcastBackgroundThrottleDecision(reason, decision);
-      }
-
-      return decision;
-    }
-
-    const snapshot = await this.resolveSystemModeSnapshot();
-    if (snapshot.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot)) {
-      return this.logManagedBroadcastSystemModePauseDecision(reason, snapshot);
-    }
-
-    return {
-      action: 'run',
-      reason: 'background headroom available',
-      retryAfterMs: 0,
-    };
-  }
-
-  private logManagedBroadcastBackgroundThrottleDecision(
-    reason: 'startup' | 'scheduled',
-    decision: ManagedBroadcastBackgroundDecision,
-  ): ManagedBroadcastBackgroundDecision {
-    const now = Date.now();
-    if (
-      now - this.managedBroadcastDegradePauseLogAtMs >=
-      MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS
-    ) {
-      this.managedBroadcastDegradePauseLogAtMs = now;
-      this.logger.log(
-        {
-          reason,
-          action: decision.action,
-          details: decision.reason,
-          retryAfterMs: decision.retryAfterMs,
-        },
-        'Throttled managed broadcast background delivery because the runtime governor detected pressure',
-      );
-    }
-
-    return decision;
-  }
-
-  private logManagedBroadcastSystemModePauseDecision(
-    reason: 'startup' | 'scheduled',
-    snapshot: Pick<SystemModeSnapshot, 'mode' | 'source' | 'reason'>,
-  ): ManagedBroadcastBackgroundDecision {
-    const now = Date.now();
-    if (
-      now - this.managedBroadcastDegradePauseLogAtMs >=
-      MANAGED_BROADCAST_DEGRADE_PAUSE_LOG_INTERVAL_MS
-    ) {
-      this.managedBroadcastDegradePauseLogAtMs = now;
-      this.logger.log(
-        {
-          reason,
-          mode: snapshot.mode,
-          source: snapshot.source,
-          details: snapshot.reason,
-        },
-        'Paused managed broadcast background delivery because the system is degraded',
-      );
-    }
-
-    return {
-      action: 'pause',
-      reason: snapshot.reason,
-      retryAfterMs: MANAGED_BROADCAST_DEGRADE_PAUSE_RETRY_MS,
-    };
-  }
-
-  private async listManagedBroadcastsForEntity(
-    sourceChatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    options: AdminReadBypassOptions = {},
-  ): Promise<ManagedBroadcastSummary[]> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(sourceChatId, user.userId, entityType);
-    }
-
-    const baseWhere = {
-      sourceChatId,
-      entityType: mapManagedEntityTypeToChatEntityType(entityType),
-    };
-    const [activeRows, recentRows] = await Promise.all([
-      this.prisma.managedBroadcast.findMany({
-        where: {
-          ...baseWhere,
-          status: {
-            in: [
-              PrismaManagedBroadcastStatus.ACTIVE,
-              PrismaManagedBroadcastStatus.PARTIAL,
-              PrismaManagedBroadcastStatus.FAILED,
-            ],
-          },
-        },
-        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
-      }),
-      this.prisma.managedBroadcast.findMany({
-        where: {
-          ...baseWhere,
-          status: {
-            in: [PrismaManagedBroadcastStatus.COMPLETED, PrismaManagedBroadcastStatus.CANCELED],
-          },
-          updatedAt: {
-            gte: new Date(Date.now() - MANAGED_BROADCAST_HISTORY_WINDOW_MS),
-          },
-        },
-        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
-        take: MANAGED_BROADCAST_HISTORY_LIMIT,
-      }),
-    ]);
-    const rows = [
-      ...activeRows,
-      ...recentRows.filter((row) => !activeRows.some((active) => active.id === row.id)),
-    ];
-
-    const [snapshots, upcomingSlotsMap, targetPreviewBundles] = await Promise.all([
-      this.getManagedBroadcastDeliverySnapshots(rows),
-      this.getManagedBroadcastUpcomingSlotsMap(rows),
-      this.getManagedBroadcastTargetPreviewBundles(rows),
-    ]);
-
-    return rows.map((row) =>
-      managedBroadcastSummarySchema.parse(
-        this.mapManagedBroadcastSummary(
-          row,
-          snapshots.get(row.id),
-          upcomingSlotsMap.get(row.id) ?? [],
-          targetPreviewBundles.get(row.id),
-        ),
-      ),
-    );
-  }
-
-  private parseManagedBroadcastCalendarQuery(query: unknown): {
-    from: Date;
-    to: Date;
-    targetChatIds: string[];
-  } {
-    const source = query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
-    const now = new Date();
-    const fromRaw = typeof source.from === 'string' ? source.from : '';
-    const toRaw = typeof source.to === 'string' ? source.to : '';
-    const from = fromRaw ? new Date(fromRaw) : now;
-    const to = toRaw ? new Date(toRaw) : new Date(from.getTime() + BROADCAST_MAX_DELAY_MS);
-
-    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
-      throw new BadRequestException('Некорректный диапазон календаря автопостинга.');
-    }
-    if (to.getTime() < from.getTime()) {
-      throw new BadRequestException('Конец календаря должен быть позже начала.');
-    }
-    if (to.getTime() - from.getTime() > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Календарь автопостинга доступен максимум на 31 день.');
-    }
-
-    const readTargetValue = (value: unknown): string[] => {
-      if (Array.isArray(value)) {
-        return value.flatMap((item) => readTargetValue(item));
-      }
-      if (typeof value !== 'string') {
-        return [];
-      }
-      return value
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-    };
-
-    return {
-      from,
-      to,
-      targetChatIds: this.normalizeManagedBroadcastTargetChatIds(
-        readTargetValue(source.targetChatIds),
-      ),
-    };
-  }
-
-  private async getManagedBroadcastCalendarForEntity(
-    sourceChatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    query: unknown,
-  ): Promise<ManagedBroadcastCalendarResponse> {
-    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
-
-    const parsedQuery = this.parseManagedBroadcastCalendarQuery(query);
-    const targetChatIds =
-      parsedQuery.targetChatIds.length > 0 ? parsedQuery.targetChatIds : [sourceChatId];
-    const allowedTargetIds = new Set([sourceChatId]);
-    if (entityType === 'chat') {
-      const availableTargets = await this.listChatsForMassBroadcast(user, {
-        discoveryMode: 'cached-first',
-      });
-      for (const chat of availableTargets) {
-        if (chat.entityType === entityType) {
-          allowedTargetIds.add(chat.id);
-        }
-      }
-    }
-
-    const invalidTargetChatIds = targetChatIds.filter((chatId) => !allowedTargetIds.has(chatId));
-    if (invalidTargetChatIds.length > 0) {
-      throw new BadRequestException(
-        'Некоторые выбранные чаты больше недоступны. Откройте список заново.',
-      );
-    }
-
-    const prismaEntityType = mapManagedEntityTypeToChatEntityType(entityType);
-    const occurrences = await this.prisma.managedBroadcastOccurrence.findMany({
-      where: {
-        entityType: prismaEntityType,
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
-        },
-        scheduledAt: {
-          gte: parsedQuery.from,
-          lte: parsedQuery.to,
-        },
-      },
-      include: {
-        broadcast: true,
-      },
-      orderBy: [{ scheduledAt: 'asc' }],
-    });
-    const requestedTargetChatIdSet = new Set(targetChatIds);
-    const activeOccurrences = occurrences.filter((occurrence) => {
-      if (
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.ACTIVE &&
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.PARTIAL &&
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.FAILED
-      ) {
-        return false;
-      }
-
-      return this.parseManagedBroadcastTargetChatIds(
-        occurrence.broadcast.targetChatIds,
-        occurrence.broadcast.sourceChatId,
-      ).some((chatId) => requestedTargetChatIdSet.has(chatId));
-    });
-    const broadcastRows = Array.from(
-      new Map(
-        activeOccurrences.map((occurrence) => [occurrence.broadcast.id, occurrence.broadcast]),
-      ).values(),
-    ) as PersistedManagedBroadcast[];
-    const allTargetChatIds = [
-      ...targetChatIds,
-      ...broadcastRows.flatMap((row) =>
-        this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
-      ),
-    ];
-    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(
-      allTargetChatIds,
-      entityType,
-    );
-
-    return managedBroadcastCalendarResponseSchema.parse({
-      sourceChatId,
-      entityType,
-      from: parsedQuery.from.toISOString(),
-      to: parsedQuery.to.toISOString(),
-      targetChatIds,
-      slots: activeOccurrences.map((occurrence) => {
-        const row = occurrence.broadcast;
-        const { targetMode, targetChatIds: rowTargetChatIds } =
-          this.resolveManagedBroadcastTargetsFromRow(row);
-        const targetPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-          rowTargetChatIds,
-          previewMap,
-          fromPrismaEntityType(row.entityType),
-        );
-        const overlapChatIds =
-          requestedTargetChatIdSet.size > 0
-            ? rowTargetChatIds.filter((chatId) => requestedTargetChatIdSet.has(chatId))
-            : [];
-        const overlapPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-          overlapChatIds,
-          previewMap,
-          fromPrismaEntityType(row.entityType),
-        );
-        const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
-        const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
-        const hasImage = this.readManagedBroadcastImagesFromRow(row).length > 0;
-
-        return {
-          broadcastId: row.id,
-          sourceChatId: row.sourceChatId,
-          scheduledAt: occurrence.scheduledAt.toISOString(),
-          status: row.status,
-          textPreview: normalizedText
-            ? normalizedText.slice(0, 160)
-            : hasImage
-              ? 'Фото без текста'
-              : hasVideo
-                ? 'Видео без текста'
-                : 'Пустой автопостинг',
-          targetMode,
-          targetChatIds: rowTargetChatIds,
-          targetChats: rowTargetChatIds.length,
-          targetPreviews: targetPreviewBundle.previews,
-          targetOverflowCount: targetPreviewBundle.overflowCount,
-          overlapChatIds,
-          overlapPreviews: overlapPreviewBundle.previews,
-          overlapOverflowCount: overlapPreviewBundle.overflowCount,
-          hasTargetOverlap: overlapChatIds.length > 0,
-        };
-      }),
-    });
-  }
-
-  private async getManagedBroadcastForEntity(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedBroadcastDetails> {
-    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
-
-    const row = await this.prisma.managedBroadcast.findFirst({
-      where: {
-        id: broadcastId,
-        sourceChatId,
-        entityType: mapManagedEntityTypeToChatEntityType(entityType),
-      },
-    });
-    if (!row) {
-      throw new BadRequestException('Автопостинг не найден.');
-    }
-
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
-    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
-      this.getManagedBroadcastDeliverySnapshot(row),
-      this.getManagedBroadcastUpcomingSlots(row),
-      this.getManagedBroadcastTargetPreviewBundle(targetChatIds, entityType),
-    ]);
-    return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots, targetPreviewBundle),
-    );
-  }
-
-  private async updateManagedBroadcastForEntity(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    body: unknown,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
-
-    const existing = await this.prisma.managedBroadcast.findFirst({
-      where: {
-        id: broadcastId,
-        sourceChatId,
-        entityType: mapManagedEntityTypeToChatEntityType(entityType),
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
-        },
-      },
-    });
-    if (!existing) {
-      throw new BadRequestException('Автопостинг не найден или уже завершён.');
-    }
-
-    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
-      entityType,
-      resolveTargets:
-        entityType === 'chat'
-          ? (actor) => this.listChatsForMassBroadcast(actor, { discoveryMode: 'cached-first' })
-          : undefined,
-    });
-
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
-    await this.reconcileInterruptedManagedBroadcastDeliveries(existing.id, currentOccurrence);
-    const currentOccurrenceDelivered = await this.prisma.managedBroadcastDelivery.count({
-      where: {
-        broadcastId: existing.id,
-        occurrenceIndex: currentOccurrence,
-        status: PrismaManagedBroadcastDeliveryStatus.SENT,
-      },
-    });
-    if (currentOccurrenceDelivered > 0) {
-      throw new BadRequestException(
-        'Текущая отправка уже частично доставлена. Сначала повторите ошибки или остановите автопостинг.',
-      );
-    }
-
-    const schedulePlan = await this.planManagedBroadcastSchedule(
-      sourceChatId,
-      mapManagedEntityTypeToChatEntityType(entityType),
-      request.payload,
-      existing.sentCount,
-      existing.id,
-    );
-    const buttonState = this.buildManagedBroadcastButtonState(request.payload.buttons);
-    const nextOccurrenceIndex = schedulePlan.sentCount + 1;
-    const isCalendarPlanComplete =
-      schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.managedBroadcast.update({
-        where: { id: existing.id },
-        data: {
-          actorUserId: user.userId,
-          text: request.payload.text,
-          textFormat: request.payload.textFormat,
-          applyToAllChats: request.payload.applyToAllChats,
-          targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-          buttons: buttonState.buttons as Prisma.InputJsonValue,
-          buttonEnabled: buttonState.buttonEnabled,
-          buttonUrl: buttonState.buttonUrl,
-          buttonText: buttonState.buttonText,
-          imageEnabled: request.payload.imageEnabled,
-          imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
-          imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
-          imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-          mediaType: request.payload.mediaType,
-          mediaPayload: request.payload.mediaPayload
-            ? (request.payload.mediaPayload as Prisma.InputJsonValue)
-            : Prisma.DbNull,
-          mediaMimeType: request.payload.mediaMimeType,
-          mediaFileName: request.payload.mediaFileName,
-          scheduleMode: schedulePlan.scheduleMode,
-          scheduleTimezone: schedulePlan.scheduleTimezone,
-          nextSendAt: schedulePlan.nextSendAt,
-          cycleEnabled: schedulePlan.cycleEnabled,
-          cycleEveryHours: schedulePlan.cycleEveryHours,
-          cycleCount: schedulePlan.cycleCount,
-          sentCount: schedulePlan.sentCount,
-          status: isCalendarPlanComplete
-            ? PrismaManagedBroadcastStatus.COMPLETED
-            : PrismaManagedBroadcastStatus.ACTIVE,
-          lastError: null,
-          lockedAt: null,
-        },
-      });
-      await tx.managedBroadcastDelivery.deleteMany({
-        where: {
-          broadcastId: existing.id,
-          occurrenceIndex: { gte: currentOccurrence },
-          status: { not: PrismaManagedBroadcastDeliveryStatus.SENT },
-        },
-      });
-      await tx.managedBroadcastOccurrence.deleteMany({
-        where: {
-          broadcastId: existing.id,
-          occurrenceIndex: { gte: currentOccurrence },
-        },
-      });
-
-      if (schedulePlan.sentCount < schedulePlan.cycleCount) {
-        await tx.managedBroadcastDelivery.createMany({
-          data: this.buildManagedBroadcastDeliveryRows(
-            existing.id,
-            request.targetChatIds,
-            nextOccurrenceIndex,
-            schedulePlan.cycleCount,
-          ),
-        });
-      }
-
-      if (schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0) {
-        await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
-          broadcastId: existing.id,
-          sourceChatId,
-          entityType: mapManagedEntityTypeToChatEntityType(entityType),
-          fromOccurrenceIndex: nextOccurrenceIndex,
-          slots: schedulePlan.upcomingSlots,
-          targetChatIds: request.targetChatIds,
-          excludeBroadcastId: existing.id,
-          allowOverwrite: request.payload.replaceConflictingSlots,
-        });
-      }
-    });
-
-    const updated = await this.prisma.managedBroadcast.findUnique({
-      where: { id: existing.id },
-    });
-    if (!updated) {
-      throw new BadRequestException('Автопостинг не найден.');
-    }
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId: sourceChatId,
-        actorUserId: user.userId,
-        action: 'UPDATE_BROADCAST_SCHEDULE',
-        payload: {
-          broadcastId: existing.id,
-          entityType,
-          targetMode: request.payload.targetMode,
-          targetChats: request.targetChatIds.length,
-          nextSendAt: schedulePlan.nextSendAt?.toISOString() ?? null,
-          scheduleMode: schedulePlan.scheduleMode,
-          scheduleTimezone: schedulePlan.scheduleTimezone,
-          scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
-          cycleEnabled: schedulePlan.cycleEnabled,
-          cycleEveryHours: schedulePlan.cycleEveryHours,
-          cycleCount: schedulePlan.cycleCount,
-        },
-      },
-    });
-
-    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
-      updated.targetChatIds,
-      updated.sourceChatId,
-    );
-    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
-      this.getManagedBroadcastDeliverySnapshot(updated),
-      this.getManagedBroadcastUpcomingSlots(updated),
-      this.getManagedBroadcastTargetPreviewBundle(updatedTargetChatIds, entityType),
-    ]);
-    return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots, targetPreviewBundle),
-    );
-  }
-
-  private async cancelManagedBroadcastForEntity(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
-
-    const existing = await this.prisma.managedBroadcast.findFirst({
-      where: {
-        id: broadcastId,
-        sourceChatId,
-        entityType: mapManagedEntityTypeToChatEntityType(entityType),
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
-        },
-      },
-    });
-    if (!existing) {
-      throw new BadRequestException('Автопостинг не найден или уже завершён.');
-    }
-
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
-    await this.reconcileInterruptedManagedBroadcastDeliveries(existing.id, currentOccurrence);
-    const [canceled] = await this.prisma.$transaction([
-      this.prisma.managedBroadcast.update({
-        where: { id: existing.id },
-        data: {
-          status: PrismaManagedBroadcastStatus.CANCELED,
-          nextSendAt: null,
-          lockedAt: null,
-        },
-      }),
-      this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          broadcastId: existing.id,
-          status: {
-            in: [
-              PrismaManagedBroadcastDeliveryStatus.PENDING,
-              PrismaManagedBroadcastDeliveryStatus.SENDING,
-              PrismaManagedBroadcastDeliveryStatus.FAILED,
-            ],
-          },
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
-          lockedAt: null,
-        },
-      }),
-      this.prisma.managedBroadcastOccurrence.deleteMany({
-        where: {
-          broadcastId: existing.id,
-          occurrenceIndex: { gte: currentOccurrence },
-        },
-      }),
-    ]);
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId: sourceChatId,
-        actorUserId: user.userId,
-        action: 'CANCEL_BROADCAST_SCHEDULE',
-        payload: {
-          broadcastId: existing.id,
-          entityType,
-        },
-      },
-    });
-
-    const canceledTargetChatIds = this.parseManagedBroadcastTargetChatIds(
-      canceled.targetChatIds,
-      canceled.sourceChatId,
-    );
-    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
-      this.getManagedBroadcastDeliverySnapshot(canceled),
-      this.getManagedBroadcastUpcomingSlots(canceled),
-      this.getManagedBroadcastTargetPreviewBundle(canceledTargetChatIds, entityType),
-    ]);
-    return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(canceled, snapshot, upcomingSlots, targetPreviewBundle),
-    );
-  }
-
-  private async retryManagedBroadcastForEntity(
-    sourceChatId: string,
-    broadcastId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
-
-    const existing = await this.prisma.managedBroadcast.findFirst({
-      where: {
-        id: broadcastId,
-        sourceChatId,
-        entityType: mapManagedEntityTypeToChatEntityType(entityType),
-        status: {
-          in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
-        },
-      },
-    });
-    if (!existing) {
-      throw new BadRequestException('Для повтора нет неуспешного автопостинга.');
-    }
-
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
-    await this.reconcileInterruptedManagedBroadcastDeliveries(existing.id, currentOccurrence);
-    const currentOccurrenceSlot = await this.getManagedBroadcastOccurrenceAtIndex(
-      existing.id,
-      currentOccurrence,
-    );
-    const deliveriesAfterReconcile = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId: existing.id,
-        occurrenceIndex: currentOccurrence,
-      },
-    });
-    const hasFailedDeliveries = deliveriesAfterReconcile.some(
-      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-    );
-    const hasPendingDeliveries = deliveriesAfterReconcile.some(
-      (delivery) =>
-        delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
-        delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
-    );
-
-    if (!hasFailedDeliveries && !hasPendingDeliveries) {
-      await this.finalizeManagedBroadcastOccurrence(existing, currentOccurrence, [], [], null);
-
-      const finalized = await this.prisma.managedBroadcast.findUnique({
-        where: { id: existing.id },
-      });
-      if (!finalized) {
-        throw new BadRequestException('Автопостинг не найден.');
-      }
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId: sourceChatId,
-          actorUserId: user.userId,
-          action: 'RETRY_BROADCAST_SCHEDULE',
-          payload: {
-            broadcastId: existing.id,
-            entityType,
-            occurrenceIndex: currentOccurrence,
-            reconciledWithoutResend: true,
-          },
-        },
-      });
-
-      const finalizedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
-        finalized.targetChatIds,
-        finalized.sourceChatId,
-      );
-      const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
-        this.getManagedBroadcastDeliverySnapshot(finalized),
-        this.getManagedBroadcastUpcomingSlots(finalized),
-        this.getManagedBroadcastTargetPreviewBundle(finalizedTargetChatIds, entityType),
-      ]);
-      return managedBroadcastDetailsSchema.parse(
-        this.mapManagedBroadcastDetails(finalized, snapshot, upcomingSlots, targetPreviewBundle),
-      );
-    }
-
-    await this.prisma.$transaction([
-      this.prisma.managedBroadcast.update({
-        where: { id: existing.id },
-        data: {
-          status: PrismaManagedBroadcastStatus.ACTIVE,
-          lastError: null,
-          lockedAt: null,
-          nextSendAt: existing.nextSendAt ?? currentOccurrenceSlot?.scheduledAt ?? new Date(),
-        },
-      }),
-      this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          broadcastId: existing.id,
-          occurrenceIndex: currentOccurrence,
-          status: {
-            in: [PrismaManagedBroadcastDeliveryStatus.FAILED],
-          },
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-          lockedAt: null,
-          lastError: null,
-        },
-      }),
-      this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: existing.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.ACTIVE,
-        },
-      }),
-    ]);
-
-    await this.processManagedBroadcastOccurrence(
-      existing.id,
-      'manual_retry',
-      new Date(Date.now() - MANAGED_BROADCAST_LOCK_STALE_MS),
-      [
-        PrismaManagedBroadcastStatus.ACTIVE,
-        PrismaManagedBroadcastStatus.PARTIAL,
-        PrismaManagedBroadcastStatus.FAILED,
-      ],
-    );
-
-    const updated = await this.prisma.managedBroadcast.findUnique({
-      where: { id: existing.id },
-    });
-    if (!updated) {
-      throw new BadRequestException('Автопостинг не найден.');
-    }
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId: sourceChatId,
-        actorUserId: user.userId,
-        action: 'RETRY_BROADCAST_SCHEDULE',
-        payload: {
-          broadcastId: existing.id,
-          entityType,
-          occurrenceIndex: currentOccurrence,
-        },
-      },
-    });
-
-    const updatedTargetChatIds = this.parseManagedBroadcastTargetChatIds(
-      updated.targetChatIds,
-      updated.sourceChatId,
-    );
-    const [snapshot, upcomingSlots, targetPreviewBundle] = await Promise.all([
-      this.getManagedBroadcastDeliverySnapshot(updated),
-      this.getManagedBroadcastUpcomingSlots(updated),
-      this.getManagedBroadcastTargetPreviewBundle(updatedTargetChatIds, entityType),
-    ]);
-    return managedBroadcastDetailsSchema.parse(
-      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots, targetPreviewBundle),
-    );
-  }
-
-  private async sendManagedBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    options: {
-      entityType: ManagedEntityType;
-      source: AdminActionSource;
-      resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
-    },
-  ): Promise<SendBroadcastResult> {
-    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
-      entityType: options.entityType,
-      resolveTargets: options.resolveTargets,
-    });
-
-    const shouldSchedule =
-      options.entityType === 'chat' ||
-      request.payload.scheduleMode === 'calendar' ||
-      request.payload.sendAt !== null ||
-      request.payload.cycleEnabled;
-
-    if (shouldSchedule) {
-      return this.scheduleManagedBroadcast(
-        sourceChatId,
-        user,
-        request,
-        options.entityType,
-        options.source,
-      );
-    }
-
-    return this.sendManagedBroadcastViaQueue(
+    return this.managedBroadcastRuntime.getChannelManagedBroadcastCalendar(
       sourceChatId,
       user,
-      request,
-      options.entityType,
-      options.source,
+      query,
     );
   }
 
-  private async sendManagedBroadcastTest(
+  getManagedBroadcast(
     sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    entityType: ManagedEntityType,
-  ): Promise<SendBroadcastTestResult> {
-    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
-      entityType,
-    });
-    const deliveryBotId =
-      (await this.resolveDeliveryBotAssignment(sourceChatId)) ?? this.resolvePrivateDeliveryBotId();
-    const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
-    const maxApiOptions = this.buildManagedBroadcastMaxApiOptions('interactive');
-    const media = await this.resolveManagedBroadcastMedia(
-      request.payload,
-      entityType,
-      sourceChatId,
-      user.userId,
-      deliveryBotId,
-      maxApiOptions,
-    );
-    const message = await this.buildManagedBroadcastMessage(
-      sourceChatId,
-      entityType,
-      request.payload,
-      request.normalizedSourceText,
-      media,
-      deliveryBotId,
-    );
-
-    try {
-      const published = await this.sendManagedBroadcastTestPrivateMessage({
-        adminUserId: user.userId,
-        privateChatId,
-        message: message.messageText,
-        options: message.messageOptions,
-        botId: deliveryBotId,
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId: sourceChatId,
-          actorUserId: user.userId,
-          action: 'SEND_BROADCAST_TEST',
-          payload: {
-            entityType,
-            botId: deliveryBotId ?? null,
-            privateChatId: privateChatId ?? null,
-            messageId: published.messageId,
-          },
-        },
-      });
-
-      return sendBroadcastTestResultSchema.parse({
-        delivered: true,
-        messageId: published.messageId,
-        chatId: published.chatId ?? privateChatId ?? null,
-        url: published.url ?? null,
-      });
-    } catch (error: unknown) {
-      const maxApiMessage = this.extractMaxApiErrorMessage(error);
-      throw new BadRequestException(
-        maxApiMessage ||
-          'Не удалось отправить тест. Откройте личный диалог с ботом и попробуйте ещё раз.',
-      );
-    }
-  }
-
-  private async sendManagedBroadcastTestPrivateMessage(params: {
-    adminUserId: string;
-    privateChatId: string | null;
-    message: string;
-    options?:
-      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
-      | undefined;
-    botId?: string;
-  }) {
-    let lastError: unknown = null;
-    let privateChatId = params.privateChatId;
-    const attempts =
-      Math.max(
-        this.hasRetriableMaxAttachment(params.options)
-          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
-          : 0,
-        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
-        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
-      ) + 1;
-
-    for (let attempt = 1; attempt <= attempts; ) {
-      try {
-        return privateChatId
-          ? await this.maxClient.sendMessageImmediateWithId(
-              privateChatId,
-              params.message,
-              params.options,
-              {
-                trafficClass: 'interactive',
-                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-                ...(params.botId ? { botId: params.botId } : {}),
-              },
-            )
-          : await this.maxClient.sendMessageImmediateToUser(
-              params.adminUserId,
-              params.message,
-              params.options,
-              {
-                trafficClass: 'interactive',
-                sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-                ...(params.botId ? { botId: params.botId } : {}),
-              },
-            );
-      } catch (error: unknown) {
-        lastError = error;
-        if (privateChatId && isPrivateDialogChatUnavailableError(error)) {
-          privateChatId = null;
-          continue;
-        }
-
-        const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
-          error,
-          attempt,
-          params.options,
-        );
-        if (retryDelayMs === null) {
-          throw error;
-        }
-
-        await this.sleep(retryDelayMs);
-        attempt += 1;
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
-
-    throw new Error('Broadcast test delivery failed without error details.');
-  }
-
-  private async prepareManagedBroadcastRequest(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    options: {
-      entityType: ManagedEntityType;
-      resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
-    },
-  ): Promise<PreparedManagedBroadcastRequest> {
-    await this.assertChatAdmin(sourceChatId, user.userId, options.entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, options.entityType);
-
-    const parsed = sendBroadcastRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-    this.validateManagedBroadcastMediaPayload(parsed.data);
-
-    let targetChatIds = [sourceChatId];
-    const needsAvailableTargets =
-      parsed.data.targetMode === 'all' || parsed.data.targetMode === 'selected';
-    const availableTargets =
-      needsAvailableTargets && options.resolveTargets ? await options.resolveTargets(user) : [];
-    const allowedTargetIds = new Set([
-      sourceChatId,
-      ...availableTargets
-        .filter((chat) => chat.entityType === options.entityType)
-        .map((chat) => chat.id),
-    ]);
-    if (parsed.data.targetMode === 'all') {
-      if (!options.resolveTargets) {
-        throw new BadRequestException('Массовый автопостинг по каналам пока недоступен.');
-      }
-
-      targetChatIds = [...allowedTargetIds];
-    } else if (parsed.data.targetMode === 'selected') {
-      if (!options.resolveTargets) {
-        throw new BadRequestException('Выбор нескольких чатов для этого автопостинга недоступен.');
-      }
-
-      const invalidTargetChatIds = parsed.data.targetChatIds.filter(
-        (chatId) => !allowedTargetIds.has(chatId),
-      );
-      if (invalidTargetChatIds.length > 0) {
-        throw new BadRequestException(
-          'Некоторые выбранные чаты больше недоступны. Откройте список заново.',
-        );
-      }
-
-      targetChatIds = parsed.data.targetChatIds;
-    }
-
-    return {
-      payload: parsed.data,
-      targetChatIds,
-      normalizedSourceText: parsed.data.text,
-    };
-  }
-
-  private async sendManagedBroadcastViaQueue(
-    sourceChatId: string,
-    user: AuthUser,
-    request: PreparedManagedBroadcastRequest,
-    entityType: ManagedEntityType,
-    source: AdminActionSource,
-  ): Promise<SendBroadcastResult> {
-    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
-      required: false,
-      sourceChatId,
-      sentCount: 0,
-    });
-    const delayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
-    const cycleEnabled = request.payload.cycleEnabled;
-    const cycleEveryHours = cycleEnabled ? request.payload.cycleEveryHours : 1;
-    const cycleCount = cycleEnabled ? request.payload.cycleCount : 1;
-    const cycleEveryMs = cycleEveryHours * ONE_HOUR_MS;
-    const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
-    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все циклы должны укладываться в 31 день от текущего момента.');
-    }
-
-    const maxApiOptions = this.resolveManagedBroadcastSourceMaxApiOptions(source);
-    const resolvedBotIdsByChatId = new Map<string, string | undefined>();
-    const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
-    const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
-      if (!resolvedBotIdsByChatId.has(chatId)) {
-        resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
-      }
-      return resolvedBotIdsByChatId.get(chatId);
-    };
-    const resolveMedia = async (
-      botId: string | undefined,
-    ): Promise<ManagedBroadcastResolvedMedia> => {
-      const cacheKey = botId ?? '__default__';
-      if (!mediaByBotId.has(cacheKey)) {
-        mediaByBotId.set(
-          cacheKey,
-          await this.resolveManagedBroadcastMedia(
-            request.payload,
-            entityType,
-            sourceChatId,
-            user.userId,
-            botId,
-            maxApiOptions,
-          ),
-        );
-      }
-
-      return mediaByBotId.get(cacheKey) ?? {};
-    };
-    const sentChatIds: string[] = [];
-    const failedChatIds: string[] = [];
-    let firstSendError: unknown = null;
-
-    for (const chatId of request.targetChatIds) {
-      const resolvedBotId = await resolveTargetBotId(chatId);
-      const media = await resolveMedia(resolvedBotId);
-      let chatFailed = false;
-      for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
-        const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
-        try {
-          const message = await this.buildManagedBroadcastMessage(
-            chatId,
-            entityType,
-            request.payload,
-            request.normalizedSourceText,
-            media,
-            resolvedBotId,
-          );
-          if (occurrenceDelayMs === 0 && this.hasRetriableMaxAttachment(message.messageOptions)) {
-            await this.sendBroadcastImageMessageWithRetry(
-              chatId,
-              message.messageText,
-              message.messageOptions,
-              resolvedBotId,
-              maxApiOptions,
-            );
-          } else {
-            await this.maxClient.sendMessage(
-              chatId,
-              message.messageText,
-              message.messageOptions,
-              occurrenceDelayMs > 0
-                ? {
-                    delayMs: occurrenceDelayMs,
-                    ...maxApiOptions,
-                    ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-                  }
-                : {
-                    immediate: true,
-                    ...maxApiOptions,
-                    ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-                  },
-            );
-          }
-        } catch (error: unknown) {
-          if (!firstSendError) {
-            firstSendError = error;
-          }
-          chatFailed = true;
-          this.logger.warn(
-            {
-              entityType,
-              sourceChatId,
-              targetChatId: chatId,
-              actorUserId: user.userId,
-              sendAt: scheduledAt?.toISOString() ?? null,
-              cycleEnabled,
-              cycleEveryHours,
-              cycleCount,
-              cycleIndex: cycleIndex + 1,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Broadcast message failed for target chat',
-          );
-          break;
-        }
-      }
-
-      if (chatFailed) {
-        failedChatIds.push(chatId);
-      } else {
-        sentChatIds.push(chatId);
-      }
-    }
-
-    if (sentChatIds.length === 0 && failedChatIds.length > 0) {
-      const fallbackMessage = 'Не удалось отправить автопостинг.';
-      const maxApiMessage = this.extractMaxApiErrorMessage(firstSendError);
-      throw new BadRequestException(maxApiMessage || fallbackMessage);
-    }
-
-    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
-    await this.prisma.auditLog.create({
-      data: {
-        chatId: sourceChatId,
-        actorUserId: user.userId,
-        action: 'SEND_BROADCAST',
-        payload: {
-          entityType,
-          targetMode: request.payload.targetMode,
-          applyToAllChats: request.payload.applyToAllChats,
-          targetChats: request.targetChatIds.length,
-          sentChats: sentChatIds.length,
-          failedChats: failedChatIds.length,
-          scheduleMode: 'legacy',
-          scheduleTimezone: request.payload.scheduleTimezone,
-          scheduledSlots: [],
-          sendAt: scheduledAt?.toISOString() ?? null,
-          nextSendAt: scheduledAt?.toISOString() ?? null,
-          cycleEnabled,
-          cycleEveryHours,
-          ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-          cycleCount,
-          sentChatIds,
-          failedChatIds,
-          source,
-        },
-      },
-    });
-
-    const targetPreviewMap = await this.loadManagedBroadcastTargetPreviewMap(
-      request.targetChatIds,
-      entityType,
-    );
-    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-      sentChatIds,
-      targetPreviewMap,
-      entityType,
-    );
-    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-      failedChatIds,
-      targetPreviewMap,
-      entityType,
-    );
-
-    return {
-      sourceChatId,
-      targetChats: request.targetChatIds.length,
-      sentChats: sentChatIds.length,
-      failedChats: failedChatIds.length,
-      sentChatIds,
-      failedChatIds,
-      sentChatPreviews: sentChatPreviewBundle.previews,
-      failedChatPreviews: failedChatPreviewBundle.previews,
-      sentChatOverflowCount: sentChatPreviewBundle.overflowCount,
-      failedChatOverflowCount: failedChatPreviewBundle.overflowCount,
-      scheduleMode: 'legacy',
-      scheduleTimezone: request.payload.scheduleTimezone,
-      scheduledSlots: [],
-      sendAt: scheduledAt?.toISOString() ?? null,
-      nextSendAt: scheduledAt?.toISOString() ?? null,
-      cycleEnabled,
-      cycleEveryHours,
-      ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-      cycleCount,
-      scheduleId: null,
-      scheduledOccurrences: 0,
-    };
-  }
-
-  private async scheduleManagedBroadcast(
-    sourceChatId: string,
-    user: AuthUser,
-    request: PreparedManagedBroadcastRequest,
-    entityType: ManagedEntityType,
-    source: AdminActionSource,
-  ): Promise<SendBroadcastResult> {
-    const schedulePlan = await this.planManagedBroadcastSchedule(
-      sourceChatId,
-      mapManagedEntityTypeToChatEntityType(entityType),
-      request.payload,
-      0,
-      null,
-    );
-    const buttonState = this.buildManagedBroadcastButtonState(request.payload.buttons);
-    const nextOccurrenceIndex = schedulePlan.sentCount + 1;
-    const isCalendarPlanComplete =
-      schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
-
-    const created = await this.prisma.$transaction(async (tx) => {
-      const createdBroadcast = await tx.managedBroadcast.create({
-        data: {
-          sourceChatId,
-          entityType: mapManagedEntityTypeToChatEntityType(entityType),
-          actorUserId: user.userId,
-          text: request.payload.text,
-          textFormat: request.payload.textFormat,
-          applyToAllChats: request.payload.applyToAllChats,
-          targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-          buttons: buttonState.buttons as Prisma.InputJsonValue,
-          buttonEnabled: buttonState.buttonEnabled,
-          buttonUrl: buttonState.buttonUrl,
-          buttonText: buttonState.buttonText,
-          imageEnabled: request.payload.imageEnabled,
-          imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
-          imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
-          imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-          mediaType: request.payload.mediaType,
-          mediaPayload: request.payload.mediaPayload
-            ? (request.payload.mediaPayload as Prisma.InputJsonValue)
-            : Prisma.DbNull,
-          mediaMimeType: request.payload.mediaMimeType,
-          mediaFileName: request.payload.mediaFileName,
-          scheduleMode: schedulePlan.scheduleMode,
-          scheduleTimezone: schedulePlan.scheduleTimezone,
-          nextSendAt: schedulePlan.nextSendAt,
-          cycleEnabled: schedulePlan.cycleEnabled,
-          cycleEveryHours: schedulePlan.cycleEveryHours,
-          cycleCount: schedulePlan.cycleCount,
-          sentCount: schedulePlan.sentCount,
-          status: isCalendarPlanComplete
-            ? PrismaManagedBroadcastStatus.COMPLETED
-            : PrismaManagedBroadcastStatus.ACTIVE,
-        },
-      });
-
-      if (schedulePlan.sentCount < schedulePlan.cycleCount) {
-        await tx.managedBroadcastDelivery.createMany({
-          data: this.buildManagedBroadcastDeliveryRows(
-            createdBroadcast.id,
-            request.targetChatIds,
-            nextOccurrenceIndex,
-            schedulePlan.cycleCount,
-          ),
-        });
-      }
-
-      if (schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0) {
-        await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
-          broadcastId: createdBroadcast.id,
-          sourceChatId,
-          entityType: mapManagedEntityTypeToChatEntityType(entityType),
-          fromOccurrenceIndex: nextOccurrenceIndex,
-          slots: schedulePlan.upcomingSlots,
-          targetChatIds: request.targetChatIds,
-          excludeBroadcastId: createdBroadcast.id,
-          allowOverwrite: request.payload.replaceConflictingSlots,
-        });
-      }
-
-      return createdBroadcast;
-    });
-
-    let occurrence: BroadcastOccurrenceResult = {
-      status: isCalendarPlanComplete
-        ? PrismaManagedBroadcastStatus.COMPLETED
-        : PrismaManagedBroadcastStatus.ACTIVE,
-      currentOccurrence: Math.min(
-        Math.max(1, schedulePlan.sentCount + 1),
-        Math.max(1, schedulePlan.cycleCount),
-      ),
-      sentChatIds: [],
-      failedChatIds: [],
-      pendingChatIds: isCalendarPlanComplete ? [] : request.targetChatIds,
-      canRetry: false,
-      firstSendError: null,
-      nextSendAt: schedulePlan.nextSendAt,
-    };
-
-    if (schedulePlan.scheduleMode !== 'calendar' && schedulePlan.sendAt === null) {
-      occurrence = await this.processManagedBroadcastOccurrence(
-        created.id,
-        'immediate',
-        new Date(Date.now() - MANAGED_BROADCAST_LOCK_STALE_MS),
-        [PrismaManagedBroadcastStatus.ACTIVE],
-      );
-    }
-
-    const updated = await this.prisma.managedBroadcast.findUnique({
-      where: { id: created.id },
-    });
-    if (!updated) {
-      throw new BadRequestException('Автопостинг не найден.');
-    }
-
-    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(schedulePlan.cycleEveryHours);
-    await this.prisma.auditLog.create({
-      data: {
-        chatId: sourceChatId,
-        actorUserId: user.userId,
-        action: 'SCHEDULE_BROADCAST',
-        payload: {
-          broadcastId: created.id,
-          entityType,
-          targetMode: request.payload.targetMode,
-          applyToAllChats: request.payload.applyToAllChats,
-          targetChats: request.targetChatIds.length,
-          sendAt: schedulePlan.sendAt,
-          nextSendAt: updated.nextSendAt?.toISOString() ?? null,
-          scheduleMode: schedulePlan.scheduleMode,
-          scheduleTimezone: schedulePlan.scheduleTimezone,
-          scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
-          cycleEnabled: schedulePlan.cycleEnabled,
-          cycleEveryHours: schedulePlan.cycleEveryHours,
-          ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-          cycleCount: schedulePlan.cycleCount,
-          sentCount: updated.sentCount,
-          source,
-        },
-      },
-    });
-
-    const targetPreviewMap = await this.loadManagedBroadcastTargetPreviewMap(
-      request.targetChatIds,
-      entityType,
-    );
-    const sentChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-      occurrence.sentChatIds,
-      targetPreviewMap,
-      entityType,
-    );
-    const failedChatPreviewBundle = this.buildManagedBroadcastTargetPreviewBundle(
-      occurrence.failedChatIds,
-      targetPreviewMap,
-      entityType,
-    );
-
-    return {
-      sourceChatId,
-      targetChats: request.targetChatIds.length,
-      sentChats: occurrence.sentChatIds.length,
-      failedChats: occurrence.failedChatIds.length,
-      sentChatIds: occurrence.sentChatIds,
-      failedChatIds: occurrence.failedChatIds,
-      sentChatPreviews: sentChatPreviewBundle.previews,
-      failedChatPreviews: failedChatPreviewBundle.previews,
-      sentChatOverflowCount: sentChatPreviewBundle.overflowCount,
-      failedChatOverflowCount: failedChatPreviewBundle.overflowCount,
-      scheduleMode: schedulePlan.scheduleMode,
-      scheduleTimezone: schedulePlan.scheduleTimezone,
-      scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
-      sendAt: schedulePlan.sendAt,
-      nextSendAt: updated.nextSendAt?.toISOString() ?? null,
-      cycleEnabled: schedulePlan.cycleEnabled,
-      cycleEveryHours: schedulePlan.cycleEveryHours,
-      ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-      cycleCount: schedulePlan.cycleCount,
-      scheduleId: created.id,
-      scheduledOccurrences: Math.max(0, schedulePlan.cycleCount - updated.sentCount),
-    };
-  }
-
-  private async processManagedBroadcastOccurrence(
     broadcastId: string,
-    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
-    staleLockBefore: Date,
-    allowedStatuses: PrismaManagedBroadcastStatus[],
-  ): Promise<BroadcastOccurrenceResult> {
-    const claimedAt = new Date();
-    const claim = await this.prisma.managedBroadcast.updateMany({
-      where: {
-        id: broadcastId,
-        status: { in: allowedStatuses },
-        nextSendAt: { lte: claimedAt },
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-      },
-      data: {
-        lockedAt: claimedAt,
-      },
-    });
-    if (claim.count === 0) {
-      const row = await this.prisma.managedBroadcast.findUnique({
-        where: { id: broadcastId },
-      });
-      return {
-        status: row?.status ?? PrismaManagedBroadcastStatus.FAILED,
-        currentOccurrence: row ? this.getCurrentManagedBroadcastOccurrence(row) : 1,
-        sentChatIds: [],
-        failedChatIds: [],
-        pendingChatIds: [],
-        canRetry: false,
-        firstSendError: null,
-        nextSendAt: row?.nextSendAt ?? null,
-      };
-    }
-
-    const row = await this.prisma.managedBroadcast.findUnique({
-      where: { id: broadcastId },
-    });
-    if (!row || !row.nextSendAt || !allowedStatuses.includes(row.status)) {
-      await this.prisma.managedBroadcast.updateMany({
-        where: { id: broadcastId },
-        data: { lockedAt: null },
-      });
-      return {
-        status: row?.status ?? PrismaManagedBroadcastStatus.FAILED,
-        currentOccurrence: row ? this.getCurrentManagedBroadcastOccurrence(row) : 1,
-        sentChatIds: [],
-        failedChatIds: [],
-        pendingChatIds: [],
-        canRetry: false,
-        firstSendError: null,
-        nextSendAt: row?.nextSendAt ?? null,
-      };
-    }
-
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
-    const maxApiOptions = this.resolveManagedBroadcastProcessingMaxApiOptions(reason);
-
-    try {
-      await this.reconcileStaleManagedBroadcastDeliveries(
-        row.id,
-        currentOccurrence,
-        staleLockBefore,
-      );
-      const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
-
-      const request: PreparedManagedBroadcastRequest = {
-        payload: {
-          text: row.text,
-          textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
-          targetMode,
-          targetChatIds,
-          applyToAllChats: row.applyToAllChats,
-          ...this.buildManagedBroadcastButtonState(row.buttons, {
-            buttonEnabled: row.buttonEnabled,
-            buttonUrl: row.buttonUrl,
-            buttonText: row.buttonText,
-          }),
-          imageEnabled: row.imageEnabled,
-          imageBase64: row.imageBase64,
-          imageMimeType: row.imageMimeType,
-          imageFileName: row.imageFileName,
-          images: this.readManagedBroadcastImagesFromRow(row),
-          mediaType: readManagedBroadcastMediaType(row.mediaType),
-          mediaPayload: this.readObjectPayloadOrNull(row.mediaPayload),
-          mediaMimeType: row.mediaMimeType,
-          mediaFileName: row.mediaFileName,
-          scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
-          scheduleTimezone: row.scheduleTimezone,
-          scheduledSlots: [],
-          replaceConflictingSlots: false,
-          sendAt: row.nextSendAt.toISOString(),
-          cycleEnabled: row.cycleEnabled,
-          cycleEveryHours: row.cycleEveryHours,
-          cycleCount: row.cycleCount,
-        },
-        targetChatIds,
-        normalizedSourceText: row.text,
-      };
-
-      const sentChatIds: string[] = [];
-      const failedChatIds: string[] = [];
-      let firstSendError: unknown = null;
-      let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        orderBy: [{ targetChatId: 'asc' }],
-      });
-
-      if (reason === 'startup' || reason === 'scheduled') {
-        initialDeliveries = await this.recoverManagedBroadcastDeliveriesForAutomaticRun(
-          row.id,
-          currentOccurrence,
-          initialDeliveries,
-        );
-      }
-
-      const fatalRecoveredDelivery = initialDeliveries.find((delivery) => {
-        if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
-          return false;
-        }
-        return (
-          this.resolveManagedBroadcastFatalProcessingFailureMessage(delivery.lastError) !== null
-        );
-      });
-      if (fatalRecoveredDelivery) {
-        const fatalProcessingErrorMessage =
-          this.resolveManagedBroadcastFatalProcessingFailureMessage(
-            fatalRecoveredDelivery.lastError,
-          ) ?? 'Не удалось обработать автопостинг.';
-        await this.failManagedBroadcastAfterFatalProcessingError(
-          row,
-          currentOccurrence,
-          fatalProcessingErrorMessage,
-        );
-        return {
-          status: PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence,
-          sentChatIds: [],
-          failedChatIds: [fatalRecoveredDelivery.targetChatId],
-          pendingChatIds: [],
-          canRetry: true,
-          firstSendError: new BadRequestException(fatalProcessingErrorMessage),
-          nextSendAt: null,
-        };
-      }
-
-      if (
-        initialDeliveries.some(
-          (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-        )
-      ) {
-        return this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null);
-      }
-
-      const resolvedBotIdsByChatId = new Map<string, string | undefined>();
-      const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
-      const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
-        if (!resolvedBotIdsByChatId.has(chatId)) {
-          resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
-        }
-        return resolvedBotIdsByChatId.get(chatId);
-      };
-      const resolveMedia = async (
-        botId: string | undefined,
-      ): Promise<ManagedBroadcastResolvedMedia> => {
-        const cacheKey = botId ?? '__default__';
-        if (!mediaByBotId.has(cacheKey)) {
-          mediaByBotId.set(
-            cacheKey,
-            await this.resolveManagedBroadcastMedia(
-              request.payload,
-              row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-              row.sourceChatId,
-              row.actorUserId,
-              botId,
-              maxApiOptions,
-            ),
-          );
-        }
-
-        return mediaByBotId.get(cacheKey) ?? {};
-      };
-
-      for (const delivery of initialDeliveries) {
-        if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.PENDING) {
-          continue;
-        }
-
-        const deliveryClaim = await this.prisma.managedBroadcastDelivery.updateMany({
-          where: {
-            id: delivery.id,
-            status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-          },
-          data: {
-            status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-            lockedAt: claimedAt,
-            attemptCount: { increment: 1 },
-          },
-        });
-        if (deliveryClaim.count === 0) {
-          continue;
-        }
-
-        let sentMessageId: string;
-        try {
-          const resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
-          const media = await resolveMedia(resolvedBotId);
-          const message = await this.buildManagedBroadcastMessage(
-            delivery.targetChatId,
-            row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-            request.payload,
-            request.normalizedSourceText,
-            media,
-            resolvedBotId,
-          );
-          sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
-            delivery.targetChatId,
-            message.messageText,
-            message.messageOptions,
-            resolvedBotId,
-            maxApiOptions,
-          );
-        } catch (error: unknown) {
-          const deliveryFailureMessage =
-            this.extractMaxApiErrorMessage(error) ||
-            (error instanceof Error && error.message.trim()
-              ? error.message
-              : 'Не удалось отправить сообщение.');
-          const fatalProcessingErrorMessage =
-            this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
-          if (fatalProcessingErrorMessage) {
-            await this.failManagedBroadcastAfterFatalProcessingError(
-              row,
-              currentOccurrence,
-              fatalProcessingErrorMessage,
-            );
-            return {
-              status: PrismaManagedBroadcastStatus.FAILED,
-              currentOccurrence,
-              sentChatIds,
-              failedChatIds: [...failedChatIds, delivery.targetChatId],
-              pendingChatIds: [],
-              canRetry: true,
-              firstSendError: error,
-              nextSendAt: null,
-            };
-          }
-          if (
-            this.isManagedBroadcastPermanentTargetDeliveryFailure(error, deliveryFailureMessage)
-          ) {
-            await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
-              targetChatId: delivery.targetChatId,
-              currentDeliveryId: delivery.id,
-              lastError: deliveryFailureMessage,
-            });
-            this.logger.warn(
-              {
-                sourceChatId: row.sourceChatId,
-                broadcastId: row.id,
-                targetChatId: delivery.targetChatId,
-                actorUserId: row.actorUserId,
-                occurrenceIndex: currentOccurrence,
-                err: deliveryFailureMessage,
-              },
-              'Managed broadcast target became unavailable and was removed from remaining deliveries',
-            );
-            continue;
-          }
-          const currentAttemptCount = delivery.attemptCount + 1;
-          const transientQuarantineMessage =
-            await this.resolveManagedBroadcastTransientQuarantineMessage(
-              row.id,
-              currentOccurrence,
-              delivery.targetChatId,
-              currentAttemptCount,
-              deliveryFailureMessage,
-            );
-          if (transientQuarantineMessage) {
-            await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
-              targetChatId: delivery.targetChatId,
-              currentDeliveryId: delivery.id,
-              lastError: transientQuarantineMessage,
-            });
-            this.logger.warn(
-              {
-                sourceChatId: row.sourceChatId,
-                broadcastId: row.id,
-                targetChatId: delivery.targetChatId,
-                actorUserId: row.actorUserId,
-                occurrenceIndex: currentOccurrence,
-                attempts: currentAttemptCount,
-                err: deliveryFailureMessage,
-              },
-              'Managed broadcast target was quarantined after repeated transient delivery failures',
-            );
-            continue;
-          }
-          if (!firstSendError) {
-            firstSendError = error;
-          }
-          failedChatIds.push(delivery.targetChatId);
-          this.logger.warn(
-            {
-              sourceChatId: row.sourceChatId,
-              broadcastId: row.id,
-              targetChatId: delivery.targetChatId,
-              actorUserId: row.actorUserId,
-              occurrenceIndex: currentOccurrence,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Managed broadcast delivery failed for target chat',
-          );
-          await this.prisma.managedBroadcastDelivery.updateMany({
-            where: {
-              id: delivery.id,
-              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-            },
-            data: {
-              status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-              lockedAt: null,
-              lastError: deliveryFailureMessage,
-            },
-          });
-          continue;
-        }
-
-        const sentAt = new Date();
-        try {
-          const persistedSentMessage = await this.prisma.managedBroadcastDelivery.updateMany({
-            where: {
-              id: delivery.id,
-              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-            },
-            data: {
-              sentAt,
-              remoteMessageId: sentMessageId,
-              lastError: null,
-            },
-          });
-          sentChatIds.push(delivery.targetChatId);
-          if (persistedSentMessage.count === 0) {
-            continue;
-          }
-
-          await this.prisma.managedBroadcastDelivery.updateMany({
-            where: {
-              id: delivery.id,
-              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-            },
-            data: {
-              status: PrismaManagedBroadcastDeliveryStatus.SENT,
-              lockedAt: null,
-              lastError: null,
-            },
-          });
-        } catch (error: unknown) {
-          if (!firstSendError) {
-            firstSendError = error;
-          }
-          this.logger.warn(
-            {
-              sourceChatId: row.sourceChatId,
-              broadcastId: row.id,
-              targetChatId: delivery.targetChatId,
-              actorUserId: row.actorUserId,
-              occurrenceIndex: currentOccurrence,
-              messageId: sentMessageId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Managed broadcast delivery state sync failed after successful send',
-          );
-          await this.prisma.managedBroadcastDelivery.updateMany({
-            where: {
-              id: delivery.id,
-              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-            },
-            data: {
-              sentAt,
-              remoteMessageId: sentMessageId,
-              lastError: null,
-            },
-          });
-          throw error;
-        }
-      }
-
-      return this.finalizeManagedBroadcastOccurrence(
-        row,
-        currentOccurrence,
-        sentChatIds,
-        failedChatIds,
-        firstSendError,
-      );
-    } catch (error: unknown) {
-      const fatalProcessingErrorMessage =
-        this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
-      if (fatalProcessingErrorMessage) {
-        await this.failManagedBroadcastAfterFatalProcessingError(
-          row,
-          currentOccurrence,
-          fatalProcessingErrorMessage,
-        );
-        return {
-          status: PrismaManagedBroadcastStatus.FAILED,
-          currentOccurrence,
-          sentChatIds: [],
-          failedChatIds: [],
-          pendingChatIds: [],
-          canRetry: true,
-          firstSendError: error,
-          nextSendAt: null,
-        };
-      }
-      this.logger.warn(
-        {
-          broadcastId: row.id,
-          sourceChatId: row.sourceChatId,
-          reason,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Managed broadcast processing failed',
-      );
-      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
-        status: PrismaManagedBroadcastStatus.FAILED,
-        lastError:
-          error instanceof Error && error.message.trim().length > 0
-            ? error.message
-            : 'Не удалось обработать автопостинг.',
-        lockedAt: null,
-      });
-      if (!updated) {
-        return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error);
-      }
-      return {
-        status: PrismaManagedBroadcastStatus.FAILED,
-        currentOccurrence,
-        sentChatIds: [],
-        failedChatIds: [],
-        pendingChatIds: [],
-        canRetry: true,
-        firstSendError: error,
-        nextSendAt: row.nextSendAt,
-      };
-    }
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.getManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  private async buildManagedBroadcastMessage(
-    chatId: string,
-    entityType: ManagedEntityType,
-    payload: SendBroadcastRequest,
-    normalizedSourceText: string,
-    media: ManagedBroadcastResolvedMedia,
-    botId?: string,
-  ): Promise<{
-    messageText: string;
-    messageOptions:
-      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
-      | undefined;
-  }> {
-    const broadcastButtons = await this.resolveBroadcastButtons(
-      chatId,
-      entityType,
-      {
-        customButtons: payload.buttons,
-        includeCustomButton: payload.buttonEnabled,
-        customButtonText: payload.buttonText.trim(),
-        customButtonUrl: payload.buttonUrl.trim(),
-      },
-      botId,
-    );
-    const hasMedia = Boolean(media.imagePayload) || Boolean(media.attachments?.length);
-    const hasMeaningfulText = normalizedSourceText.trim().length > 0;
-    const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
-    const messageText = shouldUseRichText
-      ? renderSupportedMarkdownAsHtml(normalizedSourceText, { blockMode: 'raw' })
-      : hasMeaningfulText
-        ? normalizedSourceText
-        : hasMedia
-          ? ' '
-          : '';
-    const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
-    const messageOptions =
-      broadcastButtons.length > 0 || hasMedia || textFormat
-        ? {
-            ...(textFormat ? { textFormat } : {}),
-            ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
-            ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
-            ...(media.attachments?.length ? { attachments: media.attachments } : {}),
-          }
-        : undefined;
-
-    return {
-      messageText,
-      messageOptions,
-    };
-  }
-
-  private async resolveManagedBroadcastMedia(
-    payload: SendBroadcastRequest,
-    entityType: ManagedEntityType,
+  getChannelManagedBroadcast(
     sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-  ): Promise<ManagedBroadcastResolvedMedia> {
-    const images = this.resolveManagedBroadcastRequestImages(payload);
-    if (images.length === 1) {
-      const imagePayload = await this.uploadManagedBroadcastImage(
-        images[0],
-        entityType,
-        sourceChatId,
-        actorUserId,
-        botId,
-        maxApiOptions,
-      );
-      return imagePayload ? { imagePayload } : {};
-    }
-
-    if (images.length > 1) {
-      const attachments: MaxAttachmentPayload[] = [];
-      for (const image of images) {
-        const imagePayload = await this.uploadManagedBroadcastImage(
-          image,
-          entityType,
-          sourceChatId,
-          actorUserId,
-          botId,
-          maxApiOptions,
-        );
-        if (imagePayload) {
-          attachments.push({
-            type: 'image',
-            payload: imagePayload,
-          });
-        }
-      }
-
-      return attachments.length > 0 ? { attachments } : {};
-    }
-
-    if (payload.mediaType === 'video' && payload.mediaPayload) {
-      return {
-        attachments: [
-          {
-            type: 'video',
-            payload: payload.mediaPayload,
-          },
-        ],
-      };
-    }
-
-    return {};
-  }
-
-  private resolveManagedBroadcastRequestImages(payload: SendBroadcastRequest): BroadcastImage[] {
-    const explicitImages = Array.isArray(payload.images)
-      ? payload.images.filter((image) => image.base64.trim().length > 0)
-      : [];
-    if (explicitImages.length > 0) {
-      return explicitImages.slice(0, MAX_BROADCAST_IMAGES);
-    }
-
-    const imageBase64 = payload.imageBase64.trim();
-    if (!payload.imageEnabled || !imageBase64) {
-      return [];
-    }
-
-    return [
-      {
-        base64: imageBase64,
-        mimeType: payload.imageMimeType.trim(),
-        fileName: payload.imageFileName.trim(),
-      },
-    ];
-  }
-
-  private readManagedBroadcastMediaPayloadImages(value: unknown): BroadcastImage[] {
-    const payload = this.readObjectPayloadOrNull(value);
-    if (!payload || !Array.isArray(payload.images)) {
-      return [];
-    }
-
-    return payload.images
-      .map((item) => this.readManagedBroadcastMediaPayloadImage(item))
-      .filter((image): image is BroadcastImage => image !== null)
-      .slice(0, MAX_BROADCAST_IMAGES);
-  }
-
-  private readManagedBroadcastMediaPayloadImage(value: unknown): BroadcastImage | null {
-    const payload = this.readObjectPayloadOrNull(value);
-    if (!payload) {
-      return null;
-    }
-
-    const base64 = this.readTrimmedString(payload.base64);
-    if (!base64) {
-      return null;
-    }
-
-    return {
-      base64,
-      mimeType: this.readTrimmedString(payload.mimeType) ?? '',
-      fileName: this.readTrimmedString(payload.fileName) ?? '',
-    };
-  }
-
-  private readManagedBroadcastImagesFromRow(row: PersistedManagedBroadcast): BroadcastImage[] {
-    if (readManagedBroadcastMediaType(row.mediaType) === 'image') {
-      const payloadImages = this.readManagedBroadcastMediaPayloadImages(row.mediaPayload);
-      if (payloadImages.length > 0) {
-        return payloadImages;
-      }
-    }
-
-    const imageBase64 = row.imageBase64.trim();
-    if (!row.imageEnabled || !imageBase64) {
-      return [];
-    }
-
-    return [
-      {
-        base64: imageBase64,
-        mimeType: row.imageMimeType.trim(),
-        fileName: row.imageFileName.trim(),
-      },
-    ];
-  }
-
-  private validateManagedBroadcastMediaPayload(payload: SendBroadcastRequest): void {
-    const images = this.resolveManagedBroadcastRequestImages(payload);
-    if (images.length === 0) {
-      return;
-    }
-
-    if (images.length > MAX_BROADCAST_IMAGES) {
-      throw new BadRequestException(
-        `В одном автопостинге можно добавить до ${MAX_BROADCAST_IMAGES} фото.`,
-      );
-    }
-
-    let totalBytes = 0;
-    for (const image of images) {
-      totalBytes += this.validateManagedBroadcastImagePayload(image).length;
-    }
-
-    if (totalBytes > BROADCAST_IMAGES_TOTAL_MAX_BYTES) {
-      throw new BadRequestException('Суммарный размер фото слишком большой.');
-    }
-  }
-
-  private validateManagedBroadcastImagePayload(image: BroadcastImage): Buffer {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    if (!imageMimeType.startsWith('image/')) {
-      throw new BadRequestException('Поддерживаются только изображения.');
-    }
-
-    const imageBuffer = this.decodeBroadcastImageBase64(image.base64);
-    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
-      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
-    }
-
-    return imageBuffer;
-  }
-
-  private async uploadManagedBroadcastImage(
-    image: BroadcastImage,
-    entityType: ManagedEntityType,
-    sourceChatId: string,
-    actorUserId: string,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-  ): Promise<Record<string, unknown> | undefined> {
-    const imageMimeType = image.mimeType.trim().toLowerCase();
-    const imageBuffer = this.validateManagedBroadcastImagePayload(image);
-
-    let lastError: unknown = null;
-    const attempts =
-      Math.max(
-        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
-        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
-      ) + 1;
-
-    try {
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          return botId
-            ? await this.maxClient.uploadImage(
-                imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
-                imageMimeType,
-                {
-                  ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-                  botId,
-                },
-              )
-            : await this.maxClient.uploadImage(
-                imageBuffer,
-                this.resolveBroadcastImageFileName(image.fileName, imageMimeType),
-                imageMimeType,
-                this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-              );
-        } catch (error: unknown) {
-          lastError = error;
-          const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
-            error,
-            attempt,
-            undefined,
-          );
-          if (retryDelayMs === null) {
-            throw error;
-          }
-          await this.sleep(retryDelayMs);
-        }
-      }
-
-      if (lastError) {
-        throw lastError;
-      }
-
-      throw new Error('Managed broadcast image upload did not return a result.');
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          entityType,
-          sourceChatId,
-          actorUserId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Broadcast image upload failed',
-      );
-      throw new BadRequestException('Не удалось загрузить фото. Попробуйте другое изображение.');
-    }
-  }
-
-  private buildManagedBroadcastMaxApiOptions(
-    trafficClass: NonNullable<ManagedBroadcastMaxApiOptions['trafficClass']>,
-  ): ManagedBroadcastMaxApiOptions {
-    return {
-      trafficClass,
-      actionHealthLane: trafficClass,
-      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_BROADCAST,
-    };
-  }
-
-  private buildManagedBroadcastMaxApiRequestOptions(
-    options?: ManagedBroadcastMaxApiOptions,
-  ): ManagedBroadcastMaxApiOptions {
-    return options ?? this.buildManagedBroadcastMaxApiOptions('interactive');
-  }
-
-  private resolveManagedBroadcastSourceMaxApiOptions(
-    _source: AdminActionSource,
-  ): ManagedBroadcastMaxApiOptions {
-    return this.buildManagedBroadcastMaxApiOptions('interactive');
-  }
-
-  private resolveManagedBroadcastProcessingMaxApiOptions(
-    reason: 'startup' | 'scheduled' | 'manual_retry' | 'immediate',
-  ): ManagedBroadcastMaxApiOptions {
-    return this.buildManagedBroadcastMaxApiOptions(
-      reason === 'startup' || reason === 'scheduled' ? 'background' : 'interactive',
-    );
-  }
-
-  private async planManagedBroadcastSchedule(
-    sourceChatId: string,
-    entityType: ChatEntityType,
-    payload: SendBroadcastRequest,
-    sentCount: number,
-    excludeBroadcastId: string | null,
-  ): Promise<ManagedBroadcastSchedulePlan> {
-    const scheduleMode = normalizeBroadcastScheduleMode(payload.scheduleMode);
-    const scheduleTimezone = payload.scheduleTimezone.trim() || 'Europe/Moscow';
-
-    if (scheduleMode === 'calendar') {
-      const calendarPlan = await this.parseManagedBroadcastCalendarSlots(payload.scheduledSlots, {
-        sourceChatId,
-        sentCount,
-        entityType,
-        excludeBroadcastId,
-        scheduleTimezone,
-      });
-      const upcomingSlots = calendarPlan.upcomingSlots;
-
-      return {
-        scheduleMode,
-        scheduleTimezone,
-        upcomingSlots,
-        nextSendAt: upcomingSlots[0] ?? null,
-        cycleEnabled: false,
-        cycleEveryHours: 1,
-        cycleCount: calendarPlan.sentCount + upcomingSlots.length,
-        sendAt: upcomingSlots[0]?.toISOString() ?? null,
-        sentCount: calendarPlan.sentCount,
-      };
-    }
-
-    const scheduledAt = this.parseManagedBroadcastSendAt(payload.sendAt, {
-      required: false,
-      sourceChatId,
-      sentCount,
-    });
-    const cycleEveryHours = payload.cycleEnabled ? payload.cycleEveryHours : 1;
-    const cycleCount = payload.cycleEnabled ? payload.cycleCount : 1;
-
-    if (sentCount > 0 && !payload.cycleEnabled) {
-      throw new BadRequestException(
-        'После первого запуска цикла оставьте циклический режим включенным.',
-      );
-    }
-    if (sentCount > 0 && cycleCount <= sentCount) {
-      throw new BadRequestException('Количество отправок должно быть больше уже выполненных.');
-    }
-
-    const initialDelayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
-    const maxDelayWithCycles = initialDelayMs + (cycleCount - 1) * cycleEveryHours * ONE_HOUR_MS;
-    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все оставшиеся отправки должны уместиться в 31 день.');
-    }
-
-    const firstOccurrenceAt = scheduledAt ?? new Date();
-    const remainingOccurrences = Math.max(1, cycleCount - sentCount);
-
-    return {
-      scheduleMode,
-      scheduleTimezone,
-      upcomingSlots: this.buildLegacyManagedBroadcastUpcomingSlots(
-        firstOccurrenceAt,
-        remainingOccurrences,
-        cycleEveryHours,
-      ),
-      nextSendAt: firstOccurrenceAt,
-      cycleEnabled: payload.cycleEnabled,
-      cycleEveryHours,
-      cycleCount,
-      sendAt: scheduledAt?.toISOString() ?? null,
-      sentCount,
-    };
-  }
-
-  private async parseManagedBroadcastCalendarSlots(
-    values: string[],
-    options: {
-      sourceChatId: string;
-      sentCount: number;
-      entityType: ChatEntityType;
-      excludeBroadcastId: string | null;
-      scheduleTimezone: string;
-    },
-  ): Promise<ParsedManagedBroadcastCalendarSlots> {
-    const normalized = Array.from(
-      new Set(values.map((value) => value.trim()).filter(Boolean)),
-    ).sort((a, b) => a.localeCompare(b));
-    if (normalized.length === 0) {
-      throw new BadRequestException('Добавьте хотя бы один слот публикации.');
-    }
-
-    const now = new Date();
-    const todayKey = this.getDateKeyInTimeZone(now, options.scheduleTimezone);
-    const upcomingSlots: Date[] = [];
-    let pastTodayCount = 0;
-
-    for (const value of normalized) {
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) {
-        throw new BadRequestException('Некорректный слот публикации.');
-      }
-      if (
-        parsed.getUTCMinutes() % BROADCAST_CALENDAR_SLOT_MINUTES !== 0 ||
-        parsed.getUTCSeconds() !== 0 ||
-        parsed.getUTCMilliseconds() !== 0
-      ) {
-        throw new BadRequestException('Слоты должны быть кратны 30 минутам.');
-      }
-
-      const delayMs = parsed.getTime() - now.getTime();
-      if (delayMs < 0) {
-        if (this.getDateKeyInTimeZone(parsed, options.scheduleTimezone) !== todayKey) {
-          throw new BadRequestException(
-            'Прошедшие слоты можно оставлять только в пределах сегодняшнего дня.',
-          );
-        }
-        pastTodayCount += 1;
-        continue;
-      }
-      if (delayMs < BROADCAST_MIN_DELAY_MS) {
-        throw new BadRequestException('Ближайший слот должен быть минимум через 30 секунд.');
-      }
-      if (delayMs > BROADCAST_MAX_DELAY_MS) {
-        throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');
-      }
-      upcomingSlots.push(parsed);
-    }
-
-    return {
-      upcomingSlots,
-      sentCount: Math.max(options.sentCount, pastTodayCount),
-    };
-  }
-
-  private buildLegacyManagedBroadcastUpcomingSlots(
-    nextSendAt: Date | null,
-    remainingOccurrences: number,
-    cycleEveryHours: number,
-  ): Date[] {
-    if (!nextSendAt || remainingOccurrences <= 0) {
-      return [];
-    }
-
-    const slots: Date[] = [];
-    for (let index = 0; index < remainingOccurrences; index += 1) {
-      slots.push(new Date(nextSendAt.getTime() + index * cycleEveryHours * ONE_HOUR_MS));
-    }
-    return slots;
-  }
-
-  private buildManagedBroadcastOccurrenceRows(
     broadcastId: string,
-    sourceChatId: string,
-    entityType: ChatEntityType,
-    fromOccurrenceIndex: number,
-    slots: Date[],
-  ): Prisma.ManagedBroadcastOccurrenceCreateManyInput[] {
-    return slots.map((scheduledAt, index) => ({
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.getChannelManagedBroadcast(
+      sourceChatId,
       broadcastId,
+      user,
+    );
+  }
+
+  updateManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.updateManagedBroadcast(sourceChatId, broadcastId, user, body);
+  }
+
+  updateChannelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.updateChannelManagedBroadcast(
       sourceChatId,
-      entityType,
-      occurrenceIndex: fromOccurrenceIndex + index,
-      scheduledAt,
-      status: PrismaManagedBroadcastStatus.ACTIVE,
-    }));
-  }
-
-  private async createManagedBroadcastOccurrencesWithOverwrite(
-    tx: Prisma.TransactionClient,
-    options: {
-      broadcastId: string;
-      sourceChatId: string;
-      entityType: ChatEntityType;
-      fromOccurrenceIndex: number;
-      slots: Date[];
-      targetChatIds: string[];
-      excludeBroadcastId: string | null;
-      allowOverwrite: boolean;
-    },
-  ): Promise<void> {
-    if (options.slots.length === 0) {
-      return;
-    }
-
-    const rows = this.buildManagedBroadcastOccurrenceRows(
-      options.broadcastId,
-      options.sourceChatId,
-      options.entityType,
-      options.fromOccurrenceIndex,
-      options.slots,
+      broadcastId,
+      user,
+      body,
     );
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await this.overwriteManagedBroadcastCalendarSlots(tx, {
-        sourceChatId: options.sourceChatId,
-        entityType: options.entityType,
-        slots: options.slots,
-        excludeBroadcastId: options.excludeBroadcastId,
-        allowOverwrite: options.allowOverwrite,
-      });
-      await this.assertManagedBroadcastTargetCalendarSlotsAvailable(tx, {
-        targetChatIds: options.targetChatIds,
-        entityType: options.entityType,
-        slots: options.slots,
-        excludeBroadcastId: options.excludeBroadcastId,
-      });
-
-      try {
-        await tx.managedBroadcastOccurrence.createMany({
-          data: rows,
-        });
-        return;
-      } catch (error: unknown) {
-        if (!this.isManagedBroadcastSlotConflictError(error) || attempt > 0) {
-          throw error;
-        }
-      }
-    }
   }
 
-  private async assertManagedBroadcastTargetCalendarSlotsAvailable(
-    tx: Prisma.TransactionClient,
-    options: {
-      targetChatIds: readonly string[];
-      entityType: ChatEntityType;
-      slots: Date[];
-      excludeBroadcastId: string | null;
-    },
-  ): Promise<void> {
-    const targetChatIds = this.normalizeManagedBroadcastTargetChatIds(options.targetChatIds);
-    if (targetChatIds.length === 0 || options.slots.length === 0) {
-      return;
-    }
-
-    const targetChatIdSet = new Set(targetChatIds);
-    const occurrences = await tx.managedBroadcastOccurrence.findMany({
-      where: {
-        entityType: options.entityType,
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
-        },
-        scheduledAt: {
-          in: options.slots,
-        },
-        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
-      },
-      select: {
-        broadcastId: true,
-        scheduledAt: true,
-        broadcast: {
-          select: {
-            sourceChatId: true,
-            targetChatIds: true,
-            status: true,
-          },
-        },
-      },
-      orderBy: [{ scheduledAt: 'asc' }],
-    });
-
-    const conflictSlots = new Set<string>();
-    const conflictTargetChatIds = new Set<string>();
-    for (const occurrence of occurrences) {
-      if (
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.ACTIVE &&
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.PARTIAL &&
-        occurrence.broadcast.status !== PrismaManagedBroadcastStatus.FAILED
-      ) {
-        continue;
-      }
-
-      const existingTargetChatIds = this.parseManagedBroadcastTargetChatIds(
-        occurrence.broadcast.targetChatIds,
-        occurrence.broadcast.sourceChatId,
-      );
-      const overlaps = existingTargetChatIds.filter((chatId) => targetChatIdSet.has(chatId));
-      if (overlaps.length === 0) {
-        continue;
-      }
-
-      conflictSlots.add(occurrence.scheduledAt.toISOString());
-      for (const chatId of overlaps) {
-        conflictTargetChatIds.add(chatId);
-      }
-    }
-
-    if (conflictSlots.size === 0) {
-      return;
-    }
-
-    throw new BadRequestException({
-      code: 'BROADCAST_TARGET_SLOT_CONFLICT',
-      message: 'В выбранной группе на это время уже есть автопостинг.',
-      conflicts: [...conflictSlots],
-      targetChatIds: [...conflictTargetChatIds],
-    });
-  }
-
-  private async overwriteManagedBroadcastCalendarSlots(
-    tx: Prisma.TransactionClient,
-    options: {
-      sourceChatId: string;
-      entityType: ChatEntityType;
-      slots: Date[];
-      excludeBroadcastId: string | null;
-      allowOverwrite: boolean;
-    },
-  ): Promise<void> {
-    if (options.slots.length === 0) {
-      return;
-    }
-
-    const conflicts = await tx.managedBroadcastOccurrence.findMany({
-      where: {
-        sourceChatId: options.sourceChatId,
-        entityType: options.entityType,
-        scheduledAt: {
-          in: options.slots,
-        },
-        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
-      },
-      select: {
-        broadcastId: true,
-        scheduledAt: true,
-      },
-      orderBy: [{ broadcastId: 'asc' }, { scheduledAt: 'asc' }],
-    });
-    if (conflicts.length === 0) {
-      return;
-    }
-    if (!options.allowOverwrite) {
-      throw new BadRequestException({
-        code: 'BROADCAST_SLOT_CONFLICT',
-        message: 'На выбранное время уже есть автопостинг. Обновите календарь или замените слот.',
-        conflicts: conflicts.map((conflict) => conflict.scheduledAt.toISOString()),
-      });
-    }
-
-    const overwrittenSlotsByBroadcastId = new Map<string, Set<number>>();
-    for (const conflict of conflicts) {
-      const current = overwrittenSlotsByBroadcastId.get(conflict.broadcastId) ?? new Set<number>();
-      current.add(conflict.scheduledAt.getTime());
-      overwrittenSlotsByBroadcastId.set(conflict.broadcastId, current);
-    }
-
-    const affectedRows = await tx.managedBroadcast.findMany({
-      where: {
-        id: {
-          in: [...overwrittenSlotsByBroadcastId.keys()],
-        },
-      },
-      orderBy: [{ createdAt: 'asc' }],
-    });
-
-    for (const row of affectedRows) {
-      await this.rebuildManagedBroadcastCalendarSlotsAfterOverwrite(
-        tx,
-        row,
-        overwrittenSlotsByBroadcastId.get(row.id) ?? new Set<number>(),
-      );
-    }
-  }
-
-  private async rebuildManagedBroadcastCalendarSlotsAfterOverwrite(
-    tx: Prisma.TransactionClient,
-    row: PersistedManagedBroadcast,
-    overwrittenSlotsMs: ReadonlySet<number>,
-  ): Promise<void> {
-    if (
-      overwrittenSlotsMs.size === 0 ||
-      normalizeBroadcastScheduleMode(row.scheduleMode) !== 'calendar'
-    ) {
-      return;
-    }
-
-    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
-    const scheduledOccurrences = await tx.managedBroadcastOccurrence.findMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: { gte: currentOccurrence },
-      },
-      orderBy: [{ occurrenceIndex: 'asc' }],
-    });
-    if (scheduledOccurrences.length === 0) {
-      return;
-    }
-
-    const remainingSlots = scheduledOccurrences
-      .filter((occurrence) => !overwrittenSlotsMs.has(occurrence.scheduledAt.getTime()))
-      .map((occurrence) => occurrence.scheduledAt);
-    if (remainingSlots.length === scheduledOccurrences.length) {
-      return;
-    }
-
-    await tx.managedBroadcastDelivery.deleteMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: { gte: currentOccurrence },
-      },
-    });
-    await tx.managedBroadcastOccurrence.deleteMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: { gte: currentOccurrence },
-      },
-    });
-
-    const nextSendAt = remainingSlots[0] ?? null;
-    const nextCycleCount = row.sentCount + remainingSlots.length;
-    await tx.managedBroadcast.update({
-      where: { id: row.id },
-      data: {
-        nextSendAt,
-        cycleCount: nextCycleCount,
-        status: nextSendAt
-          ? PrismaManagedBroadcastStatus.ACTIVE
-          : PrismaManagedBroadcastStatus.COMPLETED,
-        lastError: null,
-        lockedAt: null,
-      },
-    });
-
-    if (remainingSlots.length === 0) {
-      return;
-    }
-
-    await tx.managedBroadcastDelivery.createMany({
-      data: this.buildManagedBroadcastDeliveryRows(
-        row.id,
-        this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
-        currentOccurrence,
-        nextCycleCount,
-      ),
-    });
-    await tx.managedBroadcastOccurrence.createMany({
-      data: this.buildManagedBroadcastOccurrenceRows(
-        row.id,
-        row.sourceChatId,
-        row.entityType,
-        currentOccurrence,
-        remainingSlots,
-      ),
-    });
-  }
-
-  private async getManagedBroadcastOccurrenceAtIndex(
+  cancelManagedBroadcast(
+    sourceChatId: string,
     broadcastId: string,
-    occurrenceIndex: number,
-  ): Promise<PersistedManagedBroadcastOccurrence | null> {
-    return this.prisma.managedBroadcastOccurrence.findUnique({
-      where: {
-        broadcastId_occurrenceIndex: {
-          broadcastId,
-          occurrenceIndex,
-        },
-      },
-    });
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.cancelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  private async getManagedBroadcastUpcomingSlotsMap(
-    rows: PersistedManagedBroadcast[],
-  ): Promise<Map<string, Date[]>> {
-    if (rows.length === 0) {
-      return new Map();
-    }
-
-    const calendarRows = rows.filter(
-      (row) => normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar',
-    );
-    const occurrences =
-      calendarRows.length > 0
-        ? await this.prisma.managedBroadcastOccurrence.findMany({
-            where: {
-              broadcastId: {
-                in: calendarRows.map((row) => row.id),
-              },
-            },
-            orderBy: [{ occurrenceIndex: 'asc' }],
-          })
-        : [];
-
-    const groupedOccurrences = new Map<string, PersistedManagedBroadcastOccurrence[]>();
-    for (const occurrence of occurrences) {
-      const current = groupedOccurrences.get(occurrence.broadcastId) ?? [];
-      current.push(occurrence);
-      groupedOccurrences.set(occurrence.broadcastId, current);
-    }
-
-    const result = new Map<string, Date[]>();
-    for (const row of rows) {
-      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-        const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
-        const upcoming = (groupedOccurrences.get(row.id) ?? [])
-          .filter((occurrence) => occurrence.occurrenceIndex >= currentOccurrence)
-          .map((occurrence) => occurrence.scheduledAt);
-        result.set(row.id, upcoming);
-        continue;
-      }
-
-      result.set(
-        row.id,
-        this.buildLegacyManagedBroadcastUpcomingSlots(
-          row.nextSendAt,
-          Math.max(0, row.cycleCount - row.sentCount),
-          row.cycleEveryHours,
-        ),
-      );
-    }
-
-    return result;
-  }
-
-  private async getManagedBroadcastUpcomingSlots(row: PersistedManagedBroadcast): Promise<Date[]> {
-    return (await this.getManagedBroadcastUpcomingSlotsMap([row])).get(row.id) ?? [];
-  }
-
-  private parseManagedBroadcastSendAt(
-    sendAt: string | null,
-    options: {
-      required: boolean;
-      sourceChatId: string;
-      sentCount: number;
-    },
-  ): Date | null {
-    if (!sendAt) {
-      if (options.required) {
-        throw new BadRequestException('Укажите следующее время отправки.');
-      }
-      return null;
-    }
-
-    const scheduledAt = new Date(sendAt);
-    if (Number.isNaN(scheduledAt.getTime())) {
-      throw new BadRequestException('Некорректное время автопостинга.');
-    }
-    const calculatedDelayMs = scheduledAt.getTime() - Date.now();
-    if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
-      const message =
-        options.sentCount > 0
-          ? 'Следующую отправку можно поставить минимум через 30 секунд.'
-          : 'Укажите время автопостинга минимум через 30 секунд.';
-      throw new BadRequestException(message);
-    }
-    if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Максимальный таймер автопостинга: 31 день.');
-    }
-    return scheduledAt;
-  }
-
-  private getDateKeyInTimeZone(value: Date, timeZone: string): string {
-    const baseOptions: Intl.DateTimeFormatOptions = {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    };
-    let formatter: Intl.DateTimeFormat;
-
-    try {
-      formatter = new Intl.DateTimeFormat('en-CA', {
-        ...baseOptions,
-        timeZone,
-      });
-    } catch {
-      formatter = new Intl.DateTimeFormat('en-CA', baseOptions);
-    }
-
-    const parts = formatter.formatToParts(value);
-    const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
-    const month = parts.find((part) => part.type === 'month')?.value ?? '00';
-    const day = parts.find((part) => part.type === 'day')?.value ?? '00';
-    return `${year}-${month}-${day}`;
-  }
-
-  private toLegacyCycleEveryDays(cycleEveryHours: number): number | undefined {
-    return cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
-  }
-
-  private normalizeManagedBroadcastTargetChatIds(
-    targetChatIds: readonly string[],
-    fallbackChatId?: string,
-  ): string[] {
-    const normalized = Array.from(
-      new Set(
-        targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
-      ),
-    );
-    if (normalized.length > 0) {
-      return normalized;
-    }
-
-    return fallbackChatId?.trim() ? [fallbackChatId.trim()] : [];
-  }
-
-  private parseManagedBroadcastTargetChatIds(
-    value: Prisma.JsonValue,
-    fallbackChatId?: string,
-  ): string[] {
-    if (!Array.isArray(value)) {
-      return this.normalizeManagedBroadcastTargetChatIds([], fallbackChatId);
-    }
-
-    return this.normalizeManagedBroadcastTargetChatIds(
-      value.filter((item): item is string => typeof item === 'string'),
-      fallbackChatId,
-    );
-  }
-
-  private resolveManagedBroadcastTargetMode(params: {
-    applyToAllChats: boolean;
-    sourceChatId: string;
-    targetChatIds: readonly string[];
-  }): BroadcastTargetMode {
-    if (params.applyToAllChats) {
-      return 'all';
-    }
-
-    if (params.targetChatIds.length === 1 && params.targetChatIds[0] === params.sourceChatId) {
-      return 'current';
-    }
-
-    return 'selected';
-  }
-
-  private resolveManagedBroadcastTargetsFromRow(row: {
-    applyToAllChats: boolean;
-    sourceChatId: string;
-    targetChatIds: Prisma.JsonValue;
-  }): { targetMode: BroadcastTargetMode; targetChatIds: string[] } {
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
-      row.targetChatIds,
-      row.sourceChatId,
-    );
-    return {
-      targetMode: this.resolveManagedBroadcastTargetMode({
-        applyToAllChats: row.applyToAllChats,
-        sourceChatId: row.sourceChatId,
-        targetChatIds,
-      }),
-      targetChatIds,
-    };
-  }
-
-  private fallbackManagedBroadcastTargetPreview(
-    chatId: string,
-    entityType: ManagedEntityType = 'chat',
-  ): ManagedBroadcastTargetPreview {
-    const normalizedChatId = chatId.trim();
-    return {
-      id: normalizedChatId,
-      title: `${entityType === 'channel' ? 'Канал' : 'Чат'} ${normalizedChatId}`,
-      entityType,
-      link: null,
-      avatarUrl: null,
-    };
-  }
-
-  private async loadManagedBroadcastTargetPreviewMap(
-    targetChatIds: readonly string[],
-    fallbackEntityType: ManagedEntityType = 'chat',
-  ): Promise<Map<string, ManagedBroadcastTargetPreview>> {
-    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
-    if (normalizedIds.length === 0) {
-      return new Map();
-    }
-
-    const [chatRows, catalogRows] = await Promise.all([
-      this.prisma.chat.findMany({
-        where: {
-          id: { in: normalizedIds },
-        },
-        select: {
-          id: true,
-          title: true,
-          entityType: true,
-        },
-      }),
-      this.prisma.managedBotChatCatalog.findMany({
-        where: {
-          chatId: { in: normalizedIds },
-          status: 'ACTIVE',
-        },
-        orderBy: [{ lastSeenAt: 'desc' }],
-        select: {
-          chatId: true,
-          entityType: true,
-          title: true,
-          link: true,
-          avatarUrl: true,
-        },
-      }),
-    ]);
-
-    const previews = new Map<string, ManagedBroadcastTargetPreview>();
-    for (const row of chatRows) {
-      const entityType = fromPrismaEntityType(row.entityType);
-      previews.set(row.id, {
-        id: row.id,
-        title:
-          this.readTrimmedString(row.title) ??
-          this.fallbackManagedBroadcastTargetPreview(row.id, entityType).title,
-        entityType,
-        link: null,
-        avatarUrl: null,
-      });
-    }
-
-    for (const row of catalogRows) {
-      if (previews.has(row.chatId)) {
-        const current = previews.get(row.chatId);
-        if (current) {
-          previews.set(row.chatId, {
-            ...current,
-            title:
-              this.readTrimmedString(current.title) ??
-              this.readTrimmedString(row.title) ??
-              current.title,
-            link: this.readTrimmedString(current.link) ?? this.readTrimmedString(row.link) ?? null,
-            avatarUrl:
-              this.readTrimmedString(current.avatarUrl) ??
-              this.readTrimmedString(row.avatarUrl) ??
-              null,
-          });
-        }
-        continue;
-      }
-
-      const entityType = fromPrismaEntityType(row.entityType);
-      previews.set(row.chatId, {
-        id: row.chatId,
-        title:
-          this.readTrimmedString(row.title) ??
-          this.fallbackManagedBroadcastTargetPreview(row.chatId, entityType).title,
-        entityType,
-        link: this.readTrimmedString(row.link) ?? null,
-        avatarUrl: this.readTrimmedString(row.avatarUrl) ?? null,
-      });
-    }
-
-    for (const chatId of normalizedIds) {
-      if (!previews.has(chatId)) {
-        previews.set(
-          chatId,
-          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
-        );
-      }
-    }
-
-    return previews;
-  }
-
-  private buildManagedBroadcastTargetPreviewBundle(
-    targetChatIds: readonly string[],
-    previewMap: ReadonlyMap<string, ManagedBroadcastTargetPreview>,
-    fallbackEntityType: ManagedEntityType = 'chat',
-  ): ManagedBroadcastTargetPreviewBundle {
-    const normalizedIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
-    const previews = normalizedIds
-      .slice(0, MANAGED_BROADCAST_TARGET_PREVIEW_LIMIT)
-      .map(
-        (chatId) =>
-          previewMap.get(chatId) ??
-          this.fallbackManagedBroadcastTargetPreview(chatId, fallbackEntityType),
-      );
-
-    return {
-      previews,
-      overflowCount: Math.max(0, normalizedIds.length - previews.length),
-    };
-  }
-
-  private async getManagedBroadcastTargetPreviewBundle(
-    targetChatIds: readonly string[],
-    fallbackEntityType: ManagedEntityType = 'chat',
-  ): Promise<ManagedBroadcastTargetPreviewBundle> {
-    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(
-      targetChatIds,
-      fallbackEntityType,
-    );
-    return this.buildManagedBroadcastTargetPreviewBundle(
-      targetChatIds,
-      previewMap,
-      fallbackEntityType,
-    );
-  }
-
-  private async getManagedBroadcastTargetPreviewBundles(
-    rows: readonly PersistedManagedBroadcast[],
-  ): Promise<Map<string, ManagedBroadcastTargetPreviewBundle>> {
-    const allTargetChatIds = rows.flatMap((row) =>
-      this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
-    );
-    const previewMap = await this.loadManagedBroadcastTargetPreviewMap(allTargetChatIds);
-    const result = new Map<string, ManagedBroadcastTargetPreviewBundle>();
-
-    for (const row of rows) {
-      const fallbackEntityType = fromPrismaEntityType(row.entityType);
-      result.set(
-        row.id,
-        this.buildManagedBroadcastTargetPreviewBundle(
-          this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
-          previewMap,
-          fallbackEntityType,
-        ),
-      );
-    }
-
-    return result;
-  }
-
-  private normalizeBroadcastTextFormat(value: string): BroadcastTextFormat {
-    return value === 'markdown' ? 'markdown' : 'plain';
-  }
-
-  private getCurrentManagedBroadcastOccurrence(row: PersistedManagedBroadcast): number {
-    return Math.min(Math.max(1, row.sentCount + 1), Math.max(1, row.cycleCount));
-  }
-
-  private normalizeManagedBroadcastCycleCount(row: Pick<PersistedManagedBroadcast, 'cycleCount'>) {
-    return Math.max(1, row.cycleCount);
-  }
-
-  private buildManagedBroadcastDeliveryRows(
+  cancelChannelManagedBroadcast(
+    sourceChatId: string,
     broadcastId: string,
-    targetChatIds: string[],
-    fromOccurrenceIndex: number,
-    cycleCount: number,
-  ): Prisma.ManagedBroadcastDeliveryCreateManyInput[] {
-    const rows: Prisma.ManagedBroadcastDeliveryCreateManyInput[] = [];
-    for (
-      let occurrenceIndex = fromOccurrenceIndex;
-      occurrenceIndex <= cycleCount;
-      occurrenceIndex += 1
-    ) {
-      for (const targetChatId of targetChatIds) {
-        rows.push({
-          broadcastId,
-          occurrenceIndex,
-          targetChatId,
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-        });
-      }
-    }
-    return rows;
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.cancelChannelManagedBroadcast(
+      sourceChatId,
+      broadcastId,
+      user,
+    );
   }
 
-  private async recoverManagedBroadcastDeliveriesForAutomaticRun(
+  retryManagedBroadcast(
+    sourceChatId: string,
     broadcastId: string,
-    occurrenceIndex: number,
-    deliveries: PersistedManagedBroadcastDelivery[],
-  ): Promise<PersistedManagedBroadcastDelivery[]> {
-    let mutated = false;
-
-    for (const delivery of deliveries) {
-      if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
-        continue;
-      }
-
-      const failureMessage = delivery.lastError?.trim() ?? '';
-      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
-        await this.cancelManagedBroadcastTargetDeliveries(broadcastId, occurrenceIndex, {
-          targetChatId: delivery.targetChatId,
-          currentDeliveryId: delivery.id,
-          lastError:
-            failureMessage || 'Чат больше недоступен для бота, дальнейшие доставки пропущены.',
-        });
-        mutated = true;
-        continue;
-      }
-      const transientQuarantineMessage =
-        await this.resolveManagedBroadcastTransientQuarantineMessage(
-          broadcastId,
-          occurrenceIndex,
-          delivery.targetChatId,
-          delivery.attemptCount,
-          failureMessage,
-        );
-      if (transientQuarantineMessage) {
-        await this.cancelManagedBroadcastTargetDeliveries(broadcastId, occurrenceIndex, {
-          targetChatId: delivery.targetChatId,
-          currentDeliveryId: delivery.id,
-          lastError: transientQuarantineMessage,
-        });
-        this.logger.warn(
-          {
-            broadcastId,
-            targetChatId: delivery.targetChatId,
-            occurrenceIndex,
-            attempts: delivery.attemptCount,
-            err: failureMessage,
-          },
-          'Managed broadcast target was quarantined during automatic recovery after repeated transient failures',
-        );
-        mutated = true;
-        continue;
-      }
-
-      if (!this.shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
-        continue;
-      }
-
-      const resetResult = await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: delivery.id,
-          status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
-          lockedAt: null,
-          lastError: null,
-        },
-      });
-      mutated ||= resetResult.count > 0;
-    }
-
-    if (!mutated) {
-      return deliveries;
-    }
-
-    return this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId,
-        occurrenceIndex,
-      },
-      orderBy: [{ targetChatId: 'asc' }],
-    });
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.retryManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
-  private async cancelManagedBroadcastTargetDeliveries(
+  retryChannelManagedBroadcast(
+    sourceChatId: string,
     broadcastId: string,
-    occurrenceIndex: number,
-    options: {
-      targetChatId: string;
-      currentDeliveryId?: string;
-      lastError: string;
-    },
-  ): Promise<void> {
-    const normalizedLastError =
-      options.lastError.trim() || 'Чат больше недоступен для бота, дальнейшие доставки пропущены.';
-
-    if (options.currentDeliveryId) {
-      await this.prisma.managedBroadcastDelivery.updateMany({
-        where: {
-          id: options.currentDeliveryId,
-          status: {
-            in: [
-              PrismaManagedBroadcastDeliveryStatus.PENDING,
-              PrismaManagedBroadcastDeliveryStatus.SENDING,
-              PrismaManagedBroadcastDeliveryStatus.FAILED,
-            ],
-          },
-        },
-        data: {
-          status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
-          lockedAt: null,
-          lastError: normalizedLastError,
-        },
-      });
-    }
-
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId,
-        targetChatId: options.targetChatId,
-        occurrenceIndex: { gte: occurrenceIndex + 1 },
-        status: {
-          in: [
-            PrismaManagedBroadcastDeliveryStatus.PENDING,
-            PrismaManagedBroadcastDeliveryStatus.FAILED,
-          ],
-        },
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
-        lockedAt: null,
-        lastError: normalizedLastError,
-      },
-    });
-  }
-
-  private async resolveManagedBroadcastTransientQuarantineMessage(
-    broadcastId: string,
-    occurrenceIndex: number,
-    targetChatId: string,
-    currentAttemptCount: number,
-    failureMessage: string,
-  ): Promise<string | null> {
-    if (!this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
-      return null;
-    }
-
-    if (
-      currentAttemptCount < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
-      occurrenceIndex < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-    ) {
-      return null;
-    }
-
-    const history = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId,
-        targetChatId,
-        occurrenceIndex: { lte: occurrenceIndex },
-      },
-      orderBy: [{ occurrenceIndex: 'asc' }],
-    });
-
-    let transientFailureAttempts = 0;
-    const transientFailureOccurrences = new Set<number>();
-    for (const delivery of history) {
-      const isCurrentOccurrence = delivery.occurrenceIndex === occurrenceIndex;
-      const effectiveFailureMessage = isCurrentOccurrence
-        ? failureMessage
-        : (delivery.lastError ?? '').trim();
-      if (!this.isManagedBroadcastTransientDeliveryFailureMessage(effectiveFailureMessage)) {
-        continue;
-      }
-
-      transientFailureOccurrences.add(delivery.occurrenceIndex);
-      transientFailureAttempts += isCurrentOccurrence
-        ? Math.max(1, currentAttemptCount)
-        : Math.max(1, delivery.attemptCount);
-    }
-
-    if (
-      transientFailureAttempts < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
-      transientFailureOccurrences.size < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-    ) {
-      return null;
-    }
-
-    return this.buildManagedBroadcastTransientQuarantineMessage(
-      transientFailureAttempts,
-      transientFailureOccurrences.size,
-      failureMessage,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.managedBroadcastRuntime.retryChannelManagedBroadcast(
+      sourceChatId,
+      broadcastId,
+      user,
     );
   }
 
-  private shouldAutoRetryManagedBroadcastDeliveryFailure(
-    delivery: PersistedManagedBroadcastDelivery,
-  ): boolean {
-    if (delivery.attemptCount >= MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS) {
-      return false;
-    }
-
-    const retryAllowedAtMs = delivery.updatedAt.getTime() + MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS;
-    if (retryAllowedAtMs > Date.now()) {
-      return false;
-    }
-
-    return this.isManagedBroadcastTransientDeliveryFailureMessage(delivery.lastError ?? '');
+  processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
+    return this.managedBroadcastRuntime.processDueManagedBroadcasts(reason);
   }
 
-  private isManagedBroadcastTransientDeliveryFailureMessage(value: string): boolean {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      return true;
-    }
-
-    return (
-      normalized.includes('timeout') ||
-      normalized.includes('rate limit exceeded') ||
-      normalized.includes('circuit breaker') ||
-      normalized.includes('attachment.not.ready') ||
-      normalized.includes('not ready') ||
-      normalized.includes('temporarily unavailable') ||
-      normalized.includes('service unavailable') ||
-      normalized.includes('socket hang up') ||
-      normalized.includes('econnaborted') ||
-      normalized.includes('econnreset') ||
-      normalized.includes('network error') ||
-      normalized.includes('прошлая попытка была прервана после старта отправки')
-    );
+  getManagedBroadcastRuntimeForBroadcastService(): AdminManagedBroadcastRuntime {
+    return this.managedBroadcastRuntime;
   }
 
-  private isManagedBroadcastTransientQuarantineFailureMessage(value: string): boolean {
-    return value
-      .trim()
-      .toLowerCase()
-      .startsWith(MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX.toLowerCase());
+  private processManagedBroadcastOccurrence(...args: any[]) {
+    return (this.managedBroadcastRuntime as any).processManagedBroadcastOccurrence(...args);
   }
 
-  private buildManagedBroadcastTransientQuarantineMessage(
-    transientFailureAttempts: number,
-    transientFailureOccurrences: number,
-    lastFailureMessage: string,
-  ): string {
-    const reason =
-      transientFailureOccurrences >= MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
-        ? `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureOccurrences} проблемных слота подряд.`
-        : `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureAttempts} неудачных попыток.`;
-    const normalizedLastFailureMessage = lastFailureMessage.trim();
-    return normalizedLastFailureMessage
-      ? `${reason} Последняя ошибка: ${normalizedLastFailureMessage}`
-      : reason;
+  private createManagedBroadcastDeliverySnapshot(...args: any[]) {
+    return (this.managedBroadcastRuntime as any).createManagedBroadcastDeliverySnapshot(...args);
   }
 
-  private isManagedBroadcastPermanentTargetDeliveryFailure(
-    error: unknown,
-    failureMessage: string,
-  ): boolean {
-    if (error && isPrivateDialogChatUnavailableError(error)) {
-      return true;
-    }
-
-    const normalized = failureMessage.trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-
-    return (
-      normalized.includes('chat closed') ||
-      normalized.includes('chat not found') ||
-      /^chat\s+.+\s+not found$/i.test(failureMessage.trim()) ||
-      normalized.includes('not active chat member') ||
-      normalized.includes('not a chat member') ||
-      normalized.includes('bot is not a chat member') ||
-      normalized.includes('not accessible') ||
-      normalized.includes('forbidden') ||
-      normalized.includes('chat.denied') ||
-      normalized.includes('chat.not.found')
-    );
+  private mapManagedBroadcastSummary(...args: any[]) {
+    return (this.managedBroadcastRuntime as any).mapManagedBroadcastSummary(...args);
   }
 
-  private async reconcileStaleManagedBroadcastDeliveries(
-    broadcastId: string,
-    occurrenceIndex: number,
-    staleLockBefore: Date,
-  ): Promise<void> {
-    await this.reconcileManagedBroadcastSendingDeliveries(broadcastId, occurrenceIndex, {
-      lockedAt: { lt: staleLockBefore },
-    });
+  private mapManagedBroadcastDetails(...args: any[]) {
+    return (this.managedBroadcastRuntime as any).mapManagedBroadcastDetails(...args);
   }
 
-  private async reconcileInterruptedManagedBroadcastDeliveries(
-    broadcastId: string,
-    occurrenceIndex: number,
-  ): Promise<void> {
-    await this.reconcileManagedBroadcastSendingDeliveries(broadcastId, occurrenceIndex);
-  }
-
-  private async reconcileManagedBroadcastSendingDeliveries(
-    broadcastId: string,
-    occurrenceIndex: number,
-    extraWhere?: Prisma.ManagedBroadcastDeliveryWhereInput,
-  ): Promise<void> {
-    const reconciledAt = new Date();
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId,
-        occurrenceIndex,
-        status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-        remoteMessageId: { not: null },
-        ...(extraWhere ?? {}),
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.SENT,
-        sentAt: reconciledAt,
-        lockedAt: null,
-        lastError: null,
-      },
-    });
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId,
-        occurrenceIndex,
-        status: PrismaManagedBroadcastDeliveryStatus.SENDING,
-        remoteMessageId: null,
-        ...(extraWhere ?? {}),
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-        lockedAt: null,
-        lastError:
-          'Прошлая попытка была прервана после старта отправки. Проверьте чат и повторите только ошибочные доставки.',
-      },
-    });
-  }
-
-  private resolveManagedBroadcastFatalProcessingErrorMessage(error: unknown): string | null {
-    if (!(error instanceof BadRequestException)) {
-      return null;
-    }
-
-    const response = error.getResponse();
-    if (typeof response === 'string' && response.trim().length > 0) {
-      return response.trim();
-    }
-
-    const message = (response as { message?: unknown } | null)?.message;
-    if (typeof message === 'string' && message.trim().length > 0) {
-      return message.trim();
-    }
-    if (Array.isArray(message)) {
-      const normalized = message.find(
-        (item): item is string => typeof item === 'string' && item.trim().length > 0,
-      );
-      if (normalized) {
-        return normalized.trim();
-      }
-    }
-
-    return error.message.trim().length > 0 ? error.message.trim() : null;
-  }
-
-  private resolveManagedBroadcastFatalProcessingFailureMessage(
-    failureMessage: string | null | undefined,
-  ): string | null {
-    const normalized = failureMessage?.trim();
-    if (!normalized) {
-      return null;
-    }
-
-    switch (normalized) {
-      case 'Поддерживаются только изображения.':
-      case 'Фото слишком большое. Попробуйте другое изображение.':
-      case 'Не удалось загрузить фото. Попробуйте другое изображение.':
-        return normalized;
-      default:
-        return null;
-    }
-  }
-
-  private async failManagedBroadcastAfterFatalProcessingError(
-    row: PersistedManagedBroadcast,
-    currentOccurrence: number,
-    failureMessage: string,
-  ): Promise<void> {
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: currentOccurrence,
-        status: {
-          in: [
-            PrismaManagedBroadcastDeliveryStatus.PENDING,
-            PrismaManagedBroadcastDeliveryStatus.SENDING,
-            PrismaManagedBroadcastDeliveryStatus.FAILED,
-          ],
-        },
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.FAILED,
-        lockedAt: null,
-        lastError: failureMessage,
-      },
-    });
-    await this.prisma.managedBroadcastDelivery.updateMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: { gt: currentOccurrence },
-        status: {
-          in: [
-            PrismaManagedBroadcastDeliveryStatus.PENDING,
-            PrismaManagedBroadcastDeliveryStatus.SENDING,
-            PrismaManagedBroadcastDeliveryStatus.FAILED,
-          ],
-        },
-      },
-      data: {
-        status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
-        lockedAt: null,
-        lastError: failureMessage,
-      },
-    });
-
-    if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-      await this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.FAILED,
-        },
-      });
-      await this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: { gt: currentOccurrence },
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.CANCELED,
-        },
-      });
-    }
-
-    await this.updateManagedBroadcastIfNotCanceled(row.id, {
-      status: PrismaManagedBroadcastStatus.FAILED,
-      lastError: failureMessage,
-      nextSendAt: null,
-      lockedAt: null,
-    });
-
-    this.logger.warn(
-      {
-        broadcastId: row.id,
-        sourceChatId: row.sourceChatId,
-        actorUserId: row.actorUserId,
-        occurrenceIndex: currentOccurrence,
-        err: failureMessage,
-      },
-      'Managed broadcast was stopped after a fatal processing error',
-    );
-  }
-
-  private async updateManagedBroadcastIfNotCanceled(
-    broadcastId: string,
-    data: Prisma.ManagedBroadcastUpdateManyMutationInput,
-  ): Promise<boolean> {
-    const result = await this.prisma.managedBroadcast.updateMany({
-      where: {
-        id: broadcastId,
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
-        },
-      },
-      data,
-    });
-
-    return result.count > 0;
-  }
-
-  private async readManagedBroadcastOccurrenceResult(
-    broadcastId: string,
-    sentChatIds: string[],
-    failedChatIds: string[],
-    pendingChatIds: string[],
-    firstSendError: unknown,
-  ): Promise<BroadcastOccurrenceResult> {
-    const current = await this.prisma.managedBroadcast.findUnique({
-      where: { id: broadcastId },
-    });
-
-    return {
-      status: current?.status ?? PrismaManagedBroadcastStatus.FAILED,
-      currentOccurrence: current ? this.getCurrentManagedBroadcastOccurrence(current) : 1,
-      sentChatIds,
-      failedChatIds,
-      pendingChatIds,
-      canRetry:
-        current?.status === PrismaManagedBroadcastStatus.PARTIAL ||
-        current?.status === PrismaManagedBroadcastStatus.FAILED,
-      firstSendError,
-      nextSendAt: current?.nextSendAt ?? null,
-    };
-  }
-
-  private async finalizeManagedBroadcastOccurrence(
-    row: PersistedManagedBroadcast,
-    currentOccurrence: number,
-    sentChatIds: string[],
-    failedChatIds: string[],
-    firstSendError: unknown,
-  ): Promise<BroadcastOccurrenceResult> {
-    const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: currentOccurrence,
-      },
-    });
-    const deliveredChats = deliveries.filter(
-      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
-    );
-    const failedChats = deliveries.filter(
-      (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-    );
-    const pendingChats = deliveries.filter(
-      (delivery) =>
-        delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
-        delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
-    );
-    const canRetry = failedChats.length > 0;
-
-    if (failedChats.length > 0) {
-      const status =
-        deliveredChats.length > 0
-          ? PrismaManagedBroadcastStatus.PARTIAL
-          : PrismaManagedBroadcastStatus.FAILED;
-      const failureMessage = this.buildManagedBroadcastFailureMessage(
-        failedChats.length,
-        firstSendError,
-      );
-      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
-        status,
-        lastError: failureMessage,
-        lockedAt: null,
-      });
-      if (!updated) {
-        return this.readManagedBroadcastOccurrenceResult(
-          row.id,
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery) => delivery.targetChatId),
-          failedChatIds.length > 0
-            ? failedChatIds
-            : failedChats.map((delivery) => delivery.targetChatId),
-          pendingChats.map((delivery) => delivery.targetChatId),
-          firstSendError,
-        );
-      }
-      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-        await this.prisma.managedBroadcastOccurrence.updateMany({
-          where: {
-            broadcastId: row.id,
-            occurrenceIndex: currentOccurrence,
-          },
-          data: {
-            status,
-          },
-        });
-      }
-
-      return {
-        status,
-        currentOccurrence,
-        sentChatIds:
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery) => delivery.targetChatId),
-        failedChatIds:
-          failedChatIds.length > 0
-            ? failedChatIds
-            : failedChats.map((delivery) => delivery.targetChatId),
-        pendingChatIds: pendingChats.map((delivery) => delivery.targetChatId),
-        canRetry,
-        firstSendError,
-        nextSendAt: row.nextSendAt,
-      };
-    }
-
-    if (pendingChats.length > 0) {
-      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        lastError: null,
-        lockedAt: null,
-      });
-      if (!updated) {
-        return this.readManagedBroadcastOccurrenceResult(
-          row.id,
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery) => delivery.targetChatId),
-          [],
-          pendingChats.map((delivery) => delivery.targetChatId),
-          firstSendError,
-        );
-      }
-      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-        await this.prisma.managedBroadcastOccurrence.updateMany({
-          where: {
-            broadcastId: row.id,
-            occurrenceIndex: currentOccurrence,
-          },
-          data: {
-            status: PrismaManagedBroadcastStatus.ACTIVE,
-          },
-        });
-      }
-      return {
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        currentOccurrence,
-        sentChatIds:
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery) => delivery.targetChatId),
-        failedChatIds: [],
-        pendingChatIds: pendingChats.map((delivery) => delivery.targetChatId),
-        canRetry: false,
-        firstSendError,
-        nextSendAt: row.nextSendAt,
-      };
-    }
-
-    const nextSentCount = currentOccurrence;
-    let nextSendAt: Date | null;
-    let isComplete: boolean;
-    if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-      const nextOccurrence = await this.getManagedBroadcastOccurrenceAtIndex(
-        row.id,
-        currentOccurrence + 1,
-      );
-      nextSendAt = nextOccurrence?.scheduledAt ?? null;
-      isComplete = nextSentCount >= row.cycleCount || !nextSendAt;
-      await this.prisma.managedBroadcastOccurrence.updateMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        data: {
-          status: PrismaManagedBroadcastStatus.COMPLETED,
-        },
-      });
-    } else {
-      isComplete = nextSentCount >= row.cycleCount;
-      nextSendAt = isComplete
-        ? null
-        : new Date(row.nextSendAt!.getTime() + row.cycleEveryHours * ONE_HOUR_MS);
-    }
-    const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
-      sentCount: nextSentCount,
-      nextSendAt,
-      status: isComplete
-        ? PrismaManagedBroadcastStatus.COMPLETED
-        : PrismaManagedBroadcastStatus.ACTIVE,
-      lastError: null,
-      lockedAt: null,
-    });
-    if (!updated) {
-      return this.readManagedBroadcastOccurrenceResult(
-        row.id,
-        sentChatIds.length > 0
-          ? sentChatIds
-          : deliveredChats.map((delivery) => delivery.targetChatId),
-        [],
-        [],
-        firstSendError,
-      );
-    }
-    return {
-      status: isComplete
-        ? PrismaManagedBroadcastStatus.COMPLETED
-        : PrismaManagedBroadcastStatus.ACTIVE,
-      currentOccurrence,
-      sentChatIds:
-        sentChatIds.length > 0
-          ? sentChatIds
-          : deliveredChats.map((delivery) => delivery.targetChatId),
-      failedChatIds: [],
-      pendingChatIds: [],
-      canRetry: false,
-      firstSendError,
-      nextSendAt,
-    };
-  }
-
-  private buildManagedBroadcastFailureMessage(
-    failedChats: number,
-    firstSendError: unknown,
-  ): string {
-    return (
-      this.extractMaxApiErrorMessage(firstSendError) ||
-      (firstSendError instanceof Error && firstSendError.message.trim()
-        ? firstSendError.message
-        : `Не удалось отправить в ${failedChats} чат(ов).`)
-    );
-  }
-
-  private async getManagedBroadcastDeliverySnapshots(
-    rows: PersistedManagedBroadcast[],
-  ): Promise<Map<string, ManagedBroadcastDeliverySnapshot>> {
-    if (rows.length === 0) {
-      return new Map();
-    }
-
-    const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        OR: rows.map((row) => ({
-          broadcastId: row.id,
-          occurrenceIndex: this.getCurrentManagedBroadcastOccurrence(row),
-        })),
-      },
-      select: {
-        broadcastId: true,
-        status: true,
-      },
-    });
-
-    const grouped = new Map<string, PersistedManagedBroadcastDelivery[]>();
-    for (const delivery of deliveries) {
-      const current = grouped.get(delivery.broadcastId) ?? [];
-      current.push(delivery as PersistedManagedBroadcastDelivery);
-      grouped.set(delivery.broadcastId, current);
-    }
-
-    return new Map(
-      rows.map((row) => [
-        row.id,
-        this.createManagedBroadcastDeliverySnapshot(row, grouped.get(row.id) ?? []),
-      ]),
-    );
-  }
-
-  private async getManagedBroadcastDeliverySnapshot(
-    row: PersistedManagedBroadcast,
-  ): Promise<ManagedBroadcastDeliverySnapshot> {
-    const deliveries = await this.prisma.managedBroadcastDelivery.findMany({
-      where: {
-        broadcastId: row.id,
-        occurrenceIndex: this.getCurrentManagedBroadcastOccurrence(row),
-      },
-    });
-    return this.createManagedBroadcastDeliverySnapshot(row, deliveries);
-  }
-
-  private createManagedBroadcastDeliverySnapshot(
-    row: PersistedManagedBroadcast,
-    deliveries: PersistedManagedBroadcastDelivery[],
-  ): ManagedBroadcastDeliverySnapshot {
-    const failureBreakdown = this.createEmptyManagedBroadcastFailureBreakdown();
-    for (const delivery of deliveries) {
-      if (
-        delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED &&
-        delivery.status !== PrismaManagedBroadcastDeliveryStatus.CANCELED
-      ) {
-        continue;
-      }
-
-      const failureMessage = delivery.lastError ?? '';
-      if (this.isManagedBroadcastTransientQuarantineFailureMessage(failureMessage)) {
-        failureBreakdown.quarantined += 1;
-        continue;
-      }
-      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
-        failureBreakdown.permanentTarget += 1;
-        continue;
-      }
-      if (this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
-        failureBreakdown.transient += 1;
-        continue;
-      }
-      failureBreakdown.unknown += 1;
-    }
-
-    return {
-      currentOccurrence: this.getCurrentManagedBroadcastOccurrence(row),
-      deliveredChats: deliveries.filter(
-        (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.SENT,
-      ).length,
-      failedChats: deliveries.filter(
-        (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-      ).length,
-      pendingChats: deliveries.filter(
-        (delivery) =>
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
-          delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
-      ).length,
-      blockedChats: deliveries.filter(
-        (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.CANCELED,
-      ).length,
-      failureBreakdown,
-      canRetry:
-        row.status === PrismaManagedBroadcastStatus.PARTIAL ||
-        row.status === PrismaManagedBroadcastStatus.FAILED,
-    };
-  }
-
-  private createEmptyManagedBroadcastFailureBreakdown(): ManagedBroadcastFailureBreakdown {
-    return {
-      transient: 0,
-      permanentTarget: 0,
-      quarantined: 0,
-      unknown: 0,
-    };
-  }
-
-  private mapManagedBroadcastSummary(
-    row: PersistedManagedBroadcast,
-    snapshot?: ManagedBroadcastDeliverySnapshot,
-    upcomingSlots: Date[] = [],
-    targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
-  ): ManagedBroadcastSummary {
-    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
-    const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
-    const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
-    const resolvedTargetPreviewBundle =
-      targetPreviewBundle ??
-      this.buildManagedBroadcastTargetPreviewBundle(
-        targetChatIds,
-        new Map(),
-        fromPrismaEntityType(row.entityType),
-      );
-    const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
-      buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonUrl,
-      buttonText: row.buttonText,
-    });
-    const images = this.readManagedBroadcastImagesFromRow(row);
-    const hasVideo = readManagedBroadcastMediaType(row.mediaType) === 'video';
-    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
-
-    return {
-      id: row.id,
-      status: row.status,
-      textPreview: normalizedText
-        ? normalizedText.slice(0, 160)
-        : images.length > 0
-          ? 'Фото без текста'
-          : hasVideo
-            ? 'Видео без текста'
-            : 'Пустой автопостинг',
-      textLength: row.text.length,
-      targetMode,
-      applyToAllChats: row.applyToAllChats,
-      targetChatIds,
-      targetChats: targetChatIds.length,
-      targetPreviews: resolvedTargetPreviewBundle.previews,
-      targetOverflowCount: resolvedTargetPreviewBundle.overflowCount,
-      hasImage: images.length > 0,
-      imageCount: images.length,
-      hasVideo,
-      buttons: buttonState.buttons,
-      buttonEnabled: buttonState.buttonEnabled,
-      scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
-      scheduleTimezone: row.scheduleTimezone,
-      scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
-      nextSendAt: row.nextSendAt?.toISOString() ?? null,
-      cycleEnabled: row.cycleEnabled,
-      cycleEveryHours: row.cycleEveryHours,
-      cycleCount,
-      sentCount: row.sentCount,
-      currentOccurrence: resolvedSnapshot.currentOccurrence,
-      deliveredChats: resolvedSnapshot.deliveredChats,
-      failedChats: resolvedSnapshot.failedChats,
-      pendingChats: resolvedSnapshot.pendingChats,
-      blockedChats: resolvedSnapshot.blockedChats,
-      failureBreakdown: resolvedSnapshot.failureBreakdown,
-      canRetry: resolvedSnapshot.canRetry,
-      remainingCount: Math.max(0, row.cycleCount - row.sentCount),
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      lastError: row.lastError && row.lastError.trim() ? row.lastError : null,
-    };
-  }
-
-  private mapManagedBroadcastDetails(
-    row: PersistedManagedBroadcast,
-    snapshot?: ManagedBroadcastDeliverySnapshot,
-    upcomingSlots: Date[] = [],
-    targetPreviewBundle?: ManagedBroadcastTargetPreviewBundle,
-  ): ManagedBroadcastDetails {
-    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
-    const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
-    const resolvedTargetPreviewBundle =
-      targetPreviewBundle ??
-      this.buildManagedBroadcastTargetPreviewBundle(
-        targetChatIds,
-        new Map(),
-        fromPrismaEntityType(row.entityType),
-      );
-    const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
-      buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonUrl,
-      buttonText: row.buttonText,
-    });
-    const mediaType = readManagedBroadcastMediaType(row.mediaType);
-    const images = this.readManagedBroadcastImagesFromRow(row);
-    const firstImage = images[0];
-    const cycleCount = this.normalizeManagedBroadcastCycleCount(row);
-
-    return {
-      id: row.id,
-      status: row.status,
-      text: row.text,
-      textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
-      targetMode,
-      applyToAllChats: row.applyToAllChats,
-      targetChatIds,
-      targetPreviews: resolvedTargetPreviewBundle.previews,
-      targetOverflowCount: resolvedTargetPreviewBundle.overflowCount,
-      buttons: buttonState.buttons,
-      buttonEnabled: buttonState.buttonEnabled,
-      buttonUrl: buttonState.buttonUrl,
-      buttonText: buttonState.buttonText,
-      imageEnabled: images.length > 0,
-      imageBase64: firstImage?.base64 ?? '',
-      imageMimeType: firstImage?.mimeType ?? '',
-      imageFileName: firstImage?.fileName ?? '',
-      images,
-      mediaType,
-      mediaPayload: mediaType ? this.readObjectPayloadOrNull(row.mediaPayload) : null,
-      mediaMimeType: mediaType ? row.mediaMimeType : '',
-      mediaFileName: mediaType ? row.mediaFileName : '',
-      scheduleMode: normalizeBroadcastScheduleMode(row.scheduleMode),
-      scheduleTimezone: row.scheduleTimezone,
-      scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
-      nextSendAt: row.nextSendAt?.toISOString() ?? null,
-      cycleEnabled: row.cycleEnabled,
-      cycleEveryHours: row.cycleEveryHours,
-      cycleCount,
-      sentCount: row.sentCount,
-      currentOccurrence: resolvedSnapshot.currentOccurrence,
-      deliveredChats: resolvedSnapshot.deliveredChats,
-      failedChats: resolvedSnapshot.failedChats,
-      pendingChats: resolvedSnapshot.pendingChats,
-      blockedChats: resolvedSnapshot.blockedChats,
-      failureBreakdown: resolvedSnapshot.failureBreakdown,
-      canRetry: resolvedSnapshot.canRetry,
-      remainingCount: Math.max(0, row.cycleCount - row.sentCount),
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      lastError: row.lastError && row.lastError.trim() ? row.lastError : null,
-    };
-  }
-
-  private async sendManagedBroadcastMessageImmediateWithId(
-    chatId: string,
-    text: string,
-    options:
-      | Pick<
-          MaxSendMessageOptions,
-          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
-        >
-      | undefined,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-  ): Promise<string> {
-    let lastError: unknown = null;
-    const attempts =
-      Math.max(
-        this.hasRetriableMaxAttachment(options) ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
-        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
-        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
-      ) + 1;
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      try {
-        const published = botId
-          ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, {
-              ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-              botId,
-            })
-          : await this.maxClient.sendMessageImmediateWithId(
-              chatId,
-              text,
-              options,
-              this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-            );
-        return published.messageId;
-      } catch (error: unknown) {
-        lastError = error;
-        const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(error, attempt, options);
-        if (retryDelayMs === null) {
-          throw error;
-        }
-        await this.sleep(retryDelayMs);
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
-    throw new Error('Managed broadcast send did not return a result.');
-  }
-
-  private async sendBroadcastImageMessageWithRetry(
-    chatId: string,
-    text: string,
-    options:
-      | Pick<
-          MaxSendMessageOptions,
-          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
-        >
-      | undefined,
-    botId?: string,
-    maxApiOptions?: ManagedBroadcastMaxApiOptions,
-  ): Promise<void> {
-    let lastError: unknown = null;
-    const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      try {
-        await this.maxClient.sendMessage(
-          chatId,
-          text,
-          options,
-          botId
-            ? {
-                immediate: true,
-                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-                botId,
-              }
-            : {
-                immediate: true,
-                ...this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
-              },
-        );
-        return;
-      } catch (error: unknown) {
-        lastError = error;
-        if (!this.isAttachmentNotReadyError(error) || attempt >= attempts) {
-          throw error;
-        }
-        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
-        await this.sleep(delayMs);
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
-    }
+  private normalizeBroadcastTextFormat(...args: any[]) {
+    return (this.managedBroadcastRuntime as any).normalizeBroadcastTextFormat(...args);
   }
 
   private resolveManagedBroadcastSendRetryDelayMs(
@@ -15184,23 +9893,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private extractMaxApiErrorMessage(error: unknown): string {
-    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-    if (!responseData || typeof responseData !== 'object') {
-      return '';
-    }
-
-    const row = responseData as Record<string, unknown>;
-    const message = row.message;
-    if (typeof message === 'string' && message.trim()) {
-      return message.trim();
-    }
-
-    const code = row.code;
-    if (typeof code === 'string' && code.trim()) {
-      return `Ошибка MAX API: ${code.trim()}`;
-    }
-
-    return '';
+    return extractMaxApiErrorMessageValue(error);
   }
 
   private decodeBroadcastImageBase64(value: string): Buffer {
@@ -15224,23 +9917,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private decodeRulesImageBase64(value: string): Buffer {
-    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
-    if (!normalized) {
-      throw new BadRequestException('Добавьте фото для правил.');
-    }
-
-    let imageBuffer: Buffer;
-    try {
-      imageBuffer = Buffer.from(normalized, 'base64');
-    } catch {
-      throw new BadRequestException('Не удалось прочитать фото правил.');
-    }
-
-    if (imageBuffer.length === 0) {
-      throw new BadRequestException('Не удалось прочитать фото правил.');
-    }
-
-    return imageBuffer;
+    return decodeRulesImageBase64Value(value);
   }
 
   private resolveBroadcastImageFileName(fileName: string, mimeType: string): string {
@@ -15627,22 +10304,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private resolveRulesImageFileName(fileName: string, mimeType: string): string {
-    const trimmed = fileName.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-
-    if (mimeType === 'image/png') {
-      return 'chat-rules.png';
-    }
-    if (mimeType === 'image/webp') {
-      return 'chat-rules.webp';
-    }
-    if (mimeType === 'image/gif') {
-      return 'chat-rules.gif';
-    }
-
-    return 'chat-rules.jpg';
+    return resolveRulesImageFileNameValue(fileName, mimeType);
   }
 
   private async publishMessageWithRetry(
@@ -15684,1013 +10346,85 @@ export class AdminService implements OnModuleDestroy {
     throw new Error('Message publish failed without error details');
   }
 
-  private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
-    const buttonState = this.buildStoredLinkButtonState(value.buttons, {
-      buttonUrl: value.buttonUrl,
-      buttonText: value.buttonText,
-    });
-    const baseDraft = {
-      text: value.text,
-      autoTextEnabled: value.autoTextEnabled,
-      buttons: buttonState.buttons,
-      buttonEnabled: value.buttonEnabled,
-      buttonUrl: buttonState.buttonUrl,
-      buttonText: buttonState.buttonText,
-      adminContactButtonEnabled: value.adminContactButtonEnabled,
-      adminContactButtonUrl: value.adminContactButtonEnabled ? value.adminContactButtonUrl : '',
-    } satisfies Pick<
-      UpdateChatRulesRequest,
-      | 'text'
-      | 'autoTextEnabled'
-      | 'buttons'
-      | 'buttonEnabled'
-      | 'buttonUrl'
-      | 'buttonText'
-      | 'adminContactButtonEnabled'
-      | 'adminContactButtonUrl'
-    >;
-    const normalizedImageBase64 = value.imageBase64.trim();
-    if (!normalizedImageBase64) {
-      return {
-        ...baseDraft,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-      };
-    }
-
-    return {
-      ...baseDraft,
-      imageBase64: normalizedImageBase64,
-      imageMimeType: value.imageMimeType.trim(),
-      imageFileName: value.imageFileName.trim(),
-    };
+  private normalizeChatRulesDraft(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).normalizeChatRulesDraft(...args);
   }
 
-  private normalizeImportedRulesText(value: string | null | undefined): string | null {
-    const normalized = typeof value === 'string' ? value.trim() : '';
-    if (!normalized) {
-      return null;
-    }
-
-    return normalized.slice(0, 2_000);
+  private normalizeImportedRulesText(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).normalizeImportedRulesText(...args);
   }
 
-  private async upsertChatRules(chatId: string): Promise<PersistedChatRules> {
-    return this.prisma.chatRules.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        autoTextEnabled: true,
-      },
-      update: {},
-    });
+  private upsertChatRules(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).upsertChatRules(...args);
   }
 
-  private mapChatRules(rules: PersistedChatRules): ChatRules {
-    const buttonState = this.buildStoredLinkButtonState(rules.buttons, {
-      buttonUrl: rules.buttonUrl,
-      buttonText: rules.buttonText,
-    });
-
-    return chatRulesSchema.parse({
-      text: rules.text,
-      imageBase64: rules.imageBase64,
-      imageMimeType: rules.imageMimeType,
-      imageFileName: rules.imageFileName,
-      autoTextEnabled: rules.autoTextEnabled,
-      buttons: buttonState.buttons,
-      buttonEnabled: rules.buttonEnabled,
-      buttonUrl: buttonState.buttonUrl,
-      buttonText: buttonState.buttonText,
-      adminContactButtonEnabled: rules.adminContactButtonEnabled,
-      adminContactButtonUrl: rules.adminContactButtonUrl,
-      publishedMessageId: rules.publishedMessageId,
-      publishedUrl: rules.publishedUrl,
-      publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
-    });
+  private mapChatRules(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).mapChatRules(...args);
   }
 
-  private async hydratePublishedRulesUrl(
-    chatId: string,
-    rules: PersistedChatRules,
-  ): Promise<PersistedChatRules> {
-    const currentUrl = this.normalizePublishedRulesUrl(rules.publishedUrl);
-    if (currentUrl || !rules.publishedMessageId?.trim()) {
-      return {
-        ...rules,
-        publishedUrl: currentUrl,
-      };
-    }
-
-    let resolvedUrl: string | null = null;
-    try {
-      resolvedUrl = this.normalizePublishedRulesUrl(
-        await this.maxClient.resolveMessageLink(rules.publishedMessageId),
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          messageId: rules.publishedMessageId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to recover published chat rules url',
-      );
-      return rules;
-    }
-
-    if (!resolvedUrl) {
-      return rules;
-    }
-
-    await this.prisma.chatRules.update({
-      where: { chatId },
-      data: {
-        publishedUrl: resolvedUrl,
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return {
-      ...rules,
-      publishedUrl: resolvedUrl,
-    };
+  private hydratePublishedRulesUrl(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).hydratePublishedRulesUrl(...args);
   }
 
-  private normalizePublishedRulesUrl(value: string | null | undefined): string | null {
-    const normalized = typeof value === 'string' ? value.trim() : '';
-    if (!normalized) {
-      return null;
-    }
-
-    try {
-      const parsed = new URL(normalized);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        return null;
-      }
-      return parsed.toString();
-    } catch {
-      return null;
-    }
+  private normalizePublishedRulesUrl(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).normalizePublishedRulesUrl(...args);
   }
 
-  private buildChatRulesButtonRows(rules: {
-    buttons: unknown;
-    buttonEnabled: boolean;
-    buttonUrl: string;
-    buttonText: string;
-  }): MaxMessageButton[][] | null {
-    const buttons = rules.buttonEnabled
-      ? this.normalizeStoredLinkButtons(rules.buttons, {
-          buttonUrl: rules.buttonUrl,
-          buttonText: rules.buttonText,
-        }).map((button) => ({
-          ...button,
-          url: this.normalizePublishedRulesUrl(button.url) ?? '',
-        }))
-      : [];
-    const normalizedButtons = buttons.filter((button) => button.url.length > 0);
-    if (normalizedButtons.length === 0) {
-      return null;
-    }
-
-    return this.buildBroadcastLinkButtonRows(normalizedButtons);
+  private buildChatRulesButtonRows(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildChatRulesButtonRows(...args);
   }
 
-  private async buildFormattedRulesPublicationText(
-    chatId: string,
-    sourceText: string,
-    options: {
-      adminContactButtonEnabled: boolean;
-      adminContactButtonUrl: string;
-    },
-  ): Promise<{
-    text: string;
-    textFormat: MaxSendMessageOptions['textFormat'];
-  }> {
-    const fallbackDisplayName = options.adminContactButtonEnabled
-      ? await this.resolveAdminContactFallbackDisplayName(chatId, options.adminContactButtonUrl)
-      : null;
-
-    return {
-      text: appendAdminContactMarkdownLinkText(sourceText, {
-        enabled: options.adminContactButtonEnabled,
-        url: options.adminContactButtonUrl,
-        botTokens: this.maxBotTokenValidationSecrets,
-        fallbackDisplayName,
-      }),
-      textFormat: 'markdown',
-    };
+  private buildFormattedRulesPublicationText(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildFormattedRulesPublicationText(...args);
   }
 
-  private async resolveAdminContactFallbackDisplayName(
-    chatId: string,
-    url: string | null | undefined,
-  ): Promise<string | null> {
-    const target = resolveAdminContactMentionTarget(url, this.maxBotTokenValidationSecrets);
-    if (!target?.userId || target.displayName) {
-      return null;
-    }
-
-    const localDisplayNames = await this.resolveUserDisplayNames(chatId, [target.userId]);
-    const localDisplayName = this.readTrimmedString(localDisplayNames.get(target.userId));
-    if (localDisplayName) {
-      return localDisplayName;
-    }
-
-    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
-    if (!loadProfiles) {
-      return null;
-    }
-
-    try {
-      const profiles = await loadProfiles(chatId, [target.userId], {
-        trafficClass: 'interactive',
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-      });
-      return this.readTrimmedString(profiles.get(target.userId)?.displayName) ?? null;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId: target.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve admin contact display name for rules publication',
-      );
-      return null;
-    }
+  private resolveAdminContactFallbackDisplayName(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).resolveAdminContactFallbackDisplayName(...args);
   }
 
-  private async buildAutofilledRulesTextFromCurrentSettings(
-    chatId: string,
-    user: AuthUser,
-  ): Promise<string> {
-    const settings = await this.getSettings(chatId, user);
-    const [domains, requiredSubscriptionChannels] = await Promise.all([
-      settings.linkPolicy === 'ALLOWLIST_ONLY'
-        ? this.getDomainAllowlistDetails(chatId, user)
-        : Promise.resolve([] as DomainAllowlistEntry[]),
-      this.isRequiredSubscriptionCurrentlyActive(settings)
-        ? this.resolveRequiredSubscriptionChannelHeaders(settings.requiredSubscriptionChannelIds)
-        : Promise.resolve([] as ManagedEntityHeader[]),
-    ]);
-
-    return this.buildRulesTextFromSettings({
-      settings,
-      domains,
-      requiredSubscriptionChannels,
-    });
+  private buildAutofilledRulesTextFromCurrentSettings(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildAutofilledRulesTextFromCurrentSettings(...args);
   }
 
-  private buildRulesTextFromSettings(input: {
-    settings: ChatSettings;
-    domains: DomainAllowlistEntry[];
-    requiredSubscriptionChannels: ManagedEntityHeader[];
-  }): string {
-    const items = this.buildRulesTextItemsFromSettings(input);
-    if (items.length === 0) {
-      throw new BadRequestException('Нет активных настроек, из которых можно собрать правила.');
-    }
-
-    const lines = ['Правила чата:', ''];
-    const numberedItems: string[] = [];
-
-    for (const [index, item] of items.entries()) {
-      const numberedItem = `${index + 1}. ${item}`;
-      const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
-      if (candidate.length > 2_000) {
-        break;
-      }
-      numberedItems.push(numberedItem);
-    }
-
-    if (numberedItems.length === 0) {
-      throw new BadRequestException(
-        'Не удалось собрать короткий текст правил из текущих настроек.',
-      );
-    }
-
-    return [...lines, ...numberedItems].join('\n');
+  private buildRulesTextFromSettings(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildRulesTextFromSettings(...args);
   }
 
-  private buildRulesTextItemsFromSettings(input: {
-    settings: ChatSettings;
-    domains: DomainAllowlistEntry[];
-    requiredSubscriptionChannels: ManagedEntityHeader[];
-  }): string[] {
-    const { settings, requiredSubscriptionChannels, domains } = input;
-    const items: string[] = [];
-
-    if (settings.linkPolicy === 'BLOCKLIST_ONLY') {
-      items.push('Пожалуйста, не отправляйте ссылки: бот их удаляет.');
-    } else if (settings.linkPolicy === 'ALLOWLIST_ONLY') {
-      items.push(
-        domains.length > 0
-          ? 'Можно отправлять только ссылки из разрешённого списка.'
-          : 'Ссылки здесь ограничены: если нужно, сначала согласуйте их с администраторами.',
-      );
-    } else if (settings.linkPolicy === 'ALERT_ONLY') {
-      items.push('Ссылки бот проверяет, но не удаляет автоматически.');
-    }
-
-    if (this.isRequiredSubscriptionCurrentlyActive(settings)) {
-      const channelTitles = requiredSubscriptionChannels
-        .map((channel) => channel.title.trim())
-        .filter(Boolean);
-      items.push(
-        channelTitles.length > 0
-          ? `Чтобы писать в чат, сначала подпишитесь на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
-          : 'Чтобы писать в чат, сначала подпишитесь на обязательные чаты или каналы.',
-      );
-    }
-
-    if (settings.russianProfanityFilterEnabled) {
-      items.push('Пожалуйста, без мата и грубой лексики.');
-    }
-
-    if (settings.commercialAdsFilterEnabled) {
-      items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
-    }
-
-    if (settings.thematicCodewordEnabled) {
-      const codeword = settings.thematicCodeword.trim();
-      items.push(
-        codeword
-          ? `Если пишете по теме, начинайте сообщение со слова "${codeword}".`
-          : 'Если включён тематический фильтр, придерживайтесь темы чата.',
-      );
-    }
-
-    if (settings.antiDuplicateEnabled) {
-      const allowedCount = this.resolveRulesDuplicateAllowedCount(settings);
-      items.push(
-        allowedCount === 0
-          ? 'Не повторяйте одно и то же сообщение несколько раз.'
-          : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-      );
-    }
-
-    if (settings.antiSpamEnabled) {
-      items.push('Пожалуйста, не флудите и не спамьте.');
-    }
-
-    if (settings.messageCountLimitEnabled) {
-      items.push(
-        `Пожалуйста, не отправляйте больше ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${this.formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
-      );
-    }
-
-    if (settings.maxMessageLengthEnabled) {
-      items.push(
-        `Старайтесь писать короче: до ${settings.maxMessageLength} символов в одном сообщении.`,
-      );
-    }
-
-    if (settings.photoMessageCooldownEnabled) {
-      items.push(
-        `Фото можно отправлять не чаще одного раза в ${settings.photoMessageCooldownHours} ${this.formatRulesHoursLabel(settings.photoMessageCooldownHours)}.`,
-      );
-    }
-
-    if (settings.stickerMessageCooldownEnabled) {
-      items.push(
-        `Стикеры можно отправлять не чаще одного раза в ${settings.stickerMessageCooldownMinutes} ${this.formatRulesMinutesLabel(settings.stickerMessageCooldownMinutes)}.`,
-      );
-    }
-
-    if (!settings.photoMessagesEnabled) {
-      items.push('Фото сюда отправлять нельзя.');
-    }
-
-    if (!settings.videoMessagesEnabled) {
-      items.push('Видео сюда отправлять нельзя.');
-    }
-
-    if (!settings.fileMessagesEnabled) {
-      items.push('Файлы сюда отправлять нельзя.');
-    }
-
-    if (!settings.voiceMessagesEnabled) {
-      items.push('Голосовые сообщения сюда отправлять нельзя.');
-    }
-
-    if (!settings.phoneNumbersEnabled) {
-      items.push('Телефонные номера в сообщениях запрещены.');
-    }
-
-    if (settings.nightModeEnabled) {
-      items.push(
-        `Ночью чат работает тише: ограничения действуют с ${this.formatRulesTime(settings.nightModeStartTimeMinutes)} до ${this.formatRulesTime(settings.nightModeEndTimeMinutes)}.`,
-      );
-    }
-
-    const sanctionsSummary = this.buildRulesSanctionsSummary(
-      this.isRequiredSubscriptionCurrentlyActive(settings)
-        ? settings
-        : {
-            ...settings,
-            requiredSubscriptionWarnEnabled: false,
-            requiredSubscriptionMuteEnabled: false,
-            requiredSubscriptionBanEnabled: false,
-          },
-    );
-    if (sanctionsSummary) {
-      items.push(sanctionsSummary);
-    }
-
-    return items;
+  private buildRulesTextItemsFromSettings(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildRulesTextItemsFromSettings(...args);
   }
 
-  private buildRulesSanctionsSummary(
-    settings: Pick<
-      ChatSettings,
-      | 'linkWarnEnabled'
-      | 'requiredSubscriptionWarnEnabled'
-      | 'textFiltersWarnEnabled'
-      | 'thematicFiltersWarnEnabled'
-      | 'messageLimitsWarnEnabled'
-      | 'duplicateWarnEnabled'
-      | 'linkMuteEnabled'
-      | 'requiredSubscriptionMuteEnabled'
-      | 'textFiltersMuteEnabled'
-      | 'thematicFiltersMuteEnabled'
-      | 'messageLimitsMuteEnabled'
-      | 'duplicateMuteEnabled'
-      | 'linkBanEnabled'
-      | 'requiredSubscriptionBanEnabled'
-      | 'textFiltersBanEnabled'
-      | 'thematicFiltersBanEnabled'
-      | 'messageLimitsBanEnabled'
-      | 'duplicateBanEnabled'
-    >,
-  ): string | null {
-    const sanctions = new Set<string>();
-
-    if (
-      settings.linkWarnEnabled ||
-      settings.requiredSubscriptionWarnEnabled ||
-      settings.textFiltersWarnEnabled ||
-      settings.thematicFiltersWarnEnabled ||
-      settings.messageLimitsWarnEnabled ||
-      settings.duplicateWarnEnabled
-    ) {
-      sanctions.add('предупредить');
-    }
-
-    if (
-      settings.linkMuteEnabled ||
-      settings.requiredSubscriptionMuteEnabled ||
-      settings.textFiltersMuteEnabled ||
-      settings.thematicFiltersMuteEnabled ||
-      settings.messageLimitsMuteEnabled ||
-      settings.duplicateMuteEnabled
-    ) {
-      sanctions.add('временно ограничить сообщения');
-    }
-
-    if (
-      settings.linkBanEnabled ||
-      settings.requiredSubscriptionBanEnabled ||
-      settings.textFiltersBanEnabled ||
-      settings.thematicFiltersBanEnabled ||
-      settings.messageLimitsBanEnabled ||
-      settings.duplicateBanEnabled
-    ) {
-      sanctions.add('заблокировать');
-    }
-
-    if (sanctions.size === 0) {
-      return null;
-    }
-
-    return `За повторные нарушения бот может ${this.formatRulesConjunctionList([...sanctions])}.`;
+  private buildRulesSanctionsSummary(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).buildRulesSanctionsSummary(...args);
   }
 
-  private resolveRulesDuplicateAllowedCount(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateBotMessageEnabled'
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-      | 'duplicateWarnMaxCount'
-      | 'duplicateMuteMaxCount'
-      | 'duplicateBanMaxCount'
-    >,
-  ): number {
-    const firstThreshold = settings.duplicateWarnEnabled
-      ? settings.duplicateWarnMaxCount
-      : settings.duplicateMuteEnabled
-        ? settings.duplicateMuteMaxCount
-        : settings.duplicateBanEnabled
-          ? settings.duplicateBanMaxCount
-          : settings.duplicateWarnMaxCount;
-    const duplicateThresholdOffset =
-      (settings.duplicateBotMessageEnabled ? 2 : 1) +
-      (settings.duplicateWarnEnabled ? 1 : 0) +
-      (settings.duplicateMuteEnabled ? 1 : 0);
-    const allowedCountMax = Math.max(0, 20 - duplicateThresholdOffset);
-
-    return Math.max(
-      0,
-      Math.min(allowedCountMax, firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1)),
-    );
+  private resolveRulesDuplicateAllowedCount(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).resolveRulesDuplicateAllowedCount(...args);
   }
 
-  private formatRulesDuplicateAllowanceLabel(count: number): string {
-    if (count === 0) {
-      return 'с первого дубля';
-    }
-
-    if (count === 1) {
-      return 'после 1 дубля';
-    }
-
-    return `после ${count} дублей`;
+  private formatRulesDuplicateAllowanceLabel(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesDuplicateAllowanceLabel(...args);
   }
 
-  private formatRulesPreviewList(values: readonly string[], limit: number): string {
-    const uniqueValues = Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-    const visible = uniqueValues.slice(0, limit);
-    const remaining = uniqueValues.length - visible.length;
-    if (remaining <= 0) {
-      return visible.join(', ');
-    }
-
-    return `${visible.join(', ')} и ещё ${remaining}`;
+  private formatRulesPreviewList(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesPreviewList(...args);
   }
 
-  private formatRulesConjunctionList(values: readonly string[]): string {
-    if (values.length <= 1) {
-      return values[0] ?? '';
-    }
-
-    if (values.length === 2) {
-      return `${values[0]} и ${values[1]}`;
-    }
-
-    return `${values.slice(0, -1).join(', ')} и ${values[values.length - 1]}`;
+  private formatRulesConjunctionList(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesConjunctionList(...args);
   }
 
-  private formatRulesHoursLabel(value: number): string {
-    const normalized = Math.abs(Math.trunc(value));
-    const mod10 = normalized % 10;
-    const mod100 = normalized % 100;
-
-    if (mod10 === 1 && mod100 !== 11) {
-      return 'час';
-    }
-
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-      return 'часа';
-    }
-
-    return 'часов';
+  private formatRulesHoursLabel(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesHoursLabel(...args);
   }
 
-  private formatRulesMinutesLabel(value: number): string {
-    const normalized = Math.abs(Math.trunc(value));
-    const mod10 = normalized % 10;
-    const mod100 = normalized % 100;
-
-    if (mod10 === 1 && mod100 !== 11) {
-      return 'минуту';
-    }
-
-    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-      return 'минуты';
-    }
-
-    return 'минут';
+  private formatRulesMinutesLabel(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesMinutesLabel(...args);
   }
 
-  private formatRulesTime(minutes: number): string {
-    const totalMinutes = Math.max(0, Math.min(23 * 60 + 59, Math.round(minutes)));
-    const hours = Math.floor(totalMinutes / 60)
-      .toString()
-      .padStart(2, '0');
-    const mins = (totalMinutes % 60).toString().padStart(2, '0');
-    return `${hours}:${mins}`;
+  private formatRulesTime(...args: any[]) {
+    return (this.chatRulesTextRuntime as any).formatRulesTime(...args);
   }
-
-  private async getManagedPoll(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedPoll> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    const poll = await this.upsertManagedPoll(chatId);
-    const hydrated = await this.hydrateManagedPollPublishedUrl(chatId, poll);
-    return this.mapManagedPoll(hydrated);
-  }
-
-  private async updateManagedPoll(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    body: unknown,
-    source: AdminActionSource,
-  ): Promise<ManagedPoll> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    const parsed = updateManagedPollRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const current = await this.upsertManagedPoll(chatId);
-    if (current.status === PrismaManagedPollStatus.ACTIVE) {
-      throw new BadRequestException('Сначала закройте активный опрос.');
-    }
-
-    const normalizedDraft = normalizeManagedPollDraft(parsed.data.question, parsed.data.options);
-    const currentDraft = normalizeManagedPollDraft(
-      current.question,
-      this.readManagedPollOptions(current.options),
-    );
-    const hasChanges =
-      normalizedDraft.question !== currentDraft.question ||
-      normalizedDraft.options.length !== currentDraft.options.length ||
-      normalizedDraft.options.some((option, index) => option !== currentDraft.options[index]);
-
-    const updated = await this.prisma.managedPoll.update({
-      where: { chatId },
-      data: {
-        question: normalizedDraft.question,
-        options: normalizedDraft.options as Prisma.InputJsonValue,
-        ...(current.status === PrismaManagedPollStatus.CLOSED && hasChanges
-          ? {
-              status: PrismaManagedPollStatus.DRAFT,
-              publishedMessageId: null,
-              publishedUrl: null,
-              publishedAt: null,
-              closedAt: null,
-            }
-          : {}),
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: MANAGED_POLL_ACTION_UPDATE,
-        payload: {
-          entityType,
-          questionLength: normalizedDraft.question.length,
-          optionsCount: normalizedDraft.options.length,
-          statusBefore: current.status,
-          statusAfter:
-            current.status === PrismaManagedPollStatus.CLOSED && hasChanges
-              ? PrismaManagedPollStatus.DRAFT
-              : current.status,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return this.mapManagedPoll(updated);
-  }
-
-  private async publishManagedPoll(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    source: AdminActionSource,
-  ): Promise<ManagedPoll> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    const current = await this.upsertManagedPoll(chatId);
-    if (current.status === PrismaManagedPollStatus.ACTIVE && current.publishedMessageId?.trim()) {
-      throw new BadRequestException('Сначала закройте активный опрос.');
-    }
-
-    let normalizedDraft: { question: string; options: string[] };
-    try {
-      normalizedDraft = validateManagedPollForPublish(
-        current.question,
-        this.readManagedPollOptions(current.options),
-      );
-    } catch (error: unknown) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : 'Опрос заполнен некорректно.',
-      );
-    }
-
-    const nextVersion = Math.max(0, current.activeVersion) + 1;
-    const zeroResults = buildManagedPollOptionSummaries(
-      normalizedDraft.options,
-      normalizedDraft.options.map(() => 0),
-    );
-    const buttons = buildManagedPollButtons(
-      current.id,
-      nextVersion,
-      normalizedDraft.options,
-      zeroResults.optionResults,
-    );
-    const messageText = buildManagedPollMessageText(
-      normalizedDraft.question,
-      zeroResults.optionResults,
-      'ACTIVE',
-    );
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-
-    let published: { messageId: string; url: string | null };
-    try {
-      published = resolvedBotId
-        ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-            chatId,
-            messageText,
-            {
-              buttons,
-            },
-            { botId: resolvedBotId },
-          )
-        : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, {
-            buttons,
-          });
-    } catch (error: unknown) {
-      const maxApiMessage = this.extractMaxApiErrorMessage(error);
-      throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать опрос.');
-    }
-
-    const publishedAt = new Date();
-    const updated = await this.prisma.managedPoll.update({
-      where: { chatId },
-      data: {
-        question: normalizedDraft.question,
-        options: normalizedDraft.options as Prisma.InputJsonValue,
-        status: PrismaManagedPollStatus.ACTIVE,
-        activeVersion: nextVersion,
-        publishedMessageId: published.messageId,
-        publishedUrl: this.normalizePublishedRulesUrl(published.url),
-        publishedAt,
-        closedAt: null,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: MANAGED_POLL_ACTION_PUBLISH,
-        payload: {
-          entityType,
-          messageId: published.messageId,
-          url: published.url,
-          questionLength: normalizedDraft.question.length,
-          optionsCount: normalizedDraft.options.length,
-          activeVersion: nextVersion,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return this.mapManagedPoll(updated);
-  }
-
-  private async closeManagedPoll(
-    chatId: string,
-    user: AuthUser,
-    entityType: ManagedEntityType,
-    source: AdminActionSource,
-  ): Promise<ManagedPoll> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
-
-    const current = await this.upsertManagedPoll(chatId);
-    const publishedMessageId = current.publishedMessageId?.trim() ?? '';
-    if (current.status !== PrismaManagedPollStatus.ACTIVE || !publishedMessageId) {
-      throw new BadRequestException('Активного опроса нет.');
-    }
-
-    const normalizedDraft = normalizeManagedPollDraft(
-      current.question,
-      this.readManagedPollOptions(current.options),
-    );
-    const voteCounts = await this.loadManagedPollVoteCounts(
-      current.id,
-      current.activeVersion,
-      normalizedDraft.options.length,
-    );
-    const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
-    const messageText = buildManagedPollMessageText(
-      normalizedDraft.question,
-      summary.optionResults,
-      'CLOSED',
-    );
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-    let nextPublishedMessageId = publishedMessageId;
-    let nextPublishedUrl = this.normalizePublishedRulesUrl(current.publishedUrl);
-    let recreatedFromMessageId: string | null = null;
-
-    try {
-      if (resolvedBotId) {
-        await this.maxClient.editMessageInlineKeyboard(
-          chatId,
-          publishedMessageId,
-          messageText,
-          undefined,
-          { botId: resolvedBotId },
-        );
-      } else {
-        await this.maxClient.editMessageInlineKeyboard(chatId, publishedMessageId, messageText);
-      }
-    } catch (error: unknown) {
-      if (!this.shouldRecreateEditableMessage(error)) {
-        const maxApiMessage = this.extractMaxApiErrorMessage(error);
-        throw new BadRequestException(maxApiMessage || 'Не удалось закрыть опрос.');
-      }
-
-      recreatedFromMessageId = publishedMessageId;
-      try {
-        const recreated = resolvedBotId
-          ? await this.maxClient.sendMessageImmediateWithResolvedLink(
-              chatId,
-              messageText,
-              undefined,
-              {
-                botId: resolvedBotId,
-              },
-            )
-          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText);
-        nextPublishedMessageId = recreated.messageId;
-        nextPublishedUrl = this.normalizePublishedRulesUrl(recreated.url);
-      } catch (recreateError: unknown) {
-        const maxApiMessage = this.extractMaxApiErrorMessage(recreateError);
-        throw new BadRequestException(maxApiMessage || 'Не удалось закрыть опрос.');
-      }
-    }
-
-    const closedAt = new Date();
-    const updated = await this.prisma.managedPoll.update({
-      where: { chatId },
-      data: {
-        status: PrismaManagedPollStatus.CLOSED,
-        closedAt,
-        ...(recreatedFromMessageId
-          ? {
-              publishedMessageId: nextPublishedMessageId,
-              publishedUrl: nextPublishedUrl,
-            }
-          : {}),
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: MANAGED_POLL_ACTION_CLOSE,
-        payload: {
-          entityType,
-          messageId: nextPublishedMessageId,
-          activeVersion: current.activeVersion,
-          totalVotes: summary.totalVotes,
-          recreatedFromMessageId,
-          source,
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return this.mapManagedPoll(updated);
-  }
-
-  private async upsertManagedPoll(chatId: string): Promise<PersistedManagedPoll> {
-    return this.prisma.managedPoll.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-      },
-      update: {},
-    });
-  }
-
-  private async mapManagedPoll(poll: PersistedManagedPoll): Promise<ManagedPoll> {
-    const normalizedDraft = normalizeManagedPollDraft(
-      poll.question,
-      this.readManagedPollOptions(poll.options),
-    );
-    const voteCounts =
-      poll.status === PrismaManagedPollStatus.ACTIVE ||
-      poll.status === PrismaManagedPollStatus.CLOSED
-        ? await this.loadManagedPollVoteCounts(
-            poll.id,
-            poll.activeVersion,
-            normalizedDraft.options.length,
-          )
-        : normalizedDraft.options.map(() => 0);
-    const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
-
-    return managedPollSchema.parse({
-      question: normalizedDraft.question,
-      options: normalizedDraft.options,
-      status: poll.status,
-      activeVersion: poll.activeVersion,
-      publishedMessageId: poll.publishedMessageId?.trim() || null,
-      publishedUrl: this.normalizePublishedRulesUrl(poll.publishedUrl),
-      publishedAt: poll.publishedAt ? poll.publishedAt.toISOString() : null,
-      closedAt: poll.closedAt ? poll.closedAt.toISOString() : null,
-      totalVotes: summary.totalVotes,
-      optionResults: summary.optionResults,
-    });
-  }
-
-  private async hydrateManagedPollPublishedUrl(
-    chatId: string,
-    poll: PersistedManagedPoll,
-  ): Promise<PersistedManagedPoll> {
-    const currentUrl = this.normalizePublishedRulesUrl(poll.publishedUrl);
-    if (currentUrl || !poll.publishedMessageId?.trim()) {
-      return {
-        ...poll,
-        publishedUrl: currentUrl,
-      };
-    }
-
-    let resolvedUrl: string | null = null;
-    try {
-      const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
-      resolvedUrl = this.normalizePublishedRulesUrl(
-        resolvedBotId
-          ? await this.maxClient.resolveMessageLink(poll.publishedMessageId, {
-              botId: resolvedBotId,
-            })
-          : await this.maxClient.resolveMessageLink(poll.publishedMessageId),
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          messageId: poll.publishedMessageId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to recover published managed poll url',
-      );
-      return poll;
-    }
-
-    if (!resolvedUrl) {
-      return poll;
-    }
-
-    await this.prisma.managedPoll.update({
-      where: { chatId },
-      data: {
-        publishedUrl: resolvedUrl,
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return {
-      ...poll,
-      publishedUrl: resolvedUrl,
-    };
-  }
-
-  private readManagedPollOptions(value: Prisma.JsonValue): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value.filter((item): item is string => typeof item === 'string');
-  }
-
-  private async loadManagedPollVoteCounts(
-    pollId: string,
-    pollVersion: number,
-    optionCount: number,
-  ): Promise<number[]> {
-    const counts = Array.from({ length: optionCount }, () => 0);
-    const votes = await this.prisma.managedPollVote.groupBy({
-      where: {
-        pollId,
-        pollVersion,
-      },
-      by: ['optionIndex'],
-      _count: {
-        _all: true,
-      },
-    });
-
-    for (const vote of votes) {
-      if (vote.optionIndex >= 0 && vote.optionIndex < counts.length) {
-        counts[vote.optionIndex] = vote._count._all;
-      }
-    }
-
-    return counts;
-  }
-
   private resolveChannelDialogIntroText(
     settings: ChannelSettings,
     dialogType: ChannelDialogType,
@@ -16702,38 +10436,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isMaxMessageMissingError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status === 404) {
-      return true;
-    }
-
-    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
-    return normalized.includes('not found') || normalized.includes('message_not_found');
-  }
-
-  private shouldRecreateEditableMessage(error: unknown): boolean {
-    if (this.isMaxMessageMissingError(error)) {
-      return true;
-    }
-
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status !== 400 && status !== 403) {
-      return false;
-    }
-
-    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
-    return (
-      normalized.includes('edit') ||
-      normalized.includes('update') ||
-      normalized.includes('too old') ||
-      normalized.includes('24') ||
-      normalized.includes("can't be edited") ||
-      normalized.includes('cannot edit') ||
-      normalized.includes('cant edit') ||
-      normalized.includes('message.not.updated')
-    );
+    return isMaxMessageMissingErrorValue(error);
   }
 
   async getLogsDashboard(
@@ -19990,6 +13693,224 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  async assertManagedEntityAdminAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    await this.assertChatAdmin(chatId, userId, entityType);
+    await this.ensureEntityType(chatId, userId, entityType);
+  }
+
+  async assertManagedEntityReadAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    options: AdminReadBypassOptions = {},
+  ): Promise<void> {
+    if (!options.skipAdminCheck) {
+      await this.assertReadOnlyChatAdmin(chatId, userId, entityType, {
+        forceRemote: options.forceRemote,
+        timeoutMs: options.timeoutMs,
+      });
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(chatId, userId, entityType);
+    }
+  }
+
+  async resolveChatSettingsReadBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
+    return this.buildResolvedBotAssignmentData(resolvedBotId);
+  }
+
+  async resolveChatSettingsWriteBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    return this.buildResolvedBotAssignmentData(resolvedBotId);
+  }
+
+  async resolveChannelSettingsReadBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
+    return this.buildResolvedBotAssignmentData(resolvedBotId);
+  }
+
+  async resolveChannelSettingsWriteBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    return this.buildResolvedBotAssignmentData(resolvedBotId);
+  }
+
+  async resolveChatRulesActionBotId(chatId: string): Promise<string | undefined> {
+    return this.resolveManualActionBotAssignment(chatId);
+  }
+
+  async resolveManagedPollReadBotId(chatId: string): Promise<string | undefined> {
+    return this.resolveChatBotIdForRead(chatId);
+  }
+
+  async resolveManagedPollActionBotId(chatId: string): Promise<string | undefined> {
+    return this.resolveManualActionBotAssignment(chatId);
+  }
+
+  async resolveChannelEngagementActionBotId(chatId: string): Promise<string | undefined> {
+    return this.resolveManualActionBotAssignment(chatId);
+  }
+
+  normalizeChatSettingsForApply(sourceChatId: string, settings: ChatSettings): ChatSettings {
+    return this.normalizeChatSettings(settings, undefined, sourceChatId, {
+      resetRequiredSubscriptionExpiration: true,
+    });
+  }
+
+  async resolveSettingsApplyTargetChatsForSettings(
+    sourceChatId: string,
+    user: AuthUser,
+    target: ApplySettingsTarget,
+  ): Promise<ChatSummary[]> {
+    return this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
+  }
+
+  async resolveSettingsApplyBotAssignmentData(
+    chatId: string,
+  ): Promise<ResolvedBotAssignmentData> {
+    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    return this.buildResolvedBotAssignmentData(resolvedBotId);
+  }
+
+  isRequiredSubscriptionCurrentlyActiveForSettings(settings: ChatSettings): boolean {
+    return this.isRequiredSubscriptionCurrentlyActive(settings);
+  }
+
+  scheduleApplySettingsToAllReadinessRefreshForSettings(params: {
+    chatIds: readonly string[];
+    shouldRefreshRequiredSubscription: boolean;
+    requiredSubscriptionChannelIds: readonly string[];
+  }): void {
+    this.scheduleApplySettingsToAllReadinessRefresh(params);
+  }
+
+  async syncDomainAllowlistToChatsForSettings(
+    sourceChatId: string,
+    targetChatIds: readonly string[],
+  ): Promise<void> {
+    await this.syncDomainAllowlistToChats(sourceChatId, targetChatIds);
+  }
+
+  async resolveManagedEntityHeaderReadBotId(chatId: string): Promise<string | undefined> {
+    return this.resolveBackgroundReadBotAssignment(chatId);
+  }
+
+  async attachManagedEntityHeaderBotAssignmentsForManagedEntities(
+    header: ManagedEntityHeader,
+  ): Promise<ManagedEntityHeader> {
+    return this.attachManagedEntityHeaderBotAssignments(header);
+  }
+
+  buildChannelEngagementDialogArtifacts(
+    params: BuildChannelEngagementDialogArtifactsParams,
+  ): ChannelEngagementDialogArtifacts {
+    const commentsUrl = this.dialogLinkHelper.buildChannelDialogLaunchUrl(
+      params.chatId,
+      'comments',
+      params.threadId,
+      params.botId,
+    );
+    const suggestPayload = this.dialogLinkHelper.buildChannelSuggestionStartPayload(
+      params.chatId,
+      params.threadId,
+    );
+    const suggestLaunchUrl = this.dialogLinkHelper.buildChannelDialogLaunchUrl(
+      params.chatId,
+      'suggest',
+      params.threadId,
+      params.botId,
+    );
+    const suggestUrl =
+      params.suggestionEntryMode === 'MINIAPP'
+        ? suggestLaunchUrl
+        : (this.dialogLinkHelper.buildBotStartUrl(suggestPayload, params.botId) ??
+          suggestLaunchUrl);
+
+    return {
+      commentsUrl,
+      suggestPayload,
+      suggestUrl,
+      commentsButton: this.buildChannelDialogButton(
+        params.chatId,
+        'comments',
+        params.threadId,
+        params.formattedCommentsButtonText,
+        params.botId,
+      ),
+      suggestButton: this.buildChannelDialogButton(
+        params.chatId,
+        'suggest',
+        params.threadId,
+        params.suggestButtonText,
+        params.botId,
+        params.suggestionEntryMode,
+      ),
+    };
+  }
+
+  async buildAutofilledChatRulesTextFromCurrentSettings(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<string> {
+    return this.buildAutofilledRulesTextFromCurrentSettings(chatId, user);
+  }
+
+  async buildFormattedChatRulesPublicationText(
+    chatId: string,
+    sourceText: string,
+    options: {
+      adminContactButtonEnabled: boolean;
+      adminContactButtonUrl: string;
+    },
+  ): Promise<{
+    text: string;
+    textFormat: MaxSendMessageOptions['textFormat'];
+  }> {
+    return this.buildFormattedRulesPublicationText(chatId, sourceText, options);
+  }
+
+  async sendPublishedChatRulesPrivateConfirmation(
+    user: AuthUser,
+    publishedUrl: string | null,
+  ): Promise<void> {
+    await this.sendRulesPublishedPrivateConfirmation(user, publishedUrl);
+  }
+
+  async assertRequiredSubscriptionSettingsForChatSettings(
+    settings: ChatSettings,
+  ): Promise<void> {
+    await this.assertRequiredSubscriptionSettings(settings);
+  }
+
+  async refreshChatSettingsExecutionReadiness(
+    chatId: string,
+    settings: ChatSettings,
+  ): Promise<void> {
+    await this.refreshExecutionReadinessAfterChatSettingsUpdate(chatId, settings);
+  }
+
+  async refreshChannelSettingsExecutionReadiness(chatId: string): Promise<void> {
+    await this.refreshExecutionReadinessAfterChannelSettingsUpdate(chatId);
+  }
+
+  async resolveRequiredSubscriptionChannelHeadersForSettings(
+    channelIds: readonly string[],
+  ): Promise<ManagedEntityHeader[]> {
+    return this.resolveRequiredSubscriptionChannelHeaders(channelIds);
+  }
+
   private async assertReadOnlyChatAdmin(
     chatId: string,
     userId: string,
@@ -22208,84 +16129,15 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private buildUserProfileUrl(username: string | null): string | null {
-    const normalizedUsername = username?.replace(/^@+/u, '').trim() ?? '';
-    if (!normalizedUsername) {
-      return null;
-    }
-
-    return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
+    return buildUserProfileUrl(username);
   }
 
   private normalizeMaxProfileUrl(value: string | null): string | null {
-    if (!value) {
-      return null;
-    }
-
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        return null;
-      }
-
-      const hostname = parsed.hostname.toLowerCase();
-      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
-        return null;
-      }
-
-      parsed.hash = '';
-      return parsed.toString();
-    } catch {
-      return null;
-    }
-  }
-
-  private extractLegacyMaxUserId(url: string | null | undefined): string | null {
-    if (typeof url !== 'string') {
-      return null;
-    }
-
-    try {
-      const parsed = new URL(url.trim());
-      if (parsed.protocol !== 'max:' || parsed.hostname.trim().toLowerCase() !== 'user') {
-        return null;
-      }
-
-      const userId = decodeURIComponent(parsed.pathname.replace(/^\/+/u, '').trim());
-      return userId || null;
-    } catch {
-      return null;
-    }
-  }
-
-  private isLegacyProfileHandoffUrl(url: string | null | undefined): boolean {
-    if (typeof url !== 'string') {
-      return false;
-    }
-
-    try {
-      const parsed = new URL(url.trim());
-      const hostname = parsed.hostname.trim().toLowerCase();
-      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
-        return false;
-      }
-
-      const startPayload = parsed.searchParams.get('start')?.trim() ?? '';
-      return startPayload.startsWith(PROFILE_MENTION_START_PREFIX);
-    } catch {
-      return false;
-    }
+    return normalizeMaxProfileUrl(value);
   }
 
   private normalizeLegacyProfileButtonUrl(url: string | null | undefined): string {
-    const normalizedUrl = typeof url === 'string' ? url.trim() : '';
-    if (
-      this.extractLegacyMaxUserId(normalizedUrl) ||
-      this.isLegacyProfileHandoffUrl(normalizedUrl)
-    ) {
-      return '';
-    }
-
-    return normalizedUrl;
+    return normalizeLegacyProfileButtonUrl(url);
   }
 
   private buildProfileMentionHandoffUrl(
@@ -22294,31 +16146,13 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     displayName: string | null,
   ): string | null {
-    const normalizedChatId = chatId.trim();
-    const normalizedUserId = userId.trim();
-    if (!normalizedChatId || !normalizedUserId) {
-      return null;
-    }
-
-    const startPayload = this.dialogLinkHelper.buildProfileMentionStartPayload({
-      chatId: normalizedChatId,
+    return buildProfileMentionHandoffUrl(
+      this.dialogLinkHelper,
+      chatId,
       entityType,
-      userId: normalizedUserId,
-      displayName: displayName?.trim() || 'Пользователь',
-    });
-    const handoffUrl = this.dialogLinkHelper.buildBotStartUrl(startPayload);
-    const normalizedDisplayName = this.readTrimmedString(displayName);
-    if (!handoffUrl || !normalizedDisplayName) {
-      return handoffUrl;
-    }
-
-    try {
-      const parsed = new URL(handoffUrl);
-      parsed.searchParams.set('profile_label', normalizedDisplayName);
-      return parsed.toString();
-    } catch {
-      return handoffUrl;
-    }
+      userId,
+      displayName,
+    );
   }
 
   private activeDomainWhere(chatId: string) {
@@ -29042,90 +22876,20 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(chatId, user.userId, entityType);
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(chatId, user.userId, entityType);
-    }
-
-    const cached = await this.chatContextCache.getManagedEntityHeader?.(chatId, entityType);
-    if (
-      cached &&
-      !this.isManagedEntityHeaderStale(cached, this.toHeaderChatSummary(cached), {
-        refreshMissingLink: entityType === 'channel',
-      })
-    ) {
-      return this.attachManagedEntityHeaderBotAssignments(cached);
-    }
-
-    const persistedChat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: {
-        id: true,
-        title: true,
-      },
-    });
-
-    try {
-      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
-      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
-        trafficClass: 'interactive',
-        actionHealthLane: 'background',
-        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-      });
-      const title = snapshot.title?.trim() || persistedChat?.title?.trim() || chatId;
-
-      if (
-        persistedChat &&
-        title &&
-        title !== persistedChat.title &&
-        !isFallbackTitle(chatId, title)
-      ) {
-        await this.prisma.chat.update({
-          where: { id: chatId },
-          data: { title },
-        });
-      }
-
-      const header = this.createManagedEntityHeader({
-        id: chatId,
-        title,
-        entityType,
-        link: snapshot.link,
-        participantsCount: snapshot.participantsCount,
-        avatarUrl: snapshot.avatarUrl,
-      });
-      const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(header);
-      await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
-      return enrichedHeader;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          entityType,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to load managed entity header snapshot from MAX API',
-      );
-    }
-
-    if (cached) {
-      return this.attachManagedEntityHeaderBotAssignments(cached);
-    }
-
-    const fallbackHeader = this.createManagedEntityHeader({
-      id: chatId,
-      title: persistedChat?.title?.trim() || chatId,
+    return getManagedEntityHeaderValue({
+      prisma: this.prisma,
+      chatContextCache: this.chatContextCache,
+      maxClient: this.maxClient,
+      logger: this.logger,
+      chatId,
       entityType,
-      link: null,
-      participantsCount: null,
-      avatarUrl: null,
+      options,
+      assertReadAccess: (readOptions) =>
+        this.assertManagedEntityReadAccess(chatId, user.userId, entityType, readOptions),
+      resolveReadBotId: () => this.resolveManagedEntityHeaderReadBotId(chatId),
+      attachBotAssignments: (header) =>
+        this.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
     });
-    const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(fallbackHeader);
-    await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
-    return enrichedHeader;
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {

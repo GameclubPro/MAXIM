@@ -18,13 +18,17 @@ type AdminReadBypassOptions = {
 export class ManagedBroadcastService {
   constructor(private readonly legacyAdminService: AdminService) {}
 
+  private get runtime() {
+    return this.legacyAdminService.getManagedBroadcastRuntimeForBroadcastService();
+  }
+
   sendBroadcast(
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.legacyAdminService.sendBroadcast(sourceChatId, user, body, source);
+    return this.runtime.sendBroadcast(sourceChatId, user, body, source);
   }
 
   sendChannelBroadcast(
@@ -33,7 +37,7 @@ export class ManagedBroadcastService {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    return this.legacyAdminService.sendChannelBroadcast(sourceChatId, user, body, source);
+    return this.runtime.sendChannelBroadcast(sourceChatId, user, body, source);
   }
 
   sendBroadcastTest(
@@ -41,7 +45,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.legacyAdminService.sendBroadcastTest(sourceChatId, user, body);
+    return this.runtime.sendBroadcastTest(sourceChatId, user, body);
   }
 
   sendChannelBroadcastTest(
@@ -49,7 +53,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     body: unknown,
   ): Promise<SendBroadcastTestResult> {
-    return this.legacyAdminService.sendChannelBroadcastTest(sourceChatId, user, body);
+    return this.runtime.sendChannelBroadcastTest(sourceChatId, user, body);
   }
 
   listManagedBroadcasts(
@@ -57,7 +61,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.legacyAdminService.listManagedBroadcasts(sourceChatId, user, options);
+    return this.runtime.listManagedBroadcasts(sourceChatId, user, options);
   }
 
   listChannelManagedBroadcasts(
@@ -65,7 +69,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.legacyAdminService.listChannelManagedBroadcasts(sourceChatId, user, options);
+    return this.runtime.listChannelManagedBroadcasts(sourceChatId, user, options);
   }
 
   getManagedBroadcastCalendar(
@@ -73,7 +77,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     query: unknown,
   ): Promise<ManagedBroadcastCalendarResponse> {
-    return this.legacyAdminService.getManagedBroadcastCalendar(sourceChatId, user, query);
+    return this.runtime.getManagedBroadcastCalendar(sourceChatId, user, query);
   }
 
   getChannelManagedBroadcastCalendar(
@@ -81,7 +85,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     query: unknown,
   ): Promise<ManagedBroadcastCalendarResponse> {
-    return this.legacyAdminService.getChannelManagedBroadcastCalendar(sourceChatId, user, query);
+    return this.runtime.getChannelManagedBroadcastCalendar(sourceChatId, user, query);
   }
 
   getManagedBroadcast(
@@ -89,7 +93,7 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.getManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.getManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   getChannelManagedBroadcast(
@@ -97,7 +101,7 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.getChannelManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.getChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   updateManagedBroadcast(
@@ -106,7 +110,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.updateManagedBroadcast(sourceChatId, broadcastId, user, body);
+    return this.runtime.updateManagedBroadcast(sourceChatId, broadcastId, user, body);
   }
 
   updateChannelManagedBroadcast(
@@ -115,12 +119,7 @@ export class ManagedBroadcastService {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.updateChannelManagedBroadcast(
-      sourceChatId,
-      broadcastId,
-      user,
-      body,
-    );
+    return this.runtime.updateChannelManagedBroadcast(sourceChatId, broadcastId, user, body);
   }
 
   cancelManagedBroadcast(
@@ -128,7 +127,7 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.cancelManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.cancelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   cancelChannelManagedBroadcast(
@@ -136,7 +135,7 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.cancelChannelManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.cancelChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   retryManagedBroadcast(
@@ -144,7 +143,7 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.retryManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.retryManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   retryChannelManagedBroadcast(
@@ -152,10 +151,10 @@ export class ManagedBroadcastService {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.legacyAdminService.retryChannelManagedBroadcast(sourceChatId, broadcastId, user);
+    return this.runtime.retryChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
-    return this.legacyAdminService.processDueManagedBroadcasts(reason);
+    return this.runtime.processDueManagedBroadcasts(reason);
   }
 }

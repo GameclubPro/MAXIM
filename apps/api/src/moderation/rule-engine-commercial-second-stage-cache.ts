@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
-import type { CommercialDecisionBand, CommercialSubtype } from './rule-engine.service';
+import type { CommercialDecisionBand, CommercialSubtype } from './rule-engine.contract';
 import type { CommercialThresholdProfile } from './rule-engine-commercial-thresholds';
 
 export const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v2';

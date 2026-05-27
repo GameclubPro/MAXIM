@@ -1,5 +1,25 @@
 import { lazy, type ComponentType } from 'react';
 import type { ApiTransport } from '../lib/api/transport';
+import {
+  preloadChannelDialogPage,
+  preloadChannelSettingsPage,
+  preloadChannelStatsPage,
+  preloadEventsPage,
+  preloadGiveawayPage,
+  preloadLegalPage,
+  preloadSettingsPage,
+  preloadSystemPage,
+} from './page-preloads';
+export {
+  preloadChannelDialogPage,
+  preloadChannelSettingsPage,
+  preloadChannelStatsPage,
+  preloadEventsPage,
+  preloadGiveawayPage,
+  preloadLegalPage,
+  preloadSettingsPage,
+  preloadSystemPage,
+} from './page-preloads';
 
 type RoutedPageProps = {
   api: ApiTransport;
@@ -56,14 +76,6 @@ function lazyPage<TProps>(loader: () => Promise<Record<string, unknown>>, export
 }
 
 export const preloadChatsPage = () => import('./chats-page');
-export const preloadSettingsPage = () => import('./settings-page');
-export const preloadChannelSettingsPage = () => import('./channel-settings-page');
-export const preloadChannelStatsPage = () => import('./channel-stats-page');
-export const preloadChannelDialogPage = () => import('./channel-dialog-page');
-export const preloadEventsPage = () => import('./events-page');
-export const preloadGiveawayPage = () => import('./giveaway-page');
-export const preloadSystemPage = () => import('./system-page');
-export const preloadLegalPage = () => import('./legal-page');
 
 export const LazyChatsPage = lazyPage<RoutedPageProps>(preloadChatsPage, 'ChatsPage');
 export const LazySettingsPage = lazyPage<RoutedPageProps>(preloadSettingsPage, 'SettingsPage');

@@ -84,7 +84,7 @@ import {
   preloadChannelStatsPage,
   preloadEventsPage,
   preloadSettingsPage,
-} from './lazy-pages';
+} from './page-preloads';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';

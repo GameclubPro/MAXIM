@@ -10,6 +10,7 @@ module.exports = {
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
   },
+  setupFilesAfterEnv: ['<rootDir>/test/setup-silent-logs.ts'],
   collectCoverageFrom: ['src/**/*.ts'],
   coverageDirectory: '<rootDir>/coverage',
   testEnvironment: 'node',

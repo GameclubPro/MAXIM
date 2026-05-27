@@ -1,0 +1,8 @@
+export const preloadSettingsPage = () => import('./settings-page');
+export const preloadChannelSettingsPage = () => import('./channel-settings-page');
+export const preloadChannelStatsPage = () => import('./channel-stats-page');
+export const preloadChannelDialogPage = () => import('./channel-dialog-page');
+export const preloadEventsPage = () => import('./events-page');
+export const preloadGiveawayPage = () => import('./giveaway-page');
+export const preloadSystemPage = () => import('./system-page');
+export const preloadLegalPage = () => import('./legal-page');

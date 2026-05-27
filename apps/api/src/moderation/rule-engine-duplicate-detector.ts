@@ -8,31 +8,23 @@ import { extractUrlsFromText } from './rule-engine-link-detector';
 import { extractDetectedPhoneNumbers } from './rule-engine-message-limits.detector';
 import { normalizeForDetection } from './rule-engine-normalization';
 import { RedisCounterService } from './redis-counter.service';
+import type {
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateFingerprintType,
+  DuplicateHit,
+} from './rule-engine.contract';
 
-export type DuplicateAction = 'WARN' | 'MUTE' | 'BAN';
-
-export type DuplicateDecision = {
-  action: DuplicateAction;
-  count: number;
-  threshold: number;
-  windowSec: number;
-  hash: string;
-  fingerprintType: DuplicateFingerprintType;
-  nextAction: DuplicateAction | null;
-};
-
-export type DuplicateHit = {
-  count: number;
-  windowSec: number;
-  hash: string;
-  fingerprintType: DuplicateFingerprintType;
-};
+export type {
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateFingerprintType,
+  DuplicateHit,
+} from './rule-engine.contract';
 
 type DuplicateReactionStage = {
   action: DuplicateAction | null;
 };
-
-export type DuplicateFingerprintType = 'exact' | 'content' | 'near' | 'link' | 'phone';
 
 type DuplicateFingerprint = {
   type: DuplicateFingerprintType;

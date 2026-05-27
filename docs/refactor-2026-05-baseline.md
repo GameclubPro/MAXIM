@@ -51,6 +51,11 @@ This document is the first safety baseline for the May 2026 reliability-first re
 
 - Keep Node 24 as the baseline.
 - Patch/minor dependency updates can proceed inside current majors after fitness gates pass.
+- Prisma audit debt: `npm audit --omit=dev` currently reports
+  `GHSA-92pp-h63x-v22m` through Prisma's `@prisma/dev -> @hono/node-server`
+  chain. Do not run `npm audit fix --force` for it, because npm proposes
+  installing Prisma 6.19.3. Track this until a Prisma 7-compatible patch
+  resolves the transitive advisory.
 - Jest 30 is complete; keep it behind the API test gate when touching test runtime.
 - Vite 8 is complete; keep it behind the miniapp typecheck, test, build, and bundle-budget gates.
 - Zod 4 is complete; keep contract changes behind contracts, API, and miniapp gates.

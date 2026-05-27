@@ -136,6 +136,8 @@ export type AssertChatAdminOptions = {
 export type AdminReadBypassOptions = {
   skipAdminCheck?: boolean;
   skipEntityCheck?: boolean;
+  forceRemote?: boolean;
+  timeoutMs?: number;
 };
 
 export type TimedPromiseCacheEntry<T> = {

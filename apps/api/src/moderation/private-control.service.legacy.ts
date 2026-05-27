@@ -33,6 +33,7 @@ import {
 } from '@maxim/contracts';
 import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { AdminService } from '../admin/admin.service';
+import { AdminSettingsService } from '../admin/admin-settings.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import {
@@ -1209,6 +1210,7 @@ export class PrivateControlService {
   constructor(
     private readonly maxClient: MaxClientService,
     private readonly adminService: AdminService,
+    private readonly adminSettingsService: AdminSettingsService,
     private readonly managedGiveawayService: ManagedGiveawayService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
@@ -3881,7 +3883,7 @@ export class PrivateControlService {
         );
         const generatedText = this.buildRulesTextFromSettings(settingsScreen);
 
-        await this.adminService.updateRules(
+        await this.adminSettingsService.updateRules(
           session.selectedChatId!,
           context.actor,
           {
@@ -3914,7 +3916,7 @@ export class PrivateControlService {
       case 'rules_clear_photo': {
         this.assertSelectedEntityType(session, 'chat');
         const rules = await this.adminService.getRules(session.selectedChatId!, context.actor);
-        await this.adminService.updateRules(
+        await this.adminSettingsService.updateRules(
           session.selectedChatId!,
           context.actor,
           {
@@ -6110,7 +6112,7 @@ export class PrivateControlService {
 
     const nextText = normalizedText ? formattedText : currentRules.text;
 
-    await this.adminService.updateRules(
+    await this.adminSettingsService.updateRules(
       session.selectedChatId!,
       context.actor,
       {

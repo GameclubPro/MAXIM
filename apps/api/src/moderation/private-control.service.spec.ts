@@ -569,6 +569,7 @@ function createHarness(
     settings?: typeof defaultSettings;
     channelSettings?: typeof defaultChannelSettings;
     adminService?: Record<string, unknown>;
+    adminSettingsService?: Record<string, unknown>;
     managedBroadcastService?: Record<string, unknown>;
     managedGiveaway?: ManagedGiveawayDetails | null;
     rules?: ChatRules;
@@ -827,6 +828,10 @@ function createHarness(
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
   };
+  const adminSettingsService = {
+    updateRules: adminService.updateRules,
+    ...overrides.adminSettingsService,
+  };
 
   let currentGiveaway =
     overrides.managedGiveaway === undefined ? createGiveaway() : overrides.managedGiveaway;
@@ -1011,6 +1016,7 @@ function createHarness(
   const service = new PrivateControlService(
     maxClient as never,
     adminService as never,
+    adminSettingsService as never,
     managedGiveawayService as never,
     undefined,
     {
@@ -1034,7 +1040,15 @@ function createHarness(
     overrides.managedBroadcastService as never,
   );
 
-  return { service, maxClient, adminService, managedGiveawayService, chats, channels };
+  return {
+    service,
+    maxClient,
+    adminService,
+    adminSettingsService,
+    managedGiveawayService,
+    chats,
+    channels,
+  };
 }
 
 function getLastSentText(maxClient: { sendMessage: jest.Mock }): string {
@@ -1812,7 +1826,7 @@ describe('PrivateControlService', () => {
       nightModeEndTimeMinutes: 8 * 60,
       nightModeTimezone: 'Europe/Moscow',
     });
-    const { service, adminService, maxClient, chats } = createHarness({
+    const { service, adminSettingsService, maxClient, chats } = createHarness({
       settings: generatedSettings,
       rules: createRules({
         text: 'Текущий текст правил.',
@@ -1862,7 +1876,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
 
-    const updatePayload = adminService.updateRules.mock.calls.at(-1)?.[2];
+    const updatePayload = adminSettingsService.updateRules.mock.calls.at(-1)?.[2];
     expect(updatePayload).toMatchObject({
       imageMimeType: 'image/png',
       imageFileName: 'rules.png',
@@ -1915,7 +1929,7 @@ describe('PrivateControlService', () => {
       voiceMessagesEnabled: true,
       nightModeEnabled: false,
     });
-    const { service, adminService, chats } = createHarness({
+    const { service, adminSettingsService, chats } = createHarness({
       settings: generatedSettings,
       rules: createRules({
         text: '',
@@ -1940,7 +1954,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
 
-    const updatePayload = adminService.updateRules.mock.calls.at(-1)?.[2];
+    const updatePayload = adminSettingsService.updateRules.mock.calls.at(-1)?.[2];
     expect(String(updatePayload?.text ?? '')).toContain(
       'Ссылки бот проверяет, но не удаляет автоматически.',
     );
@@ -1948,7 +1962,7 @@ describe('PrivateControlService', () => {
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
-    const { service, adminService, maxClient, chats } = createHarness({
+    const { service, adminSettingsService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила из handoff.',
         autoTextEnabled: true,
@@ -1973,7 +1987,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('Новая версия из handoff'));
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
@@ -1985,7 +1999,7 @@ describe('PrivateControlService', () => {
   });
 
   it('updates rules text only after choosing the text button', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminSettingsService, chats } = createHarness({
       rules: createRules({
         buttonEnabled: true,
         buttonUrl: 'https://max.ru/help',
@@ -1998,7 +2012,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
@@ -2016,7 +2030,7 @@ describe('PrivateControlService', () => {
   });
 
   it('preserves incoming MAX text markup when saving rules from private bot', async () => {
-    const { service, adminService, chats } = createHarness();
+    const { service, adminSettingsService, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -2031,7 +2045,7 @@ describe('PrivateControlService', () => {
       ]),
     );
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
@@ -2043,7 +2057,7 @@ describe('PrivateControlService', () => {
   });
 
   it('keeps raw auto-detected urls intact when saving rules text with emoji prefixes', async () => {
-    const { service, adminService, chats } = createHarness();
+    const { service, adminSettingsService, chats } = createHarness();
     const firstUrl = 'https://t.me/glavnyy_admin';
     const secondUrl = 'https://wa.me/79362615370';
     const thirdUrl = 'https://linku.su/ekp4z9j';
@@ -2078,7 +2092,7 @@ describe('PrivateControlService', () => {
       ]),
     );
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
@@ -2090,7 +2104,7 @@ describe('PrivateControlService', () => {
   });
 
   it('preserves formatted links after emoji prefixes when saving rules from private bot', async () => {
-    const { service, adminService, chats } = createHarness();
+    const { service, adminSettingsService, chats } = createHarness();
     const sourceText = '🔥MAX Docs';
     const prefixLength = countMessageOffsetUnits('🔥');
     const labelLength = countMessageOffsetUnits('MAX Docs');
@@ -2124,7 +2138,7 @@ describe('PrivateControlService', () => {
       ]),
     );
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
@@ -2136,13 +2150,13 @@ describe('PrivateControlService', () => {
   });
 
   it('does not autosave rules content without an explicit input button', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
+    const { service, adminSettingsService, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
     await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
 
-    expect(adminService.updateRules).not.toHaveBeenCalled();
+    expect(adminSettingsService.updateRules).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain(
       'Сначала нажмите «Изменить текст» или «Добавить фото»',
     );
@@ -2166,7 +2180,7 @@ describe('PrivateControlService', () => {
   });
 
   it('updates rules photo from image and image-file messages in private bot', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminSettingsService, chats } = createHarness({
       rules: createRules({
         text: 'Правила с фото.',
         autoTextEnabled: true,
@@ -2182,7 +2196,7 @@ describe('PrivateControlService', () => {
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|photo'));
       await service.handleUpdate(createPrivateImageFileUpdate());
 
-      expect(adminService.updateRules).toHaveBeenNthCalledWith(
+      expect(adminSettingsService.updateRules).toHaveBeenNthCalledWith(
         1,
         chats[0].id,
         expect.objectContaining({ userId: 'user-1' }),
@@ -2194,7 +2208,7 @@ describe('PrivateControlService', () => {
         }),
         'private_bot',
       );
-      expect(adminService.updateRules).toHaveBeenNthCalledWith(
+      expect(adminSettingsService.updateRules).toHaveBeenNthCalledWith(
         2,
         chats[0].id,
         expect.objectContaining({ userId: 'user-1' }),
@@ -2212,7 +2226,7 @@ describe('PrivateControlService', () => {
   });
 
   it('rejects mixed text and photo when text mode is selected', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
+    const { service, adminSettingsService, maxClient, chats } = createHarness();
     const { restore } = mockImageFetch(TINY_PNG, 'image/jpeg');
 
     try {
@@ -2221,7 +2235,7 @@ describe('PrivateControlService', () => {
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
       await service.handleUpdate(createPrivateTextAndPhotoUpdate('Правила + фото'));
 
-      expect(adminService.updateRules).not.toHaveBeenCalled();
+      expect(adminSettingsService.updateRules).not.toHaveBeenCalled();
       expect(getLastSentText(maxClient)).toContain(
         'Для текста правил отправьте только текст без вложений.',
       );
@@ -2231,7 +2245,7 @@ describe('PrivateControlService', () => {
   });
 
   it('supports rules photo cleanup and redirects advanced rules toggles to mini app', async () => {
-    const { service, adminService, maxClient, chats } = createHarness({
+    const { service, adminService, adminSettingsService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила чата',
         autoTextEnabled: true,
@@ -2252,7 +2266,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_publish'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_reset_publication'));
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
+    expect(adminSettingsService.updateRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
