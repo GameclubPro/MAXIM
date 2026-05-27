@@ -28,7 +28,6 @@ Commands:
   exec <command...>           Run a command in the remote repo
   deploy [branch] [services]  Run the main production deploy script on the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS
-  deploy-reshenie [branch]    Run the standalone Reshenie deploy script on the VPS
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
   health                      Check local-on-VPS and public health endpoints
   ps [services...]            Show main production docker compose status
@@ -138,12 +137,6 @@ deploy_scale() {
   remote_exec "$(shell_quote_args ./infra/scripts/vps-pull-build-up-scale.sh "$branch" "$@")"
 }
 
-deploy_reshenie() {
-  local branch="${1:-main}"
-
-  remote_exec "$(shell_quote_args ./infra/scripts/vps-pull-build-up-reshenie.sh "$branch")"
-}
-
 rollback_runtime() {
   if [[ $# -lt 1 ]]; then
     echo "Usage: $0 rollback-runtime <git-ref> [services...]"
@@ -234,9 +227,6 @@ case "$command" in
     ;;
   deploy-scale)
     deploy_scale "$@"
-    ;;
-  deploy-reshenie)
-    deploy_reshenie "$@"
     ;;
   rollback-runtime)
     rollback_runtime "$@"

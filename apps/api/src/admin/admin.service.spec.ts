@@ -10529,7 +10529,7 @@ describe('AdminService.listChats', () => {
         items: [
           createChatSummaryFixture({
             id: 'chat-owned',
-            title: 'Чат Решение',
+            title: 'Чат Модерации',
             createdAt: '2026-04-03T10:00:00.000Z',
             entityType: 'chat',
             primaryBotId: '777000_bot',
@@ -10573,7 +10573,7 @@ describe('AdminService.listChats', () => {
     expect(result).toEqual([
       createChatSummaryFixture({
         id: 'chat-owned',
-        title: 'Чат Решение',
+        title: 'Чат Модерации',
         createdAt: '2026-04-03T10:00:00.000Z',
         entityType: 'chat',
         primaryBotId: '777000_bot',
@@ -11387,7 +11387,7 @@ describe('AdminService.listChats', () => {
       {
         chat: {
           id: 'chat-owned',
-          title: 'Чат Решение',
+          title: 'Чат Модерации',
           createdAt: new Date('2026-03-04T10:00:00.000Z'),
           entityType: 'CHAT' as const,
           primaryBotId: '777000_bot',
@@ -11471,7 +11471,7 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([
       createChatSummaryFixture({
         id: 'chat-owned',
-        title: 'Чат Решение',
+        title: 'Чат Модерации',
         createdAt: '2026-03-04T10:00:00.000Z',
         entityType: 'chat',
       }),

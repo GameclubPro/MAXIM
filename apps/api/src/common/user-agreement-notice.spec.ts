@@ -14,13 +14,13 @@ describe('user agreement notice', () => {
   });
 
   it('builds legal links from APP_BASE_URL for prefixed deployments', () => {
-    const appBaseUrl = 'https://maxim.play-team.ru/reshenie/';
+    const appBaseUrl = 'https://maxim.play-team.ru/custom/';
 
     expect(buildUserAgreementUrl(appBaseUrl)).toBe(
-      'https://maxim.play-team.ru/reshenie/app/legal/agreement',
+      'https://maxim.play-team.ru/custom/app/legal/agreement',
     );
     expect(buildPrivacyPolicyUrl(appBaseUrl)).toBe(
-      'https://maxim.play-team.ru/reshenie/app/legal/privacy',
+      'https://maxim.play-team.ru/custom/app/legal/privacy',
     );
   });
 
