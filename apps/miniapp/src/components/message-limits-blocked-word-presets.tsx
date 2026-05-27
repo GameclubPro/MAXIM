@@ -67,6 +67,17 @@ function formatPresetDelta(
   return remainingSlots === 0 ? 'лимит' : 'без изменений';
 }
 
+const MESSAGE_LIMITS_BLOCKED_WORD_PRESET_COMPACT_TITLES: Record<
+  MessageLimitsBlockedWordPresetId,
+  string
+> = {
+  gambling: 'Казино',
+  earnings: 'Таски',
+  crypto: 'Крипта',
+  accounts: 'Аккаунты',
+  tarot: 'Таро',
+};
+
 export default function MessageLimitsBlockedWordPresets({
   selectedWords,
   remainingSlots,
@@ -139,14 +150,7 @@ export default function MessageLimitsBlockedWordPresets({
           const missingWords = presetWords.filter((word) => !selectedWordsSet.has(word));
           const addableCount = Math.min(remainingSlots, missingWords.length);
           const removableCount = selectedPresetWords.length;
-          const compactTitle =
-            preset.id === 'gambling'
-              ? 'Казино'
-              : preset.id === 'earnings'
-                ? 'Заработок'
-                : preset.id === 'crypto'
-                  ? 'Крипта'
-                  : 'Таро';
+          const compactTitle = MESSAGE_LIMITS_BLOCKED_WORD_PRESET_COMPACT_TITLES[preset.id];
 
           return (
             <article

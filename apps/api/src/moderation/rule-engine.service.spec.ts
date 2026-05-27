@@ -2584,6 +2584,78 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects high-signal compound stop words across spaces and punctuation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      messageLimitsBlockedWords: [
+        'заработокбезвложений',
+        'p2pсвязка',
+        'арендааккаунта',
+        'раскладтаро',
+      ],
+    });
+
+    await expect(
+      service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'В канале обещают заработок без вложений.',
+        settings,
+        domainAllowlist: [],
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        violations: expect.arrayContaining([
+          expect.objectContaining({
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+            metadata: expect.objectContaining({ blockedWord: 'заработокбезвложений' }),
+          }),
+        ]),
+      }),
+    );
+
+    await expect(
+      service.detect({
+        chatId: 'chat-1',
+        userId: 'u-2',
+        text: 'Есть новая p2p-связка и аренда аккаунта.',
+        settings,
+        domainAllowlist: [],
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        violations: expect.arrayContaining([
+          expect.objectContaining({
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('keeps high-signal compound stop words from matching neutral broad terms', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text:
+        'Ставки по кредиту снизились, биржа труда обновила вакансию, ' +
+        'сигнал светофора сломан, а расклад сил изменился.',
+      settings: buildSettings({
+        messageLimitsBlockedWords: [
+          'ставкинаспорт',
+          'криптосигнал',
+          'заработокбезвложений',
+          'раскладтаро',
+          'арендааккаунта',
+        ],
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+  });
+
   it('does not detect MESSAGE_BLOCKED_WORD inside larger word', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

@@ -5227,6 +5227,18 @@
     rgba(255, 255, 255, 0.92);
 }
 
+.settings-word-banlist__preset-card--accounts {
+  background:
+    linear-gradient(180deg, rgba(246, 244, 255, 0.96), rgba(253, 252, 255, 0.92)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.settings-word-banlist__preset-card--tarot {
+  background:
+    linear-gradient(180deg, rgba(255, 244, 249, 0.96), rgba(255, 252, 254, 0.92)),
+    rgba(255, 255, 255, 0.92);
+}
+
 .settings-word-banlist__preset-head {
   display: flex;
   align-items: center;

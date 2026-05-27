@@ -55,6 +55,18 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-stop-words',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'stopWords',
+    },
+    beforeShot: async (page) => {
+      await page.locator('.settings-word-banlist__preset-grid').waitFor({ state: 'visible' });
+      await page.locator('.settings-word-banlist').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'chat-settings-links',
     path: '/chat/preview-chat/settings',
     searchParams: {

@@ -549,6 +549,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'links' &&
       focusSection !== 'rules' &&
       focusSection !== 'comments' &&
+      focusSection !== 'stopWords' &&
       focusSection !== 'poll' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'vkParsing' &&
@@ -566,15 +567,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? { rules: true }
           : focusSection === 'comments'
             ? { comments: true }
-            : focusSection === 'poll'
-              ? { poll: true }
-              : focusSection === 'giveaway'
-                ? { giveaway: true }
-                : focusSection === 'vkParsing'
-                  ? { vkParsing: true }
-                  : focusSection === 'requiredSubscription'
-                    ? { requiredSubscription: true }
-                    : { mailing: true }),
+            : focusSection === 'stopWords'
+              ? { stopWords: true }
+              : focusSection === 'poll'
+                ? { poll: true }
+                : focusSection === 'giveaway'
+                  ? { giveaway: true }
+                  : focusSection === 'vkParsing'
+                    ? { vkParsing: true }
+                    : focusSection === 'requiredSubscription'
+                      ? { requiredSubscription: true }
+                      : { mailing: true }),
     });
   }, [focusSection]);
 
