@@ -2840,6 +2840,89 @@ describe('AdminService required subscription settings', () => {
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves an external required subscription channel from a locally known root link when discovery misses it', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedBotChatCatalog.findMany.mockResolvedValue([
+      {
+        botId: 'id613002203036_bot',
+        chatId: '-75095650340108',
+        entityType: 'CHANNEL',
+        title: 'Авторынок ДНР/ЛНР',
+        link: 'https://max.ru/aavtorynok_dnr_lnr',
+        avatarUrl: null,
+        lastEventTime: '1779913608754',
+        lastSeenAt: new Date('2026-05-27T20:26:48.754Z'),
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: '-75095650340108',
+        title: 'Авторынок ДНР/ЛНР',
+        participantsCount: 4096,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/aavtorynok_dnr_lnr',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'id613002203036_bot' }) as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'https://max.ru/aavtorynok_dnr_lnr',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: '-75095650340108',
+        title: 'Авторынок ДНР/ЛНР',
+        entityType: 'channel',
+        link: 'https://max.ru/aavtorynok_dnr_lnr',
+        participantsCount: 4096,
+      }),
+    });
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
+    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          link: {
+            in: expect.arrayContaining([
+              'https://max.ru/aavtorynok_dnr_lnr',
+              'https://max.ru/channel/aavtorynok_dnr_lnr',
+              'https://max.ru/channels/aavtorynok_dnr_lnr',
+            ]),
+          },
+        },
+      }),
+    );
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      '-75095650340108',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+  });
+
   it('resolves an external required subscription channel from a public channel message link', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();

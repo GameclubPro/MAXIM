@@ -255,6 +255,7 @@ import {
   normalizeLegacyProfileButtonUrl,
   normalizeMaxProfileUrl,
 } from './admin-profile-links';
+import { resolveRequiredSubscriptionChannelByKnownLink } from './admin-required-subscription-catalog';
 import {
   buildChannelOverview,
   buildChatParticipantsPageCacheKey,
@@ -9128,6 +9129,31 @@ export class AdminService implements OnModuleDestroy {
       throw new ServiceUnavailableException(
         'Не удалось проверить публичную ссылку чата или канала в MAX. Повторите попытку.',
       );
+    }
+
+    let locallyKnownChannel: MaxBotChat | null = null;
+    try {
+      locallyKnownChannel = await resolveRequiredSubscriptionChannelByKnownLink({
+        normalizedLink,
+        catalog: this.prisma.managedBotChatCatalog,
+        normalizeLink: (value) => this.normalizeRequiredSubscriptionChannelLink(value),
+        mergeCatalogRows: (rows) => this.mergeManagedBotChatCatalogRows(rows),
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          link: normalizedLink,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve required subscription entity by local catalog link',
+      );
+      throw new ServiceUnavailableException(
+        'Не удалось проверить сохраненную ссылку чата или канала. Повторите попытку.',
+      );
+    }
+
+    if (locallyKnownChannel) {
+      return locallyKnownChannel;
     }
 
     throw new BadRequestException(
