@@ -9075,7 +9075,12 @@ export class AdminService implements OnModuleDestroy {
           .split('/')
           .map((segment) => segment.trim())
           .filter(Boolean);
-        if (pathSegments[0] !== 'chats' || pathSegments.length < 2) {
+        const rootSegment = pathSegments[0]?.toLowerCase();
+        if (
+          rootSegment !== 'chats' &&
+          rootSegment !== 'c' &&
+          rootSegment !== 'chat'
+        ) {
           continue;
         }
 
@@ -9323,7 +9328,22 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        pathname = pathname.replace(/^\/channel\//iu, '/channels/');
+        const pathSegments = pathname
+          .split('/')
+          .map((segment) => segment.trim())
+          .filter(Boolean);
+        if (pathSegments[0]?.toLowerCase() === 'channel') {
+          pathSegments[0] = 'channels';
+          pathname = `/${pathSegments.join('/')}`;
+        }
+        if (
+          pathSegments[0]?.toLowerCase() === 'channels' &&
+          (pathSegments[2]?.toLowerCase() === 'message' ||
+            pathSegments[2]?.toLowerCase() === 'messages')
+        ) {
+          pathname = `/${pathSegments.slice(0, 2).join('/')}`;
+        }
+
         parsed.search = '';
         parsed.hash = '';
 
