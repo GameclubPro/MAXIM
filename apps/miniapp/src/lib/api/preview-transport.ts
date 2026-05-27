@@ -2714,8 +2714,7 @@ function createInitialState(): PreviewState {
   const channelVkParsing = createPreviewVkParsingFeed(PREVIEW_CHANNEL_ID, now);
   const chatDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
     comments: {
-      introText:
-        'Тихий тред к сообщению админа: короткие ответы, без флуда, ссылки режет модерация.',
+      introText: '',
       messages: [
         buildPreviewDialogMessage({
           id: 'chat-comments-1',
@@ -2831,8 +2830,7 @@ function createInitialState(): PreviewState {
   };
   const channelDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
     comments: {
-      introText:
-        'Комментарии к посту канала идут отдельным потоком, чтобы лента канала оставалась чистой.',
+      introText: '',
       messages: [
         buildPreviewDialogMessage({
           id: 'channel-comments-1',

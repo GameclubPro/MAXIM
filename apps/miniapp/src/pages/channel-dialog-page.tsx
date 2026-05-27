@@ -3323,18 +3323,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           'channel-dialog-shell',
           dialogType === 'suggest' && 'channel-dialog-shell--suggest',
           dialogType === 'comments' && 'has-comments-header',
-          dialogType === 'comments' && introText && 'has-thread-context',
         )}
       >
         {dialogType === 'comments' ? (
-          <div className={cn('channel-dialog-comments-header', introText && 'has-context')}>
-            {introText ? (
-              <div className="channel-dialog-thread-context channel-dialog-thread-context--summary">
-                <p>{introText}</p>
-              </div>
-            ) : (
-              <span className="channel-dialog-comments-header__spacer" aria-hidden />
-            )}
+          <div className="channel-dialog-comments-header">
+            <span className="channel-dialog-comments-header__spacer" aria-hidden />
 
             <div className="channel-dialog-notifications">
               <button
