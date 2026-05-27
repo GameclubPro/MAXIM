@@ -27,7 +27,7 @@
     "moderation:audit-commercial": "tsx src/scripts/audit-commercial-filter.ts",
     "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
     "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts",
-    "vk-parsing:diagnose": "tsx src/scripts/diagnose-vk-parsing.ts"
+    "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --"
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",
