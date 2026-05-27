@@ -4,8 +4,13 @@ import {
   createEmptyHomeEntityFavorites,
   createEmptyHomeEntityFavoritesByType,
   getHomeEntityFavoriteTypes,
+  HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
+  HOME_ENTITY_FAVORITE_LABELS,
+  mergeHomeEntityFavoriteLabels,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
+  resolveHomeEntityFavoriteLabels,
+  sanitizeHomeEntityFavoriteLabels,
   sanitizeHomeEntityFavorites,
   toggleHomeEntityFavoriteType,
 } from '../src/lib/home-entity-favorites';
@@ -84,4 +89,31 @@ test('reads the selected favorite type for one entity', () => {
   favorites.chat.important = ['chat-1'];
 
   assert.deepEqual(getHomeEntityFavoriteTypes(favorites, 'chat', 'chat-1'), ['important']);
+});
+
+test('sanitizes custom favorite category labels', () => {
+  const longLabel = 'Очень длинное название категории избранного';
+  const labels = sanitizeHomeEntityFavoriteLabels({
+    important: ' VIP   чаты ',
+    watch: longLabel,
+    broadcast: HOME_ENTITY_FAVORITE_LABELS.broadcast,
+    service: 42,
+  });
+
+  assert.deepEqual(labels, {
+    important: 'VIP чаты',
+    watch: Array.from(longLabel).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join(''),
+  });
+});
+
+test('resolves and merges favorite category labels with standard fallbacks', () => {
+  const merged = mergeHomeEntityFavoriteLabels(
+    { important: 'Первый экран' },
+    { important: 'Старое', partner: 'Партнерки' },
+  );
+  const resolved = resolveHomeEntityFavoriteLabels(merged);
+
+  assert.equal(resolved.important, 'Первый экран');
+  assert.equal(resolved.partner, 'Партнерки');
+  assert.equal(resolved.broadcast, 'Автопостинг');
 });

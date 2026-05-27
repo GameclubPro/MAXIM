@@ -5,10 +5,13 @@ export type HomeEntityFavoriteEntityType = 'chat' | 'channel';
 export type HomeEntityFavoriteType = ManagedEntityFavoriteType;
 export type HomeEntityFavoritesByType = Record<HomeEntityFavoriteType, string[]>;
 export type HomeEntityFavorites = Record<HomeEntityFavoriteEntityType, HomeEntityFavoritesByType>;
+export type HomeEntityFavoriteLabelOverrides = Partial<Record<HomeEntityFavoriteType, string>>;
 
 const HOME_ENTITY_FAVORITES_VERSION = 2;
 const HOME_ENTITY_FAVORITES_LEGACY_VERSION = 1;
+const HOME_ENTITY_FAVORITE_LABELS_VERSION = 1;
 const HOME_ENTITY_FAVORITES_FALLBACK_SCOPE = 'device';
+export const HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH = 24;
 export const HOME_ENTITY_FAVORITE_TYPES: HomeEntityFavoriteType[] = [
   'important',
   'watch',
@@ -20,7 +23,7 @@ export const HOME_ENTITY_FAVORITE_TYPES: HomeEntityFavoriteType[] = [
 export const HOME_ENTITY_FAVORITE_LABELS: Record<HomeEntityFavoriteType, string> = {
   important: 'Важные',
   watch: 'На контроле',
-  broadcast: 'Рассылки',
+  broadcast: 'Автопостинг',
   test: 'Тестовые',
   partner: 'Партнеры',
   service: 'Служебные',
@@ -127,6 +130,65 @@ export function sanitizeHomeEntityFavorites(value: unknown): HomeEntityFavorites
   };
 }
 
+function normalizeFavoriteLabel(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/gu, ' ').trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return Array.from(normalized).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join('');
+}
+
+export function sanitizeHomeEntityFavoriteLabels(value: unknown): HomeEntityFavoriteLabelOverrides {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const record = value as Partial<Record<HomeEntityFavoriteType, unknown>>;
+  const result: HomeEntityFavoriteLabelOverrides = {};
+  for (const favoriteType of HOME_ENTITY_FAVORITE_TYPES) {
+    const label = normalizeFavoriteLabel(record[favoriteType]);
+    if (label && label !== HOME_ENTITY_FAVORITE_LABELS[favoriteType]) {
+      result[favoriteType] = label;
+    }
+  }
+
+  return result;
+}
+
+export function resolveHomeEntityFavoriteLabel(
+  favoriteType: HomeEntityFavoriteType,
+  labels?: HomeEntityFavoriteLabelOverrides,
+): string {
+  return labels?.[favoriteType] ?? HOME_ENTITY_FAVORITE_LABELS[favoriteType];
+}
+
+export function resolveHomeEntityFavoriteLabels(
+  labels?: HomeEntityFavoriteLabelOverrides,
+): Record<HomeEntityFavoriteType, string> {
+  return HOME_ENTITY_FAVORITE_TYPES.reduce(
+    (acc, favoriteType) => {
+      acc[favoriteType] = resolveHomeEntityFavoriteLabel(favoriteType, labels);
+      return acc;
+    },
+    {} as Record<HomeEntityFavoriteType, string>,
+  );
+}
+
+export function mergeHomeEntityFavoriteLabels(
+  primary: HomeEntityFavoriteLabelOverrides,
+  secondary: HomeEntityFavoriteLabelOverrides,
+): HomeEntityFavoriteLabelOverrides {
+  return sanitizeHomeEntityFavoriteLabels({
+    ...secondary,
+    ...primary,
+  });
+}
+
 function sanitizeLegacyHomeEntityFavorites(value: unknown): LegacyHomeEntityFavorites {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return {
@@ -155,6 +217,12 @@ function buildHomeEntityFavoritesStorageKey(scope: string | null | undefined): s
 
 function buildLegacyHomeEntityFavoritesStorageKey(scope: string | null | undefined): string {
   return `maxim:home-entity-favorites:v${HOME_ENTITY_FAVORITES_LEGACY_VERSION}:${normalizeFavoritesScope(
+    scope,
+  )}`;
+}
+
+function buildHomeEntityFavoriteLabelsStorageKey(scope: string | null | undefined): string {
+  return `maxim:home-entity-favorite-labels:v${HOME_ENTITY_FAVORITE_LABELS_VERSION}:${normalizeFavoritesScope(
     scope,
   )}`;
 }
@@ -208,6 +276,25 @@ export function readLegacyHomeEntityFavorites(scope?: string | null): LegacyHome
   }
 }
 
+export function readHomeEntityFavoriteLabels(
+  scope?: string | null,
+): HomeEntityFavoriteLabelOverrides {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = readLocalMirrorItem(buildHomeEntityFavoriteLabelsStorageKey(scope));
+    if (!raw) {
+      return {};
+    }
+
+    return sanitizeHomeEntityFavoriteLabels(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
 export function saveHomeEntityFavorites(
   scope: string | null | undefined,
   favorites: HomeEntityFavorites,
@@ -220,6 +307,24 @@ export function saveHomeEntityFavorites(
     saveMirroredItem(
       buildHomeEntityFavoritesStorageKey(scope),
       JSON.stringify(sanitizeHomeEntityFavorites(favorites)),
+    );
+  } catch {
+    // Ignore localStorage failures in restrictive WebView environments.
+  }
+}
+
+export function saveHomeEntityFavoriteLabels(
+  scope: string | null | undefined,
+  labels: HomeEntityFavoriteLabelOverrides,
+): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    saveMirroredItem(
+      buildHomeEntityFavoriteLabelsStorageKey(scope),
+      JSON.stringify(sanitizeHomeEntityFavoriteLabels(labels)),
     );
   } catch {
     // Ignore localStorage failures in restrictive WebView environments.
@@ -242,6 +347,25 @@ export async function hydrateHomeEntityFavorites(
     return sanitizeHomeEntityFavorites(JSON.parse(raw));
   } catch {
     return createEmptyHomeEntityFavorites();
+  }
+}
+
+export async function hydrateHomeEntityFavoriteLabels(
+  scope?: string | null,
+): Promise<HomeEntityFavoriteLabelOverrides> {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = await hydrateMirroredItem(buildHomeEntityFavoriteLabelsStorageKey(scope));
+    if (!raw) {
+      return {};
+    }
+
+    return sanitizeHomeEntityFavoriteLabels(JSON.parse(raw));
+  } catch {
+    return {};
   }
 }
 

@@ -65,6 +65,27 @@ export function XmarkGlyph(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function SettingsGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      <path d="M4.5 7.5h15" />
+      <path d="M4.5 16.5h15" />
+      <path d="M8.2 4.8v5.4" />
+      <path d="M15.8 13.8v5.4" />
+      <path d="M6.6 7.5h3.2" />
+      <path d="M14.2 16.5h3.2" />
+    </svg>
+  );
+}
+
 export function WatchGlyph(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" {...props}>

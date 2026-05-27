@@ -3,15 +3,19 @@ import type {
   ApplySettingsTarget,
 } from '@maxim/contracts/settings';
 import type { ManagedEntityFavoriteType } from '@maxim/contracts/managed-entities';
-import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { XmarkGlyph } from '../../components/ui/compact-icons';
 import {
-  HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TITLES,
   HOME_ENTITY_FAVORITE_TYPES,
+  getHomeEntityFavoritesFallbackScope,
+  hydrateHomeEntityFavoriteLabels,
+  readHomeEntityFavoriteLabels,
+  resolveHomeEntityFavoriteLabels,
 } from '../../lib/home-entity-favorites';
 import { cn } from '../../lib/cn';
+import { getInitDataUserId } from '../../lib/init-data';
 import { useNativeBackHandler } from '../../lib/native-back';
 import type { ApplySectionKey } from '../settings-page-state';
 import { APPLY_TARGET_FAVORITE_ICONS, SECTION_LABELS } from './settings-page-helpers';
@@ -59,6 +63,18 @@ export function SettingsApplyTargetSheet({
   onTargetChange,
   onConfirm,
 }: SettingsApplyTargetSheetProps) {
+  const favoriteStorageScope = useMemo(() => {
+    const userId = getInitDataUserId()?.trim();
+    return userId ? `u:${userId}` : getHomeEntityFavoritesFallbackScope();
+  }, []);
+  const [favoriteLabelOverrides, setFavoriteLabelOverrides] = useState(() =>
+    readHomeEntityFavoriteLabels(favoriteStorageScope),
+  );
+  const favoriteLabels = useMemo(
+    () => resolveHomeEntityFavoriteLabels(favoriteLabelOverrides),
+    [favoriteLabelOverrides],
+  );
+
   useNativeBackHandler(
     () => {
       if (isApplying) {
@@ -70,6 +86,20 @@ export function SettingsApplyTargetSheet({
     },
     { enabled: Boolean(sheet), priority: 690 },
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void hydrateHomeEntityFavoriteLabels(favoriteStorageScope).then((labels) => {
+      if (!cancelled) {
+        setFavoriteLabelOverrides(labels);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteStorageScope]);
 
   if (!sheet) {
     return null;
@@ -163,7 +193,7 @@ export function SettingsApplyTargetSheet({
                 onClick={() => updateFavoriteType(favoriteType)}
               >
                 <FavoriteIcon aria-hidden />
-                <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
+                <span>{favoriteLabels[favoriteType]}</span>
               </button>
             );
           })}

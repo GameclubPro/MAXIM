@@ -24,6 +24,7 @@ import {
   HOME_ENTITY_FAVORITE_ICONS,
   RefreshGlyph,
   SearchGlyph,
+  SettingsGlyph,
   XmarkGlyph,
 } from '../components/ui/compact-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -34,20 +35,28 @@ import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
 import {
+  HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH,
   HOME_ENTITY_FAVORITE_TYPES,
   HOME_ENTITY_FAVORITE_LABELS,
   HOME_ENTITY_FAVORITE_TITLES,
+  type HomeEntityFavoriteLabelOverrides,
   buildHomeEntityFavoritesMigrationKey,
   createHomeEntityFavoritesFromEntities,
   createHomeEntityFavoritesFromLegacy,
   getHomeEntityFavoritesFallbackScope,
   getHomeEntityFavoriteTypes,
+  hydrateHomeEntityFavoriteLabels,
   hydrateHomeEntityFavorites,
   isHomeEntityFavorite,
+  mergeHomeEntityFavoriteLabels,
   mergeHomeEntityFavorites,
   orderHomeEntitiesByFavorites,
+  readHomeEntityFavoriteLabels,
   readLegacyHomeEntityFavorites,
   readHomeEntityFavorites,
+  resolveHomeEntityFavoriteLabels,
+  sanitizeHomeEntityFavoriteLabels,
+  saveHomeEntityFavoriteLabels,
   saveHomeEntityFavorites,
   setHomeEntityFavoriteTypes,
   toggleHomeEntityFavoriteType,
@@ -105,6 +114,15 @@ const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 104;
 const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 const FAVORITE_FILTER_ALL = 'all';
+type FavoriteLabelDraft = Record<ManagedEntityFavoriteType, string>;
+
+function createFavoriteLabelDraft(labels: HomeEntityFavoriteLabelOverrides): FavoriteLabelDraft {
+  return resolveHomeEntityFavoriteLabels(labels);
+}
+
+function limitFavoriteLabelInput(value: string): string {
+  return Array.from(value).slice(0, HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH).join('');
+}
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -326,6 +344,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [homeEntityFavorites, setHomeEntityFavorites] = useState(() =>
     readHomeEntityFavorites(favoriteStorageScope),
   );
+  const favoriteLabelStorageScopeRef = useRef(favoriteStorageScope);
+  const [homeEntityFavoriteLabels, setHomeEntityFavoriteLabels] =
+    useState<HomeEntityFavoriteLabelOverrides>(() =>
+      readHomeEntityFavoriteLabels(favoriteStorageScope),
+    );
+  const favoriteLabels = useMemo(
+    () => resolveHomeEntityFavoriteLabels(homeEntityFavoriteLabels),
+    [homeEntityFavoriteLabels],
+  );
   const [favoriteFilter, setFavoriteFilter] = useState<
     ManagedEntityFavoriteType | typeof FAVORITE_FILTER_ALL
   >(FAVORITE_FILTER_ALL);
@@ -333,8 +360,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     entityType: ManagedTab;
     entity: ManagedHomeEntity;
   } | null>(null);
+  const [favoriteLabelsEditorOpen, setFavoriteLabelsEditorOpen] = useState(false);
+  const [favoriteLabelDraft, setFavoriteLabelDraft] = useState<FavoriteLabelDraft>(() =>
+    createFavoriteLabelDraft(readHomeEntityFavoriteLabels(favoriteStorageScope)),
+  );
   const [savingFavoriteEntityKey, setSavingFavoriteEntityKey] = useState<string | null>(null);
-  const favoritePickerOverlayStyle = useVisualViewportOverlayStyle(Boolean(favoritePicker));
+  const favoriteOverlayOpen = Boolean(favoritePicker) || favoriteLabelsEditorOpen;
+  const favoritePickerOverlayStyle = useVisualViewportOverlayStyle(favoriteOverlayOpen);
   const favoriteMigrationAttemptedRef = useRef(false);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
@@ -349,10 +381,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   useNativeBackHandler(
     () => {
-      setFavoritePicker(null);
+      if (favoriteLabelsEditorOpen) {
+        setFavoriteLabelsEditorOpen(false);
+      } else {
+        setFavoritePicker(null);
+      }
       return true;
     },
-    { enabled: Boolean(favoritePicker), priority: 650 },
+    { enabled: favoriteOverlayOpen, priority: 650 },
   );
 
   const activeEntitiesKey = getEntitiesKey(activeTab);
@@ -605,6 +641,30 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [favoriteStorageScope]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    void hydrateHomeEntityFavoriteLabels(favoriteStorageScope).then((nativeLabels) => {
+      if (cancelled) {
+        return;
+      }
+
+      setHomeEntityFavoriteLabels((current) => {
+        const next = mergeHomeEntityFavoriteLabels(current, nativeLabels);
+        if (JSON.stringify(next) === JSON.stringify(current)) {
+          return current;
+        }
+
+        saveHomeEntityFavoriteLabels(favoriteStorageScope, next);
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteStorageScope]);
+
+  useEffect(() => {
     const serverFavorites = createHomeEntityFavoritesFromEntities({
       chats: chatsState.data ?? undefined,
       channels: channelsState.data ?? undefined,
@@ -649,7 +709,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, []);
 
   useEffect(() => {
-    if (!favoritePicker) {
+    if (!favoriteOverlayOpen) {
       return undefined;
     }
 
@@ -666,7 +726,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       body.style.overflow = previousBodyOverflow;
       documentElement.style.overflow = previousDocumentOverflow;
     };
-  }, [favoritePicker]);
+  }, [favoriteOverlayOpen]);
 
   useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
@@ -701,6 +761,28 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     favoriteMigrationAttemptedRef.current = false;
     setHomeEntityFavorites(scopedFavorites);
   }, [channelsState.data, chatsState.data, favoriteStorageScope]);
+
+  useEffect(() => {
+    const previousScope = favoriteLabelStorageScopeRef.current;
+    if (previousScope === favoriteStorageScope) {
+      return;
+    }
+
+    const storedLabels = readHomeEntityFavoriteLabels(favoriteStorageScope);
+    const scopedLabels =
+      previousScope === getHomeEntityFavoritesFallbackScope() &&
+      favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
+        ? mergeHomeEntityFavoriteLabels(storedLabels, readHomeEntityFavoriteLabels(previousScope))
+        : storedLabels;
+
+    if (JSON.stringify(scopedLabels) !== JSON.stringify(storedLabels)) {
+      saveHomeEntityFavoriteLabels(favoriteStorageScope, scopedLabels);
+    }
+
+    favoriteLabelStorageScopeRef.current = favoriteStorageScope;
+    setHomeEntityFavoriteLabels(scopedLabels);
+    setFavoriteLabelDraft(createFavoriteLabelDraft(scopedLabels));
+  }, [favoriteStorageScope]);
 
   useEffect(() => {
     if (
@@ -776,12 +858,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         queryKey: queryKeys.logsDashboard(chatId, DEFAULT_DASHBOARD_RANGE, false, true),
         queryFn: async ({ signal }) => {
           const { getChatModerationDashboard } = await import('../lib/api/events-client');
-          return getChatModerationDashboard(
-            api,
-            chatId,
-            DEFAULT_DASHBOARD_RANGE,
-            { signal },
-          );
+          return getChatModerationDashboard(api, chatId, DEFAULT_DASHBOARD_RANGE, { signal });
         },
       })
       .catch(() => undefined);
@@ -817,6 +894,40 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function buildFavoriteEntityKey(entityType: ManagedTab, entityId: string) {
     return `${entityType}:${entityId}`;
+  }
+
+  function openFavoriteLabelsEditor() {
+    setFavoritePicker(null);
+    setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
+    setFavoriteLabelsEditorOpen(true);
+  }
+
+  function closeFavoriteLabelsEditor() {
+    setFavoriteLabelDraft(createFavoriteLabelDraft(homeEntityFavoriteLabels));
+    setFavoriteLabelsEditorOpen(false);
+  }
+
+  function updateFavoriteLabelDraft(favoriteType: ManagedEntityFavoriteType, value: string) {
+    const nextValue = limitFavoriteLabelInput(value);
+    setFavoriteLabelDraft((current) => ({
+      ...current,
+      [favoriteType]: nextValue,
+    }));
+  }
+
+  function resetFavoriteLabelDraft(favoriteType: ManagedEntityFavoriteType) {
+    setFavoriteLabelDraft((current) => ({
+      ...current,
+      [favoriteType]: HOME_ENTITY_FAVORITE_LABELS[favoriteType],
+    }));
+  }
+
+  function saveFavoriteLabelDraft() {
+    const nextLabels = sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft);
+    setHomeEntityFavoriteLabels(nextLabels);
+    saveHomeEntityFavoriteLabels(favoriteStorageScope, nextLabels);
+    setFavoriteLabelDraft(createFavoriteLabelDraft(nextLabels));
+    setFavoriteLabelsEditorOpen(false);
   }
 
   async function handleToggleHomeEntityFavoriteType(
@@ -948,7 +1059,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const favoriteLabel =
       favoriteTypes.length > 0
         ? `Избранное: ${favoriteTypes
-            .map((favoriteType) => HOME_ENTITY_FAVORITE_LABELS[favoriteType])
+            .map((favoriteType) => favoriteLabels[favoriteType])
             .join(', ')}`
         : 'Добавить в избранное';
     const compactLinkLabel = activeTab === 'channel' ? formatCompactLinkLabel(entity.link) : null;
@@ -1113,7 +1224,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <span className="favorite-picker__icon">
                     <FavoriteIcon aria-hidden />
                   </span>
-                  <strong>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</strong>
+                  <strong>{favoriteLabels[favoriteType]}</strong>
                   {active ? <CheckGlyph aria-hidden className="favorite-picker__check" /> : null}
                 </button>
               );
@@ -1133,9 +1244,116 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function renderFavoriteLabelsEditor() {
+    if (!favoriteLabelsEditorOpen) {
+      return null;
+    }
+
+    const draftOverrides = sanitizeHomeEntityFavoriteLabels(favoriteLabelDraft);
+    const canSave = JSON.stringify(draftOverrides) !== JSON.stringify(homeEntityFavoriteLabels);
+
+    const editor = (
+      <div
+        className="favorite-picker favorite-label-editor"
+        style={favoritePickerOverlayStyle}
+        role="dialog"
+        aria-modal="true"
+      >
+        <button
+          type="button"
+          className="favorite-picker__backdrop"
+          aria-label="Закрыть категории"
+          onClick={closeFavoriteLabelsEditor}
+        />
+        <div className="favorite-picker__panel favorite-label-editor__panel">
+          <div className="favorite-picker__header">
+            <div>
+              <strong>Категории избранного</strong>
+            </div>
+            <button
+              type="button"
+              className="favorite-picker__close"
+              aria-label="Закрыть"
+              title="Закрыть"
+              onClick={closeFavoriteLabelsEditor}
+            >
+              <XmarkGlyph aria-hidden />
+            </button>
+          </div>
+
+          <div className="favorite-label-editor__list">
+            {HOME_ENTITY_FAVORITE_TYPES.map((favoriteType) => {
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+              const isCustom = Boolean(homeEntityFavoriteLabels[favoriteType]);
+
+              return (
+                <label key={favoriteType} className="favorite-label-editor__row">
+                  <span className={cn('favorite-label-editor__icon', `is-${favoriteType}`)}>
+                    <FavoriteIcon aria-hidden />
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="text"
+                    value={favoriteLabelDraft[favoriteType]}
+                    maxLength={HOME_ENTITY_FAVORITE_LABEL_MAX_LENGTH}
+                    aria-label={`Название категории: ${HOME_ENTITY_FAVORITE_LABELS[favoriteType]}`}
+                    onChange={(event) =>
+                      updateFavoriteLabelDraft(favoriteType, event.currentTarget.value)
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="favorite-label-editor__reset"
+                    aria-label="Вернуть стандартное название"
+                    title="Вернуть стандартное название"
+                    disabled={
+                      !isCustom &&
+                      favoriteLabelDraft[favoriteType] === HOME_ENTITY_FAVORITE_LABELS[favoriteType]
+                    }
+                    onClick={() => resetFavoriteLabelDraft(favoriteType)}
+                  >
+                    <XmarkGlyph aria-hidden />
+                  </button>
+                </label>
+              );
+            })}
+          </div>
+
+          <div className="favorite-label-editor__actions">
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={closeFavoriteLabelsEditor}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="button button--accent"
+              onClick={saveFavoriteLabelDraft}
+              disabled={!canSave}
+            >
+              Сохранить
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
+    if (typeof document === 'undefined') {
+      return editor;
+    }
+
+    return createPortal(
+      editor,
+      document.querySelector('.design-preview__device-screen') ?? document.body,
+    );
+  }
+
   return (
     <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
       {renderFavoritePicker()}
+      {renderFavoriteLabelsEditor()}
 
       <GlassCard className={cn('chats-command', isFetching && 'is-syncing')} padding="sm" elevated>
         <h1 className="chats-command__sr">{tabLabel}</h1>
@@ -1222,39 +1440,50 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           </label>
         </div>
 
-        <div className="favorite-filter" role="group" aria-label="Фильтр избранного">
+        <div className="favorite-filter-bar">
+          <div className="favorite-filter" role="group" aria-label="Фильтр избранного">
+            <button
+              type="button"
+              className={cn(
+                'favorite-filter__chip',
+                favoriteFilter === FAVORITE_FILTER_ALL && 'is-active',
+              )}
+              aria-pressed={favoriteFilter === FAVORITE_FILTER_ALL}
+              onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
+            >
+              Все
+            </button>
+            {visibleFavoriteFilterTypes.map((favoriteType) => {
+              const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
+              return (
+                <button
+                  key={favoriteType}
+                  type="button"
+                  className={cn(
+                    'favorite-filter__chip',
+                    `is-${favoriteType}`,
+                    favoriteFilter === favoriteType && 'is-active',
+                  )}
+                  aria-pressed={favoriteFilter === favoriteType}
+                  title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
+                  onClick={() => setFavoriteFilter(favoriteType)}
+                >
+                  <FavoriteIcon aria-hidden />
+                  <span>{favoriteLabels[favoriteType]}</span>
+                  <strong>{favoriteCounts[favoriteType]}</strong>
+                </button>
+              );
+            })}
+          </div>
           <button
             type="button"
-            className={cn(
-              'favorite-filter__chip',
-              favoriteFilter === FAVORITE_FILTER_ALL && 'is-active',
-            )}
-            aria-pressed={favoriteFilter === FAVORITE_FILTER_ALL}
-            onClick={() => setFavoriteFilter(FAVORITE_FILTER_ALL)}
+            className="favorite-filter__settings"
+            aria-label="Настроить категории"
+            title="Настроить категории"
+            onClick={openFavoriteLabelsEditor}
           >
-            Все
+            <SettingsGlyph aria-hidden />
           </button>
-          {visibleFavoriteFilterTypes.map((favoriteType) => {
-            const FavoriteIcon = HOME_ENTITY_FAVORITE_ICONS[favoriteType];
-            return (
-              <button
-                key={favoriteType}
-                type="button"
-                className={cn(
-                  'favorite-filter__chip',
-                  `is-${favoriteType}`,
-                  favoriteFilter === favoriteType && 'is-active',
-                )}
-                aria-pressed={favoriteFilter === favoriteType}
-                title={HOME_ENTITY_FAVORITE_TITLES[favoriteType]}
-                onClick={() => setFavoriteFilter(favoriteType)}
-              >
-                <FavoriteIcon aria-hidden />
-                <span>{HOME_ENTITY_FAVORITE_LABELS[favoriteType]}</span>
-                <strong>{favoriteCounts[favoriteType]}</strong>
-              </button>
-            );
-          })}
         </div>
       </GlassCard>
 
