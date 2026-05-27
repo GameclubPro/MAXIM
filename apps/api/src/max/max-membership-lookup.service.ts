@@ -181,7 +181,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.subscriber = this.redis.duplicate();
+    this.subscriber = this.redis.duplicate({ enableReadyCheck: false });
     this.membershipLookupBatchWindowMs = this.readConfigInt(
       configService.get('MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS'),
       20,

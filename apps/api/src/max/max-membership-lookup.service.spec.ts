@@ -105,6 +105,20 @@ describe('MaxMembershipLookupService', () => {
     jest.clearAllMocks();
   });
 
+  it('disables Redis ready check on the pub/sub subscriber connection', () => {
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+    };
+
+    new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      duplicate: jest.Mock;
+    };
+    expect(redisInstance.duplicate).toHaveBeenCalledWith({ enableReadyCheck: false });
+  });
+
   it('reuses a positive membership snapshot across policies while it remains fresh enough', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:00:00.000Z'));
 

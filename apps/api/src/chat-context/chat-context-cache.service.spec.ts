@@ -345,6 +345,13 @@ function buildSettings(chatId: string): ChatSettings {
   };
 }
 
+function createConfigMock() {
+  return {
+    getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    get: jest.fn((_key: string, fallback?: unknown) => fallback),
+  };
+}
+
 describe('ChatContextCacheService', () => {
   const maxBotLinkService = {
     resolveBotRoute: jest.fn().mockResolvedValue({
@@ -377,6 +384,17 @@ describe('ChatContextCacheService', () => {
     });
     maxBotLinkService.resolveBotId.mockResolvedValue('777000_bot');
     maxBotLinkService.getContextOrDefaultBotId.mockReturnValue('777000_bot');
+  });
+
+  it('disables Redis ready check on the pub/sub subscriber connection', () => {
+    const prisma = {} as never;
+
+    new ChatContextCacheService(prisma, createConfigMock() as never, maxBotLinkService as never);
+
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      duplicate: jest.Mock;
+    };
+    expect(redisInstance.duplicate).toHaveBeenCalledWith({ enableReadyCheck: false });
   });
 
   it('loads existing chat context with a single read and caches the result', async () => {

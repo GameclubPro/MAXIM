@@ -87,7 +87,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     private readonly maxBotLinkService: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.subscriber = this.redis.duplicate();
+    this.subscriber = this.redis.duplicate({ enableReadyCheck: false });
     this.localChatContextTtlMs = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
         'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS',
