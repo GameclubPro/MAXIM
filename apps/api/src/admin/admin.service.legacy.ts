@@ -9332,16 +9332,17 @@ export class AdminService implements OnModuleDestroy {
           .split('/')
           .map((segment) => segment.trim())
           .filter(Boolean);
-        if (pathSegments[0]?.toLowerCase() === 'channel') {
-          pathSegments[0] = 'channels';
-          pathname = `/${pathSegments.join('/')}`;
-        }
-        if (
-          pathSegments[0]?.toLowerCase() === 'channels' &&
-          (pathSegments[2]?.toLowerCase() === 'message' ||
-            pathSegments[2]?.toLowerCase() === 'messages')
+        const rootSegment = pathSegments[0]?.toLowerCase();
+        if ((rootSegment === 'channel' || rootSegment === 'channels') && pathSegments[1]) {
+          pathname = `/${pathSegments[1]}`;
+        } else if (
+          pathSegments.length === 1 &&
+          rootSegment !== 'chat' &&
+          rootSegment !== 'chats' &&
+          rootSegment !== 'c' &&
+          rootSegment !== 'join'
         ) {
-          pathname = `/${pathSegments.slice(0, 2).join('/')}`;
+          pathname = `/${pathSegments[0]}`;
         }
 
         parsed.search = '';

@@ -2780,6 +2780,66 @@ describe('AdminService required subscription settings', () => {
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves an external required subscription channel from a root MAX public slug', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-auto-market',
+          title: 'Авторынок ДНР ЛНР',
+          lastEventTime: 1,
+          entityType: 'channel',
+          link: 'https://max.ru/channels/aavtorynok_dnr_lnr',
+        },
+      ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-auto-market',
+        title: 'Авторынок ДНР ЛНР',
+        participantsCount: 1024,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/aavtorynok_dnr_lnr',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'https://max.ru/aavtorynok_dnr_lnr',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'channel-auto-market',
+        title: 'Авторынок ДНР ЛНР',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/aavtorynok_dnr_lnr',
+        participantsCount: 1024,
+      }),
+    });
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+  });
+
   it('resolves an external required subscription channel from a public channel message link', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
