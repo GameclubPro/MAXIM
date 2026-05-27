@@ -1910,6 +1910,10 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   gap: 10px;
 }
 
+.settings-drilldown .settings-word-banlist__mode-title {
+  font-size: 0.76rem;
+}
+
 .settings-drilldown .settings-word-banlist__chip--domain {
   background: #164e5c;
 }

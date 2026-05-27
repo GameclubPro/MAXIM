@@ -155,6 +155,7 @@ import {
 import {
   applyMessageLimitsBlockedDomainsInput,
   applyMessageLimitsBlockedWordsInput,
+  findMessageLimitsBlockedDomainCoveringRule,
   splitMessageLimitsBlockedDomainsInput,
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
@@ -186,6 +187,13 @@ import {
   mergeCommentsSettings,
   mergeSectionSettings,
 } from './settings-page-state';
+import {
+  DUPLICATE_DETECTION_LABELS,
+  DUPLICATE_DETECTION_OPTIONS,
+  type DuplicateDetectionPreset,
+  type NumericChatSettingKey,
+  type StopWordsMode,
+} from './settings-page.constants';
 import {
   buildRulesTextFromSettingsScreen,
   serializeRulesDraftPayload,
@@ -336,44 +344,6 @@ import {
 const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
-
-type DuplicateDetectionPreset = ChatSettings['duplicateDetectionPreset'];
-
-const DUPLICATE_DETECTION_OPTIONS: Array<{
-  value: DuplicateDetectionPreset;
-  label: string;
-}> = [
-  {
-    value: 'STRICT',
-    label: 'Строгий',
-  },
-  {
-    value: 'STANDARD',
-    label: 'Точный',
-  },
-  {
-    value: 'CUSTOM',
-    label: 'Свой',
-  },
-];
-
-const DUPLICATE_DETECTION_LABELS: Record<DuplicateDetectionPreset, string> = {
-  STANDARD: 'Точный',
-  STRICT: 'Строгий',
-  CUSTOM: 'Свой',
-};
-
-type NumericChatSettingKey =
-  | 'linkEscalationWindowHours'
-  | 'linkWarnMaxCount'
-  | 'linkMuteMaxCount'
-  | 'linkBanMaxCount'
-  | 'phoneNumbersEscalationWindowHours'
-  | 'phoneNumbersWarnMaxCount'
-  | 'phoneNumbersMuteMaxCount'
-  | 'phoneNumbersBanMaxCount';
-
-type StopWordsMode = 'words' | 'domains';
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -2555,7 +2525,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           messageLimitsBlockedDomains: 'Лимит доменов достигнут.',
         }));
       } else {
-        clearFieldError('messageLimitsBlockedDomains');
+        const addAction = actions.find((action) => action.operation === 'add');
+        const coveredBy = addAction
+          ? findMessageLimitsBlockedDomainCoveringRule(
+              addAction.domain,
+              draft.messageLimitsBlockedDomains,
+            )
+          : null;
+        setFieldErrors((current) => ({
+          ...current,
+          messageLimitsBlockedDomains: addAction
+            ? coveredBy && coveredBy !== addAction.domain
+              ? `Уже закрыт через ${coveredBy}.`
+              : 'Этот домен уже в списке.'
+            : 'Такого домена нет в списке.',
+        }));
       }
       return;
     }
@@ -3780,10 +3764,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const messageLimitsBlockedWordsRemaining = Math.max(
     0,
     MESSAGE_LIMITS_BLOCKED_WORDS_MAX - messageLimitsBlockedWords.length,
-  );
-  const messageLimitsBlockedDomainsRemaining = Math.max(
-    0,
-    MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX - messageLimitsBlockedDomains.length,
   );
   const isMessageLimitsBlockedWordsApplyDisabled =
     !messageLimitsBlockedWordsInput.trim() ||
@@ -9071,6 +9051,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="tabpanel"
                             aria-label="Запрещенные домены"
                           >
+                            <div className="settings-word-banlist__mode-head">
+                              <span className="settings-word-banlist__mode-title">
+                                Ручное добавление
+                              </span>
+                              <SettingsHintAnchor
+                                hintKey="stopWordsDomains"
+                                openHintKey={openHintKey}
+                                onToggleHint={toggleHint}
+                                label="Как добавлять домены"
+                              >
+                                Можно ввести site.com или вставить ссылку. Сохраним только домен,
+                                без пути и параметров. Поддомены тоже блокируются.
+                              </SettingsHintAnchor>
+                            </div>
                             <div className="settings-word-banlist__add-row">
                               <input
                                 type="text"
@@ -9085,7 +9079,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     addMessageLimitsBlockedDomains();
                                   }
                                 }}
-                                placeholder="Домен, +домен или -домен"
+                                placeholder="site.com или ссылка целиком"
                                 maxLength={320}
                                 aria-label="Изменить запрещенные домены"
                               />
@@ -9095,7 +9089,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={addMessageLimitsBlockedDomains}
                                 disabled={isMessageLimitsBlockedDomainsApplyDisabled}
                               >
-                                Применить
+                                {hasMessageLimitsBlockedDomainsRemoveInputActions
+                                  ? 'Применить'
+                                  : 'Добавить'}
                               </button>
                             </div>
 
@@ -9147,7 +9143,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             <small className="field__hint">
                               {messageLimitsBlockedDomainsError ??
-                                'Домен, ссылка, +домен или -домен.'}
+                                'Вводите домен руками или вставляйте ссылку.'}
                             </small>
                           </div>
                         )}

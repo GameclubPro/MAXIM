@@ -51,6 +51,22 @@ function isMessageLimitsDomainCoveredBy(candidate: string, parent: string): bool
   return candidate === parent || candidate.endsWith(`.${parent}`);
 }
 
+export function findMessageLimitsBlockedDomainCoveringRule(
+  candidate: string,
+  currentDomains: readonly string[],
+): string | null {
+  const normalizedCandidate = normalizeMessageLimitsBlockedDomainCandidate(candidate);
+  if (!normalizedCandidate) {
+    return null;
+  }
+
+  return (
+    normalizeMessageLimitsBlockedDomains(currentDomains).find((domain) =>
+      isMessageLimitsDomainCoveredBy(normalizedCandidate, domain),
+    ) ?? null
+  );
+}
+
 export function mergeMessageLimitsBlockedWords(
   currentWords: readonly string[],
   candidates: readonly string[],

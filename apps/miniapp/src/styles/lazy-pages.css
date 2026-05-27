@@ -5213,6 +5213,27 @@
   gap: 10px;
 }
 
+.settings-word-banlist__mode-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-word-banlist__mode-title {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.settings-word-banlist__mode-head .channel-settings-hint-popover {
+  top: auto;
+  bottom: calc(100% + var(--hint-popover-gap));
+  pointer-events: none;
+}
+
 .settings-word-banlist__preset-grid {
   display: flex;
   flex-wrap: wrap;

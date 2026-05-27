@@ -6,6 +6,7 @@ import {
 } from '../src/lib/message-limits-blocked-word-presets';
 import {
   applyMessageLimitsBlockedWordsInput,
+  findMessageLimitsBlockedDomainCoveringRule,
   applyMessageLimitsBlockedDomainsInput,
   mergeMessageLimitsBlockedDomains,
   mergeMessageLimitsBlockedWords,
@@ -70,6 +71,23 @@ test('mergeMessageLimitsBlockedDomains respects parent domain coverage', () => {
 
   assert.deepEqual(result.addedDomains, ['spam.example']);
   assert.deepEqual(result.nextDomains, ['casino.example', 'spam.example']);
+});
+
+test('findMessageLimitsBlockedDomainCoveringRule detects duplicate and parent rules', () => {
+  assert.equal(
+    findMessageLimitsBlockedDomainCoveringRule('https://promo.casino.example/path', [
+      'casino.example',
+    ]),
+    'casino.example',
+  );
+  assert.equal(
+    findMessageLimitsBlockedDomainCoveringRule('casino.example', ['casino.example']),
+    'casino.example',
+  );
+  assert.equal(
+    findMessageLimitsBlockedDomainCoveringRule('notcasino.example', ['casino.example']),
+    null,
+  );
 });
 
 test('subtractMessageLimitsBlockedWords removes all matching words from a preset', () => {

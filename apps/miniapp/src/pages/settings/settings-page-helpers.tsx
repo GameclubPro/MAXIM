@@ -533,6 +533,7 @@ export type HintKey =
   | 'stickerCooldown'
   | 'messageLimitsBotMessage'
   | 'messageLimitsBotButton'
+  | 'stopWordsDomains'
   | 'phoneNumbersBotMessage'
   | 'nightModeEnabled'
   | 'nightForceClose'
