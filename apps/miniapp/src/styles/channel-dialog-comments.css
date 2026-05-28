@@ -1203,15 +1203,18 @@
 
 .channel-dialog-notifications {
   position: absolute;
-  top: 1px;
+  top: 50%;
   right: 2px;
+  transform: translateY(-50%);
 }
 
 .channel-dialog-notifications__toggle {
   width: 36px;
   height: 36px;
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 1px solid rgba(20, 32, 43, 0.1);
   border-radius: 10px;
   background:
@@ -1221,8 +1224,11 @@
   box-shadow:
     0 10px 22px rgba(20, 55, 78, 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  appearance: none;
+  -webkit-appearance: none;
   backdrop-filter: blur(16px) saturate(142%);
   -webkit-backdrop-filter: blur(16px) saturate(142%);
+  line-height: 0;
   transition:
     transform 0.16s ease,
     border-color 0.16s ease,
@@ -1231,9 +1237,12 @@
 }
 
 .channel-dialog-notifications__toggle svg {
+  display: block;
+  flex: 0 0 auto;
   width: 20px;
   height: 20px;
   stroke-width: 2;
+  pointer-events: none;
 }
 
 .channel-dialog-notifications__toggle.is-active {
