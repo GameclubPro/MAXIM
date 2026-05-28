@@ -2509,6 +2509,160 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects marketplace review work and paid posting tasks from audit misses', async () => {
+    const service = createRuleEngine();
+    const marketplace = await detectCommercialViolation(
+      service,
+      'Последний набор до конца месяца Озон, ВБ, ЯМ, Авито, Али, СберМегаМаркет - срочно ищем модераторов. Условия: с телефона 2-3 часа в день, 3500-4500₽ ежедневно. Нужно 25-30 отзывов. Места ограничены, пиши под пост https://vk.ru/wall1086491776_1223',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const paidReviews = await detectCommercialViolation(
+      service,
+      'Не спам! Ищу 15 человек, написать пару постов и отзывов. Гарантированная оплата 3000₽, за срочность доплата 500₽. За подробностями пиши ВК https://vk.me/join/example',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(marketplace).toBeDefined();
+    expect(marketplace?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:marketplace-seller', 'recruitment:marketplace-review-work']),
+    );
+    expect(paidReviews).toBeDefined();
+    expect(paidReviews?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:paid-review-task', 'recruitment:marketplace-review-work']),
+    );
+  });
+
+  it('detects remaining high-risk service and buyout audit misses', async () => {
+    const service = createRuleEngine();
+    const buyout = await detectCommercialViolation(
+      service,
+      'Куплю цифровые фотоаппараты и видеокамеры +79886169021',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 8,
+          sameTextDistinctChatCount: 8,
+          repeatedPhoneDistinctChatCount: 8,
+          repeatedLinkDistinctChatCount: 0,
+        },
+      },
+    );
+    const tarot = await detectCommercialViolation(
+      service,
+      'Здравствуйте, бабушка Раиса! +7 950 910-44-78. Таролог с опытом, успевайте записаться на полный расклад. Помогу в любой ситуации, защищу от сглаза и открою денежный канал.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const gridConnection = await detectCommercialViolation(
+      service,
+      'Помогу с подачей документов и оформлении заявки на технологическое присоединение к электрическим сетям, заключении договора с сетевой компанией. Консультация по телефону 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(buyout).toBeDefined();
+    expect(buyout?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['buyout:used-electronics-buyout', 'contact:phone']),
+    );
+    expect(tarot).toBeDefined();
+    expect(tarot?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:paid-esoteric-service', 'contact:phone']),
+    );
+    expect(gridConnection).toBeDefined();
+    expect(gridConnection?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'intent:помогу-с-оформлением',
+        'service-specialty:техприсоединение',
+      ]),
+    );
+  });
+
+  it('detects casino, app-directory, and mass invite-link promotions from audit misses', async () => {
+    const service = createRuleEngine();
+    const casino = await detectCommercialViolation(
+      service,
+      'Maxbetslots - легенда рунета! 200+ крутых игр, депозит от 100 рублей, сочные бонусы для каждого игрока. https://win4land.com/l/694ffce9da4aef374e093b42',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const appDirectory = await detectCommercialViolation(
+      service,
+      'https://apps.apple.com/kg/app/id6749191108 РАБОТА, КВАРТИРА, КУПЛЯ ПРОДАЖА, МЕДИЦИНСКИЙ ЦЕНТР - все это скачайте у нас на сайте. https://play.google.com/store/apps/details?id=com.kgmoskva.kgmoskva',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const invite = await detectCommercialViolation(
+      service,
+      'Присоединяйся к чату по ссылке: https://max.ru/join/AdJRlxIPyq1o8G8uvTHLnFcGSh-vTA7pWvFrUVpM1cU https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8y-UPa60DSTFrUYWDN4AkIKVPQDN2Rt7SGDf0beLbl-E',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 1,
+          sameTextDistinctChatCount: 1,
+          repeatedPhoneDistinctChatCount: 0,
+          repeatedLinkDistinctChatCount: 14,
+        },
+      },
+    );
+
+    expect(casino).toBeDefined();
+    expect(casino?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:casino-slot-promo', 'risk:casino-landing-link']),
+    );
+    expect(appDirectory).toBeDefined();
+    expect(appDirectory?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'risk:app-store-directory-promo',
+        'risk:app-store-directory-link',
+      ]),
+    );
+    expect(invite).toBeDefined();
+    expect(invite?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['channel-placement:mass-invite-link', 'deal-channel:link']),
+    );
+  });
+
+  it('keeps repeated private property and pet rehome listings clear', async () => {
+    const service = createRuleEngine();
+    const campaignContext = {
+      senderDistinctChatCount: 4,
+      sameTextDistinctChatCount: 4,
+      repeatedPhoneDistinctChatCount: 4,
+      repeatedLinkDistinctChatCount: 0,
+    };
+    const ownerProperty = await detectCommercialViolation(
+      service,
+      'Краснодар. Продам новый дом с центральным газом. Я один собственник. Полная стоимость в договоре, дом оформлен. Без обременений. Ипотека без удорожания. Цена 9900000. Телефон 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      { commercialCampaignContext: campaignContext },
+    );
+    const petRehome = await detectCommercialViolation(
+      service,
+      'Возьмите красавчика себе. Умненький, будет средненький. В дар самым любящим хозяевам. Может жить как в доме, так и в будочке. Привезем. 89501448852.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      { commercialCampaignContext: campaignContext },
+    );
+
+    expect(ownerProperty).toBeUndefined();
+    expect(petRehome).toBeUndefined();
+  });
+
   it('records unicode-safe price, transactional, urgency, and quantity signals', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(

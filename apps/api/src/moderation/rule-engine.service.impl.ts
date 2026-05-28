@@ -742,6 +742,13 @@ const ADS_BUYOUT_MARKERS = [
   'скупаем',
   'закупаем',
 ];
+const ADS_BUYOUT_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'used-electronics-buyout',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])куплю(?:[\p{L}\p{N}\s.,:;()/%+-]{0,64})(?:цифров[\p{L}\p{N}_-]*\s+)?(?:фотоаппарат[\p{L}\p{N}_-]*|видеокамер[\p{L}\p{N}_-]*|ноутбук[\p{L}\p{N}_-]*|смартфон[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*|айфон[\p{L}\p{N}_-]*|iphone|техник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
 const ADS_PROMO_MARKERS = [
   'акци',
   'прайс',
@@ -807,7 +814,27 @@ const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
   {
     label: 'marketplace-seller',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:(?:маркетплейс[\p{L}\p{N}_-]*|wildberries|wb|вайлдберриз|озон|ozon)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:выкуп[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|карточк[\p{L}\p{N}_-]*|селлер[\p{L}\p{N}_-]*|поставщик[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*|артикул[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:маркетплейс[\p{L}\p{N}_-]*|wildberries|wb|вб|вайлдберриз|озон|ozon|яндекс\s*маркет|сбермегамаркет|али|aliexpress|авито)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,120})(?:выкуп[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|карточк[\p{L}\p{N}_-]*|селлер[\p{L}\p{N}_-]*|поставщик[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*|артикул[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'paid-review-task',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:ищ(?:у|ем)|нужн[\p{L}\p{N}_-]*|требу(?:ется|ются)?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,36})\d{1,3}\s+человек(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:пост[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|коммент[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:оплат[\p{L}\p{N}_-]*|доплат[\p{L}\p{N}_-]*|\d+\s?(?:₽|руб(?:\.|лей)?|р\.?))|(?:пост[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|коммент[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:гарантированн[\p{L}\p{N}_-]*\s+)?оплат[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'casino-slot-promo',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:maxbetslots|слот[\p{L}\p{N}_-]*|игров[\p{L}\p{N}_-]*\s+процесс|больш[\p{L}\p{N}_-]*\s+выигрыш[\p{L}\p{N}_-]*|депозит[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})(?:казино|игр[\p{L}\p{N}_-]*|выигрыш[\p{L}\p{N}_-]*|депозит[\p{L}\p{N}_-]*|бонус[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'paid-esoteric-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:таролог[\p{L}\p{N}_-]*|расклад[\p{L}\p{N}_-]*(?:\s+по\s+фото)?|защищу\s+от\s+сглаз[\p{L}\p{N}_-]*|денежн[\p{L}\p{N}_-]*\s+канал|обряд[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,120})(?:запис[\p{L}\p{N}_-]*|успевай[\p{L}\p{N}_-]*|помогу|тел\.?|звон[\p{L}\p{N}_-]*)?(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'app-store-directory-promo',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:скачай[\p{L}\p{N}_-]*|скачать|приложени[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,140})(?:работа|квартира|купл[\p{L}\p{N}_-]*\s+продаж[\p{L}\p{N}_-]*|медицинск[\p{L}\p{N}_-]*\s+центр|автомобил[\p{L}\p{N}_-]*|сайт[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
     label: 'lead-magnet',
@@ -848,7 +875,22 @@ const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
 const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map([
   ['lead-magnet', 8],
   ['referral-offer', 12],
+  ['paid-review-task', 20],
+  ['casino-slot-promo', 22],
+  ['paid-esoteric-service', 20],
+  ['app-store-directory-promo', 18],
 ]);
+const ADS_HIGH_RISK_RAW_LINK_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'casino-landing-link',
+    pattern: /(?:win4land\.com|1xstavka|1xbet|pin-up|pinup|betboom|fonbet)/iu,
+  },
+  {
+    label: 'app-store-directory-link',
+    pattern:
+      /(?:(?:apps\.apple\.com|play\.google\.com\/store)(?:[\s\S]{0,220})(?:скачай|скачать|работа|квартира|купля|медицинский|автомобиль)|(?:скачай|скачать|работа|квартира|купля|медицинский|автомобиль)(?:[\s\S]{0,220})(?:apps\.apple\.com|play\.google\.com\/store))/iu,
+  },
+];
 const ADS_SERVICE_SPECIALTY_MARKERS = [
   'ремонт',
   'сантехник',
@@ -955,6 +997,11 @@ const ADS_RECRUITMENT_PATTERNS: LabeledPattern[] = [
   {
     label: 'есть-работа',
     pattern: /(?:^|[^\p{L}\p{N}_-])есть\s+работа(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'marketplace-review-work',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:озон|ozon|wb|вб|wildberries|вайлдберриз|яндекс\s*маркет|сбермегамаркет|али|aliexpress|авито)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,130})(?:ищ(?:ем|ут)|набор|требу(?:ется|ются)?|нужн[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,60})(?:модератор[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*)|(?:ищ(?:у|ем)|нужн[\p{L}\p{N}_-]*|требу(?:ется|ются)?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})\d{1,3}\s+человек(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:пост[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|коммент[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
     label: 'роль-условия',
@@ -1241,6 +1288,11 @@ const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:сделаю|сделаем|изготовлю|изготовим|построю|построим|отремонтирую|отремонтируем|починю|починим|пробурю|пробурим|сварю|сварим|сошью|сошьем|сошьём|свяжу|свяжем|соберу|соберем|соберём|выполню|выполним)(?=$|[^\p{L}\p{N}_-])/u,
   },
+  {
+    label: 'помогу-с-оформлением',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:помогу|поможем|сопровожу|сопроводим)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:документ[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|договор[\p{L}\p{N}_-]*|оформлени[\p{L}\p{N}_-]*|подач[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
   {
@@ -1283,7 +1335,14 @@ const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:каменн[\p{L}\p{N}_-]*\s+ков[её]р|бесшовн[\p{L}\p{N}_-]*\s+покрыти[\p{L}\p{N}_-]*|покрыти[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:пространств[\p{L}\p{N}_-]*|бассейн[\p{L}\p{N}_-]*|террас[\p{L}\p{N}_-]*|гараж[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
+  {
+    label: 'техприсоединение',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:технологическ[\p{L}\p{N}_-]*\s+присоединени[\p{L}\p{N}_-]*|электрическ[\p{L}\p{N}_-]*\s+сет[\p{L}\p{N}_-]*|сетев[\p{L}\p{N}_-]*\s+компани[\p{L}\p{N}_-]*|антимонопольн[\p{L}\p{N}_-]*\s+орган|досудебн[\p{L}\p{N}_-]*\s+претензи[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
+const ADS_MASS_INVITE_LINK_PATTERN =
+  /(?:max\.ru\/join|vk\.ru\/wall)[^\s]*[\s\S]{0,140}i\.oneme\.ru|i\.oneme\.ru[\s\S]{0,140}(?:max\.ru\/join|vk\.ru\/wall)/iu;
 const ADS_GOODS_RETAIL_PATTERNS: LabeledPattern[] = [
   {
     label: 'sizes-and-colors',
@@ -3419,7 +3478,21 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const buyoutHits = ADS_BUYOUT_MARKERS.filter((marker) => hasMarker(marker));
+    const rawLinkCommercialHits = ADS_HIGH_RISK_RAW_LINK_PATTERNS.filter(({ pattern }) =>
+      pattern.test(rawLoweredText),
+    );
+    for (const { label } of rawLinkCommercialHits.slice(0, 2)) {
+      addPositive(`risk:${label}`, 18);
+      hasBusinessContext = true;
+      hasCommercialContext = true;
+    }
+
+    const buyoutHits = [
+      ...ADS_BUYOUT_MARKERS.filter((marker) => hasMarker(marker)),
+      ...ADS_BUYOUT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
     for (const marker of buyoutHits.slice(0, 2)) {
       addPositive(`buyout:${marker}`, 18);
       hasBuyoutContext = true;
@@ -3541,6 +3614,21 @@ export class RuleEngineService {
       addPositive(`channel-placement:${marker}`, 12);
       hasGroupContext = true;
       hasGroupTradeContext = true;
+      hasGroupPromotionIntent = true;
+      hasCommercialAudienceContext = true;
+      hasChannelPlacementContext = true;
+      hasBusinessContext = true;
+      hasCallToActionContext = true;
+      hasCommercialContext = true;
+    }
+
+    if (
+      commercialCampaignContext &&
+      commercialCampaignContext.repeatedLinkDistinctChatCount >= 5 &&
+      ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)
+    ) {
+      addPositive('channel-placement:mass-invite-link', 18);
+      hasGroupContext = true;
       hasGroupPromotionIntent = true;
       hasCommercialAudienceContext = true;
       hasChannelPlacementContext = true;
