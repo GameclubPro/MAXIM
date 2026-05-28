@@ -143,6 +143,8 @@ export class VkParsingService {
     chatId: string;
     reason: VkParsingPublishReason;
     idempotencyKey: string;
+    attemptsMade?: number;
+    maxAttempts?: number;
   }): Promise<void> {
     return this.publishService.processPublishPostJob(params);
   }

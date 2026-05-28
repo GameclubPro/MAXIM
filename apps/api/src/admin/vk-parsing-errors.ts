@@ -104,6 +104,27 @@ export function classifyVkParsingPublishError(error: unknown): VkParsingErrorCla
 
   const message = formatVkParsingError(error);
   const normalized = message.toLowerCase();
+  if (normalized.includes('rate limit') || normalized.includes('too many requests')) {
+    return {
+      code: 'max.rate_limit',
+      message,
+      retryable: true,
+    };
+  }
+  if (
+    normalized.includes('timeout') ||
+    normalized.includes('timed out') ||
+    normalized.includes('terminated') ||
+    normalized.includes('fetch failed') ||
+    normalized.includes('econnreset') ||
+    normalized.includes('network')
+  ) {
+    return {
+      code: 'media.transient',
+      message,
+      retryable: true,
+    };
+  }
   if (
     normalized.includes('фото') ||
     normalized.includes('image') ||

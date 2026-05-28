@@ -1415,8 +1415,95 @@ describe('VkParsingService', () => {
         where: { id: 'post-1' },
         data: expect.objectContaining({
           status: 'FAILED',
-          autoPublishError: expect.stringContaining('MAX API background rate limit exceeded'),
+          lastError: expect.stringContaining('[max.rate_limit]'),
+          autoPublishError: expect.stringContaining('[max.rate_limit]'),
         }),
+      }),
+    );
+    const lastUpdate = prisma.vkParsingPost.update.mock.calls.at(-1)?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(lastUpdate?.data).toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        publishLockedAt: null,
+      }),
+    );
+    expect(lastUpdate?.data).not.toHaveProperty('publishQueuedAt');
+    expect(lastUpdate?.data).not.toHaveProperty('publishIdempotencyKey');
+    expect(lastUpdate?.data).not.toHaveProperty('publishReason');
+  });
+
+  it('clears queued publish metadata after the final retryable autopublish attempt', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: 'Текст с фото',
+      photoUrls: ['https://sun1.example/large.jpg'],
+      attachments: [
+        {
+          type: 'photo',
+          photo: {
+            id: 11,
+            owner_id: -36819802,
+            sizes: [{ width: 1280, height: 960, url: 'https://sun1.example/large.jpg' }],
+          },
+        },
+      ],
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    maxClient.uploadImage.mockRejectedValue(
+      new Error('MAX API background rate limit exceeded across all bots'),
+    );
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+        attemptsMade: 4,
+        maxAttempts: 5,
+      }),
+    ).rejects.toThrow('MAX API background rate limit exceeded');
+
+    const lastUpdate = prisma.vkParsingPost.update.mock.calls.at(-1)?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(lastUpdate?.data).toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        lastError: expect.stringContaining('[max.rate_limit]'),
+        autoPublishError: expect.stringContaining('[max.rate_limit]'),
+        publishLockedAt: null,
+        publishQueuedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
       }),
     );
   });

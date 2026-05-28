@@ -243,6 +243,8 @@ export class VkPublishService {
     chatId: string;
     reason: VkParsingPublishReason;
     idempotencyKey: string;
+    attemptsMade?: number;
+    maxAttempts?: number;
   }): Promise<void> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.publishLeaseTtlMs);
@@ -289,7 +291,11 @@ export class VkPublishService {
       }
       await this.autoPublishPost(post, settings);
     } catch (error) {
-      await this.markPostAutoPublishFailed(post.id, error);
+      const classified = classifyVkParsingPublishError(error);
+      await this.markQueuedPostPublishFailed(post, classified, {
+        auto: params.reason === 'autopublish',
+        finalAttempt: this.isFinalPublishAttempt(params),
+      });
       throw error;
     }
   }
@@ -646,7 +652,10 @@ export class VkPublishService {
     try {
       this.assertPreparedPublishPayload(prepared);
     } catch (error) {
-      await this.markPostAutoPublishFailed(post.id, error);
+      await this.markQueuedPostPublishFailed(post, classifyVkParsingPublishError(error), {
+        auto: true,
+        finalAttempt: true,
+      });
       throw error;
     }
 
@@ -658,20 +667,41 @@ export class VkPublishService {
     });
   }
 
-  private async markPostAutoPublishFailed(postId: string, error: unknown): Promise<void> {
-    const message = formatVkParsingClassifiedErrorMessage(classifyVkParsingPublishError(error));
+  private async markQueuedPostPublishFailed(
+    post: Pick<VkParsingPostWithSource, 'id' | 'autoPublishError'>,
+    error: ReturnType<typeof classifyVkParsingPublishError>,
+    options: { auto: boolean; finalAttempt: boolean },
+  ): Promise<void> {
+    const message = formatVkParsingClassifiedErrorMessage(error);
+    const shouldClearQueue = !error.retryable || options.finalAttempt;
     await this.prisma.vkParsingPost.update({
-      where: { id: postId },
+      where: { id: post.id },
       data: {
         status: VK_POST_STATUS_FAILED,
         lastError: message,
-        autoPublishError: message,
+        autoPublishError: options.auto ? message : post.autoPublishError,
         publishLockedAt: null,
-        publishQueuedAt: null,
-        publishIdempotencyKey: null,
-        publishReason: null,
+        ...(shouldClearQueue
+          ? {
+              publishQueuedAt: null,
+              publishIdempotencyKey: null,
+              publishReason: null,
+            }
+          : {}),
       },
     });
+  }
+
+  private isFinalPublishAttempt(params: { attemptsMade?: number; maxAttempts?: number }): boolean {
+    const maxAttempts =
+      typeof params.maxAttempts === 'number' && params.maxAttempts > 0
+        ? Math.trunc(params.maxAttempts)
+        : VK_PARSING_PUBLISH_RETRY_POLICY.attempts;
+    const attemptsMade =
+      typeof params.attemptsMade === 'number' && params.attemptsMade > 0
+        ? Math.trunc(params.attemptsMade)
+        : 0;
+    return attemptsMade + 1 >= maxAttempts;
   }
 
   private isPostEligibleForAutoPublish(
