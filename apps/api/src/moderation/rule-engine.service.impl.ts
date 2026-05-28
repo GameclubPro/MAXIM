@@ -894,12 +894,22 @@ const ADS_RECRUITMENT_PATTERNS: LabeledPattern[] = [
   {
     label: 'требуется',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])треб(?:уется|уются|ует|уют)\s+(?:менеджер|сотрудник|работник|специалист|мастер|бригада|подрядчик|водитель|курьер|продавец|оператор|администратор|охранник|грузчик|разнорабоч[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|шве[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|маркетолог[\p{L}\p{N}_-]*|копирайтер[\p{L}\p{N}_-]*|бухгалтер[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|риелтор[\p{L}\p{N}_-]*|сварщик[\p{L}\p{N}_-]*|монтажник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])треб(?:уется|уются|ует|уют)\s+(?:менеджер|сотрудник|работник|специалист|мастер|бригада|подрядчик|водитель|курьер|продавец|оператор|администратор|модератор|охранник|грузчик|разнорабоч[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|официант[\p{L}\p{N}_-]*|бармен[\p{L}\p{N}_-]*|хостес|кассир[\p{L}\p{N}_-]*|упаковщик[\p{L}\p{N}_-]*|комплектовщик[\p{L}\p{N}_-]*|мойщик[\p{L}\p{N}_-]*|заготовщик[\p{L}\p{N}_-]*|шве[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|маркетолог[\p{L}\p{N}_-]*|копирайтер[\p{L}\p{N}_-]*|бухгалтер[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|риелтор[\p{L}\p{N}_-]*|сварщик[\p{L}\p{N}_-]*|монтажник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'набор',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:вед[её]т(?:ся)?\s+)?набор\s+(?:сотрудник[\p{L}\p{N}_-]*|персонал[\p{L}\p{N}_-]*|люд[\p{L}\p{N}_-]*|команд[\p{L}\p{N}_-]*|мастер[\p{L}\p{N}_-]*|водител[\p{L}\p{N}_-]*|курьер[\p{L}\p{N}_-]*|оператор[\p{L}\p{N}_-]*|охранник[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|администратор[\p{L}\p{N}_-]*|менеджер[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:вед[её]т(?:ся)?\s+|открыт(?:а|ый)?\s+|открывает\s+|осуществляет\s+)?набор\s+(?:сотрудник[\p{L}\p{N}_-]*|персонал[\p{L}\p{N}_-]*|люд[\p{L}\p{N}_-]*|команд[\p{L}\p{N}_-]*|мастер[\p{L}\p{N}_-]*|водител[\p{L}\p{N}_-]*|курьер[\p{L}\p{N}_-]*|оператор[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|охранник[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|администратор[\p{L}\p{N}_-]*|менеджер[\p{L}\p{N}_-]*|официант[\p{L}\p{N}_-]*|бармен[\p{L}\p{N}_-]*|хостес|кассир[\p{L}\p{N}_-]*|упаковщик[\p{L}\p{N}_-]*|комплектовщик[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'ищет-команду',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:ищ(?:ет|ем|ут)|открывает)\s+(?:ярк[\p{L}\p{N}_-]*\s+|ответственн[\p{L}\p{N}_-]*\s+|энергичн[\p{L}\p{N}_-]*\s+){0,3}(?:люд[\p{L}\p{N}_-]*|команд[\p{L}\p{N}_-]*|сотрудник[\p{L}\p{N}_-]*|персонал[\p{L}\p{N}_-]*|официант[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|бармен[\p{L}\p{N}_-]*|хостес|кассир[\p{L}\p{N}_-]*|менеджер[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'приглашаем-на-должность',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])приглаша(?:ем|ют)\s+на\s+(?:должность|работу)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
 const ADS_INFO_PRODUCT_MARKERS = ['курс', 'вебинар', 'марафон', 'обучени', 'интенсив', 'наставнич'];
@@ -967,6 +977,12 @@ const ADS_CHANNEL_PLACEMENT_MARKERS = [
   'мца',
   'жца',
   'сца',
+  'пиар чат',
+  'чат пиар',
+  'пиар чаты',
+  'пиар чатах',
+  'взаимная подписка',
+  'доска объявлений',
   'места на завтра',
   'места на ближайшие дни',
   'продаю места',
@@ -1251,7 +1267,7 @@ const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
   {
     label: 'property-sale',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:прода(?:м|ется|ётся)|сда(?:м|ется|ётся)|аренда|ипотек[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,80})(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:прода(?:м|ю|ется|ётся)|сда(?:м|ю|ется|ётся)|аренда|ипотек[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,80})(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'property-listing',
@@ -1285,7 +1301,7 @@ const ADS_PROPERTY_COMMERCIAL_PATTERNS: LabeledPattern[] = [
   {
     label: 'commercial-space',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:коммерци[\p{L}\p{N}_-]*|нежил[\p{L}\p{N}_-]*|(?:продажа|продам|продается|продаётся|аренда|сдам)(?:[\p{L}\p{N}\s.,:;()/-]{0,36})помещени[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:коммерческ[\p{L}\p{N}_-]*|нежил[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,36})(?:помещени[\p{L}\p{N}_-]*|недвижим[\p{L}\p{N}_-]*|объект[\p{L}\p{N}_-]*|площад[\p{L}\p{N}_-]*|здани[\p{L}\p{N}_-]*)|(?:продажа|продам|продаю|продается|продаётся|аренда|сдам|сдаю)(?:[\p{L}\p{N}\s.,:;()/-]{0,36})помещени[\p{L}\p{N}_-]*|помещени[\p{L}\p{N}\s.,:;()/-]{0,36}(?:коммерци[\p{L}\p{N}_-]*|нежил[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
     label: 'street-traffic',
@@ -1358,6 +1374,10 @@ const ADS_PERSONAL_RESALE_STRONG_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:б\/у|бу|в\s+отличном\s+состоянии|в\s+хорошем\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|после\s+одного\s+(?:ребенка|ребёнка|сезона)|носил[аи]?|одевал[аи]?|надевал[аи]?|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_TRANSACTIONAL_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])в\s+наличии\s+\d{1,2}\s*(?:шт\.?|штук)(?:[\p{L}\p{N}\s.,:;()/-]{0,40})(?:по\s+)?\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?)(?:[\p{L}\p{N}\s.,:;()/-]{0,18})(?:кажд[\p{L}\p{N}_-]*)?(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PRIVATE_LOW_QUANTITY_COMMERCIAL_OVERRIDE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:магазин|интернет[\s-]*магазин|каталог|ассортимент|опт|розниц|под\s+заказ|по\s+заказу|оформ(?:ить|ляйте)\s+заказ|заказывайте|от\s+производител[\p{L}\p{N}_-]*|со\s+склада|доставка\s+по\s+(?:россии|региону|городу|стране)|разн(?:ые|ых)\s+(?:размер(?:ы)?|цвет(?:а)?|модел[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PROPERTY_UTILITY_PAYMENT_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])ком(?:мунальн(?:ые|ых|ым|ыми))?(?:\s*|\.)услуг[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_URGENCY_PATTERN =
@@ -1760,9 +1780,15 @@ export class RuleEngineService {
     const hasPrivateSingleListingContext = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.some(({ pattern }) =>
       matchesPattern(pattern),
     );
+    const hasPrivateLowQuantityGoodsListing =
+      this.isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
     const hasPrivateGoodsItemContext =
       hasPrivateSingleListingContext ||
+      hasPrivateLowQuantityGoodsListing ||
       ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasStrongGoodsRetailContext =
+      ADS_GOODS_RETAIL_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      this.countPatternMatches(rawLoweredText, ADS_MULTI_SKU_PRICE_LINE_PATTERN, 4) >= 2;
     const hasPropertyServiceCommercialOverride =
       hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
@@ -1775,7 +1801,7 @@ export class RuleEngineService {
       hasRecruitmentContext ||
       hasInfoProductContext ||
       hasPropertyServiceCommercialOverride ||
-      hasGoodsRetailContext;
+      hasStrongGoodsRetailContext;
     const hasPrivateContextMarker =
       hasPrivateSingleListingContext ||
       ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
@@ -1801,10 +1827,10 @@ export class RuleEngineService {
 
     if (
       hasPrivateGoodsItemContext &&
-      !hasGoodsRetailContext &&
       !hasBusinessContext &&
       !hasChannelPlacementContext &&
       !hasServiceCommercialContext &&
+      !hasStrongGoodsRetailContext &&
       !ADS_LINK_PATTERN.test(rawLoweredText)
     ) {
       return false;
@@ -1839,6 +1865,44 @@ export class RuleEngineService {
       state.hasCommercialPropertyContext ||
       state.hasGoodsRetailContext
     );
+  }
+
+  private hasPrivateGoodsCommercialOverride(state: CommercialSignalState): boolean {
+    return (
+      state.hasBusinessContext ||
+      state.hasDealChannel ||
+      state.hasCampaignContext ||
+      state.hasGroupPromoContext ||
+      state.hasCommercialAudienceContext ||
+      state.hasChannelPlacementContext ||
+      state.hasServiceOfferContext ||
+      this.hasStrongGoodsRetailEvidence(state)
+    );
+  }
+
+  private hasStrongGoodsRetailEvidence(state: CommercialSignalState): boolean {
+    return state.matchedSignals.some(
+      (signal) =>
+        signal === 'goods-retail:sizes-and-colors' ||
+        signal === 'goods-retail:catalog-media' ||
+        signal === 'goods-retail:manufacturer' ||
+        signal === 'goods-retail:commercial-use' ||
+        signal === 'goods-retail:order-flow' ||
+        signal === 'goods-retail:multi-sku',
+    );
+  }
+
+  private isLikelyPrivateLowQuantityGoodsListing(rawLoweredText: string): boolean {
+    const textWithoutUrls = stripUrlsFromText(rawLoweredText).replace(/\s+/gu, ' ').trim();
+    if (!textWithoutUrls || textWithoutUrls.length > 180) {
+      return false;
+    }
+
+    if (!ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN.test(textWithoutUrls)) {
+      return false;
+    }
+
+    return !ADS_PRIVATE_LOW_QUANTITY_COMMERCIAL_OVERRIDE_PATTERN.test(textWithoutUrls);
   }
 
   private buildCommercialMarkerContext(
@@ -2313,6 +2377,8 @@ export class RuleEngineService {
       (state.hasServiceContext &&
         (!state.hasPropertyPrivateContext || state.hasServiceOfferContext)) ||
       state.hasServiceOfferContext;
+    const hasPrivateLowQuantityGoodsListing =
+      this.isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
 
     if (state.hasPrivateSaleContext && !hasPrivateSaleCommercialOverride) {
       return null;
@@ -2327,11 +2393,8 @@ export class RuleEngineService {
     }
 
     if (
-      state.hasPrivateGoodsItemContext &&
-      !state.hasGoodsRetailContext &&
-      !state.hasBusinessContext &&
-      !state.hasDealChannel &&
-      !state.hasCampaignContext
+      (state.hasPrivateGoodsItemContext || hasPrivateLowQuantityGoodsListing) &&
+      !this.hasPrivateGoodsCommercialOverride(state)
     ) {
       return null;
     }

@@ -1572,6 +1572,23 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
+  it('classifies restaurant team search copy from production audit as recruitment', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Новый большой бар открывает набор сотрудников. Ищем ярких людей: официанты, хостес, менеджеры, бармены. Ставка 5000 за смену, контакт для связи +7 900 000 00 23 https://t.me/hr_bar',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.primarySubtype).toBe('RECRUITMENT');
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['recruitment:набор', 'recruitment:ищет-команду']),
+    );
+  });
+
   it('does not detect COMMERCIAL_AD for private sale with phone only', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -2158,6 +2175,40 @@ describe('RuleEngineService', () => {
     expect(violation).toBeUndefined();
   });
 
+  it('does not let campaign repetition override a private apartment sale phrased as "продаю"', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Продаю, недорого 3х комнатную квартиру в селе Подлужном вопросы только по телефону +7 900 000 00 21',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 5,
+          sameTextDistinctChatCount: 4,
+          repeatedPhoneDistinctChatCount: 4,
+          repeatedLinkDistinctChatCount: 0,
+        },
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('does not treat a short low-quantity private item listing as retail inventory', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Фитолампа для комнатных растений, в наличии 2 шт, по 500 р каждая. +7 900 000 00 22',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
   it('does not let campaign repetition override wellness diary content without direct deal evidence', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
@@ -2212,6 +2263,30 @@ describe('RuleEngineService', () => {
         'combo:promo+deal',
         'combo:business+deal',
       ]),
+    );
+  });
+
+  it('detects commercial MAX chat directory ads without treating "коммерции" as real estate', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      [
+        'Чаты Max: Чат Пиар MAX, Взаимная подписка MAX, Чат коммерции NO LIMITS, Доска объявлений MAX.',
+        'Каналы в Max: Взаимная подписка без отписок + реакции.',
+        'https://max.ru/join/UzimHdYPoOS_Es3ll3chlhI4fanZOoZEn6smVqR_C2E',
+      ].join(' '),
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['channel-placement:взаимная подписка', 'deal-channel:link']),
+    );
+    expect(violation?.metadata?.matchedSignals).not.toEqual(
+      expect.arrayContaining(['property-commercial:commercial-space']),
     );
   });
 

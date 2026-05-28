@@ -421,4 +421,22 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'private apartment sale with repeated phone from production audit',
+    text: `Продаю, недорого 3х комнатную квартиру в селе Подлужном вопросы только по телефону +7 900 000 00 21`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'short low quantity plant lamp listing from production audit',
+    text: `Фитолампа для комнатных растений, в наличии 2 шт, по 500 р каждая. +7 900 000 00 22`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
