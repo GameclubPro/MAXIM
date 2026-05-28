@@ -2612,7 +2612,7 @@ describe('RuleEngineService', () => {
           senderDistinctChatCount: 1,
           sameTextDistinctChatCount: 1,
           repeatedPhoneDistinctChatCount: 0,
-          repeatedLinkDistinctChatCount: 14,
+          repeatedLinkDistinctChatCount: 3,
         },
       },
     );

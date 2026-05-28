@@ -1040,6 +1040,8 @@ const ADS_GROUP_PROMO_MARKERS = [
   'приглашаю',
   'вступайте',
   'присоединяйтесь',
+  'присоединяйся',
+  'присоединиться',
   'добавляйтесь',
   'заходите',
 ];
@@ -3624,7 +3626,7 @@ export class RuleEngineService {
 
     if (
       commercialCampaignContext &&
-      commercialCampaignContext.repeatedLinkDistinctChatCount >= 5 &&
+      commercialCampaignContext.repeatedLinkDistinctChatCount >= 3 &&
       ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)
     ) {
       addPositive('channel-placement:mass-invite-link', 18);
