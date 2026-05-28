@@ -100,8 +100,14 @@ import {
   isMessageLimitsBlockedListRuleCode,
 } from './message-limits-blocked-reason.util';
 import { RedisCounterService } from './redis-counter.service';
-import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.contract';
+import type {
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateHit,
+  RuleViolation,
+} from './rule-engine.contract';
 import { RuleEngineService } from './rule-engine.service';
+import { detectBlockedLink } from './rule-engine-link-detector';
 import {
   ANTI_SPAM_BURST_LIMIT,
   ANTI_SPAM_BURST_WINDOW_SEC,
@@ -1299,7 +1305,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
 
-      const { violations } = detection;
+      const violations = await this.reconcileLinkAllowlistViolations({
+        chatId,
+        text,
+        settings,
+        cachedDomainAllowlist: chat.domainAllowlist,
+        violations: detection.violations,
+      });
       const hasCompetingViolation = violations.length > 0;
       const latestManualReleaseAt =
         detection.duplicateDecision || detection.duplicateHit
@@ -15814,6 +15826,100 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private getCurrentBotToken(): string {
     return this.maxBotLinkService?.getBotTokenSync?.() ?? this.maxBotToken ?? '';
+  }
+
+  private async reconcileLinkAllowlistViolations(params: {
+    chatId: string;
+    text: string;
+    settings: ChatSettings;
+    cachedDomainAllowlist: string[];
+    violations: RuleViolation[];
+  }): Promise<RuleViolation[]> {
+    if (
+      params.settings.linkPolicy !== 'ALLOWLIST_ONLY' ||
+      !params.violations.some((violation) => violation.ruleCode === 'LINK_BLOCKED')
+    ) {
+      return params.violations;
+    }
+
+    let freshDomainAllowlist: string[] | null = null;
+    try {
+      freshDomainAllowlist = await this.loadFreshDomainAllowlistForLinkRecheck(params.chatId);
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Fresh allowlist link recheck failed',
+      );
+      return params.violations;
+    }
+
+    if (!freshDomainAllowlist || freshDomainAllowlist.length === 0) {
+      return params.violations;
+    }
+
+    const linkViolation = detectBlockedLink(
+      params.text,
+      params.settings.linkPolicy,
+      freshDomainAllowlist,
+    );
+    if (linkViolation) {
+      return params.violations;
+    }
+
+    this.logger.debug(
+      {
+        chatId: params.chatId,
+        cachedAllowlistSize: params.cachedDomainAllowlist.length,
+        freshAllowlistSize: freshDomainAllowlist.length,
+      },
+      'Suppressed link violation after fresh allowlist recheck',
+    );
+    void this.chatContextCache?.invalidate(params.chatId).catch((error: unknown) => {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to invalidate chat context after fresh allowlist recheck',
+      );
+    });
+
+    return params.violations.filter((violation) => violation.ruleCode !== 'LINK_BLOCKED');
+  }
+
+  private async loadFreshDomainAllowlistForLinkRecheck(chatId: string): Promise<string[] | null> {
+    const domainAllowlistDelegate = (
+      this.prisma as unknown as {
+        domainAllowlist?: {
+          findMany?: (args: {
+            where: {
+              chatId: string;
+              OR: Array<{ removeAfterAt: null } | { removeAfterAt: { gt: Date } }>;
+            };
+            select: { domain: true };
+          }) => Promise<Array<{ domain: string }>>;
+        };
+      }
+    ).domainAllowlist;
+
+    if (typeof domainAllowlistDelegate?.findMany !== 'function') {
+      return null;
+    }
+
+    const rows = await domainAllowlistDelegate.findMany({
+      where: {
+        chatId,
+        OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+      },
+      select: {
+        domain: true,
+      },
+    });
+
+    return rows.map((row) => row.domain);
   }
 
   private async loadChatContext(

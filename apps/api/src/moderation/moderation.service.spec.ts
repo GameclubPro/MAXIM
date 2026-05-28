@@ -11296,6 +11296,84 @@ describe('ModerationService', () => {
     });
   });
 
+  it('keeps a link message when fresh allowlist permits a stale cached violation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ linkBotMessageEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      domainAllowlist: {
+        findMany: jest.fn().mockResolvedValue([{ domain: 'domain:avito.ru' }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'LINK_BLOCKED',
+            score: 0.9,
+            reason: 'Link https://www.avito.ru/item/123 is not in allowlist',
+          },
+        ],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const update = createUpdate();
+    if (update.message) {
+      update.message.text = 'Продам https://www.avito.ru/item/123';
+    }
+
+    await service.handleUpdate(update);
+
+    expect(ruleEngine.detect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domainAllowlist: [],
+      }),
+    );
+    expect(prisma.domainAllowlist.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: expect.any(Date) } }],
+      },
+      select: {
+        domain: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('deletes commercial ad and sends first-step explanation with button', async () => {
     const prisma = {
       chat: {

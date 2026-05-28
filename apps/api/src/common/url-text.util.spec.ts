@@ -11,6 +11,14 @@ describe('url-text util', () => {
     ]);
   });
 
+  it('trims punctuation that wraps pasted scheme urls', () => {
+    expect(
+      extractUrlsFromText(
+        'ссылки: [https://max.ru/channel/news] {https://docs.max.ru/start}:',
+      ),
+    ).toEqual(['https://max.ru/channel/news', 'https://docs.max.ru/start']);
+  });
+
   it('does not treat dotted russian text as a url', () => {
     expect(extractUrlsFromText('Продам кузов Нивы.Весь перевареный')).toEqual([]);
   });

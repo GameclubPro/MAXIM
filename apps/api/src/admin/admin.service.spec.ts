@@ -19059,7 +19059,7 @@ describe('AdminService allowlist normalization', () => {
       },
       {
         domain:
-          'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU MAX позволяет отправлять любые виды сообщений',
+          'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU: MAX позволяет отправлять любые виды сообщений',
       },
     );
 
