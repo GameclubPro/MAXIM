@@ -34,10 +34,16 @@ import { VkParsingPublishProcessor } from './vk-parsing-publish.processor';
 import { VkParsingRunnerService } from './vk-parsing-runner.service';
 import { VkParsingSyncProcessor } from './vk-parsing-sync.processor';
 import { VK_PARSING_PUBLISH_QUEUE, VK_PARSING_SYNC_QUEUE } from './vk-parsing.queue';
+import { VkApiClientService } from './vk-api-client.service';
+import { VkParsingAccessService } from './vk-parsing-access.service';
+import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
 import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingRateLimitService } from './vk-parsing-rate-limit.service';
 import { VkParsingService } from './vk-parsing.service';
+import { VkPublishService } from './vk-publish.service';
+import { VkSourceService } from './vk-source.service';
+import { VkSyncService } from './vk-sync.service';
 
 @Module({
   imports: [
@@ -74,6 +80,12 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
     VkParsingRateLimitService,
+    VkApiClientService,
+    VkParsingAccessService,
+    VkParsingFeedService,
+    VkSourceService,
+    VkSyncService,
+    VkPublishService,
     VkParsingMediaCacheService,
     VkParsingPostImportRepository,
     VkParsingService,
@@ -94,6 +106,12 @@ import { VkParsingService } from './vk-parsing.service';
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,
     VkParsingRateLimitService,
+    VkApiClientService,
+    VkParsingAccessService,
+    VkParsingFeedService,
+    VkSourceService,
+    VkSyncService,
+    VkPublishService,
     VkParsingMediaCacheService,
     VkParsingPostImportRepository,
     VkParsingService,

@@ -2,7 +2,13 @@ import { ChatEntityType } from '../prisma/prisma-client';
 import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
 import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
+import { VkParsingAccessService } from './vk-parsing-access.service';
+import { VkApiClientService } from './vk-api-client.service';
+import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingService } from './vk-parsing.service';
+import { VkPublishService } from './vk-publish.service';
+import { VkSourceService } from './vk-source.service';
+import { VkSyncService } from './vk-sync.service';
 
 type MockFetchResponse = {
   ok: boolean;
@@ -198,18 +204,47 @@ describe('VkParsingService', () => {
     });
     const mediaCache = new VkParsingMediaCacheService(prisma as never, configService as never);
     const postImportRepository = new VkParsingPostImportRepository(prisma as never);
-
-    const service = new VkParsingService(
+    const accessService = new VkParsingAccessService(prisma as never, adminService as never);
+    const feedService = new VkParsingFeedService(
       prisma as never,
+      vkRateLimitService as never,
+      configService as never,
+    );
+    const vkApiClient = new VkApiClientService(configService as never, vkRateLimitService as never);
+    const sourceService = new VkSourceService(
+      prisma as never,
+      feedService,
+      vkApiClient,
+      syncQueue as never,
+      configService as never,
+    );
+    const publishService = new VkPublishService(
+      prisma as never,
+      accessService,
       adminService as never,
       maxClient as never,
       maxBotLinkService as never,
-      vkRateLimitService as never,
       mediaCache,
-      postImportRepository,
-      syncQueue as never,
+      feedService,
       publishQueue as never,
       configService as never,
+    );
+    const syncService = new VkSyncService(
+      prisma as never,
+      vkApiClient,
+      publishService,
+      mediaCache,
+      postImportRepository,
+      configService as never,
+    );
+
+    const service = new VkParsingService(
+      prisma as never,
+      accessService,
+      feedService,
+      sourceService,
+      syncService,
+      publishService,
     );
 
     return {
@@ -223,6 +258,12 @@ describe('VkParsingService', () => {
       publishQueue,
       mediaCache,
       postImportRepository,
+      accessService,
+      feedService,
+      vkApiClient,
+      sourceService,
+      syncService,
+      publishService,
     };
   }
 
