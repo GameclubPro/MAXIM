@@ -164,6 +164,10 @@ async function loadSourceHealth(prisma: PrismaClient): Promise<unknown> {
       )::int as "errorSources",
       count(*) filter (
         where status = 'ACTIVE'
+          and circuit_opened_at is not null
+      )::int as "circuitOpenSources",
+      count(*) filter (
+        where status = 'ACTIVE'
           and sync_status in ('QUEUED', 'SYNCING')
       )::int as "inFlightSources",
       count(*) filter (
@@ -211,6 +215,11 @@ async function loadNoisySources(prisma: PrismaClient, limit: number): Promise<un
       last_success_at as "lastSuccessAt",
       next_sync_at as "nextSyncAt",
       case when sync_status = 'BACKOFF' then next_sync_at else null end as "nextRetryAt",
+      terminal_failure_count as "terminalFailureCount",
+      circuit_opened_at as "circuitOpenedAt",
+      circuit_reason_code as "circuitReasonCode",
+      left(coalesce(circuit_reason, ''), 300) as "circuitReason",
+      circuit_retry_at as "circuitRetryAt",
       sync_locked_by as "syncLockedBy",
       sync_lock_deadline_at as "syncLockDeadlineAt",
       sync_heartbeat_at as "syncHeartbeatAt",
@@ -479,7 +488,9 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
       sourceHealth.sourceCount,
     )} healthy, ${readNumber(sourceHealth.errorSources)} error/backoff, ${readNumber(
       sourceHealth.inFlightSources,
-    )} queued/syncing, ${readNumber(sourceHealth.staleSyncLocks)} stale locks`,
+    )} queued/syncing, ${readNumber(sourceHealth.staleSyncLocks)} stale locks, ${readNumber(
+      sourceHealth.circuitOpenSources,
+    )} circuits open`,
     `Sync: fetched ${readNumber(syncPerformance.fetchedPosts)}, imported ${readNumber(
       syncPerformance.importedPosts,
     )}, p95 ${Math.round(readNumber(syncPerformance.p95SyncDurationMs))}ms`,

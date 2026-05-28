@@ -50,6 +50,7 @@ import {
 } from './vk-parsing-media-cache.service';
 import {
   VK_PARSING_PUBLISH_QUEUE,
+  VK_PARSING_PUBLISH_RETRY_POLICY,
   type VkParsingPublishJob,
   type VkParsingPublishReason,
 } from './vk-parsing.queue';
@@ -591,10 +592,7 @@ export class VkPublishService {
       },
       {
         jobId: this.buildPublishJobId(post.id, idempotencyKey),
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5_000 },
-        removeOnComplete: true,
-        removeOnFail: 500,
+        ...VK_PARSING_PUBLISH_RETRY_POLICY,
       },
     );
   }

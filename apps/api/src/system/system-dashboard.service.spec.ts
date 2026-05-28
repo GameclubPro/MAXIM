@@ -106,6 +106,65 @@ function createDefaultWorkerGroups(
   };
 }
 
+function createHealthyQueueSnapshot(overrides: Record<string, unknown> = {}) {
+  const counters = { waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 };
+  const statusMetrics = {
+    count: 0,
+    oldestEventId: null,
+    oldestCreatedAt: null,
+    oldestLagSec: 0,
+  };
+  return {
+    moderation: counters,
+    webhookCritical: counters,
+    webhookJoin: counters,
+    webhookJoinShards: {},
+    webhookDefault: counters,
+    webhookDefaultShards: {},
+    webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
+    webhookBackground: counters,
+    webhookLegacy: counters,
+    actions: counters,
+    webhookEvents: {
+      received: statusMetrics,
+      queued: statusMetrics,
+      failed: statusMetrics,
+    },
+    userFacingWebhookEvents: {
+      received: statusMetrics,
+      queued: statusMetrics,
+      failed: statusMetrics,
+    },
+    actionHealth: {
+      windowSec: 60,
+      total: 12,
+      success: 12,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    },
+    webhookDynamicLeases: null,
+    bots: {},
+    oldestQueuedEventId: null,
+    oldestQueuedCreatedAt: null,
+    oldestQueuedLagSec: 0,
+    oldestReceivedEventId: null,
+    oldestReceivedCreatedAt: null,
+    oldestReceivedLagSec: 0,
+    effectiveLagSec: 0,
+    userFacingOldestQueuedEventId: null,
+    userFacingOldestQueuedCreatedAt: null,
+    userFacingOldestQueuedLagSec: 0,
+    userFacingOldestReceivedEventId: null,
+    userFacingOldestReceivedCreatedAt: null,
+    userFacingOldestReceivedLagSec: 0,
+    userFacingEffectiveLagSec: 0,
+    generatedAt: '2026-03-29T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
 describe('SystemDashboardService', () => {
   it('builds a healthy summary when queues and MAX action health are clean', async () => {
     const service = new SystemDashboardService(
@@ -193,6 +252,74 @@ describe('SystemDashboardService', () => {
       queueGroupHealth: {
         status: 'healthy',
       },
+    });
+  });
+
+  it('surfaces VK parsing guard warnings without marking the dashboard critical', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValueOnce([
+            {
+              activeSources: 12,
+              sourceFailureCount: 4,
+              circuitOpenSources: 1,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              recentMediaChecks: 10,
+              recentMediaFailures: 3,
+            },
+          ])
+          .mockResolvedValueOnce([
+            {
+              publishBacklog: 2,
+              oldestPublishBacklogAgeSec: 900,
+            },
+          ]),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: { status: 'warning' },
+      alerts: [
+        expect.objectContaining({
+          code: 'vk-parsing-health',
+          level: 'warning',
+        }),
+      ],
     });
   });
 

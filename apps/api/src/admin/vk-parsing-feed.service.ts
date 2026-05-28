@@ -121,6 +121,7 @@ export class VkParsingFeedService {
       oldestQueued,
       publishBacklog,
       staleSyncLockCount,
+      sourceRuntimeStats,
       mediaTotal,
       mediaFailed,
       vkApiMetrics,
@@ -168,6 +169,7 @@ export class VkParsingFeedService {
           ],
         },
       }),
+      this.loadSourceRuntimeStats(chatId),
       this.prisma.vkParsingMediaCache.count(),
       this.prisma.vkParsingMediaCache.count({ where: { status: VK_MEDIA_STATUS_FAILED } }),
       this.vkRateLimitService.getRecentVkApiMetrics(300).catch(() => ({
@@ -179,6 +181,12 @@ export class VkParsingFeedService {
 
     const lastSeenAt = latestSeen._max.lastSeenAt;
     const firstQueuedAt = oldestQueued._min.publishQueuedAt;
+    const attemptedSources = this.readNumber(sourceRuntimeStats.attemptedSources) ?? 0;
+    const successfulSources = this.readNumber(sourceRuntimeStats.successfulSources) ?? 0;
+    const p95SyncDurationMs = this.readNumber(sourceRuntimeStats.p95SyncDurationMs) ?? 0;
+    const publishLagSeconds = firstQueuedAt
+      ? Math.max(0, Math.floor((now.getTime() - firstQueuedAt.getTime()) / 1_000))
+      : null;
     return {
       chatId,
       generatedAt: now.toISOString(),
@@ -189,14 +197,37 @@ export class VkParsingFeedService {
       importLagSeconds: lastSeenAt
         ? Math.max(0, Math.floor((now.getTime() - lastSeenAt.getTime()) / 1_000))
         : null,
-      publishLagSeconds: firstQueuedAt
-        ? Math.max(0, Math.floor((now.getTime() - firstQueuedAt.getTime()) / 1_000))
-        : null,
+      publishLagSeconds,
+      publishBacklogAgeSeconds: publishLagSeconds,
       publishBacklog,
       staleSyncLockCount,
+      circuitOpenSourceCount: this.readNumber(sourceRuntimeStats.circuitOpenSourceCount) ?? 0,
+      importSuccessRate:
+        attemptedSources > 0 ? Math.min(1, successfulSources / attemptedSources) : 1,
+      p95SyncDurationMs: p95SyncDurationMs > 0 ? Math.round(p95SyncDurationMs) : null,
       mediaFailureRatio: mediaTotal > 0 ? Math.min(1, mediaFailed / mediaTotal) : 0,
       recentErrors: vkApiMetrics.recentErrors,
     };
+  }
+
+  private async loadSourceRuntimeStats(chatId: string): Promise<Record<string, unknown>> {
+    const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+      select
+        count(*) filter (where last_sync_at is not null)::int as "attemptedSources",
+        count(*) filter (
+          where sync_status = 'IDLE'
+            and last_error_code is null
+            and last_success_at is not null
+        )::int as "successfulSources",
+        count(*) filter (where circuit_opened_at is not null)::int as "circuitOpenSourceCount",
+        percentile_cont(0.95) within group (order by last_sync_duration_ms) filter (
+          where last_sync_duration_ms is not null
+        ) as "p95SyncDurationMs"
+      from vk_parsing_sources
+      where chat_id = ${chatId}
+        and status = ${VK_SOURCE_STATUS_ACTIVE}
+    `;
+    return rows[0] ?? {};
   }
 
   mapPost(post: VkParsingPostWithSource): VkParsingPost {
@@ -295,6 +326,11 @@ export class VkParsingFeedService {
       lastSuccessAt: source.lastSuccessAt ? source.lastSuccessAt.toISOString() : null,
       syncStartedAt: source.syncStartedAt ? source.syncStartedAt.toISOString() : null,
       consecutiveFailures: Math.max(0, source.consecutiveFailures),
+      terminalFailureCount: Math.max(0, source.terminalFailureCount ?? 0),
+      circuitOpenedAt: source.circuitOpenedAt ? source.circuitOpenedAt.toISOString() : null,
+      circuitReasonCode: source.circuitReasonCode,
+      circuitReason: source.circuitReason,
+      circuitRetryAt: source.circuitRetryAt ? source.circuitRetryAt.toISOString() : null,
       lastErrorCode: source.lastErrorCode,
       lastImportedCount: Math.max(0, source.lastImportedCount),
       lastFetchedCount: Math.max(0, source.lastFetchedCount),

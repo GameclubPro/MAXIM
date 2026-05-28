@@ -75,8 +75,12 @@ export function formatVkSourceSyncLabel(source: {
   syncStatus: string;
   nextSyncAt: string | null;
   nextRetryAt?: string | null;
+  circuitOpenedAt?: string | null;
   lastError: string | null;
 }): string | null {
+  if (source.circuitOpenedAt) {
+    return 'Требует действия';
+  }
   if (source.syncStatus === 'QUEUED') {
     return 'В очереди';
   }

@@ -84,6 +84,7 @@ export class VkSyncService {
   private readonly missingConfirmationThreshold: number;
   private readonly syncLeaseTtlMs: number;
   private readonly mediaConcurrency: number;
+  private readonly sourceCircuitTerminalFailureThreshold: number;
   private readonly workerId = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   private readonly warningDedupe = new Map<string, { loggedAtMs: number; suppressed: number }>();
 
@@ -110,6 +111,10 @@ export class VkSyncService {
       configService.get<number>('VK_PARSING_MISSING_CONFIRMATION_THRESHOLD') ?? 3;
     this.syncLeaseTtlMs = configService.get<number>('VK_PARSING_LEASE_TTL_MS') ?? 120_000;
     this.mediaConcurrency = configService.get<number>('VK_PARSING_MEDIA_CONCURRENCY') ?? 3;
+    this.sourceCircuitTerminalFailureThreshold = Math.max(
+      1,
+      configService.get<number>('VK_PARSING_SOURCE_CIRCUIT_TERMINAL_FAILURE_THRESHOLD') ?? 1,
+    );
   }
 
   getSyncIntervalMs(): number {
@@ -163,6 +168,11 @@ export class VkSyncService {
           syncLockDeadlineAt: null,
           syncHeartbeatAt: null,
           consecutiveFailures: 0,
+          terminalFailureCount: 0,
+          circuitOpenedAt: null,
+          circuitReasonCode: null,
+          circuitReason: null,
+          circuitRetryAt: null,
           lastErrorCode: null,
           lastImportedCount: importResult.imported,
           lastFetchedCount: posts.length,
@@ -181,14 +191,26 @@ export class VkSyncService {
       const completedAt = new Date();
       const classified = classifyVkParsingSyncError(error);
       const failureCount = source.consecutiveFailures + 1;
-      const backoffMs = classified.retryable ? this.resolveSyncBackoffMs(failureCount) : null;
+      const isCircuitBreakerFailure = this.isSourceCircuitBreakerFailure(classified);
+      const terminalFailureCount = isCircuitBreakerFailure
+        ? source.terminalFailureCount + 1
+        : 0;
+      const openCircuit =
+        isCircuitBreakerFailure &&
+        terminalFailureCount >= this.sourceCircuitTerminalFailureThreshold;
+      const retryTerminalBeforeCircuit = isCircuitBreakerFailure && !openCircuit;
+      const backoffMs =
+        classified.retryable || retryTerminalBeforeCircuit
+          ? this.resolveSyncBackoffMs(failureCount)
+          : null;
+      const nextRetryAt = backoffMs === null ? null : new Date(completedAt.getTime() + backoffMs);
       await this.prisma.vkParsingSource.update({
         where: { id: source.id },
         data: {
-          syncStatus: classified.retryable
+          syncStatus: backoffMs !== null
             ? VK_SOURCE_SYNC_STATUS_BACKOFF
             : VK_SOURCE_SYNC_STATUS_ERROR,
-          nextSyncAt: backoffMs === null ? null : new Date(completedAt.getTime() + backoffMs),
+          nextSyncAt: nextRetryAt,
           lastSyncAt: completedAt,
           syncStartedAt: null,
           syncLockedAt: null,
@@ -196,6 +218,11 @@ export class VkSyncService {
           syncLockDeadlineAt: null,
           syncHeartbeatAt: null,
           consecutiveFailures: failureCount,
+          terminalFailureCount,
+          circuitOpenedAt: openCircuit ? completedAt : null,
+          circuitReasonCode: openCircuit ? classified.code : null,
+          circuitReason: openCircuit ? classified.message : null,
+          circuitRetryAt: retryTerminalBeforeCircuit ? nextRetryAt : null,
           lastErrorCode: classified.code,
           lastImportedCount: 0,
           lastFetchedCount: 0,
@@ -210,6 +237,8 @@ export class VkSyncService {
           chatId: source.chatId,
           reason: classified.code,
           retryable: classified.retryable,
+          circuitOpen: openCircuit,
+          terminalFailureCount,
           err: error,
         },
         'VK sync failed',
@@ -378,6 +407,7 @@ export class VkSyncService {
       where: {
         id: sourceId,
         status: VK_SOURCE_STATUS_ACTIVE,
+        circuitOpenedAt: null,
         OR: [
           { syncLockedAt: null },
           { syncLockDeadlineAt: { lt: now } },
@@ -482,6 +512,13 @@ export class VkSyncService {
     const cappedFailureCount = Math.max(0, Math.min(6, failureCount - 1));
     const jitterMs = Math.floor(Math.random() * 5_000);
     return Math.min(60 * 60_000, baseMs * 2 ** cappedFailureCount + jitterMs);
+  }
+
+  private isSourceCircuitBreakerFailure(classified: {
+    code: string;
+    retryable: boolean;
+  }): boolean {
+    return !classified.retryable && classified.code.startsWith('vk_api.');
   }
 
   private buildPostKey(ownerId: number, postId: number): string {

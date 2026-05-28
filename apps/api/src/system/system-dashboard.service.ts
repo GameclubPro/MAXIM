@@ -21,6 +21,7 @@ import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemModeService } from './system-mode.service';
 import { WebhookSloService, type WebhookSloSnapshot } from './webhook-slo.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 const QUEUE_LAG_WARNING_SEC = 5;
 const FAILED_EVENTS_CRITICAL_COUNT = 100;
@@ -33,6 +34,23 @@ const DEFAULT_WORKER_SKEW_CRITICAL_PRESSURE = 8;
 const DEFAULT_WORKER_SKEW_CRITICAL_RATIO = 0.85;
 const JOIN_BURST_WARNING_PRESSURE = 6;
 const JOIN_BURST_CRITICAL_PRESSURE = 16;
+const VK_PARSING_HEALTH_WINDOW_MIN = 30;
+const VK_PARSING_SOURCE_FAILURE_WARNING_COUNT = 3;
+const VK_PARSING_MEDIA_FAILURE_WARNING_RATIO = 0.2;
+const VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC = 10 * 60;
+
+type VkParsingGuardSnapshot = {
+  checkedAt: string;
+  windowMin: number;
+  activeSources: number;
+  sourceFailureCount: number;
+  circuitOpenSources: number;
+  recentMediaChecks: number;
+  recentMediaFailures: number;
+  recentMediaFailureRatio: number;
+  publishBacklog: number;
+  oldestPublishBacklogAgeSec: number;
+};
 
 @Injectable()
 export class SystemDashboardService {
@@ -53,6 +71,8 @@ export class SystemDashboardService {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
     private readonly webhookSloService?: WebhookSloService,
+    @Optional()
+    private readonly prisma?: PrismaService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
     this.webhookSloTargetMs = configService.get<number>(
@@ -83,6 +103,7 @@ export class SystemDashboardService {
       this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
       this.webhookSloService?.getSnapshot(),
     ]);
+    const vkParsingGuard = await this.loadVkParsingGuardSnapshot();
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
     const failedCount = this.readActiveFailedCount(queues.webhookEvents.failed);
@@ -234,6 +255,11 @@ export class SystemDashboardService {
       alerts.push(webhookSloAlert);
     }
 
+    const vkParsingAlert = this.buildVkParsingHealthAlert(vkParsingGuard);
+    if (vkParsingAlert) {
+      alerts.push(vkParsingAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -250,6 +276,7 @@ export class SystemDashboardService {
       hotPathTimeoutCritical: hotPathTimeoutCount >= 10,
       hotPathTimeoutWarning: hotPathTimeoutCount > 0,
       webhookSloStatus: webhookSlo?.status ?? null,
+      vkParsingWarning: vkParsingAlert !== null,
     });
     const queueGroupHealth = buildSystemQueueGroupHealth(queues);
     const runtimeProfile = buildSystemRuntimeProfile(
@@ -325,6 +352,7 @@ export class SystemDashboardService {
     hotPathTimeoutCritical?: boolean;
     hotPathTimeoutWarning?: boolean;
     webhookSloStatus?: WebhookSloSnapshot['status'] | null;
+    vkParsingWarning?: boolean;
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
@@ -347,7 +375,8 @@ export class SystemDashboardService {
       input.webhookSubscriptionStatus === 'warning' ||
       input.problemChatsWarning === true ||
       input.hotPathTimeoutWarning === true ||
-      input.webhookSloStatus === 'warning'
+      input.webhookSloStatus === 'warning' ||
+      input.vkParsingWarning === true
     ) {
       return 'warning';
     }
@@ -585,6 +614,122 @@ export class SystemDashboardService {
       detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек.`,
       recommendedAction:
         'Проверьте backlog, MAX API rate limit и последние failed webhook events до расширения фоновых задач.',
+    };
+  }
+
+  private async loadVkParsingGuardSnapshot(): Promise<VkParsingGuardSnapshot | null> {
+    if (!this.prisma) {
+      return null;
+    }
+
+    const checkedAt = new Date();
+    const windowMin = VK_PARSING_HEALTH_WINDOW_MIN;
+    const since = new Date(checkedAt.getTime() - windowMin * 60_000);
+    try {
+      const [sourceRows, mediaRows, publishRows] = await Promise.all([
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
+            count(*) filter (where status = 'ACTIVE')::int as "activeSources",
+            count(*) filter (
+              where status = 'ACTIVE'
+                and updated_at >= ${since}
+                and (sync_status in ('BACKOFF', 'ERROR') or last_error_code is not null)
+            )::int as "sourceFailureCount",
+            count(*) filter (
+              where status = 'ACTIVE'
+                and circuit_opened_at is not null
+            )::int as "circuitOpenSources"
+          from vk_parsing_sources
+        `,
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
+            count(*) filter (
+              where coalesce(last_checked_at, updated_at) >= ${since}
+            )::int as "recentMediaChecks",
+            count(*) filter (
+              where status = 'FAILED'
+                and coalesce(last_checked_at, updated_at) >= ${since}
+            )::int as "recentMediaFailures"
+          from vk_parsing_media_cache
+        `,
+        this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+          select
+            count(*) filter (where publish_queued_at is not null)::int as "publishBacklog",
+            extract(epoch from (now() - min(publish_queued_at)))::int
+              as "oldestPublishBacklogAgeSec"
+          from vk_parsing_posts
+          where publish_queued_at is not null
+        `,
+      ]);
+      const sources = sourceRows[0] ?? {};
+      const media = mediaRows[0] ?? {};
+      const publish = publishRows[0] ?? {};
+      const recentMediaChecks = this.readNumber(media.recentMediaChecks);
+      const recentMediaFailures = this.readNumber(media.recentMediaFailures);
+      return {
+        checkedAt: checkedAt.toISOString(),
+        windowMin,
+        activeSources: this.readNumber(sources.activeSources),
+        sourceFailureCount: this.readNumber(sources.sourceFailureCount),
+        circuitOpenSources: this.readNumber(sources.circuitOpenSources),
+        recentMediaChecks,
+        recentMediaFailures,
+        recentMediaFailureRatio:
+          recentMediaChecks > 0 ? Math.min(1, recentMediaFailures / recentMediaChecks) : 0,
+        publishBacklog: this.readNumber(publish.publishBacklog),
+        oldestPublishBacklogAgeSec: this.readNumber(publish.oldestPublishBacklogAgeSec),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private buildVkParsingHealthAlert(
+    snapshot: VkParsingGuardSnapshot | null,
+  ): SystemDashboardAlert | null {
+    if (!snapshot || snapshot.activeSources === 0) {
+      return null;
+    }
+
+    const sourceFailuresHigh =
+      snapshot.sourceFailureCount >= VK_PARSING_SOURCE_FAILURE_WARNING_COUNT;
+    const mediaFailuresHigh =
+      snapshot.recentMediaChecks > 0 &&
+      snapshot.recentMediaFailureRatio >= VK_PARSING_MEDIA_FAILURE_WARNING_RATIO;
+    const publishBacklogOld =
+      snapshot.oldestPublishBacklogAgeSec >= VK_PARSING_PUBLISH_BACKLOG_WARNING_SEC;
+
+    if (
+      snapshot.circuitOpenSources === 0 &&
+      !sourceFailuresHigh &&
+      !mediaFailuresHigh &&
+      !publishBacklogOld
+    ) {
+      return null;
+    }
+
+    const details = [
+      snapshot.circuitOpenSources > 0
+        ? `circuit open: ${snapshot.circuitOpenSources}`
+        : null,
+      sourceFailuresHigh
+        ? `source failures за ${snapshot.windowMin} мин: ${snapshot.sourceFailureCount}`
+        : null,
+      mediaFailuresHigh
+        ? `media failures: ${(snapshot.recentMediaFailureRatio * 100).toFixed(1)}%`
+        : null,
+      publishBacklogOld
+        ? `oldest publish backlog: ${snapshot.oldestPublishBacklogAgeSec} сек`
+        : null,
+    ].filter((item): item is string => item !== null);
+
+    return {
+      code: 'vk-parsing-health',
+      level: 'warning',
+      title: 'VK parsing требует внимания',
+      detail: details.join('; '),
+      recommendedAction:
+        'Откройте VK diagnostics: проверьте noisy sources, media failures и publish backlog. Readiness при этом остаётся зелёной.',
     };
   }
 
@@ -872,5 +1017,19 @@ export class SystemDashboardService {
       recommendedAction:
         'Проверьте hot chat по user_added и greeting/join path. Realtime default path сейчас изолирован и не требует срочного вмешательства.',
     };
+  }
+
+  private readNumber(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'bigint') {
+      return Number(value);
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
   }
 }

@@ -14,6 +14,7 @@ import { VkApiClientService } from './vk-api-client.service';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import {
   VK_PARSING_SYNC_QUEUE,
+  VK_PARSING_SYNC_RETRY_POLICY,
   type VkParsingSyncJob,
   type VkParsingSyncReason,
 } from './vk-parsing.queue';
@@ -108,6 +109,11 @@ export class VkSourceService {
         syncLockedBy: null,
         syncLockDeadlineAt: null,
         syncHeartbeatAt: null,
+        terminalFailureCount: 0,
+        circuitOpenedAt: null,
+        circuitReasonCode: null,
+        circuitReason: null,
+        circuitRetryAt: null,
         lastError: null,
         lastErrorCode: null,
       },
@@ -136,6 +142,7 @@ export class VkSourceService {
         syncLockedBy: null,
         syncLockDeadlineAt: null,
         syncHeartbeatAt: null,
+        circuitRetryAt: null,
       },
     });
     return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
@@ -160,6 +167,7 @@ export class VkSourceService {
       where: {
         status: VK_SOURCE_STATUS_ACTIVE,
         syncStatus: { not: VK_SOURCE_SYNC_STATUS_ERROR },
+        circuitOpenedAt: null,
         OR: [
           { nextSyncAt: null },
           { nextSyncAt: { lte: now } },
@@ -204,6 +212,11 @@ export class VkSourceService {
         syncLockedBy: null,
         syncLockDeadlineAt: null,
         syncHeartbeatAt: null,
+        terminalFailureCount: 0,
+        circuitOpenedAt: null,
+        circuitReasonCode: null,
+        circuitReason: null,
+        circuitRetryAt: null,
       },
     });
 
@@ -217,9 +230,7 @@ export class VkSourceService {
       },
       {
         jobId: this.buildSyncJobId(sourceId),
-        attempts: 1,
-        removeOnComplete: true,
-        removeOnFail: 500,
+        ...VK_PARSING_SYNC_RETRY_POLICY,
       },
     );
 

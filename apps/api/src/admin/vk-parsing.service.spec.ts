@@ -142,6 +142,14 @@ describe('VkParsingService', () => {
         ),
       },
       $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([
+        {
+          attemptedSources: 0,
+          successfulSources: 0,
+          circuitOpenSourceCount: 0,
+          p95SyncDurationMs: null,
+        },
+      ]),
       $transaction: jest.fn(),
     };
     prisma.$transaction.mockImplementation((operation: unknown) =>
@@ -288,6 +296,11 @@ describe('VkParsingService', () => {
       syncHeartbeatAt: null,
       syncAttemptCount: 0,
       consecutiveFailures: 0,
+      terminalFailureCount: 0,
+      circuitOpenedAt: null,
+      circuitReasonCode: null,
+      circuitReason: null,
+      circuitRetryAt: null,
       lastErrorCode: null,
       lastImportedCount: 0,
       lastFetchedCount: 0,
@@ -385,21 +398,41 @@ describe('VkParsingService', () => {
     const { service, prisma } = createFixture();
     const retryAt = new Date('2026-05-25T10:30:00.000Z');
     prisma.vkParsingSource.findMany.mockResolvedValue([
-      createSource({ syncStatus: 'BACKOFF', nextSyncAt: retryAt }),
+      createSource({
+        syncStatus: 'BACKOFF',
+        nextSyncAt: retryAt,
+        terminalFailureCount: 1,
+        circuitRetryAt: retryAt,
+      }),
     ]);
     prisma.vkParsingPost.findMany.mockResolvedValue([]);
     prisma.vkParsingSource.count
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(2);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        attemptedSources: 2,
+        successfulSources: 1,
+        circuitOpenSourceCount: 1,
+        p95SyncDurationMs: 1500,
+      },
+    ]);
 
     const feed = await service.listVkParsing('channel-1', { userId: '183470701' } as never);
 
     expect(feed.sources[0]).toMatchObject({
       syncStatus: 'BACKOFF',
       nextRetryAt: retryAt.toISOString(),
+      terminalFailureCount: 1,
+      circuitRetryAt: retryAt.toISOString(),
     });
     expect(feed.summary?.staleSyncLockCount).toBe(2);
+    expect(feed.summary).toMatchObject({
+      circuitOpenSourceCount: 1,
+      importSuccessRate: 0.5,
+      p95SyncDurationMs: 1500,
+    });
   });
 
   it('updates VK parsing automation settings for a channel', async () => {
@@ -500,22 +533,8 @@ describe('VkParsingService', () => {
   });
 
   it('imports text, photos and links from a public VK community without videos', async () => {
-    const { service, prisma } = createFixture();
-    const source = {
-      id: 'source-1',
-      chatId: 'channel-1',
-      ownerId: 36819802,
-      wallOwnerId: -36819802,
-      screenName: 'avto_prodaja_rb',
-      title: 'Авторынок Уфа',
-      url: 'https://vk.ru/avto_prodaja_rb',
-      status: 'ACTIVE',
-      lastSyncAt: null,
-      lastError: null,
-      createdByUserId: '183470701',
-      createdAt: new Date('2026-05-25T10:00:00.000Z'),
-      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
-    };
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource();
     const wallPayload = {
       response: {
         groups: [{ id: 36819802, screen_name: 'avto_prodaja_rb', name: 'Авторынок Уфа' }],
@@ -559,6 +578,19 @@ describe('VkParsingService', () => {
     await service.addSource('channel-1', { userId: '183470701' } as never, {
       url: 'https://vk.ru/avto_prodaja_rb',
     });
+    expect(syncQueue.add).toHaveBeenCalledWith(
+      'sync-vk-source',
+      expect.objectContaining({
+        sourceId: 'source-1',
+        reason: 'source-added',
+        retryPolicyName: 'vk-parsing-sync',
+      }),
+      expect.objectContaining({
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnFail: 500,
+      }),
+    );
     await service.processSyncSourceJob('source-1', 'scheduled');
 
     expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
@@ -779,8 +811,9 @@ describe('VkParsingService', () => {
         retryPolicyName: 'vk-parsing-publish',
       }),
       expect.objectContaining({
-        attempts: 3,
+        attempts: 5,
         backoff: { type: 'exponential', delay: 5_000 },
+        removeOnFail: 1000,
       }),
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
@@ -919,7 +952,7 @@ describe('VkParsingService', () => {
       }),
       expect.objectContaining({
         jobId: 'vk-parsing-publish__post-1__publish-key-1',
-        attempts: 3,
+        attempts: 5,
       }),
     );
   });
@@ -1619,7 +1652,7 @@ describe('VkParsingService', () => {
     );
   });
 
-  it('backs off terminal private or content-blocked VK sources as source errors', async () => {
+  it('opens a source circuit breaker for terminal private or content-blocked VK sources', async () => {
     const { service, prisma } = createFixture();
     const source = createSource();
     prisma.vkParsingSource.findUnique.mockResolvedValue(source);
@@ -1638,7 +1671,43 @@ describe('VkParsingService', () => {
           syncStatus: 'ERROR',
           nextSyncAt: null,
           consecutiveFailures: 1,
+          terminalFailureCount: 1,
+          circuitOpenedAt: expect.any(Date),
+          circuitReasonCode: 'vk_api.vk_19',
+          circuitReason: expect.stringContaining('Content blocked'),
+          circuitRetryAt: null,
           lastErrorCode: 'vk_api.vk_19',
+        }),
+      }),
+    );
+  });
+
+  it('can verify a terminal VK source before opening the source circuit breaker', async () => {
+    const { service, prisma } = createFixture({
+      VK_PARSING_SOURCE_CIRCUIT_TERMINAL_FAILURE_THRESHOLD: 2,
+    });
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        error: { error_code: 15, error_msg: 'Access denied' },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'source-1' },
+        data: expect.objectContaining({
+          syncStatus: 'BACKOFF',
+          nextSyncAt: expect.any(Date),
+          terminalFailureCount: 1,
+          circuitOpenedAt: null,
+          circuitReasonCode: null,
+          circuitReason: null,
+          circuitRetryAt: expect.any(Date),
+          lastErrorCode: 'vk_api.vk_15',
         }),
       }),
     );

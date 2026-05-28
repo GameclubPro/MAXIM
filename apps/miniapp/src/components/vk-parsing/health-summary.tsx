@@ -21,8 +21,21 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
       </span>
       <span title="Задержка импорта">{formatDurationSeconds(summary.importLagSeconds)}</span>
       <span title="Задержка публикации">{formatDurationSeconds(summary.publishLagSeconds)}</span>
+      <span title="Успешность последних синхронизаций">
+        {formatPercent(summary.importSuccessRate)}
+      </span>
+      {summary.p95SyncDurationMs ? (
+        <span title="P95 длительности синхронизации">
+          {formatDurationSeconds(Math.ceil(summary.p95SyncDurationMs / 1_000))}
+        </span>
+      ) : null}
       {summary.publishBacklog > 0 ? (
         <span title="Посты ждут публикации">{summary.publishBacklog}</span>
+      ) : null}
+      {summary.circuitOpenSourceCount > 0 ? (
+        <span title="Источники остановлены circuit breaker">
+          {summary.circuitOpenSourceCount}
+        </span>
       ) : null}
       {summary.staleSyncLockCount > 0 ? (
         <span title="Зависшие обновления источников">{summary.staleSyncLockCount}</span>

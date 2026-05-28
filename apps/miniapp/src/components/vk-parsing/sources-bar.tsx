@@ -22,11 +22,13 @@ type SourcesBarProps = {
 };
 
 function formatSourceErrorTitle(source: VkParsingSource): string | undefined {
-  if (!source.lastError && !source.lastErrorCode) {
+  const reasonCode = source.circuitReasonCode ?? source.lastErrorCode;
+  const reason = source.circuitReason ?? source.lastError;
+  if (!reason && !reasonCode) {
     return undefined;
   }
 
-  return [source.lastErrorCode, source.lastError].filter(Boolean).join(': ');
+  return [reasonCode, reason].filter(Boolean).join(': ');
 }
 
 export function SourcesBar({
