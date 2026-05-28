@@ -102,6 +102,7 @@ type CommercialSignalState = {
   hasGroupPromotionIntent: boolean;
   hasGroupPromoContext: boolean;
   hasCommercialAudienceContext: boolean;
+  hasChannelPlacementContext: boolean;
   hasSearchRequestContext: boolean;
   hasJobSeekingContext: boolean;
   hasServiceContext: boolean;
@@ -757,7 +758,6 @@ const ADS_PROMO_MARKERS = [
 ];
 const ADS_BUSINESS_MARKERS = [
   'коммерция',
-  'салон',
   'студия',
   'компания',
   'агентств',
@@ -969,7 +969,6 @@ const ADS_CHANNEL_PLACEMENT_MARKERS = [
   'сца',
   'места на завтра',
   'места на ближайшие дни',
-  'свободные места',
   'продаю места',
   'цена за пост',
   'активная аудитория',
@@ -994,6 +993,11 @@ const ADS_CHANNEL_PLACEMENT_PATTERNS: LabeledPattern[] = [
     label: 'цена-за-пост',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:цена\s+за\s+пост|продаю\s+места|места\s+на\s+(?:завтра|ближайшие\s+дни)|отдам\s+по\s+\d+)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'свободные-места',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:канал[\p{L}\p{N}_-]*|чат[\p{L}\p{N}_-]*|пиар|реклам[\p{L}\p{N}_-]*|пост[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,48})свободн[\p{L}\p{N}_-]*\s+мест[\p{L}\p{N}_-]*|свободн[\p{L}\p{N}_-]*\s+мест[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,48})(?:канал[\p{L}\p{N}_-]*|чат[\p{L}\p{N}_-]*|пиар|реклам[\p{L}\p{N}_-]*|пост[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_CONTACT_MARKERS = [
@@ -1123,6 +1127,11 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
     pattern: /(?:^|[^\p{L}\p{N}_-])где\s+купить(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
+    label: 'request:personal-experience',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:кому|кто)(?:\s+|-)?(?:нибудь|то)?(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:предлагал[\p{L}\p{N}_-]*|сталкивал[\p{L}\p{N}_-]*|получал[\p{L}\p{N}_-]*|оформлял[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
     label: 'question:quality-check',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:это|он|она)\s+нормальн[\p{L}\p{N}_-]+\s+(?:мастер|специалист|салон|магазин)(?=$|[^\p{L}\p{N}_-])/u,
@@ -1220,12 +1229,22 @@ const ADS_PRIVATE_SINGLE_LISTING_PATTERNS: LabeledPattern[] = [
   {
     label: 'private-vehicle',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:продам|продаю|прода[её]тся)(?:[\p{L}\p{N}\s.,:;()/-]{0,55})(?:автомобил[\p{L}\p{N}_-]*|машин[ауые]?|опель|opel|лада|ваз|грант[\p{L}\p{N}_-]*|приор[\p{L}\p{N}_-]*|солярис|kia|киа|hyundai|хенда[ий]|toyota|тойот[\p{L}\p{N}_-]*|ford|форд|renault|рено|chevrolet|шевроле)(?:[\p{L}\p{N}\s.,:;()/-]{0,110})(?:пробег|мотор|двигател[\p{L}\p{N}_-]*|кузов|птс|стс|владельц[\p{L}\p{N}_-]*|штраф[\p{L}\p{N}_-]*|запрет[\p{L}\p{N}_-]*|резин[\p{L}\p{N}_-]*|ключ[\p{L}\p{N}_-]*|сел\s+и\s+поехал|цена|торг|звон)(?=$|[^\p{L}\p{N}_-])/iu,
+      /(?:^|[^\p{L}\p{N}_-])(?:продам|продаю|прода[её]тся)(?:[\p{L}\p{N}\s.,:;()/-]{0,55})(?:автомобил[\p{L}\p{N}_-]*|машин[ауые]?|джимни|jimny|премио|premio|королл?а|corolla|калина|kalina|ларгус|largus|волг[\p{L}\p{N}_-]*|опель|opel|лада|ваз|грант[\p{L}\p{N}_-]*|приор[\p{L}\p{N}_-]*|солярис|kia|киа|hyundai|хенда[ий]|honda|хонд[\p{L}\p{N}_-]*|toyota|тойот[\p{L}\p{N}_-]*|ford|форд|renault|рено|chevrolet|шевроле)(?:[\p{L}\p{N}\s.,:;()/-]{0,140})(?:пробег|мотор|двигател[\p{L}\p{N}_-]*|кузов|птс|стс|владельц[\p{L}\p{N}_-]*|собственник|штраф[\p{L}\p{N}_-]*|запрет[\p{L}\p{N}_-]*|резин[\p{L}\p{N}_-]*|ключ[\p{L}\p{N}_-]*|салон|сел\s+и\s+поехал|цена|торг|звон)(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
     label: 'baby-gear',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:продам|продаю|отдам)(?:[\p{L}\p{N}\s.,:;()/-]{0,70})(?:детск[\p{L}\p{N}_-]*\s+)?(?:коляск[\p{L}\p{N}_-]*|автокресл[\p{L}\p{N}_-]*|кроватк[\p{L}\p{N}_-]*|стульчик[\p{L}\p{N}_-]*|манеж[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'pet-rehome',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:щен[\p{L}\p{N}_-]*|кот[её]н[\p{L}\p{N}_-]*|котят[\p{L}\p{N}_-]*|собак[\p{L}\p{N}_-]*|кошк[\p{L}\p{N}_-]*|малыш[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,90})(?:ищ(?:ет|ут)\s+(?:дом|хозя[\p{L}\p{N}_-]*)|в\s+добрые\s+руки|отда[её]тс[\p{L}\p{N}_-]*|отдам)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'private-vehicle-specs',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:автомобил[\p{L}\p{N}_-]*|машин[ауые]?|джимни|jimny|премио|premio|королл?а|corolla|калина|kalina|ларгус|largus|волг[\p{L}\p{N}_-]*|опель|opel|лада|ваз|грант[\p{L}\p{N}_-]*|приор[\p{L}\p{N}_-]*|солярис|kia|киа|hyundai|хенда[ий]|honda|хонд[\p{L}\p{N}_-]*|toyota|тойот[\p{L}\p{N}_-]*|ford|форд|renault|рено|chevrolet|шевроле)(?:[\p{L}\p{N}\s.,:;()/-]{0,160})(?:пробег|двигател[\p{L}\p{N}_-]*|кузов|птс|стс|собственник|владелец|торг|обмен|сел\s+и\s+поехал|салон|резин[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
@@ -1314,6 +1333,7 @@ const PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS = new Set([
 ]);
 const PROPERTY_LISTING_NOISE_BUSINESS_MARKERS = new Set(['магазин', 'студия']);
 const ADS_SPECIAL_TOKEN_MATCHERS = new Map<string, RegExp>([
+  ['группа', /^групп(?:а|ы|е|у|ой|ою|ам|ами|ах)?$/u],
   ['чат', /^чат(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
   ['канал', /^канал(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
   ['клуб', /^клуб(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
@@ -1796,7 +1816,7 @@ export class RuleEngineService {
         hasGoodsRetailContext ||
         hasChannelPlacementContext ||
         hasServiceCommercialContext ||
-        (hasGroupContext && hasDealSignal && hasGroupTradeContext && hasGroupPromotionIntent)) &&
+        (hasGroupContext && hasDealSignal && hasGroupPromotionIntent)) &&
       hasDealSignal &&
       !(hasPropertyPrivateContext && !hasPrivateSaleCommercialOverride) &&
       !(hasPrivateContextMarker && !hasPrivateSaleCommercialOverride)
@@ -2914,10 +2934,11 @@ export class RuleEngineService {
       subtypeScores.set(subtype, Math.max(score, subtypeScores.get(subtype) ?? 0));
     };
 
-    if (state.hasGroupPromoContext) {
+    if (
+      state.hasChannelPlacementContext ||
+      (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent)
+    ) {
       addSubtype('CHANNEL_PLACEMENT', 100);
-    } else if (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent) {
-      addSubtype('CHANNEL_PLACEMENT', 90);
     }
 
     if (state.hasPropertyAgentContext) {
@@ -2950,7 +2971,7 @@ export class RuleEngineService {
       addSubtype('GOODS_RETAIL', state.hasServiceContext ? 76 : 86);
     }
 
-    if (state.hasGroupPromotionIntent && state.hasDealChannel) {
+    if (state.hasGroupPromoContext || (state.hasGroupPromotionIntent && state.hasDealChannel)) {
       addSubtype('GROUP_PROMOTION', state.hasGroupPromoContext ? 82 : 72);
     }
 
@@ -3122,6 +3143,7 @@ export class RuleEngineService {
     let hasGroupContext = false;
     let hasGroupTradeContext = false;
     let hasCommercialAudienceContext = false;
+    let hasChannelPlacementContext = false;
     let hasPropertyPrivateContext = false;
 
     const markerContext = this.buildCommercialMarkerContext(normalizedText, rawLoweredText);
@@ -3291,6 +3313,25 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
+    const multiSkuPriceLineCount = this.countPatternMatches(
+      rawLoweredText,
+      ADS_MULTI_SKU_PRICE_LINE_PATTERN,
+      4,
+    );
+    const goodsVariantMarkerCount = this.countPatternMatches(
+      rawLoweredText,
+      ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
+      4,
+    );
+    if (
+      multiSkuPriceLineCount >= 2 ||
+      (multiSkuPriceLineCount >= 1 && goodsVariantMarkerCount >= 1)
+    ) {
+      addPositive('goods-retail:multi-sku', 10);
+      hasGoodsRetailContext = true;
+      hasCommercialContext = true;
+    }
+
     const groupContextHits = ADS_GROUP_CONTEXT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of groupContextHits.slice(0, 2)) {
       addPositive(`group:${marker}`, 6);
@@ -3342,6 +3383,7 @@ export class RuleEngineService {
       hasGroupTradeContext = true;
       hasGroupPromotionIntent = true;
       hasCommercialAudienceContext = true;
+      hasChannelPlacementContext = true;
       hasBusinessContext = true;
       hasCallToActionContext = true;
       hasCommercialContext = true;
@@ -3558,8 +3600,24 @@ export class RuleEngineService {
       !hasSearchRequestContext &&
       (hasPhoneContact || hasPrice || hasTransactional || hasDealChannel)
     ) {
+      const hasStrictIntentCommercialAnchor =
+        hasPromoContext ||
+        hasBusinessContext ||
+        hasBuyoutContext ||
+        hasRecruitmentContext ||
+        hasInfoProductContext ||
+        hasServiceOfferContext ||
+        hasServiceSpecialtyContext ||
+        hasGoodsRetailContext ||
+        hasGroupPromoContext ||
+        hasCommercialAudienceContext ||
+        hasCommercialPropertyContext ||
+        hasPropertyAgentContext ||
+        hasCampaignContext;
       addPositive('combo:strict-intent+direct-deal', 16);
-      hasCommercialContext = true;
+      if (hasStrictIntentCommercialAnchor) {
+        hasCommercialContext = true;
+      }
     }
 
     if (
@@ -3581,16 +3639,13 @@ export class RuleEngineService {
       }
     }
 
-    if (
-      hasGroupContext &&
-      hasDealChannel &&
-      hasGroupPromotionIntent &&
-      (hasGroupTradeContext ||
+    if (hasGroupContext && hasDealChannel && hasGroupPromotionIntent) {
+      const hasExplicitGroupCommercialContext =
+        hasGroupTradeContext ||
         hasCommercialAudienceContext ||
         hasBusinessContext ||
-        hasPromoContext)
-    ) {
-      addPositive('combo:group-promo+deal', 18);
+        hasPromoContext;
+      addPositive('combo:group-promo+deal', hasExplicitGroupCommercialContext ? 18 : 14);
       hasGroupPromoContext = true;
       hasCommercialContext = true;
     }
@@ -3663,6 +3718,7 @@ export class RuleEngineService {
       hasGroupPromotionIntent,
       hasGroupPromoContext,
       hasCommercialAudienceContext,
+      hasChannelPlacementContext,
       hasSearchRequestContext,
       hasJobSeekingContext,
       hasServiceContext,

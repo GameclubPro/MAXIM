@@ -1533,6 +1533,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
+  it('detects bare MAX group promotion without relying on campaign repetition', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Доброго времени суток! Присоединяйтесь к нашей группе. Купи-Продай Родино. Будем рады каждому участнику! https://max.ru/join/Obusdfb6l0Bn6CdmZnOUPpcZiLrclx6r44s7FcAprEo',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['group:группа', 'group-promo:присоединяйтесь', 'deal-channel:link']),
+    );
+  });
+
   it('detects recruitment ad with salary and contact', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -1655,6 +1668,19 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('does not detect personal experience question with promo words and reply CTA', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Здравствуйте, кому нибудь предлагали скидку или займ при покупке квартиры? Если да, то напишите мне в личку пожалуйста',
+      {
+        commercialAdsSensitivity: 'BALANCED',
+      },
+    );
+
+    expect(violation).toBeUndefined();
   });
 
   it('does not detect request for service specialist from real logs when user is looking for help', async () => {
@@ -1800,6 +1826,50 @@ describe('RuleEngineService', () => {
     );
 
     expect(violation).toBeUndefined();
+  });
+
+  it('does not detect private vehicle listing when car interior says salon', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Тойота королла 2000, 1,5. Собственник! 500к Торг. Машина в хорошем состоянии. Коробка и двигатель в норме, салон хороший, по всем вопросам по телефону 89247509666',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('does not detect private pet rehome post just because delivery and phone are present', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Щеночки мальчик и 2 девочки ищут дом. Им 1,5 месяца. Будут средние, уличное содержание +7-914-471-68-90. Доставка',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('does not detect rideshare free seats as channel placement', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Еду в город, есть свободные места, могу забрать с адреса. Водитель 89828862767',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+    expect(
+      service.hasCommercialSpamMarkers(
+        'Еду в город, есть свободные места, могу забрать с адреса. Водитель 89828862767',
+      ),
+    ).toBe(false);
   });
 
   it('detects commercial digital service ads with prices in private messages', async () => {
