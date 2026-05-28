@@ -38,6 +38,17 @@ const PRESETS: Array<{ value: BulkUpdateVkParsingSourcesRequest['preset']; label
   { value: 'CLEAN', label: 'Чисто' },
 ];
 
+const FREQUENCY_PRESETS = [
+  { value: 'FAST', label: 'Быстро', minutes: 20 },
+  { value: 'NORMAL', label: 'Обычно', minutes: 60 },
+  { value: 'SLOW', label: 'Редко', minutes: 180 },
+  { value: 'CUSTOM', label: 'Своё', minutes: null },
+] as const;
+
+const CUSTOM_FREQUENCY_MINUTES = 90;
+
+type FrequencyPresetValue = (typeof FREQUENCY_PRESETS)[number]['value'];
+
 function formatShortDate(value: string | null): string {
   if (!value) {
     return '-';
@@ -47,7 +58,9 @@ function formatShortDate(value: string | null): string {
     month: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(value));
+  })
+    .format(new Date(value))
+    .replace(',', '');
 }
 
 function resolveSourceTone(source: VkParsingSource): 'active' | 'paused' | 'warning' | 'danger' {
@@ -76,6 +89,11 @@ function resolveSourceLabel(source: VkParsingSource): string {
   }
   const syncLabel = formatVkSourceSyncLabel(source);
   return syncLabel || 'Активно';
+}
+
+function resolveFrequencyPreset(minutes: number): FrequencyPresetValue {
+  const preset = FREQUENCY_PRESETS.find((item) => item.minutes === minutes);
+  return preset?.value ?? 'CUSTOM';
 }
 
 export function SourceDashboard({
@@ -142,11 +160,11 @@ export function SourceDashboard({
         </button>
       </div>
 
-      {sources.length > 0 ? (
+      {selectedBulkSourceIds.length > 0 ? (
         <div className="vk-source-bulk">
           <label className="vk-source-select-all">
             <input type="checkbox" checked={allSelected} onChange={onSelectAllBulkSources} />
-            <span>{selectedBulkSourceIds.length || sources.length}</span>
+            <span>{selectedBulkSourceIds.length}</span>
           </label>
           {PRESETS.map((preset) => (
             <button
@@ -167,6 +185,31 @@ export function SourceDashboard({
           const tone = resolveSourceTone(source);
           const selected = selectedSourceId === source.id;
           const bulkSelected = selectedBulkSourceIds.includes(source.id);
+          const frequencyPreset = resolveFrequencyPreset(source.publishIntervalMinutes);
+          const sourceFacts = [
+            {
+              label: 'Импорт',
+              value: formatShortDate(source.lastSuccessAt ?? source.lastSyncAt),
+              title: 'Последний импорт',
+            },
+            {
+              label: 'След.',
+              value: formatShortDate(source.nextRetryAt ?? source.nextSyncAt),
+              title: 'Следующий импорт',
+            },
+            {
+              label: 'Очередь',
+              value: String(source.queuedPostCount),
+              title: 'Постов в очереди',
+            },
+          ];
+          if (source.failedPostCount > 0) {
+            sourceFacts.push({
+              label: 'Ошибки',
+              value: String(source.failedPostCount),
+              title: 'Ошибки публикации',
+            });
+          }
           return (
             <article
               key={source.id}
@@ -193,17 +236,12 @@ export function SourceDashboard({
               </header>
 
               <div className="vk-source-card__facts">
-                <span title="Последний импорт">
-                  {formatShortDate(source.lastSuccessAt ?? source.lastSyncAt)}
-                </span>
-                <span title="Следующий импорт">
-                  {formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}
-                </span>
-                <span title="Новые">{source.lastImportedCount}</span>
-                <span title="Очередь">{source.queuedPostCount}</span>
-                <span title="Опубликованы">{source.publishedPostCount}</span>
-                <span title="Пропущены">{source.skippedPostCount}</span>
-                <span title="Ошибки">{source.failedPostCount}</span>
+                {sourceFacts.map((fact) => (
+                  <span key={fact.label} title={fact.title}>
+                    <b>{fact.label}</b>
+                    {fact.value}
+                  </span>
+                ))}
               </div>
 
               <div className="vk-source-card__actions">
@@ -241,15 +279,6 @@ export function SourceDashboard({
                 </a>
                 <button
                   type="button"
-                  className="vk-parsing-icon-button"
-                  aria-label="Открыть ленту"
-                  title="Открыть ленту"
-                  onClick={() => onSelectSource(source.id)}
-                >
-                  <CheckCircle aria-hidden />
-                </button>
-                <button
-                  type="button"
                   className="vk-parsing-icon-button vk-parsing-icon-button--danger"
                   aria-label="Удалить"
                   title="Удалить"
@@ -260,121 +289,145 @@ export function SourceDashboard({
                 </button>
               </div>
 
-              <div className="vk-source-controls">
-                <label className="vk-source-toggle">
-                  <span>Импорт</span>
-                  <input
-                    type="checkbox"
-                    checked={source.importEnabled}
-                    disabled={isSavingSource}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, { importEnabled: event.target.checked })
-                    }
-                  />
-                </label>
-                <label className="vk-source-toggle">
-                  <span>Авто</span>
-                  <input
-                    type="checkbox"
-                    checked={source.autoPublishEnabled}
-                    disabled={isSavingSource}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, { autoPublishEnabled: event.target.checked })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Частота</span>
-                  <input
-                    type="number"
-                    min={5}
-                    max={10080}
-                    value={source.publishIntervalMinutes}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, {
-                        publishIntervalMinutes: Number(event.target.value),
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Лимит</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={500}
-                    value={source.dailyLimit}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, { dailyLimit: Number(event.target.value) })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Интервал</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1440}
-                    value={source.minPublishIntervalMinutes}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, {
-                        minPublishIntervalMinutes: Number(event.target.value),
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Режим</span>
-                  <select
-                    value={source.publishMode}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, {
-                        publishMode: event.target
-                          .value as UpdateVkParsingSourceRequest['publishMode'],
-                      })
-                    }
-                  >
-                    <option value="IMMEDIATE">Сразу</option>
-                    <option value="QUEUE">Очередь</option>
-                    <option value="REVIEW">Ручной</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Приоритет</span>
-                  <select
-                    value={source.priority}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, {
-                        priority: event.target.value as UpdateVkParsingSourceRequest['priority'],
-                      })
-                    }
-                  >
-                    <option value="HIGH">Высокий</option>
-                    <option value="NORMAL">Обычный</option>
-                    <option value="LOW">Низкий</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Тихо с</span>
-                  <input
-                    type="time"
-                    value={source.quietHoursStart ?? ''}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, { quietHoursStart: event.target.value || null })
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Тихо до</span>
-                  <input
-                    type="time"
-                    value={source.quietHoursEnd ?? ''}
-                    onChange={(event) =>
-                      onUpdateSource(source.id, { quietHoursEnd: event.target.value || null })
-                    }
-                  />
-                </label>
-              </div>
+              {selected ? (
+                <div className="vk-source-controls">
+                  <label className="vk-source-toggle">
+                    <span>Импорт</span>
+                    <input
+                      type="checkbox"
+                      checked={source.importEnabled}
+                      disabled={isSavingSource}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, { importEnabled: event.target.checked })
+                      }
+                    />
+                  </label>
+                  <label className="vk-source-toggle">
+                    <span>Авто</span>
+                    <input
+                      type="checkbox"
+                      checked={source.autoPublishEnabled}
+                      disabled={isSavingSource}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, { autoPublishEnabled: event.target.checked })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Частота</span>
+                    <select
+                      value={frequencyPreset}
+                      onChange={(event) => {
+                        const nextPreset = FREQUENCY_PRESETS.find(
+                          (item) => item.value === event.target.value,
+                        );
+                        onUpdateSource(source.id, {
+                          publishIntervalMinutes: nextPreset?.minutes ?? CUSTOM_FREQUENCY_MINUTES,
+                        });
+                      }}
+                    >
+                      {FREQUENCY_PRESETS.map((preset) => (
+                        <option key={preset.value} value={preset.value}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {frequencyPreset === 'CUSTOM' ? (
+                    <label>
+                      <span>Мин</span>
+                      <input
+                        type="number"
+                        min={5}
+                        max={10080}
+                        value={source.publishIntervalMinutes}
+                        onChange={(event) =>
+                          onUpdateSource(source.id, {
+                            publishIntervalMinutes: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
+                  ) : null}
+                  <label>
+                    <span>Лимит</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={source.dailyLimit}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, { dailyLimit: Number(event.target.value) })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Интервал</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={1440}
+                      value={source.minPublishIntervalMinutes}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, {
+                          minPublishIntervalMinutes: Number(event.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Режим</span>
+                    <select
+                      value={source.publishMode}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, {
+                          publishMode: event.target
+                            .value as UpdateVkParsingSourceRequest['publishMode'],
+                        })
+                      }
+                    >
+                      <option value="IMMEDIATE">Сразу</option>
+                      <option value="QUEUE">Очередь</option>
+                      <option value="REVIEW">Ручной</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Приоритет</span>
+                    <select
+                      value={source.priority}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, {
+                          priority: event.target.value as UpdateVkParsingSourceRequest['priority'],
+                        })
+                      }
+                    >
+                      <option value="HIGH">Высокий</option>
+                      <option value="NORMAL">Обычный</option>
+                      <option value="LOW">Низкий</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Тихо с</span>
+                    <input
+                      type="time"
+                      value={source.quietHoursStart ?? ''}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, { quietHoursStart: event.target.value || null })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Тихо до</span>
+                    <input
+                      type="time"
+                      value={source.quietHoursEnd ?? ''}
+                      onChange={(event) =>
+                        onUpdateSource(source.id, { quietHoursEnd: event.target.value || null })
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
             </article>
           );
         })}

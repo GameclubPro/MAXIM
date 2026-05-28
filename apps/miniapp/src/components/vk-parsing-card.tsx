@@ -51,41 +51,42 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
       />
 
       {feed ? (
-        <SchedulerPanel
-          settings={settings}
-          isSaving={state.isSavingSettings}
-          onUpdateSetting={state.updateSetting}
-        />
+        <details className="vk-parsing-fold">
+          <summary>Автопостинг</summary>
+          <SchedulerPanel
+            settings={settings}
+            isSaving={state.isSavingSettings}
+            onUpdateSetting={state.updateSetting}
+          />
+          <HealthSummary summary={feed.summary} />
+        </details>
       ) : null}
 
-      {feed && settings.autoPublishEnabled ? (
-        <div className="vk-parsing-compliance" role="status">
-          Первичный импорт не публикует старые материалы. Рекламные посты остаются в ленте, если
-          включён режим «Без рекламы».
-        </div>
-      ) : null}
-
-      <HealthSummary summary={feed?.summary} />
-
-      {feed ? (
-        <QueueTimeline
-          posts={feed.queue}
-          schedulingPostId={state.schedulingPostId}
-          cancelingPostId={state.cancelingPostId}
-          publishingNowPostId={state.publishingNowPostId}
-          onSchedulePost={state.schedulePost}
-          onCancelPost={state.cancelScheduledPost}
-          onPublishNow={state.publishPostNow}
-        />
+      {feed && feed.queue.length > 0 ? (
+        <details className="vk-parsing-fold">
+          <summary>Очередь · {feed.queue.length}</summary>
+          <QueueTimeline
+            posts={feed.queue}
+            schedulingPostId={state.schedulingPostId}
+            cancelingPostId={state.cancelingPostId}
+            publishingNowPostId={state.publishingNowPostId}
+            onSchedulePost={state.schedulePost}
+            onCancelPost={state.cancelScheduledPost}
+            onPublishNow={state.publishPostNow}
+          />
+        </details>
       ) : null}
 
       {feed ? (
-        <SafetyPanel
-          sources={sources}
-          auditEvents={feed.auditEvents}
-          isRollingBack={state.isRollingBack}
-          onRollback={state.rollback}
-        />
+        <details className="vk-parsing-fold">
+          <summary>Защита</summary>
+          <SafetyPanel
+            sources={sources}
+            auditEvents={feed.auditEvents}
+            isRollingBack={state.isRollingBack}
+            onRollback={state.rollback}
+          />
+        </details>
       ) : null}
 
       {feed ? (

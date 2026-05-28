@@ -1235,9 +1235,19 @@ function handleVkParsingPreviewRequest(
   if (tail[1] === 'sources' && tail[2] === 'bulk' && method === 'POST') {
     const payload = bulkUpdateVkParsingSourcesRequestSchema.parse(parseJsonBody(init));
     const nowIso = new Date().toISOString();
+    const currentFeed = readFeed();
     const feed = vkParsingFeedSchema.parse({
-      ...readFeed(),
-      sources: readFeed().sources.map((source) =>
+      ...currentFeed,
+      settings:
+        payload.preset === 'CLEAN'
+          ? {
+              ...currentFeed.settings,
+              stripLinksEnabled: true,
+              skipAdsEnabled: true,
+              updatedAt: nowIso,
+            }
+          : currentFeed.settings,
+      sources: currentFeed.sources.map((source) =>
         payload.sourceIds.includes(source.id)
           ? {
               ...source,

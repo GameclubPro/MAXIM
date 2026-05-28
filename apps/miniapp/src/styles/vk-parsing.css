@@ -256,17 +256,6 @@
   background: rgba(31, 124, 209, 0.1);
 }
 
-.vk-parsing-compliance {
-  padding: 9px 11px;
-  border: 1px solid rgba(193, 132, 30, 0.22);
-  border-radius: 8px;
-  background: rgba(255, 249, 236, 0.86);
-  color: #6f4e12;
-  font-size: 12px;
-  font-weight: 680;
-  line-height: 1.38;
-}
-
 .vk-parsing-summary,
 .vk-parsing-filter-bar,
 .vk-parsing-pagination {
@@ -564,18 +553,19 @@
 
 .vk-source-card__facts {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
 }
 
 .vk-source-card__facts span {
   min-width: 0;
   min-height: 28px;
-  padding: 4px 5px;
+  padding: 5px 7px;
   border-radius: 8px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 5px;
   overflow: hidden;
   background: rgba(45, 58, 84, 0.055);
   color: #3d4e64;
@@ -585,10 +575,63 @@
   white-space: nowrap;
 }
 
+.vk-source-card__facts b {
+  flex: 0 0 auto;
+  color: #718095;
+  font-size: 10px;
+  font-weight: 760;
+}
+
 .vk-source-card__actions {
   display: grid;
-  grid-template-columns: repeat(5, 42px);
+  grid-template-columns: repeat(4, 42px);
   gap: 7px;
+}
+
+.vk-parsing-fold {
+  border: 1px solid rgba(45, 58, 84, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.vk-parsing-fold > summary {
+  min-height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  color: #27384f;
+  font-size: 13px;
+  font-weight: 820;
+  cursor: pointer;
+  list-style: none;
+}
+
+.vk-parsing-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.vk-parsing-fold > summary::after {
+  content: '+';
+  margin-left: auto;
+  color: #7c8798;
+  font-size: 17px;
+  font-weight: 720;
+}
+
+.vk-parsing-fold[open] > summary::after {
+  content: '-';
+}
+
+.vk-parsing-fold[open] {
+  padding-bottom: 8px;
+}
+
+.vk-parsing-fold > .vk-scheduler-panel,
+.vk-parsing-fold > .vk-safety-panel,
+.vk-parsing-fold > .vk-queue-timeline {
+  margin: 0 8px;
+  border: 0;
+  background: transparent;
 }
 
 .vk-source-controls,
@@ -1095,11 +1138,11 @@
   }
 
   .vk-source-card__facts {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .vk-source-card__actions {
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
 
   .vk-source-card__actions .vk-parsing-icon-button {
