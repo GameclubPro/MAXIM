@@ -264,7 +264,10 @@ export class VkSyncService {
       await this.recordSourceHeartbeat(source.id);
       const pagePosts = (wall.items ?? [])
         .map((item) => this.normalizePost(item))
-        .filter((post): post is NormalizedVkPost => post !== null);
+        .filter(
+          (post): post is NormalizedVkPost =>
+            post !== null && post.vkOwnerId === source.wallOwnerId,
+        );
       for (const post of pagePosts) {
         postsByKey.set(this.buildPostKey(post.vkOwnerId, post.vkPostId), post);
       }

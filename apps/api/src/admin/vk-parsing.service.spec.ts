@@ -640,6 +640,16 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('rejects malformed VK source links as bad requests', async () => {
+    const { service } = createFixture();
+
+    await expect(
+      service.addSource('channel-1', { userId: '183470701' } as never, {
+        url: 'https://',
+      }),
+    ).rejects.toThrow('Некорректная ссылка на VK-сообщество.');
+  });
+
   it('imports text, photos and links from a public VK community without videos', async () => {
     const { service, prisma, syncQueue } = createFixture();
     const source = createSource();
@@ -706,6 +716,39 @@ describe('VkParsingService', () => {
     expect(rawValues).toContain('Продам авто');
     expect(rawValues).toContain(JSON.stringify(['https://sun1.example/large.jpg']));
     expect(rawValues).toContain(JSON.stringify(['https://example.com/car']));
+  });
+
+  it('ignores wall posts whose owner does not match the source owner', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            { owner_id: -1, id: 1, date: 1_779_707_999, text: 'Чужой пост' },
+            { owner_id: -36819802, id: 101, date: 1_779_708_000, text: 'Наш пост' },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const rawValues = readExecuteRawValues(prisma);
+    expect(rawValues).toContain('Наш пост');
+    expect(rawValues).not.toContain('Чужой пост');
+    expect(prisma.vkParsingSource.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'source-1' },
+        data: expect.objectContaining({
+          lastFetchedCount: 1,
+        }),
+      }),
+    );
   });
 
   it('imports modern VK attachment facts from src photos, copy history, ads and unsupported types', async () => {

@@ -499,7 +499,9 @@ export class VkSourceService {
 
     let sourcePath = trimmed;
     if (/^https?:\/\//iu.test(trimmed) || /^(?:www\.|m\.)?(?:vk\.com|vk\.ru)\//iu.test(trimmed)) {
-      const url = new URL(/^https?:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`);
+      const url = this.parseVkSourceUrl(
+        /^https?:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`,
+      );
       const host = url.hostname
         .replace(/^www\./iu, '')
         .replace(/^m\./iu, '')
@@ -593,6 +595,14 @@ export class VkSourceService {
     }
 
     return null;
+  }
+
+  private parseVkSourceUrl(value: string): URL {
+    try {
+      return new URL(value);
+    } catch {
+      throw new BadRequestException('Некорректная ссылка на VK-сообщество.');
+    }
   }
 
   private async fetchWall(options: {
