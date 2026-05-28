@@ -2400,6 +2400,115 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects recruitment ads with role/pay conditions and contract-service copy', async () => {
+    const service = createRuleEngine();
+    const restaurant = await detectCommercialViolation(
+      service,
+      'СРОЧНО ПОВАРА сезон/постоянка. Ресторан премиум класса. Повар х/ц и г/ц, ставка от 5800 р. до 8000 р. График 2/2, звоните или пишите в MAX +79217822898.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const contract = await detectCommercialViolation(
+      service,
+      'Добровольцы СВО. Самые высокие выплаты и льготы от государства. Официальный контракт с Минобороны РФ, водитель C,D,E, оператор БПЛА. ЗП от 210000р, телефон 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const jobChannel = await detectCommercialViolation(
+      service,
+      'МАХ канал. Есть работа: https://max.ru/join/job1 ИШ ЖУМУШ РАБОТА: https://max.ru/join/job2',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(restaurant).toBeDefined();
+    expect(restaurant?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['recruitment:роль-условия', 'contact:phone']),
+    );
+    expect(contract).toBeDefined();
+    expect(contract?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['recruitment:контрактная-служба', 'contact:phone']),
+    );
+    expect(jobChannel).toBeDefined();
+    expect(jobChannel?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['recruitment:есть-работа', 'deal-channel:link']),
+    );
+  });
+
+  it('detects malformed chat directories and bank card leadgen from audit misses', async () => {
+    const service = createRuleEngine();
+    const directory = await detectCommercialViolation(
+      service,
+      'Чаты 1 женский чат https://max.ru/join/a 2 доска объявлений https://max.ru/join/b 3 взаимосылочная https://max.ru/join/c',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const bank = await detectCommercialViolation(
+      service,
+      'Привет, это Альфа-Банк. Дарим 500 ₽ за оформление Альфа-Стикера по ссылке: https://alfa.me/example. Карта собирает кэшбэк.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(directory).toBeDefined();
+    expect(directory?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['channel-placement:numbered-chat-directory', 'deal-channel:link']),
+    );
+    expect(bank).toBeDefined();
+    expect(bank?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:bank-card-leadgen', 'deal-channel:link']),
+    );
+  });
+
+  it('detects commercial service ads for windows and stone carpet coatings', async () => {
+    const service = createRuleEngine();
+    const windows = await detectCommercialViolation(
+      service,
+      'Новые окна - новая атмосфера в вашем доме. Пластиковые окна, бесплатный выезд на замер, индивидуальный подбор под ваш бюджет, аккуратный монтаж. Телефон 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const coating = await detectCommercialViolation(
+      service,
+      'Каменный ковер - бесшовное покрытие для любого пространства. Подходит для бассейнов, террас и гаражей, служит 30-50 лет. Звоните 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(windows).toBeDefined();
+    expect(windows?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['service-specialty:пластиковые-окна', 'contact:phone']),
+    );
+    expect(coating).toBeDefined();
+    expect(coating?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['service-specialty:каменный-ковер', 'contact:phone']),
+    );
+  });
+
+  it('detects multi-object realtor catalog listings while keeping private property protected', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Губернский, студия 24 м2, этаж 22/22, ремонт, мебель, техника, цена 4000. Губернский 1 к квартира, площадь 45 м2, этаж 21/22, ремонт, мебель, техника, цена 6050. Телефон 89000000000.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.primarySubtype).toBe('PROPERTY_AGENT');
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['property-agent:витрина-объектов', 'contact:phone']),
+    );
+  });
+
   it('records unicode-safe price, transactional, urgency, and quantity signals', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
