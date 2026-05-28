@@ -168,9 +168,12 @@ export function formatVkPublishState(post: VkParsingPost): VkParsingPublishState
   }
 
   if (post.publishQueuedAt) {
+    const scheduled = post.publishScheduledAt ? formatVkPostDate(post.publishScheduledAt) : '';
     return {
       label: post.publishAttemptCount > 0 ? 'Повтор в очереди' : 'В очереди',
-      title: `Ждёт публикации с ${formatVkPostDate(post.publishQueuedAt)}${attemptText}`,
+      title: scheduled
+        ? `Запланирован на ${scheduled}${attemptText}`
+        : `Ждёт публикации с ${formatVkPostDate(post.publishQueuedAt)}${attemptText}`,
       tone: 'warning',
     };
   }

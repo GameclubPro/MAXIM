@@ -1,11 +1,15 @@
 import {
   publishVkParsingPostRequestSchema,
+  rollbackVkParsingResultSchema,
   retryVkParsingPostResultSchema,
   VK_PARSING_MAX_LINKS,
   VK_PARSING_MAX_PHOTOS,
   VK_PARSING_MAX_PUBLISH_TEXT_LENGTH,
   type PublishVkParsingPostResult,
+  type RollbackVkParsingRequest,
+  type RollbackVkParsingResult,
   type RetryVkParsingPostResult,
+  type VkParsingDryRunResult,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
@@ -61,8 +65,19 @@ type VkParsingSettingsLike = {
   chatId: string;
   autoPublishEnabled: boolean;
   autoPublishEnabledAt: Date | null;
+  autoPublishKillSwitchEnabled: boolean;
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
+  schedulerTimezone: string;
+  quietHoursStart: string | null;
+  quietHoursEnd: string | null;
+  workHoursStart: string;
+  workHoursEnd: string;
+  distributeEvenlyEnabled: boolean;
+  roundRobinEnabled: boolean;
+  circuitBreakerEnabled: boolean;
+  circuitBreakerWindowMinutes: number;
+  circuitBreakerPostLimit: number;
   updatedAt: Date | null;
 };
 
@@ -71,8 +86,13 @@ const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_FAILED = 'FAILED';
 const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
+const VK_SOURCE_STATUS_ACTIVE = 'ACTIVE';
+const VK_SOURCE_PUBLISH_MODE_IMMEDIATE = 'IMMEDIATE';
+const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
+const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
+const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
 
 @Injectable()
 export class VkPublishService {
@@ -134,17 +154,12 @@ export class VkPublishService {
         settingsByChatId.set(post.chatId, settings);
       }
 
-      if (
-        reason === 'autopublish' &&
-        (!settings.autoPublishEnabled ||
-          !settings.autoPublishEnabledAt ||
-          !this.isPostEligibleForAutoPublish(post, settings.autoPublishEnabledAt))
-      ) {
+      if (reason === 'autopublish' && !this.canAutoPublishPost(post, settings)) {
         await this.clearQueuedAutoPublishPost(post.id, idempotencyKey);
         continue;
       }
 
-      await this.addPublishJob(post, reason, idempotencyKey, now);
+      await this.addPublishJob(post, reason, idempotencyKey, now, post.publishScheduledAt);
       recovered += 1;
     }
 
@@ -238,6 +253,230 @@ export class VkPublishService {
     });
   }
 
+  async schedulePost(
+    chatId: string,
+    postId: string,
+    scheduledAtIso: string,
+    actorUserId: string,
+  ): Promise<RetryVkParsingPostResult> {
+    const post = await this.findSchedulablePost(chatId, postId);
+    const scheduledAt = new Date(scheduledAtIso);
+    if (!Number.isFinite(scheduledAt.getTime())) {
+      throw new BadRequestException('Некорректное время публикации.');
+    }
+    const reason = post.publishReason === 'autopublish' ? 'autopublish' : 'manual-schedule';
+    const queued = await this.enqueuePostPublish(post, reason, scheduledAt);
+    await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_SCHEDULE_POST', {
+      postId,
+      sourceId: post.sourceId,
+      scheduledAt: scheduledAt.toISOString(),
+    });
+    const updated = await this.prisma.vkParsingPost.findFirst({
+      where: { id: post.id, chatId },
+      include: { source: true },
+    });
+    return retryVkParsingPostResultSchema.parse({
+      post: this.feedService.mapPost(updated ?? post),
+      queued,
+    });
+  }
+
+  async cancelScheduledPost(
+    chatId: string,
+    postId: string,
+    actorUserId: string,
+  ): Promise<RetryVkParsingPostResult> {
+    const post = await this.findSchedulablePost(chatId, postId);
+    const now = new Date();
+    await this.prisma.vkParsingPost.update({
+      where: { id: post.id },
+      data: {
+        publishQueuedAt: null,
+        publishScheduledAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+        publishCancelledAt: now,
+        publishCancelledByUserId: actorUserId,
+      },
+    });
+    await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_CANCEL_POST', {
+      postId,
+      sourceId: post.sourceId,
+    });
+    const updated = await this.prisma.vkParsingPost.findFirst({
+      where: { id: post.id, chatId },
+      include: { source: true },
+    });
+    return retryVkParsingPostResultSchema.parse({
+      post: this.feedService.mapPost(updated ?? post),
+      queued: 0,
+    });
+  }
+
+  async publishPostNow(
+    chatId: string,
+    postId: string,
+    actorUserId: string,
+  ): Promise<RetryVkParsingPostResult> {
+    const post = await this.findSchedulablePost(chatId, postId);
+    const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date());
+    await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_PUBLISH_NOW', {
+      postId,
+      sourceId: post.sourceId,
+    });
+    const updated = await this.prisma.vkParsingPost.findFirst({
+      where: { id: post.id, chatId },
+      include: { source: true },
+    });
+    return retryVkParsingPostResultSchema.parse({
+      post: this.feedService.mapPost(updated ?? post),
+      queued,
+    });
+  }
+
+  async dryRunAutoPublish(chatId: string, query: unknown): Promise<VkParsingDryRunResult> {
+    const sourceId =
+      this.asRecord(query)?.sourceId && typeof this.asRecord(query)?.sourceId === 'string'
+        ? String(this.asRecord(query)?.sourceId).trim()
+        : null;
+    const now = new Date();
+    const settings = await this.getSettingsForChat(chatId);
+    const sources = await this.prisma.vkParsingSource.findMany({
+      where: {
+        chatId,
+        status: VK_SOURCE_STATUS_ACTIVE,
+        ...(sourceId ? { id: sourceId } : {}),
+      },
+    });
+
+    let eligibleNow = 0;
+    let latestImportedVkPublishedAt: Date | null = null;
+    let sourcesWithoutSuccessfulSync = 0;
+    let baselineAt: Date | null = settings.autoPublishEnabledAt;
+    if (settings.autoPublishEnabled && !settings.autoPublishKillSwitchEnabled) {
+      for (const source of sources) {
+        if (!source.lastSuccessAt) {
+          sourcesWithoutSuccessfulSync += 1;
+        }
+        const sourceBaseline = this.resolveAutoPublishBaseline(settings, source);
+        if (!sourceBaseline || !source.autoPublishEnabled || source.publishMode === 'REVIEW') {
+          continue;
+        }
+        baselineAt =
+          baselineAt && baselineAt.getTime() > sourceBaseline.getTime()
+            ? baselineAt
+            : sourceBaseline;
+        const [count, latest] = await Promise.all([
+          this.prisma.vkParsingPost.count({
+            where: {
+              chatId,
+              sourceId: source.id,
+              status: VK_POST_STATUS_NEW,
+              publishQueuedAt: null,
+              publishCancelledAt: null,
+              createdAt: { gte: sourceBaseline },
+              vkPublishedAt: { gte: sourceBaseline },
+            },
+          }),
+          this.prisma.vkParsingPost.aggregate({
+            where: { chatId, sourceId: source.id, status: VK_POST_STATUS_NEW },
+            _max: { vkPublishedAt: true },
+          }),
+        ]);
+        eligibleNow += count;
+        const latestAt = latest._max.vkPublishedAt;
+        if (
+          latestAt &&
+          (!latestImportedVkPublishedAt ||
+            latestAt.getTime() > latestImportedVkPublishedAt.getTime())
+        ) {
+          latestImportedVkPublishedAt = latestAt;
+        }
+      }
+    }
+
+    return {
+      chatId,
+      sourceId,
+      generatedAt: now.toISOString(),
+      globalEnabled: settings.autoPublishEnabled,
+      killSwitchEnabled: settings.autoPublishKillSwitchEnabled,
+      baselineAt: baselineAt ? baselineAt.toISOString() : null,
+      eligibleNow,
+      latestImportedVkPublishedAt: latestImportedVkPublishedAt
+        ? latestImportedVkPublishedAt.toISOString()
+        : null,
+      sourcesWithoutSuccessfulSync,
+    };
+  }
+
+  async rollbackAutoPublished(
+    chatId: string,
+    actorUserId: string,
+    request: RollbackVkParsingRequest,
+  ): Promise<RollbackVkParsingResult> {
+    const since = new Date(request.since);
+    const until = new Date(request.until);
+    if (!Number.isFinite(since.getTime()) || !Number.isFinite(until.getTime())) {
+      throw new BadRequestException('Некорректный период rollback.');
+    }
+    if (until.getTime() < since.getTime()) {
+      throw new BadRequestException('Конец периода раньше начала.');
+    }
+    const posts = await this.prisma.vkParsingPost.findMany({
+      where: {
+        chatId,
+        autoPublishedAt: { gte: since, lte: until },
+        ...(request.sourceId ? { sourceId: request.sourceId } : {}),
+      },
+      include: { source: true },
+      orderBy: [{ autoPublishedAt: 'desc' }],
+      take: 100,
+    });
+
+    let deleted = 0;
+    let failed = 0;
+    if (request.deleteMessages) {
+      for (const post of posts) {
+        if (!post.publishedMessageId) {
+          failed += 1;
+          continue;
+        }
+        try {
+          const botId = await this.maxBotLinkService.resolveBotId({ chatId: post.chatId });
+          await this.maxClient.deleteMessage(post.chatId, post.publishedMessageId, {
+            immediate: true,
+            botId,
+            trafficClass: 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+          });
+          deleted += 1;
+        } catch (error) {
+          failed += 1;
+          this.logger.warn({ postId: post.id, chatId, err: error }, 'VK rollback delete failed');
+        }
+      }
+    }
+
+    await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_ROLLBACK', {
+      since: since.toISOString(),
+      until: until.toISOString(),
+      sourceId: request.sourceId ?? null,
+      deleteMessages: request.deleteMessages,
+      matched: posts.length,
+      deleted,
+      failed,
+    });
+
+    return rollbackVkParsingResultSchema.parse({
+      matched: posts.length,
+      deleted,
+      failed,
+      posts: posts.map((post) => this.feedService.mapPost(post)),
+    });
+  }
+
   async processPublishPostJob(params: {
     postId: string;
     chatId: string;
@@ -280,13 +519,28 @@ export class VkPublishService {
 
     try {
       const settings = await this.getSettingsForChat(post.chatId);
+      if (params.reason === 'autopublish') {
+        if (!this.canAutoPublishPost(post, settings)) {
+          await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey);
+          return;
+        }
+        const deferredUntil = await this.resolveDeferredPublishAt(post, settings, now);
+        if (deferredUntil.getTime() > now.getTime() + 1_000) {
+          await this.deferQueuedPost(post, params.reason, params.idempotencyKey, deferredUntil);
+          return;
+        }
+      }
       if (
-        params.reason === 'autopublish' &&
-        (!settings.autoPublishEnabled ||
-          !settings.autoPublishEnabledAt ||
-          !this.isPostEligibleForAutoPublish(post, settings.autoPublishEnabledAt))
+        params.reason === 'manual-schedule' &&
+        post.publishScheduledAt &&
+        post.publishScheduledAt.getTime() > now.getTime() + 1_000
       ) {
-        await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey);
+        await this.deferQueuedPost(
+          post,
+          params.reason,
+          params.idempotencyKey,
+          post.publishScheduledAt,
+        );
         return;
       }
       await this.autoPublishPost(post, settings);
@@ -309,20 +563,41 @@ export class VkPublishService {
     }
 
     const settings = await this.getSettingsForChat(chatId);
-    if (!settings.autoPublishEnabled || !settings.autoPublishEnabledAt) {
+    if (
+      !settings.autoPublishEnabled ||
+      !settings.autoPublishEnabledAt ||
+      settings.autoPublishKillSwitchEnabled
+    ) {
       return;
     }
 
-    for (const post of posts) {
+    const queuedBySourceId = new Map<string, number>();
+    for (const post of this.sortAutoPublishCandidates(posts)) {
       if (post.status !== VK_POST_STATUS_NEW) {
         continue;
       }
-      if (!this.isPostEligibleForAutoPublish(post, settings.autoPublishEnabledAt)) {
+      if (!this.canAutoPublishPost(post, settings)) {
+        continue;
+      }
+      if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW) {
+        continue;
+      }
+      const queuedForSource = queuedBySourceId.get(post.sourceId) ?? 0;
+      const circuitOpen = await this.shouldOpenAutoPublishCircuit(
+        post,
+        settings,
+        queuedForSource + 1,
+      );
+      if (circuitOpen) {
+        await this.pauseSourceAutoPublishForCircuit(post.source, settings);
+        queuedBySourceId.set(post.sourceId, 0);
         continue;
       }
 
       try {
-        await this.enqueuePostPublish(post, 'autopublish');
+        const scheduledAt = await this.resolveInitialAutoPublishAt(post, settings, queuedForSource);
+        const queued = await this.enqueuePostPublish(post, 'autopublish', scheduledAt);
+        queuedBySourceId.set(post.sourceId, queuedForSource + queued);
       } catch (error) {
         this.logger.warn(
           {
@@ -347,6 +622,7 @@ export class VkPublishService {
           { publishLockedAt: { not: null } },
           { publishIdempotencyKey: { not: null } },
           { publishReason: { not: null } },
+          { publishScheduledAt: { not: null } },
         ],
       },
       data: {
@@ -354,6 +630,39 @@ export class VkPublishService {
         publishLockedAt: null,
         publishIdempotencyKey: null,
         publishReason: null,
+        publishScheduledAt: null,
+      },
+    });
+  }
+
+  async clearQueuedAutoPublishForSource(chatId: string, sourceId: string): Promise<void> {
+    await this.clearQueuedAutoPublishForSources(chatId, [sourceId]);
+  }
+
+  async clearQueuedAutoPublishForSources(chatId: string, sourceIds: string[]): Promise<void> {
+    const uniqueSourceIds = [...new Set(sourceIds.filter(Boolean))];
+    if (uniqueSourceIds.length === 0) {
+      return;
+    }
+    await this.prisma.vkParsingPost.updateMany({
+      where: {
+        chatId,
+        sourceId: { in: uniqueSourceIds },
+        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+        OR: [
+          { publishQueuedAt: { not: null } },
+          { publishLockedAt: { not: null } },
+          { publishIdempotencyKey: { not: null } },
+          { publishReason: { not: null } },
+          { publishScheduledAt: { not: null } },
+        ],
+      },
+      data: {
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+        publishScheduledAt: null,
       },
     });
   }
@@ -456,6 +765,9 @@ export class VkPublishService {
           autoPublishedAt: params.auto ? new Date() : post.autoPublishedAt,
           autoPublishError: null,
           publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishCancelledAt: null,
+          publishCancelledByUserId: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
@@ -465,6 +777,12 @@ export class VkPublishService {
         },
         include: { source: true },
       });
+      if (params.auto) {
+        await this.prisma.vkParsingSource.updateMany({
+          where: { id: post.sourceId },
+          data: { lastAutoPublishedAt: updated.autoPublishedAt ?? updated.publishedAtMax },
+        });
+      }
 
       return {
         post: this.feedService.mapPost(updated),
@@ -551,19 +869,23 @@ export class VkPublishService {
   private async enqueuePostPublish(
     post: VkParsingPostWithSource,
     reason: VkParsingPublishReason,
+    scheduledAt: Date = new Date(),
   ): Promise<number> {
-    const idempotencyKey = this.buildPublishIdempotencyKey(post);
+    const idempotencyKey = this.buildPublishIdempotencyKey(post, scheduledAt);
     const now = new Date();
     const queued = await this.prisma.vkParsingPost.updateMany({
       where: {
         id: post.id,
-        publishQueuedAt: null,
         publishLockedAt: null,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
         ...(reason === 'autopublish' ? { publishIdempotencyKey: null } : {}),
       },
       data: {
         status: post.status === VK_POST_STATUS_FAILED ? VK_POST_STATUS_NEW : post.status,
         publishQueuedAt: now,
+        publishScheduledAt: scheduledAt,
+        publishCancelledAt: null,
+        publishCancelledByUserId: null,
         publishLockedAt: null,
         publishIdempotencyKey: idempotencyKey,
         publishReason: reason,
@@ -575,7 +897,7 @@ export class VkPublishService {
       return 0;
     }
 
-    await this.addPublishJob(post, reason, idempotencyKey, now);
+    await this.addPublishJob(post, reason, idempotencyKey, now, scheduledAt);
 
     return 1;
   }
@@ -585,7 +907,9 @@ export class VkPublishService {
     reason: VkParsingPublishReason,
     idempotencyKey: string,
     createdAt: Date,
+    scheduledAt: Date | null = null,
   ): Promise<void> {
+    const delay = scheduledAt ? Math.max(0, scheduledAt.getTime() - Date.now()) : 0;
     await this.publishQueue.add(
       VK_PUBLISH_JOB_NAME,
       {
@@ -598,9 +922,332 @@ export class VkPublishService {
       },
       {
         jobId: this.buildPublishJobId(post.id, idempotencyKey),
+        delay,
         ...VK_PARSING_PUBLISH_RETRY_POLICY,
       },
     );
+  }
+
+  private sortAutoPublishCandidates(posts: VkParsingPostWithSource[]): VkParsingPostWithSource[] {
+    const priorityRank = new Map([
+      ['HIGH', 0],
+      ['NORMAL', 1],
+      ['LOW', 2],
+    ]);
+    return [...posts].sort((left, right) => {
+      const byPriority =
+        (priorityRank.get(left.source.priority) ?? 1) -
+        (priorityRank.get(right.source.priority) ?? 1);
+      if (byPriority !== 0) {
+        return byPriority;
+      }
+      const leftTime = left.vkPublishedAt?.getTime() ?? left.createdAt.getTime();
+      const rightTime = right.vkPublishedAt?.getTime() ?? right.createdAt.getTime();
+      return leftTime - rightTime;
+    });
+  }
+
+  private canAutoPublishPost(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+  ): boolean {
+    if (
+      !settings.autoPublishEnabled ||
+      !settings.autoPublishEnabledAt ||
+      settings.autoPublishKillSwitchEnabled
+    ) {
+      return false;
+    }
+    if (
+      post.source.status !== VK_SOURCE_STATUS_ACTIVE ||
+      post.source.importEnabled === false ||
+      post.source.autoPublishEnabled === false
+    ) {
+      return false;
+    }
+    const baseline = this.resolveAutoPublishBaseline(settings, post.source);
+    return baseline ? this.isPostEligibleForAutoPublish(post, baseline) : false;
+  }
+
+  private resolveAutoPublishBaseline(
+    settings: VkParsingSettingsLike,
+    source: Pick<VkParsingPostWithSource['source'], 'autoPublishEnabledAt'>,
+  ): Date | null {
+    const globalBaseline = settings.autoPublishEnabledAt;
+    const sourceBaseline = source.autoPublishEnabledAt ?? globalBaseline;
+    if (!globalBaseline || !sourceBaseline) {
+      return null;
+    }
+
+    return globalBaseline.getTime() >= sourceBaseline.getTime() ? globalBaseline : sourceBaseline;
+  }
+
+  private async shouldOpenAutoPublishCircuit(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+    pendingInBatch: number,
+  ): Promise<boolean> {
+    if (!settings.circuitBreakerEnabled) {
+      return false;
+    }
+    const windowMinutes = Math.max(1, settings.circuitBreakerWindowMinutes);
+    const windowStart = new Date(Date.now() - windowMinutes * 60_000);
+    const recent = await this.prisma.vkParsingPost.count({
+      where: {
+        chatId: post.chatId,
+        sourceId: post.sourceId,
+        OR: [
+          { publishQueuedAt: { gte: windowStart }, publishReason: 'autopublish' },
+          { autoPublishedAt: { gte: windowStart } },
+        ],
+      },
+    });
+
+    return (recent ?? 0) + pendingInBatch > settings.circuitBreakerPostLimit;
+  }
+
+  private async pauseSourceAutoPublishForCircuit(
+    source: VkParsingPostWithSource['source'],
+    settings: VkParsingSettingsLike,
+  ): Promise<void> {
+    const now = new Date();
+    await this.prisma.vkParsingSource.update({
+      where: { id: source.id },
+      data: {
+        autoPublishEnabled: false,
+        autoPublishEnabledAt: null,
+        autoPublishPausedAt: now,
+        autoPublishPausedReason: 'circuit_breaker',
+      },
+    });
+    await this.writeAuditLog(
+      source.chatId,
+      VK_PARSING_SYSTEM_ACTOR_USER_ID,
+      'VK_PARSING_CIRCUIT_OPEN',
+      {
+        sourceId: source.id,
+        windowMinutes: settings.circuitBreakerWindowMinutes,
+        limit: settings.circuitBreakerPostLimit,
+      },
+    );
+  }
+
+  private async resolveInitialAutoPublishAt(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+    queuedForSource: number,
+  ): Promise<Date> {
+    const now = new Date();
+    if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_IMMEDIATE) {
+      return this.resolveAllowedScheduleAt(now, settings, post.source);
+    }
+
+    const latestQueued = await this.prisma.vkParsingPost.aggregate({
+      where: {
+        chatId: post.chatId,
+        sourceId: post.sourceId,
+        publishQueuedAt: { not: null },
+        status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+      },
+      _max: { publishScheduledAt: true },
+    });
+    const sourceLastAt =
+      latestQueued?._max?.publishScheduledAt ??
+      post.source.lastAutoPublishedAt ??
+      post.source.autoPublishEnabledAt ??
+      now;
+    const publishIntervalMinutes =
+      typeof post.source.publishIntervalMinutes === 'number' &&
+      post.source.publishIntervalMinutes > 0
+        ? post.source.publishIntervalMinutes
+        : 60;
+    const minPublishIntervalMinutes =
+      typeof post.source.minPublishIntervalMinutes === 'number' &&
+      post.source.minPublishIntervalMinutes >= 0
+        ? post.source.minPublishIntervalMinutes
+        : 30;
+    const sourceSpacingMs = Math.max(
+      5 * 60_000,
+      Math.max(publishIntervalMinutes, minPublishIntervalMinutes) * 60_000,
+    );
+    const chatSpacingMs = settings.roundRobinEnabled ? 60_000 : 0;
+    const latestChatQueued = settings.roundRobinEnabled
+      ? await this.prisma.vkParsingPost.aggregate({
+          where: {
+            chatId: post.chatId,
+            publishQueuedAt: { not: null },
+            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+          },
+          _max: { publishScheduledAt: true },
+        })
+      : null;
+    const baseMs = Math.max(
+      now.getTime(),
+      sourceLastAt.getTime() + sourceSpacingMs * Math.max(1, queuedForSource + 1),
+      latestChatQueued?._max.publishScheduledAt
+        ? latestChatQueued._max.publishScheduledAt.getTime() + chatSpacingMs
+        : 0,
+    );
+    return this.resolveAllowedScheduleAt(new Date(baseMs), settings, post.source);
+  }
+
+  private async resolveDeferredPublishAt(
+    post: VkParsingPostWithSource,
+    settings: VkParsingSettingsLike,
+    now: Date,
+  ): Promise<Date> {
+    let candidate =
+      post.publishScheduledAt && post.publishScheduledAt > now ? post.publishScheduledAt : now;
+    const dayStart = new Date(candidate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60_000);
+    const publishedToday = await this.prisma.vkParsingPost.count({
+      where: {
+        chatId: post.chatId,
+        sourceId: post.sourceId,
+        autoPublishedAt: { gte: dayStart, lt: dayEnd },
+      },
+    });
+    const dailyLimit =
+      typeof post.source.dailyLimit === 'number' && post.source.dailyLimit > 0
+        ? post.source.dailyLimit
+        : 3;
+    if (publishedToday >= dailyLimit) {
+      candidate = new Date(dayEnd.getTime() + 9 * 60 * 60_000);
+    }
+    const lastAutoPublishedAt = post.source.lastAutoPublishedAt;
+    if (lastAutoPublishedAt) {
+      const minPublishIntervalMinutes =
+        typeof post.source.minPublishIntervalMinutes === 'number' &&
+        post.source.minPublishIntervalMinutes >= 0
+          ? post.source.minPublishIntervalMinutes
+          : 30;
+      const minNextAt = new Date(
+        lastAutoPublishedAt.getTime() + minPublishIntervalMinutes * 60_000,
+      );
+      if (minNextAt > candidate) {
+        candidate = minNextAt;
+      }
+    }
+
+    return this.resolveAllowedScheduleAt(candidate, settings, post.source);
+  }
+
+  private async deferQueuedPost(
+    post: VkParsingPostWithSource,
+    reason: VkParsingPublishReason,
+    currentIdempotencyKey: string,
+    scheduledAt: Date,
+  ): Promise<void> {
+    const nextIdempotencyKey = this.buildPublishIdempotencyKey(post, scheduledAt);
+    await this.prisma.vkParsingPost.updateMany({
+      where: { id: post.id, publishIdempotencyKey: currentIdempotencyKey },
+      data: {
+        publishScheduledAt: scheduledAt,
+        publishLockedAt: null,
+        publishIdempotencyKey: nextIdempotencyKey,
+        publishReason: reason,
+      },
+    });
+    await this.addPublishJob(post, reason, nextIdempotencyKey, new Date(), scheduledAt);
+  }
+
+  private resolveAllowedScheduleAt(
+    candidate: Date,
+    settings: VkParsingSettingsLike,
+    source: Pick<VkParsingPostWithSource['source'], 'quietHoursStart' | 'quietHoursEnd'>,
+  ): Date {
+    let current = new Date(candidate);
+    for (let index = 0; index < VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS; index += 1) {
+      if (this.isAllowedPublishTime(current, settings, source)) {
+        return current;
+      }
+      current = new Date(current.getTime() + VK_PARSING_SCHEDULE_STEP_MS);
+    }
+
+    return candidate;
+  }
+
+  private isAllowedPublishTime(
+    date: Date,
+    settings: VkParsingSettingsLike,
+    source: Pick<VkParsingPostWithSource['source'], 'quietHoursStart' | 'quietHoursEnd'>,
+  ): boolean {
+    const minute = this.getTimeOfDayMinute(date, settings.schedulerTimezone);
+    return (
+      this.isMinuteInsideRange(minute, settings.workHoursStart, settings.workHoursEnd) &&
+      !this.isMinuteInsideOptionalRange(minute, settings.quietHoursStart, settings.quietHoursEnd) &&
+      !this.isMinuteInsideOptionalRange(minute, source.quietHoursStart, source.quietHoursEnd)
+    );
+  }
+
+  private isMinuteInsideOptionalRange(
+    minute: number,
+    start: string | null,
+    end: string | null,
+  ): boolean {
+    return Boolean(start && end && this.isMinuteInsideRange(minute, start, end));
+  }
+
+  private isMinuteInsideRange(minute: number, start: string, end: string): boolean {
+    const startMinute = this.parseTimeOfDay(start);
+    const endMinute = this.parseTimeOfDay(end);
+    if (startMinute === endMinute) {
+      return true;
+    }
+    if (startMinute < endMinute) {
+      return minute >= startMinute && minute < endMinute;
+    }
+    return minute >= startMinute || minute < endMinute;
+  }
+
+  private parseTimeOfDay(value: string): number {
+    const [hoursRaw, minutesRaw] = value.split(':');
+    const hours = Number(hoursRaw);
+    const minutes = Number(minutesRaw);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      return 0;
+    }
+    return (
+      Math.max(0, Math.min(23, Math.trunc(hours))) * 60 +
+      Math.max(0, Math.min(59, Math.trunc(minutes)))
+    );
+  }
+
+  private getTimeOfDayMinute(date: Date, timeZone: string): number {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(date);
+      const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? 0);
+      const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? 0);
+      return hour * 60 + minute;
+    } catch {
+      return date.getHours() * 60 + date.getMinutes();
+    }
+  }
+
+  private async findSchedulablePost(
+    chatId: string,
+    postId: string,
+  ): Promise<VkParsingPostWithSource> {
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: { id: postId, chatId },
+      include: { source: true },
+    });
+    if (!post) {
+      throw new NotFoundException('VK-пост не найден.');
+    }
+    if (post.status === VK_POST_STATUS_PUBLISHED) {
+      throw new BadRequestException('Этот VK-пост уже опубликован.');
+    }
+    if (post.status === VK_POST_STATUS_UNAVAILABLE) {
+      throw new BadRequestException('VK-пост недоступен в исходном источнике.');
+    }
+    return post;
   }
 
   private resolvePhotoMediaIdentityMap(post: {
@@ -684,6 +1331,7 @@ export class VkPublishService {
         ...(shouldClearQueue
           ? {
               publishQueuedAt: null,
+              publishScheduledAt: null,
               publishIdempotencyKey: null,
               publishReason: null,
             }
@@ -729,6 +1377,7 @@ export class VkPublishService {
       },
       data: {
         publishQueuedAt: null,
+        publishScheduledAt: null,
         publishLockedAt: null,
         publishIdempotencyKey: null,
         publishReason: null,
@@ -741,10 +1390,13 @@ export class VkPublishService {
   }
 
   private resolveRecoveredPublishReason(reason: string | null | undefined): VkParsingPublishReason {
-    return reason === 'manual-retry' ? 'manual-retry' : 'autopublish';
+    if (reason === 'manual-retry' || reason === 'manual-schedule') {
+      return reason;
+    }
+    return 'autopublish';
   }
 
-  private buildPublishIdempotencyKey(post: VkParsingPostWithSource): string {
+  private buildPublishIdempotencyKey(post: VkParsingPostWithSource, scheduledAt: Date): string {
     return createHash('sha256')
       .update(
         JSON.stringify({
@@ -752,6 +1404,7 @@ export class VkPublishService {
           chatId: post.chatId,
           contentHash: post.contentHash,
           status: post.status,
+          scheduledAt: scheduledAt.toISOString(),
         }),
       )
       .digest('hex')
@@ -977,6 +1630,7 @@ export class VkPublishService {
         lastError: describeVkParsingSkipReason(reason),
         publishLockedAt: null,
         publishQueuedAt: null,
+        publishScheduledAt: null,
         publishIdempotencyKey: null,
         publishReason: null,
       },
@@ -1012,20 +1666,63 @@ export class VkPublishService {
     );
   }
 
+  private async writeAuditLog(
+    chatId: string,
+    actorUserId: string,
+    action: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.prisma.auditLog?.create) {
+      return;
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId,
+        action,
+        payload: this.toJsonInput(payload),
+      },
+    });
+  }
+
+  private toJsonInput(value: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+  }
+
   private getDefaultSettings(chatId: string): VkParsingSettingsLike {
     return {
       chatId,
       autoPublishEnabled: false,
       autoPublishEnabledAt: null,
+      autoPublishKillSwitchEnabled: false,
       stripLinksEnabled: false,
       skipAdsEnabled: false,
+      schedulerTimezone: 'Europe/Moscow',
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      workHoursStart: '09:00',
+      workHoursEnd: '22:00',
+      distributeEvenlyEnabled: true,
+      roundRobinEnabled: true,
+      circuitBreakerEnabled: true,
+      circuitBreakerWindowMinutes: 10,
+      circuitBreakerPostLimit: 10,
       updatedAt: null,
     };
   }
 
   private async getSettingsForChat(chatId: string): Promise<VkParsingSettingsLike> {
     const settings = await this.prisma.vkParsingSettings.findUnique({ where: { chatId } });
-    return settings ?? this.getDefaultSettings(chatId);
+    const defaults = this.getDefaultSettings(chatId);
+    const legacySchedulerDefaults =
+      settings && !Object.prototype.hasOwnProperty.call(settings, 'workHoursStart')
+        ? { workHoursStart: '00:00', workHoursEnd: '00:00' }
+        : {};
+    return {
+      ...defaults,
+      ...legacySchedulerDefaults,
+      ...(settings ?? {}),
+    };
   }
 
   private readStringArray(value: Prisma.JsonValue | unknown): string[] {

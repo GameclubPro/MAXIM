@@ -1,5 +1,6 @@
 import {
   addVkParsingSourceRequestSchema,
+  bulkUpdateVkParsingSourcesRequestSchema,
   applySectionTargetPreviewResponseSchema,
   applySectionToAllResponseSchema,
   applySettingsTargetSchema,
@@ -38,7 +39,10 @@ import {
   publishChatRulesResultSchema,
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
+  rollbackVkParsingRequestSchema,
+  rollbackVkParsingResultSchema,
   retryVkParsingPostResultSchema,
+  scheduleVkParsingPostRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   sendBroadcastTestResultSchema,
@@ -54,6 +58,7 @@ import {
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   updateVkParsingSettingsRequestSchema,
+  updateVkParsingSourceRequestSchema,
   vkParsingCapabilitySchema,
   vkParsingFeedQuerySchema,
   vkParsingFeedSchema,
@@ -766,6 +771,24 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     title: 'Южное медиа',
     url: 'https://vk.com/yuzhnoe_media',
     status: 'ACTIVE',
+    importEnabled: true,
+    autoPublishEnabled: true,
+    autoPublishEnabledAt: addHours(now, -2).toISOString(),
+    autoPublishPausedAt: null,
+    autoPublishPausedReason: null,
+    publishIntervalMinutes: 30,
+    dailyLimit: 6,
+    minPublishIntervalMinutes: 20,
+    publishMode: 'QUEUE',
+    priority: 'HIGH',
+    quietHoursStart: null,
+    quietHoursEnd: null,
+    lastAutoPublishedAt: addHours(now, -6.8).toISOString(),
+    newPostCount: 2,
+    queuedPostCount: 1,
+    publishedPostCount: 1,
+    skippedPostCount: 1,
+    failedPostCount: 1,
     syncStatus: 'IDLE',
     nextSyncAt: null,
     nextRetryAt: null,
@@ -800,6 +823,24 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     title: 'Афиша Юга',
     url: 'https://vk.com/afisha_yuga',
     status: 'ACTIVE',
+    importEnabled: true,
+    autoPublishEnabled: false,
+    autoPublishEnabledAt: null,
+    autoPublishPausedAt: addHours(now, -1).toISOString(),
+    autoPublishPausedReason: 'manual',
+    publishIntervalMinutes: 180,
+    dailyLimit: 3,
+    minPublishIntervalMinutes: 60,
+    publishMode: 'REVIEW',
+    priority: 'NORMAL',
+    quietHoursStart: '23:00',
+    quietHoursEnd: '08:00',
+    lastAutoPublishedAt: null,
+    newPostCount: 1,
+    queuedPostCount: 0,
+    publishedPostCount: 0,
+    skippedPostCount: 0,
+    failedPostCount: 0,
     syncStatus: 'BACKOFF',
     nextSyncAt: addHours(now, 1.4).toISOString(),
     nextRetryAt: addHours(now, 1.4).toISOString(),
@@ -829,12 +870,23 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
     chatId,
     autoPublishEnabled: true,
     autoPublishEnabledAt: addHours(now, -2).toISOString(),
+    autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: true,
     skipAdsEnabled: true,
+    schedulerTimezone: 'Europe/Moscow',
+    quietHoursStart: '23:00',
+    quietHoursEnd: '08:00',
+    workHoursStart: '09:00',
+    workHoursEnd: '22:00',
+    distributeEvenlyEnabled: true,
+    roundRobinEnabled: true,
+    circuitBreakerEnabled: true,
+    circuitBreakerWindowMinutes: 10,
+    circuitBreakerPostLimit: 10,
     updatedAt: addHours(now, -2).toISOString(),
   };
 
-  return vkParsingFeedSchema.parse({
+  const feed = vkParsingFeedSchema.parse({
     capabilities: { enabled: true, canUse: true },
     settings,
     sources: [sourceOne, sourceTwo],
@@ -868,6 +920,8 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         lastSeenAt: addHours(now, -1.8).toISOString(),
         missingSinceAt: null,
         unavailableAt: null,
+        publishQueuedAt: addHours(now, -0.3).toISOString(),
+        publishScheduledAt: addHours(now, 0.8).toISOString(),
         lastError: null,
         createdAt: addHours(now, -2.4).toISOString(),
         updatedAt: addHours(now, -1.8).toISOString(),
@@ -1022,6 +1076,10 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
       recentErrors: [{ code: 'vk_6', count: 3 }],
     },
   });
+  return vkParsingFeedSchema.parse({
+    ...feed,
+    queue: feed.posts.filter((post) => post.publishQueuedAt),
+  });
 }
 
 function buildPreviewVkParsingPage(
@@ -1030,7 +1088,11 @@ function buildPreviewVkParsingPage(
 ): VkParsingFeed {
   const query = vkParsingFeedQuerySchema.parse(Object.fromEntries(searchParams.entries()));
   const filteredPosts = feed.posts.filter((post) => {
-    if (query.status !== 'ALL' && post.status !== query.status) {
+    if (query.status === 'QUEUED') {
+      if (!post.publishQueuedAt) {
+        return false;
+      }
+    } else if (query.status !== 'ALL' && post.status !== query.status) {
       return false;
     }
     if (query.sourceId && post.sourceId !== query.sourceId) {
@@ -1045,6 +1107,7 @@ function buildPreviewVkParsingPage(
   return vkParsingFeedSchema.parse({
     ...feed,
     posts,
+    queue: feed.posts.filter((post) => post.publishQueuedAt),
     pagination: {
       limit: query.limit,
       offset: query.offset,
@@ -1072,10 +1135,14 @@ function handleVkParsingPreviewRequest(
 
   const readFeed = () => (entityType === 'channel' ? state.channelVkParsing : state.chatVkParsing);
   const writeFeed = (feed: VkParsingFeed) => {
+    const normalizedFeed = vkParsingFeedSchema.parse({
+      ...feed,
+      queue: feed.posts.filter((post) => post.publishQueuedAt),
+    });
     if (entityType === 'channel') {
-      state.channelVkParsing = feed;
+      state.channelVkParsing = normalizedFeed;
     } else {
-      state.chatVkParsing = feed;
+      state.chatVkParsing = normalizedFeed;
     }
   };
 
@@ -1115,6 +1182,82 @@ function handleVkParsingPreviewRequest(
     return { handled: true, value: cloneJson(feed) };
   }
 
+  if (tail[1] === 'autopublish' && tail[2] === 'dry-run' && method === 'GET') {
+    const sourceId = url.searchParams.get('sourceId');
+    const feed = readFeed();
+    const sources = sourceId
+      ? feed.sources.filter((source) => source.id === sourceId)
+      : feed.sources;
+    return {
+      handled: true,
+      value: {
+        chatId,
+        sourceId: sourceId ?? null,
+        generatedAt: new Date().toISOString(),
+        globalEnabled: feed.settings.autoPublishEnabled,
+        killSwitchEnabled: feed.settings.autoPublishKillSwitchEnabled,
+        baselineAt: feed.settings.autoPublishEnabledAt,
+        eligibleNow: 0,
+        latestImportedVkPublishedAt:
+          feed.posts
+            .filter((post) => !sourceId || post.sourceId === sourceId)
+            .map((post) => post.vkPublishedAt)
+            .filter(Boolean)
+            .sort()
+            .at(-1) ?? null,
+        sourcesWithoutSuccessfulSync: sources.filter((source) => !source.lastSuccessAt).length,
+      },
+    };
+  }
+
+  if (tail[1] === 'rollback' && method === 'POST') {
+    const payload = rollbackVkParsingRequestSchema.parse(parseJsonBody(init));
+    const posts = readFeed().posts.filter((post) => {
+      if (!post.autoPublishedAt) {
+        return false;
+      }
+      if (payload.sourceId && post.sourceId !== payload.sourceId) {
+        return false;
+      }
+      return post.autoPublishedAt >= payload.since && post.autoPublishedAt <= payload.until;
+    });
+    return {
+      handled: true,
+      value: rollbackVkParsingResultSchema.parse({
+        matched: posts.length,
+        deleted: payload.deleteMessages ? posts.length : 0,
+        failed: 0,
+        posts,
+      }),
+    };
+  }
+
+  if (tail[1] === 'sources' && tail[2] === 'bulk' && method === 'POST') {
+    const payload = bulkUpdateVkParsingSourcesRequestSchema.parse(parseJsonBody(init));
+    const nowIso = new Date().toISOString();
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: readFeed().sources.map((source) =>
+        payload.sourceIds.includes(source.id)
+          ? {
+              ...source,
+              importEnabled: true,
+              autoPublishEnabled: payload.preset !== 'REVIEW',
+              autoPublishEnabledAt: payload.preset !== 'REVIEW' ? nowIso : null,
+              publishMode: payload.preset === 'REVIEW' ? 'REVIEW' : 'QUEUE',
+              priority: payload.preset === 'NEWS' ? 'HIGH' : 'NORMAL',
+              publishIntervalMinutes:
+                payload.preset === 'NEWS' ? 20 : payload.preset === 'SLOW' ? 180 : 60,
+              dailyLimit: payload.preset === 'NEWS' ? 12 : 3,
+              updatedAt: nowIso,
+            }
+          : source,
+      ),
+    });
+    writeFeed(feed);
+    return { handled: true, value: cloneJson(feed) };
+  }
+
   if (tail[1] === 'sources' && tail.length === 2 && method === 'POST') {
     const payload = addVkParsingSourceRequestSchema.parse(parseJsonBody(init));
     const now = new Date();
@@ -1129,6 +1272,24 @@ function handleVkParsingPreviewRequest(
       title: screenName.replace(/[_-]+/gu, ' ') || 'VK источник',
       url: parsedUrl.toString(),
       status: 'ACTIVE',
+      importEnabled: true,
+      autoPublishEnabled: false,
+      autoPublishEnabledAt: null,
+      autoPublishPausedAt: null,
+      autoPublishPausedReason: null,
+      publishIntervalMinutes: 60,
+      dailyLimit: 3,
+      minPublishIntervalMinutes: 30,
+      publishMode: 'QUEUE',
+      priority: 'NORMAL',
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      lastAutoPublishedAt: null,
+      newPostCount: 0,
+      queuedPostCount: 0,
+      publishedPostCount: 0,
+      skippedPostCount: 0,
+      failedPostCount: 0,
       syncStatus: 'QUEUED',
       nextSyncAt: null,
       nextRetryAt: null,
@@ -1166,6 +1327,57 @@ function handleVkParsingPreviewRequest(
         imported: 0,
         queued: 1,
       }),
+    };
+  }
+
+  if (tail[1] === 'sources' && tail[2] && tail.length === 3 && method === 'PATCH') {
+    const sourceId = decodeURIComponent(tail[2]);
+    const payload = updateVkParsingSourceRequestSchema.parse(parseJsonBody(init));
+    const nowIso = new Date().toISOString();
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: readFeed().sources.map((source) =>
+        source.id === sourceId
+          ? {
+              ...source,
+              ...payload,
+              autoPublishEnabledAt:
+                payload.autoPublishEnabled === true
+                  ? (source.autoPublishEnabledAt ?? nowIso)
+                  : payload.autoPublishEnabled === false
+                    ? null
+                    : source.autoPublishEnabledAt,
+              updatedAt: nowIso,
+            }
+          : source,
+      ),
+    });
+    writeFeed(feed);
+    return { handled: true, value: cloneJson(feed) };
+  }
+
+  if (tail[1] === 'sources' && tail[2] && tail[3] === 'refresh' && method === 'POST') {
+    const sourceId = decodeURIComponent(tail[2]);
+    const nowIso = new Date().toISOString();
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      sources: readFeed().sources.map((source) =>
+        source.id === sourceId
+          ? {
+              ...source,
+              syncStatus: 'IDLE',
+              lastSyncAt: nowIso,
+              lastSuccessAt: nowIso,
+              lastImportedCount: source.lastImportedCount + 1,
+              updatedAt: nowIso,
+            }
+          : source,
+      ),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: vkParsingRefreshResultSchema.parse({ ...feed, imported: 1, queued: 1 }),
     };
   }
 
@@ -1219,6 +1431,7 @@ function handleVkParsingPreviewRequest(
       ...post,
       status: 'NEW',
       publishQueuedAt: nowIso,
+      publishScheduledAt: addHours(new Date(), 1).toISOString(),
       publishLockedAt: null,
       publishAttemptCount: post.publishAttemptCount + 1,
       autoPublishError: null,
@@ -1236,6 +1449,90 @@ function handleVkParsingPreviewRequest(
         post: updatedPost,
         queued: 1,
       }),
+    };
+  }
+
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'schedule' && method === 'PATCH') {
+    const payload = scheduleVkParsingPostRequestSchema.parse(parseJsonBody(init));
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatedPost: VkParsingPost = {
+      ...post,
+      status: 'NEW',
+      publishQueuedAt: post.publishQueuedAt ?? nowIso,
+      publishScheduledAt: payload.scheduledAt,
+      publishLockedAt: null,
+      publishAttemptCount: post.publishAttemptCount,
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: retryVkParsingPostResultSchema.parse({ post: updatedPost, queued: 1 }),
+    };
+  }
+
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'cancel' && method === 'POST') {
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+    const nowIso = new Date().toISOString();
+    const updatedPost: VkParsingPost = {
+      ...post,
+      publishQueuedAt: null,
+      publishScheduledAt: null,
+      publishLockedAt: null,
+      publishCancelledAt: nowIso,
+      publishCancelledByUserId: 'preview-user',
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: retryVkParsingPostResultSchema.parse({ post: updatedPost, queued: 0 }),
+    };
+  }
+
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'publish-now' && method === 'POST') {
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+    const nowIso = new Date().toISOString();
+    const updatedPost: VkParsingPost = {
+      ...post,
+      status: 'NEW',
+      publishQueuedAt: nowIso,
+      publishScheduledAt: nowIso,
+      publishLockedAt: null,
+      publishCancelledAt: null,
+      publishCancelledByUserId: null,
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: retryVkParsingPostResultSchema.parse({ post: updatedPost, queued: 1 }),
     };
   }
 
@@ -1264,6 +1561,7 @@ function handleVkParsingPreviewRequest(
       autoPublishedAt: null,
       autoPublishError: null,
       publishQueuedAt: null,
+      publishScheduledAt: null,
       publishLockedAt: null,
       lastError: null,
       updatedAt: nowIso,

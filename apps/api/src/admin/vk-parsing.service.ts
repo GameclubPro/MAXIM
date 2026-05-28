@@ -1,8 +1,14 @@
 import {
+  bulkUpdateVkParsingSourcesRequestSchema,
+  rollbackVkParsingRequestSchema,
+  scheduleVkParsingPostRequestSchema,
   updateVkParsingSettingsRequestSchema,
+  updateVkParsingSourceRequestSchema,
   type PublishVkParsingPostResult,
+  type RollbackVkParsingResult,
   type RetryVkParsingPostResult,
   type VkParsingCapability,
+  type VkParsingDryRunResult,
   type VkParsingFeed,
   type VkParsingHealthSummary,
   type VkParsingRefreshResult,
@@ -71,15 +77,32 @@ export class VkParsingService {
         chatId,
         autoPublishEnabled: nextAutoPublishEnabled,
         autoPublishEnabledAt: nextAutoPublishEnabled ? (autoPublishEnabledAt ?? now) : null,
+        autoPublishKillSwitchEnabled: parsed.data.autoPublishKillSwitchEnabled ?? false,
         stripLinksEnabled: parsed.data.stripLinksEnabled ?? false,
         skipAdsEnabled: parsed.data.skipAdsEnabled ?? false,
+        schedulerTimezone: parsed.data.schedulerTimezone ?? 'Europe/Moscow',
+        quietHoursStart: parsed.data.quietHoursStart ?? null,
+        quietHoursEnd: parsed.data.quietHoursEnd ?? null,
+        workHoursStart: parsed.data.workHoursStart ?? '09:00',
+        workHoursEnd: parsed.data.workHoursEnd ?? '22:00',
+        distributeEvenlyEnabled: parsed.data.distributeEvenlyEnabled ?? true,
+        roundRobinEnabled: parsed.data.roundRobinEnabled ?? true,
+        circuitBreakerEnabled: parsed.data.circuitBreakerEnabled ?? true,
+        circuitBreakerWindowMinutes: parsed.data.circuitBreakerWindowMinutes ?? 10,
+        circuitBreakerPostLimit: parsed.data.circuitBreakerPostLimit ?? 10,
       },
       update: updateData,
     });
 
-    if (parsed.data.autoPublishEnabled === false) {
+    if (
+      parsed.data.autoPublishEnabled === false ||
+      parsed.data.autoPublishKillSwitchEnabled === true
+    ) {
       await this.publishService.clearQueuedAutoPublishForChat(chatId);
     }
+    await this.writeAuditLog(chatId, user.userId, 'VK_PARSING_UPDATE_SETTINGS', {
+      changed: parsed.data,
+    });
 
     return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
   }
@@ -96,12 +119,59 @@ export class VkParsingService {
 
   async removeSource(chatId: string, sourceId: string, user: AuthUser): Promise<VkParsingFeed> {
     await this.accessService.assertAccess(chatId, user);
+    await this.publishService.clearQueuedAutoPublishForSource(chatId, sourceId);
     return this.sourceService.removeSource(chatId, sourceId);
+  }
+
+  async updateSource(
+    chatId: string,
+    sourceId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<VkParsingFeed> {
+    await this.accessService.assertAccess(chatId, user);
+    const parsed = updateVkParsingSourceRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const feed = await this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
+    if (parsed.data.autoPublishEnabled === false || parsed.data.importEnabled === false) {
+      await this.publishService.clearQueuedAutoPublishForSource(chatId, sourceId);
+    }
+    return feed;
+  }
+
+  async applySourcePreset(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
+    await this.accessService.assertAccess(chatId, user);
+    const parsed = bulkUpdateVkParsingSourcesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    const feed = await this.sourceService.applyBulkPreset(chatId, user, parsed.data);
+    if (parsed.data.preset === 'REVIEW') {
+      await this.publishService.clearQueuedAutoPublishForSources(chatId, parsed.data.sourceIds);
+    }
+    if (parsed.data.preset === 'CLEAN') {
+      return this.updateSettings(chatId, user, {
+        stripLinksEnabled: true,
+        skipAdsEnabled: true,
+      });
+    }
+    return feed;
   }
 
   async refresh(chatId: string, user: AuthUser): Promise<VkParsingRefreshResult> {
     await this.accessService.assertAccess(chatId, user);
     return this.sourceService.refresh(chatId);
+  }
+
+  async refreshSource(
+    chatId: string,
+    sourceId: string,
+    user: AuthUser,
+  ): Promise<VkParsingRefreshResult> {
+    await this.accessService.assertAccess(chatId, user);
+    return this.sourceService.refreshSource(chatId, sourceId);
   }
 
   async syncDueSources(reason: VkParsingSyncReason = 'scheduled'): Promise<number> {
@@ -131,6 +201,60 @@ export class VkParsingService {
     return this.publishService.retryPost(chatId, postId);
   }
 
+  async schedulePost(
+    chatId: string,
+    postId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<RetryVkParsingPostResult> {
+    await this.accessService.assertAccess(chatId, user);
+    const parsed = scheduleVkParsingPostRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.publishService.schedulePost(chatId, postId, parsed.data.scheduledAt, user.userId);
+  }
+
+  async cancelScheduledPost(
+    chatId: string,
+    postId: string,
+    user: AuthUser,
+  ): Promise<RetryVkParsingPostResult> {
+    await this.accessService.assertAccess(chatId, user);
+    return this.publishService.cancelScheduledPost(chatId, postId, user.userId);
+  }
+
+  async publishPostNow(
+    chatId: string,
+    postId: string,
+    user: AuthUser,
+  ): Promise<RetryVkParsingPostResult> {
+    await this.accessService.assertAccess(chatId, user);
+    return this.publishService.publishPostNow(chatId, postId, user.userId);
+  }
+
+  async dryRunAutoPublish(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<VkParsingDryRunResult> {
+    await this.accessService.assertAccess(chatId, user);
+    return this.publishService.dryRunAutoPublish(chatId, query);
+  }
+
+  async rollbackAutoPublished(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<RollbackVkParsingResult> {
+    await this.accessService.assertAccess(chatId, user);
+    const parsed = rollbackVkParsingRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+    return this.publishService.rollbackAutoPublished(chatId, user.userId, parsed.data);
+  }
+
   async processSyncSourceJob(
     sourceId: string,
     reason: VkParsingSyncReason = 'scheduled',
@@ -147,5 +271,24 @@ export class VkParsingService {
     maxAttempts?: number;
   }): Promise<void> {
     return this.publishService.processPublishPostJob(params);
+  }
+
+  private async writeAuditLog(
+    chatId: string,
+    actorUserId: string,
+    action: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.prisma.auditLog?.create) {
+      return;
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId,
+        action,
+        payload: JSON.parse(JSON.stringify(payload ?? null)),
+      },
+    });
   }
 }

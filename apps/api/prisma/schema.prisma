@@ -175,29 +175,29 @@ model Chat {
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
-  settings                 ChatSettings?
-  rules                    ChatRules?
-  poll                     ManagedPoll?
-  channelSettings          ChannelSettings?
-  admins                   ChatAdminAllowlist[]
-  domains                  DomainAllowlist[]
-  violations               Violation[]
-  events                   ModerationEvent[]
-  auditLogs                AuditLog[]
-  channelAudienceSnapshots ChannelAudienceSnapshot[]
-  channelPosts             ChannelPost[]
-  channelStatsSyncState    ChannelStatsSyncState?
-  managedBroadcasts        ManagedBroadcast[]
-  managedGiveaways         ManagedGiveaway[]
-  vkParsingSettings        VkParsingSettings?
-  vkParsingSources         VkParsingSource[]
-  vkParsingPosts           VkParsingPost[]
-  botMemberships           ChatBotMembership[]
-  accessEdges              ManagedEntityAccessEdge[]
-  favorites                ManagedEntityFavorite[]
+  settings                        ChatSettings?
+  rules                           ChatRules?
+  poll                            ManagedPoll?
+  channelSettings                 ChannelSettings?
+  admins                          ChatAdminAllowlist[]
+  domains                         DomainAllowlist[]
+  violations                      Violation[]
+  events                          ModerationEvent[]
+  auditLogs                       AuditLog[]
+  channelAudienceSnapshots        ChannelAudienceSnapshot[]
+  channelPosts                    ChannelPost[]
+  channelStatsSyncState           ChannelStatsSyncState?
+  managedBroadcasts               ManagedBroadcast[]
+  managedGiveaways                ManagedGiveaway[]
+  vkParsingSettings               VkParsingSettings?
+  vkParsingSources                VkParsingSource[]
+  vkParsingPosts                  VkParsingPost[]
+  botMemberships                  ChatBotMembership[]
+  accessEdges                     ManagedEntityAccessEdge[]
+  favorites                       ManagedEntityFavorite[]
   dialogNotificationSubscriptions DialogNotificationSubscription[]
-  participantImmunities    ChatParticipantModerationImmunity[]
-  invitationAccessProgress ChatInvitationAccessProgress[]
+  participantImmunities           ChatParticipantModerationImmunity[]
+  invitationAccessProgress        ChatInvitationAccessProgress[]
 
   @@index([botId], map: "chats_bot_id_idx")
   @@index([primaryBotId], map: "chats_primary_bot_id_idx")
@@ -991,49 +991,63 @@ model ManagedBroadcastDelivery {
 }
 
 model VkParsingSource {
-  id                      String    @id @default(cuid())
-  chatId                  String    @map("chat_id")
-  ownerId                 Int       @map("owner_id")
-  wallOwnerId             Int       @map("wall_owner_id")
-  screenName              String    @map("screen_name")
-  title                   String
-  url                     String
-  status                  String    @default("ACTIVE")
-  syncStatus              String    @default("IDLE") @map("sync_status")
-  nextSyncAt              DateTime? @map("next_sync_at")
-  lastSyncAt              DateTime? @map("last_sync_at")
-  lastSuccessAt           DateTime? @map("last_success_at")
-  syncStartedAt           DateTime? @map("sync_started_at")
-  syncLockedAt            DateTime? @map("sync_locked_at")
-  syncLockedBy            String?   @map("sync_locked_by")
-  syncLockDeadlineAt      DateTime? @map("sync_lock_deadline_at")
-  syncHeartbeatAt         DateTime? @map("sync_heartbeat_at")
-  syncAttemptCount        Int       @default(0) @map("sync_attempt_count")
-  consecutiveFailures     Int       @default(0) @map("consecutive_failures")
-  terminalFailureCount    Int       @default(0) @map("terminal_failure_count")
-  circuitOpenedAt         DateTime? @map("circuit_opened_at")
-  circuitReasonCode       String?   @map("circuit_reason_code")
-  circuitReason           String?   @map("circuit_reason")
-  circuitRetryAt          DateTime? @map("circuit_retry_at")
-  lastErrorCode           String?   @map("last_error_code")
-  lastImportedCount       Int       @default(0) @map("last_imported_count")
-  lastFetchedCount        Int       @default(0) @map("last_fetched_count")
-  lastFetchedPages        Int       @default(0) @map("last_fetched_pages")
-  lastFetchedOffsets      Json      @default("[]") @map("last_fetched_offsets")
-  lastVkNewestPostId      Int?      @map("last_vk_newest_post_id")
-  lastVkNewestPublishedAt DateTime? @map("last_vk_newest_published_at")
-  adaptiveIntervalMs      Int?      @map("adaptive_interval_ms")
-  lastSyncDurationMs      Int?      @map("last_sync_duration_ms")
-  lastError               String?   @map("last_error")
-  createdByUserId         String    @map("created_by_user_id")
-  createdAt               DateTime  @default(now()) @map("created_at")
-  updatedAt               DateTime  @updatedAt @map("updated_at")
+  id                        String    @id @default(cuid())
+  chatId                    String    @map("chat_id")
+  ownerId                   Int       @map("owner_id")
+  wallOwnerId               Int       @map("wall_owner_id")
+  screenName                String    @map("screen_name")
+  title                     String
+  url                       String
+  status                    String    @default("ACTIVE")
+  importEnabled             Boolean   @default(true) @map("import_enabled")
+  autoPublishEnabled        Boolean   @default(false) @map("auto_publish_enabled")
+  autoPublishEnabledAt      DateTime? @map("auto_publish_enabled_at")
+  autoPublishPausedAt       DateTime? @map("auto_publish_paused_at")
+  autoPublishPausedReason   String?   @map("auto_publish_paused_reason")
+  publishIntervalMinutes    Int       @default(60) @map("publish_interval_minutes")
+  dailyLimit                Int       @default(3) @map("daily_limit")
+  minPublishIntervalMinutes Int       @default(30) @map("min_publish_interval_minutes")
+  publishMode               String    @default("QUEUE") @map("publish_mode")
+  priority                  String    @default("NORMAL")
+  quietHoursStart           String?   @map("quiet_hours_start")
+  quietHoursEnd             String?   @map("quiet_hours_end")
+  lastAutoPublishedAt       DateTime? @map("last_auto_published_at")
+  syncStatus                String    @default("IDLE") @map("sync_status")
+  nextSyncAt                DateTime? @map("next_sync_at")
+  lastSyncAt                DateTime? @map("last_sync_at")
+  lastSuccessAt             DateTime? @map("last_success_at")
+  syncStartedAt             DateTime? @map("sync_started_at")
+  syncLockedAt              DateTime? @map("sync_locked_at")
+  syncLockedBy              String?   @map("sync_locked_by")
+  syncLockDeadlineAt        DateTime? @map("sync_lock_deadline_at")
+  syncHeartbeatAt           DateTime? @map("sync_heartbeat_at")
+  syncAttemptCount          Int       @default(0) @map("sync_attempt_count")
+  consecutiveFailures       Int       @default(0) @map("consecutive_failures")
+  terminalFailureCount      Int       @default(0) @map("terminal_failure_count")
+  circuitOpenedAt           DateTime? @map("circuit_opened_at")
+  circuitReasonCode         String?   @map("circuit_reason_code")
+  circuitReason             String?   @map("circuit_reason")
+  circuitRetryAt            DateTime? @map("circuit_retry_at")
+  lastErrorCode             String?   @map("last_error_code")
+  lastImportedCount         Int       @default(0) @map("last_imported_count")
+  lastFetchedCount          Int       @default(0) @map("last_fetched_count")
+  lastFetchedPages          Int       @default(0) @map("last_fetched_pages")
+  lastFetchedOffsets        Json      @default("[]") @map("last_fetched_offsets")
+  lastVkNewestPostId        Int?      @map("last_vk_newest_post_id")
+  lastVkNewestPublishedAt   DateTime? @map("last_vk_newest_published_at")
+  adaptiveIntervalMs        Int?      @map("adaptive_interval_ms")
+  lastSyncDurationMs        Int?      @map("last_sync_duration_ms")
+  lastError                 String?   @map("last_error")
+  createdByUserId           String    @map("created_by_user_id")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
 
   chat  Chat            @relation(fields: [chatId], references: [id], onDelete: Cascade)
   posts VkParsingPost[]
 
   @@unique([chatId, wallOwnerId], map: "vk_parsing_sources_chat_wall_owner_key")
   @@index([chatId, status], map: "vk_parsing_sources_chat_status_idx")
+  @@index([chatId, status, importEnabled, nextSyncAt], map: "vk_parsing_sources_scheduler_idx")
   @@index([status, lastSyncAt], map: "vk_parsing_sources_status_last_sync_at_idx")
   @@index([status, nextSyncAt], map: "vk_parsing_sources_status_next_sync_at_idx")
   @@index([status, circuitOpenedAt], map: "vk_parsing_sources_status_circuit_opened_idx")
@@ -1043,14 +1057,25 @@ model VkParsingSource {
 }
 
 model VkParsingSettings {
-  id                   String    @id @default(cuid())
-  chatId               String    @unique @map("chat_id")
-  autoPublishEnabled   Boolean   @default(false) @map("auto_publish_enabled")
-  autoPublishEnabledAt DateTime? @map("auto_publish_enabled_at")
-  stripLinksEnabled    Boolean   @default(false) @map("strip_links_enabled")
-  skipAdsEnabled       Boolean   @default(false) @map("skip_ads_enabled")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+  id                           String    @id @default(cuid())
+  chatId                       String    @unique @map("chat_id")
+  autoPublishEnabled           Boolean   @default(false) @map("auto_publish_enabled")
+  autoPublishEnabledAt         DateTime? @map("auto_publish_enabled_at")
+  autoPublishKillSwitchEnabled Boolean   @default(false) @map("auto_publish_kill_switch_enabled")
+  stripLinksEnabled            Boolean   @default(false) @map("strip_links_enabled")
+  skipAdsEnabled               Boolean   @default(false) @map("skip_ads_enabled")
+  schedulerTimezone            String    @default("Europe/Moscow") @map("scheduler_timezone")
+  quietHoursStart              String?   @map("quiet_hours_start")
+  quietHoursEnd                String?   @map("quiet_hours_end")
+  workHoursStart               String    @default("09:00") @map("work_hours_start")
+  workHoursEnd                 String    @default("22:00") @map("work_hours_end")
+  distributeEvenlyEnabled      Boolean   @default(true) @map("distribute_evenly_enabled")
+  roundRobinEnabled            Boolean   @default(true) @map("round_robin_enabled")
+  circuitBreakerEnabled        Boolean   @default(true) @map("circuit_breaker_enabled")
+  circuitBreakerWindowMinutes  Int       @default(10) @map("circuit_breaker_window_minutes")
+  circuitBreakerPostLimit      Int       @default(10) @map("circuit_breaker_post_limit")
+  createdAt                    DateTime  @default(now()) @map("created_at")
+  updatedAt                    DateTime  @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
@@ -1091,6 +1116,9 @@ model VkParsingPost {
   lastAvailabilityCheckedAt DateTime? @map("last_availability_checked_at")
   unavailableAt             DateTime? @map("unavailable_at")
   publishQueuedAt           DateTime? @map("publish_queued_at")
+  publishScheduledAt        DateTime? @map("publish_scheduled_at")
+  publishCancelledAt        DateTime? @map("publish_cancelled_at")
+  publishCancelledByUserId  String?   @map("publish_cancelled_by_user_id")
   publishLockedAt           DateTime? @map("publish_locked_at")
   publishAttemptCount       Int       @default(0) @map("publish_attempt_count")
   publishIdempotencyKey     String?   @unique(map: "vk_parsing_posts_publish_idempotency_key_key") @map("publish_idempotency_key")
@@ -1108,6 +1136,9 @@ model VkParsingPost {
   @@index([sourceId, lastSeenAt], map: "vk_parsing_posts_source_last_seen_at_idx")
   @@index([status, skipReason], map: "vk_parsing_posts_status_skip_reason_idx")
   @@index([status, publishQueuedAt], map: "vk_parsing_posts_status_publish_queued_idx")
+  @@index([chatId, publishScheduledAt], map: "vk_parsing_posts_chat_scheduled_idx")
+  @@index([sourceId, publishQueuedAt], map: "vk_parsing_posts_source_queued_idx")
+  @@index([chatId, sourceId, autoPublishedAt], map: "vk_parsing_posts_auto_published_idx")
   @@index([publishLockedAt], map: "vk_parsing_posts_publish_locked_idx")
   @@map("vk_parsing_posts")
 }

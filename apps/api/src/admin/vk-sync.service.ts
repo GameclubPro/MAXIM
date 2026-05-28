@@ -192,9 +192,7 @@ export class VkSyncService {
       const classified = classifyVkParsingSyncError(error);
       const failureCount = source.consecutiveFailures + 1;
       const isCircuitBreakerFailure = this.isSourceCircuitBreakerFailure(classified);
-      const terminalFailureCount = isCircuitBreakerFailure
-        ? source.terminalFailureCount + 1
-        : 0;
+      const terminalFailureCount = isCircuitBreakerFailure ? source.terminalFailureCount + 1 : 0;
       const openCircuit =
         isCircuitBreakerFailure &&
         terminalFailureCount >= this.sourceCircuitTerminalFailureThreshold;
@@ -207,9 +205,8 @@ export class VkSyncService {
       await this.prisma.vkParsingSource.update({
         where: { id: source.id },
         data: {
-          syncStatus: backoffMs !== null
-            ? VK_SOURCE_SYNC_STATUS_BACKOFF
-            : VK_SOURCE_SYNC_STATUS_ERROR,
+          syncStatus:
+            backoffMs !== null ? VK_SOURCE_SYNC_STATUS_BACKOFF : VK_SOURCE_SYNC_STATUS_ERROR,
           nextSyncAt: nextRetryAt,
           lastSyncAt: completedAt,
           syncStartedAt: null,
@@ -324,15 +321,19 @@ export class VkSyncService {
     const newestAgeMs = newestPost?.vkPublishedAt
       ? Math.max(0, now.getTime() - newestPost.vkPublishedAt.getTime())
       : Number.POSITIVE_INFINITY;
-    let baseMs = this.syncIntervalMs;
+    const sourceIntervalMs =
+      typeof source.publishIntervalMinutes === 'number' && source.publishIntervalMinutes > 0
+        ? source.publishIntervalMinutes * 60_000
+        : this.syncIntervalMs;
+    let baseMs = sourceIntervalMs;
     if (newestAgeMs <= 60 * 60_000) {
       baseMs = this.minSyncIntervalMs;
     } else if (newestAgeMs <= 6 * 60 * 60_000) {
-      baseMs = Math.max(this.minSyncIntervalMs, Math.floor(this.syncIntervalMs / 2));
+      baseMs = Math.max(this.minSyncIntervalMs, Math.floor(sourceIntervalMs / 2));
     } else if (newestAgeMs >= 7 * 24 * 60 * 60_000) {
       baseMs = this.maxSyncIntervalMs;
     } else if (newestAgeMs >= 24 * 60 * 60_000) {
-      baseMs = Math.min(this.maxSyncIntervalMs, this.syncIntervalMs * 3);
+      baseMs = Math.min(this.maxSyncIntervalMs, sourceIntervalMs * 3);
     }
 
     const bounded = Math.max(this.minSyncIntervalMs, Math.min(this.maxSyncIntervalMs, baseMs));
@@ -407,6 +408,7 @@ export class VkSyncService {
       where: {
         id: sourceId,
         status: VK_SOURCE_STATUS_ACTIVE,
+        importEnabled: true,
         circuitOpenedAt: null,
         OR: [
           { syncLockedAt: null },
@@ -514,10 +516,7 @@ export class VkSyncService {
     return Math.min(60 * 60_000, baseMs * 2 ** cappedFailureCount + jitterMs);
   }
 
-  private isSourceCircuitBreakerFailure(classified: {
-    code: string;
-    retryable: boolean;
-  }): boolean {
+  private isSourceCircuitBreakerFailure(classified: { code: string; retryable: boolean }): boolean {
     return !classified.retryable && classified.code.startsWith('vk_api.');
   }
 

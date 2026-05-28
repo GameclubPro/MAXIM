@@ -285,6 +285,19 @@ describe('VkParsingService', () => {
       title: 'Авторынок Уфа',
       url: 'https://vk.ru/avto_prodaja_rb',
       status: 'ACTIVE',
+      importEnabled: true,
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      autoPublishPausedAt: null,
+      autoPublishPausedReason: null,
+      publishIntervalMinutes: 60,
+      dailyLimit: 3,
+      minPublishIntervalMinutes: 30,
+      publishMode: 'QUEUE',
+      priority: 'NORMAL',
+      quietHoursStart: null,
+      quietHoursEnd: null,
+      lastAutoPublishedAt: null,
       syncStatus: 'IDLE',
       nextSyncAt: new Date('2026-05-25T10:00:00.000Z'),
       lastSyncAt: null,
@@ -355,6 +368,9 @@ describe('VkParsingService', () => {
       lastAvailabilityCheckedAt: new Date('2026-05-25T10:00:00.000Z'),
       unavailableAt: null,
       publishQueuedAt: null,
+      publishScheduledAt: null,
+      publishCancelledAt: null,
+      publishCancelledByUserId: null,
       publishLockedAt: null,
       publishAttemptCount: 0,
       publishIdempotencyKey: null,
@@ -456,13 +472,16 @@ describe('VkParsingService', () => {
 
     expect(prisma.vkParsingSettings.upsert).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
-      create: {
+      create: expect.objectContaining({
         chatId: 'channel-1',
         autoPublishEnabled: true,
         autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
         stripLinksEnabled: true,
         skipAdsEnabled: true,
-      },
+        autoPublishKillSwitchEnabled: false,
+        workHoursStart: '09:00',
+        workHoursEnd: '22:00',
+      }),
       update: {
         autoPublishEnabled: true,
         autoPublishEnabledAt: new Date('2026-05-25T10:01:00.000Z'),
@@ -470,12 +489,13 @@ describe('VkParsingService', () => {
         skipAdsEnabled: true,
       },
     });
-    expect(feed.settings).toEqual({
+    expect(feed.settings).toMatchObject({
       chatId: 'channel-1',
       autoPublishEnabled: true,
       autoPublishEnabledAt: '2026-05-25T10:01:00.000Z',
       stripLinksEnabled: true,
       skipAdsEnabled: true,
+      autoPublishKillSwitchEnabled: false,
       updatedAt: '2026-05-25T10:05:00.000Z',
     });
   });
@@ -527,6 +547,7 @@ describe('VkParsingService', () => {
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
+          publishScheduledAt: null,
         },
       }),
     );
@@ -1031,6 +1052,7 @@ describe('VkParsingService', () => {
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
+          publishScheduledAt: null,
         },
       }),
     );
@@ -1106,6 +1128,76 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('publishes manual retry jobs immediately without scheduler deferral', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
+    try {
+      const { service, prisma, maxClient, publishQueue } = createFixture();
+      const source = createSource();
+      const post = createPostRow({
+        source,
+        publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+        publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+        publishIdempotencyKey: 'publish-key-1',
+        publishReason: 'manual-retry',
+      });
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: false,
+        autoPublishEnabledAt: null,
+        autoPublishKillSwitchEnabled: false,
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        schedulerTimezone: 'Europe/Moscow',
+        quietHoursStart: null,
+        quietHoursEnd: null,
+        workHoursStart: '23:00',
+        workHoursEnd: '23:30',
+        distributeEvenlyEnabled: true,
+        roundRobinEnabled: true,
+        circuitBreakerEnabled: true,
+        circuitBreakerWindowMinutes: 10,
+        circuitBreakerPostLimit: 10,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+      });
+      prisma.vkParsingPost.update.mockResolvedValue({
+        ...post,
+        status: 'PUBLISHED',
+        publishedMessageId: 'mid-1',
+        publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+        publishedAtMax: new Date('2026-05-25T10:00:00.000Z'),
+      });
+      maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+        messageId: 'mid-1',
+        url: 'https://max.ru/channels/channel-1/message/mid-1',
+      });
+
+      await service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'manual-retry',
+        idempotencyKey: 'publish-key-1',
+      });
+
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'channel-1',
+        'Продам авто',
+        expect.any(Object),
+        {
+          botId: 'bot-1',
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+        },
+      );
+      expect(publishQueue.add).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('drops queued autopublish jobs for posts before the enable baseline', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
@@ -1143,6 +1235,7 @@ describe('VkParsingService', () => {
           publishLockedAt: null,
           publishIdempotencyKey: null,
           publishReason: null,
+          publishScheduledAt: null,
         },
       }),
     );

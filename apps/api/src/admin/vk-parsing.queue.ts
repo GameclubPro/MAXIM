@@ -18,7 +18,7 @@ export const VK_PARSING_PUBLISH_RETRY_POLICY = {
 };
 
 export type VkParsingSyncReason = 'source-added' | 'manual' | 'scheduled' | 'startup';
-export type VkParsingPublishReason = 'autopublish' | 'manual-retry';
+export type VkParsingPublishReason = 'autopublish' | 'manual-retry' | 'manual-schedule';
 
 export type VkParsingSyncJob = QueueJobEnvelope<
   {

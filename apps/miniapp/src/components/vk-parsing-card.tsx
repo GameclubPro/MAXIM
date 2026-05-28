@@ -3,8 +3,10 @@ import type { ApiTransport } from '../lib/api/transport';
 import { HealthSummary } from './vk-parsing/health-summary';
 import { Pagination } from './vk-parsing/pagination';
 import { PostList } from './vk-parsing/post-list';
-import { SettingsToggles } from './vk-parsing/settings-toggles';
-import { SourcesBar } from './vk-parsing/sources-bar';
+import { QueueTimeline } from './vk-parsing/queue-timeline';
+import { SafetyPanel } from './vk-parsing/safety-panel';
+import { SchedulerPanel } from './vk-parsing/scheduler-panel';
+import { SourceDashboard } from './vk-parsing/source-dashboard';
 import { StatusFilterBar } from './vk-parsing/status-filter-bar';
 import { normalizeApiError } from './vk-parsing/format';
 import { useVkParsingCard } from './vk-parsing/use-vk-parsing-card';
@@ -25,29 +27,34 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
 
   return (
     <div className="vk-parsing-card">
-      <SourcesBar
+      <SourceDashboard
         sourceUrl={state.sourceUrl}
         sources={sources}
         selectedSourceId={state.selectedSourceId}
-        openHintKey={state.openHintKey}
+        selectedBulkSourceIds={state.selectedBulkSourceIds}
         isAdding={state.isAddingSource}
         isRefreshing={state.isRefreshing}
         isRemoving={state.isRemovingSource}
+        isSavingSource={state.isSavingSource}
+        isApplyingPreset={state.isApplyingPreset}
+        refreshingSourceId={state.refreshingSourceId}
         onSourceUrlChange={state.setSourceUrl}
         onSubmitSource={state.submitSource}
-        onToggleHint={state.toggleHint}
         onRefresh={state.refreshSources}
+        onRefreshSource={state.refreshSource}
         onSelectSource={state.selectSource}
+        onToggleBulkSource={state.toggleBulkSource}
+        onSelectAllBulkSources={state.selectAllBulkSources}
+        onApplyPreset={state.applySourcePreset}
+        onUpdateSource={state.updateSource}
         onRemoveSource={state.removeSource}
       />
 
       {feed ? (
-        <SettingsToggles
+        <SchedulerPanel
           settings={settings}
-          openHintKey={state.openHintKey}
           isSaving={state.isSavingSettings}
-          onToggleHint={state.toggleHint}
-          onToggleSetting={state.toggleSetting}
+          onUpdateSetting={state.updateSetting}
         />
       ) : null}
 
@@ -59,6 +66,27 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
       ) : null}
 
       <HealthSummary summary={feed?.summary} />
+
+      {feed ? (
+        <QueueTimeline
+          posts={feed.queue}
+          schedulingPostId={state.schedulingPostId}
+          cancelingPostId={state.cancelingPostId}
+          publishingNowPostId={state.publishingNowPostId}
+          onSchedulePost={state.schedulePost}
+          onCancelPost={state.cancelScheduledPost}
+          onPublishNow={state.publishPostNow}
+        />
+      ) : null}
+
+      {feed ? (
+        <SafetyPanel
+          sources={sources}
+          auditEvents={feed.auditEvents}
+          isRollingBack={state.isRollingBack}
+          onRollback={state.rollback}
+        />
+      ) : null}
 
       {feed ? (
         <StatusFilterBar

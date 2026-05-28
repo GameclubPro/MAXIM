@@ -1,18 +1,29 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  BulkUpdateVkParsingSourcesRequest,
+  RollbackVkParsingRequest,
   UpdateVkParsingSettingsRequest,
+  UpdateVkParsingSourceRequest,
   VkParsingFeedQuery,
   VkParsingPost,
   VkParsingPostFilterStatus,
 } from '@maxim/contracts';
 import {
   addVkParsingSource,
+  applyVkParsingSourcePreset,
+  cancelVkParsingPost,
+  dryRunVkParsingAutopublish,
   getVkParsing,
   publishVkParsingPost,
+  publishVkParsingPostNow,
   refreshVkParsing,
+  refreshVkParsingSource,
   removeVkParsingSource,
+  rollbackVkParsingAutopublish,
   retryVkParsingPost,
+  scheduleVkParsingPost,
+  updateVkParsingSource,
   updateVkParsingSettings,
   type VkParsingEntityType,
 } from '../../lib/api/vk-parsing-client';
@@ -47,6 +58,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   const [statusFilter, setStatusFilter] = useState<VkParsingPostFilterStatus>('ALL');
   const [pageOffset, setPageOffset] = useState(0);
   const [openHintKey, setOpenHintKey] = useState<VkParsingHintKey | null>(null);
+  const [selectedBulkSourceIds, setSelectedBulkSourceIds] = useState<string[]>([]);
 
   const feedQueryScope = useMemo<Partial<VkParsingFeedQuery>>(
     () => ({
@@ -147,6 +159,70 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
+  const updateSourceMutation = useMutation({
+    mutationFn: ({
+      sourceId,
+      payload,
+    }: {
+      sourceId: string;
+      payload: UpdateVkParsingSourceRequest;
+    }) => updateVkParsingSource(api, entityType, chatId, sourceId, payload),
+    onSuccess: (nextFeed) => {
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Источник сохранён' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Источник не сохранён',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const sourcePresetMutation = useMutation({
+    mutationFn: (payload: BulkUpdateVkParsingSourcesRequest) =>
+      applyVkParsingSourcePreset(api, entityType, chatId, payload),
+    onSuccess: (nextFeed) => {
+      setSelectedBulkSourceIds([]);
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Пресет применён' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Пресет не применён',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const refreshSourceMutation = useMutation({
+    mutationFn: (sourceId: string) => refreshVkParsingSource(api, entityType, chatId, sourceId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({
+        tone: result.queued > 0 ? 'success' : 'info',
+        title: result.queued > 0 ? 'Обновление запущено' : 'Нечего обновлять',
+      });
+      maxNotify(result.queued > 0 ? 'success' : 'warning');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Источник не обновлён',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const publishMutation = useMutation({
     mutationFn: (payload: PublishPayload) =>
       publishVkParsingPost(api, entityType, chatId, payload.postId, {
@@ -187,13 +263,97 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
+  const scheduleMutation = useMutation({
+    mutationFn: ({ postId, scheduledAt }: { postId: string; scheduledAt: string }) =>
+      scheduleVkParsingPost(api, entityType, chatId, postId, { scheduledAt }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Время обновлено' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Время не обновлено',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const cancelPostMutation = useMutation({
+    mutationFn: (postId: string) => cancelVkParsingPost(api, entityType, chatId, postId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'info', title: 'Публикация снята' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Публикация не снята',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const publishNowMutation = useMutation({
+    mutationFn: (postId: string) => publishVkParsingPostNow(api, entityType, chatId, postId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Поставлено сейчас' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не поставлено',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
+  const rollbackMutation = useMutation({
+    mutationFn: (payload: RollbackVkParsingRequest) =>
+      rollbackVkParsingAutopublish(api, entityType, chatId, payload),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({
+        tone: result.failed > 0 ? 'info' : 'success',
+        title: `Rollback: ${result.matched}`,
+        description: result.deleted > 0 ? `Удалено: ${result.deleted}` : undefined,
+      });
+      maxNotify(result.failed > 0 ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Rollback не выполнен',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const feed = feedQuery.data;
   const settings = feed?.settings ?? {
     chatId,
     autoPublishEnabled: false,
     autoPublishEnabledAt: null,
+    autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: false,
     skipAdsEnabled: false,
+    schedulerTimezone: 'Europe/Moscow',
+    quietHoursStart: null,
+    quietHoursEnd: null,
+    workHoursStart: '09:00',
+    workHoursEnd: '22:00',
+    distributeEvenlyEnabled: true,
+    roundRobinEnabled: true,
+    circuitBreakerEnabled: true,
+    circuitBreakerWindowMinutes: 10,
+    circuitBreakerPostLimit: 10,
     updatedAt: null,
   };
   const posts = feed?.posts ?? [];
@@ -261,8 +421,60 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     updateSettingsMutation.mutate({ [key]: checked });
   }
 
+  async function updateSetting(payload: UpdateVkParsingSettingsRequest) {
+    if (updateSettingsMutation.isPending) {
+      return;
+    }
+    if (payload.autoPublishEnabled === true) {
+      const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId);
+      if (dryRun.eligibleNow > 0) {
+        pushToast({
+          tone: 'danger',
+          title: `Dry-run: ${dryRun.eligibleNow}`,
+          description: 'Старые посты не будут включены автоматически.',
+        });
+        maxNotify('warning');
+        return;
+      }
+    }
+    updateSettingsMutation.mutate(payload);
+  }
+
+  async function updateSource(sourceId: string, payload: UpdateVkParsingSourceRequest) {
+    if (updateSourceMutation.isPending) {
+      return;
+    }
+    if (payload.autoPublishEnabled === true) {
+      const dryRun = await dryRunVkParsingAutopublish(api, entityType, chatId, sourceId);
+      if (dryRun.eligibleNow > 0) {
+        pushToast({
+          tone: 'danger',
+          title: `Dry-run: ${dryRun.eligibleNow}`,
+          description: 'Старые посты не будут включены автоматически.',
+        });
+        maxNotify('warning');
+        return;
+      }
+    }
+    updateSourceMutation.mutate({ sourceId, payload });
+  }
+
   function toggleHint(key: VkParsingHintKey) {
     setOpenHintKey((current) => (current === key ? null : key));
+  }
+
+  function toggleBulkSource(sourceId: string) {
+    setSelectedBulkSourceIds((current) =>
+      current.includes(sourceId)
+        ? current.filter((item) => item !== sourceId)
+        : [...current, sourceId],
+    );
+  }
+
+  function selectAllBulkSources() {
+    setSelectedBulkSourceIds((current) =>
+      current.length === sources.length ? [] : sources.map((source) => source.id),
+    );
   }
 
   return {
@@ -276,6 +488,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     statusFilter,
     pageOffset,
     openHintKey,
+    selectedBulkSourceIds,
     editingPostId,
     draftText,
     selectedPhotoUrls,
@@ -287,17 +500,45 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     isAddingSource: addSourceMutation.isPending,
     isRemovingSource: removeSourceMutation.isPending,
     isRefreshing: refreshMutation.isPending,
+    refreshingSourceId: refreshSourceMutation.isPending
+      ? (refreshSourceMutation.variables ?? null)
+      : null,
     isSavingSettings: updateSettingsMutation.isPending,
+    isSavingSource: updateSourceMutation.isPending,
+    isApplyingPreset: sourcePresetMutation.isPending,
+    schedulingPostId: scheduleMutation.isPending
+      ? (scheduleMutation.variables?.postId ?? null)
+      : null,
+    cancelingPostId: cancelPostMutation.isPending ? (cancelPostMutation.variables ?? null) : null,
+    publishingNowPostId: publishNowMutation.isPending
+      ? (publishNowMutation.variables ?? null)
+      : null,
+    isRollingBack: rollbackMutation.isPending,
     setSourceUrl,
     setDraftText,
     setPageOffset,
     submitSource,
     refreshSources: () => refreshMutation.mutate(),
+    refreshSource: (sourceId: string) => refreshSourceMutation.mutate(sourceId),
     removeSource: (sourceId: string) => removeSourceMutation.mutate(sourceId),
     selectSource: setSelectedSourceId,
     selectStatusFilter: setStatusFilter,
     toggleHint,
     toggleSetting,
+    updateSetting,
+    updateSource,
+    toggleBulkSource,
+    selectAllBulkSources,
+    applySourcePreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => {
+      if (selectedBulkSourceIds.length > 0) {
+        sourcePresetMutation.mutate({ sourceIds: selectedBulkSourceIds, preset });
+      }
+    },
+    schedulePost: (postId: string, scheduledAt: string) =>
+      scheduleMutation.mutate({ postId, scheduledAt }),
+    cancelScheduledPost: (postId: string) => cancelPostMutation.mutate(postId),
+    publishPostNow: (postId: string) => publishNowMutation.mutate(postId),
+    rollback: (payload: RollbackVkParsingRequest) => rollbackMutation.mutate(payload),
     startEditing,
     cancelEditing: () => setEditingPostId(null),
     publishEditingPost,

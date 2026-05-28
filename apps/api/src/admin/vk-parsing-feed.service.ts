@@ -19,13 +19,32 @@ import type { VkParsingUnsupportedAttachmentSummary } from './vk-parsing-attachm
 type VkParsingSourceRow = Prisma.VkParsingSourceGetPayload<Record<string, never>>;
 type VkParsingPostWithSource = Prisma.VkParsingPostGetPayload<{ include: { source: true } }>;
 type VkParsingSettingsRow = Prisma.VkParsingSettingsGetPayload<Record<string, never>>;
+type VkParsingAuditRow = Prisma.AuditLogGetPayload<Record<string, never>>;
+type SourcePostStats = {
+  newPostCount: number;
+  queuedPostCount: number;
+  publishedPostCount: number;
+  skippedPostCount: number;
+  failedPostCount: number;
+};
 
 type VkParsingSettingsLike = {
   chatId: string;
   autoPublishEnabled: boolean;
   autoPublishEnabledAt: Date | null;
+  autoPublishKillSwitchEnabled: boolean;
   stripLinksEnabled: boolean;
   skipAdsEnabled: boolean;
+  schedulerTimezone: string;
+  quietHoursStart: string | null;
+  quietHoursEnd: string | null;
+  workHoursStart: string;
+  workHoursEnd: string;
+  distributeEvenlyEnabled: boolean;
+  roundRobinEnabled: boolean;
+  circuitBreakerEnabled: boolean;
+  circuitBreakerWindowMinutes: number;
+  circuitBreakerPostLimit: number;
   updatedAt: Date | null;
 };
 
@@ -68,38 +87,70 @@ export class VkParsingFeedService {
     const query: VkParsingFeedQuery = parsedQuery.success
       ? parsedQuery.data
       : { status: 'ALL', limit: 50, offset: 0 };
+    const statusWhere =
+      query.status === 'ALL'
+        ? {}
+        : query.status === 'QUEUED'
+          ? {
+              publishQueuedAt: { not: null },
+              status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+            }
+          : { status: query.status };
     const postWhere: Prisma.VkParsingPostWhereInput = {
       chatId,
       source: { status: VK_SOURCE_STATUS_ACTIVE },
-      ...(query.status !== 'ALL' ? { status: query.status } : {}),
+      ...statusWhere,
       ...(query.sourceId ? { sourceId: query.sourceId } : {}),
     };
 
-    const [settings, sources, posts, total, summary] = await Promise.all([
-      this.prisma.vkParsingSettings.findUnique({
-        where: { chatId },
-      }),
-      this.prisma.vkParsingSource.findMany({
-        where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
-        orderBy: [{ createdAt: 'asc' }],
-      }),
-      this.prisma.vkParsingPost.findMany({
-        where: postWhere,
-        include: { source: true },
-        orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
-        skip: query.offset,
-        take: query.limit,
-      }),
-      this.prisma.vkParsingPost.count({ where: postWhere }),
-      this.buildHealthSummary(chatId),
-    ]);
+    const [settings, sources, posts, total, summary, queue, auditEvents, sourceStats] =
+      await Promise.all([
+        this.prisma.vkParsingSettings.findUnique({
+          where: { chatId },
+        }),
+        this.prisma.vkParsingSource.findMany({
+          where: { chatId, status: VK_SOURCE_STATUS_ACTIVE },
+          orderBy: [{ createdAt: 'asc' }],
+        }),
+        this.prisma.vkParsingPost.findMany({
+          where: postWhere,
+          include: { source: true },
+          orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
+          skip: query.offset,
+          take: query.limit,
+        }),
+        this.prisma.vkParsingPost.count({ where: postWhere }),
+        this.buildHealthSummary(chatId),
+        this.prisma.vkParsingPost.findMany({
+          where: {
+            chatId,
+            publishQueuedAt: { not: null },
+            status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
+            source: { status: VK_SOURCE_STATUS_ACTIVE },
+          },
+          include: { source: true },
+          orderBy: [{ publishScheduledAt: 'asc' }, { publishQueuedAt: 'asc' }],
+          take: 20,
+        }),
+        this.prisma.auditLog?.findMany?.({
+          where: {
+            chatId,
+            action: { startsWith: 'VK_PARSING_' },
+          },
+          orderBy: [{ createdAt: 'desc' }],
+          take: 12,
+        }) ?? Promise.resolve([]),
+        this.loadSourcePostStats(chatId),
+      ]);
     const nextOffset = query.offset + query.limit;
 
     return {
       capabilities,
       settings: this.mapSettings(chatId, settings),
-      sources: sources.map((source) => this.mapSource(source)),
+      sources: sources.map((source) => this.mapSource(source, sourceStats.get(source.id))),
       posts: posts.map((post) => this.mapPost(post)),
+      queue: queue.map((post) => this.mapPost(post)),
+      auditEvents: auditEvents.map((event) => this.mapAuditEvent(event)),
       pagination: {
         limit: query.limit,
         offset: query.offset,
@@ -230,6 +281,40 @@ export class VkParsingFeedService {
     return rows[0] ?? {};
   }
 
+  private async loadSourcePostStats(chatId: string): Promise<Map<string, SourcePostStats>> {
+    const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
+      select
+        source_id as "sourceId",
+        count(*) filter (
+          where status = ${VK_POST_STATUS_NEW}
+            and publish_queued_at is null
+            and publish_cancelled_at is null
+        )::int as "newPostCount",
+        count(*) filter (
+          where publish_queued_at is not null
+            and status in (${VK_POST_STATUS_NEW}, ${VK_POST_STATUS_FAILED})
+        )::int as "queuedPostCount",
+        count(*) filter (where status = ${VK_POST_STATUS_PUBLISHED})::int as "publishedPostCount",
+        count(*) filter (where status = ${VK_POST_STATUS_SKIPPED})::int as "skippedPostCount",
+        count(*) filter (where status = ${VK_POST_STATUS_FAILED})::int as "failedPostCount"
+      from vk_parsing_posts
+      where chat_id = ${chatId}
+      group by source_id
+    `;
+    return new Map(
+      rows.map((row) => [
+        String(row.sourceId),
+        {
+          newPostCount: this.readNumber(row.newPostCount) ?? 0,
+          queuedPostCount: this.readNumber(row.queuedPostCount) ?? 0,
+          publishedPostCount: this.readNumber(row.publishedPostCount) ?? 0,
+          skippedPostCount: this.readNumber(row.skippedPostCount) ?? 0,
+          failedPostCount: this.readNumber(row.failedPostCount) ?? 0,
+        },
+      ]),
+    );
+  }
+
   mapPost(post: VkParsingPostWithSource): VkParsingPost {
     const status =
       post.status === VK_POST_STATUS_PUBLISHED
@@ -283,6 +368,9 @@ export class VkParsingFeedService {
         : null,
       unavailableAt: post.unavailableAt ? post.unavailableAt.toISOString() : null,
       publishQueuedAt: post.publishQueuedAt ? post.publishQueuedAt.toISOString() : null,
+      publishScheduledAt: post.publishScheduledAt ? post.publishScheduledAt.toISOString() : null,
+      publishCancelledAt: post.publishCancelledAt ? post.publishCancelledAt.toISOString() : null,
+      publishCancelledByUserId: post.publishCancelledByUserId,
       publishLockedAt: post.publishLockedAt ? post.publishLockedAt.toISOString() : null,
       publishAttemptCount: Math.max(0, post.publishAttemptCount ?? 0),
       lastError: post.lastError,
@@ -301,13 +389,24 @@ export class VkParsingFeedService {
       autoPublishEnabledAt: settings?.autoPublishEnabledAt
         ? settings.autoPublishEnabledAt.toISOString()
         : null,
+      autoPublishKillSwitchEnabled: settings?.autoPublishKillSwitchEnabled ?? false,
       stripLinksEnabled: settings?.stripLinksEnabled ?? false,
       skipAdsEnabled: settings?.skipAdsEnabled ?? false,
+      schedulerTimezone: settings?.schedulerTimezone ?? 'Europe/Moscow',
+      quietHoursStart: settings?.quietHoursStart ?? null,
+      quietHoursEnd: settings?.quietHoursEnd ?? null,
+      workHoursStart: settings?.workHoursStart ?? '09:00',
+      workHoursEnd: settings?.workHoursEnd ?? '22:00',
+      distributeEvenlyEnabled: settings?.distributeEvenlyEnabled ?? true,
+      roundRobinEnabled: settings?.roundRobinEnabled ?? true,
+      circuitBreakerEnabled: settings?.circuitBreakerEnabled ?? true,
+      circuitBreakerWindowMinutes: Math.max(1, settings?.circuitBreakerWindowMinutes ?? 10),
+      circuitBreakerPostLimit: Math.max(1, settings?.circuitBreakerPostLimit ?? 10),
       updatedAt: settings?.updatedAt ? settings.updatedAt.toISOString() : null,
     };
   }
 
-  private mapSource(source: VkParsingSourceRow): VkParsingSource {
+  private mapSource(source: VkParsingSourceRow, stats?: SourcePostStats): VkParsingSource {
     const syncStatus = this.mapSourceSyncStatus(source.syncStatus);
     const nextSyncAt = source.nextSyncAt ? source.nextSyncAt.toISOString() : null;
     return {
@@ -319,6 +418,34 @@ export class VkParsingFeedService {
       title: source.title,
       url: source.url,
       status: source.status === VK_SOURCE_STATUS_DISABLED ? 'DISABLED' : 'ACTIVE',
+      importEnabled: source.importEnabled,
+      autoPublishEnabled: source.autoPublishEnabled,
+      autoPublishEnabledAt: source.autoPublishEnabledAt
+        ? source.autoPublishEnabledAt.toISOString()
+        : null,
+      autoPublishPausedAt: source.autoPublishPausedAt
+        ? source.autoPublishPausedAt.toISOString()
+        : null,
+      autoPublishPausedReason: source.autoPublishPausedReason,
+      publishIntervalMinutes: Math.max(5, source.publishIntervalMinutes ?? 60),
+      dailyLimit: Math.max(1, source.dailyLimit ?? 3),
+      minPublishIntervalMinutes: Math.max(0, source.minPublishIntervalMinutes ?? 30),
+      publishMode:
+        source.publishMode === 'IMMEDIATE' || source.publishMode === 'REVIEW'
+          ? source.publishMode
+          : 'QUEUE',
+      priority:
+        source.priority === 'HIGH' || source.priority === 'LOW' ? source.priority : 'NORMAL',
+      quietHoursStart: source.quietHoursStart,
+      quietHoursEnd: source.quietHoursEnd,
+      lastAutoPublishedAt: source.lastAutoPublishedAt
+        ? source.lastAutoPublishedAt.toISOString()
+        : null,
+      newPostCount: stats?.newPostCount ?? 0,
+      queuedPostCount: stats?.queuedPostCount ?? 0,
+      publishedPostCount: stats?.publishedPostCount ?? 0,
+      skippedPostCount: stats?.skippedPostCount ?? 0,
+      failedPostCount: stats?.failedPostCount ?? 0,
       syncStatus,
       nextSyncAt,
       nextRetryAt: syncStatus === VK_SOURCE_SYNC_STATUS_BACKOFF ? nextSyncAt : null,
@@ -351,6 +478,17 @@ export class VkParsingFeedService {
       lastError: source.lastError,
       createdAt: source.createdAt.toISOString(),
       updatedAt: source.updatedAt.toISOString(),
+    };
+  }
+
+  private mapAuditEvent(event: VkParsingAuditRow): VkParsingFeed['auditEvents'][number] {
+    const payload = this.asRecord(event.payload) ?? {};
+    return {
+      id: event.id,
+      action: event.action,
+      actorUserId: event.actorUserId,
+      payload,
+      createdAt: event.createdAt.toISOString(),
     };
   }
 

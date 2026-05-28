@@ -2251,14 +2251,26 @@ export const vkParsingPostStatusSchema = z.enum([
 ]);
 export type VkParsingPostStatus = z.infer<typeof vkParsingPostStatusSchema>;
 
+export const vkParsingPublishModeSchema = z.enum(['IMMEDIATE', 'QUEUE', 'REVIEW']);
+export type VkParsingPublishMode = z.infer<typeof vkParsingPublishModeSchema>;
+
+export const vkParsingSourcePrioritySchema = z.enum(['LOW', 'NORMAL', 'HIGH']);
+export type VkParsingSourcePriority = z.infer<typeof vkParsingSourcePrioritySchema>;
+
+export const vkParsingBulkPresetSchema = z.enum(['NEWS', 'SLOW', 'REVIEW', 'CLEAN']);
+export type VkParsingBulkPreset = z.infer<typeof vkParsingBulkPresetSchema>;
+
 export const vkParsingPostSkipReasonSchema = z.enum(['AD', 'EMPTY_AFTER_LINK_FILTER']);
 export type VkParsingPostSkipReason = z.infer<typeof vkParsingPostSkipReasonSchema>;
 
 export const vkParsingPostFilterStatusSchema = z.union([
   z.literal('ALL'),
+  z.literal('QUEUED'),
   vkParsingPostStatusSchema,
 ]);
 export type VkParsingPostFilterStatus = z.infer<typeof vkParsingPostFilterStatusSchema>;
+
+export const vkParsingTimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/u);
 
 export const vkParsingUnsupportedAttachmentSchema = z
   .object({
@@ -2276,8 +2288,19 @@ export const vkParsingSettingsSchema = z.object({
   chatId: z.string(),
   autoPublishEnabled: z.boolean().default(false),
   autoPublishEnabledAt: z.string().datetime().nullable().default(null),
+  autoPublishKillSwitchEnabled: z.boolean().default(false),
   stripLinksEnabled: z.boolean().default(false),
   skipAdsEnabled: z.boolean().default(false),
+  schedulerTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  quietHoursStart: vkParsingTimeOfDaySchema.nullable().default(null),
+  quietHoursEnd: vkParsingTimeOfDaySchema.nullable().default(null),
+  workHoursStart: vkParsingTimeOfDaySchema.default('09:00'),
+  workHoursEnd: vkParsingTimeOfDaySchema.default('22:00'),
+  distributeEvenlyEnabled: z.boolean().default(true),
+  roundRobinEnabled: z.boolean().default(true),
+  circuitBreakerEnabled: z.boolean().default(true),
+  circuitBreakerWindowMinutes: z.number().int().min(1).max(1440).default(10),
+  circuitBreakerPostLimit: z.number().int().min(1).max(500).default(10),
   updatedAt: z.string().datetime().nullable().default(null),
 });
 export type VkParsingSettings = z.infer<typeof vkParsingSettingsSchema>;
@@ -2291,6 +2314,24 @@ export const vkParsingSourceSchema = z.object({
   title: z.string(),
   url: z.string().url(),
   status: vkParsingSourceStatusSchema,
+  importEnabled: z.boolean().default(true),
+  autoPublishEnabled: z.boolean().default(false),
+  autoPublishEnabledAt: z.string().datetime().nullable().default(null),
+  autoPublishPausedAt: z.string().datetime().nullable().default(null),
+  autoPublishPausedReason: z.string().nullable().default(null),
+  publishIntervalMinutes: z.number().int().min(5).max(10080).default(60),
+  dailyLimit: z.number().int().min(1).max(500).default(3),
+  minPublishIntervalMinutes: z.number().int().min(0).max(1440).default(30),
+  publishMode: vkParsingPublishModeSchema.default('QUEUE'),
+  priority: vkParsingSourcePrioritySchema.default('NORMAL'),
+  quietHoursStart: vkParsingTimeOfDaySchema.nullable().default(null),
+  quietHoursEnd: vkParsingTimeOfDaySchema.nullable().default(null),
+  lastAutoPublishedAt: z.string().datetime().nullable().default(null),
+  newPostCount: z.number().int().min(0).default(0),
+  queuedPostCount: z.number().int().min(0).default(0),
+  publishedPostCount: z.number().int().min(0).default(0),
+  skippedPostCount: z.number().int().min(0).default(0),
+  failedPostCount: z.number().int().min(0).default(0),
   syncStatus: vkParsingSourceSyncStatusSchema.default('IDLE'),
   nextSyncAt: z.string().datetime().nullable().default(null),
   nextRetryAt: z.string().datetime().nullable().default(null),
@@ -2352,6 +2393,9 @@ export const vkParsingPostSchema = z.object({
   lastAvailabilityCheckedAt: z.string().datetime().nullable().default(null),
   unavailableAt: z.string().datetime().nullable().default(null),
   publishQueuedAt: z.string().datetime().nullable().default(null),
+  publishScheduledAt: z.string().datetime().nullable().default(null),
+  publishCancelledAt: z.string().datetime().nullable().default(null),
+  publishCancelledByUserId: z.string().nullable().default(null),
   publishLockedAt: z.string().datetime().nullable().default(null),
   publishAttemptCount: z.number().int().min(0).default(0),
   lastError: z.string().nullable(),
@@ -2408,12 +2452,35 @@ export const vkParsingFeedSchema = z.object({
     chatId: '',
     autoPublishEnabled: false,
     autoPublishEnabledAt: null,
+    autoPublishKillSwitchEnabled: false,
     stripLinksEnabled: false,
     skipAdsEnabled: false,
+    schedulerTimezone: 'Europe/Moscow',
+    quietHoursStart: null,
+    quietHoursEnd: null,
+    workHoursStart: '09:00',
+    workHoursEnd: '22:00',
+    distributeEvenlyEnabled: true,
+    roundRobinEnabled: true,
+    circuitBreakerEnabled: true,
+    circuitBreakerWindowMinutes: 10,
+    circuitBreakerPostLimit: 10,
     updatedAt: null,
   }),
   sources: z.array(vkParsingSourceSchema).default([]),
   posts: z.array(vkParsingPostSchema).default([]),
+  queue: z.array(vkParsingPostSchema).default([]),
+  auditEvents: z
+    .array(
+      z.object({
+        id: z.string(),
+        action: z.string(),
+        actorUserId: z.string(),
+        payload: z.record(z.string(), z.unknown()).default({}),
+        createdAt: z.string().datetime(),
+      }),
+    )
+    .default([]),
   pagination: vkParsingFeedPaginationSchema.default({
     limit: 50,
     offset: 0,
@@ -2436,13 +2503,49 @@ export type VkParsingFeedQuery = z.infer<typeof vkParsingFeedQuerySchema>;
 export const updateVkParsingSettingsRequestSchema = z
   .object({
     autoPublishEnabled: z.boolean().optional(),
+    autoPublishKillSwitchEnabled: z.boolean().optional(),
     stripLinksEnabled: z.boolean().optional(),
     skipAdsEnabled: z.boolean().optional(),
+    schedulerTimezone: z.string().trim().min(1).max(64).optional(),
+    quietHoursStart: vkParsingTimeOfDaySchema.nullable().optional(),
+    quietHoursEnd: vkParsingTimeOfDaySchema.nullable().optional(),
+    workHoursStart: vkParsingTimeOfDaySchema.optional(),
+    workHoursEnd: vkParsingTimeOfDaySchema.optional(),
+    distributeEvenlyEnabled: z.boolean().optional(),
+    roundRobinEnabled: z.boolean().optional(),
+    circuitBreakerEnabled: z.boolean().optional(),
+    circuitBreakerWindowMinutes: z.number().int().min(1).max(1440).optional(),
+    circuitBreakerPostLimit: z.number().int().min(1).max(500).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: 'Передайте хотя бы одну настройку.',
   });
 export type UpdateVkParsingSettingsRequest = z.infer<typeof updateVkParsingSettingsRequestSchema>;
+
+export const updateVkParsingSourceRequestSchema = z
+  .object({
+    importEnabled: z.boolean().optional(),
+    autoPublishEnabled: z.boolean().optional(),
+    publishIntervalMinutes: z.number().int().min(5).max(10080).optional(),
+    dailyLimit: z.number().int().min(1).max(500).optional(),
+    minPublishIntervalMinutes: z.number().int().min(0).max(1440).optional(),
+    publishMode: vkParsingPublishModeSchema.optional(),
+    priority: vkParsingSourcePrioritySchema.optional(),
+    quietHoursStart: vkParsingTimeOfDaySchema.nullable().optional(),
+    quietHoursEnd: vkParsingTimeOfDaySchema.nullable().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Передайте хотя бы одну настройку.',
+  });
+export type UpdateVkParsingSourceRequest = z.infer<typeof updateVkParsingSourceRequestSchema>;
+
+export const bulkUpdateVkParsingSourcesRequestSchema = z.object({
+  sourceIds: z.array(z.string().min(1)).min(1).max(50),
+  preset: vkParsingBulkPresetSchema,
+});
+export type BulkUpdateVkParsingSourcesRequest = z.infer<
+  typeof bulkUpdateVkParsingSourcesRequestSchema
+>;
 
 export const addVkParsingSourceRequestSchema = z.object({
   url: z.string().trim().min(2).max(512),
@@ -2469,6 +2572,40 @@ export const publishVkParsingPostRequestSchema = z
     }
   });
 export type PublishVkParsingPostRequest = z.infer<typeof publishVkParsingPostRequestSchema>;
+
+export const scheduleVkParsingPostRequestSchema = z.object({
+  scheduledAt: z.string().datetime(),
+});
+export type ScheduleVkParsingPostRequest = z.infer<typeof scheduleVkParsingPostRequestSchema>;
+
+export const vkParsingDryRunResultSchema = z.object({
+  chatId: z.string(),
+  sourceId: z.string().nullable().default(null),
+  generatedAt: z.string().datetime(),
+  globalEnabled: z.boolean().default(false),
+  killSwitchEnabled: z.boolean().default(false),
+  baselineAt: z.string().datetime().nullable().default(null),
+  eligibleNow: z.number().int().min(0).default(0),
+  latestImportedVkPublishedAt: z.string().datetime().nullable().default(null),
+  sourcesWithoutSuccessfulSync: z.number().int().min(0).default(0),
+});
+export type VkParsingDryRunResult = z.infer<typeof vkParsingDryRunResultSchema>;
+
+export const rollbackVkParsingRequestSchema = z.object({
+  since: z.string().datetime(),
+  until: z.string().datetime(),
+  sourceId: z.string().trim().min(1).optional(),
+  deleteMessages: z.boolean().default(false),
+});
+export type RollbackVkParsingRequest = z.infer<typeof rollbackVkParsingRequestSchema>;
+
+export const rollbackVkParsingResultSchema = z.object({
+  matched: z.number().int().min(0).default(0),
+  deleted: z.number().int().min(0).default(0),
+  failed: z.number().int().min(0).default(0),
+  posts: z.array(vkParsingPostSchema).default([]),
+});
+export type RollbackVkParsingResult = z.infer<typeof rollbackVkParsingResultSchema>;
 
 export const vkParsingRefreshResultSchema = vkParsingFeedSchema.extend({
   imported: z.number().int().min(0).default(0),

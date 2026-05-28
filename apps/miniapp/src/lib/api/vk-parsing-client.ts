@@ -1,17 +1,29 @@
 import {
   addVkParsingSourceRequestSchema,
+  bulkUpdateVkParsingSourcesRequestSchema,
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
+  rollbackVkParsingRequestSchema,
+  rollbackVkParsingResultSchema,
   retryVkParsingPostResultSchema,
+  scheduleVkParsingPostRequestSchema,
   updateVkParsingSettingsRequestSchema,
+  updateVkParsingSourceRequestSchema,
   vkParsingCapabilitySchema,
+  vkParsingDryRunResultSchema,
   vkParsingFeedSchema,
   vkParsingRefreshResultSchema,
+  type BulkUpdateVkParsingSourcesRequest,
   type PublishVkParsingPostRequest,
   type PublishVkParsingPostResult,
+  type RollbackVkParsingRequest,
+  type RollbackVkParsingResult,
   type RetryVkParsingPostResult,
+  type ScheduleVkParsingPostRequest,
   type UpdateVkParsingSettingsRequest,
+  type UpdateVkParsingSourceRequest,
   type VkParsingCapability,
+  type VkParsingDryRunResult,
   type VkParsingFeed,
   type VkParsingFeedQuery,
   type VkParsingRefreshResult,
@@ -114,6 +126,38 @@ export async function removeVkParsingSource(
   return vkParsingFeedSchema.parse(response);
 }
 
+export async function updateVkParsingSource(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  sourceId: string,
+  payload: UpdateVkParsingSourceRequest,
+): Promise<VkParsingFeed> {
+  const requestBody = updateVkParsingSourceRequestSchema.parse(payload);
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/sources/${sourceId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return vkParsingFeedSchema.parse(response);
+}
+
+export async function applyVkParsingSourcePreset(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  payload: BulkUpdateVkParsingSourcesRequest,
+): Promise<VkParsingFeed> {
+  const requestBody = bulkUpdateVkParsingSourcesRequestSchema.parse(payload);
+  const response = await api.request(`${buildVkParsingPath(entityType, chatId)}/sources/bulk`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return vkParsingFeedSchema.parse(response);
+}
+
 export async function refreshVkParsing(
   api: ApiTransport,
   entityType: VkParsingEntityType,
@@ -122,6 +166,21 @@ export async function refreshVkParsing(
   const response = await api.request(`${buildVkParsingPath(entityType, chatId)}/refresh`, {
     method: 'POST',
   });
+  return vkParsingRefreshResultSchema.parse(response);
+}
+
+export async function refreshVkParsingSource(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  sourceId: string,
+): Promise<VkParsingRefreshResult> {
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/sources/${sourceId}/refresh`,
+    {
+      method: 'POST',
+    },
+  );
   return vkParsingRefreshResultSchema.parse(response);
 }
 
@@ -156,4 +215,83 @@ export async function retryVkParsingPost(
     },
   );
   return retryVkParsingPostResultSchema.parse(response);
+}
+
+export async function scheduleVkParsingPost(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  postId: string,
+  payload: ScheduleVkParsingPostRequest,
+): Promise<RetryVkParsingPostResult> {
+  const requestBody = scheduleVkParsingPostRequestSchema.parse(payload);
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/posts/${postId}/schedule`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return retryVkParsingPostResultSchema.parse(response);
+}
+
+export async function cancelVkParsingPost(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  postId: string,
+): Promise<RetryVkParsingPostResult> {
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/posts/${postId}/cancel`,
+    {
+      method: 'POST',
+    },
+  );
+  return retryVkParsingPostResultSchema.parse(response);
+}
+
+export async function publishVkParsingPostNow(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  postId: string,
+): Promise<RetryVkParsingPostResult> {
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/posts/${postId}/publish-now`,
+    {
+      method: 'POST',
+    },
+  );
+  return retryVkParsingPostResultSchema.parse(response);
+}
+
+export async function dryRunVkParsingAutopublish(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  sourceId?: string | null,
+): Promise<VkParsingDryRunResult> {
+  const params = new URLSearchParams();
+  if (sourceId) {
+    params.set('sourceId', sourceId);
+  }
+  const query = params.toString();
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/autopublish/dry-run${query ? `?${query}` : ''}`,
+  );
+  return vkParsingDryRunResultSchema.parse(response);
+}
+
+export async function rollbackVkParsingAutopublish(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  payload: RollbackVkParsingRequest,
+): Promise<RollbackVkParsingResult> {
+  const requestBody = rollbackVkParsingRequestSchema.parse(payload);
+  const response = await api.request(`${buildVkParsingPath(entityType, chatId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return rollbackVkParsingResultSchema.parse(response);
 }

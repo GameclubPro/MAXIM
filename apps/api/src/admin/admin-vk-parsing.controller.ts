@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { VkParsingService } from './vk-parsing.service';
@@ -31,6 +41,33 @@ export class AdminVkParsingController {
     return this.vkParsingService.updateSettings(chatId, user, body);
   }
 
+  @Get('channels/:chatId/vk-parsing/autopublish/dry-run')
+  dryRunChannelVkParsingAutopublish(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.vkParsingService.dryRunAutoPublish(chatId, user, query);
+  }
+
+  @Post('channels/:chatId/vk-parsing/rollback')
+  rollbackChannelVkParsingAutopublish(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.rollbackAutoPublished(chatId, user, body);
+  }
+
+  @Post('channels/:chatId/vk-parsing/sources/bulk')
+  applyChannelVkParsingSourcePreset(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.applySourcePreset(chatId, user, body);
+  }
+
   @Post('channels/:chatId/vk-parsing/sources')
   addChannelVkParsingSource(
     @Param('chatId') chatId: string,
@@ -38,6 +75,25 @@ export class AdminVkParsingController {
     @Body() body: unknown,
   ) {
     return this.vkParsingService.addSource(chatId, user, body);
+  }
+
+  @Patch('channels/:chatId/vk-parsing/sources/:sourceId')
+  updateChannelVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateSource(chatId, sourceId, user, body);
+  }
+
+  @Post('channels/:chatId/vk-parsing/sources/:sourceId/refresh')
+  refreshChannelVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.refreshSource(chatId, sourceId, user);
   }
 
   @Delete('channels/:chatId/vk-parsing/sources/:sourceId')
@@ -66,6 +122,34 @@ export class AdminVkParsingController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.vkParsingService.retryPost(chatId, postId, user);
+  }
+
+  @Patch('channels/:chatId/vk-parsing/posts/:postId/schedule')
+  scheduleChannelVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.schedulePost(chatId, postId, user, body);
+  }
+
+  @Post('channels/:chatId/vk-parsing/posts/:postId/cancel')
+  cancelChannelVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.cancelScheduledPost(chatId, postId, user);
+  }
+
+  @Post('channels/:chatId/vk-parsing/posts/:postId/publish-now')
+  publishChannelVkParsingPostNow(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.publishPostNow(chatId, postId, user);
   }
 
   @Post('channels/:chatId/vk-parsing/posts/:postId/publish')
@@ -101,6 +185,33 @@ export class AdminVkParsingController {
     return this.vkParsingService.updateSettings(chatId, user, body);
   }
 
+  @Get('chats/:chatId/vk-parsing/autopublish/dry-run')
+  dryRunChatVkParsingAutopublish(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.vkParsingService.dryRunAutoPublish(chatId, user, query);
+  }
+
+  @Post('chats/:chatId/vk-parsing/rollback')
+  rollbackChatVkParsingAutopublish(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.rollbackAutoPublished(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/vk-parsing/sources/bulk')
+  applyChatVkParsingSourcePreset(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.applySourcePreset(chatId, user, body);
+  }
+
   @Post('chats/:chatId/vk-parsing/sources')
   addChatVkParsingSource(
     @Param('chatId') chatId: string,
@@ -108,6 +219,25 @@ export class AdminVkParsingController {
     @Body() body: unknown,
   ) {
     return this.vkParsingService.addSource(chatId, user, body);
+  }
+
+  @Patch('chats/:chatId/vk-parsing/sources/:sourceId')
+  updateChatVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateSource(chatId, sourceId, user, body);
+  }
+
+  @Post('chats/:chatId/vk-parsing/sources/:sourceId/refresh')
+  refreshChatVkParsingSource(
+    @Param('chatId') chatId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.refreshSource(chatId, sourceId, user);
   }
 
   @Delete('chats/:chatId/vk-parsing/sources/:sourceId')
@@ -136,6 +266,34 @@ export class AdminVkParsingController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.vkParsingService.retryPost(chatId, postId, user);
+  }
+
+  @Patch('chats/:chatId/vk-parsing/posts/:postId/schedule')
+  scheduleChatVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.schedulePost(chatId, postId, user, body);
+  }
+
+  @Post('chats/:chatId/vk-parsing/posts/:postId/cancel')
+  cancelChatVkParsingPost(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.cancelScheduledPost(chatId, postId, user);
+  }
+
+  @Post('chats/:chatId/vk-parsing/posts/:postId/publish-now')
+  publishChatVkParsingPostNow(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.vkParsingService.publishPostNow(chatId, postId, user);
   }
 
   @Post('chats/:chatId/vk-parsing/posts/:postId/publish')
