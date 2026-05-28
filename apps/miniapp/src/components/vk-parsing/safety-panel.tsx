@@ -74,7 +74,7 @@ export function SafetyPanel({ sources, auditEvents, isRollingBack, onRollback }:
             })
           }
         >
-          Rollback
+          Откат
         </button>
       </div>
 

@@ -24,9 +24,47 @@ type VkParsingCardProps = {
 export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
+  const activeSourceCount = sources.filter((source) => source.importEnabled).length;
+  const publishedCount = posts.filter((post) => post.status === 'PUBLISHED').length;
+  const autopublishLabel = settings.autoPublishKillSwitchEnabled
+    ? 'Стоп'
+    : settings.autoPublishEnabled
+      ? 'Вкл'
+      : 'Ручной';
 
   return (
     <div className="vk-parsing-card">
+      {feed ? (
+        <div className="vk-parsing-overview" aria-label="Сводка VK-парсинга">
+          <span>
+            <b>
+              {activeSourceCount}/{sources.length}
+            </b>
+            <small>Источн.</small>
+          </span>
+          <span>
+            <b>{feed.queue.length}</b>
+            <small>Очередь</small>
+          </span>
+          <span>
+            <b>{publishedCount}</b>
+            <small>Посты</small>
+          </span>
+          <span
+            className={
+              settings.autoPublishKillSwitchEnabled
+                ? 'is-danger'
+                : settings.autoPublishEnabled
+                  ? 'is-success'
+                  : undefined
+            }
+          >
+            <b>{autopublishLabel}</b>
+            <small>Авто</small>
+          </span>
+        </div>
+      ) : null}
+
       <SourceDashboard
         sourceUrl={state.sourceUrl}
         sources={sources}
@@ -51,42 +89,42 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
       />
 
       {feed ? (
-        <details className="vk-parsing-fold">
-          <summary>Автопостинг</summary>
-          <SchedulerPanel
-            settings={settings}
-            isSaving={state.isSavingSettings}
-            onUpdateSetting={state.updateSetting}
-          />
-          <HealthSummary summary={feed.summary} />
-        </details>
-      ) : null}
+        <div className="vk-parsing-control-stack">
+          <details className="vk-parsing-fold">
+            <summary>Автопостинг</summary>
+            <SchedulerPanel
+              settings={settings}
+              isSaving={state.isSavingSettings}
+              onUpdateSetting={state.updateSetting}
+            />
+            <HealthSummary summary={feed.summary} />
+          </details>
 
-      {feed && feed.queue.length > 0 ? (
-        <details className="vk-parsing-fold">
-          <summary>Очередь · {feed.queue.length}</summary>
-          <QueueTimeline
-            posts={feed.queue}
-            schedulingPostId={state.schedulingPostId}
-            cancelingPostId={state.cancelingPostId}
-            publishingNowPostId={state.publishingNowPostId}
-            onSchedulePost={state.schedulePost}
-            onCancelPost={state.cancelScheduledPost}
-            onPublishNow={state.publishPostNow}
-          />
-        </details>
-      ) : null}
+          {feed.queue.length > 0 ? (
+            <details className="vk-parsing-fold">
+              <summary>Очередь · {feed.queue.length}</summary>
+              <QueueTimeline
+                posts={feed.queue}
+                schedulingPostId={state.schedulingPostId}
+                cancelingPostId={state.cancelingPostId}
+                publishingNowPostId={state.publishingNowPostId}
+                onSchedulePost={state.schedulePost}
+                onCancelPost={state.cancelScheduledPost}
+                onPublishNow={state.publishPostNow}
+              />
+            </details>
+          ) : null}
 
-      {feed ? (
-        <details className="vk-parsing-fold">
-          <summary>Защита</summary>
-          <SafetyPanel
-            sources={sources}
-            auditEvents={feed.auditEvents}
-            isRollingBack={state.isRollingBack}
-            onRollback={state.rollback}
-          />
-        </details>
+          <details className="vk-parsing-fold">
+            <summary>Защита</summary>
+            <SafetyPanel
+              sources={sources}
+              auditEvents={feed.auditEvents}
+              isRollingBack={state.isRollingBack}
+              onRollback={state.rollback}
+            />
+          </details>
+        </div>
       ) : null}
 
       {feed ? (

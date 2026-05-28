@@ -55,6 +55,16 @@ function renderStatusIcon(post: VkParsingPost) {
   return null;
 }
 
+function getSourceInitials(title: string): string {
+  const words = title
+    .split(/\s+/u)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  const first = words[0]?.[0] ?? 'V';
+  const second = words.length > 1 ? words[1]?.[0] : words[0]?.[1];
+  return `${first}${second ?? ''}`.toUpperCase();
+}
+
 export function PostCard({
   post,
   settings,
@@ -79,6 +89,8 @@ export function PostCard({
   const photoCount = post.photoUrls.length;
   const linkCount = post.linkUrls.length;
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
+  const visiblePhotoUrls = post.photoUrls.slice(0, 4);
+  const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
 
   return (
     <article
@@ -91,20 +103,42 @@ export function PostCard({
       )}
     >
       <div className="vk-parsing-post-card__head">
-        <div className="vk-parsing-post-card__source">
-          <strong>{post.sourceTitle}</strong>
-          <span>{dateLabel || 'VK'}</span>
+        <div className="vk-parsing-post-card__identity">
+          <span className="vk-parsing-post-card__avatar" aria-hidden>
+            {getSourceInitials(post.sourceTitle)}
+          </span>
+          <div className="vk-parsing-post-card__source">
+            <strong>{post.sourceTitle}</strong>
+            <span>{dateLabel || 'VK'}</span>
+          </div>
         </div>
-        <a
-          className="vk-parsing-post-card__vk-link"
-          href={post.url}
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Открыть пост VK"
-          title="Открыть пост VK"
-        >
-          <OpenNewWindow aria-hidden />
-        </a>
+        <div className="vk-parsing-post-card__head-actions">
+          {statusLabel ? (
+            <span
+              className={cn(
+                'vk-parsing-status-pill',
+                post.status === 'PUBLISHED' && 'is-success',
+                post.status === 'FAILED' && 'is-danger',
+                post.status === 'SKIPPED' && 'is-muted',
+                post.status === 'CHANGED_AFTER_PUBLISH' && 'is-warning',
+              )}
+              title={post.autoPublishError ?? post.lastError ?? undefined}
+            >
+              {renderStatusIcon(post)}
+              {statusLabel}
+            </span>
+          ) : null}
+          <a
+            className="vk-parsing-post-card__vk-link"
+            href={post.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Открыть пост VK"
+            title="Открыть пост VK"
+          >
+            <OpenNewWindow aria-hidden />
+          </a>
+        </div>
       </div>
 
       {postIssue ? (
@@ -142,23 +176,18 @@ export function PostCard({
 
           {post.photoUrls.length > 0 ? (
             <div className="vk-parsing-post-card__photos">
-              {post.photoUrls.slice(0, 4).map((url) => (
-                <img key={url} src={url} alt="" loading="lazy" />
+              {visiblePhotoUrls.map((url, index) => (
+                <span key={url} className="vk-parsing-post-card__photo">
+                  <img src={url} alt="" loading="lazy" />
+                  {index === visiblePhotoUrls.length - 1 && extraPhotoCount > 0 ? (
+                    <em>+{extraPhotoCount}</em>
+                  ) : null}
+                </span>
               ))}
             </div>
           ) : null}
 
           <div className="vk-parsing-post-card__facts">
-            <a
-              href={post.url}
-              target="_blank"
-              rel="noreferrer"
-              className="vk-parsing-fact-link"
-              title="Оригинал VK"
-            >
-              <OpenNewWindow aria-hidden />
-              Оригинал
-            </a>
             {photoCount > 0 ? (
               <span>
                 <Camera aria-hidden />
@@ -201,21 +230,6 @@ export function PostCard({
                   <RefreshCircle aria-hidden />
                 )}
                 {publishState.label}
-              </span>
-            ) : null}
-            {statusLabel ? (
-              <span
-                className={cn(
-                  'vk-parsing-status-pill',
-                  post.status === 'PUBLISHED' && 'is-success',
-                  post.status === 'FAILED' && 'is-danger',
-                  post.status === 'SKIPPED' && 'is-muted',
-                  post.status === 'CHANGED_AFTER_PUBLISH' && 'is-warning',
-                )}
-                title={post.autoPublishError ?? post.lastError ?? undefined}
-              >
-                {renderStatusIcon(post)}
-                {statusLabel}
               </span>
             ) : null}
           </div>
