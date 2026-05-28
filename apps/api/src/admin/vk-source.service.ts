@@ -536,13 +536,19 @@ export class VkSourceService {
     input: NormalizedVkSourceInput,
     wall: VkWallGetResponse,
   ): NormalizedVkSourceInfo {
-    const group = (wall.groups ?? [])
+    const groups = (wall.groups ?? [])
       .map((item) => this.asRecord(item))
-      .find((item): item is Record<string, unknown> => item !== null);
+      .filter((item): item is Record<string, unknown> => item !== null);
     const firstPost = (wall.items ?? [])
       .map((item) => this.asRecord(item))
       .find((item): item is Record<string, unknown> => item !== null);
-    const groupId = this.readNumber(group?.id) ?? this.resolveGroupIdFromPost(firstPost ?? null);
+    const groupIdFromPost = this.resolveGroupIdFromPost(firstPost ?? null);
+    const group =
+      typeof groupIdFromPost === 'number'
+        ? (groups.find((item) => this.readNumber(item.id) === groupIdFromPost) ?? null)
+        : (this.findGroupByInputDomain(groups, input.domain) ??
+          (groups.length === 1 ? groups[0] : null));
+    const groupId = groupIdFromPost ?? this.readNumber(group?.id);
     if (!groupId) {
       throw new BadRequestException('VK-сообщество не найдено или недоступно.');
     }
@@ -565,6 +571,28 @@ export class VkSourceService {
     }
 
     return Math.abs(ownerId);
+  }
+
+  private findGroupByInputDomain(
+    groups: Record<string, unknown>[],
+    domain: string,
+  ): Record<string, unknown> | null {
+    const normalizedDomain = domain.toLowerCase();
+    for (const group of groups) {
+      const id = this.readNumber(group.id);
+      const screenName = this.readString(group.screen_name).toLowerCase();
+      if (screenName && screenName === normalizedDomain) {
+        return group;
+      }
+      if (
+        typeof id === 'number' &&
+        (normalizedDomain === `club${id}` || normalizedDomain === `public${id}`)
+      ) {
+        return group;
+      }
+    }
+
+    return null;
   }
 
   private async fetchWall(options: {

@@ -553,6 +553,93 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('adds a VK source from the wall owner, not the first extended group', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          groups: [
+            { id: 1, screen_name: 'unrelated_group', name: 'Чужая группа' },
+            { id: 36819802, screen_name: 'avto_prodaja_rb', name: 'Авторынок Уфа' },
+          ],
+          items: [{ owner_id: -36819802, id: 101, date: 1_779_708_000, text: 'Пост' }],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    prisma.vkParsingSource.upsert.mockResolvedValue(source);
+
+    await service.addSource('channel-1', { userId: '183470701' } as never, {
+      url: 'https://vk.com/avto_prodaja_rb',
+    });
+
+    expect(prisma.vkParsingSource.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_wallOwnerId: {
+            chatId: 'channel-1',
+            wallOwnerId: -36819802,
+          },
+        },
+        create: expect.objectContaining({
+          ownerId: 36819802,
+          wallOwnerId: -36819802,
+          screenName: 'avto_prodaja_rb',
+          title: 'Авторынок Уфа',
+          url: 'https://vk.ru/avto_prodaja_rb',
+        }),
+        update: expect.objectContaining({
+          ownerId: 36819802,
+          screenName: 'avto_prodaja_rb',
+          title: 'Авторынок Уфа',
+          url: 'https://vk.ru/avto_prodaja_rb',
+        }),
+      }),
+    );
+  });
+
+  it('keeps the requested VK source when extended groups omit the wall owner', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          groups: [{ id: 1, screen_name: 'unrelated_group', name: 'Чужая группа' }],
+          items: [{ owner_id: -36819802, id: 101, date: 1_779_708_000, text: 'Пост' }],
+        },
+      }),
+    ) as unknown as typeof fetch;
+    prisma.vkParsingSource.upsert.mockResolvedValue(source);
+
+    await service.addSource('channel-1', { userId: '183470701' } as never, {
+      url: 'https://vk.com/avto_prodaja_rb',
+    });
+
+    expect(prisma.vkParsingSource.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_wallOwnerId: {
+            chatId: 'channel-1',
+            wallOwnerId: -36819802,
+          },
+        },
+        create: expect.objectContaining({
+          ownerId: 36819802,
+          wallOwnerId: -36819802,
+          screenName: 'avto_prodaja_rb',
+          title: 'avto_prodaja_rb',
+          url: 'https://vk.ru/avto_prodaja_rb',
+        }),
+        update: expect.objectContaining({
+          ownerId: 36819802,
+          screenName: 'avto_prodaja_rb',
+          title: 'avto_prodaja_rb',
+          url: 'https://vk.ru/avto_prodaja_rb',
+        }),
+      }),
+    );
+  });
+
   it('imports text, photos and links from a public VK community without videos', async () => {
     const { service, prisma, syncQueue } = createFixture();
     const source = createSource();
