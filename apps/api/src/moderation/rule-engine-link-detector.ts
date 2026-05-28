@@ -151,6 +151,14 @@ function isAllowlistedLink(
     return true;
   }
 
+  if (match.normalizedDomain) {
+    for (const domain of matchers.domains) {
+      if (match.normalizedDomain.endsWith(`.${domain}`)) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 

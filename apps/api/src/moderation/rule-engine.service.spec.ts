@@ -448,15 +448,25 @@ describe('RuleEngineService', () => {
       settings: buildSettings(),
       domainAllowlist: ['domain:docs.max.ru'],
     });
-    const blocked = await service.detect({
+    const allowedSubdomain = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'смотри https://sub.docs.max.ru/mini-apps/start',
       settings: buildSettings(),
       domainAllowlist: ['domain:docs.max.ru'],
     });
+    const blocked = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://bad-docs.max.ru/mini-apps/start',
+      settings: buildSettings(),
+      domainAllowlist: ['domain:docs.max.ru'],
+    });
 
     expect(allowed.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(allowedSubdomain.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(
+      false,
+    );
     expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
