@@ -166,6 +166,17 @@ async function loadSourceHealth(prisma: PrismaClient): Promise<unknown> {
         where status = 'ACTIVE'
           and sync_status in ('QUEUED', 'SYNCING')
       )::int as "inFlightSources",
+      count(*) filter (
+        where status = 'ACTIVE'
+          and sync_status = 'SYNCING'
+          and (
+            sync_lock_deadline_at < now()
+            or (
+              sync_lock_deadline_at is null
+              and sync_locked_at < now() - interval '5 minutes'
+            )
+          )
+      )::int as "staleSyncLocks",
       avg(last_sync_duration_ms) filter (
         where last_sync_duration_ms is not null
       ) as "avgSyncDurationMs",
@@ -199,6 +210,20 @@ async function loadNoisySources(prisma: PrismaClient, limit: number): Promise<un
       last_sync_at as "lastSyncAt",
       last_success_at as "lastSuccessAt",
       next_sync_at as "nextSyncAt",
+      case when sync_status = 'BACKOFF' then next_sync_at else null end as "nextRetryAt",
+      sync_locked_by as "syncLockedBy",
+      sync_lock_deadline_at as "syncLockDeadlineAt",
+      sync_heartbeat_at as "syncHeartbeatAt",
+      (
+        sync_status = 'SYNCING'
+        and (
+          sync_lock_deadline_at < now()
+          or (
+            sync_lock_deadline_at is null
+            and sync_locked_at < now() - interval '5 minutes'
+          )
+        )
+      ) as "staleSyncLock",
       last_fetched_pages as "lastFetchedPages",
       last_imported_count as "lastImportedCount",
       last_fetched_count as "lastFetchedCount",
@@ -454,7 +479,7 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
       sourceHealth.sourceCount,
     )} healthy, ${readNumber(sourceHealth.errorSources)} error/backoff, ${readNumber(
       sourceHealth.inFlightSources,
-    )} queued/syncing`,
+    )} queued/syncing, ${readNumber(sourceHealth.staleSyncLocks)} stale locks`,
     `Sync: fetched ${readNumber(syncPerformance.fetchedPosts)}, imported ${readNumber(
       syncPerformance.importedPosts,
     )}, p95 ${Math.round(readNumber(syncPerformance.p95SyncDurationMs))}ms`,

@@ -120,6 +120,7 @@ export class VkParsingFeedService {
       latestSeen,
       oldestQueued,
       publishBacklog,
+      staleSyncLockCount,
       mediaTotal,
       mediaFailed,
       vkApiMetrics,
@@ -153,6 +154,20 @@ export class VkParsingFeedService {
           status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         },
       }),
+      this.prisma.vkParsingSource.count({
+        where: {
+          chatId,
+          status: VK_SOURCE_STATUS_ACTIVE,
+          syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
+          OR: [
+            { syncLockDeadlineAt: { lt: now } },
+            {
+              syncLockDeadlineAt: null,
+              syncLockedAt: { lt: staleBefore },
+            },
+          ],
+        },
+      }),
       this.prisma.vkParsingMediaCache.count(),
       this.prisma.vkParsingMediaCache.count({ where: { status: VK_MEDIA_STATUS_FAILED } }),
       this.vkRateLimitService.getRecentVkApiMetrics(300).catch(() => ({
@@ -178,6 +193,7 @@ export class VkParsingFeedService {
         ? Math.max(0, Math.floor((now.getTime() - firstQueuedAt.getTime()) / 1_000))
         : null,
       publishBacklog,
+      staleSyncLockCount,
       mediaFailureRatio: mediaTotal > 0 ? Math.min(1, mediaFailed / mediaTotal) : 0,
       recentErrors: vkApiMetrics.recentErrors,
     };
@@ -261,6 +277,8 @@ export class VkParsingFeedService {
   }
 
   private mapSource(source: VkParsingSourceRow): VkParsingSource {
+    const syncStatus = this.mapSourceSyncStatus(source.syncStatus);
+    const nextSyncAt = source.nextSyncAt ? source.nextSyncAt.toISOString() : null;
     return {
       id: source.id,
       chatId: source.chatId,
@@ -270,8 +288,9 @@ export class VkParsingFeedService {
       title: source.title,
       url: source.url,
       status: source.status === VK_SOURCE_STATUS_DISABLED ? 'DISABLED' : 'ACTIVE',
-      syncStatus: this.mapSourceSyncStatus(source.syncStatus),
-      nextSyncAt: source.nextSyncAt ? source.nextSyncAt.toISOString() : null,
+      syncStatus,
+      nextSyncAt,
+      nextRetryAt: syncStatus === VK_SOURCE_SYNC_STATUS_BACKOFF ? nextSyncAt : null,
       lastSyncAt: source.lastSyncAt ? source.lastSyncAt.toISOString() : null,
       lastSuccessAt: source.lastSuccessAt ? source.lastSuccessAt.toISOString() : null,
       syncStartedAt: source.syncStartedAt ? source.syncStartedAt.toISOString() : null,

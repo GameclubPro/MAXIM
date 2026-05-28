@@ -24,6 +24,7 @@ describe('diagnose-vk-parsing script helpers', () => {
         healthySources: 59,
         errorSources: 0,
         inFlightSources: 0,
+        staleSyncLocks: 1,
       },
       noisySources: [],
       syncPerformance: {
@@ -50,6 +51,7 @@ describe('diagnose-vk-parsing script helpers', () => {
     });
 
     expect(rendered).toContain('Sources: 59/59 healthy');
+    expect(rendered).toContain('1 stale locks');
     expect(rendered).toContain('Publish backlog: 2 queued');
     expect(rendered).toContain('sync={"waiting":0}');
   });

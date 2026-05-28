@@ -137,7 +137,9 @@ export class VkSyncService {
       const wallPages = await this.fetchWallPages(source, reason);
       const posts = wallPages.posts;
 
+      await this.recordSourceHeartbeat(source.id);
       const importResult = await this.upsertPostsBatch(source, posts, startedAt);
+      await this.recordSourceHeartbeat(source.id);
       if (this.shouldAutoPublishImportedPosts(source, reason)) {
         await this.publishService.enqueueAutoPublishImportedPosts(
           source.chatId,
@@ -158,6 +160,8 @@ export class VkSyncService {
           syncStartedAt: null,
           syncLockedAt: null,
           syncLockedBy: null,
+          syncLockDeadlineAt: null,
+          syncHeartbeatAt: null,
           consecutiveFailures: 0,
           lastErrorCode: null,
           lastImportedCount: importResult.imported,
@@ -189,6 +193,8 @@ export class VkSyncService {
           syncStartedAt: null,
           syncLockedAt: null,
           syncLockedBy: null,
+          syncLockDeadlineAt: null,
+          syncHeartbeatAt: null,
           consecutiveFailures: failureCount,
           lastErrorCode: classified.code,
           lastImportedCount: 0,
@@ -229,6 +235,7 @@ export class VkSyncService {
         count: this.fetchCount,
         offset,
       });
+      await this.recordSourceHeartbeat(source.id);
       const pagePosts = (wall.items ?? [])
         .map((item) => this.normalizePost(item))
         .filter((post): post is NormalizedVkPost => post !== null);
@@ -366,17 +373,27 @@ export class VkSyncService {
   private async acquireSourceLease(sourceId: string): Promise<VkParsingSourceRow | null> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
+    const syncLockDeadlineAt = new Date(now.getTime() + this.syncLeaseTtlMs);
     const updated = await this.prisma.vkParsingSource.updateMany({
       where: {
         id: sourceId,
         status: VK_SOURCE_STATUS_ACTIVE,
-        OR: [{ syncLockedAt: null }, { syncLockedAt: { lt: staleLockBefore } }],
+        OR: [
+          { syncLockedAt: null },
+          { syncLockDeadlineAt: { lt: now } },
+          {
+            syncLockDeadlineAt: null,
+            syncLockedAt: { lt: staleLockBefore },
+          },
+        ],
       },
       data: {
         syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
         syncStartedAt: now,
         syncLockedAt: now,
         syncLockedBy: this.workerId,
+        syncLockDeadlineAt,
+        syncHeartbeatAt: now,
         syncAttemptCount: { increment: 1 },
       },
     });
@@ -391,6 +408,21 @@ export class VkSyncService {
     }
 
     return source;
+  }
+
+  private async recordSourceHeartbeat(sourceId: string): Promise<void> {
+    const now = new Date();
+    await this.prisma.vkParsingSource.updateMany({
+      where: {
+        id: sourceId,
+        syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
+        syncLockedBy: this.workerId,
+      },
+      data: {
+        syncHeartbeatAt: now,
+        syncLockDeadlineAt: new Date(now.getTime() + this.syncLeaseTtlMs),
+      },
+    });
   }
 
   private resolveImportedPostStatus(

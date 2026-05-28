@@ -24,6 +24,9 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
       {summary.publishBacklog > 0 ? (
         <span title="Посты ждут публикации">{summary.publishBacklog}</span>
       ) : null}
+      {summary.staleSyncLockCount > 0 ? (
+        <span title="Зависшие обновления источников">{summary.staleSyncLockCount}</span>
+      ) : null}
       {summary.mediaFailureRatio > 0 ? (
         <span title="Доля ошибок медиа">{formatPercent(summary.mediaFailureRatio)}</span>
       ) : null}

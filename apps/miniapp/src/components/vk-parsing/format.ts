@@ -74,6 +74,7 @@ export function formatPercent(value: number | null | undefined): string {
 export function formatVkSourceSyncLabel(source: {
   syncStatus: string;
   nextSyncAt: string | null;
+  nextRetryAt?: string | null;
   lastError: string | null;
 }): string | null {
   if (source.syncStatus === 'QUEUED') {
@@ -83,7 +84,7 @@ export function formatVkSourceSyncLabel(source: {
     return 'Обновляется';
   }
   if (source.syncStatus === 'BACKOFF') {
-    const retryAt = formatVkSourceRetry(source.nextSyncAt);
+    const retryAt = formatVkSourceRetry(source.nextRetryAt ?? source.nextSyncAt);
     return retryAt ? `Повтор ${retryAt}` : 'Повтор позже';
   }
   if (source.syncStatus === 'ERROR' || source.lastError) {

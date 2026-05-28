@@ -104,6 +104,10 @@ export class VkSourceService {
         status: VK_SOURCE_STATUS_ACTIVE,
         syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
         nextSyncAt: new Date(),
+        syncLockedAt: null,
+        syncLockedBy: null,
+        syncLockDeadlineAt: null,
+        syncHeartbeatAt: null,
         lastError: null,
         lastErrorCode: null,
       },
@@ -130,6 +134,8 @@ export class VkSourceService {
         nextSyncAt: null,
         syncLockedAt: null,
         syncLockedBy: null,
+        syncLockDeadlineAt: null,
+        syncHeartbeatAt: null,
       },
     });
     return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
@@ -159,7 +165,13 @@ export class VkSourceService {
           { nextSyncAt: { lte: now } },
           {
             syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
-            syncLockedAt: { lt: staleLockBefore },
+            OR: [
+              { syncLockDeadlineAt: { lt: now } },
+              {
+                syncLockDeadlineAt: null,
+                syncLockedAt: { lt: staleLockBefore },
+              },
+            ],
           },
         ],
       },
@@ -188,6 +200,10 @@ export class VkSourceService {
       data: {
         syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
         nextSyncAt: new Date(),
+        syncLockedAt: null,
+        syncLockedBy: null,
+        syncLockDeadlineAt: null,
+        syncHeartbeatAt: null,
       },
     });
 

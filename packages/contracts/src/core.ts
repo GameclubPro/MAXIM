@@ -371,10 +371,7 @@ const messageLimitsBlockedWordsSchema = z
 const messageLimitsBlockedDomainSchema = z.string().trim().max(253);
 const messageLimitsBlockedDomainsSchema = z
   .array(messageLimitsBlockedDomainSchema)
-  .max(
-    MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
-    `До ${MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX} доменов.`,
-  )
+  .max(MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX, `До ${MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX} доменов.`)
   .default([]);
 const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
 const requiredSubscriptionChannelIdsSchema = z
@@ -452,10 +449,7 @@ export function normalizeMessageLimitsBlockedDomainCandidate(value: string): str
   }
 
   const labels = candidate.split('.');
-  if (
-    labels.length < 2 ||
-    labels.some((label) => label.length === 0 || label.length > 63)
-  ) {
+  if (labels.length < 2 || labels.some((label) => label.length === 0 || label.length > 63)) {
     return null;
   }
 
@@ -2299,6 +2293,7 @@ export const vkParsingSourceSchema = z.object({
   status: vkParsingSourceStatusSchema,
   syncStatus: vkParsingSourceSyncStatusSchema.default('IDLE'),
   nextSyncAt: z.string().datetime().nullable().default(null),
+  nextRetryAt: z.string().datetime().nullable().default(null),
   lastSyncAt: z.string().datetime().nullable(),
   lastSuccessAt: z.string().datetime().nullable().default(null),
   syncStartedAt: z.string().datetime().nullable().default(null),
@@ -2385,6 +2380,7 @@ export const vkParsingHealthSummarySchema = z.object({
   importLagSeconds: z.number().int().min(0).nullable().default(null),
   publishLagSeconds: z.number().int().min(0).nullable().default(null),
   publishBacklog: z.number().int().min(0).default(0),
+  staleSyncLockCount: z.number().int().min(0).default(0),
   mediaFailureRatio: z.number().min(0).max(1).default(0),
   recentErrors: z
     .array(

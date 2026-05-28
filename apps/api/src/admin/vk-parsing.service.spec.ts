@@ -284,6 +284,8 @@ describe('VkParsingService', () => {
       syncStartedAt: null,
       syncLockedAt: null,
       syncLockedBy: null,
+      syncLockDeadlineAt: null,
+      syncHeartbeatAt: null,
       syncAttemptCount: 0,
       consecutiveFailures: 0,
       lastErrorCode: null,
@@ -377,6 +379,27 @@ describe('VkParsingService', () => {
       capabilities: { enabled: true, canUse: true },
     });
     expect(adminService.assertChatAdmin).toHaveBeenCalledWith('chat-1', 'chat-admin', 'chat');
+  });
+
+  it('exposes source retry and stale sync lock metrics in the feed', async () => {
+    const { service, prisma } = createFixture();
+    const retryAt = new Date('2026-05-25T10:30:00.000Z');
+    prisma.vkParsingSource.findMany.mockResolvedValue([
+      createSource({ syncStatus: 'BACKOFF', nextSyncAt: retryAt }),
+    ]);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    prisma.vkParsingSource.count
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2);
+
+    const feed = await service.listVkParsing('channel-1', { userId: '183470701' } as never);
+
+    expect(feed.sources[0]).toMatchObject({
+      syncStatus: 'BACKOFF',
+      nextRetryAt: retryAt.toISOString(),
+    });
+    expect(feed.summary?.staleSyncLockCount).toBe(2);
   });
 
   it('updates VK parsing automation settings for a channel', async () => {
@@ -1544,10 +1567,55 @@ describe('VkParsingService', () => {
         where: { id: 'source-1' },
         data: expect.objectContaining({
           syncStatus: 'IDLE',
+          syncLockDeadlineAt: null,
+          syncHeartbeatAt: null,
           lastFetchedCount: 0,
           lastImportedCount: 0,
         }),
       }),
+    );
+  });
+
+  it('records sync lease deadline and heartbeats while processing a source', async () => {
+    const { service, prisma } = createFixture();
+    const source = createSource();
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        createJsonFetchResponse({ response: { items: [], groups: [] } }),
+      ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'source-1' }),
+        data: expect.objectContaining({
+          syncLockedBy: expect.any(String),
+          syncLockDeadlineAt: expect.any(Date),
+          syncHeartbeatAt: expect.any(Date),
+          syncAttemptCount: { increment: 1 },
+        }),
+      }),
+    );
+    expect(prisma.vkParsingSource.updateMany.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            where: expect.objectContaining({
+              id: 'source-1',
+              syncStatus: 'SYNCING',
+              syncLockedBy: expect.any(String),
+            }),
+            data: expect.objectContaining({
+              syncHeartbeatAt: expect.any(Date),
+              syncLockDeadlineAt: expect.any(Date),
+            }),
+          }),
+        ],
+      ]),
     );
   });
 
