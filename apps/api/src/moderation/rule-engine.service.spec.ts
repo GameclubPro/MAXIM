@@ -2290,6 +2290,116 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects vakhata recruitment ads with salary ranges and application links', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'ВАХТА - выезд через 1-3 дня. Ферма с коровами, легкая работа, 3400-3600 ₽ за смену от 45 смен, питание и проживание, покупаем билет до 7000 ₽. Запись тут https://vk.ru/wall1086491776_1223',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.primarySubtype).toBe('RECRUITMENT');
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'recruitment:вахт',
+        'recruitment:вахта-условия',
+        'deal-channel:link',
+      ]),
+    );
+  });
+
+  it('detects paid MAX group promo and directory posts from recent audit misses', async () => {
+    const service = createRuleEngine();
+    const paidPromo = await detectCommercialViolation(
+      service,
+      'Реклама вашей группы. Рассылка. Стоимость 50р. Фотоотчёт. Все вопросы в личные сообщения.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const directory = await detectCommercialViolation(
+      service,
+      'ГРУППЫ В МАХ: 1) Барахолка Тюмень https://max.ru/join/abc 2) Московский тракт https://max.ru/join/def',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(paidPromo).toBeDefined();
+    expect(paidPromo?.metadata?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(paidPromo?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['channel-placement:paid-group-promo', 'transaction:price']),
+    );
+    expect(directory).toBeDefined();
+    expect(directory?.metadata?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(directory?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['channel-placement:max-group-directory', 'deal-channel:link']),
+    );
+  });
+
+  it('detects developer new-build property lead ads without reopening private owner listings', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Двухкомнатная квартира с первым взносом всего 350 000 р. Актуальные предложения по новостройкам города. Все цены от застройщика без дополнительных комиссий. Строительство с ремонтом. 89000000000',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.primarySubtype).toBe('PROPERTY_AGENT');
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['property-agent:новостройки-от-застройщика', 'contact:phone']),
+    );
+  });
+
+  it('detects commercial chat-bot monetization and bulk leadgen promos', async () => {
+    const service = createRuleEngine();
+    const botPromo = await detectCommercialViolation(
+      service,
+      'Админы MAX, ваш чат приносит деньги? Спамер кидает рекламу, бот удаляет сообщение и показывает: оплатить размещение. Подробнее https://max.ru/join/abc',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+    const leadgenPromo = await detectCommercialViolation(
+      service,
+      'Отправьте 200 сообщений и забудьте про поиск клиентов. 40-60 заявок каждый день, теплая база в подарок. Узнай больше тут https://max.ru/join/abc',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(botPromo).toBeDefined();
+    expect(botPromo?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:chat-bot-monetization', 'deal-channel:link']),
+    );
+    expect(leadgenPromo).toBeDefined();
+    expect(leadgenPromo?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:bulk-client-leadgen', 'deal-channel:link']),
+    );
+  });
+
+  it('detects paid raffle posts with payment and prize mechanics', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Денежный лот: выбираете номер и оплачиваете его. Счастливчиков выберет генератор случайных чисел. В игре 16 билетов по 350 рублей, призы 1500 рублей и 1000 рублей.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:paid-raffle', 'transaction:price']),
+    );
+  });
+
   it('records unicode-safe price, transactional, urgency, and quantity signals', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
