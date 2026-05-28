@@ -7955,8 +7955,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
       },
     );
-    const isFirstRequiredSubscriptionViolation = requiredSubscriptionViolationCount24h === 1;
-
     if (messageDeleted) {
       await this.createBotModerationEvent({
         data: {
@@ -8034,7 +8032,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (action === SanctionAction.NONE) {
         if (
-          isFirstRequiredSubscriptionViolation &&
           params.settings.requiredSubscriptionBotMessageEnabled &&
           canSendRequiredSubscriptionNotice
         ) {

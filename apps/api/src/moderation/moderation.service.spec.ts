@@ -16356,6 +16356,80 @@ describe('ModerationService', () => {
       );
     });
 
+    it('sends the required subscription explanation again after the notice cooldown expires', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      prisma.violation.count.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.incrementWithTtl.mockResolvedValue(2);
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      const secondUpdate = createUpdate();
+      secondUpdate.updateId = 'upd-2';
+      if (secondUpdate.message) {
+        secondUpdate.message.messageId = 'msg-2';
+      }
+
+      await service.handleUpdate(createUpdate());
+      redisCounter.stringCache.delete('required-subscription:notice:v1:chat-1:user-1');
+      await service.handleUpdate(secondUpdate);
+
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+      expect(prisma.violation.count).toHaveBeenCalledTimes(1);
+      expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
+        expect.stringContaining('moderation:violation-count:v1:chat-1:user-1:REQUIRED_SUBSCRIPTION'),
+        24 * 60 * 60 + 60,
+      );
+      const secondNoticeText = maxClient.sendMessage.mock.calls[1]?.[1] ?? '';
+      expect(secondNoticeText).toContain('Новости MAX');
+      expect(prisma.moderationEvent.create.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.objectContaining({
+              data: expect.objectContaining({
+                ruleCode: 'REQUIRED_SUBSCRIPTION',
+                action: SanctionAction.NONE,
+                metadata: expect.objectContaining({
+                  requiredSubscriptionViolationCount24h: 2,
+                }),
+              }),
+            }),
+          ],
+        ]),
+      );
+    });
+
     it('skips required subscription checks after the timer expires', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-04-16T12:00:00.000Z'));
 
