@@ -53,7 +53,11 @@ export function SourcesBar({
           <label className="vk-parsing-source-input">
             <span className="vk-parsing-sr-only">Источник VK</span>
             <input
-              type="url"
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={sourceUrl}
               onChange={(event) => onSourceUrlChange(event.target.value)}
               placeholder="vk.com/..."
