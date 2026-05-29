@@ -152,6 +152,8 @@
 - MAX `startapp` payloads are limited to 512 chars and `[A-Za-z0-9_-]`. Use `MaxBotLinkService`, `max-deep-link.util.ts`, and `apps/miniapp/src/lib/launch-route.ts` patterns instead of hand-built payloads.
 - Sanction explanations, warnings, and published chat rules use dedicated `*AdminContactButtonEnabled` / `*AdminContactButtonUrl` settings to append the fixed `Связь с админом` markdown link; mute/ban notices do not include that admin-contact link. Keep profile handoff links out of generic custom button fields.
 - In mini app code, use `window.WebApp.openMaxLink` only for `https://max.ru/...` deep links; use `openLink` for external links.
+- Public comments and post-suggestion dialog routes opened from bot buttons should close the MAX
+  mini app on the native BackButton instead of navigating to the mini app home screen.
 - Public legal routes linked from bot greetings (`/app/legal/agreement` and `/app/legal/privacy`,
   including prefixed standalone app paths) must render without MAX `initData`; keep them before the
   mini app init-data gate when editing startup routing.

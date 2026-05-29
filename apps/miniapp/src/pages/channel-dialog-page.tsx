@@ -1104,12 +1104,14 @@ function SuggestionRequirements({ text }: { text: string }) {
     return null;
   }
 
-  const summary = paragraphs.join(' ');
-
   return (
     <section className="channel-suggest-requirements" aria-label="Требования">
       <span className="channel-suggest-requirements__label">Требования</span>
-      <p className="channel-suggest-requirements__text">{summary}</p>
+      <div className="channel-suggest-requirements__text">
+        {paragraphs.map((paragraph, index) => (
+          <p key={`${paragraph}-${index}`}>{paragraph}</p>
+        ))}
+      </div>
     </section>
   );
 }

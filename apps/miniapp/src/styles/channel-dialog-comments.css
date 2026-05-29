@@ -5079,6 +5079,7 @@ button.channel-dialog-message__avatar {
   --suggest-cyan: #2399aa;
   --suggest-green: #2c9a68;
   --suggest-plum: #6f69c9;
+  padding-top: 0;
 }
 
 .channel-dialog-screen--suggest .channel-dialog-screen__backdrop {
@@ -5103,7 +5104,7 @@ button.channel-dialog-message__avatar {
 }
 
 .channel-suggest-requirements {
-  display: flex;
+  display: grid;
   align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
@@ -5118,6 +5119,7 @@ button.channel-dialog-message__avatar {
 }
 
 .channel-suggest-requirements__label {
+  width: fit-content;
   flex: 0 0 auto;
   min-height: 22px;
   padding: 0 7px;
@@ -5132,12 +5134,17 @@ button.channel-dialog-message__avatar {
 
 .channel-suggest-requirements__text {
   margin: 1px 0 0;
-  display: block;
+  display: grid;
+  gap: 5px;
   color: rgba(34, 48, 62, 0.72);
   font-size: 0.76rem;
   font-weight: 660;
   line-height: 1.32;
-  white-space: normal;
+}
+
+.channel-suggest-requirements__text p {
+  margin: 0;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -5357,7 +5364,7 @@ button.channel-dialog-message__avatar {
 
 @media (max-width: 420px) {
   .channel-dialog-screen--suggest {
-    padding: max(7px, env(safe-area-inset-top, 0px)) 7px max(7px, calc(var(--safe-bottom) + 4px));
+    padding: 0 7px max(7px, calc(var(--safe-bottom) + 4px));
   }
 
   .channel-suggest-workspace {

@@ -293,7 +293,8 @@ export function Shell() {
     location.pathname.includes('/dialog/') &&
     (location.pathname.includes('/channel/') || location.pathname.includes('/chat/'));
   const isCommentsDialogRoute = isDialogRoute && location.pathname.includes('/dialog/comments');
-  const shouldCloseDialogOnBack = isCommentsDialogRoute;
+  const isSuggestDialogRoute = isDialogRoute && location.pathname.includes('/dialog/suggest');
+  const shouldCloseDialogOnBack = isDialogRoute;
   const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
@@ -357,6 +358,7 @@ export function Shell() {
         !hasTopbar && 'app-shell--no-topbar',
         (isDialogRoute || isGiveawayRoute) && 'app-shell--immersive',
         isCommentsDialogRoute && 'app-shell--comments-dialog',
+        isSuggestDialogRoute && 'app-shell--suggest-dialog',
       )}
     >
       {hasTopbar ? (
