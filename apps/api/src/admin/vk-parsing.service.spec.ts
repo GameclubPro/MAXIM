@@ -1778,6 +1778,106 @@ describe('VkParsingService', () => {
     );
   });
 
+  it('falls back to another VK photo size when the selected CDN URL is stale', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const largeUrl = 'https://sun1.example/large.jpg';
+    const smallUrl = 'https://sun1.example/small.jpg';
+    const post = createPostRow({
+      source,
+      text: 'Текст с фото',
+      photoUrls: [largeUrl],
+      attachments: [
+        {
+          type: 'photo',
+          photo: {
+            id: 11,
+            owner_id: -36819802,
+            access_key: 'photo-key',
+            sizes: [
+              { width: 1280, height: 960, url: largeUrl },
+              { width: 320, height: 240, url: smallUrl },
+            ],
+          },
+        },
+      ],
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingMediaCache.findFirst.mockResolvedValue({
+      id: 'media-old',
+      url: largeUrl,
+      mediaIdentity: 'vk-photo:-36819802:11:photo-key',
+      status: 'FAILED',
+      mimeType: null,
+      contentLength: null,
+      maxUploadPayload: null,
+      maxUploadToken: null,
+      maxUploadedAt: null,
+      uploadAttemptCount: 0,
+      lastCheckedAt: new Date(),
+      lastError: 'VK вернул статус 404 для фото.',
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    prisma.vkParsingPost.update.mockResolvedValue({
+      ...post,
+      status: 'PUBLISHED',
+      publishedMessageId: 'mid-1',
+      publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+      publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
+      autoPublishedAt: new Date('2026-05-25T10:05:00.000Z'),
+    });
+    maxClient.uploadImage.mockResolvedValue({ token: 'image-token' });
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'mid-1',
+      url: 'https://max.ru/channels/channel-1/message/mid-1',
+    });
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        body: { cancel: async () => undefined },
+      } satisfies MockFetchResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: new Headers({ 'content-type': 'image/jpeg', 'content-length': '3' }),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } satisfies MockFetchResponse) as unknown as typeof fetch;
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(new URL(smallUrl), expect.any(Object));
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from([1, 2, 3]),
+      'small.jpg',
+      'image/jpeg',
+      {
+        botId: 'bot-1',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      },
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalled();
+  });
+
   it('keeps MAX media upload rate limits as autopublish retry failures', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
@@ -1969,6 +2069,56 @@ describe('VkParsingService', () => {
         data: expect.objectContaining({
           status: 'SKIPPED',
           skipReason: 'AD',
+          publishQueuedAt: null,
+          publishLockedAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+        }),
+      }),
+    );
+  });
+
+  it('skips unsupported-only VK posts during autopublish instead of failing them', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      text: '',
+      photoUrls: [],
+      linkUrls: [],
+      attachmentTypes: ['video'],
+      unsupportedAttachments: [{ type: 'video', label: 'Видео', title: 'Обзор', count: 1 }],
+      hasUnsupportedAttachments: true,
+      attachments: [{ type: 'video', video: { title: 'Обзор' } }],
+      raw: { attachments: [{ type: 'video', video: { title: 'Обзор' } }] },
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'autopublish',
+      idempotencyKey: 'publish-key-1',
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          status: 'SKIPPED',
+          skipReason: 'NO_SUPPORTED_CONTENT',
           publishQueuedAt: null,
           publishLockedAt: null,
           publishIdempotencyKey: null,

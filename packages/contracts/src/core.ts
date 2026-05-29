@@ -2487,7 +2487,11 @@ export type VkParsingSourcePriority = z.infer<typeof vkParsingSourcePrioritySche
 export const vkParsingBulkPresetSchema = z.enum(['NEWS', 'SLOW', 'REVIEW', 'CLEAN']);
 export type VkParsingBulkPreset = z.infer<typeof vkParsingBulkPresetSchema>;
 
-export const vkParsingPostSkipReasonSchema = z.enum(['AD', 'EMPTY_AFTER_LINK_FILTER']);
+export const vkParsingPostSkipReasonSchema = z.enum([
+  'AD',
+  'EMPTY_AFTER_LINK_FILTER',
+  'NO_SUPPORTED_CONTENT',
+]);
 export type VkParsingPostSkipReason = z.infer<typeof vkParsingPostSkipReasonSchema>;
 
 export const vkParsingPostFilterStatusSchema = z.union([

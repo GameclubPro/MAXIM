@@ -52,7 +52,12 @@ export class VkParsingMediaCacheService {
         cached.status === VK_MEDIA_STATUS_FAILED
           ? this.mediaFailedPreflightTtlMs
           : this.mediaPreflightTtlMs;
-      if (ageMs >= 0 && ageMs < cacheTtlMs && cached.status !== VK_MEDIA_STATUS_UNKNOWN) {
+      if (
+        ageMs >= 0 &&
+        ageMs < cacheTtlMs &&
+        cached.status !== VK_MEDIA_STATUS_UNKNOWN &&
+        this.canReusePreflightCacheForUrl(cached, imageUrl)
+      ) {
         return cached;
       }
     }
@@ -165,6 +170,25 @@ export class VkParsingMediaCacheService {
     }
 
     return this.prisma.vkParsingMediaCache.findUnique({ where: { url } });
+  }
+
+  private canReusePreflightCacheForUrl(row: VkParsingMediaCacheRow, url: string): boolean {
+    if (row.url === url) {
+      return true;
+    }
+
+    return this.hasReusableUpload(row);
+  }
+
+  private hasReusableUpload(row: VkParsingMediaCacheRow): boolean {
+    const payload =
+      typeof row.maxUploadPayload === 'object' && row.maxUploadPayload !== null
+        ? row.maxUploadPayload
+        : null;
+    return Boolean(
+      (payload && Object.keys(payload).length > 0) ||
+        (typeof row.maxUploadToken === 'string' && row.maxUploadToken.trim()),
+    );
   }
 
   async writeMediaCache(

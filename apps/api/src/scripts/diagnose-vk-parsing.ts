@@ -277,11 +277,27 @@ async function loadPublishBacklog(prisma: PrismaClient): Promise<unknown> {
     select
       count(*) filter (where publish_queued_at is not null)::int as "queuedPosts",
       count(*) filter (
+        where publish_queued_at is not null
+          and coalesce(publish_scheduled_at, publish_queued_at) <= now()
+      )::int as "dueQueuedPosts",
+      count(*) filter (
+        where publish_queued_at is not null
+          and publish_scheduled_at > now()
+      )::int as "futureScheduledPosts",
+      count(*) filter (
         where publish_locked_at is not null
           and publish_locked_at < now() - interval '5 minutes'
       )::int as "staleLockedPosts",
-      extract(epoch from (now() - min(publish_queued_at)))::int as "oldestQueuedAgeSec",
-      min(publish_queued_at) as "oldestQueuedAt"
+      extract(epoch from (
+        now() - min(publish_queued_at) filter (
+          where publish_queued_at is not null
+            and coalesce(publish_scheduled_at, publish_queued_at) <= now()
+        )
+      ))::int as "oldestDueQueuedAgeSec",
+      min(publish_queued_at) filter (
+        where publish_queued_at is not null
+          and coalesce(publish_scheduled_at, publish_queued_at) <= now()
+      ) as "oldestDueQueuedAt"
     from vk_parsing_posts
     where publish_queued_at is not null or publish_locked_at is not null
   `;
@@ -297,13 +313,17 @@ async function loadStuckPublishPosts(prisma: PrismaClient, limit: number): Promi
       status,
       publish_reason as "publishReason",
       publish_queued_at as "publishQueuedAt",
+      publish_scheduled_at as "publishScheduledAt",
       publish_locked_at as "publishLockedAt",
       publish_attempt_count as "publishAttemptCount",
       extract(epoch from (now() - coalesce(publish_queued_at, publish_locked_at)))::int
         as "ageSec",
       left(coalesce(last_error, ''), 300) as "lastError"
     from vk_parsing_posts
-    where publish_queued_at is not null
+    where (
+        publish_queued_at is not null
+        and coalesce(publish_scheduled_at, publish_queued_at) <= now()
+      )
       or (
         publish_locked_at is not null
         and publish_locked_at < now() - interval '5 minutes'
@@ -494,9 +514,11 @@ export function renderTextDiagnostics(diagnostics: VkParsingDiagnostics): string
     `Sync: fetched ${readNumber(syncPerformance.fetchedPosts)}, imported ${readNumber(
       syncPerformance.importedPosts,
     )}, p95 ${Math.round(readNumber(syncPerformance.p95SyncDurationMs))}ms`,
-    `Publish backlog: ${readNumber(publishBacklog.queuedPosts)} queued, ${readNumber(
+    `Publish backlog: ${readNumber(publishBacklog.dueQueuedPosts)} due / ${readNumber(
+      publishBacklog.queuedPosts,
+    )} queued, ${readNumber(publishBacklog.futureScheduledPosts)} scheduled later, ${readNumber(
       publishBacklog.staleLockedPosts,
-    )} stale locked, oldest ${readNumber(publishBacklog.oldestQueuedAgeSec)}s`,
+    )} stale locked, oldest due ${readNumber(publishBacklog.oldestDueQueuedAgeSec)}s`,
     '',
     `Source status: ${JSON.stringify(diagnostics.sourceStatus)}`,
     `Media status: ${JSON.stringify(diagnostics.mediaStatus)}`,

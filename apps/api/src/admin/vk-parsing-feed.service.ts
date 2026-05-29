@@ -48,7 +48,7 @@ type VkParsingSettingsLike = {
   updatedAt: Date | null;
 };
 
-type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER';
+type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER' | 'NO_SUPPORTED_CONTENT';
 
 const VK_SOURCE_STATUS_ACTIVE = 'ACTIVE';
 const VK_SOURCE_STATUS_DISABLED = 'DISABLED';
@@ -64,6 +64,7 @@ const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const VK_POST_SKIP_REASON_AD: VkParsingSkipReason = 'AD';
 const VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER: VkParsingSkipReason = 'EMPTY_AFTER_LINK_FILTER';
+const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason = 'NO_SUPPORTED_CONTENT';
 
 @Injectable()
 export class VkParsingFeedService {
@@ -357,7 +358,8 @@ export class VkParsingFeedService {
       skippedAt: post.skippedAt ? post.skippedAt.toISOString() : null,
       skipReason:
         post.skipReason === VK_POST_SKIP_REASON_AD ||
-        post.skipReason === VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER
+        post.skipReason === VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER ||
+        post.skipReason === VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT
           ? post.skipReason
           : null,
       lastSeenAt: post.lastSeenAt ? post.lastSeenAt.toISOString() : null,

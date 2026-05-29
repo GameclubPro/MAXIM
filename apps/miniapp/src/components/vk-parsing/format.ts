@@ -132,6 +132,9 @@ export function formatVkSkipReason(reason: VkParsingPost['skipReason']): string 
   if (reason === 'EMPTY_AFTER_LINK_FILTER') {
     return 'Только ссылки';
   }
+  if (reason === 'NO_SUPPORTED_CONTENT') {
+    return 'Без поддерживаемого контента';
+  }
 
   return null;
 }

@@ -44,6 +44,7 @@ import {
   describeVkParsingSkipReason,
   prepareVkParsingPublishPayload,
   resolveVkParsingPostSkipReason,
+  VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT,
   type PreparedVkPublishPayload,
   type VkParsingSkipReason,
 } from './vk-parsing-content';
@@ -89,6 +90,11 @@ type VkParsingSettingsLike = {
   circuitBreakerWindowMinutes: number;
   circuitBreakerPostLimit: number;
   updatedAt: Date | null;
+};
+
+type VkParsingPhotoPublishMedia = {
+  mediaIdentity: string | null;
+  candidateUrls: string[];
 };
 
 const VK_POST_STATUS_NEW = 'NEW';
@@ -732,7 +738,7 @@ export class VkPublishService {
         }
       }
 
-      const photoMediaIdentityByUrl = this.resolvePhotoMediaIdentityMap({
+      const photoMediaByUrl = this.resolvePhotoMediaIdentityMap({
         attachments: post.attachments,
         raw: post.raw,
         text: post.text,
@@ -744,7 +750,7 @@ export class VkPublishService {
           allowPartialFailures: params.auto,
           canPublishWithoutPhotos: payload.text.trim().length > 0 || payload.linkUrls.length > 0,
         },
-        photoMediaIdentityByUrl,
+        photoMediaByUrl,
       );
 
       if (imagePayloads.length === 1) {
@@ -1279,7 +1285,7 @@ export class VkPublishService {
     attachments: Prisma.JsonValue | unknown;
     raw: Prisma.JsonValue | unknown;
     text: string;
-  }): Map<string, string> {
+  }): Map<string, VkParsingPhotoPublishMedia> {
     const parsed = parseVkWallPostAttachments({
       attachments: this.readAttachments(post.attachments),
       rawPost: this.asRecord(post.raw) ?? {},
@@ -1287,7 +1293,15 @@ export class VkPublishService {
       maxPhotos: VK_PARSING_MAX_PHOTOS,
       maxLinks: VK_PARSING_MAX_LINKS,
     });
-    return new Map(parsed.photoMedia.map(({ url, mediaIdentity }) => [url, mediaIdentity]));
+    return new Map(
+      parsed.photoMedia.map(({ url, mediaIdentity, candidateUrls }) => [
+        url,
+        {
+          mediaIdentity,
+          candidateUrls,
+        },
+      ]),
+    );
   }
 
   private async autoPublishPost(
@@ -1321,15 +1335,11 @@ export class VkPublishService {
       },
       settings,
     );
-    try {
-      this.assertPreparedPublishPayload(prepared);
-    } catch (error) {
-      await this.markQueuedPostPublishFailed(post, classifyVkParsingPublishError(error), {
-        auto: true,
-        finalAttempt: true,
-      });
-      throw error;
+    if (this.isEmptyPublishPayload(prepared)) {
+      await this.markPostSkipped(post.id, VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT);
+      return;
     }
+    this.assertPreparedPublishPayload(prepared);
 
     await this.publishPreparedPostToMax(post, prepared, {
       actorUserId: VK_PARSING_SYSTEM_ACTOR_USER_ID,
@@ -1463,7 +1473,7 @@ export class VkPublishService {
       allowPartialFailures?: boolean;
       canPublishWithoutPhotos?: boolean;
     } = {},
-    photoMediaIdentityByUrl: Map<string, string> = new Map(),
+    photoMediaByUrl: Map<string, VkParsingPhotoPublishMedia> = new Map(),
   ): Promise<Record<string, unknown>[]> {
     const payloads = new Array<Record<string, unknown> | null>(photoUrls.length).fill(null);
     const skippedErrors: string[] = [];
@@ -1471,12 +1481,12 @@ export class VkPublishService {
       requestOptions.trafficClass === 'background' ? 1 : this.mediaConcurrency;
     await this.mapWithConcurrency(photoUrls, uploadConcurrency, async (url, index) => {
       try {
-        const mediaIdentity = photoMediaIdentityByUrl.get(url) ?? null;
+        const media = photoMediaByUrl.get(url) ?? null;
         payloads[index] = await this.resolveUploadPayloadForMedia(
           url,
           index,
           requestOptions,
-          mediaIdentity,
+          media,
         );
       } catch (error) {
         const message = `Фото ${index + 1}: ${this.formatError(error)}`;
@@ -1510,36 +1520,61 @@ export class VkPublishService {
       trafficClass: MaxApiTrafficClass;
       sourceTag: string;
     },
-    mediaIdentity: string | null,
+    media: VkParsingPhotoPublishMedia | null,
   ): Promise<Record<string, unknown>> {
-    const cache = await this.assertMediaReadyForPublish(imageUrl, index, mediaIdentity);
-    const cachedPayload = this.readUploadPayload(cache);
-    if (cachedPayload) {
-      return cachedPayload;
+    const mediaIdentity = media?.mediaIdentity ?? null;
+    const candidateUrls = this.resolvePhotoCandidateUrls(imageUrl, media?.candidateUrls ?? []);
+    let lastError: unknown = null;
+
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const cache = await this.assertMediaReadyForPublish(candidateUrl, index, mediaIdentity);
+        const cachedPayload = this.readUploadPayload(cache);
+        if (cachedPayload) {
+          return cachedPayload;
+        }
+
+        const image = await this.downloadImage(candidateUrl, index);
+        const payload = await this.maxClient.uploadImage(
+          image.buffer,
+          image.fileName,
+          image.mimeType,
+          requestOptions,
+        );
+        await this.mediaCache.writeMediaCache(
+          candidateUrl,
+          {
+            status: VK_MEDIA_STATUS_READY,
+            mimeType: image.mimeType,
+            contentLength: image.buffer.length,
+            lastError: null,
+            maxUploadPayload: payload,
+            maxUploadToken: this.readUploadToken(payload),
+            maxUploadedAt: new Date(),
+          },
+          mediaIdentity,
+        );
+
+        return payload;
+      } catch (error) {
+        lastError = error;
+        if (!this.shouldTryNextPhotoCandidate(error)) {
+          throw error;
+        }
+      }
     }
 
-    const image = await this.downloadImage(imageUrl, index);
-    const payload = await this.maxClient.uploadImage(
-      image.buffer,
-      image.fileName,
-      image.mimeType,
-      requestOptions,
-    );
-    await this.mediaCache.writeMediaCache(
-      imageUrl,
-      {
-        status: VK_MEDIA_STATUS_READY,
-        mimeType: image.mimeType,
-        contentLength: image.buffer.length,
-        lastError: null,
-        maxUploadPayload: payload,
-        maxUploadToken: this.readUploadToken(payload),
-        maxUploadedAt: new Date(),
-      },
-      mediaIdentity,
-    );
+    throw lastError instanceof Error ? lastError : new BadRequestException('Фото недоступно.');
+  }
 
-    return payload;
+  private resolvePhotoCandidateUrls(primaryUrl: string, candidateUrls: string[]): string[] {
+    return [
+      ...new Set([primaryUrl, ...candidateUrls].map((url) => url.trim()).filter(Boolean)),
+    ];
+  }
+
+  private shouldTryNextPhotoCandidate(error: unknown): boolean {
+    return this.isSkippablePhotoPublishFailure(this.formatError(error));
   }
 
   private async assertMediaReadyForPublish(
@@ -1622,11 +1657,7 @@ export class VkPublishService {
   }
 
   private assertPreparedPublishPayload(payload: PreparedVkPublishPayload): void {
-    if (
-      payload.text.trim().length === 0 &&
-      payload.photoUrls.length === 0 &&
-      payload.linkUrls.length === 0
-    ) {
+    if (this.isEmptyPublishPayload(payload)) {
       throw new BadRequestException(
         'После фильтрации в посте не осталось текста, фото или ссылок.',
       );
@@ -1636,6 +1667,14 @@ export class VkPublishService {
         `Текст публикации слишком длинный. Максимум ${VK_PARSING_MAX_PUBLISH_TEXT_LENGTH} символов.`,
       );
     }
+  }
+
+  private isEmptyPublishPayload(payload: PreparedVkPublishPayload): boolean {
+    return (
+      payload.text.trim().length === 0 &&
+      payload.photoUrls.length === 0 &&
+      payload.linkUrls.length === 0
+    );
   }
 
   private isSkippablePhotoPublishFailure(message: string): boolean {
@@ -1652,6 +1691,8 @@ export class VkPublishService {
       normalized.includes('vk вернул статус') ||
       normalized.includes('не удалось скачать фото') ||
       normalized.includes('fetch failed') ||
+      normalized.includes('terminated') ||
+      normalized.includes('operation was aborted') ||
       normalized.includes('фото vk должно быть доступно по https') ||
       normalized.includes('некорректная ссылка на фото vk') ||
       normalized.includes('фото из vk слишком большое') ||

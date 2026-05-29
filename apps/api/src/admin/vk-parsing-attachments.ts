@@ -12,6 +12,7 @@ export type VkParsingUnsupportedAttachmentSummary = {
 export type VkParsingPhotoMediaIdentity = {
   url: string;
   mediaIdentity: string;
+  candidateUrls: string[];
 };
 
 export type VkParsingAttachmentRegistryResult = {
@@ -88,6 +89,7 @@ export function parseVkWallPostAttachments(params: {
     photoMedia: [...accumulator.photoUrls.entries()].map(([url, mediaIdentity]) => ({
       url,
       mediaIdentity,
+      candidateUrls: accumulator.photoCandidateUrlsByIdentity.get(mediaIdentity) ?? [url],
     })),
     copyHistoryText: accumulator.copyHistoryText,
   };
@@ -123,6 +125,7 @@ function createAttachmentAccumulator(maxPhotos: number, maxLinks: number) {
     maxLinks,
     attachmentTypes: new Set<string>(),
     photoUrls: new Map<string, string>(),
+    photoCandidateUrlsByIdentity: new Map<string, string[]>(),
     linkUrls: new Set<string>(),
     unsupportedByKey: new Map<string, VkParsingUnsupportedAttachmentSummary>(),
     copyHistoryText: [] as string[],
@@ -192,7 +195,7 @@ function collectPhotoAttachment(
 ): void {
   const photo = asRecord(attachment.photo);
   const sizes = Array.isArray(photo?.sizes) ? photo.sizes : [];
-  const best = sizes
+  const candidates = sizes
     .map((item) => asRecord(item))
     .filter((item): item is Record<string, unknown> => item !== null)
     .map((size) => ({
@@ -200,7 +203,8 @@ function collectPhotoAttachment(
       area: Math.max(0, readNumber(size.width) ?? 0) * Math.max(0, readNumber(size.height) ?? 0),
     }))
     .filter((size): size is { url: string; area: number } => Boolean(size.url))
-    .sort((left, right) => right.area - left.area)[0];
+    .sort((left, right) => right.area - left.area);
+  const best = candidates[0];
 
   if (!best?.url) {
     collectUnsupportedAttachment('photo', attachment, accumulator, 'Нет доступного URL фото');
@@ -210,7 +214,15 @@ function collectPhotoAttachment(
   if (accumulator.photoUrls.size >= accumulator.maxPhotos && !accumulator.photoUrls.has(best.url)) {
     return;
   }
-  accumulator.photoUrls.set(best.url, resolvePhotoMediaIdentity(photo, best.url));
+  const mediaIdentity = resolvePhotoMediaIdentity(photo, best.url);
+  accumulator.photoUrls.set(best.url, mediaIdentity);
+  accumulator.photoCandidateUrlsByIdentity.set(
+    mediaIdentity,
+    uniqueStrings([
+      ...(accumulator.photoCandidateUrlsByIdentity.get(mediaIdentity) ?? []),
+      ...candidates.map((candidate) => candidate.url),
+    ]),
+  );
 }
 
 function collectLinkAttachment(
@@ -338,4 +350,8 @@ function normalizeHttpUrl(value: string): string {
   } catch {
     return '';
   }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }

@@ -4,7 +4,7 @@ import {
   type VkParsingUnsupportedAttachmentSummary,
 } from './vk-parsing-attachments';
 
-export type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER';
+export type VkParsingSkipReason = 'AD' | 'EMPTY_AFTER_LINK_FILTER' | 'NO_SUPPORTED_CONTENT';
 
 export type PreparedVkPublishPayload = {
   text: string;
@@ -40,6 +40,8 @@ export type VkParsingPostContentHashInput = {
 export const VK_POST_SKIP_REASON_AD: VkParsingSkipReason = 'AD';
 export const VK_POST_SKIP_REASON_EMPTY_AFTER_LINK_FILTER: VkParsingSkipReason =
   'EMPTY_AFTER_LINK_FILTER';
+export const VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT: VkParsingSkipReason =
+  'NO_SUPPORTED_CONTENT';
 
 const VK_INLINE_LINK_PATTERN =
   /(?:https?:\/\/|www\.)[^\s<>()\]["'`{}]+|(?:vk\.cc|vk\.com|vk\.ru|t\.me|telegram\.me|wa\.me|max\.ru)\/[^\s<>()\]["'`{}]+/giu;
@@ -119,9 +121,14 @@ export function isVkParsingAdvertisingPost(post: VkParsingPostSkipCandidate): bo
 }
 
 export function describeVkParsingSkipReason(reason: VkParsingSkipReason): string {
-  return reason === VK_POST_SKIP_REASON_AD
-    ? 'Пост пропущен фильтром рекламы.'
-    : 'Пост пропущен: после удаления ссылок не осталось содержимого.';
+  if (reason === VK_POST_SKIP_REASON_AD) {
+    return 'Пост пропущен фильтром рекламы.';
+  }
+  if (reason === VK_POST_SKIP_REASON_NO_SUPPORTED_CONTENT) {
+    return 'Пост пропущен: в VK-записи нет поддерживаемого текста, фото или ссылок.';
+  }
+
+  return 'Пост пропущен: после удаления ссылок не осталось содержимого.';
 }
 
 export function computeVkParsingPostContentHash(params: VkParsingPostContentHashInput): string {

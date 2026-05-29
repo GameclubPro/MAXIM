@@ -34,8 +34,10 @@ describe('diagnose-vk-parsing script helpers', () => {
       },
       publishBacklog: {
         queuedPosts: 2,
+        dueQueuedPosts: 1,
+        futureScheduledPosts: 1,
         staleLockedPosts: 0,
-        oldestQueuedAgeSec: 45,
+        oldestDueQueuedAgeSec: 45,
       },
       stuckPublishPosts: [],
       recentPublishFailures: [],
@@ -52,7 +54,7 @@ describe('diagnose-vk-parsing script helpers', () => {
 
     expect(rendered).toContain('Sources: 59/59 healthy');
     expect(rendered).toContain('1 stale locks');
-    expect(rendered).toContain('Publish backlog: 2 queued');
+    expect(rendered).toContain('Publish backlog: 1 due / 2 queued');
     expect(rendered).toContain('sync={"waiting":0}');
   });
 });

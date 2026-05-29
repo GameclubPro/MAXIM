@@ -89,6 +89,9 @@ describe('vk-parsing-content', () => {
     expect(describeVkParsingSkipReason('EMPTY_AFTER_LINK_FILTER')).toBe(
       'Пост пропущен: после удаления ссылок не осталось содержимого.',
     );
+    expect(describeVkParsingSkipReason('NO_SUPPORTED_CONTENT')).toBe(
+      'Пост пропущен: в VK-записи нет поддерживаемого текста, фото или ссылок.',
+    );
   });
 
   it('keeps content hash stable for identical normalized content', () => {
