@@ -682,6 +682,141 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'logistics office recruitment free workplace from six hour clear sweep',
+    text: `В логистическом филиале свободное рабочее место. Ищем сотрудника на долгосрочное сотрудничество. Оформление по договору, 56 000 плюс премиальная часть, пятидневная рабочая неделя. Для отклика телефон +7 900 000 00 45.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: [
+      'recruitment:сотрудничеств',
+      'recruitment:отклик',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'appliance repair private master from six hour clear sweep',
+    text: `Частный мастер по ремонту холодильников и стиральных машин. Продажа, чистка, заправка и установка кондиционеров. Пенсионерам скидка 20%. Бесплатная консультация по телефону +7 900 000 00 46.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:ремонт', 'promo:скидк', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'home building contractor with mortgage from six hour clear sweep',
+    text: `Постройте дом своей мечты уже в этом сезоне. Мы строим дома более 8 лет, помогаем подобрать землю и оформить ипотеку от 2%. Заключите договор с надежным подрядчиком. Звоните +7 900 000 00 47.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['intent:строим-дома', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'short term seaside apartment rental from six hour clear sweep',
+    text: `Сдаётся уютная квартира у моря для отдыха. Пляж в пяти минутах, Wi-Fi, кондиционер, парковка. Цена 4500 руб. сутки. Звоните +7 900 000 00 48, забронируйте свой отдых прямо сейчас.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    reviewRecommended: false,
+    expectedSignals: ['property-agent:посуточная-аренда', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'realtor max group directory from six hour clear sweep',
+    text: `Агрегатор риелторов: еще 31 группа. Платим комиссию, запросы и районы города. Кирилла Россинского https://max.ru/join/example1 Восточка https://max.ru/join/example2`,
+    expectedSubtype: 'CHANNEL_PLACEMENT',
+    reviewRecommended: false,
+    expectedSignals: ['channel-placement:realtor-group-directory', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'debt relief legal lead from six hour clear sweep',
+    text: `Жизнь без долгов реально. Предлагаю поддержку и помощь в списании долгов любой сложности с сохранением жилья, пенсий и автомобиля. Телефон WhatsApp Telegram +7 900 000 00 49, заполните анкету и мы свяжемся.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['risk:debt-relief-service', 'service-specialty:debt-relief-service'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'speech therapy classes from six hour clear sweep',
+    text: `Индивидуальные занятия с логопедом для детей от 2 лет: диагностика, запуск речи, коррекция звукопроизношения, подготовка к школе. Звоните +7 900 000 00 50, скидки на летние занятия.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:speech-therapy-lessons', 'promo:скидк'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'hotel houseman recruitment from six hour clear sweep',
+    text: `Срочно в уютный отель ищем хаусмена-разнорабочего. Зарплата от 105000 ₽ в месяц, график 6/1, принимаем без опыта, питание и форма. Обращаться WhatsApp Telegram +7 900 000 00 51.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:ищет-команду', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'commercial cleaning service with bare seven phone from six hour clear sweep',
+    text: `Клининг любой сложности: уборка после ремонта, спецуборка, генеральная уборка, мойка окон и фасадов. Сотрудничаем с коммерческими объектами, юрлицами и физлицами. Телефон 7 987 639 00 19.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:клининг', 'service-specialty:уборк', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'cargo moving service from six hour clear sweep',
+    text: `Грузоперевозки по РФ и обратно. Газель до 2 тонн, грузчики, домашние и офисные переезды, стройматериалы, быстро и аккуратно. Телеграм +7 900 000 00 52.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:грузоперевоз', 'service-specialty:logistics-delivery', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'self service coffee machine commercial equipment from six hour audit',
+    text: `Продам кофе машину самообслуживания с платёжной системой. Полностью обслужена, готова к работе. Все вопросы в лс. +7 900 000 00 53.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:commercial-equipment', 'intent:продам', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -868,6 +1003,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private single sofa sale with delivery from six hour false-positive guard',
     text: `Продам диван за 10000 ₽, возможна доставка. Все вопросы по телефону +7 900 000 00 44.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private land sale with cadastral price from six hour false-positive guard',
+    text: `Продам земельный участок под ИЖС 7,39 соток. Цена кадастровая 200 тыс руб, телефон +7 900 000 00 54.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
