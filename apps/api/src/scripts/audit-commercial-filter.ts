@@ -32,6 +32,7 @@ type CliOptions = {
   exportJsonlPath?: string;
   exportCorpusJsonlPath?: string;
   includeStableHits: boolean;
+  exportAllCorpus: boolean;
 };
 
 type AuditCandidateRow = {
@@ -185,6 +186,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
   const exportJsonlPath = readStringOption(args, '--export-jsonl');
   const exportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
   const includeStableHits = args.includes('--include-stable-hits');
+  const exportAllCorpus = args.includes('--export-all-corpus');
 
   if (since.getTime() > until.getTime()) {
     throw new Error('--since must be earlier than or equal to --until');
@@ -199,6 +201,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
     ...(exportJsonlPath ? { exportJsonlPath } : {}),
     ...(exportCorpusJsonlPath ? { exportCorpusJsonlPath } : {}),
     includeStableHits,
+    exportAllCorpus,
   };
 }
 
@@ -1089,13 +1092,33 @@ async function main() {
       (record) => record.category === 'historical_only' || record.category === 'current_only',
     );
     const policyRelevant = auditedRecords.filter((record) => record.policyCategory !== 'none');
-    const exportable = options.includeStableHits
-      ? auditedRecords.filter((record) => record.category !== 'stable_clear')
-      : [
-          ...new Map(
-            [...mismatches, ...policyRelevant].map((record) => [record.webhookEventId, record]),
-          ).values(),
-        ];
+    const exportable = options.exportAllCorpus
+      ? auditedRecords
+      : options.includeStableHits
+        ? auditedRecords.filter((record) => record.category !== 'stable_clear')
+        : [
+            ...new Map(
+              [...mismatches, ...policyRelevant].map((record) => [record.webhookEventId, record]),
+            ).values(),
+          ];
+    const deleteFalsePositiveCandidates = auditedRecords.filter(
+      (record) =>
+        record.label === 'negative_candidate' &&
+        (record.current.actionBand === 'DELETE' ||
+          record.current.actionBand === 'DELETE_AND_ESCALATE'),
+    ).length;
+    const grayDeleteCandidates = auditedRecords.filter(
+      (record) =>
+        record.label === 'gray_candidate' &&
+        (record.current.actionBand === 'DELETE' ||
+          record.current.actionBand === 'DELETE_AND_ESCALATE'),
+    ).length;
+    const campaignOnlyDeleteCandidates = auditedRecords.filter(
+      (record) =>
+        record.policyCategory === 'campaign_only' &&
+        (record.current.actionBand === 'DELETE' ||
+          record.current.actionBand === 'DELETE_AND_ESCALATE'),
+    ).length;
 
     console.log('');
     console.log('Summary');
@@ -1151,6 +1174,9 @@ async function main() {
       }`,
     );
     console.log(`current_review_recommended=${currentReviewRecommendedCount}`);
+    console.log(`delete_false_positive_candidates=${deleteFalsePositiveCandidates}`);
+    console.log(`gray_delete_candidates=${grayDeleteCandidates}`);
+    console.log(`campaign_only_delete_candidates=${campaignOnlyDeleteCandidates}`);
     console.log(
       `current_review_reasons=${
         formatCounts(
