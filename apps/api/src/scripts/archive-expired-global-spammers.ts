@@ -1,7 +1,5 @@
-import { NestFactory } from '@nestjs/core';
-import { Logger } from 'nestjs-pino';
-import { AppModule } from '../app.module';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
+import { createPrismaClient } from '../prisma/prisma-client';
 
 type CliOptions = {
   limit: number;
@@ -47,13 +45,9 @@ function readOptionValue(args: readonly string[], name: string): string | undefi
 
 async function main() {
   const options = readCliOptions(process.argv.slice(2));
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    bufferLogs: true,
-  });
-  app.useLogger(app.get(Logger));
-
+  const prisma = createPrismaClient();
   try {
-    const service = app.get(GlobalSpammerIntelligenceService);
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
     const result = await service.archiveExpiredRegistryEntries({
       limit: options.limit,
       dryRun: options.dryRun,
@@ -62,10 +56,10 @@ async function main() {
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
-      app.get(Logger).log(result, 'Archived expired global spammer registry rows');
+      process.stdout.write(`${JSON.stringify(result)}\n`);
     }
   } finally {
-    await app.close();
+    await prisma.$disconnect();
   }
 }
 
