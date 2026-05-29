@@ -159,7 +159,7 @@ function isSanitizedText(value: string): boolean {
   const rawLinkPattern =
     /\b(?:https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|clck\.ru\/|bit\.ly\/|goo\.su\/|tinyurl\.com\/)/iu;
   const rawPhonePattern =
-    /(?:^|[^\d])(?:\+?7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?=$|[^\d])/u;
+    /(?:^|[^\d])(?:\+?7|8)[\s‐‑‒–—―-]*\(?\d{3}\)?[\s‐‑‒–—―-]?\d{3}[\s‐‑‒–—―-]?\d{2}[\s‐‑‒–—―-]?\d{2}(?=$|[^\d])/u;
   const rawEmailPattern = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/iu;
   const rawHandlePattern = /(?:^|[^\p{L}\p{N}_])@[a-z0-9_]{4,32}(?=$|[^\p{L}\p{N}_])/iu;
 

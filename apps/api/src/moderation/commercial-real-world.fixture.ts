@@ -861,6 +861,176 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'short tile and finishing service from three hour audit',
+    text: `+7 900 000 00 57 Валерий. Плитка и отделочные работы.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:плитк',
+      'service-specialty:отделочн',
+      'service-specialty:tile-finishing-works',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'split system cleaning service from three hour audit',
+    text: `Ваш кондиционер пахнет неприятно? Выполним чистку и заправку сплит-систем. Звоните +7 900 000 00 58.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:кондиционер', 'contact:звоните', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'livestock buyout from three hour audit',
+    text: `Куплю коров, телок, бычков. Вынужденный забой КРС. Звоните +7 900 000 00 59.`,
+    expectedSubtype: 'BUYOUT',
+    expectedSignals: ['buyout:livestock-buyout', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'damaged auto buyout from three hour audit',
+    text: `Куплю для личных нужд автомобиль Лада, можно не на ходу, после ДТП. Ватсаап, MAX, звонки +7 900 000 00 60.`,
+    expectedSubtype: 'BUYOUT',
+    expectedSignals: ['buyout:damaged-auto-buyout', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'remote daily pay funnel from three hour audit',
+    text: `СРОЧНЫЙ НАБОР: УДАЛЕНКА. Оплата до 3500 ₽ ежедневно. Пиши по ссылке https://example.com/start`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: [
+      'recruitment:remote-network-work',
+      'transaction:price',
+      'contact:recruitment-response-keyword',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'hr chat recruiter funnel from three hour audit',
+    text: `МЕНЕДЖЕР ПО ПОДБОРУ ПЕРСОНАЛА. Работа с чатами и откликами, обучение. Пиши СТАРТ.`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: [
+      'recruitment:hr-chat-recruiter',
+      'contact:recruitment-response-keyword',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'pest control service with unicode hyphen phone from three hour audit',
+    text: `ДЕЗИНСЕКЦИЯ / ДЕЗИНФЕКЦИЯ / ДЕРАТИЗАЦИЯ. Уничтожение клопов, тараканов, грызунов. Звоните +7 900‑000‑00‑61.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:дезинсекц',
+      'service-specialty:дезинфекц',
+      'service-specialty:дератизац',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'cosmetic removal service from three hour audit',
+    text: `Удаляем капилляры, сосудистые звездочки, папилломы и бородавки. Запись по телефону +7 900 000 00 62.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['intent:specialist-self-work', 'service-specialty:капилляр', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'garden treatment service from three hour audit',
+    text: `Проведу обработку вашего участка от клещей и комаров. Цены договорные, пишите или звоните +7 900 000 00 63.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['intent:specialist-self-work', 'service-specialty:клещ', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'delivery platform onboarding from three hour audit',
+    text: `ЯНДЕКС ЕДА. ПОДКЛЮЧЕНИЕ https://example.com/eats`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:delivery-platform-onboarding', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'paid wellness menu from three hour audit',
+    text: `Продам меню правильного питания для похудения. Цена 200 р. Ватсап или телеграм +7 900 000 00 64.`,
+    expectedSubtype: 'GOODS',
+    expectedSignals: ['intent:продам', 'business:wellness-menu-product', 'transaction:price'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'exclusive broker flat listing from three hour audit',
+    text: `Экс. ЖК Самолет. Квартира 1 к.к, ремонт, мебель, сейф в объекте. Цена 6 500 000 ₽. Звоните +7 900 000 00 65.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: [
+      'property-agent:экс-витрина',
+      'property-agent:сейф-в-объекте',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'rental room business property from three hour audit',
+    text: `Продается жилой дом с номерами для сдачи, готовый арендный бизнес. Цена 12 000 000 ₽. Телефон +7 900 000 00 66.`,
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    expectedSignals: [
+      'property-commercial:rental-room-business',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -1092,6 +1262,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'recommendation request with tg handle false positive guard',
     text: `Посоветуйте мастера по холодильникам, пожалуйста. Нашла tg holod_master, кто-нибудь обращался, нормальный специалист?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private shorthand apartment sale with repair from three hour false-positive guard',
+    text: `КМР ПМР Комсомольский Пашковский ул. Лавочкина, 3. Монолит кирпич, 7/7 эт., без лифта. Дом 2012 г. 1 к.ка 35 м2, ремонт, мебель. 3 450 000 ₽, вся сумма в ДКП. Елена +7 900 000 00 67. Звоните, на смс долго отвечаю.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

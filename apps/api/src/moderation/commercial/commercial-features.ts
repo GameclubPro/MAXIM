@@ -601,6 +601,14 @@ export function collectCommercialSignals(params: {
     hasRecruitmentContext = true;
     hasCommercialContext = true;
   }
+  if (
+    recruitmentHits.includes('hr-chat-recruiter') ||
+    recruitmentHits.includes('remote-network-work')
+  ) {
+    addPositive('contact:recruitment-response-keyword', weights.contactMarker);
+    hasContact = true;
+    hasDealSignal = true;
+  }
 
   const infoProductHits = ADS_INFO_PRODUCT_MARKERS.filter((marker) => hasMarker(marker));
   for (const marker of infoProductHits.slice(0, 2)) {
