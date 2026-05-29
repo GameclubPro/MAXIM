@@ -124,6 +124,10 @@ export function BroadcastStudioHeader({
   const progressStyle = { '--broadcast-studio-progress': `${progress}%` } as CSSProperties;
   const readyLabel =
     normalizedReadyCount === safeTotal ? 'Готово' : `${normalizedReadyCount}/${safeTotal}`;
+  const visibleSignals = signals.filter((signal) => signal.label !== 'История');
+  const readyTone: BroadcastStudioSignalTone =
+    normalizedReadyCount === safeTotal ? 'ready' : normalizedReadyCount > 0 ? 'warning' : 'pending';
+  const readySignalLabel = `${readyLabel}: ${subtitle}`;
 
   return (
     <section
@@ -149,7 +153,7 @@ export function BroadcastStudioHeader({
       </div>
 
       <div className="broadcast-studio-command__signals">
-        {signals.map((signal, index) => {
+        {visibleSignals.map((signal, index) => {
           const content = (
             <>
               <span className="broadcast-studio-command__signal-icon">
@@ -191,6 +195,16 @@ export function BroadcastStudioHeader({
             </span>
           );
         })}
+        <span
+          className={cn('broadcast-studio-command__signal', `is-${readyTone}`, 'is-ready-total')}
+          aria-label={readySignalLabel}
+          title={readySignalLabel}
+        >
+          <span className="broadcast-studio-command__signal-copy">
+            <span className="broadcast-studio-command__signal-label">Готово</span>
+            <strong>{readyLabel}</strong>
+          </span>
+        </span>
       </div>
     </section>
   );

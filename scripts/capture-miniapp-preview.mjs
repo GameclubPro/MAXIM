@@ -596,6 +596,13 @@ async function openBroadcastPlannerTimeSheet(page) {
     await page.waitForTimeout(150);
   }
 
+  const compactSummary = page.locator('.broadcast-planner__compact-summary').first();
+  if ((await compactSummary.count()) > 0) {
+    await compactSummary.click();
+    await page.waitForTimeout(350);
+    return;
+  }
+
   if ((await dockButton.count()) > 0) {
     await dockButton.click();
     await page.waitForTimeout(350);

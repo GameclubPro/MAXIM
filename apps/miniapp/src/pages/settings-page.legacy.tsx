@@ -4657,10 +4657,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingTestReady = mailingContentReady && mailingButtonDraftValid;
   const mailingSendDisabled = isMailingBusy;
   const mailingPublishIssueLabels = [
-    !mailingHasPublishableContent ? 'Контент' : null,
+    !mailingHasPublishableContent ? 'Нет текста' : null,
     mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
-    !mailingAudienceReady ? 'Кому' : null,
-    !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
+    !mailingAudienceReady ? 'Нет адресата' : null,
+    !mailingScheduleReady || !mailingHasFutureSlots ? 'Нет времени' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
   const mailingPublishIssueActions = mailingPublishIssueLabels.map((label) => ({
@@ -4668,7 +4668,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setMailingWorkspaceView('compose');
 
-      if (label === 'Контент') {
+      if (label === 'Нет текста') {
         setMailingTextError('Добавьте текст или фото.');
         return;
       }
@@ -4678,12 +4678,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      if (label === 'Кому') {
+      if (label === 'Нет адресата') {
         setMailingAudienceError('Выберите хотя бы один чат.');
         return;
       }
 
-      if (label === 'Время') {
+      if (label === 'Нет времени') {
         if (mailingTimingMode === 'cycle') {
           setMailingCycleError(mailingCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;

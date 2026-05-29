@@ -1963,9 +1963,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastTestReady = broadcastContentReady && broadcastButtonDraftValid;
   const broadcastSendDisabled = isBroadcastBusy;
   const broadcastPublishIssueLabels = [
-    !broadcastHasPublishableContent ? 'Контент' : null,
+    !broadcastHasPublishableContent ? 'Нет текста' : null,
     broadcastHasPublishableContent && !broadcastMediaReady ? 'Фото' : null,
-    !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Время' : null,
+    !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Нет времени' : null,
     !broadcastButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
   const broadcastPublishIssueActions = broadcastPublishIssueLabels.map((label) => ({
@@ -1973,7 +1973,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setBroadcastWorkspaceView('compose');
 
-      if (label === 'Контент') {
+      if (label === 'Нет текста') {
         setBroadcastTextError('Добавьте текст или фото.');
         return;
       }
@@ -1985,7 +1985,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      if (label === 'Время') {
+      if (label === 'Нет времени') {
         if (broadcastTimingMode === 'cycle') {
           setBroadcastCycleError(broadcastCycleValidationError ?? 'Проверьте цикл публикаций.');
           return;
