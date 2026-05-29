@@ -55,16 +55,6 @@ function renderStatusIcon(post: VkParsingPost) {
   return null;
 }
 
-function getSourceInitials(title: string): string {
-  const words = title
-    .split(/\s+/u)
-    .map((word) => word.trim())
-    .filter(Boolean);
-  const first = words[0]?.[0] ?? 'V';
-  const second = words.length > 1 ? words[1]?.[0] : words[0]?.[1];
-  return `${first}${second ?? ''}`.toUpperCase();
-}
-
 export function PostCard({
   post,
   settings,
@@ -104,9 +94,6 @@ export function PostCard({
     >
       <div className="vk-parsing-post-card__head">
         <div className="vk-parsing-post-card__identity">
-          <span className="vk-parsing-post-card__avatar" aria-hidden>
-            {getSourceInitials(post.sourceTitle)}
-          </span>
           <div className="vk-parsing-post-card__source">
             <strong>{post.sourceTitle}</strong>
             <span>{dateLabel || 'VK'}</span>

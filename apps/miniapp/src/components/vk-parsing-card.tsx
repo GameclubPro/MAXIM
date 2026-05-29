@@ -100,6 +100,10 @@ function buildAutopostStatus(
   const autoSourceCount = sources.filter(
     (source) => source.importEnabled && source.autoPublishEnabled,
   ).length;
+  const hasSourceError = sources.some(
+    (source) =>
+      source.syncStatus === 'ERROR' || source.autoPublishPausedReason === 'circuit_breaker',
+  );
   const timeWindow = resolveTimeWindow(settings);
   const isPaused = settings.autoPublishKillSwitchEnabled;
   const isWorking =
@@ -116,6 +120,10 @@ function buildAutopostStatus(
   if (isPaused) {
     title = 'Пауза';
     reason = 'Стоп включён';
+    tone = 'danger';
+  } else if (hasSourceError) {
+    title = 'Ошибка';
+    reason = 'Проверьте источники';
     tone = 'danger';
   } else if (!settings.autoPublishEnabled) {
     title = 'Ручной';
@@ -195,9 +203,9 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
       />
 
       {feed ? (
-        <div className="vk-parsing-control-stack">
+        <div className="vk-parsing-secondary-stack" aria-label="Дополнительно">
           {feed.queue.length > 0 ? (
-            <details className="vk-parsing-fold">
+            <details className="vk-parsing-fold vk-parsing-fold--secondary">
               <summary>Очередь · {feed.queue.length}</summary>
               <QueueTimeline
                 posts={feed.queue}
@@ -211,8 +219,8 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
             </details>
           ) : null}
 
-          <details className="vk-parsing-fold">
-            <summary>Защита и история</summary>
+          <details className="vk-parsing-fold vk-parsing-fold--secondary">
+            <summary>Состояние и откат</summary>
             <HealthSummary summary={feed.summary} />
             <SafetyPanel
               sources={sources}
@@ -224,61 +232,63 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         </div>
       ) : null}
 
-      {feed ? (
-        <StatusFilterBar
-          statusFilter={state.statusFilter}
-          onSelectStatusFilter={state.selectStatusFilter}
+      <section className="vk-feed-section" aria-label="Посты VK">
+        {feed ? (
+          <StatusFilterBar
+            statusFilter={state.statusFilter}
+            onSelectStatusFilter={state.selectStatusFilter}
+          />
+        ) : null}
+
+        {feedQuery.isLoading ? <SkeletonCard lines={5} /> : null}
+
+        {feedQuery.error ? (
+          <StatusState
+            tone="danger"
+            title="Не удалось загрузить VK-посты"
+            description={normalizeApiError(feedQuery.error)}
+            action={
+              <button
+                type="button"
+                className="button button--danger"
+                onClick={() => void feedQuery.refetch()}
+              >
+                Повторить
+              </button>
+            }
+          />
+        ) : null}
+
+        {!feedQuery.isLoading && !feedQuery.error && posts.length === 0 ? (
+          <div className="vk-parsing-card__empty">Постов пока нет</div>
+        ) : null}
+
+        <PostList
+          posts={posts}
+          settings={settings}
+          editingPostId={state.editingPostId}
+          publishingPostId={state.publishingPostId}
+          retryingPostId={state.retryingPostId}
+          draftText={state.draftText}
+          selectedPhotoUrls={state.selectedPhotoUrls}
+          selectedLinkUrls={state.selectedLinkUrls}
+          onStartEditing={state.startEditing}
+          onCancelEditing={state.cancelEditing}
+          onPublishEditingPost={state.publishEditingPost}
+          onRetryPost={state.retryPost}
+          onDraftTextChange={state.setDraftText}
+          onTogglePhoto={state.togglePhoto}
+          onToggleLink={state.toggleLink}
         />
-      ) : null}
 
-      {feedQuery.isLoading ? <SkeletonCard lines={5} /> : null}
-
-      {feedQuery.error ? (
-        <StatusState
-          tone="danger"
-          title="Не удалось загрузить VK-посты"
-          description={normalizeApiError(feedQuery.error)}
-          action={
-            <button
-              type="button"
-              className="button button--danger"
-              onClick={() => void feedQuery.refetch()}
-            >
-              Повторить
-            </button>
-          }
+        <Pagination
+          pagination={feed?.pagination}
+          postsLength={posts.length}
+          pageOffset={state.pageOffset}
+          isFetching={feedQuery.isFetching}
+          onPageOffsetChange={state.setPageOffset}
         />
-      ) : null}
-
-      {!feedQuery.isLoading && !feedQuery.error && posts.length === 0 ? (
-        <div className="vk-parsing-card__empty">Постов пока нет</div>
-      ) : null}
-
-      <PostList
-        posts={posts}
-        settings={settings}
-        editingPostId={state.editingPostId}
-        publishingPostId={state.publishingPostId}
-        retryingPostId={state.retryingPostId}
-        draftText={state.draftText}
-        selectedPhotoUrls={state.selectedPhotoUrls}
-        selectedLinkUrls={state.selectedLinkUrls}
-        onStartEditing={state.startEditing}
-        onCancelEditing={state.cancelEditing}
-        onPublishEditingPost={state.publishEditingPost}
-        onRetryPost={state.retryPost}
-        onDraftTextChange={state.setDraftText}
-        onTogglePhoto={state.togglePhoto}
-        onToggleLink={state.toggleLink}
-      />
-
-      <Pagination
-        pagination={feed?.pagination}
-        postsLength={posts.length}
-        pageOffset={state.pageOffset}
-        isFetching={feedQuery.isFetching}
-        onPageOffsetChange={state.setPageOffset}
-      />
+      </section>
     </div>
   );
 }

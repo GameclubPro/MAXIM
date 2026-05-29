@@ -225,6 +225,37 @@ function formatSourceMode(source: VkParsingSource): string {
   return 'Очередь';
 }
 
+function formatSourceProblem(source: VkParsingSource): string | null {
+  if (source.lastError) {
+    return source.lastError;
+  }
+  if (source.circuitReason) {
+    return source.circuitReason;
+  }
+  if (source.autoPublishPausedReason === 'circuit_breaker') {
+    return 'Автопостинг остановлен защитой';
+  }
+  if (source.syncStatus === 'ERROR') {
+    return 'Источник требует внимания';
+  }
+  if (source.syncStatus === 'BACKOFF') {
+    return 'Повтор после ограничения VK';
+  }
+  return null;
+}
+
+function formatSourceNextRun(source: VkParsingSource): string {
+  const value = source.nextRetryAt ?? source.nextSyncAt;
+  if (!value) {
+    return 'Готово';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
 function resolveFrequencyPreset(minutes: number): FrequencyPresetValue {
   const preset = FREQUENCY_PRESETS.find((item) => item.minutes === minutes);
   return preset?.value ?? 'CUSTOM';
@@ -313,6 +344,9 @@ export function SourceDashboard({
             const selected = selectedSourceId === source.id;
             const bulkSelected = selectedBulkSourceIds.includes(source.id);
             const frequencyPreset = resolveFrequencyPreset(source.publishIntervalMinutes);
+            const problem = formatSourceProblem(source);
+            const nextRun = formatSourceNextRun(source);
+            const workCount = source.newPostCount + source.queuedPostCount;
             return (
               <article
                 key={source.id}
@@ -362,19 +396,29 @@ export function SourceDashboard({
                   />
                   <div className="vk-source-card__metrics" aria-label="Сводка источника">
                     <span title="Следующее обновление">
-                      <b>{formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}</b>
+                      <b>{nextRun}</b>
                       <small>Обнов.</small>
                     </span>
-                    <span title="Постов в очереди">
-                      <b>{source.queuedPostCount}</b>
-                      <small>Очередь</small>
+                    <span title="Новые посты и очередь">
+                      <b>{workCount}</b>
+                      <small>В работе</small>
                     </span>
-                    <span title="Ошибки публикации">
+                    <span
+                      className={source.failedPostCount > 0 ? 'is-danger' : undefined}
+                      title="Ошибки публикации"
+                    >
                       <b>{source.failedPostCount}</b>
                       <small>Ошибки</small>
                     </span>
                   </div>
                 </div>
+
+                {problem ? (
+                  <div className="vk-source-card__problem" title={problem}>
+                    <WarningCircle aria-hidden />
+                    <span>{problem}</span>
+                  </div>
+                ) : null}
 
                 <details
                   className="vk-source-details"
@@ -431,27 +475,8 @@ export function SourceDashboard({
                         </button>
                       </div>
 
-                      <div className="vk-source-detail-strip">
-                        <span title="Опубликовано из источника">
-                          <b>Опубл.</b>
-                          {source.publishedPostCount}
-                        </span>
-                        <span title="Следующее обновление">
-                          <b>Обнов.</b>
-                          {formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}
-                        </span>
-                        <span title="Постов в очереди">
-                          <b>Очередь</b>
-                          {source.queuedPostCount}
-                        </span>
-                        <span title="Ошибки публикации">
-                          <b>Ошибки</b>
-                          {source.failedPostCount}
-                        </span>
-                      </div>
-
                       <section className="vk-source-control-group">
-                        <h4>Режим</h4>
+                        <h4>Публикация</h4>
                         <div className="vk-source-controls">
                           <div className="vk-source-field vk-source-field--wide">
                             <div
@@ -477,10 +502,10 @@ export function SourceDashboard({
                       </section>
 
                       <section className="vk-source-control-group">
-                        <h4>Темп</h4>
+                        <h4>Интервал</h4>
                         <div className="vk-source-controls">
                           <div className="vk-source-field vk-source-field--wide">
-                            <span>Частота</span>
+                            <span className="vk-parsing-sr-only">Частота</span>
                             <div className="vk-segmented-buttons" role="group">
                               {FREQUENCY_PRESETS.map((preset) => (
                                 <button
@@ -536,7 +561,7 @@ export function SourceDashboard({
                       </section>
 
                       <section className="vk-source-control-group">
-                        <h4>Тихие часы</h4>
+                        <h4>Пауза</h4>
                         <div className="vk-source-controls">
                           <label>
                             <span>С</span>
