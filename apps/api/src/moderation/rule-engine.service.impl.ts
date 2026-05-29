@@ -1424,7 +1424,12 @@ const ADS_GOODS_RETAIL_PATTERNS: LabeledPattern[] = [
   {
     label: 'wholesale-produce',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:без\s+посредник[\p{L}\p{N}_-]*|сетев[\p{L}\p{N}_-]*\s+качеств[\p{L}\p{N}_-]*|калибр|нал[\p{L}\p{N}\s.,:;()/-]{0,12}безнал|об[ъь][её]м)(?:[\p{L}\p{N}\s.,:;()/-]{0,160})(?:цен[\p{L}\p{N}_-]*|\d+[,.]?\d*\s?(?:₽|руб(?:\.|лей)?|р\.?)|тел\.?|телефон|\+7|8\d{10})(?=$|[^\p{L}\p{N}_-])/iu,
+      /(?:^|[^\p{L}\p{N}_-])(?:без\s+посредник[\p{L}\p{N}_-]*|сетев[\p{L}\p{N}_-]*\s+качеств[\p{L}\p{N}_-]*|капуст[\p{L}\p{N}_-]*|картофел[\p{L}\p{N}_-]*|овощ[\p{L}\p{N}_-]*|калибр|нал[\p{L}\p{N}\s.,:;()/-]{0,12}безнал)(?:[\p{L}\p{N}\s.,:;()/-]{0,160})(?:цен[\p{L}\p{N}_-]*|\d+[,.]?\d*\s?(?:₽|руб(?:\.|лей)?|р\.?)|тел\.?|телефон|\+7|8\d{10})(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'volume-price-table',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:об[ъь][её]м[\p{L}\p{N}_-]*|серии|модел[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,160})(?:\d{1,3}\s*л\s*[—–-]\s*\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?)|\d{1,3}\s*литр[\p{L}\p{N}_-]*[\p{L}\p{N}\s.,:;()/-]{0,20}\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?))(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
@@ -2105,6 +2110,7 @@ export class RuleEngineService {
         signal === 'goods-retail:order-flow' ||
         signal === 'goods-retail:bulk-materials' ||
         signal === 'goods-retail:wholesale-produce' ||
+        signal === 'goods-retail:volume-price-table' ||
         signal === 'goods-retail:multi-sku',
     );
   }

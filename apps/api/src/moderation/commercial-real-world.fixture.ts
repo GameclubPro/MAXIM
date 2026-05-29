@@ -450,6 +450,18 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'plant pot volume price table from last six hour audit',
+    text: `Фактурные кашпо из ротанга. У нас 4 серии: морской бриз, голубая лагуна, лавандовая и коричневая. Любой объем от 5 до 20 литров. 5 л - 1000 ₽, 7 л - 1200 ₽, 10 л - 1400 ₽, 12 л - 1600 ₽. Все вопросы и точный адрес по телефону +7 900 000 00 30.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:volume-price-table', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
