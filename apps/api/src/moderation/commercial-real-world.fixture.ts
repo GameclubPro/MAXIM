@@ -297,7 +297,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
   {
     label: 'cross-chat audience group invite from production audit',
     text: `Рассылка - добавка MAX, ватцап. Строго в группу писать. Более 400 клиентов. Действуют акции, пишите в группу. https://max.ru/join/example-audience-group`,
-    expectedSubtype: 'GOODS',
+    expectedSubtype: 'SERVICES',
     reviewRecommended: true,
     requireClassifier: true,
     campaignContext: {
@@ -308,6 +308,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
     expectedSignals: [
       'promo:акци',
+      'service-specialty:marketing-automation',
       'audience:клиент',
       'deal-channel:link',
       'campaign:cross-chat-text',
@@ -462,6 +463,85 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'lead generation bot missed in last six hour clear sweep',
+    text: `Меньше работы, больше заявок! Всего 200 отправленных сообщений через нашего бота, и вы получаете стабильный поток из 40-60 клиентов ежедневно. Работает незаметно, без прокси и IP. Стартовая база в комплекте. Жми, чтобы узнать как: https://max.ru/join/example-leads`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'risk:bulk-client-leadgen',
+      'service-specialty:marketing-automation',
+      'audience:клиент',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'mailing automation software missed in last six hour clear sweep',
+    text: `Хватит терять аккаунты! Рассылки, которые не вызывают блокировок. Софт, который не подведет и не забанят. Забудьте о бесконечной настройке прокси и рассылках с нулевым результатом. Наш инструмент работает как живой человек. Стартовая база в комплекте: https://max.ru/join/example-mailing-soft`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'risk:messaging-automation',
+      'service-specialty:marketing-automation',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'city event channel invite missed in last six hour clear sweep',
+    text: `Уважаемые участники группы. Приглашаем вас на наш канал "Афиша города. Куда сходить с детьми". Все события и мероприятия города: https://max.ru/join/example-city-events`,
+    expectedSubtype: 'CHANNEL_PLACEMENT',
+    expectedSignals: ['channel-placement:invite-to-channel', 'group-promo:приглашаем', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'agency rental with АН marker missed in last six hour clear sweep',
+    text: `Сдам меблированную 1к квартиру с хорошим ремонтом. Центр энергетика, ул. Погодаева 7. Цена 17000 руб., коммунальные платежи включены. Звоните, тел. +7 900 000 00 31. АН.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    reviewRecommended: false,
+    expectedSignals: ['property-agent:агентство-недвижимости', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'broker price feed with safe request missed in last six hour clear sweep',
+    text: `ЖК Лучший. Мини-2к.кв., 10/24 этаж, S=37 кв.м. Новый ремонт, мебель, техника. Сейф по запросу. Разбивка 4 150 000. Цена: 6 300 000. Светлана +7 900 000 00 32.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: ['property-agent:сейф-по-запросу', 'property-agent:разбивка-цены', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'official guard service recruitment missed in last six hour clear sweep',
+    text: `Отдел вневедомственной охраны войск национальной гвардии приглашает на службу. Ищем граждан РФ от 18 до 50 лет, образование не ниже среднего, официальное трудоустройство, стабильная зарплата. Подробности по телефону +7 900 000 00 33.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:приглашает-на-службу', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -585,6 +665,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'single private dog feeding stand sale from last six hour audit',
     text: `Продам подставку для кормления собак. Цена 500 рублей.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'ordinary no-link invite without commercial deal from clear sweep guard',
+    text: `Приглашаем соседей в чат дома обсудить субботник и график уборки подъезда.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
