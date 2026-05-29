@@ -7,6 +7,10 @@ export const queryKeys = {
     ['global-spammer-review-queue', chatId, ...scope] as const,
   globalSpammerReviewMetrics: (chatId: string | null | undefined) =>
     ['global-spammer-review-metrics', chatId] as const,
+  globalSpammerUserDiagnostics: (
+    chatId: string | null | undefined,
+    userId: string | null | undefined,
+  ) => ['global-spammer-user-diagnostics', chatId, userId] as const,
   channelStats: (chatId: string, range: string) => ['channel-stats', chatId, range] as const,
 
   entityDialog: (

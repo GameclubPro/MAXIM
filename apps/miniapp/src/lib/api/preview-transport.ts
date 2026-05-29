@@ -27,6 +27,7 @@ import {
   globalSpammerReviewQueueSchema,
   globalSpammerReviewRequestSchema,
   globalSpammerReviewResultSchema,
+  globalSpammerUserDiagnosticsSchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
   managedEntityFavoritesResponseSchema,
@@ -87,6 +88,7 @@ import {
   type DomainAllowlistEntry,
   type GlobalSpammerReviewCandidate,
   type GlobalSpammerReviewRequest,
+  type GlobalSpammerUserDiagnostics,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
@@ -4235,6 +4237,7 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
     approved,
     suppressed,
     reviewed,
+    enforcementMode: 'enforce',
     falsePositiveCount,
     falsePositiveRate: reviewed > 0 ? falsePositiveCount / reviewed : 0,
     recentObservations: [...sourceCounts.entries()].map(([source, count]) => ({ source, count })),
@@ -4243,6 +4246,107 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
       count,
     })),
     sourceAlerts: [],
+  });
+}
+
+function buildPreviewSpammerDiagnostics(
+  candidates: readonly GlobalSpammerReviewCandidate[],
+  chatId: string,
+  userId: string,
+): GlobalSpammerUserDiagnostics {
+  const now = new Date();
+  const candidate = candidates.find((item) => item.userId === userId) ?? null;
+  const isApproved = candidate?.status === 'APPROVED' || candidate?.status === 'AUTO_APPROVED';
+  const isSuppressed = candidate?.status === 'SUPPRESSED';
+  const policyStatus = isApproved
+    ? 'ACTIVE_CONFIRMED'
+    : isSuppressed
+      ? 'SUPPRESSED'
+      : candidate?.status === 'PENDING'
+        ? 'MEDIUM_REVIEW'
+        : 'NONE';
+  const confidenceScore = candidate?.confidenceScore ?? null;
+  const expiresAt = isApproved ? addDays(now, 30).toISOString() : null;
+
+  return globalSpammerUserDiagnosticsSchema.parse({
+    userId,
+    chatId,
+    policy: {
+      userId,
+      chatId,
+      trigger: 'diagnostics',
+      registryStatus: policyStatus,
+      action: isApproved ? 'DELETE_AND_KICK' : 'NONE',
+      enforcementMode: 'enforce',
+      deleteSpammersEnabled: true,
+      adminExempt: false,
+      shadow: false,
+      wouldEnforce: isApproved,
+      enforced: false,
+      confidenceScore,
+      reason: candidate?.lastReason ?? 'NO_ACTIVE_REGISTRY_ENTRY',
+      expiresAt,
+      sourceBreakdown: candidate?.sourceBreakdown ?? null,
+    },
+    registry: {
+      active: isApproved,
+      expired: false,
+      confidenceScore: isApproved ? confidenceScore : null,
+      confirmedAt: isApproved ? (candidate?.reviewedAt ?? now.toISOString()) : null,
+      confirmedByUserId: isApproved ? (candidate?.reviewedByUserId ?? null) : null,
+      reason: isApproved ? (candidate?.lastReason ?? null) : null,
+      expiresAt,
+      sourceBreakdown: isApproved ? (candidate?.sourceBreakdown ?? null) : null,
+    },
+    candidate: candidate
+      ? {
+          status: candidate.status,
+          confidenceScore: candidate.confidenceScore,
+          lastReason: candidate.lastReason,
+          reviewedAt: candidate.reviewedAt,
+          reviewedByUserId: candidate.reviewedByUserId,
+          reviewReason: candidate.reviewReason,
+          falsePositive: candidate.falsePositive,
+        }
+      : null,
+    activeSuppression: isSuppressed
+      ? {
+          source: 'REVIEW_SUPPRESSION',
+          reason: candidate?.reviewReason ?? 'Ложное',
+          adminUserId: candidate?.reviewedByUserId ?? null,
+          suppressedUntil: candidate?.suppressedUntil ?? addDays(now, 30).toISOString(),
+        }
+      : null,
+    observations: (candidate?.observations ?? []).map((observation) => ({
+      id: observation.id,
+      source: observation.source,
+      score: observation.score,
+      confidenceLevel: observation.confidenceLevel,
+      reason: observation.reason,
+      chatId: observation.chatId,
+      observedAt: observation.observedAt,
+      expiresAt: observation.expiresAt,
+      suppressedAt: observation.suppressedAt,
+    })),
+    graphSignals: [
+      {
+        signalType: 'DOMAIN',
+        source: 'GRAPH_DOMAIN',
+        score: 0.62,
+        chatId,
+        observedAt: addHours(now, -1).toISOString(),
+        expiresAt: addDays(now, 14).toISOString(),
+      },
+    ],
+    sourceReputation: [
+      {
+        source: 'COMMERCIAL_CAMPAIGN',
+        weight: 0.9,
+        falsePositiveRate: 0.04,
+        observations: 42,
+        suppressed: 2,
+      },
+    ],
   });
 }
 
@@ -5095,6 +5199,16 @@ async function handleChatRequest(
 
   if (tail[0] === 'spammer-review' && tail[1] === 'metrics' && method === 'GET') {
     return cloneJson(buildPreviewSpammerReviewMetrics(state.spammerReviewCandidates));
+  }
+
+  if (tail[0] === 'spammer-diagnostics' && tail[1] && method === 'GET') {
+    return cloneJson(
+      buildPreviewSpammerDiagnostics(
+        state.spammerReviewCandidates,
+        chatId,
+        decodeURIComponent(tail[1]),
+      ),
+    );
   }
 
   if (tail[0] === 'spammer-review' && tail.length === 1 && method === 'GET') {

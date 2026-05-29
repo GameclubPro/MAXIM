@@ -23,6 +23,7 @@ type ChatParticipantSheetProps = {
   onSaveImmunity: (payload: { durationHours: number; dailyViolationLimit: number }) => void;
   onClearImmunity: () => void;
   onProfileActivate: () => void;
+  onSpammerDiagnostics: () => void;
   onMute: (durationHours: number) => void;
   onBan: () => void;
 };
@@ -191,6 +192,7 @@ export function ChatParticipantSheet({
   onSaveImmunity,
   onClearImmunity,
   onProfileActivate,
+  onSpammerDiagnostics,
   onMute,
   onBan,
 }: ChatParticipantSheetProps) {
@@ -341,6 +343,16 @@ export function ChatParticipantSheet({
             >
               <ProfileIcon />
               <span>Профиль</span>
+            </button>
+
+            <button
+              type="button"
+              className="participant-sheet__action participant-sheet__action--registry"
+              onClick={onSpammerDiagnostics}
+              disabled={isBusy}
+            >
+              <ShieldIcon />
+              <span>База</span>
             </button>
 
             {canManageParticipant ? (

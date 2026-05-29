@@ -8,6 +8,7 @@ import type {
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
   GlobalSpammerReviewMetrics,
+  GlobalSpammerUserDiagnostics,
   ModerationFeedFilter,
   MembershipActivityItem,
 } from '@maxim/contracts';
@@ -32,6 +33,7 @@ import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
+import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { Spinner } from '../components/ui/spinner';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -44,6 +46,7 @@ import {
   getChatModerationFeed,
   getGlobalSpammerReviewMetrics,
   getGlobalSpammerReviewQueue,
+  getGlobalSpammerUserDiagnostics,
   getLogsDashboard,
   handoffChatMemberProfile,
   handoffChatMemberProfileKeepalive,
@@ -64,6 +67,10 @@ type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
 type EventsFilter = ModerationFeedFilter;
 type EventsSection = 'activity' | 'moderation' | 'participants';
+type SpammerDiagnosticsTarget = {
+  userId: string;
+  displayName: string;
+};
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
@@ -603,6 +610,19 @@ function formatFalsePositiveRate(value: number): string {
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
+function formatRussianCountLabel(count: number, one: string, few: string, many: string): string {
+  const abs = Math.abs(Math.trunc(count));
+  const mod10 = abs % 10;
+  const mod100 = abs % 100;
+  if (mod10 === 1 && mod100 !== 11) {
+    return one;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return few;
+  }
+  return many;
+}
+
 function resolveSpammerSourceLabel(source: string): string {
   const labels: Record<string, string> = {
     FANOUT_HIGH: 'массовая рассылка',
@@ -611,25 +631,17 @@ function resolveSpammerSourceLabel(source: string): string {
     COMMERCIAL_CAMPAIGN: 'кампания',
     REPEATED_LINK: 'повтор ссылки',
     REPEATED_PHONE: 'повтор телефона',
+    GRAPH_DOMAIN: 'одинаковый домен',
+    GRAPH_PHONE: 'одинаковый телефон',
+    GRAPH_TEXT: 'похожий текст',
+    GRAPH_CAMPAIGN: 'одна кампания',
+    GRAPH_FANOUT_PATTERN: 'массовая схема',
     SANCTION_BAN: 'санкции',
     MANUAL_BAN: 'ручной бан',
-    REVIEW_APPROVED: 'review',
+    REVIEW_APPROVED: 'проверено',
   };
 
   return labels[source] ?? source.toLowerCase().replaceAll('_', ' ');
-}
-
-function resolveSpammerStatusLabel(status: GlobalSpammerReviewCandidate['status']): string {
-  if (status === 'PENDING') {
-    return 'на проверке';
-  }
-  if (status === 'AUTO_APPROVED') {
-    return 'авто';
-  }
-  if (status === 'APPROVED') {
-    return 'подтверждён';
-  }
-  return 'ложное';
 }
 
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
@@ -664,14 +676,101 @@ function resolveSpammerSourceSummary(candidate: GlobalSpammerReviewCandidate): s
   const sources = breakdown ? Object.keys(breakdown) : [];
   const fallbackSources = candidate.observations.map((observation) => observation.source);
   const uniqueSources = [...new Set(sources.length > 0 ? sources : fallbackSources)];
-  if (uniqueSources.length === 0) {
-    return resolveSpammerSourceLabel(candidate.lastReason);
+  const displayed = uniqueSources.slice(0, 3).map(resolveSpammerSourceLabel);
+  const sourcesSummary =
+    uniqueSources.length > displayed.length
+      ? `${displayed.join(' · ')} · +${uniqueSources.length - displayed.length}`
+      : displayed.join(' · ');
+  const chatsCount = candidate.chats.length;
+  const chatsSummary =
+    chatsCount > 0
+      ? `${chatsCount} ${formatRussianCountLabel(chatsCount, 'чат', 'чата', 'чатов')}`
+      : '';
+
+  return [chatsSummary, sourcesSummary || resolveSpammerSourceLabel(candidate.lastReason)]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function resolveSpammerReasons(candidate: GlobalSpammerReviewCandidate): string[] {
+  const breakdown = readJsonRecord(candidate.sourceBreakdown);
+  const sources = breakdown ? Object.keys(breakdown) : [];
+  const fallbackSources = candidate.observations.map((observation) => observation.source);
+  const labels = [...new Set(sources.length > 0 ? sources : fallbackSources)]
+    .map(resolveSpammerSourceLabel)
+    .filter(Boolean);
+  return labels.length > 0 ? labels.slice(0, 4) : [resolveSpammerSourceLabel(candidate.lastReason)];
+}
+
+function resolveSpammerChatFacts(candidate: GlobalSpammerReviewCandidate): string {
+  if (candidate.chats.length === 0) {
+    return 'Нет чатов';
   }
 
-  const displayed = uniqueSources.slice(0, 3).map(resolveSpammerSourceLabel);
-  return uniqueSources.length > displayed.length
-    ? `${displayed.join(', ')} +${uniqueSources.length - displayed.length}`
-    : displayed.join(', ');
+  const visible = candidate.chats
+    .slice(0, 3)
+    .map((chat) => {
+      const countSuffix = chat.detectionsCount > 1 ? ` · ${chat.detectionsCount}` : '';
+      return `${chat.chatId}${countSuffix}`;
+    });
+  const hiddenCount = candidate.chats.length - visible.length;
+  return hiddenCount > 0 ? `${visible.join(', ')} · +${hiddenCount} ещё` : visible.join(', ');
+}
+
+function resolveDiagnosticsStatusLabel(
+  diagnostics: GlobalSpammerUserDiagnostics | null | undefined,
+): string {
+  const status = diagnostics?.policy.registryStatus;
+  if (status === 'ACTIVE_CONFIRMED') {
+    return 'В реестре';
+  }
+  if (status === 'MEDIUM_REVIEW') {
+    return 'На проверке';
+  }
+  if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
+    return 'Исключен';
+  }
+  if (status === 'EXPIRED') {
+    return 'Истек';
+  }
+  return 'Нет данных';
+}
+
+function resolveDiagnosticsActionLabel(
+  diagnostics: GlobalSpammerUserDiagnostics | null | undefined,
+): string {
+  const policy = diagnostics?.policy;
+  if (!policy) {
+    return 'Нет данных';
+  }
+  if (policy.action === 'DELETE_AND_KICK') {
+    return 'Удалит';
+  }
+  if (policy.action === 'SHADOW_DELETE_AND_KICK') {
+    return 'Проверка';
+  }
+  if (policy.registryStatus === 'MEDIUM_REVIEW') {
+    return 'Только проверка';
+  }
+  return 'Не тронет';
+}
+
+function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
+  return (
+    diagnostics.registry.reason ||
+    diagnostics.candidate?.lastReason ||
+    diagnostics.activeSuppression?.reason ||
+    diagnostics.policy.reason ||
+    '—'
+  );
+}
+
+function resolveDiagnosticsConfirmedBy(diagnostics: GlobalSpammerUserDiagnostics): string {
+  return diagnostics.registry.confirmedByUserId || diagnostics.candidate?.reviewedByUserId || '—';
+}
+
+function formatNullableDate(value: string | null | undefined): string {
+  return value ? formatViolationDate(value) : '—';
 }
 
 function formatSpammerSourceAlertReason(reason: string): string {
@@ -696,6 +795,7 @@ function GlobalSpammerReviewPanel({
   onToggleCandidate,
   onReasonChange,
   onReview,
+  onOpenDiagnostics,
   onRetry,
 }: {
   metrics: GlobalSpammerReviewMetrics | null;
@@ -708,6 +808,7 @@ function GlobalSpammerReviewPanel({
   onToggleCandidate: (userId: string) => void;
   onReasonChange: (userId: string, value: string) => void;
   onReview: (candidate: GlobalSpammerReviewCandidate, action: GlobalSpammerReviewAction) => void;
+  onOpenDiagnostics: (candidate: GlobalSpammerReviewCandidate) => void;
   onRetry: () => void;
 }) {
   const pending = metrics?.pending ?? candidates.length;
@@ -715,24 +816,27 @@ function GlobalSpammerReviewPanel({
   const falsePositiveRate = metrics?.falsePositiveRate ?? 0;
   const sourceAlerts = metrics?.sourceAlerts ?? [];
   const errorMessage = error instanceof Error ? error.message : null;
+  const shouldHide =
+    !isLoading &&
+    !errorMessage &&
+    candidates.length === 0 &&
+    pending === 0 &&
+    sourceAlerts.length === 0;
+  if (shouldHide) {
+    return null;
+  }
 
   return (
     <section className="spammer-review" aria-label="Очередь базы спама">
       <div className="spammer-review__head">
         <div className="spammer-review__title">
           <strong>База спама</strong>
-          <span>{pending} на проверке</span>
         </div>
 
         <div className="spammer-review__metrics" aria-label="Метрики базы спама">
-          <article>
-            <small>В реестре</small>
-            <strong>{approved}</strong>
-          </article>
-          <article>
-            <small>Ложные</small>
-            <strong>{formatFalsePositiveRate(falsePositiveRate)}</strong>
-          </article>
+          <span>На проверке {pending}</span>
+          <span>В реестре {approved}</span>
+          <span>Ложные {formatFalsePositiveRate(falsePositiveRate)}</span>
         </div>
       </div>
 
@@ -763,7 +867,7 @@ function GlobalSpammerReviewPanel({
         </div>
       ) : candidates.length === 0 ? (
         <div className="spammer-review__state">
-          <span>Очередь пуста</span>
+          <span>Кандидатов нет</span>
         </div>
       ) : (
         <div className="spammer-review__list">
@@ -800,7 +904,6 @@ function GlobalSpammerReviewPanel({
                       <span>{formatConfidenceScore(candidate.confidenceScore)}</span>
                     </div>
                     <div className="spammer-review-candidate__meta">
-                      <span>{resolveSpammerStatusLabel(candidate.status)}</span>
                       <span>{resolveSpammerSourceSummary(candidate)}</span>
                     </div>
                     {excerpt ? <p>{excerpt}</p> : null}
@@ -809,32 +912,28 @@ function GlobalSpammerReviewPanel({
 
                 {expanded ? (
                   <div className="spammer-review-candidate__details">
-                    {candidate.chats.length > 0 ? (
-                      <div className="spammer-review-candidate__facts">
-                        {candidate.chats.slice(0, 3).map((chat) => (
-                          <span key={chat.chatId}>
-                            {chat.chatId}: {chat.detectionsCount}
-                          </span>
-                        ))}
+                    <dl className="spammer-review-candidate__facts">
+                      <div>
+                        <dt>Почему</dt>
+                        <dd>{resolveSpammerReasons(candidate).join(', ')}</dd>
                       </div>
-                    ) : null}
-
-                    {candidate.observations.length > 0 ? (
-                      <div className="spammer-review-candidate__observations">
-                        {candidate.observations.slice(0, 3).map((observation) => (
-                          <span key={observation.id}>
-                            {resolveSpammerSourceLabel(observation.source)} /{' '}
-                            {formatConfidenceScore(observation.score)} /{' '}
-                            {formatViolationDate(observation.observedAt)}
-                          </span>
-                        ))}
+                      <div>
+                        <dt>Где</dt>
+                        <dd>{resolveSpammerChatFacts(candidate)}</dd>
                       </div>
-                    ) : null}
+                      {excerpt ? (
+                        <div>
+                          <dt>Пример</dt>
+                          <dd>{excerpt}</dd>
+                        </div>
+                      ) : null}
+                    </dl>
 
                     <label className="spammer-review-candidate__reason">
-                      <span>Причина решения</span>
+                      <span>Причина</span>
                       <input
                         value={reasonValue}
+                        placeholder="Необязательно"
                         maxLength={500}
                         onChange={(event) => onReasonChange(candidate.userId, event.target.value)}
                       />
@@ -843,11 +942,19 @@ function GlobalSpammerReviewPanel({
                     <div className="spammer-review-candidate__actions">
                       <button
                         type="button"
+                        className="spammer-review-candidate__button spammer-review-candidate__button--ghost"
+                        disabled={isReviewing}
+                        onClick={() => onOpenDiagnostics(candidate)}
+                      >
+                        Детали
+                      </button>
+                      <button
+                        type="button"
                         className="spammer-review-candidate__button spammer-review-candidate__button--approve"
                         disabled={isReviewing}
                         onClick={() => onReview(candidate, 'APPROVE')}
                       >
-                        {isReviewing ? 'Сохраняем...' : 'Подтвердить'}
+                        {isReviewing ? 'Сохраняем...' : 'В реестр'}
                       </button>
                       <button
                         type="button"
@@ -869,15 +976,134 @@ function GlobalSpammerReviewPanel({
   );
 }
 
+function SpammerDiagnosticsSheet({
+  open,
+  target,
+  diagnostics,
+  isLoading,
+  error,
+  onClose,
+  onRetry,
+}: {
+  open: boolean;
+  target: SpammerDiagnosticsTarget | null;
+  diagnostics: GlobalSpammerUserDiagnostics | null;
+  isLoading: boolean;
+  error: unknown;
+  onClose: () => void;
+  onRetry: () => void;
+}) {
+  const errorMessage = error instanceof Error ? error.message : null;
+  const signals = diagnostics
+    ? [
+        ...diagnostics.observations.slice(0, 4).map((item) => ({
+          key: `observation:${item.id}`,
+          label: resolveSpammerSourceLabel(item.source),
+          score: item.score,
+        })),
+        ...diagnostics.graphSignals.slice(0, 3).map((item, index) => ({
+          key: `graph:${item.signalType}:${index}`,
+          label: resolveSpammerSourceLabel(item.source),
+          score: item.score,
+        })),
+      ].slice(0, 5)
+    : [];
+  const reliability = diagnostics?.sourceReputation.slice(0, 3) ?? [];
+
+  return (
+    <SettingsDrilldownPanel
+      id="spammer-diagnostics-sheet"
+      open={open}
+      title={target?.displayName ?? 'База спама'}
+      summary={target?.userId ? `ID ${target.userId}` : ''}
+      tone="sky"
+      onClose={onClose}
+      className="spammer-diagnostics-sheet"
+    >
+      {isLoading ? (
+        <div className="spammer-diagnostics__state">
+          <Spinner size="sm" label="Загружаем диагностику" />
+        </div>
+      ) : errorMessage ? (
+        <div className="spammer-diagnostics__state">
+          <span>{errorMessage}</span>
+          <button type="button" className="button button--ghost" onClick={onRetry}>
+            Обновить
+          </button>
+        </div>
+      ) : diagnostics ? (
+        <section className="spammer-diagnostics">
+          <div className="spammer-diagnostics__summary">
+            <article>
+              <small>Статус</small>
+              <strong>{resolveDiagnosticsStatusLabel(diagnostics)}</strong>
+            </article>
+            <article>
+              <small>Действие бота</small>
+              <strong>{resolveDiagnosticsActionLabel(diagnostics)}</strong>
+            </article>
+          </div>
+
+          <dl className="spammer-diagnostics__facts">
+            <div>
+              <dt>Причина</dt>
+              <dd>{resolveDiagnosticsReason(diagnostics)}</dd>
+            </div>
+            <div>
+              <dt>Истекает</dt>
+              <dd>
+                {formatNullableDate(diagnostics.policy.expiresAt ?? diagnostics.registry.expiresAt)}
+              </dd>
+            </div>
+            <div>
+              <dt>Подтвердил</dt>
+              <dd>{resolveDiagnosticsConfirmedBy(diagnostics)}</dd>
+            </div>
+          </dl>
+
+          {signals.length > 0 ? (
+            <div className="spammer-diagnostics__signals">
+              <span>Сигналы</span>
+              <div>
+                {signals.map((signal) => (
+                  <small key={signal.key}>
+                    {signal.label} · {formatConfidenceScore(signal.score)}
+                  </small>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {reliability.length > 0 ? (
+            <div className="spammer-diagnostics__signals">
+              <span>Надежность источника</span>
+              <div>
+                {reliability.map((item) => (
+                  <small key={item.source}>
+                    {resolveSpammerSourceLabel(item.source)} ·{' '}
+                    {formatFalsePositiveRate(item.weight)}
+                  </small>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </SettingsDrilldownPanel>
+  );
+}
+
 function ViolationModerationControls({
   api,
   chatId,
   violation,
+  onOpenDiagnostics,
   onApplied,
 }: {
   api: ApiTransport;
   chatId: string;
   violation: ViolationItem;
+  onOpenDiagnostics: () => void;
   onApplied: () => void;
 }) {
   const releaseAction = resolveReleaseAction(violation);
@@ -925,6 +1151,19 @@ function ViolationModerationControls({
           releaseAction ? 'logs-violation-item__quick-actions--single' : ''
         }`}
       >
+        <button
+          type="button"
+          className="logs-violation-item__quick-button logs-violation-item__quick-button--neutral"
+          disabled={applyMutation.isPending}
+          onClick={() => {
+            setStatus(null);
+            setMuteExpanded(false);
+            setPendingAction(null);
+            onOpenDiagnostics();
+          }}
+        >
+          База
+        </button>
         {!releaseAction ? (
           <button
             type="button"
@@ -1157,6 +1396,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [expandedSpammerCandidateId, setExpandedSpammerCandidateId] = useState<string | null>(null);
   const [spammerReviewReasons, setSpammerReviewReasons] = useState<Record<string, string>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
+  const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
+    useState<SpammerDiagnosticsTarget | null>(null);
   const [participantsSearch, setParticipantsSearch] = useState('');
   const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
     chatId: string | null;
@@ -1409,6 +1650,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
+  const spammerDiagnosticsQuery = useQuery({
+    queryKey: queryKeys.globalSpammerUserDiagnostics(
+      chatId,
+      spammerDiagnosticsTarget?.userId ?? null,
+    ),
+    queryFn: ({ signal }) =>
+      getGlobalSpammerUserDiagnostics(
+        api,
+        chatId ?? '',
+        spammerDiagnosticsTarget?.userId ?? '',
+        { signal },
+      ),
+    enabled: Boolean(chatId && spammerDiagnosticsTarget?.userId),
+    staleTime: 20_000,
+    refetchOnWindowFocus: false,
+  });
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
@@ -1539,7 +1796,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       });
       pushToast({
         tone: 'success',
-        title: result.status === 'SUPPRESSED' ? 'Кандидат подавлен' : 'Кандидат подтверждён',
+        title: result.status === 'SUPPRESSED' ? 'Отмечено как ложное' : 'Добавлено в реестр',
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.globalSpammerReviewQueue(chatId),
@@ -1667,6 +1924,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const handleSpammerReviewRetry = () => {
     void spammerReviewQueueQuery.refetch();
     void spammerReviewMetricsQuery.refetch();
+  };
+  const openSpammerDiagnostics = (target: SpammerDiagnosticsTarget) => {
+    if (!target.userId.trim()) {
+      return;
+    }
+    setSpammerDiagnosticsTarget(target);
+  };
+  const handleSpammerCandidateDiagnostics = (candidate: GlobalSpammerReviewCandidate) => {
+    openSpammerDiagnostics({
+      userId: candidate.userId,
+      displayName: resolveSpammerCandidateName(candidate),
+    });
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
     if (nextFilter === activityFeed.filter) {
@@ -2065,6 +2334,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             onToggleCandidate={handleSpammerCandidateToggle}
             onReasonChange={handleSpammerReviewReasonChange}
             onReview={handleSpammerReview}
+            onOpenDiagnostics={handleSpammerCandidateDiagnostics}
             onRetry={handleSpammerReviewRetry}
           />
 
@@ -2253,6 +2523,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                             api={api}
                             chatId={chatId}
                             violation={violation}
+                            onOpenDiagnostics={() =>
+                              openSpammerDiagnostics({
+                                userId: violation.userId,
+                                displayName,
+                              })
+                            }
                             onApplied={() => {
                               void dashboardQuery.refetch();
                               void moderationFeed.retry();
@@ -2279,6 +2555,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
         </>
       ) : null}
+
+      <SpammerDiagnosticsSheet
+        open={Boolean(spammerDiagnosticsTarget)}
+        target={spammerDiagnosticsTarget}
+        diagnostics={spammerDiagnosticsQuery.data ?? null}
+        isLoading={spammerDiagnosticsQuery.isLoading && !spammerDiagnosticsQuery.data}
+        error={spammerDiagnosticsQuery.error}
+        onClose={() => setSpammerDiagnosticsTarget(null)}
+        onRetry={() => void spammerDiagnosticsQuery.refetch()}
+      />
 
       <ChatParticipantSheet
         open={Boolean(selectedParticipant)}
@@ -2319,6 +2605,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             selectedParticipant.userDisplayName,
             selectedParticipant.profileHandoffUrl,
           );
+        }}
+        onSpammerDiagnostics={() => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          openSpammerDiagnostics({
+            userId: selectedParticipant.userId,
+            displayName: selectedParticipant.userDisplayName || selectedParticipant.userId,
+          });
         }}
         onMute={(durationHours) => {
           if (!selectedParticipant) {

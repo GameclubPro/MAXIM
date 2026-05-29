@@ -103,6 +103,7 @@ import {
   updateSettings,
 } from '../lib/api/chat-settings-client';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
+import { getGlobalSpammerReviewMetrics } from '../lib/api/events-client';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
@@ -687,6 +688,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryFn: () => getVkParsingCapability(api, 'chat', chatId ?? ''),
     enabled: Boolean(chatId),
     staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const spammerReviewMetricsQuery = useQuery({
+    queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
+    queryFn: ({ signal }) => getGlobalSpammerReviewMetrics(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const canAccessVkParsing = vkParsingCapabilityQuery.data?.canUse === true;
@@ -4127,6 +4135,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const limitsRulesEnabledCount = [
     draft?.antiSpamEnabled,
+    draft?.deleteSpammersEnabled,
     draft?.messageCountLimitEnabled,
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
@@ -4237,10 +4246,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : 'Пусто'
     : 'Выкл';
   const extraEnabledCount = [
-    draft?.deleteSpammersEnabled,
     draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
   ].filter(Boolean).length;
+  const deleteSpammersRuntimeStatus = !draft?.deleteSpammersEnabled
+    ? 'Выкл'
+    : spammerReviewMetricsQuery.data?.enforcementMode === 'shadow'
+      ? 'Проверка'
+      : 'Активно';
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
@@ -8097,6 +8110,62 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Удалять спаммеров</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <span
+                                className={cn(
+                                  'settings-native-toggle__status',
+                                  draft.deleteSpammersEnabled && 'is-active',
+                                  spammerReviewMetricsQuery.data?.enforcementMode === 'shadow' &&
+                                    draft.deleteSpammersEnabled &&
+                                    'is-shadow',
+                                )}
+                              >
+                                {deleteSpammersRuntimeStatus}
+                              </span>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'deleteSpammers' && 'is-open',
+                                )}
+                                aria-label="Пояснение для удаления спаммеров"
+                                aria-controls="delete-spammers-hint"
+                                aria-expanded={openHintKey === 'deleteSpammers'}
+                                onClick={() => toggleHint('deleteSpammers')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление спаммеров"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.deleteSpammersEnabled}
+                              onChange={(event) =>
+                                setFieldValue('deleteSpammersEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'deleteSpammers' ? (
+                          <p id="delete-spammers-hint" className="settings-native-toggle__hint">
+                            Удаляются только подтвержденные.
+                          </p>
+                        ) : null}
+                      </div>
+
                       <div
                         className={cn(
                           'settings-native-toggle',
@@ -11121,50 +11190,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           onAdjust={adjustDeleteBotMessagesDelay}
                         />
                       ) : null}
-
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Удалять спаммеров</span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'deleteSpammers' && 'is-open',
-                              )}
-                              aria-label="Пояснение для удаления спаммеров"
-                              aria-controls="delete-spammers-hint"
-                              aria-expanded={openHintKey === 'deleteSpammers'}
-                              onClick={() => toggleHint('deleteSpammers')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить удаление спаммеров"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.deleteSpammersEnabled}
-                              onChange={(event) =>
-                                setFieldValue('deleteSpammersEnabled', event.target.checked)
-                              }
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'deleteSpammers' ? (
-                          <p id="delete-spammers-hint" className="settings-native-toggle__hint">
-                            Глобальная база: после 5 чатов за 2 минуты бот предупреждает, после 6
-                            добавляет в базу и удаляет из текущего чата.
-                          </p>
-                        ) : null}
-                      </div>
 
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">

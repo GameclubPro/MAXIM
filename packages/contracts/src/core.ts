@@ -1777,6 +1777,7 @@ export const globalSpammerReviewMetricsSchema = z.object({
   approved: z.number().int().min(0),
   suppressed: z.number().int().min(0),
   reviewed: z.number().int().min(0),
+  enforcementMode: z.enum(['enforce', 'shadow']).default('enforce'),
   falsePositiveCount: z.number().int().min(0),
   falsePositiveRate: z.number().min(0).max(1),
   recentObservations: z.array(

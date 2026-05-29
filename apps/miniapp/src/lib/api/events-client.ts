@@ -9,6 +9,7 @@ import type {
   GlobalSpammerReviewQueue,
   GlobalSpammerReviewRequest,
   GlobalSpammerReviewResult,
+  GlobalSpammerUserDiagnostics,
   LogsDashboardRange,
   LogsDashboardResponse,
   ManualModerationActionRequest,
@@ -298,6 +299,19 @@ export async function getGlobalSpammerReviewMetrics(
 ): Promise<GlobalSpammerReviewMetrics> {
   const response = await api.request(`/chats/${chatId}/spammer-review/metrics`, request);
   return response as GlobalSpammerReviewMetrics;
+}
+
+export async function getGlobalSpammerUserDiagnostics(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<GlobalSpammerUserDiagnostics> {
+  const response = await api.request(
+    `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`,
+    request,
+  );
+  return response as GlobalSpammerUserDiagnostics;
 }
 
 export async function reviewGlobalSpammerCandidate(

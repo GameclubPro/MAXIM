@@ -141,6 +141,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   ],
   limits: [
     'antiSpamEnabled',
+    'deleteSpammersEnabled',
     'messageCountLimitEnabled',
     'messageCountLimitMessages',
     'messageCountLimitWindowHours',
@@ -214,7 +215,6 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'invitationAccessBanEnabled',
   ],
   extra: [
-    'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',
     'removeBotsFromGroupEnabled',

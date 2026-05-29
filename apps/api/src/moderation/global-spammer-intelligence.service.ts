@@ -884,6 +884,7 @@ export class GlobalSpammerIntelligenceService {
       approved,
       suppressed,
       reviewed,
+      enforcementMode: this.defaultEnforcementMode,
       falsePositiveCount,
       falsePositiveRate: reviewed > 0 ? this.roundScore(falsePositiveCount / reviewed) : 0,
       recentObservations: recentObservations.map((row) => ({
