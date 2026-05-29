@@ -175,7 +175,13 @@ export function PostCard({
           />
 
           {post.photoUrls.length > 0 ? (
-            <div className="vk-parsing-post-card__photos">
+            <div
+              className={cn(
+                'vk-parsing-post-card__photos',
+                photoCount === 1 && 'is-single',
+                photoCount === 2 && 'is-pair',
+              )}
+            >
               {visiblePhotoUrls.map((url, index) => (
                 <span key={url} className="vk-parsing-post-card__photo">
                   <img src={url} alt="" loading="lazy" />

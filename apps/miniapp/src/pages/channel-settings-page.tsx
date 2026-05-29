@@ -2832,7 +2832,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-vk-parsing"
             open={expandedSections.vkParsing}
             title="ВК-парсинг"
-            summary="Посты из VK"
             tone="ink"
             className="settings-drilldown__panel--campaign settings-drilldown__panel--vk-parsing"
             onClose={() => toggleSection('vkParsing')}
