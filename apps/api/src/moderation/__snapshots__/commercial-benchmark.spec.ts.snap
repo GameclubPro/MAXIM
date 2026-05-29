@@ -1,0 +1,31 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`commercial deterministic benchmark meets recall, false-positive, subtype, and action-policy gates 1`] = `
+{
+  "byAction": {
+    "DELETE": 24,
+    "DELETE_AND_ESCALATE": 9,
+    "REVIEW_ONLY": 3,
+    "WARN": 20,
+  },
+  "bySubtype": {
+    "BUYOUT": 1,
+    "CHANNEL_PLACEMENT": 3,
+    "GOODS": 2,
+    "GOODS_RETAIL": 12,
+    "INFO_PRODUCT": 2,
+    "PROPERTY_AGENT": 6,
+    "PROPERTY_COMMERCIAL": 1,
+    "RECRUITMENT": 8,
+    "SERVICES": 21,
+  },
+  "confusionMatrix": {
+    "FN": 0,
+    "FP": 0,
+    "TN": 24,
+    "TP": 56,
+  },
+  "topFalseNegativeSignals": {},
+  "topFalsePositiveSignals": {},
+}
+`;

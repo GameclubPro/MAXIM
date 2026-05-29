@@ -3,18 +3,28 @@ import { extractUrlsFromText, stripUrlsFromText } from '../common/url-text.util'
 
 const COMMERCIAL_CAMPAIGN_KEY_PREFIX = 'commercial-campaign:v1';
 const COMMERCIAL_CAMPAIGN_PHONE_PATTERN = /(?:\+?\d[\d\s()-]{8,}\d)/gu;
+const COMMERCIAL_CAMPAIGN_HANDLE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_])@([a-z0-9_]{4,32})(?=$|[^\p{L}\p{N}_])/giu;
 const COMMERCIAL_CAMPAIGN_TEXT_MIN_LENGTH = 18;
 const COMMERCIAL_CAMPAIGN_TEXT_MIN_TOKENS = 3;
+const COMMERCIAL_CAMPAIGN_NEAR_TEXT_MIN_LENGTH = 24;
+const COMMERCIAL_CAMPAIGN_NEAR_TEXT_MIN_TOKENS = 4;
 
 export const COMMERCIAL_CAMPAIGN_WINDOW_SEC = 36 * 60 * 60;
+export const COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC = [5 * 60, 30 * 60, 120 * 60] as const;
 export const COMMERCIAL_CAMPAIGN_MAX_LINKS = 2;
 export const COMMERCIAL_CAMPAIGN_MAX_PHONES = 2;
+export const COMMERCIAL_CAMPAIGN_MAX_DOMAINS = 2;
+export const COMMERCIAL_CAMPAIGN_MAX_HANDLES = 2;
 
 export type CommercialCampaignFingerprint = {
   normalizedText: string;
   textHash: string | null;
+  nearTextHash: string | null;
   links: string[];
+  domains: string[];
   phones: string[];
+  handles: string[];
 };
 
 export type CommercialCampaignContext = {
@@ -22,6 +32,12 @@ export type CommercialCampaignContext = {
   sameTextDistinctChatCount: number;
   repeatedPhoneDistinctChatCount: number;
   repeatedLinkDistinctChatCount: number;
+  nearTextDistinctChatCount?: number;
+  repeatedDomainDistinctChatCount?: number;
+  repeatedHandleDistinctChatCount?: number;
+  senderDistinctChatCount5m?: number;
+  senderDistinctChatCount30m?: number;
+  senderDistinctChatCount120m?: number;
 };
 
 type InMemoryExpiringSet = {
@@ -40,6 +56,14 @@ function normalizeCampaignText(value: string): string {
   normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
   normalized = normalized.replace(/[_*~`"'«»“”(){}[\]|]+/gu, ' ');
   normalized = normalized.replace(/[^\p{L}\p{N}\s%+-]+/gu, ' ');
+  normalized = normalized.replace(/\s+/gu, ' ').trim();
+  return normalized;
+}
+
+function normalizeNearCampaignText(value: string): string {
+  let normalized = normalizeCampaignText(value);
+  normalized = normalized.replace(/\d+/gu, '0');
+  normalized = normalized.replace(/\b(?:р|руб|рублей|₽|usd|eur)\b/giu, ' ');
   normalized = normalized.replace(/\s+/gu, ' ').trim();
   return normalized;
 }
@@ -113,6 +137,15 @@ export function normalizeCommercialCampaignUrl(value: string): string | null {
   }
 }
 
+export function normalizeCommercialCampaignDomain(value: string): string | null {
+  const normalized = normalizeCommercialCampaignUrl(value);
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.split('/')[0] ?? null;
+}
+
 export function extractCommercialCampaignLinks(value: string): string[] {
   if (!value.trim()) {
     return [];
@@ -137,20 +170,83 @@ export function extractCommercialCampaignLinks(value: string): string[] {
   return links;
 }
 
+export function extractCommercialCampaignDomains(value: string): string[] {
+  if (!value.trim()) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const domains: string[] = [];
+
+  for (const rawLink of extractUrlsFromText(value)) {
+    const normalized = normalizeCommercialCampaignDomain(rawLink);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    domains.push(normalized);
+    if (domains.length >= COMMERCIAL_CAMPAIGN_MAX_DOMAINS) {
+      break;
+    }
+  }
+
+  return domains;
+}
+
+export function normalizeCommercialCampaignHandle(value: string): string | null {
+  const normalized = value.trim().replace(/^@/u, '').toLowerCase();
+  return /^[a-z0-9_]{4,32}$/u.test(normalized) ? normalized : null;
+}
+
+export function extractCommercialCampaignHandles(value: string): string[] {
+  if (!value.trim()) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const handles: string[] = [];
+
+  for (const match of value.matchAll(COMMERCIAL_CAMPAIGN_HANDLE_PATTERN)) {
+    const normalized = normalizeCommercialCampaignHandle(match[1] ?? '');
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    handles.push(normalized);
+    if (handles.length >= COMMERCIAL_CAMPAIGN_MAX_HANDLES) {
+      break;
+    }
+  }
+
+  return handles;
+}
+
 export function buildCommercialCampaignFingerprint(value: string): CommercialCampaignFingerprint {
   const normalizedText = normalizeCampaignText(value);
   const tokenCount = normalizedText.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+  const normalizedNearText = normalizeNearCampaignText(value);
+  const nearTokenCount = normalizedNearText.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
   const textHash =
     normalizedText.length >= COMMERCIAL_CAMPAIGN_TEXT_MIN_LENGTH &&
     tokenCount >= COMMERCIAL_CAMPAIGN_TEXT_MIN_TOKENS
       ? createHash('sha256').update(normalizedText).digest('hex').slice(0, 20)
       : null;
+  const nearTextHash =
+    normalizedNearText.length >= COMMERCIAL_CAMPAIGN_NEAR_TEXT_MIN_LENGTH &&
+    nearTokenCount >= COMMERCIAL_CAMPAIGN_NEAR_TEXT_MIN_TOKENS
+      ? createHash('sha256').update(normalizedNearText).digest('hex').slice(0, 20)
+      : null;
 
   return {
     normalizedText,
     textHash,
+    nearTextHash,
     links: extractCommercialCampaignLinks(value),
+    domains: extractCommercialCampaignDomains(value),
     phones: extractCommercialCampaignPhones(value),
+    handles: extractCommercialCampaignHandles(value),
   };
 }
 
@@ -160,8 +256,11 @@ export function hasCommercialCampaignEvidence(
   return Boolean(
     value &&
     (value.sameTextDistinctChatCount >= 2 ||
+      (value.nearTextDistinctChatCount ?? 0) >= 2 ||
       value.repeatedPhoneDistinctChatCount >= 2 ||
       value.repeatedLinkDistinctChatCount >= 2 ||
+      (value.repeatedDomainDistinctChatCount ?? 0) >= 3 ||
+      (value.repeatedHandleDistinctChatCount ?? 0) >= 2 ||
       value.senderDistinctChatCount >= 3),
   );
 }
@@ -177,12 +276,34 @@ export function buildCommercialCampaignSenderTextChatsKey(
   return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:sender:${hashCampaignKeyPart(senderId)}:text:${textHash}:chats`;
 }
 
+export function buildCommercialCampaignSenderNearTextChatsKey(
+  senderId: string,
+  nearTextHash: string,
+): string {
+  return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:sender:${hashCampaignKeyPart(senderId)}:near-text:${nearTextHash}:chats`;
+}
+
 export function buildCommercialCampaignPhoneChatsKey(phone: string): string {
   return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:phone:${hashCampaignKeyPart(phone)}:chats`;
 }
 
 export function buildCommercialCampaignLinkChatsKey(link: string): string {
   return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:link:${hashCampaignKeyPart(link)}:chats`;
+}
+
+export function buildCommercialCampaignDomainChatsKey(domain: string): string {
+  return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:domain:${hashCampaignKeyPart(domain)}:chats`;
+}
+
+export function buildCommercialCampaignHandleChatsKey(handle: string): string {
+  return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:handle:${hashCampaignKeyPart(handle)}:chats`;
+}
+
+export function buildCommercialCampaignSenderVelocityChatsKey(
+  senderId: string,
+  windowSec: (typeof COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC)[number],
+): string {
+  return `${COMMERCIAL_CAMPAIGN_KEY_PREFIX}:sender:${hashCampaignKeyPart(senderId)}:velocity:${windowSec}:chats`;
 }
 
 export class InMemoryCommercialCampaignTracker {
@@ -208,9 +329,46 @@ export class InMemoryCommercialCampaignTracker {
       params.chatId,
       createdAtMs,
     );
+    const senderDistinctChatCount5m = this.addToSetWithTtl(
+      buildCommercialCampaignSenderVelocityChatsKey(
+        normalizedSenderId,
+        COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
+      ),
+      params.chatId,
+      createdAtMs,
+      COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
+    );
+    const senderDistinctChatCount30m = this.addToSetWithTtl(
+      buildCommercialCampaignSenderVelocityChatsKey(
+        normalizedSenderId,
+        COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
+      ),
+      params.chatId,
+      createdAtMs,
+      COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
+    );
+    const senderDistinctChatCount120m = this.addToSetWithTtl(
+      buildCommercialCampaignSenderVelocityChatsKey(
+        normalizedSenderId,
+        COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
+      ),
+      params.chatId,
+      createdAtMs,
+      COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
+    );
     const sameTextDistinctChatCount = fingerprint.textHash
       ? this.addToSetWithTtl(
           buildCommercialCampaignSenderTextChatsKey(normalizedSenderId, fingerprint.textHash),
+          params.chatId,
+          createdAtMs,
+        )
+      : 0;
+    const nearTextDistinctChatCount = fingerprint.nearTextHash
+      ? this.addToSetWithTtl(
+          buildCommercialCampaignSenderNearTextChatsKey(
+            normalizedSenderId,
+            fingerprint.nearTextHash,
+          ),
           params.chatId,
           createdAtMs,
         )
@@ -236,19 +394,54 @@ export class InMemoryCommercialCampaignTracker {
       );
     }
 
+    let repeatedDomainDistinctChatCount = 0;
+    for (const domain of fingerprint.domains) {
+      repeatedDomainDistinctChatCount = Math.max(
+        repeatedDomainDistinctChatCount,
+        this.addToSetWithTtl(
+          buildCommercialCampaignDomainChatsKey(domain),
+          params.chatId,
+          createdAtMs,
+        ),
+      );
+    }
+
+    let repeatedHandleDistinctChatCount = 0;
+    for (const handle of fingerprint.handles) {
+      repeatedHandleDistinctChatCount = Math.max(
+        repeatedHandleDistinctChatCount,
+        this.addToSetWithTtl(
+          buildCommercialCampaignHandleChatsKey(handle),
+          params.chatId,
+          createdAtMs,
+        ),
+      );
+    }
+
     return {
       senderDistinctChatCount,
       sameTextDistinctChatCount,
       repeatedPhoneDistinctChatCount,
       repeatedLinkDistinctChatCount,
+      nearTextDistinctChatCount,
+      repeatedDomainDistinctChatCount,
+      repeatedHandleDistinctChatCount,
+      senderDistinctChatCount5m,
+      senderDistinctChatCount30m,
+      senderDistinctChatCount120m,
     };
   }
 
-  private addToSetWithTtl(key: string, member: string, createdAtMs: number): number {
+  private addToSetWithTtl(
+    key: string,
+    member: string,
+    createdAtMs: number,
+    ttlSec = this.ttlSec,
+  ): number {
     const existing = this.sets.get(key);
     if (!existing || existing.expiresAtMs <= createdAtMs) {
       const next: InMemoryExpiringSet = {
-        expiresAtMs: createdAtMs + this.ttlSec * 1000,
+        expiresAtMs: createdAtMs + ttlSec * 1000,
         members: new Set([member]),
       };
       this.sets.set(key, next);

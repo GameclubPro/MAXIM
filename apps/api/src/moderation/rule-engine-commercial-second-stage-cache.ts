@@ -3,7 +3,7 @@ import type { CommercialCampaignContext } from './commercial-campaign.util';
 import type { CommercialDecisionBand, CommercialSubtype } from './rule-engine.contract';
 import type { CommercialThresholdProfile } from './rule-engine-commercial-thresholds';
 
-export const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v2';
+export const COMMERCIAL_SECOND_STAGE_VERSION = '2026-service-private-v3';
 
 export type CommercialSecondStageDecision = {
   adjustedConfidenceScore: number;
@@ -57,6 +57,12 @@ export class CommercialSecondStageDecisionCache {
       commercialCampaignContext?.repeatedPhoneDistinctChatCount ?? 0,
       commercialCampaignContext?.repeatedLinkDistinctChatCount ?? 0,
       commercialCampaignContext?.senderDistinctChatCount ?? 0,
+      commercialCampaignContext?.nearTextDistinctChatCount ?? 0,
+      commercialCampaignContext?.repeatedDomainDistinctChatCount ?? 0,
+      commercialCampaignContext?.repeatedHandleDistinctChatCount ?? 0,
+      commercialCampaignContext?.senderDistinctChatCount5m ?? 0,
+      commercialCampaignContext?.senderDistinctChatCount30m ?? 0,
+      commercialCampaignContext?.senderDistinctChatCount120m ?? 0,
     ].join('|');
   }
 

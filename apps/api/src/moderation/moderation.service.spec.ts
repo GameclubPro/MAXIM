@@ -2756,13 +2756,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-6', 'msg-6', 'Текст 6'));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-5',
-      expect.stringContaining('Предупреждение 1/2.'),
-      { textFormat: 'markdown' },
-      { immediate: true },
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-6', 'msg-6');
     expectImmediateKickMember(maxClient.kickMember, 'chat-6', 'user-spam-1');
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
@@ -2882,7 +2876,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Текст 5'));
     await service.handleUpdate(createSpamUpdate('chat-6', 'msg-6', 'Текст 6'));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
@@ -3328,11 +3322,11 @@ describe('ModerationService', () => {
       where: { userId: 'user-spam-1' },
       create: expect.objectContaining({
         userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
         lastChatId: 'chat-10',
       }),
       update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
         lastChatId: 'chat-10',
       }),
     });
@@ -3340,7 +3334,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
   });
 
-  it('adds user to global spammer registry on second warning after repeated 5-chat fanout', async () => {
+  it('adds user to global spammer registry on repeated 5-chat fanout without warning', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -3448,30 +3442,16 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-9', 'msg-9', 'Добрый день, команда 9'));
     await service.handleUpdate(createSpamUpdate('chat-10', 'msg-10', 'Добрый день, команда 10'));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
-    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
-      1,
-      'chat-5',
-      expect.stringContaining('Предупреждение 1/2.'),
-      { textFormat: 'markdown' },
-      { immediate: true },
-    );
-    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
-      2,
-      'chat-10',
-      expect.stringContaining('Предупреждение 2/2.'),
-      { textFormat: 'markdown' },
-      { immediate: true },
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-spam-1' },
       create: expect.objectContaining({
         userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
         lastChatId: 'chat-10',
       }),
       update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
         lastChatId: 'chat-10',
       }),
     });

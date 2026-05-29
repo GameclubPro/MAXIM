@@ -63,6 +63,13 @@ type AuditSkipReason =
   | 'local-admin';
 
 type AuditCategory = 'stable_hit' | 'historical_only' | 'current_only' | 'stable_clear';
+type AuditPolicyCategory =
+  | 'hard_delete'
+  | 'gray_zone'
+  | 'campaign_only'
+  | 'false_positive_candidate'
+  | 'false_negative_candidate'
+  | 'none';
 
 type AuditSegment =
   | 'CHANNEL_PLACEMENT'
@@ -89,10 +96,18 @@ type CommercialSnapshot = {
   reviewReasons: string[];
   matchedSignals: string[];
   negativeSignals: string[];
+  decisionVersion: string | null;
+  fpRisk: number | null;
+  evidenceTier: string | null;
+  subtype: string | null;
+  actionBand: string | null;
+  reasonCodes: string[];
+  featureVector: Record<string, number>;
 };
 
 type AuditRecord = {
   category: AuditCategory;
+  policyCategory: AuditPolicyCategory;
   segment: AuditSegment;
   createdAt: Date;
   webhookEventId: string;
@@ -102,6 +117,7 @@ type AuditRecord = {
   messageId: string;
   senderId: string | null;
   text: string;
+  sanitizedText: string;
   historical: CommercialSnapshot;
   current: CommercialSnapshot;
 };
@@ -496,6 +512,13 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       reviewReasons: [],
       matchedSignals: [],
       negativeSignals: [],
+      decisionVersion: null,
+      fpRisk: null,
+      evidenceTier: null,
+      subtype: null,
+      actionBand: null,
+      reasonCodes: [],
+      featureVector: {},
     };
   }
 
@@ -516,6 +539,13 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     reviewReasons: readStringArray(metadata?.reviewReasons),
     matchedSignals: readStringArray(metadata?.matchedSignals),
     negativeSignals: readStringArray(metadata?.negativeSignals),
+    decisionVersion: readOptionalString(metadata?.decisionVersion),
+    fpRisk: readOptionalNumber(metadata?.fpRisk),
+    evidenceTier: readOptionalString(metadata?.evidenceTier),
+    subtype: readOptionalString(metadata?.subtype),
+    actionBand: readOptionalString(metadata?.actionBand),
+    reasonCodes: readStringArray(metadata?.reasonCodes),
+    featureVector: readNumericRecord(metadata?.featureVector),
   };
 }
 
@@ -541,7 +571,27 @@ function snapshotFromHistorical(
     reviewReasons: readStringArray(normalizedMetadata?.reviewReasons),
     matchedSignals: readStringArray(normalizedMetadata?.matchedSignals),
     negativeSignals: readStringArray(normalizedMetadata?.negativeSignals),
+    decisionVersion: readOptionalString(normalizedMetadata?.decisionVersion),
+    fpRisk: readOptionalNumber(normalizedMetadata?.fpRisk),
+    evidenceTier: readOptionalString(normalizedMetadata?.evidenceTier),
+    subtype: readOptionalString(normalizedMetadata?.subtype),
+    actionBand: readOptionalString(normalizedMetadata?.actionBand),
+    reasonCodes: readStringArray(normalizedMetadata?.reasonCodes),
+    featureVector: readNumericRecord(normalizedMetadata?.featureVector),
   };
+}
+
+function readNumericRecord(value: unknown): Record<string, number> {
+  const record = asRecord(value);
+  if (!record) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+    ),
+  );
 }
 
 function deriveCategory(historicalHit: boolean, currentHit: boolean): AuditCategory {
@@ -555,6 +605,38 @@ function deriveCategory(historicalHit: boolean, currentHit: boolean): AuditCateg
     return 'current_only';
   }
   return 'stable_clear';
+}
+
+function derivePolicyCategory(params: {
+  category: AuditCategory;
+  current: CommercialSnapshot;
+}): AuditPolicyCategory {
+  const { category, current } = params;
+  if (category === 'historical_only') {
+    return 'false_negative_candidate';
+  }
+  if (!current.hit) {
+    return 'none';
+  }
+  if ((current.fpRisk ?? 0) >= 70) {
+    return 'false_positive_candidate';
+  }
+  if (current.evidenceStrength === 'CAMPAIGN' || current.matchedSignals.some((item) => item.startsWith('campaign:'))) {
+    const hasDirectDeal =
+      current.matchedSignals.includes('transaction:price') ||
+      current.matchedSignals.includes('contact:phone') ||
+      current.matchedSignals.some((item) => item.startsWith('deal-channel:'));
+    if (!hasDirectDeal) {
+      return 'campaign_only';
+    }
+  }
+  if (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE') {
+    return 'hard_delete';
+  }
+  if (current.reviewRecommended || current.actionBand === 'WARN' || current.actionBand === 'REVIEW_ONLY') {
+    return 'gray_zone';
+  }
+  return 'none';
 }
 
 function mapSubtypeToSegment(subtype: string | null): AuditSegment | null {
@@ -683,6 +765,7 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
     .map((record) =>
       JSON.stringify({
         category: record.category,
+        policyCategory: record.policyCategory,
         segment: record.segment,
         createdAt: record.createdAt.toISOString(),
         webhookEventId: record.webhookEventId,
@@ -691,13 +774,26 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
         chatEntityType: record.chatEntityType,
         messageId: record.messageId,
         senderId: record.senderId,
-        text: record.text,
+        text: record.sanitizedText,
         historical: record.historical,
         current: record.current,
       }),
     )
     .join('\n');
   await writeFile(pathname, `${payload}\n`, 'utf8');
+}
+
+function sanitizeAuditText(value: string): string {
+  return value
+    .replace(/https?:\/\/\S+/giu, '[url]')
+    .replace(
+      /(?:^|[^\d])(?:\+?7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?=$|[^\d])/gu,
+      ' [phone] ',
+    )
+    .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/giu, '[email]')
+    .replace(/@[a-z0-9_]{4,32}/giu, '@[handle]')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 async function main() {
@@ -719,6 +815,7 @@ async function main() {
 
     const skipCounts = new Map<AuditSkipReason, number>();
     const categoryCounts = new Map<AuditCategory, number>();
+    const policyCategoryCounts = new Map<AuditPolicyCategory, number>();
     const segmentCounts = new Map<`${AuditCategory}:${AuditSegment}`, number>();
     const currentSignalCounts = new Map<string, number>();
     const currentSubtypeCounts = new Map<string, number>();
@@ -785,8 +882,11 @@ async function main() {
         currentSignals: current.matchedSignals,
         historicalSignals: historical.matchedSignals,
       });
+      const policyCategory = derivePolicyCategory({ category, current });
+      const sanitizedText = sanitizeAuditText(text);
 
       pushCount(categoryCounts, category);
+      pushCount(policyCategoryCounts, policyCategory);
       pushCount(segmentCounts, `${category}:${segment}`);
       for (const signal of current.matchedSignals) {
         pushCount(currentSignalCounts, signal);
@@ -809,6 +909,7 @@ async function main() {
 
       auditedRecords.push({
         category,
+        policyCategory,
         segment,
         createdAt: row.createdAt,
         webhookEventId: row.webhookEventId,
@@ -818,6 +919,7 @@ async function main() {
         messageId: row.messageId,
         senderId,
         text,
+        sanitizedText,
         historical,
         current,
       });
@@ -832,9 +934,14 @@ async function main() {
     const mismatches = auditedRecords.filter(
       (record) => record.category === 'historical_only' || record.category === 'current_only',
     );
+    const policyRelevant = auditedRecords.filter((record) => record.policyCategory !== 'none');
     const exportable = options.includeStableHits
       ? auditedRecords.filter((record) => record.category !== 'stable_clear')
-      : mismatches;
+      : [
+          ...new Map(
+            [...mismatches, ...policyRelevant].map((record) => [record.webhookEventId, record]),
+          ).values(),
+        ];
 
     console.log('');
     console.log('Summary');
@@ -842,6 +949,7 @@ async function main() {
     console.log(`skipped=${[...skipCounts.values()].reduce((sum, value) => sum + value, 0)}`);
     console.log(`skip_breakdown=${formatCounts(skipCounts) || 'none'}`);
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
+    console.log(`policy_category_breakdown=${formatCounts(policyCategoryCounts) || 'none'}`);
     console.log(
       `historical_only_segments=${
         formatCounts(
@@ -931,6 +1039,7 @@ async function main() {
             `messageId=${record.messageId}`,
             `senderId=${record.senderId ?? 'unknown'}`,
             `segment=${record.segment}`,
+            `policy=${record.policyCategory}`,
           ].join(' '),
         );
         console.log(`  text=${makeExcerpt(record.text)}`);
@@ -938,7 +1047,7 @@ async function main() {
           `  historical score=${record.historical.score ?? 'n/a'} subtype=${record.historical.primarySubtype ?? 'n/a'} review=${record.historical.reviewRecommended ? 'yes' : 'no'} signals=${formatSignals(record.historical.matchedSignals)}`,
         );
         console.log(
-          `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
+          `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} action=${record.current.actionBand ?? 'n/a'} fpRisk=${record.current.fpRisk ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceTier ?? record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
         );
         if (record.current.classifierVersion) {
           console.log(

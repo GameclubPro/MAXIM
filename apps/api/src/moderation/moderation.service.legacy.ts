@@ -122,11 +122,16 @@ import {
 } from './moderation-update-extractors';
 import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+  COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC,
   buildCommercialCampaignFingerprint,
+  buildCommercialCampaignDomainChatsKey,
+  buildCommercialCampaignHandleChatsKey,
   buildCommercialCampaignLinkChatsKey,
   buildCommercialCampaignPhoneChatsKey,
   buildCommercialCampaignSenderChatsKey,
+  buildCommercialCampaignSenderNearTextChatsKey,
   buildCommercialCampaignSenderTextChatsKey,
+  buildCommercialCampaignSenderVelocityChatsKey,
   hasCommercialCampaignEvidence,
   normalizeCommercialCampaignSenderId,
   type CommercialCampaignContext,
@@ -267,10 +272,10 @@ import {
   GLOBAL_SPAMMER_REDIS_TTL_SEC,
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
-  GLOBAL_SPAMMER_WARN_MIN_CHATS,
+  GLOBAL_SPAMMER_REPEAT_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
-  GLOBAL_SPAMMER_WARN_THRESHOLD,
-  GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
+  GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD,
+  GLOBAL_SPAMMER_REPEAT_FANOUT_COUNTER_TTL_SEC,
   GREETING_BURST_WINDOW_SEC,
   GREETING_BURST_LIMIT,
   GREETING_AUTO_DISABLE_SEC,
@@ -1156,7 +1161,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
           chatId,
           userId: senderId,
-          userLabel,
           messageId,
           text,
           deleteSpammersEnabled: settings.deleteSpammersEnabled,
@@ -1509,9 +1513,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const messageAgeMs = Date.now() - new Date(createdAt).getTime();
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+      const commercialActionBand =
+        topViolation.ruleCode === 'COMMERCIAL_AD'
+          ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
+          : null;
+      const shouldDeleteByCommercialPolicy =
+        topViolation.ruleCode !== 'COMMERCIAL_AD' ||
+        commercialActionBand === null ||
+        commercialActionBand === 'DELETE' ||
+        commercialActionBand === 'DELETE_AND_ESCALATE';
+      const shouldDeleteViolationMessage = canDeleteMessage && shouldDeleteByCommercialPolicy;
       let messageDeleted = false;
 
-      if (canDeleteMessage) {
+      if (shouldDeleteViolationMessage) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
         messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
         if (messageDeleted) {
@@ -1536,7 +1550,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
           this.markWebhookHotPathSuccessBoundary(hotPathProfile, 'violation-delete');
         }
-      } else {
+      } else if (!canDeleteMessage && shouldDeleteByCommercialPolicy) {
         await this.maxClient.notifyModerators(
           chatId,
           `Нарушение ${topViolation.ruleCode} от ${senderId}, но сообщение старше 24 часов и не может быть удалено`,
@@ -6672,7 +6686,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async trackAndRegisterGlobalSpammer(params: {
     chatId: string;
     userId: string;
-    userLabel: string;
     messageId: string;
     text: string;
     deleteSpammersEnabled: boolean;
@@ -6689,7 +6702,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const {
       chatId,
       userId,
-      userLabel,
       messageId,
       text,
       deleteSpammersEnabled,
@@ -6747,37 +6759,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         };
       }
 
-      if (uniqueChatsState.size < GLOBAL_SPAMMER_WARN_MIN_CHATS) {
+      if (uniqueChatsState.size < GLOBAL_SPAMMER_REPEAT_FANOUT_MIN_CHATS) {
         return baseResult;
       }
 
-      const warningCount = await this.redisCounter.incrementWithTtl(
-        this.buildGlobalSpammerWarnRedisKey(userId),
-        GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
+      const repeatedFanoutCount = await this.redisCounter.incrementWithTtl(
+        this.buildGlobalSpammerRepeatFanoutRedisKey(userId),
+        GLOBAL_SPAMMER_REPEAT_FANOUT_COUNTER_TTL_SEC,
       );
-      if (deleteSpammersEnabled) {
-        this.runGlobalSpammerSideEffect({ chatId, userId, action: 'send-warning' }, async () =>
-          this.sendGlobalSpammerFanoutWarning({
-            chatId,
-            userLabel,
-            warningCount,
-          }),
-        );
-      }
 
-      if (warningCount >= GLOBAL_SPAMMER_WARN_THRESHOLD) {
+      if (repeatedFanoutCount >= GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD) {
         this.runGlobalSpammerSideEffect(
-          { chatId, userId, action: 'upsert-warning-threshold' },
+          { chatId, userId, action: 'upsert-repeat-fanout-threshold' },
           async () =>
             this.upsertGlobalSpammerEntry({
               userId,
               sourceChatId: chatId,
-              reason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+              reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
               evidence: {
                 uniqueChats: uniqueChatsState.size,
                 windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-                warningCount,
-                warningThreshold: GLOBAL_SPAMMER_WARN_THRESHOLD,
+                repeatedFanoutCount,
+                repeatedFanoutThreshold: GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD,
               },
             }),
         );
@@ -6813,33 +6816,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Global spammer background side effect failed',
       );
     });
-  }
-
-  private async sendGlobalSpammerFanoutWarning(params: {
-    chatId: string;
-    userLabel: string;
-    warningCount: number;
-  }): Promise<void> {
-    const { chatId, userLabel, warningCount } = params;
-    const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
-    const warningText = `${userLabel}, похоже на массовый автопостинг по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
-    try {
-      await this.maxClient.sendMessage(
-        chatId,
-        warningText,
-        { textFormat: 'markdown' },
-        { immediate: true },
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          warningCount,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to send global spammer fanout warning',
-      );
-    }
   }
 
   private async deleteAndKickDetectedGlobalSpammer(params: {
@@ -7096,8 +7072,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `global-spammer:any:v1:${userId}`;
   }
 
-  private buildGlobalSpammerWarnRedisKey(userId: string): string {
-    return `global-spammer:warn:v1:${userId}`;
+  private buildGlobalSpammerRepeatFanoutRedisKey(userId: string): string {
+    return `global-spammer:fanout:v1:${userId}`;
   }
 
   private buildLocalGlobalSpammerChatObservationKey(chatId: string, userId: string): string {
@@ -17052,56 +17028,133 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const fingerprint = buildCommercialCampaignFingerprint(params.text);
 
     try {
-      const [senderDistinctChatCount, sameTextDistinctChatCount, phoneChatCounts, linkChatCounts] =
-        await Promise.all([
-          redisCounter
-            .addToSetWithTtl(
-              buildCommercialCampaignSenderChatsKey(normalizedSenderId),
-              params.chatId,
-              COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-            )
-            .then((result) => result.size),
-          fingerprint.textHash
-            ? redisCounter
-                .addToSetWithTtl(
-                  buildCommercialCampaignSenderTextChatsKey(
-                    normalizedSenderId,
-                    fingerprint.textHash,
-                  ),
-                  params.chatId,
-                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-                )
-                .then((result) => result.size)
-            : Promise.resolve(0),
-          Promise.all(
-            fingerprint.phones.map((phone) =>
-              redisCounter
-                .addToSetWithTtl(
-                  buildCommercialCampaignPhoneChatsKey(phone),
-                  params.chatId,
-                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-                )
-                .then((result) => result.size),
+      const [
+        senderDistinctChatCount,
+        senderDistinctChatCount5m,
+        senderDistinctChatCount30m,
+        senderDistinctChatCount120m,
+        sameTextDistinctChatCount,
+        nearTextDistinctChatCount,
+        phoneChatCounts,
+        linkChatCounts,
+        domainChatCounts,
+        handleChatCounts,
+      ] = await Promise.all([
+        redisCounter
+          .addToSetWithTtl(
+            buildCommercialCampaignSenderChatsKey(normalizedSenderId),
+            params.chatId,
+            COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+          )
+          .then((result) => result.size),
+        redisCounter
+          .addToSetWithTtl(
+            buildCommercialCampaignSenderVelocityChatsKey(
+              normalizedSenderId,
+              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
             ),
-          ),
-          Promise.all(
-            fingerprint.links.map((link) =>
-              redisCounter
-                .addToSetWithTtl(
-                  buildCommercialCampaignLinkChatsKey(link),
-                  params.chatId,
-                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
-                )
-                .then((result) => result.size),
+            params.chatId,
+            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[0],
+          )
+          .then((result) => result.size),
+        redisCounter
+          .addToSetWithTtl(
+            buildCommercialCampaignSenderVelocityChatsKey(
+              normalizedSenderId,
+              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
             ),
+            params.chatId,
+            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[1],
+          )
+          .then((result) => result.size),
+        redisCounter
+          .addToSetWithTtl(
+            buildCommercialCampaignSenderVelocityChatsKey(
+              normalizedSenderId,
+              COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
+            ),
+            params.chatId,
+            COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC[2],
+          )
+          .then((result) => result.size),
+        fingerprint.textHash
+          ? redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignSenderTextChatsKey(normalizedSenderId, fingerprint.textHash),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size)
+          : Promise.resolve(0),
+        fingerprint.nearTextHash
+          ? redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignSenderNearTextChatsKey(
+                  normalizedSenderId,
+                  fingerprint.nearTextHash,
+                ),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size)
+          : Promise.resolve(0),
+        Promise.all(
+          fingerprint.phones.map((phone) =>
+            redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignPhoneChatsKey(phone),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size),
           ),
-        ]);
+        ),
+        Promise.all(
+          fingerprint.links.map((link) =>
+            redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignLinkChatsKey(link),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size),
+          ),
+        ),
+        Promise.all(
+          fingerprint.domains.map((domain) =>
+            redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignDomainChatsKey(domain),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size),
+          ),
+        ),
+        Promise.all(
+          fingerprint.handles.map((handle) =>
+            redisCounter
+              .addToSetWithTtl(
+                buildCommercialCampaignHandleChatsKey(handle),
+                params.chatId,
+                COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+              )
+              .then((result) => result.size),
+          ),
+        ),
+      ]);
 
       const context: CommercialCampaignContext = {
         senderDistinctChatCount,
         sameTextDistinctChatCount,
         repeatedPhoneDistinctChatCount: Math.max(0, ...phoneChatCounts),
         repeatedLinkDistinctChatCount: Math.max(0, ...linkChatCounts),
+        nearTextDistinctChatCount,
+        repeatedDomainDistinctChatCount: Math.max(0, ...domainChatCounts),
+        repeatedHandleDistinctChatCount: Math.max(0, ...handleChatCounts),
+        senderDistinctChatCount5m,
+        senderDistinctChatCount30m,
+        senderDistinctChatCount120m,
       };
 
       return hasCommercialCampaignEvidence(context) ? context : null;
