@@ -18,8 +18,7 @@ export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput
     return 'ALLOW';
   }
 
-  const campaignOnly =
-    input.hasCampaignContext && !input.hasDirectDealEvidence && !input.hasHighRiskEvidence;
+  const campaignOnly = input.hasCampaignContext && !input.hasDirectDealEvidence;
   if (campaignOnly) {
     return input.reviewRecommended ? 'REVIEW_ONLY' : 'WARN';
   }

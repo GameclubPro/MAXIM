@@ -256,6 +256,35 @@ describe('commercial deterministic benchmark', () => {
     expect(missingRequiredAnchors).toEqual([]);
   });
 
+  it('keeps campaign-only commercial repeats out of delete actions', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'В наличии свежая партия, доставка по городу. Подробности и заказ в личные сообщения.',
+      {},
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 5,
+          sameTextDistinctChatCount: 3,
+          repeatedPhoneDistinctChatCount: 0,
+          repeatedLinkDistinctChatCount: 0,
+          nearTextDistinctChatCount: 3,
+          repeatedDomainDistinctChatCount: 0,
+          repeatedHandleDistinctChatCount: 0,
+          senderDistinctChatCount5m: 4,
+          senderDistinctChatCount30m: 5,
+          senderDistinctChatCount120m: 5,
+        },
+      },
+    );
+
+    expect(violation).toBeDefined();
+    const actionBand = String(readMetadata(violation).actionBand ?? 'UNKNOWN');
+    expect(actionBand).not.toBe('DELETE');
+    expect(actionBand).not.toBe('DELETE_AND_ESCALATE');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(actionBand);
+  });
+
   it('keeps hot-path commercial detection within the deterministic perf budget', async () => {
     const service = createRuleEngine();
     const samples = [

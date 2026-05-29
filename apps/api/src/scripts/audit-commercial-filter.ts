@@ -738,7 +738,7 @@ function deriveCorpusLabel(params: {
       labelSource: 'commercial-audit-policy-v1',
       expectedAction: current.actionBand ?? 'WARN',
       expectedSubtype: currentSubtype,
-      isHardNegative: hardNegative,
+      isHardNegative: false,
     };
   }
 
@@ -937,6 +937,10 @@ function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
 function sanitizeAuditText(value: string): string {
   return value
     .replace(/https?:\/\/\S+/giu, '[url]')
+    .replace(
+      /\b(?:t\.me|max\.ru|vk\.com|wa\.me|clck\.ru|bit\.ly|goo\.su|tinyurl\.com)\/\S+/giu,
+      '[url]',
+    )
     .replace(
       /(?:^|[^\d])(?:\+?7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?=$|[^\d])/gu,
       ' [phone] ',

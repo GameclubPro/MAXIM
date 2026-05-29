@@ -24,10 +24,17 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     primarySubtype: detection.primarySubtype,
   });
   const hasHighRiskEvidence = matchedSignals.some((signal) => signal.startsWith('risk:'));
+  const hasPriceEvidence =
+    matchedSignals.includes('transaction:price') || matchedSignals.includes('combo:contact+price');
+  const hasStrongContactEvidence =
+    matchedSignals.includes('contact:phone') ||
+    matchedSignals.includes('contact:masked-phone') ||
+    matchedSignals.includes('contact:handle');
+  const hasLinkEvidence = matchedSignals.some((signal) => signal.startsWith('deal-channel:'));
   const hasDirectDealEvidence =
-    (featureVector.priceStructure > 0 && featureVector.contactEvidence > 0) ||
-    (featureVector.dealEvidence > 0 && featureVector.contactEvidence > 0) ||
-    hasHighRiskEvidence;
+    (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
+    (hasLinkEvidence && hasStrongContactEvidence) ||
+    (hasHighRiskEvidence && (hasPriceEvidence || hasStrongContactEvidence || hasLinkEvidence));
   const evidenceTier = resolveEvidenceTier({
     legacyStrength: detection.evidenceStrength,
     hasHighRiskEvidence,
