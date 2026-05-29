@@ -6,7 +6,13 @@ export {
   findCommercialPatternRules,
 } from './commercial-patterns';
 export {
+  CommercialSecondStageScorer,
+  canCommercialActionDelete,
+  hasStrongCommercialCampaignEvidence,
+} from './commercial-scorer';
+export {
   COMMERCIAL_SUBTYPE_POLICIES,
+  classifyCommercialDetection,
   getCommercialSubtypePolicy,
   isCommercialAmbiguousAction,
   isCommercialDeleteAction,
@@ -14,12 +20,15 @@ export {
 } from './commercial-subtypes';
 export type {
   CommercialActionBand,
+  CommercialClassification,
   CommercialEvidenceTier,
   CommercialExplainableDecision,
   CommercialFeatureVector,
+  CommercialLegacyEvidenceStrength,
   CommercialPatternEvidence,
   CommercialPatternRule,
   CommercialRequiredAnchor,
+  CommercialSignalState,
   CommercialSubtypePolicy,
   CommercialTaxonomyClass,
 } from './commercial.types';

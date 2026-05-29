@@ -3,6 +3,34 @@ import type { CommercialPatternRule } from './commercial.types';
 
 export const COMMERCIAL_PATTERN_POLICY_VERSION = COMMERCIAL_ENGINE_CONFIG.patternPolicyVersion;
 
+export const ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS = new Set([
+  'risk:betting-gambling',
+  'risk:casino-slot-promo',
+  'risk:crypto-investment',
+  'risk:loan-leadgen',
+  'risk:debt-relief-service',
+  'risk:document-service',
+  'risk:paid-raffle',
+  'risk:paid-raffle-transfer',
+  'risk:referral-bonus-link',
+]);
+
+export const ADS_PRICE_CAPTURE_GLOBAL_PATTERN = /\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
+export const ADS_MULTI_SKU_PRICE_LINE_PATTERN =
+  /(?:^|[,.;\n])\s*(?:[^\s][\p{L}\p{N}\s()/"'#+-]{0,36})?(?:на\s+\d{1,2}(?:[.,]\d)?)?\s*[-:–]\s*\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
+export const ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:на\s+\d{1,2}(?:[.,]\d)?|размер(?:ы)?\s*\d{1,2}(?:\s*[/,-]\s*\d{1,2})*|\d{1,2}\s*дюйм(?:а|ов)?|цвет(?:а)?\s+на\s+выбор)(?=$|[^\p{L}\p{N}_-])/giu;
+export const ADS_GOODS_FRESH_STOCK_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:в\s+продаже|нов(?:ый|ые|ая|ое)|поступлени[\p{L}\p{N}_-]*|остатк[\p{L}\p{N}_-]*|по\s+наличию)(?=$|[^\p{L}\p{N}_-])/iu;
+export const ADS_PERSONAL_RESALE_STRONG_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:б\/у|бу|в\s+отличном\s+состоянии|в\s+хорошем\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|после\s+одного\s+(?:ребенка|ребёнка|сезона)|носил[аи]?|одевал[аи]?|надевал[аи]?|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu;
+export const ADS_RETAIL_ORDER_FLOW_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:под\s+заказ|по\s+заказу|оформить\s+заказ|оформляйте\s+заказ|оптом\s+и\s+в\s+розницу|доставка\s+по\s+(?:городу|региону|россии)|со\s+склада)(?=$|[^\p{L}\p{N}_-])/iu;
+export const ADS_RETAIL_INVENTORY_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:каталог|ассортимент|в\s+наличии)(?=$|[^\p{L}\p{N}_-])/iu;
+export const ADS_PERSONAL_RESALE_ONCE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu;
+
 export const COMMERCIAL_PATTERN_RULES: readonly CommercialPatternRule[] = [
   {
     id: 'services-specialist-offer',
