@@ -110,6 +110,15 @@ export class CommercialAdDetector {
       !state.hasSearchRequestContext &&
       !state.hasPrivateSaleContext &&
       !state.hasPrivateGoodsItemContext;
+    const hasStructuredPropertyContactEvidence =
+      (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
+      state.hasContact &&
+      !state.hasSearchRequestContext;
+    const hasStructuredRetailTransactionalEvidence =
+      state.hasGoodsRetailContext &&
+      (state.hasPhoneContact || state.hasDealChannel || state.hasPrice) &&
+      !state.hasSearchRequestContext &&
+      !state.hasPrivateGoodsItemContext;
     const hasStrongCommercialEvidence =
       state.hasPrice ||
       state.hasDealChannel ||
@@ -117,6 +126,8 @@ export class CommercialAdDetector {
       hasStructuredVacancyContactEvidence ||
       hasStructuredBuyoutPhoneEvidence ||
       hasStructuredServicePhoneEvidence ||
+      hasStructuredPropertyContactEvidence ||
+      hasStructuredRetailTransactionalEvidence ||
       hasCampaignStrongEvidence;
     const hasStructuredCommercialContext =
       state.hasPromoContext ||

@@ -1031,6 +1031,66 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'rental rooms property sale from three hour audit',
+    text: `ПРОДАМ Голубицкая, два жилых дома на участке. На территории 4 номера для сдачи, гараж, летние санузлы. Один собственник, документы готовы. Звоните, торг уместен +7 900 000 00 68.`,
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    expectedSignals: [
+      'property-commercial:rental-room-business',
+      'contact:phone',
+      'combo:property-commercial+deal',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 55,
+      commercialAdsDeleteThreshold: 76,
+    },
+  },
+  {
+    label: 'broker basement studio commercial use from three hour audit',
+    text: `Большая студия 31 м2 на Комарова. Цоколь, по документам жилое, отдельный вход, можно использовать как коммерцию. Под ремонт, на ключах. Цена 2 100 000. Денис +7 900 000 00 69.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: [
+      'property-agent:на-ключах',
+      'contact:phone',
+      'combo:property-agent+deal',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'plant nursery shipping stock from three hour audit',
+    text: `Предлагаю двухлетние саженцы черной, красной, белой смородины и крыжовника, закрытая корневая, сорта разные. Самовывоз, отправка почтой, Озон, Яндекс. Виктор +7 900 000 00 70.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:plant-nursery-stock',
+      'goods-retail:plant-nursery-shipping',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'mixed-script clearance stock retail from three hour audit',
+    text: `Раcпрoдажa остатки товаpов всё по низкoй цeнe, цена от 30 pуб до 190 pуб. Всё нoвoе, можно оптом, можно по рoзницу, подарочные боксы. Пишите, отвечу на вопросы.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:clearance-stock-retail',
+      'transaction:keywords',
+      'combo:goods-retail+deal',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 52,
+      commercialAdsDeleteThreshold: 72,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [

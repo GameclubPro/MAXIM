@@ -925,6 +925,12 @@ export function collectCommercialSignals(params: {
     if (!hasMarker(marker)) {
       continue;
     }
+    if (hasPropertyAgentContext || hasCommercialPropertyContext) {
+      continue;
+    }
+    if (hasGoodsRetailContext && marker === 'самовывоз') {
+      continue;
+    }
 
     addNegative(`private:${marker}`, weights.privateContext, true);
     hasPrivateSaleContext = true;
@@ -1098,6 +1104,25 @@ export function collectCommercialSignals(params: {
 
   if (hasBusinessContext && (hasPrice || hasContact || hasDealChannel || hasTransactional)) {
     addPositive('combo:business+deal', weights.comboBusinessDeal);
+  }
+
+  if (hasPropertyAgentContext && (hasContact || hasDealChannel || hasPrice || hasTransactional)) {
+    addPositive('combo:property-agent+deal', weights.comboBusinessDeal);
+  }
+
+  if (
+    hasCommercialPropertyContext &&
+    (hasContact || hasDealChannel || hasPrice || hasTransactional)
+  ) {
+    addPositive('combo:property-commercial+deal', weights.comboBusinessDeal);
+  }
+
+  if (
+    hasGoodsRetailContext &&
+    !hasPrivateGoodsItemContext &&
+    (hasContact || hasDealChannel || hasPrice)
+  ) {
+    addPositive('combo:goods-retail+deal', weights.comboPromoDeal);
   }
 
   if (hasRecruitmentContext && (hasContact || hasDealChannel || hasTransactional)) {
