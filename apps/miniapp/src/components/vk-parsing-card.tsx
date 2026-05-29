@@ -1,4 +1,3 @@
-import { CheckCircle, Clock, Pause, WarningCircle } from 'iconoir-react';
 import type { VkParsingSettings, VkParsingSource } from '@maxim/contracts';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -7,7 +6,11 @@ import { Pagination } from './vk-parsing/pagination';
 import { PostList } from './vk-parsing/post-list';
 import { QueueTimeline } from './vk-parsing/queue-timeline';
 import { SafetyPanel } from './vk-parsing/safety-panel';
-import { SchedulerPanel } from './vk-parsing/scheduler-panel';
+import {
+  SchedulerPanel,
+  type AutopostStatusModel,
+  type AutopostStatusTone,
+} from './vk-parsing/scheduler-panel';
 import { SourceDashboard } from './vk-parsing/source-dashboard';
 import { StatusFilterBar } from './vk-parsing/status-filter-bar';
 import { normalizeApiError } from './vk-parsing/format';
@@ -21,21 +24,6 @@ type VkParsingCardProps = {
   chatId: string;
   active: boolean;
   entityType?: VkParsingEntityType;
-};
-
-type AutopostStatusTone = 'success' | 'warning' | 'danger' | 'muted';
-
-type AutopostStatusModel = {
-  title: string;
-  reason: string;
-  tone: AutopostStatusTone;
-  readiness: Array<{
-    label: string;
-    value: string;
-    ready: boolean;
-    neutral?: boolean;
-    targetId: string;
-  }>;
 };
 
 const VK_AUTOPUBLISH_TARGETS = {
@@ -161,7 +149,7 @@ function buildAutopostStatus(
 
   if (isPaused) {
     title = 'Всё на паузе';
-    reason = 'Пауза всего';
+    reason = 'Стоп включён';
     tone = 'danger';
   } else if (!settings.autoPublishEnabled) {
     title = 'Ручной режим';
@@ -223,61 +211,6 @@ function buildAutopostStatus(
   };
 }
 
-function renderAutopostStatusIcon(tone: AutopostStatusTone) {
-  if (tone === 'success') {
-    return <CheckCircle aria-hidden />;
-  }
-  if (tone === 'danger') {
-    return <Pause aria-hidden />;
-  }
-  if (tone === 'warning') {
-    return <WarningCircle aria-hidden />;
-  }
-  return <Clock aria-hidden />;
-}
-
-function AutopostStatusPanel({
-  model,
-  queueCount,
-  publishedCount,
-  onSelectTarget,
-}: {
-  model: AutopostStatusModel;
-  queueCount: number;
-  publishedCount: number;
-  onSelectTarget: (targetId: string) => void;
-}) {
-  return (
-    <section
-      className={`vk-autopost-status vk-autopost-status--${model.tone}`}
-      aria-label="Статус автопостинга"
-    >
-      <div className="vk-autopost-status__main">
-        <span className="vk-autopost-status__icon">{renderAutopostStatusIcon(model.tone)}</span>
-        <span>
-          <strong>{model.title}</strong>
-          <small>
-            {model.reason} · Очередь {queueCount} · Опубл. {publishedCount}
-          </small>
-        </span>
-      </div>
-      <div className="vk-autopost-readiness" aria-label="Готовность автопостинга">
-        {model.readiness.map((item) => (
-          <button
-            type="button"
-            key={item.label}
-            className={item.neutral ? 'is-neutral' : item.ready ? 'is-ready' : 'is-blocked'}
-            onClick={() => onSelectTarget(item.targetId)}
-          >
-            <b>{item.label}</b>
-            <small>{item.value}</small>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
@@ -300,21 +233,16 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
 
   return (
     <div className="vk-parsing-card">
-      {autopostStatus && feed ? (
-        <AutopostStatusPanel
-          model={autopostStatus}
-          queueCount={feed.queue.length}
-          publishedCount={publishedCount}
-          onSelectTarget={focusAutopostTarget}
-        />
-      ) : null}
-
-      {feed ? (
+      {feed && autopostStatus ? (
         <SchedulerPanel
           settings={settings}
           sources={sources}
+          status={autopostStatus}
+          queueCount={feed.queue.length}
+          publishedCount={publishedCount}
           isSaving={state.isSavingSettings}
           isSavingSource={state.isSavingSource}
+          onSelectStatusTarget={focusAutopostTarget}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
           onApplyPreset={state.applyPresetToAllSources}

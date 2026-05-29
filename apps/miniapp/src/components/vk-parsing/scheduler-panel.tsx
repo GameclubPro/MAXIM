@@ -1,3 +1,4 @@
+import { CheckCircle, Clock, Pause, WarningCircle } from 'iconoir-react';
 import type {
   BulkUpdateVkParsingSourcesRequest,
   UpdateVkParsingSettingsRequest,
@@ -10,11 +11,30 @@ import { cn } from '../../lib/cn';
 type SchedulerPanelProps = {
   settings: VkParsingSettings;
   sources: VkParsingSource[];
+  status: AutopostStatusModel;
+  queueCount: number;
+  publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
+  onSelectStatusTarget: (targetId: string) => void;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => void;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
+};
+
+export type AutopostStatusTone = 'success' | 'warning' | 'danger' | 'muted';
+
+export type AutopostStatusModel = {
+  title: string;
+  reason: string;
+  tone: AutopostStatusTone;
+  readiness: Array<{
+    label: string;
+    value: string;
+    ready: boolean;
+    neutral?: boolean;
+    targetId: string;
+  }>;
 };
 
 const SOURCE_MODE_OPTIONS: Array<{
@@ -69,10 +89,7 @@ function SwitchRow({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label
-      className={danger ? 'vk-source-toggle vk-source-toggle--danger' : 'vk-source-toggle'}
-      title={title}
-    >
+    <label className={cn('vk-setup-switch', danger && 'vk-setup-switch--danger')} title={title}>
       <span>{label}</span>
       <span className="settings-native-switch">
         <input
@@ -105,11 +122,28 @@ function resolveFrequencyPreset(minutes: number | null): FrequencyOption {
   return FREQUENCY_OPTIONS.find((item) => item.minutes === minutes)?.value ?? 'CUSTOM';
 }
 
+function renderAutopostStatusIcon(tone: AutopostStatusTone) {
+  if (tone === 'success') {
+    return <CheckCircle aria-hidden />;
+  }
+  if (tone === 'danger') {
+    return <Pause aria-hidden />;
+  }
+  if (tone === 'warning') {
+    return <WarningCircle aria-hidden />;
+  }
+  return <Clock aria-hidden />;
+}
+
 export function SchedulerPanel({
   settings,
   sources,
+  status,
+  queueCount,
+  publishedCount,
   isSaving,
   isSavingSource,
+  onSelectStatusTarget,
   onUpdateSetting,
   onUpdateSources,
   onApplyPreset,
@@ -123,41 +157,74 @@ export function SchedulerPanel({
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
 
   return (
-    <section className="vk-scheduler-panel vk-quick-setup" aria-label="Быстрая настройка">
-      <div className="vk-quick-setup__head" aria-label="Включение автопостинга">
-        <SwitchRow
-          id="vk-parsing-automation-switch"
-          label="Автопостинг"
-          checked={settings.autoPublishEnabled}
-          disabled={isSaving || settings.autoPublishKillSwitchEnabled}
-          title="Общее включение автоматической публикации"
-          onChange={(checked) => onUpdateSetting({ autoPublishEnabled: checked })}
-        />
-        <SwitchRow
-          label="Пауза всего"
-          checked={settings.autoPublishKillSwitchEnabled}
-          disabled={isSaving}
-          danger
-          title="Аварийная остановка автопубликации"
-          onChange={(checked) => onUpdateSetting({ autoPublishKillSwitchEnabled: checked })}
-        />
+    <section
+      className={`vk-scheduler-panel vk-setup-center vk-setup-center--${status.tone}`}
+      aria-label="Автопостинг"
+    >
+      <div className="vk-setup-center__top">
+        <div className="vk-setup-center__status" aria-label="Статус автопостинга">
+          <span className="vk-setup-center__status-icon">
+            {renderAutopostStatusIcon(status.tone)}
+          </span>
+          <span>
+            <strong>{status.title}</strong>
+            <small>
+              {status.reason} · Оч. {queueCount} · Опубл. {publishedCount}
+            </small>
+          </span>
+        </div>
+        <div className="vk-setup-center__switches" aria-label="Включение автопостинга">
+          <SwitchRow
+            id="vk-parsing-automation-switch"
+            label="Автопостинг"
+            checked={settings.autoPublishEnabled}
+            disabled={isSaving || settings.autoPublishKillSwitchEnabled}
+            title="Общее включение автоматической публикации"
+            onChange={(checked) => onUpdateSetting({ autoPublishEnabled: checked })}
+          />
+          <SwitchRow
+            label="Стоп"
+            checked={settings.autoPublishKillSwitchEnabled}
+            disabled={isSaving}
+            danger
+            title="Остановить автопубликацию"
+            onChange={(checked) => onUpdateSetting({ autoPublishKillSwitchEnabled: checked })}
+          />
+        </div>
       </div>
 
-      <div className="vk-quick-preset-row" aria-label="Пресеты автопостинга">
-        {QUICK_PRESETS.map((preset) => (
+      <div className="vk-autopost-checklist" aria-label="Готовность автопостинга">
+        {status.readiness.map((item) => (
           <button
-            key={preset.value}
             type="button"
-            disabled={presetDisabled}
-            title={preset.title}
-            onClick={() => {
-              onUpdateSetting({ autoPublishEnabled: true, autoPublishKillSwitchEnabled: false });
-              onApplyPreset(preset.value);
-            }}
+            key={item.label}
+            className={cn(item.neutral ? 'is-neutral' : item.ready ? 'is-ready' : 'is-blocked')}
+            onClick={() => onSelectStatusTarget(item.targetId)}
           >
-            {preset.label}
+            <b>{item.label}</b>
+            <small>{item.value}</small>
           </button>
         ))}
+      </div>
+
+      <div className="vk-setup-center__presets">
+        <span>Пресет</span>
+        <div className="vk-quick-preset-row" aria-label="Пресеты автопостинга">
+          {QUICK_PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              disabled={presetDisabled}
+              title={preset.title}
+              onClick={() => {
+                onUpdateSetting({ autoPublishEnabled: true, autoPublishKillSwitchEnabled: false });
+                onApplyPreset(preset.value);
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div id="vk-parsing-publish-mode" className="vk-quick-setup__row">
@@ -217,29 +284,32 @@ export function SchedulerPanel({
         ) : null}
       </div>
 
-      <div id="vk-parsing-work-time" className="vk-quick-time">
-        <label>
-          <span>С</span>
-          <input
-            type="time"
-            value={settings.workHoursStart}
-            disabled={isSaving}
-            onChange={(event) => onUpdateSetting({ workHoursStart: event.target.value })}
-          />
-        </label>
-        <label>
-          <span>До</span>
-          <input
-            type="time"
-            value={settings.workHoursEnd}
-            disabled={isSaving}
-            onChange={(event) => onUpdateSetting({ workHoursEnd: event.target.value })}
-          />
-        </label>
+      <div id="vk-parsing-work-time" className="vk-quick-setup__row">
+        <span>Время публикаций</span>
+        <div className="vk-quick-time">
+          <label>
+            <span>С</span>
+            <input
+              type="time"
+              value={settings.workHoursStart}
+              disabled={isSaving}
+              onChange={(event) => onUpdateSetting({ workHoursStart: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>До</span>
+            <input
+              type="time"
+              value={settings.workHoursEnd}
+              disabled={isSaving}
+              onChange={(event) => onUpdateSetting({ workHoursEnd: event.target.value })}
+            />
+          </label>
+        </div>
       </div>
 
       <details className="vk-advanced-fold">
-        <summary>Дополнительно</summary>
+        <summary>Ещё</summary>
         <div className="vk-scheduler-toggles">
           <SwitchRow
             label="Убирать ссылки"
