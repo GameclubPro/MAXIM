@@ -826,6 +826,11 @@ const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:(?:списани[\p{L}\p{N}_-]*\s+долг[\p{L}\p{N}_-]*|банкротств[\p{L}\p{N}_-]*|долг[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})спиш[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,160})(?:консультац[\p{L}\p{N}_-]*|анкета|заявк[\p{L}\p{N}_-]*|тел\.?|whatsapp|telegram|ватсап|сохранени[\p{L}\p{N}_-]*\s+(?:жиль[\p{L}\p{N}_-]*|автомобил[\p{L}\p{N}_-]*|пенси[\p{L}\p{N}_-]*))|(?:юрист[\p{L}\p{N}_-]*|помощ[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,80})(?:банкротств[\p{L}\p{N}_-]*|списани[\p{L}\p{N}_-]*\s+долг[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
+    label: 'structured-job-vacancy',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:свободн[\p{L}\p{N}_-]*\s+рабоч[\p{L}\p{N}_-]*\s+мест[\p{L}\p{N}_-]*|ищем\s+сотрудник[\p{L}\p{N}_-]*|нужн[\p{L}\p{N}_-]*\s+сотрудник[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,220})(?:оформлени[\p{L}\p{N}_-]*\s+по\s+договор[\p{L}\p{N}_-]*|пятидневн[\p{L}\p{N}_-]*\s+рабоч[\p{L}\p{N}_-]*\s+недел[\p{L}\p{N}_-]*|график[\p{L}\p{N}_-]*|зарплат[\p{L}\p{N}_-]*|премиальн[\p{L}\p{N}_-]*|для\s+отклик[\p{L}\p{N}_-]*|тел\.?|звонк[\p{L}\p{N}_-]*)|(?:оформлени[\p{L}\p{N}_-]*\s+по\s+договор[\p{L}\p{N}_-]*|пятидневн[\p{L}\p{N}_-]*\s+рабоч[\p{L}\p{N}_-]*\s+недел[\p{L}\p{N}_-]*|для\s+отклик[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,220})(?:свободн[\p{L}\p{N}_-]*\s+рабоч[\p{L}\p{N}_-]*\s+мест[\p{L}\p{N}_-]*|ищем\s+сотрудник[\p{L}\p{N}_-]*|нужн[\p{L}\p{N}_-]*\s+сотрудник[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
     label: 'marketplace-seller',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:(?:маркетплейс[\p{L}\p{N}_-]*|wildberries|wb|вб|вайлдберриз|озон|ozon|яндекс\s*маркет|сбермегамаркет|али|aliexpress|авито)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,120})(?:выкуп[\p{L}\p{N}_-]*|отзыв[\p{L}\p{N}_-]*|карточк[\p{L}\p{N}_-]*|селлер[\p{L}\p{N}_-]*|поставщик[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*|артикул[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*|скидк[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
@@ -916,6 +921,7 @@ const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map([
   ['referral-offer', 12],
   ['paid-review-task', 20],
   ['debt-relief-service', 18],
+  ['structured-job-vacancy', 20],
   ['casino-slot-promo', 22],
   ['paid-esoteric-service', 20],
   ['app-store-directory-promo', 18],
@@ -2771,10 +2777,13 @@ export class RuleEngineService {
         (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
           (state.hasContact || state.hasDealChannel || state.hasTransactional))),
     );
+    const hasStructuredVacancyContactEvidence =
+      state.hasContact && state.matchedSignals.includes('risk:structured-job-vacancy');
     const hasStrongCommercialEvidence =
       state.hasPrice ||
       state.hasDealChannel ||
       (state.hasContact && state.hasTransactional) ||
+      hasStructuredVacancyContactEvidence ||
       hasCampaignStrongEvidence;
     const hasStructuredCommercialContext =
       state.hasPromoContext ||

@@ -683,19 +683,20 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
-    label: 'logistics office recruitment free workplace from six hour clear sweep',
-    text: `В логистическом филиале свободное рабочее место. Ищем сотрудника на долгосрочное сотрудничество. Оформление по договору, 56 000 плюс премиальная часть, пятидневная рабочая неделя. Для отклика телефон +7 900 000 00 45.`,
+    label: 'logistics office recruitment free workplace from six hour historical miss',
+    text: `📋 В логистическом филиале СВОБОДНО РАБОЧЕЕ МЕСТО ⚠️Ищем сотрудника на долгосрочное сотрудничество! ✅ Оформление по договору ✅ 56 000 + премиальная часть ✅ Пятидневная рабочая неделя с 8:30 до 17:00 (есть возможность совмещения) Ваши задачи: 👥 Встречать и регистрировать гостей; 👤 Работать с документами (сканирование, копирование); 👤 Периодически отвечать на звонки; Что мы ценим: ✅ Уверенное владение ПК ✅ Опыт ведения деловой документации; ✅ Коммуникабельность и вежливость; ✅ Аккуратность и пунктуальность; Просьба внимательно ознакомится с работой перед откликом 📍 г. Иркутск, Центр, Октябрьский район 📞 Для отклика: 89990000022 💬 MAX: 89930000014`,
     expectedSubtype: 'RECRUITMENT',
     reviewRecommended: false,
     expectedSignals: [
+      'risk:structured-job-vacancy',
       'recruitment:сотрудничеств',
       'recruitment:отклик',
       'contact:phone',
     ],
     overrides: {
-      commercialAdsSensitivity: 'STRICT',
-      commercialAdsWarnThreshold: 38,
-      commercialAdsDeleteThreshold: 55,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
     },
   },
   {
@@ -1016,6 +1017,24 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
       commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private sofa sale with delivery from six hour historical false positive guard',
+    text: `Продам диван 🛋️ 10.000₽, ДОСТАВКА 🚚 Всё вопросы по телефону ⬇ +79000000055 ТОЛЬКО ЗВОНИТЬ ПО ТЕЛЕФОНУ❗`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 42,
+      commercialAdsDeleteThreshold: 60,
+    },
+  },
+  {
+    label: 'private swim mattress sale with discount from six hour historical false positive guard',
+    text: `Продам матрасы для плавания. Хвост русалки 194*101 и аудио-кассета 174*117. Новые, в упаковке. Цена 2000 руб каждый. При покупке обоих скидка 500 руб Михайловск, Гармония 89000000056`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 53,
+      commercialAdsDeleteThreshold: 73,
     },
   },
 ];
