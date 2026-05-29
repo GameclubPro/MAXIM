@@ -337,6 +337,119 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'tracked max invite pair from last six hour audit',
+    text: `https://max.ru/join/example-audience-link https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8PkKUFrFQzWAxDtP-JVoTo6VPQDN2Rt7SGDf0beLbl-E`,
+    expectedSubtype: 'CHANNEL_PLACEMENT',
+    reviewRecommended: false,
+    expectedSignals: ['channel-placement:mass-invite-link', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'same day auto buyout from last six hour audit',
+    text: `Куплю автомобиль при срочной продаже. На ходу, не на ходу, с документами, без документов, с проблемными документами. Приезжаю и забираю сам в любой район. Звоните и пишите в любое время. Телефон +7 900 000 00 23.`,
+    expectedSubtype: 'BUYOUT',
+    reviewRecommended: false,
+    expectedSignals: ['buyout:auto-same-day-buyout', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'kitchen worker vacancy with adjective role from last six hour audit',
+    text: `Срочно требуется кухонный работник, объем небольшой, с 8 до 14. Просьба звонить, работу в ленте не просматриваю. Телефон +7 900 000 00 24.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:требуется', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'driver license document service from last six hour audit',
+    text: `Оформление водительских прав без экзаменов и очередей. Все категории: A, B, C, D. Без походов в ГИБДД и автошколу. Документы вносятся в официальную базу, готовность 14 дней. Пишите прямо сейчас: https://max.ru/u/example-driver-docs`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'risk:document-service',
+      'service-specialty:document-service',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'construction contractor repeated across chats in last six hour audit',
+    text: `Возьмем подряд на строительство газобетонного дома. Участок расположен рядом с новой школой. Цена обсуждается. Поможем с первоначальным взносом, юридическое сопровождение включено. Звоните +7 900 000 00 25.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:возьмем-подряд',
+      'service-specialty:construction-contractor',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'regional cargo delivery service from last six hour audit',
+    text: `Доставка по Чите и краю. Переезды, доставка сборных грузов, посылок и стройматериалов, как попутно, так и отдельной машиной. До 30 кубов, до 5 тонн. Сергей +7 900 000 00 26.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['promo:доставк', 'service-specialty:logistics-delivery', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'bulk materials delivery from last six hour audit',
+    text: `Навоз, перегной, почвогрунт, чернозем, щебень, отсев, песок речной, песок карьерный, ПГС, дрова колотые, пиломатериал до 4 м. Доставка до 4 тонн, оплата наличными. Звонить +7 900 000 00 27.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:bulk-materials', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'tattoo master service from last six hour audit',
+    text: `Тату-мастер Андрей. Индивидуальные эскизы, безопасная работа, профессиональный подход. Для записи отправьте фото желаемого места и размера или опишите идею. Контакты: личные сообщения в MAX https://max.ru/u/example-tattoo-master`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:тату', 'contact:для записи', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'wholesale produce lot from last six hour audit',
+    text: `Без посредников, от собственника. Капуста белокочанная, сетевое качество, калибр 1-2 кг. Нал, безнал, объем. Цена 16,50 р. Телефон +7 900 000 00 28.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:wholesale-produce', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -433,6 +546,33 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'short low quantity plant lamp listing from production audit',
     text: `Фитолампа для комнатных растений, в наличии 2 шт, по 500 р каждая. +7 900 000 00 22`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'ride share driver seat from last six hour audit',
+    text: `Водитель 29.05.26 ст. АСКИЗ-АБАКАН и обратно, с места до места, выезд со станции 8.30 + 30 мин. Звоните +7 900 000 00 29, есть 1 место.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'fruit delivery request from last six hour audit',
+    text: `Здравствуйте, нужна доставка на Подгорбунского, 62. Четыре ящика черешни.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'single private dog feeding stand sale from last six hour audit',
+    text: `Продам подставку для кормления собак. Цена 500 рублей.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

@@ -748,6 +748,11 @@ const ADS_BUYOUT_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])куплю(?:[\p{L}\p{N}\s.,:;()/%+-]{0,64})(?:цифров[\p{L}\p{N}_-]*\s+)?(?:фотоаппарат[\p{L}\p{N}_-]*|видеокамер[\p{L}\p{N}_-]*|ноутбук[\p{L}\p{N}_-]*|смартфон[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*|айфон[\p{L}\p{N}_-]*|iphone|техник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
+  {
+    label: 'auto-same-day-buyout',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:куплю|выкуп[\p{L}\p{N}_-]*|скуп[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,72})(?:авто[\p{L}\p{N}_-]*|автомобил[\p{L}\p{N}_-]*|машин[ауые]?)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,120})(?:срочн[\p{L}\p{N}_-]*\s+продаж[\p{L}\p{N}_-]*|не\s+на\s+ходу|без\s+документ[\p{L}\p{N}_-]*|с\s+документ[\p{L}\p{N}_-]*|проблемн[\p{L}\p{N}_-]*\s+документ[\p{L}\p{N}_-]*|забираю\s+сам|приезжаю\s+и\s+забираю|люб[\p{L}\p{N}_-]*\s+район|люб[\p{L}\p{N}_-]*\s+состояни[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_PROMO_MARKERS = [
   'акци',
@@ -871,6 +876,11 @@ const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:(?:банк[\p{L}\p{N}_-]*|альфа[\s-]*банк|карт[\p{L}\p{N}_-]*|стикер[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:дарим|оформлени[\p{L}\p{N}_-]*|к[эе]шб[эе]к|бонус|ссылк[\p{L}\p{N}_-]*)|(?:дарим|бонус|к[эе]шб[эе]к)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:банк[\p{L}\p{N}_-]*|карт[\p{L}\p{N}_-]*|стикер[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
   },
+  {
+    label: 'document-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:оформлени[\p{L}\p{N}_-]*|получи[\p{L}\p{N}_-]*|сдела(?:ем|ю|ть))(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:водительск[\p{L}\p{N}_-]*\s+прав[\p{L}\p{N}_-]*|прав[\p{L}\p{N}_-]*\s+категор[\p{L}\p{N}_-]*|документ[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,110})(?:без\s+(?:экзамен[\p{L}\p{N}_-]*|очеред[\p{L}\p{N}_-]*|поход[\p{L}\p{N}_-]*\s+в\s+гибдд|автошкол[\p{L}\p{N}_-]*)|официальн[\p{L}\p{N}_-]*\s+баз[\p{L}\p{N}_-]*|готовност[\p{L}\p{N}_-]*|конфиденциальн[\p{L}\p{N}_-]*|пишите|ссылк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map([
   ['lead-magnet', 8],
@@ -879,6 +889,7 @@ const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map([
   ['casino-slot-promo', 22],
   ['paid-esoteric-service', 20],
   ['app-store-directory-promo', 18],
+  ['document-service', 20],
 ]);
 const ADS_HIGH_RISK_RAW_LINK_PATTERNS: LabeledPattern[] = [
   {
@@ -947,6 +958,8 @@ const ADS_SERVICE_SPECIALTY_MARKERS = [
   'шиномонтаж',
   'автомойк',
   'химчистк',
+  'тату',
+  'татуаж',
 ];
 const ADS_RECRUITMENT_MARKERS = [
   'вахт',
@@ -962,7 +975,7 @@ const ADS_RECRUITMENT_PATTERNS: LabeledPattern[] = [
   {
     label: 'требуется',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])треб(?:уется|уются|ует|уют)\s+(?:менеджер|сотрудник|работник|специалист|мастер|бригада|подрядчик|водитель|курьер|продавец|оператор|администратор|модератор|охранник|грузчик|разнорабоч[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|официант[\p{L}\p{N}_-]*|бармен[\p{L}\p{N}_-]*|хостес|кассир[\p{L}\p{N}_-]*|упаковщик[\p{L}\p{N}_-]*|комплектовщик[\p{L}\p{N}_-]*|мойщик[\p{L}\p{N}_-]*|заготовщик[\p{L}\p{N}_-]*|шве[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|маркетолог[\p{L}\p{N}_-]*|копирайтер[\p{L}\p{N}_-]*|бухгалтер[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|риелтор[\p{L}\p{N}_-]*|сварщик[\p{L}\p{N}_-]*|монтажник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])треб(?:уется|уются|ует|уют)\s+(?:[\p{L}\p{N}_-]+\s+){0,3}(?:менеджер|сотрудник|работник|специалист|мастер|бригада|подрядчик|водитель|курьер|продавец|оператор|администратор|модератор|охранник|грузчик|разнорабоч[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|официант[\p{L}\p{N}_-]*|бармен[\p{L}\p{N}_-]*|хостес|кассир[\p{L}\p{N}_-]*|упаковщик[\p{L}\p{N}_-]*|комплектовщик[\p{L}\p{N}_-]*|мойщик[\p{L}\p{N}_-]*|заготовщик[\p{L}\p{N}_-]*|шве[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|маркетолог[\p{L}\p{N}_-]*|копирайтер[\p{L}\p{N}_-]*|бухгалтер[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|риелтор[\p{L}\p{N}_-]*|сварщик[\p{L}\p{N}_-]*|монтажник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'набор',
@@ -1150,6 +1163,7 @@ const ADS_CONTACT_MARKERS = [
   'в личк',
   'в личные сообщения',
   'личные сообщения',
+  'для записи',
   'в директ',
   'директ',
   'звоните',
@@ -1236,6 +1250,11 @@ const ADS_JOB_SEEKING_PATTERNS: LabeledPattern[] = [
 ];
 const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
   {
+    label: 'request:delivery',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:нужн(?:а|ы)?|нужен|ищу|кто|кому)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,24})доставк[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
     label: 'request:specialist',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:ищу|нуж(?:ен|на|ны)|посоветуйте|порекомендуйте|подскажите)\s+(?:хорош(?:ий|ая|ее|его|ую|ие|их)\s+)?(?:маст[\p{L}\p{N}_-]*|бригад[\p{L}\p{N}_-]*|электрик[\p{L}\p{N}_-]*|сантехник[\p{L}\p{N}_-]*|психолог[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|логопед[\p{L}\p{N}_-]*|маникюр[\p{L}\p{N}_-]*|педикюр[\p{L}\p{N}_-]*|клининг[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|косметолог[\p{L}\p{N}_-]*|массаж[\p{L}\p{N}_-]*|репетитор[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|эвакуатор[\p{L}\p{N}_-]*|грузоперевоз[\p{L}\p{N}_-]*|консультац[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
@@ -1279,6 +1298,8 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:это|он|она)\s+нормальн[\p{L}\p{N}_-]+\s+(?:мастер|специалист|салон|магазин)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
+const ADS_RIDE_SHARE_CONTEXT_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:водитель|попутчик|выезд)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,160})(?:есть|остал[ао]сь?)\s+\d+\s+мест[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
   {
     label: 'кому нужно сделать',
@@ -1295,6 +1316,10 @@ const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:помогу|поможем|сопровожу|сопроводим)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,90})(?:документ[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*|договор[\p{L}\p{N}_-]*|оформлени[\p{L}\p{N}_-]*|подач[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
+  {
+    label: 'возьмем-подряд',
+    pattern: /(?:^|[^\p{L}\p{N}_-])(?:возьм[её]м|бер[её]м|примем)\s+подряд(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
   {
@@ -1303,9 +1328,29 @@ const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:разработк[\p{L}\p{N}_-]*|создани[\p{L}\p{N}_-]*|сделаю|настрою)(?:[\p{L}\p{N}\s.,:;()/-]{0,28})(?:сайт[\p{L}\p{N}_-]*|лендинг[\p{L}\p{N}_-]*|бот[\p{L}\p{N}_-]*|чат[\s-]*бот[\p{L}\p{N}_-]*|дизайн[\p{L}\p{N}_-]*|логотип[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
+    label: 'construction-contractor',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:возьм[её]м|бер[её]м|примем)\s+подряд(?:[\p{L}\p{N}\s.,:;()/-]{0,120})(?:строительств[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|объект[\p{L}\p{N}_-]*|газобетон[\p{L}\p{N}_-]*|звон(?:ите|ок)|тел\.?|телефон)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
     label: 'promotion-service',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:smm|таргет[\p{L}\p{N}_-]*|настройк[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,18})реклам[\p{L}\p{N}_-]*|продвижени[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,28})(?:сайт[\p{L}\p{N}_-]*|соцсет[\p{L}\p{N}_-]*|канал[\p{L}\p{N}_-]*|групп[\p{L}\p{N}_-]*|бизнес[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'logistics-delivery',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:переезд[\p{L}\p{N}_-]*|перевозк[\p{L}\p{N}_-]*|доставк[\p{L}\p{N}_-]*\s+груз[\p{L}\p{N}_-]*|сборн[\p{L}\p{N}_-]*\s+груз[\p{L}\p{N}_-]*|грузоперевоз[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'tattoo-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:тату[\p{L}\p{N}_-]*|татуаж[\p{L}\p{N}_-]*|тату-мастер[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,90})(?:запис[\p{L}\p{N}_-]*|консультац[\p{L}\p{N}_-]*|эскиз[\p{L}\p{N}_-]*|пишите|ссылка|тел\.?|телефон)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'document-service',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:оформлени[\p{L}\p{N}_-]*|получи[\p{L}\p{N}_-]*|сдела(?:ем|ю|ть))(?:[\p{L}\p{N}\s.,:;()/%+-]{0,70})(?:водительск[\p{L}\p{N}_-]*\s+прав[\p{L}\p{N}_-]*|прав[\p{L}\p{N}_-]*\s+категор[\p{L}\p{N}_-]*|документ[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,110})(?:без\s+(?:экзамен[\p{L}\p{N}_-]*|очеред[\p{L}\p{N}_-]*|поход[\p{L}\p{N}_-]*\s+в\s+гибдд|автошкол[\p{L}\p{N}_-]*)|официальн[\p{L}\p{N}_-]*\s+баз[\p{L}\p{N}_-]*|готовност[\p{L}\p{N}_-]*|конфиденциальн[\p{L}\p{N}_-]*|пишите|ссылк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
   {
     label: 'подъем-домов',
@@ -1370,6 +1415,16 @@ const ADS_GOODS_RETAIL_PATTERNS: LabeledPattern[] = [
     label: 'order-flow',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:под\s+заказ|по\s+заказу|оформить\s+заказ|оформляйте\s+заказ|оптом\s+и\s+в\s+розницу|доставка\s+по\s+(?:городу|региону|россии)|со\s+склада)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'bulk-materials',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:навоз|перегной|почвогрунт|торфогрунт|черноз[её]м|щебень|отсев|песок|пгс|дрова|пиломатериал[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,180})(?:доставк[\p{L}\p{N}_-]*|вывоз[\p{L}\p{N}_-]*|звон(?:ить|ите)|тел\.?|телефон|оплат[\p{L}\p{N}_-]*|наличн[\p{L}\p{N}_-]*|до\s+\d+\s+тонн)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'wholesale-produce',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:без\s+посредник[\p{L}\p{N}_-]*|сетев[\p{L}\p{N}_-]*\s+качеств[\p{L}\p{N}_-]*|калибр|нал[\p{L}\p{N}\s.,:;()/-]{0,12}безнал|об[ъь][её]м)(?:[\p{L}\p{N}\s.,:;()/-]{0,160})(?:цен[\p{L}\p{N}_-]*|\d+[,.]?\d*\s?(?:₽|руб(?:\.|лей)?|р\.?)|тел\.?|телефон|\+7|8\d{10})(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
@@ -1904,9 +1959,11 @@ export class RuleEngineService {
     const hasCommercialAudienceContext = ADS_COMMERCIAL_AUDIENCE_MARKERS.some((marker) =>
       hasMarker(marker),
     );
+    const hasMassInviteLinkContext = ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText);
     const hasChannelPlacementContext =
       ADS_CHANNEL_PLACEMENT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_CHANNEL_PLACEMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+      ADS_CHANNEL_PLACEMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      hasMassInviteLinkContext;
     const hasCallToActionContext = ADS_CALL_TO_ACTION_MARKERS.some((marker) => hasMarker(marker));
     const hasSearchRequestContext =
       ADS_QUESTION_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -2046,6 +2103,8 @@ export class RuleEngineService {
         signal === 'goods-retail:manufacturer' ||
         signal === 'goods-retail:commercial-use' ||
         signal === 'goods-retail:order-flow' ||
+        signal === 'goods-retail:bulk-materials' ||
+        signal === 'goods-retail:wholesale-produce' ||
         signal === 'goods-retail:multi-sku',
     );
   }
@@ -2547,6 +2606,15 @@ export class RuleEngineService {
     }
 
     if (state.hasJobSeekingContext) {
+      return null;
+    }
+
+    if (
+      ADS_RIDE_SHARE_CONTEXT_PATTERN.test(rawLoweredText) &&
+      !state.hasBusinessContext &&
+      !state.hasDealChannel &&
+      !state.hasPrice
+    ) {
       return null;
     }
 
@@ -3624,11 +3692,7 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    if (
-      commercialCampaignContext &&
-      commercialCampaignContext.repeatedLinkDistinctChatCount >= 3 &&
-      ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)
-    ) {
+    if (ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)) {
       addPositive('channel-placement:mass-invite-link', 18);
       hasGroupContext = true;
       hasGroupPromotionIntent = true;
