@@ -80,10 +80,10 @@ const IDLE_PREFETCH_DELAY_MS = 700;
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
   WARN: 'Предупреждение',
-  MUTE: 'Мут',
-  BAN: 'Бан',
-  UNMUTE: 'Снять мут',
-  UNBAN: 'Разбан',
+  MUTE: 'Ограничение',
+  BAN: 'Блокировка',
+  UNMUTE: 'Снято огранич.',
+  UNBAN: 'Возврат',
 };
 
 const actionToneMap: Record<DisplayAction, 'neutral' | 'warning' | 'danger' | 'success'> = {
@@ -286,18 +286,18 @@ function formatViolationRule(ruleCode: string): string {
     DUPLICATE_MUTE: 'Повторяющиеся сообщения',
     DUPLICATE_KICK: 'Повторяющиеся сообщения',
     DUPLICATE_BAN: 'Повторяющиеся сообщения',
-    MANUAL_MUTE: 'Ручной мут',
-    MANUAL_UNMUTE: 'Ручное снятие мута',
-    MANUAL_KICK: 'Ручной бан',
-    MANUAL_BAN: 'Ручной бан',
-    MANUAL_UNBAN: 'Ручной разбан',
+    MANUAL_MUTE: 'Ограничение вручную',
+    MANUAL_UNMUTE: 'Ограничение снято',
+    MANUAL_KICK: 'Удаление вручную',
+    MANUAL_BAN: 'Блокировка вручную',
+    MANUAL_UNBAN: 'Возврат в чат',
     THEMATIC_FILTER: 'Объявления по теме',
-    GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
-    GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
-    GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
-    GLOBAL_SPAMMER_BAN: 'Глобальная база спаммеров',
-    GLOBAL_SPAMMER_KICK: 'Глобальная база спаммеров',
-    MUTE_ACTIVE_DELETE: 'Активный мут',
+    GLOBAL_USER_BLACKLIST_KICK: 'Запрет по базе',
+    GLOBAL_CROSS_CHAT_SPAM: 'Рассылка по чатам',
+    GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Рассылка по чатам',
+    GLOBAL_SPAMMER_BAN: 'База спама',
+    GLOBAL_SPAMMER_KICK: 'База спама',
+    MUTE_ACTIVE_DELETE: 'Ограничение активно',
     NIGHT_MODE_DELETE: 'Ночной режим',
     REQUIRED_SUBSCRIPTION: 'Обязательная подписка',
   };
@@ -310,7 +310,45 @@ function formatViolationRule(ruleCode: string): string {
     return formatViolationRule(ruleCode.replace(/_DELETE$/, ''));
   }
 
-  return ruleCode.replaceAll('_', ' ').toLowerCase();
+  return resolveModerationCodeLabel(ruleCode);
+}
+
+function resolveModerationCodeLabel(code: string): string {
+  const normalized = code.trim().toUpperCase();
+  if (!normalized) {
+    return 'Нарушение';
+  }
+  if (normalized.includes('SPAM') || normalized.includes('FANOUT')) {
+    return 'Массовая рассылка';
+  }
+  if (normalized.includes('COMMERCIAL')) {
+    return 'Коммерция';
+  }
+  if (normalized.includes('LINK')) {
+    return 'Ссылка';
+  }
+  if (normalized.includes('PHONE')) {
+    return 'Телефон';
+  }
+  if (normalized.includes('MUTE')) {
+    return 'Ограничение';
+  }
+  if (normalized.includes('BAN') || normalized.includes('KICK')) {
+    return 'Блокировка';
+  }
+  if (normalized.includes('PHOTO')) {
+    return 'Фото';
+  }
+  if (normalized.includes('VIDEO')) {
+    return 'Видео';
+  }
+  if (normalized.includes('VOICE')) {
+    return 'Голосовое';
+  }
+  if (normalized.includes('FILE')) {
+    return 'Файл';
+  }
+  return 'Нарушение';
 }
 
 function resolveOffenderName(violation: ViolationItem): string {
@@ -387,7 +425,7 @@ function resolveDisplayAction(violation: ViolationItem): DisplayAction {
 
 function resolveViolationBlurb(violation: ViolationItem): string {
   if (violation.ruleCode === 'MANUAL_UNMUTE') {
-    return 'Модератор снял мут вручную';
+    return 'Модератор снял ограничение вручную';
   }
 
   if (violation.ruleCode === 'MANUAL_UNBAN') {
@@ -408,15 +446,17 @@ function resolveViolationBlurb(violation: ViolationItem): string {
         ? metadata.muteDurationHours
         : null;
 
-    return muteDurationHours ? `Ручной мут на ${muteDurationHours}ч` : 'Модератор выдал ручной мут';
+    return muteDurationHours
+      ? `Ограничение на ${muteDurationHours}ч`
+      : 'Модератор ограничил участника';
   }
 
   if (violation.ruleCode === 'MANUAL_KICK') {
-    return 'Модератор выдал ручной бан';
+    return 'Модератор удалил участника';
   }
 
   if (violation.ruleCode === 'MANUAL_BAN') {
-    return 'Модератор выдал ручной бан';
+    return 'Модератор заблокировал участника';
   }
 
   return formatViolationRule(violation.ruleCode);
@@ -444,18 +484,18 @@ function resolveApplyActionLabel(
   muteDurationHours: number,
 ): string {
   if (action === 'MUTE') {
-    return `Замьютить на ${formatMuteDurationCompact(muteDurationHours)}`;
+    return `Ограничить на ${formatMuteDurationCompact(muteDurationHours)}`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять мут';
+    return 'Снять ограничение';
   }
 
   if (action === 'UNBAN') {
-    return 'Разбанить участника';
+    return 'Вернуть участника';
   }
 
-  return 'Забанить';
+  return 'Заблокировать';
 }
 
 function resolveConfirmMessage(
@@ -464,29 +504,29 @@ function resolveConfirmMessage(
   violation?: ViolationItem,
 ): string {
   if (action === 'MUTE') {
-    return `Замьютить участника на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
+    return `Ограничить участника на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять мут у участника?';
+    return 'Снять ограничение у участника?';
   }
 
   if (action === 'UNBAN') {
     if (violation && isBanActiveFromViolation(violation)) {
-      return 'Снять бан и вернуть участника в чат?';
+      return 'Снять блокировку и вернуть участника в чат?';
     }
 
     if (
       violation?.ruleCode === 'GLOBAL_SPAMMER_BAN' ||
       violation?.ruleCode === 'GLOBAL_SPAMMER_KICK'
     ) {
-      return 'Вернуть участника в чат и снять удаление по базе спаммеров?';
+      return 'Вернуть участника в чат и отключить удаление по базе спама?';
     }
 
     return 'Вернуть участника в чат?';
   }
 
-  return 'Забанить участника в чате MAX до ручного разбана?';
+  return 'Заблокировать участника в чате MAX, пока модератор не вернет его вручную?';
 }
 
 function isMuteActiveFromViolation(violation: ViolationItem): boolean {
@@ -564,7 +604,7 @@ function resolveReleaseAction(
 }
 
 function resolveReleaseLabel(action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>): string {
-  return action === 'UNMUTE' ? 'Снять мут' : 'Разбан';
+  return action === 'UNMUTE' ? 'Снять ограничение' : 'Вернуть';
 }
 
 function normalizeActionErrorMessage(error: unknown): string {
@@ -594,6 +634,36 @@ function normalizeActionErrorMessage(error: unknown): string {
   }
 
   return raw;
+}
+
+function normalizeLoadErrorMessage(error: unknown): string {
+  const fallback = 'Не удалось загрузить данные. Попробуйте ещё раз.';
+  const normalizeRaw = (value: string): string => {
+    const raw = value.trim();
+    if (!raw) {
+      return fallback;
+    }
+
+    if (raw.startsWith('API request failed:')) {
+      const tail = raw.replace(/^API request failed:\s*\d+\s*/u, '').trim();
+      if (!tail || (/[A-Za-z]/.test(tail) && !/[А-Яа-яЁё]/.test(tail))) {
+        return fallback;
+      }
+      return tail;
+    }
+
+    if (/[A-Za-z]/.test(raw) && !/[А-Яа-яЁё]/.test(raw)) {
+      return fallback;
+    }
+
+    return raw;
+  };
+
+  if (!(error instanceof Error)) {
+    return typeof error === 'string' ? normalizeRaw(error) : fallback;
+  }
+
+  return normalizeRaw(error.message);
 }
 
 function readJsonRecord(value: unknown): Record<string, unknown> | null {
@@ -636,16 +706,89 @@ function resolveSpammerSourceLabel(source: string): string {
     GRAPH_TEXT: 'похожий текст',
     GRAPH_CAMPAIGN: 'одна кампания',
     GRAPH_FANOUT_PATTERN: 'массовая схема',
-    SANCTION_BAN: 'санкции',
-    MANUAL_BAN: 'ручной бан',
+    SANCTION_BAN: 'блокировка',
+    MANUAL_BAN: 'ручная блокировка',
+    MANUAL_UNBAN: 'возврат вручную',
+    ADMIN_EXEMPTION: 'исключение админа',
     REVIEW_APPROVED: 'проверено',
+    REVIEW_SUPPRESSION: 'исключено вручную',
   };
 
-  return labels[source] ?? source.toLowerCase().replaceAll('_', ' ');
+  return labels[source] ?? resolveSpammerReasonLabel(source);
+}
+
+function resolveSpammerReasonLabel(reason: string | null | undefined): string {
+  const raw = reason?.trim() ?? '';
+  if (!raw) {
+    return 'другой сигнал';
+  }
+
+  const normalized = raw.toUpperCase();
+  const labels: Record<string, string> = {
+    HIGH_FANOUT_6_CHATS_2M: 'массовая рассылка',
+    HIGH_FANOUT_5_CHATS_REPEAT: 'повторная рассылка',
+    COMMERCIAL_AD_DETECTED: 'коммерция',
+    REPEATED_LINK_CROSS_CHAT: 'повтор ссылки',
+    REPEATED_PHONE_CROSS_CHAT: 'повтор телефона',
+    REVIEW_APPROVED: 'проверено вручную',
+    REVIEW_SUPPRESSED: 'исключено вручную',
+    REVIEW_SUPPRESSION: 'исключено вручную',
+    MANUAL_BAN: 'ручная блокировка',
+    MANUAL_UNBAN: 'ручной возврат',
+    SANCTION_BAN: 'блокировка',
+    SANCTION_KICK: 'удаление из чата',
+    NO_ACTIVE_REGISTRY_ENTRY: 'нет активной записи',
+    USER_ID_REQUIRED: 'нет номера пользователя',
+    ADMIN_EXEMPT: 'исключение админа',
+    ADMIN_EXEMPTION: 'исключение админа',
+  };
+
+  if (labels[normalized]) {
+    return labels[normalized];
+  }
+  if (/[А-Яа-яЁё]/.test(raw) && !/^[A-Z0-9_]+$/.test(raw)) {
+    return raw;
+  }
+  if (normalized.includes('FANOUT') || normalized.includes('SPAM')) {
+    return 'массовая рассылка';
+  }
+  if (normalized.includes('COMMERCIAL')) {
+    return 'коммерция';
+  }
+  if (normalized.includes('REPEATED_LINK') || normalized.includes('LINK')) {
+    return 'повтор ссылки';
+  }
+  if (normalized.includes('REPEATED_PHONE') || normalized.includes('PHONE')) {
+    return 'повтор телефона';
+  }
+  if (normalized.includes('GRAPH') || normalized.includes('CAMPAIGN')) {
+    return 'похожее поведение';
+  }
+  if (normalized.includes('SUPPRESS') || normalized.includes('FALSE')) {
+    return 'исключено вручную';
+  }
+  if (normalized.includes('EXEMPT')) {
+    return 'исключение админа';
+  }
+  if (normalized.includes('BAN')) {
+    return 'блокировка';
+  }
+  if (normalized.includes('KICK')) {
+    return 'удаление из чата';
+  }
+  return 'другой сигнал';
 }
 
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
-  return candidate.lastUserLabel?.trim() || `ID ${candidate.userId}`;
+  return candidate.lastUserLabel?.trim() || formatUserReference(candidate.userId);
+}
+
+function formatUserReference(userId: string): string {
+  const value = userId.trim();
+  if (!value || /[A-Za-z]/.test(value)) {
+    return 'Пользователь';
+  }
+  return `Пользователь ${value}`;
 }
 
 function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate): string {
@@ -687,7 +830,7 @@ function resolveSpammerSourceSummary(candidate: GlobalSpammerReviewCandidate): s
       ? `${chatsCount} ${formatRussianCountLabel(chatsCount, 'чат', 'чата', 'чатов')}`
       : '';
 
-  return [chatsSummary, sourcesSummary || resolveSpammerSourceLabel(candidate.lastReason)]
+  return [chatsSummary, sourcesSummary || resolveSpammerReasonLabel(candidate.lastReason)]
     .filter(Boolean)
     .join(' · ');
 }
@@ -699,7 +842,7 @@ function resolveSpammerReasons(candidate: GlobalSpammerReviewCandidate): string[
   const labels = [...new Set(sources.length > 0 ? sources : fallbackSources)]
     .map(resolveSpammerSourceLabel)
     .filter(Boolean);
-  return labels.length > 0 ? labels.slice(0, 4) : [resolveSpammerSourceLabel(candidate.lastReason)];
+  return labels.length > 0 ? labels.slice(0, 4) : [resolveSpammerReasonLabel(candidate.lastReason)];
 }
 
 function resolveSpammerChatFacts(candidate: GlobalSpammerReviewCandidate): string {
@@ -707,12 +850,10 @@ function resolveSpammerChatFacts(candidate: GlobalSpammerReviewCandidate): strin
     return 'Нет чатов';
   }
 
-  const visible = candidate.chats
-    .slice(0, 3)
-    .map((chat) => {
-      const countSuffix = chat.detectionsCount > 1 ? ` · ${chat.detectionsCount}` : '';
-      return `${chat.chatId}${countSuffix}`;
-    });
+  const visible = candidate.chats.slice(0, 3).map((chat) => {
+    const countSuffix = chat.detectionsCount > 1 ? ` · ${chat.detectionsCount}` : '';
+    return `${chat.chatId}${countSuffix}`;
+  });
   const hiddenCount = candidate.chats.length - visible.length;
   return hiddenCount > 0 ? `${visible.join(', ')} · +${hiddenCount} ещё` : visible.join(', ');
 }
@@ -756,17 +897,20 @@ function resolveDiagnosticsActionLabel(
 }
 
 function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
-  return (
+  const reason =
     diagnostics.registry.reason ||
     diagnostics.candidate?.lastReason ||
     diagnostics.activeSuppression?.reason ||
     diagnostics.policy.reason ||
-    '—'
-  );
+    null;
+
+  return reason ? resolveSpammerReasonLabel(reason) : '—';
 }
 
 function resolveDiagnosticsConfirmedBy(diagnostics: GlobalSpammerUserDiagnostics): string {
-  return diagnostics.registry.confirmedByUserId || diagnostics.candidate?.reviewedByUserId || '—';
+  const value =
+    diagnostics.registry.confirmedByUserId || diagnostics.candidate?.reviewedByUserId || '';
+  return value && !/[A-Za-z]/.test(value) ? value : value ? 'модератор' : '—';
 }
 
 function formatNullableDate(value: string | null | undefined): string {
@@ -819,7 +963,7 @@ function GlobalSpammerReviewPanel({
   const expiredRegistry = metrics?.expiredRegistry ?? 0;
   const falsePositiveRate = metrics?.falsePositiveRate ?? 0;
   const sourceAlerts = metrics?.sourceAlerts ?? [];
-  const errorMessage = error instanceof Error ? error.message : null;
+  const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const metricChips = [
     `Проверка ${pending}`,
     `Активных ${activeRegistry}`,
@@ -1004,7 +1148,7 @@ function SpammerDiagnosticsSheet({
   onClose: () => void;
   onRetry: () => void;
 }) {
-  const errorMessage = error instanceof Error ? error.message : null;
+  const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signals = diagnostics
     ? [
         ...diagnostics.observations.slice(0, 4).map((item) => ({
@@ -1026,7 +1170,7 @@ function SpammerDiagnosticsSheet({
       id="spammer-diagnostics-sheet"
       open={open}
       title={target?.displayName ?? 'База спама'}
-      summary={target?.userId ? `ID ${target.userId}` : ''}
+      summary={target?.userId ? formatUserReference(target.userId) : ''}
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
@@ -1087,7 +1231,7 @@ function SpammerDiagnosticsSheet({
 
           {reliability.length > 0 ? (
             <div className="spammer-diagnostics__signals">
-              <span>Надежность источника</span>
+              <span>Надежность</span>
               <div>
                 {reliability.map((item) => (
                   <small key={item.source}>
@@ -1188,7 +1332,7 @@ function ViolationModerationControls({
               setMuteExpanded((current) => !current);
             }}
           >
-            Мут
+            Ограничить
           </button>
         ) : null}
         {!releaseAction ? (
@@ -1202,7 +1346,7 @@ function ViolationModerationControls({
               setPendingAction((current) => (current === 'BAN' ? null : 'BAN'));
             }}
           >
-            Бан
+            Блокировать
           </button>
         ) : null}
         {releaseAction ? (
@@ -1226,7 +1370,7 @@ function ViolationModerationControls({
           <div className="logs-violation-item__duration-summary">
             <div className="logs-violation-item__duration-label">
               <ClockIcon />
-              <span>Срок мута</span>
+              <span>Срок ограничения</span>
             </div>
             <output className="logs-violation-item__duration-output" aria-live="polite">
               {formatMuteDurationCompact(muteDurationHours)}
@@ -1256,7 +1400,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev - 1))}
                 disabled={applyMutation.isPending || muteDurationHours <= MUTE_DURATION_MIN_HOURS}
-                aria-label="Уменьшить длительность мута"
+                aria-label="Уменьшить срок ограничения"
               >
                 -
               </button>
@@ -1268,7 +1412,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev + 1))}
                 disabled={applyMutation.isPending || muteDurationHours >= MUTE_DURATION_MAX_HOURS}
-                aria-label="Увеличить длительность мута"
+                aria-label="Увеличить срок ограничения"
               >
                 +
               </button>
@@ -1667,12 +1811,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       spammerDiagnosticsTarget?.userId ?? null,
     ),
     queryFn: ({ signal }) =>
-      getGlobalSpammerUserDiagnostics(
-        api,
-        chatId ?? '',
-        spammerDiagnosticsTarget?.userId ?? '',
-        { signal },
-      ),
+      getGlobalSpammerUserDiagnostics(api, chatId ?? '', spammerDiagnosticsTarget?.userId ?? '', {
+        signal,
+      }),
     enabled: Boolean(chatId && spammerDiagnosticsTarget?.userId),
     staleTime: 20_000,
     refetchOnWindowFocus: false,
@@ -1699,12 +1840,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         pushToast({
           tone: 'danger',
           title: 'Не удалось открыть бота',
-          description: 'Ссылка на handoff вернулась пустой.',
+          description: 'Ссылка на профиль пустая.',
         });
       }
     },
     onError: (error: unknown) => {
-      const description = error instanceof Error ? error.message : 'Попробуйте ещё раз.';
+      const description = normalizeLoadErrorMessage(error);
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть профиль',
@@ -1839,10 +1980,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         label: 'Удаления',
         count: violationsSummary.deleteMessage,
       },
-      { value: 'MUTE', label: 'Муты', count: violationsSummary.mute },
-      { value: 'BAN', label: 'Баны', count: violationsSummary.ban },
-      { value: 'UNMUTE', label: 'Снятия мута', count: violationsSummary.unmute },
-      { value: 'UNBAN', label: 'Разбаны', count: violationsSummary.unban },
+      { value: 'MUTE', label: 'Ограничения', count: violationsSummary.mute },
+      { value: 'BAN', label: 'Блокировки', count: violationsSummary.ban },
+      { value: 'UNMUTE', label: 'Снятие', count: violationsSummary.unmute },
+      { value: 'UNBAN', label: 'Возвраты', count: violationsSummary.unban },
     ];
 
     return options.filter((option) => option.value === 'ALL' || option.count > 0);
@@ -2018,7 +2159,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: 'neutral' as const,
     },
     {
-      label: 'Мут/бан',
+      label: 'Блокировки',
       value: String(hardMeasures),
       note: '',
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
@@ -2176,7 +2317,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <StatusState
                   tone="danger"
                   title="Не удалось загрузить статистику"
-                  description={(dashboardQuery.error as Error).message}
+                  description={normalizeLoadErrorMessage(dashboardQuery.error)}
                   action={
                     <button
                       type="button"
@@ -2354,7 +2495,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <StatusState
                 tone="warning"
                 title="Данные могли устареть"
-                description={(dashboardQuery.error as Error).message}
+                description={normalizeLoadErrorMessage(dashboardQuery.error)}
                 action={
                   <button
                     type="button"
@@ -2373,7 +2514,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <StatusState
                 tone="neutral"
                 title="Нарушений не найдено"
-                description="За выбранный период действий модерации и ручных разбанов не было."
+                description="За выбранный период действий модерации и ручных возвратов не было."
               />
             </GlassCard>
           ) : null}
@@ -2393,7 +2534,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <StatusState
                 tone="warning"
                 title="Не удалось загрузить список"
-                description={moderationFeed.error}
+                description={normalizeLoadErrorMessage(moderationFeed.error)}
                 action={
                   <button
                     type="button"
