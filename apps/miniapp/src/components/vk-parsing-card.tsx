@@ -26,13 +26,6 @@ type VkParsingCardProps = {
   entityType?: VkParsingEntityType;
 };
 
-const VK_AUTOPUBLISH_TARGETS = {
-  source: 'vk-parsing-source-section',
-  automation: 'vk-parsing-automation-switch',
-  mode: 'vk-parsing-publish-mode',
-  time: 'vk-parsing-work-time',
-} as const;
-
 function parseTimeMinutes(value: string | null | undefined): number | null {
   if (!value) {
     return null;
@@ -99,27 +92,6 @@ function resolveTimeWindow(settings: VkParsingSettings): { ready: boolean; label
   };
 }
 
-function resolveCommonValue<T>(values: T[]): T | null {
-  if (values.length === 0) {
-    return null;
-  }
-  const [first] = values;
-  return values.every((value) => value === first) ? first : null;
-}
-
-function formatPublishMode(mode: VkParsingSource['publishMode'] | null): string {
-  if (!mode) {
-    return 'Выберите';
-  }
-  if (mode === 'IMMEDIATE') {
-    return 'Сразу';
-  }
-  if (mode === 'REVIEW') {
-    return 'Проверка';
-  }
-  return 'Очередь';
-}
-
 function buildAutopostStatus(
   settings: VkParsingSettings,
   sources: VkParsingSource[],
@@ -128,12 +100,6 @@ function buildAutopostStatus(
   const autoSourceCount = sources.filter(
     (source) => source.importEnabled && source.autoPublishEnabled,
   ).length;
-  const activeAutoSources = sources.filter(
-    (source) => source.importEnabled && source.autoPublishEnabled,
-  );
-  const commonPublishMode = resolveCommonValue(
-    activeAutoSources.map((source) => source.publishMode),
-  );
   const timeWindow = resolveTimeWindow(settings);
   const isPaused = settings.autoPublishKillSwitchEnabled;
   const isWorking =
@@ -176,38 +142,6 @@ function buildAutopostStatus(
     title,
     reason,
     tone,
-    readiness: [
-      {
-        label: 'Источник',
-        value: activeSourceCount > 0 ? `${activeSourceCount} вкл` : 'Нет',
-        ready: activeSourceCount > 0,
-        targetId: VK_AUTOPUBLISH_TARGETS.source,
-      },
-      {
-        label: 'Авто',
-        value: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused ? 'Вкл' : 'Выкл',
-        ready: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused,
-        targetId: VK_AUTOPUBLISH_TARGETS.automation,
-      },
-      {
-        label: 'Режим',
-        value:
-          activeAutoSources.length === 0
-            ? 'Нет авто'
-            : commonPublishMode
-              ? formatPublishMode(commonPublishMode)
-              : 'Разные',
-        ready: activeAutoSources.length > 0,
-        neutral: activeAutoSources.length > 0 && commonPublishMode === null,
-        targetId: VK_AUTOPUBLISH_TARGETS.mode,
-      },
-      {
-        label: 'Время',
-        value: timeWindow.label,
-        ready: timeWindow.ready,
-        targetId: VK_AUTOPUBLISH_TARGETS.time,
-      },
-    ],
   };
 }
 
@@ -219,17 +153,6 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
       ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
       : posts.filter((post) => post.status === 'PUBLISHED').length;
   const autopostStatus = feed ? buildAutopostStatus(settings, sources) : null;
-  const focusAutopostTarget = (targetId: string) => {
-    const target = document.getElementById(targetId);
-    if (!target) {
-      return;
-    }
-    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    const focusTarget = target.matches('button, input, select, textarea')
-      ? target
-      : target.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select');
-    focusTarget?.focus({ preventScroll: true });
-  };
 
   return (
     <div className="vk-parsing-card">
@@ -242,7 +165,6 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           publishedCount={publishedCount}
           isSaving={state.isSavingSettings}
           isSavingSource={state.isSavingSource}
-          onSelectStatusTarget={focusAutopostTarget}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
           onApplyPreset={state.applyPresetToAllSources}

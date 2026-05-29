@@ -24,9 +24,9 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
       tone: summary.vkApiErrorRate > 0.05 ? 'danger' : undefined,
     },
     {
-      label: 'Импорт',
+      label: 'Обновление',
       value: formatDurationSeconds(summary.importLagSeconds),
-      title: 'Задержка импорта',
+      title: 'Задержка обновления источников',
       tone: summary.staleSourceCount > 0 ? 'warning' : undefined,
     },
     {
@@ -66,17 +66,17 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
       {summary.p95SyncDurationMs ? (
         <span title="P95 длительности синхронизации">
           <b>{formatDurationSeconds(Math.ceil(summary.p95SyncDurationMs / 1_000))}</b>
-          <small>P95</small>
+          <small>Пик</small>
         </span>
       ) : null}
       {summary.publishBacklog > 0 ? (
         <span className="is-warning" title="Посты ждут публикации">
           <b>{summary.publishBacklog}</b>
-          <small>Backlog</small>
+          <small>Ожидают</small>
         </span>
       ) : null}
       {summary.circuitOpenSourceCount > 0 ? (
-        <span className="is-danger" title="Источники остановлены circuit breaker">
+        <span className="is-danger" title="Источники остановлены защитой">
           <b>{summary.circuitOpenSourceCount}</b>
           <small>Стоп</small>
         </span>
@@ -84,7 +84,7 @@ export function HealthSummary({ summary }: HealthSummaryProps) {
       {summary.staleSyncLockCount > 0 ? (
         <span className="is-danger" title="Зависшие обновления источников">
           <b>{summary.staleSyncLockCount}</b>
-          <small>Locks</small>
+          <small>Зависло</small>
         </span>
       ) : null}
       {summary.mediaFailureRatio > 0 ? (

@@ -16,7 +16,6 @@ type SchedulerPanelProps = {
   publishedCount: number;
   isSaving: boolean;
   isSavingSource: boolean;
-  onSelectStatusTarget: (targetId: string) => void;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => void;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
   onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
@@ -28,13 +27,6 @@ export type AutopostStatusModel = {
   title: string;
   reason: string;
   tone: AutopostStatusTone;
-  readiness: Array<{
-    label: string;
-    value: string;
-    ready: boolean;
-    neutral?: boolean;
-    targetId: string;
-  }>;
 };
 
 const SOURCE_MODE_OPTIONS: Array<{
@@ -143,7 +135,6 @@ export function SchedulerPanel({
   publishedCount,
   isSaving,
   isSavingSource,
-  onSelectStatusTarget,
   onUpdateSetting,
   onUpdateSources,
   onApplyPreset,
@@ -151,7 +142,7 @@ export function SchedulerPanel({
   const sourceIds = sources.map((source) => source.id);
   const sourceMode = resolveCommonValue(sources.map((source) => source.publishMode));
   const commonInterval = resolveCommonValue(sources.map((source) => source.publishIntervalMinutes));
-  const frequencyPreset = resolveFrequencyPreset(commonInterval);
+  const frequencyPreset = commonInterval === null ? null : resolveFrequencyPreset(commonInterval);
   const customInterval = commonInterval ?? CUSTOM_FREQUENCY_MINUTES;
   const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
   const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
@@ -169,7 +160,7 @@ export function SchedulerPanel({
           <span>
             <strong>{status.title}</strong>
             <small>
-              {status.reason} · Оч. {queueCount} · Опубл. {publishedCount}
+              {status.reason} · Очередь {queueCount} · Опубликовано {publishedCount}
             </small>
           </span>
         </div>
@@ -193,22 +184,8 @@ export function SchedulerPanel({
         </div>
       </div>
 
-      <div className="vk-autopost-checklist" aria-label="Готовность автопостинга">
-        {status.readiness.map((item) => (
-          <button
-            type="button"
-            key={item.label}
-            className={cn(item.neutral ? 'is-neutral' : item.ready ? 'is-ready' : 'is-blocked')}
-            onClick={() => onSelectStatusTarget(item.targetId)}
-          >
-            <b>{item.label}</b>
-            <small>{item.value}</small>
-          </button>
-        ))}
-      </div>
-
       <div className="vk-setup-center__presets">
-        <span>Пресет</span>
+        <span>Профиль</span>
         <div className="vk-quick-preset-row" aria-label="Пресеты автопостинга">
           {QUICK_PRESETS.map((preset) => (
             <button
@@ -284,32 +261,31 @@ export function SchedulerPanel({
         ) : null}
       </div>
 
-      <div id="vk-parsing-work-time" className="vk-quick-setup__row">
-        <span>Время публикаций</span>
-        <div className="vk-quick-time">
-          <label>
-            <span>С</span>
-            <input
-              type="time"
-              value={settings.workHoursStart}
-              disabled={isSaving}
-              onChange={(event) => onUpdateSetting({ workHoursStart: event.target.value })}
-            />
-          </label>
-          <label>
-            <span>До</span>
-            <input
-              type="time"
-              value={settings.workHoursEnd}
-              disabled={isSaving}
-              onChange={(event) => onUpdateSetting({ workHoursEnd: event.target.value })}
-            />
-          </label>
-        </div>
-      </div>
-
       <details className="vk-advanced-fold">
         <summary>Ещё</summary>
+        <div id="vk-parsing-work-time" className="vk-quick-setup__row">
+          <span>Время</span>
+          <div className="vk-quick-time">
+            <label>
+              <span>С</span>
+              <input
+                type="time"
+                value={settings.workHoursStart}
+                disabled={isSaving}
+                onChange={(event) => onUpdateSetting({ workHoursStart: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>До</span>
+              <input
+                type="time"
+                value={settings.workHoursEnd}
+                disabled={isSaving}
+                onChange={(event) => onUpdateSetting({ workHoursEnd: event.target.value })}
+              />
+            </label>
+          </div>
+        </div>
         <div className="vk-scheduler-toggles">
           <SwitchRow
             label="Убирать ссылки"

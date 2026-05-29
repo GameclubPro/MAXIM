@@ -89,6 +89,39 @@ function NativeSwitch({
   );
 }
 
+function SourceAutoControl({
+  source,
+  disabled,
+  onChange,
+}: {
+  source: VkParsingSource;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const active = source.importEnabled && source.autoPublishEnabled;
+  return (
+    <label
+      className={cn(
+        'vk-source-auto-control',
+        active && 'is-on',
+        !source.importEnabled && 'is-paused',
+      )}
+      title="Автопостинг источника"
+    >
+      <span>
+        <b>Автопостинг</b>
+        <small>{source.importEnabled ? formatSourceMode(source) : 'Пауза'}</small>
+      </span>
+      <NativeSwitch
+        checked={active}
+        disabled={disabled || !source.importEnabled}
+        label={`Автопостинг ${source.title}`}
+        onChange={onChange}
+      />
+    </label>
+  );
+}
+
 function SourceForm({
   sourceUrl,
   isAdding,
@@ -126,30 +159,6 @@ function SourceForm({
         <PlusCircle aria-hidden />
       </button>
     </form>
-  );
-}
-
-function SourceStateToggle({
-  label,
-  value,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className={cn('vk-source-state-toggle', checked && 'is-on')}>
-      <span>
-        <b>{label}</b>
-        <small>{value}</small>
-      </span>
-      <NativeSwitch checked={checked} disabled={disabled} label={label} onChange={onChange} />
-    </div>
   );
 }
 
@@ -323,29 +332,48 @@ export function SourceDashboard({
                     <strong>{source.title}</strong>
                     <span>{source.screenName}</span>
                   </button>
-                  <span className="vk-source-status">
-                    {tone === 'danger' ? <WarningCircle aria-hidden /> : <Clock aria-hidden />}
-                    {resolveSourceLabel(source)}
-                  </span>
+                  <div className="vk-source-card__tools">
+                    <span className="vk-source-status">
+                      {tone === 'danger' ? <WarningCircle aria-hidden /> : <Clock aria-hidden />}
+                      {resolveSourceLabel(source)}
+                    </span>
+                    <button
+                      type="button"
+                      className="vk-parsing-icon-button vk-source-card__pause"
+                      aria-label={source.importEnabled ? 'Поставить на паузу' : 'Включить'}
+                      title={source.importEnabled ? 'Пауза' : 'Включить'}
+                      disabled={isSavingSource}
+                      onClick={() =>
+                        onUpdateSource(source.id, { importEnabled: !source.importEnabled })
+                      }
+                    >
+                      {source.importEnabled ? <Pause aria-hidden /> : <Play aria-hidden />}
+                    </button>
+                  </div>
                 </header>
 
-                <div className="vk-source-card__states">
-                  <SourceStateToggle
-                    label="Импорт"
-                    value={source.importEnabled ? 'Вкл' : 'Пауза'}
-                    checked={source.importEnabled}
-                    disabled={isSavingSource}
-                    onChange={(checked) => onUpdateSource(source.id, { importEnabled: checked })}
-                  />
-                  <SourceStateToggle
-                    label="Авто"
-                    value={source.autoPublishEnabled ? 'Вкл' : 'Выкл'}
-                    checked={source.autoPublishEnabled}
+                <div className="vk-source-card__main-row">
+                  <SourceAutoControl
+                    source={source}
                     disabled={isSavingSource || !source.importEnabled}
                     onChange={(checked) =>
                       onUpdateSource(source.id, { autoPublishEnabled: checked })
                     }
                   />
+                  <div className="vk-source-card__metrics" aria-label="Сводка источника">
+                    <span title="Следующее обновление">
+                      <b>{formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}</b>
+                      <small>Обновление</small>
+                    </span>
+                    <span title="Постов в очереди">
+                      <b>{source.queuedPostCount}</b>
+                      <small>Очередь</small>
+                    </span>
+                    <span title="Ошибки публикации">
+                      <b>{source.failedPostCount}</b>
+                      <small>Ошибки</small>
+                    </span>
+                  </div>
                 </div>
 
                 <details
@@ -371,18 +399,6 @@ export function SourceDashboard({
                           />
                           <span>Выбрать</span>
                         </label>
-                        <button
-                          type="button"
-                          className="vk-parsing-icon-button"
-                          aria-label={source.importEnabled ? 'Пауза' : 'Включить'}
-                          title={source.importEnabled ? 'Пауза' : 'Включить'}
-                          disabled={isSavingSource}
-                          onClick={() =>
-                            onUpdateSource(source.id, { importEnabled: !source.importEnabled })
-                          }
-                        >
-                          {source.importEnabled ? <Pause aria-hidden /> : <Play aria-hidden />}
-                        </button>
                         <button
                           type="button"
                           className="vk-parsing-icon-button"
@@ -416,12 +432,12 @@ export function SourceDashboard({
                       </div>
 
                       <div className="vk-source-detail-strip">
-                        <span title="Текущий режим публикации">
-                          <b>Режим</b>
-                          {formatSourceMode(source)}
+                        <span title="Опубликовано из источника">
+                          <b>Опубл.</b>
+                          {source.publishedPostCount}
                         </span>
-                        <span title="Следующий импорт">
-                          <b>След.</b>
+                        <span title="Следующее обновление">
+                          <b>Обнов.</b>
                           {formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}
                         </span>
                         <span title="Постов в очереди">
