@@ -9,6 +9,7 @@ import { config as loadEnv } from 'dotenv';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { InMemoryCommercialCampaignTracker } from '../moderation/commercial-campaign.util';
+import { COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES } from '../moderation/commercial/commercial-suppressors';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
@@ -80,6 +81,14 @@ type AuditSegment =
   | 'SERVICES'
   | 'OTHER';
 
+type AuditCorpusLabel =
+  | 'positive_candidate'
+  | 'negative_candidate'
+  | 'gray_candidate'
+  | 'unlabeled';
+
+type AuditCorpusLabelSource = 'commercial-audit-policy-v1' | null;
+
 type CommercialSnapshot = {
   hit: boolean;
   score: number | null;
@@ -109,6 +118,11 @@ type AuditRecord = {
   category: AuditCategory;
   policyCategory: AuditPolicyCategory;
   segment: AuditSegment;
+  label: AuditCorpusLabel;
+  labelSource: AuditCorpusLabelSource;
+  expectedAction: string | null;
+  expectedSubtype: string | null;
+  isHardNegative: boolean;
   createdAt: Date;
   webhookEventId: string;
   chatId: string;
@@ -589,7 +603,8 @@ function readNumericRecord(value: unknown): Record<string, number> {
 
   return Object.fromEntries(
     Object.entries(record).filter(
-      (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+      (entry): entry is [string, number] =>
+        typeof entry[1] === 'number' && Number.isFinite(entry[1]),
     ),
   );
 }
@@ -621,7 +636,10 @@ function derivePolicyCategory(params: {
   if ((current.fpRisk ?? 0) >= 70) {
     return 'false_positive_candidate';
   }
-  if (current.evidenceStrength === 'CAMPAIGN' || current.matchedSignals.some((item) => item.startsWith('campaign:'))) {
+  if (
+    current.evidenceStrength === 'CAMPAIGN' ||
+    current.matchedSignals.some((item) => item.startsWith('campaign:'))
+  ) {
     const hasDirectDeal =
       current.matchedSignals.includes('transaction:price') ||
       current.matchedSignals.includes('contact:phone') ||
@@ -633,10 +651,88 @@ function derivePolicyCategory(params: {
   if (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE') {
     return 'hard_delete';
   }
-  if (current.reviewRecommended || current.actionBand === 'WARN' || current.actionBand === 'REVIEW_ONLY') {
+  if (
+    current.reviewRecommended ||
+    current.actionBand === 'WARN' ||
+    current.actionBand === 'REVIEW_ONLY'
+  ) {
     return 'gray_zone';
   }
   return 'none';
+}
+
+function hasHardNegativeSignals(snapshot: CommercialSnapshot): boolean {
+  return snapshot.negativeSignals.some((signal) =>
+    COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES.some((prefix) => signal.startsWith(prefix)),
+  );
+}
+
+function deriveCorpusLabel(params: {
+  category: AuditCategory;
+  policyCategory: AuditPolicyCategory;
+  current: CommercialSnapshot;
+  historical: CommercialSnapshot;
+}): Pick<
+  AuditRecord,
+  'label' | 'labelSource' | 'expectedAction' | 'expectedSubtype' | 'isHardNegative'
+> {
+  const { category, policyCategory, current, historical } = params;
+  const currentSubtype = current.primarySubtype ?? current.subtype;
+  const historicalSubtype = historical.primarySubtype ?? historical.subtype;
+  const hardNegative =
+    policyCategory === 'false_positive_candidate' || hasHardNegativeSignals(current);
+
+  if (policyCategory === 'false_positive_candidate' || category === 'stable_clear') {
+    return {
+      label: 'negative_candidate',
+      labelSource: 'commercial-audit-policy-v1',
+      expectedAction: 'ALLOW',
+      expectedSubtype: null,
+      isHardNegative: hardNegative || category === 'stable_clear',
+    };
+  }
+
+  if (policyCategory === 'false_negative_candidate') {
+    return {
+      label: 'positive_candidate',
+      labelSource: 'commercial-audit-policy-v1',
+      expectedAction: historical.actionBand ?? 'WARN',
+      expectedSubtype: historicalSubtype,
+      isHardNegative: false,
+    };
+  }
+
+  if (policyCategory === 'gray_zone' || policyCategory === 'campaign_only') {
+    return {
+      label: 'gray_candidate',
+      labelSource: 'commercial-audit-policy-v1',
+      expectedAction: current.actionBand ?? 'REVIEW_ONLY',
+      expectedSubtype: currentSubtype,
+      isHardNegative: hardNegative,
+    };
+  }
+
+  if (
+    policyCategory === 'hard_delete' ||
+    category === 'stable_hit' ||
+    category === 'current_only'
+  ) {
+    return {
+      label: 'positive_candidate',
+      labelSource: 'commercial-audit-policy-v1',
+      expectedAction: current.actionBand ?? 'WARN',
+      expectedSubtype: currentSubtype,
+      isHardNegative: hardNegative,
+    };
+  }
+
+  return {
+    label: 'unlabeled',
+    labelSource: null,
+    expectedAction: null,
+    expectedSubtype: currentSubtype ?? historicalSubtype,
+    isHardNegative: hardNegative,
+  };
 }
 
 function mapSubtypeToSegment(subtype: string | null): AuditSegment | null {
@@ -767,6 +863,11 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
         category: record.category,
         policyCategory: record.policyCategory,
         segment: record.segment,
+        label: record.label,
+        labelSource: record.labelSource,
+        expectedAction: record.expectedAction,
+        expectedSubtype: record.expectedSubtype,
+        isHardNegative: record.isHardNegative,
         createdAt: record.createdAt.toISOString(),
         webhookEventId: record.webhookEventId,
         chatId: record.chatId,
@@ -816,6 +917,7 @@ async function main() {
     const skipCounts = new Map<AuditSkipReason, number>();
     const categoryCounts = new Map<AuditCategory, number>();
     const policyCategoryCounts = new Map<AuditPolicyCategory, number>();
+    const corpusLabelCounts = new Map<AuditCorpusLabel, number>();
     const segmentCounts = new Map<`${AuditCategory}:${AuditSegment}`, number>();
     const currentSignalCounts = new Map<string, number>();
     const currentSubtypeCounts = new Map<string, number>();
@@ -883,10 +985,12 @@ async function main() {
         historicalSignals: historical.matchedSignals,
       });
       const policyCategory = derivePolicyCategory({ category, current });
+      const corpusLabel = deriveCorpusLabel({ category, policyCategory, current, historical });
       const sanitizedText = sanitizeAuditText(text);
 
       pushCount(categoryCounts, category);
       pushCount(policyCategoryCounts, policyCategory);
+      pushCount(corpusLabelCounts, corpusLabel.label);
       pushCount(segmentCounts, `${category}:${segment}`);
       for (const signal of current.matchedSignals) {
         pushCount(currentSignalCounts, signal);
@@ -911,6 +1015,7 @@ async function main() {
         category,
         policyCategory,
         segment,
+        ...corpusLabel,
         createdAt: row.createdAt,
         webhookEventId: row.webhookEventId,
         chatId: row.chatId,
@@ -950,6 +1055,7 @@ async function main() {
     console.log(`skip_breakdown=${formatCounts(skipCounts) || 'none'}`);
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
     console.log(`policy_category_breakdown=${formatCounts(policyCategoryCounts) || 'none'}`);
+    console.log(`corpus_label_breakdown=${formatCounts(corpusLabelCounts) || 'none'}`);
     console.log(
       `historical_only_segments=${
         formatCounts(
@@ -1040,6 +1146,9 @@ async function main() {
             `senderId=${record.senderId ?? 'unknown'}`,
             `segment=${record.segment}`,
             `policy=${record.policyCategory}`,
+            `label=${record.label}`,
+            `expectedAction=${record.expectedAction ?? 'n/a'}`,
+            `expectedSubtype=${record.expectedSubtype ?? 'n/a'}`,
           ].join(' '),
         );
         console.log(`  text=${makeExcerpt(record.text)}`);

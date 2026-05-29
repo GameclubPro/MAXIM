@@ -799,7 +799,11 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'cargo moving service from six hour clear sweep',
     text: `Грузоперевозки по РФ и обратно. Газель до 2 тонн, грузчики, домашние и офисные переезды, стройматериалы, быстро и аккуратно. Телеграм +7 900 000 00 52.`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: ['service-specialty:грузоперевоз', 'service-specialty:logistics-delivery', 'contact:phone'],
+    expectedSignals: [
+      'service-specialty:грузоперевоз',
+      'service-specialty:logistics-delivery',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -812,6 +816,45 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSubtype: 'GOODS_RETAIL',
     reviewRecommended: false,
     expectedSignals: ['goods-retail:commercial-equipment', 'intent:продам', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'repair service with tg handle and price range recall pack',
+    text: `Ремонт холодильников на дому. Диагностика, заправка, замена компрессора, гарантия. Цены от 1500. Пишите tg master_holod или в личные сообщения.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:ремонт',
+      'service-specialty:холодильник',
+      'contact:handle',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'retail preorder with shortlink recall pack',
+    text: `Предзаказ кроссовок. Размеры 36/37/38/39/40, цвета на выбор, доставка по России. Цены от 3900. Каталог: clck.ru/example`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['transaction:price', 'goods-retail:order-flow', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'loan leadgen with masked phone recall pack',
+    text: `Займ онлайн без отказа до зарплаты. Быстрое одобрение заявки, пишите сразу. Телефон +7 900 *** 12 34.`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: false,
+    expectedSignals: ['risk:loan-leadgen', 'contact:masked-phone'],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -1035,6 +1078,24 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 53,
       commercialAdsDeleteThreshold: 73,
+    },
+  },
+  {
+    label: 'private one off bicycle sale with shortlink false positive guard',
+    text: `Продам свой детский велосипед б/у после одного сезона. Цена 3500 руб, самовывоз. Фото тут: clck.ru/private-bike`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'recommendation request with tg handle false positive guard',
+    text: `Посоветуйте мастера по холодильникам, пожалуйста. Нашла tg holod_master, кто-нибудь обращался, нормальный специалист?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
     },
   },
 ];

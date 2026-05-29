@@ -31,6 +31,7 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
   const evidenceTier = resolveEvidenceTier({
     legacyStrength: detection.evidenceStrength,
     hasHighRiskEvidence,
+    hasDirectDealEvidence,
   });
   const actionBand = resolveCommercialActionPolicy({
     confidenceScore: detection.confidenceScore,
@@ -67,8 +68,10 @@ export function buildCommercialFeatureVector(
   matchedSignals: readonly string[],
   negativeSignals: readonly string[],
 ): CommercialFeatureVector {
-  const hasPrefix = (prefix: string): boolean => matchedSignals.some((signal) => signal.startsWith(prefix));
-  const hasAny = (...signals: string[]): boolean => signals.some((signal) => matchedSignals.includes(signal));
+  const hasPrefix = (prefix: string): boolean =>
+    matchedSignals.some((signal) => signal.startsWith(prefix));
+  const hasAny = (...signals: string[]): boolean =>
+    signals.some((signal) => matchedSignals.includes(signal));
 
   return {
     commercialIntent: hasPrefix('intent:') ? 1 : 0,
@@ -134,9 +137,13 @@ export function estimateCommercialFpRisk(params: {
 function resolveEvidenceTier(params: {
   legacyStrength: CommercialDetection['evidenceStrength'];
   hasHighRiskEvidence: boolean;
+  hasDirectDealEvidence: boolean;
 }): CommercialEvidenceTier {
   if (params.hasHighRiskEvidence) {
     return 'HIGH_RISK';
+  }
+  if (params.hasDirectDealEvidence) {
+    return 'DIRECT';
   }
   return params.legacyStrength;
 }

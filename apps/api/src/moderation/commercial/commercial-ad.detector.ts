@@ -14,6 +14,7 @@ import type { CommercialDecisionBand, CommercialSubtype } from '../rule-engine.c
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { normalizeCommercialText } from './commercial-normalization';
 import { COMMERCIAL_DECISION_VERSION, enrichCommercialDetection } from './commercial-explain';
+import { countPatternMatches, sigmoid } from './commercial-scorer';
 
 export type CommercialDetection = {
   confidenceScore: number;
@@ -326,6 +327,17 @@ const ADS_HIGH_RISK_COMMERCIAL_PATTERNS: LabeledPattern[] = [
 const ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS = new Map<string, number>(
   Object.entries(COMMERCIAL_ENGINE_CONFIG.scoring.highRiskSignalWeights),
 );
+const ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS = new Set([
+  'risk:betting-gambling',
+  'risk:casino-slot-promo',
+  'risk:crypto-investment',
+  'risk:loan-leadgen',
+  'risk:debt-relief-service',
+  'risk:document-service',
+  'risk:paid-raffle',
+  'risk:paid-raffle-transfer',
+  'risk:referral-bonus-link',
+]);
 const ADS_HIGH_RISK_RAW_LINK_PATTERNS: LabeledPattern[] = [
   {
     label: 'casino-landing-link',
@@ -655,6 +667,12 @@ const ADS_CONTACT_MARKERS = [
   'телега',
   'в тг',
   ' тг',
+  'tg',
+  'w/a',
+  'номер в профиле',
+  'номер в описании',
+  'ссылка в профиле',
+  'ссылка в описании',
 ];
 const ADS_NEGATIVE_MARKERS = [
   'не продаю',
@@ -1177,10 +1195,12 @@ const ADS_SPECIAL_TOKEN_MATCHERS = new Map<string, RegExp>([
   ['банкет', /^банкет(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
 ]);
 const ADS_LINK_PATTERN =
-  /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
+  /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|bit\.ly\/|clck\.ru\/|goo\.su\/|tinyurl\.com\/|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
 const ADS_PRICE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PRICE_RANGE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:цен[\p{L}\p{N}_-]*|стоимост[\p{L}\p{N}_-]*|прайс)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,24})от\s+\d{2,}(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PRICE_CAPTURE_GLOBAL_PATTERN = /\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
 const ADS_MULTI_SKU_PRICE_LINE_PATTERN =
   /(?:^|[,.;\n])\s*(?:[^\s][\p{L}\p{N}\s()/"'#+-]{0,36})?(?:на\s+\d{1,2}(?:[.,]\d)?)?\s*[-:–]\s*\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
@@ -1191,7 +1211,7 @@ const ADS_GOODS_FRESH_STOCK_PATTERN =
 const ADS_PERSONAL_RESALE_STRONG_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:б\/у|бу|в\s+отличном\s+состоянии|в\s+хорошем\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|после\s+одного\s+(?:ребенка|ребёнка|сезона)|носил[аи]?|одевал[аи]?|надевал[аи]?|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_TRANSACTIONAL_PATTERN =
-  /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
+  /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|предзаказ|предварительный\s+заказ|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])в\s+наличии\s+\d{1,2}\s*(?:шт\.?|штук)(?:[\p{L}\p{N}\s.,:;()/-]{0,40})(?:по\s+)?\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?)(?:[\p{L}\p{N}\s.,:;()/-]{0,18})(?:кажд[\p{L}\p{N}_-]*)?(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PRIVATE_LOW_QUANTITY_COMMERCIAL_OVERRIDE_PATTERN =
@@ -1204,6 +1224,10 @@ const ADS_QUANTITY_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:шт|штук|шт\.|пачк[\p{L}\p{N}_-]*|упак[\p{L}\p{N}_-]*|остатк[\p{L}\p{N}_-]*|места)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+?7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
+const ADS_MASKED_PHONE_PATTERN =
+  /(?:^|[^\d])(?:\+?7|8)[\s().-]*(?:\d[\s().-]*){2,4}(?:[*xх][\s().-]*){2,4}(?:\d[\s().-]*){2,5}(?:$|[^\d])/iu;
+const ADS_HANDLE_CONTACT_PATTERN =
+  /(?:^|[^\p{L}\p{N}_@])(?:@[a-z0-9_]{4,32}|(?:tg|тг|telegram|телеграм|vk|вк|wa|w\/a|whatsapp|ватсап)[:\s-]+[a-z0-9_]{4,32})(?=$|[^\p{L}\p{N}_])/iu;
 
 export class CommercialAdDetector {
   private readonly commercialSecondStageCache = new CommercialSecondStageDecisionCache();
@@ -1317,7 +1341,10 @@ export class CommercialAdDetector {
     const hasDealSignal =
       ADS_LINK_PATTERN.test(rawLoweredText) ||
       ADS_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_MASKED_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_HANDLE_CONTACT_PATTERN.test(rawLoweredText) ||
       ADS_PRICE_PATTERN.test(rawLoweredText) ||
+      ADS_PRICE_RANGE_PATTERN.test(rawLoweredText) ||
       ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
       hasIntentContext ||
       ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
@@ -1343,7 +1370,7 @@ export class CommercialAdDetector {
       ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasStrongGoodsRetailContext =
       ADS_GOODS_RETAIL_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
-      this.countPatternMatches(rawLoweredText, ADS_MULTI_SKU_PRICE_LINE_PATTERN, 4) >= 2;
+      countPatternMatches(rawLoweredText, ADS_MULTI_SKU_PRICE_LINE_PATTERN, 4) >= 2;
     const hasPropertyServiceCommercialOverride =
       hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
@@ -1793,6 +1820,7 @@ export class CommercialAdDetector {
     const directDealEvidence =
       (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
       (state.hasDealChannel && state.hasContact);
+    const hasHighRiskEvidence = state.matchedSignals.some((signal) => signal.startsWith('risk:'));
     const strongCampaignEvidence = this.hasStrongCommercialCampaignEvidence(
       commercialCampaignContext,
       state,
@@ -1809,17 +1837,14 @@ export class CommercialAdDetector {
         state.hasBusinessContext ||
         state.hasPromoContext) &&
       (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-    const priceMatchCount = this.countPatternMatches(
-      rawLoweredText,
-      ADS_PRICE_CAPTURE_GLOBAL_PATTERN,
-    );
+    const priceMatchCount = countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN);
     const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
-    const multiSkuPriceLineCount = this.countPatternMatches(
+    const multiSkuPriceLineCount = countPatternMatches(
       rawLoweredText,
       ADS_MULTI_SKU_PRICE_LINE_PATTERN,
       secondStageConfig.countLimits.multiSkuEvidence,
     );
-    const goodsVariantMarkerCount = this.countPatternMatches(
+    const goodsVariantMarkerCount = countPatternMatches(
       rawLoweredText,
       ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
       secondStageConfig.countLimits.multiSkuEvidence,
@@ -1958,7 +1983,7 @@ export class CommercialAdDetector {
       commercialLogit += commercialLogitConfig.personalMultiSkuPenalty;
     }
 
-    const commercialProbability = this.sigmoid(commercialLogit);
+    const commercialProbability = sigmoid(commercialLogit);
     const classifierReasons: string[] = [];
     let adjustedConfidenceScore = confidenceScore;
 
@@ -2065,7 +2090,8 @@ export class CommercialAdDetector {
       reviewLogit += reviewLogitConfig.highDecision;
     }
     if (
-      adjustedConfidenceScore <= appliedThresholds.warnThreshold + reviewLogitConfig.nearWarnWindow
+      adjustedConfidenceScore <=
+      appliedThresholds.warnThreshold + reviewLogitConfig.nearWarnWindow
     ) {
       reviewLogit += reviewLogitConfig.nearWarn;
     }
@@ -2116,7 +2142,7 @@ export class CommercialAdDetector {
       reviewLogit += reviewLogitConfig.highCommercialProbability;
     }
 
-    const reviewProbability = this.sigmoid(reviewLogit);
+    const reviewProbability = sigmoid(reviewLogit);
     let reviewReasons = [...classification.reviewReasons];
     if (primarySubtype !== 'GOODS' && primarySubtype !== 'GENERIC') {
       reviewReasons = reviewReasons.filter((reason) => reason !== 'generic-subtype');
@@ -2153,7 +2179,15 @@ export class CommercialAdDetector {
         reviewReasons.includes('generic-subtype') ||
         reviewReasons.includes('conflicting-negative-signals'));
 
-    if (
+    const hasReviewClearingHighRiskEvidence = state.matchedSignals.some((signal) =>
+      ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS.has(signal),
+    );
+
+    if (hasReviewClearingHighRiskEvidence && adjustedDecisionBand === 'HIGH') {
+      reviewRecommended = false;
+      reviewReasons = [];
+      classifierReasons.push('cleared-high-risk');
+    } else if (
       !hasHardReviewReason &&
       reviewProbability <= reviewLogitConfig.clearReviewProbability &&
       adjustedDecisionBand === 'HIGH' &&
@@ -2220,36 +2254,6 @@ export class CommercialAdDetector {
     );
   }
 
-  private sigmoid(value: number): number {
-    if (value >= 0) {
-      const exponent = Math.exp(-value);
-      return 1 / (1 + exponent);
-    }
-
-    const exponent = Math.exp(value);
-    return exponent / (1 + exponent);
-  }
-
-  private countPatternMatches(
-    value: string,
-    pattern: RegExp,
-    limit: number = COMMERCIAL_ENGINE_CONFIG.secondStage.countLimits.defaultPatternMatches,
-  ): number {
-    if (!value || limit <= 0) {
-      return 0;
-    }
-
-    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
-    const matcher = new RegExp(pattern.source, flags);
-    let count = 0;
-
-    while (count < limit && matcher.exec(value)) {
-      count += 1;
-    }
-
-    return count;
-  }
-
   private classifyCommercialDetection(params: {
     state: CommercialSignalState;
     confidenceScore: number;
@@ -2301,14 +2305,18 @@ export class CommercialAdDetector {
     if (state.hasGoodsRetailContext) {
       addSubtype(
         'GOODS_RETAIL',
-        state.hasServiceContext ? subtypeConfig.GOODS_RETAIL_WITH_SERVICE : subtypeConfig.GOODS_RETAIL,
+        state.hasServiceContext
+          ? subtypeConfig.GOODS_RETAIL_WITH_SERVICE
+          : subtypeConfig.GOODS_RETAIL,
       );
     }
 
     if (state.hasGroupPromoContext || (state.hasGroupPromotionIntent && state.hasDealChannel)) {
       addSubtype(
         'GROUP_PROMOTION',
-        state.hasGroupPromoContext ? subtypeConfig.GROUP_PROMOTION : subtypeConfig.GROUP_PROMOTION_WEAK,
+        state.hasGroupPromoContext
+          ? subtypeConfig.GROUP_PROMOTION
+          : subtypeConfig.GROUP_PROMOTION_WEAK,
       );
     }
 
@@ -2335,7 +2343,8 @@ export class CommercialAdDetector {
     const primarySubtype = rankedSubtypes[0]?.subtype ?? 'GENERIC';
     const supportingSubtypes = rankedSubtypes
       .filter(
-        (entry, index) => index > 0 && entry.score >= rankedSubtypes[0].score - subtypeConfig.supportingWindow,
+        (entry, index) =>
+          index > 0 && entry.score >= rankedSubtypes[0].score - subtypeConfig.supportingWindow,
       )
       .slice(0, subtypeConfig.maxSupportingSubtypes)
       .map((entry) => entry.subtype);
@@ -2380,7 +2389,8 @@ export class CommercialAdDetector {
     }
     if (
       confidenceScore <=
-      appliedThresholds.warnThreshold + COMMERCIAL_ENGINE_CONFIG.secondStage.reviewLogit.nearWarnWindow
+      appliedThresholds.warnThreshold +
+        COMMERCIAL_ENGINE_CONFIG.secondStage.reviewLogit.nearWarnWindow
     ) {
       reviewReasons.push('near-threshold');
     }
@@ -2434,9 +2444,11 @@ export class CommercialAdDetector {
     const weights = scoringConfig.weights;
     const campaignWeights = scoringConfig.campaignWeights;
     const positiveFactor =
-      scoringConfig.positiveFactorBase + profile.strictness * scoringConfig.positiveFactorStrictness;
+      scoringConfig.positiveFactorBase +
+      profile.strictness * scoringConfig.positiveFactorStrictness;
     const negativeFactor =
-      scoringConfig.negativeFactorBase - profile.strictness * scoringConfig.negativeFactorStrictness;
+      scoringConfig.negativeFactorBase -
+      profile.strictness * scoringConfig.negativeFactorStrictness;
 
     let score = 0;
     const matchedSignals: string[] = [];
@@ -2626,8 +2638,11 @@ export class CommercialAdDetector {
       hasCommercialContext = true;
     }
 
+    const hasPaydayLoanRisk = highRiskCommercialHits.some(({ label }) => label === 'loan-leadgen');
     const recruitmentHits = [
-      ...ADS_RECRUITMENT_MARKERS.filter((marker) => hasMarker(marker)),
+      ...ADS_RECRUITMENT_MARKERS.filter(
+        (marker) => !(hasPaydayLoanRisk && marker === 'зарплат') && hasMarker(marker),
+      ),
       ...ADS_RECRUITMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
         ({ label }) => label,
       ),
@@ -2672,12 +2687,12 @@ export class CommercialAdDetector {
       hasCommercialContext = true;
     }
 
-    const multiSkuPriceLineCount = this.countPatternMatches(
+    const multiSkuPriceLineCount = countPatternMatches(
       rawLoweredText,
       ADS_MULTI_SKU_PRICE_LINE_PATTERN,
       4,
     );
-    const goodsVariantMarkerCount = this.countPatternMatches(
+    const goodsVariantMarkerCount = countPatternMatches(
       rawLoweredText,
       ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
       4,
@@ -2765,7 +2780,12 @@ export class CommercialAdDetector {
       hasCallToActionContext = true;
     }
 
-    if (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_PATTERN.test(normalizedText)) {
+    if (
+      ADS_PRICE_PATTERN.test(rawLoweredText) ||
+      ADS_PRICE_PATTERN.test(normalizedText) ||
+      ADS_PRICE_RANGE_PATTERN.test(rawLoweredText) ||
+      ADS_PRICE_RANGE_PATTERN.test(normalizedText)
+    ) {
       addPositive('transaction:price', weights.price);
       hasPrice = true;
       hasTransactional = true;
@@ -2803,6 +2823,25 @@ export class CommercialAdDetector {
       addPositive('contact:phone', weights.phone);
       hasContact = true;
       hasPhoneContact = true;
+      hasDealSignal = true;
+    }
+
+    if (
+      ADS_MASKED_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_MASKED_PHONE_PATTERN.test(normalizedText)
+    ) {
+      addPositive('contact:masked-phone', weights.contactMarker);
+      hasContact = true;
+      hasPhoneContact = true;
+      hasDealSignal = true;
+    }
+
+    if (
+      ADS_HANDLE_CONTACT_PATTERN.test(rawLoweredText) ||
+      ADS_HANDLE_CONTACT_PATTERN.test(normalizedText)
+    ) {
+      addPositive('contact:handle', weights.contactMarker);
+      hasContact = true;
       hasDealSignal = true;
     }
 
