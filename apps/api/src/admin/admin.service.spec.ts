@@ -299,10 +299,12 @@ function createPrismaMock() {
     dialogNotificationSubscription: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
-      upsert: jest.fn().mockImplementation(async ({ create, update }: { create: any; update: any }) => ({
-        ...create,
-        ...update,
-      })),
+      upsert: jest
+        .fn()
+        .mockImplementation(async ({ create, update }: { create: any; update: any }) => ({
+          ...create,
+          ...update,
+        })),
     },
     managedBroadcast: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -6552,6 +6554,9 @@ describe('AdminService.applyManualModerationAction', () => {
       banMember: jest.fn().mockResolvedValue(undefined),
       unbanMember: jest.fn().mockResolvedValue(undefined),
     };
+    const globalSpammerIntelligence = {
+      recordManualBanObservation: jest.fn().mockResolvedValue({ outcome: 'candidate' }),
+    };
 
     const service = new AdminService(
       prisma as never,
@@ -6559,6 +6564,8 @@ describe('AdminService.applyManualModerationAction', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    (service as unknown as { globalSpammerIntelligence: unknown }).globalSpammerIntelligence =
+      globalSpammerIntelligence;
 
     const result = await service.applyManualModerationAction(
       'chat-1',
@@ -6585,6 +6592,13 @@ describe('AdminService.applyManualModerationAction', () => {
       }),
     );
     expect(prisma.auditLog.create).toHaveBeenCalled();
+    expect(globalSpammerIntelligence.recordManualBanObservation).toHaveBeenCalledWith({
+      targetUserId: 'user-rollback',
+      chatId: 'chat-1',
+      actorUserId: 'admin-1',
+      source: 'miniapp',
+      executionMode: 'MAX_BLOCK',
+    });
     expect(result).toEqual({
       ok: true,
       action: 'BAN',
@@ -6606,6 +6620,9 @@ describe('AdminService.applyManualModerationAction', () => {
       deleteKeysByPattern: jest.fn().mockResolvedValue(4),
       setStringWithTtl: jest.fn().mockResolvedValue(undefined),
     };
+    const globalSpammerIntelligence = {
+      recordSuppression: jest.fn().mockResolvedValue({ ok: true }),
+    };
 
     const service = new AdminService(
       prisma as never,
@@ -6615,6 +6632,8 @@ describe('AdminService.applyManualModerationAction', () => {
       undefined,
       redisCounter as never,
     );
+    (service as unknown as { globalSpammerIntelligence: unknown }).globalSpammerIntelligence =
+      globalSpammerIntelligence;
 
     const result = await service.applyManualModerationAction(
       'chat-1',
@@ -6654,6 +6673,14 @@ describe('AdminService.applyManualModerationAction', () => {
         sourceChatId: 'chat-1',
         reason: 'MANUAL_UNBAN',
       },
+    });
+    expect(globalSpammerIntelligence.recordSuppression).toHaveBeenCalledWith({
+      userId: 'user-4',
+      source: 'MANUAL_UNBAN',
+      reason: 'MANUAL_UNBAN',
+      adminUserId: 'admin-1',
+      sourceChatId: 'chat-1',
+      falsePositive: true,
     });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -8769,14 +8796,12 @@ describe('AdminService.listChannels', () => {
           },
         };
       });
-      prisma.chatAdminAllowlist.findMany
-        .mockResolvedValueOnce(channels)
-        .mockResolvedValueOnce(
-          channels.map(({ chat }) => ({
-            chatId: chat.id,
-            createdAt: new Date('2026-05-14T08:59:00.000Z'),
-          })),
-        );
+      prisma.chatAdminAllowlist.findMany.mockResolvedValueOnce(channels).mockResolvedValueOnce(
+        channels.map(({ chat }) => ({
+          chatId: chat.id,
+          createdAt: new Date('2026-05-14T08:59:00.000Z'),
+        })),
+      );
       prisma.channelSettings.findMany.mockResolvedValue([]);
       (prisma as any).managedEntityAccessEdge = {
         findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),

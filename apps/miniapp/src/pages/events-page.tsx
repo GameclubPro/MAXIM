@@ -5,6 +5,9 @@ import type {
   ManualModerationAction,
   ManualModerationActionRequest,
   ChatParticipantItem,
+  GlobalSpammerReviewAction,
+  GlobalSpammerReviewCandidate,
+  GlobalSpammerReviewMetrics,
   ModerationFeedFilter,
   MembershipActivityItem,
 } from '@maxim/contracts';
@@ -39,9 +42,12 @@ import {
   getChatModerationDashboard,
   getChatParticipantsPage,
   getChatModerationFeed,
+  getGlobalSpammerReviewMetrics,
+  getGlobalSpammerReviewQueue,
   getLogsDashboard,
   handoffChatMemberProfile,
   handoffChatMemberProfileKeepalive,
+  reviewGlobalSpammerCandidate,
   updateChatParticipantImmunity,
 } from '../lib/api/events-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -583,6 +589,286 @@ function normalizeActionErrorMessage(error: unknown): string {
   return raw;
 }
 
+function readJsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function formatConfidenceScore(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function formatFalsePositiveRate(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
+
+function resolveSpammerSourceLabel(source: string): string {
+  const labels: Record<string, string> = {
+    FANOUT_HIGH: 'массовая рассылка',
+    FANOUT_REPEAT: 'повторная рассылка',
+    COMMERCIAL_AD: 'коммерция',
+    COMMERCIAL_CAMPAIGN: 'кампания',
+    REPEATED_LINK: 'повтор ссылки',
+    REPEATED_PHONE: 'повтор телефона',
+    SANCTION_BAN: 'санкции',
+    MANUAL_BAN: 'ручной бан',
+    REVIEW_APPROVED: 'review',
+  };
+
+  return labels[source] ?? source.toLowerCase().replaceAll('_', ' ');
+}
+
+function resolveSpammerStatusLabel(status: GlobalSpammerReviewCandidate['status']): string {
+  if (status === 'PENDING') {
+    return 'на проверке';
+  }
+  if (status === 'AUTO_APPROVED') {
+    return 'авто';
+  }
+  if (status === 'APPROVED') {
+    return 'подтверждён';
+  }
+  return 'ложное';
+}
+
+function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
+  return candidate.lastUserLabel?.trim() || `ID ${candidate.userId}`;
+}
+
+function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate): string {
+  const name = resolveSpammerCandidateName(candidate);
+  const matched = name.match(/[A-Za-zА-Яа-яЁё0-9]/);
+  return matched ? matched[0]!.toUpperCase() : 'S';
+}
+
+function resolveSpammerCandidateExcerpt(candidate: GlobalSpammerReviewCandidate): string | null {
+  const chatExcerpt = candidate.chats.find((chat) => chat.lastExcerpt?.trim())?.lastExcerpt?.trim();
+  if (chatExcerpt) {
+    return chatExcerpt;
+  }
+
+  const evidence = readJsonRecord(candidate.lastEvidence);
+  const direct = typeof evidence?.excerpt === 'string' ? evidence.excerpt.trim() : '';
+  if (direct) {
+    return direct;
+  }
+
+  const nested = readJsonRecord(evidence?.evidence);
+  const nestedExcerpt = typeof nested?.excerpt === 'string' ? nested.excerpt.trim() : '';
+  return nestedExcerpt || null;
+}
+
+function resolveSpammerSourceSummary(candidate: GlobalSpammerReviewCandidate): string {
+  const breakdown = readJsonRecord(candidate.sourceBreakdown);
+  const sources = breakdown ? Object.keys(breakdown) : [];
+  const fallbackSources = candidate.observations.map((observation) => observation.source);
+  const uniqueSources = [...new Set(sources.length > 0 ? sources : fallbackSources)];
+  if (uniqueSources.length === 0) {
+    return resolveSpammerSourceLabel(candidate.lastReason);
+  }
+
+  const displayed = uniqueSources.slice(0, 3).map(resolveSpammerSourceLabel);
+  return uniqueSources.length > displayed.length
+    ? `${displayed.join(', ')} +${uniqueSources.length - displayed.length}`
+    : displayed.join(', ');
+}
+
+function formatSpammerSourceAlertReason(reason: string): string {
+  const normalized = reason.toLowerCase();
+  if (normalized.includes('dominates')) {
+    return 'аномальная доля источника';
+  }
+  if (normalized.includes('suppression')) {
+    return 'много ложных срабатываний';
+  }
+  return 'требует внимания';
+}
+
+function GlobalSpammerReviewPanel({
+  metrics,
+  candidates,
+  isLoading,
+  error,
+  expandedCandidateId,
+  reviewingUserId,
+  reasonByUserId,
+  onToggleCandidate,
+  onReasonChange,
+  onReview,
+  onRetry,
+}: {
+  metrics: GlobalSpammerReviewMetrics | null;
+  candidates: GlobalSpammerReviewCandidate[];
+  isLoading: boolean;
+  error: unknown;
+  expandedCandidateId: string | null;
+  reviewingUserId: string | null;
+  reasonByUserId: Record<string, string>;
+  onToggleCandidate: (userId: string) => void;
+  onReasonChange: (userId: string, value: string) => void;
+  onReview: (candidate: GlobalSpammerReviewCandidate, action: GlobalSpammerReviewAction) => void;
+  onRetry: () => void;
+}) {
+  const pending = metrics?.pending ?? candidates.length;
+  const approved = metrics?.approved ?? 0;
+  const falsePositiveRate = metrics?.falsePositiveRate ?? 0;
+  const sourceAlerts = metrics?.sourceAlerts ?? [];
+  const errorMessage = error instanceof Error ? error.message : null;
+
+  return (
+    <section className="spammer-review" aria-label="Очередь базы спама">
+      <div className="spammer-review__head">
+        <div className="spammer-review__title">
+          <strong>База спама</strong>
+          <span>{pending} на проверке</span>
+        </div>
+
+        <div className="spammer-review__metrics" aria-label="Метрики базы спама">
+          <article>
+            <small>В реестре</small>
+            <strong>{approved}</strong>
+          </article>
+          <article>
+            <small>Ложные</small>
+            <strong>{formatFalsePositiveRate(falsePositiveRate)}</strong>
+          </article>
+        </div>
+      </div>
+
+      {sourceAlerts.length > 0 ? (
+        <div className="spammer-review__alerts">
+          {sourceAlerts.slice(0, 2).map((alert) => (
+            <span
+              key={`${alert.source}-${alert.reason}`}
+              className={`spammer-review__alert is-${alert.level}`}
+            >
+              {resolveSpammerSourceLabel(alert.source)}:{' '}
+              {formatSpammerSourceAlertReason(alert.reason)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {errorMessage ? (
+        <div className="spammer-review__state">
+          <span>{errorMessage}</span>
+          <button type="button" className="button button--ghost" onClick={onRetry}>
+            Обновить
+          </button>
+        </div>
+      ) : isLoading ? (
+        <div className="spammer-review__state">
+          <Spinner size="sm" label="Загружаем очередь базы спама" />
+        </div>
+      ) : candidates.length === 0 ? (
+        <div className="spammer-review__state">
+          <span>Очередь пуста</span>
+        </div>
+      ) : (
+        <div className="spammer-review__list">
+          {candidates.map((candidate) => {
+            const expanded = expandedCandidateId === candidate.userId;
+            const label = resolveSpammerCandidateName(candidate);
+            const excerpt = resolveSpammerCandidateExcerpt(candidate);
+            const reasonValue = reasonByUserId[candidate.userId] ?? '';
+            const isReviewing = reviewingUserId === candidate.userId;
+
+            return (
+              <article
+                key={candidate.userId}
+                className={`spammer-review-candidate ${
+                  expanded ? 'is-expanded' : ''
+                } spammer-review-candidate--${candidate.status.toLowerCase()}`}
+              >
+                <div
+                  className="spammer-review-candidate__trigger"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expanded}
+                  onClick={() => onToggleCandidate(candidate.userId)}
+                  onKeyDown={(event) =>
+                    handleExpandableCardKeyDown(event, () => onToggleCandidate(candidate.userId))
+                  }
+                >
+                  <span className="spammer-review-candidate__avatar" aria-hidden="true">
+                    {resolveSpammerCandidateInitial(candidate)}
+                  </span>
+                  <div className="spammer-review-candidate__body">
+                    <div className="spammer-review-candidate__headline">
+                      <strong>{label}</strong>
+                      <span>{formatConfidenceScore(candidate.confidenceScore)}</span>
+                    </div>
+                    <div className="spammer-review-candidate__meta">
+                      <span>{resolveSpammerStatusLabel(candidate.status)}</span>
+                      <span>{resolveSpammerSourceSummary(candidate)}</span>
+                    </div>
+                    {excerpt ? <p>{excerpt}</p> : null}
+                  </div>
+                </div>
+
+                {expanded ? (
+                  <div className="spammer-review-candidate__details">
+                    {candidate.chats.length > 0 ? (
+                      <div className="spammer-review-candidate__facts">
+                        {candidate.chats.slice(0, 3).map((chat) => (
+                          <span key={chat.chatId}>
+                            {chat.chatId}: {chat.detectionsCount}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {candidate.observations.length > 0 ? (
+                      <div className="spammer-review-candidate__observations">
+                        {candidate.observations.slice(0, 3).map((observation) => (
+                          <span key={observation.id}>
+                            {resolveSpammerSourceLabel(observation.source)} /{' '}
+                            {formatConfidenceScore(observation.score)} /{' '}
+                            {formatViolationDate(observation.observedAt)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <label className="spammer-review-candidate__reason">
+                      <span>Причина решения</span>
+                      <input
+                        value={reasonValue}
+                        maxLength={500}
+                        onChange={(event) => onReasonChange(candidate.userId, event.target.value)}
+                      />
+                    </label>
+
+                    <div className="spammer-review-candidate__actions">
+                      <button
+                        type="button"
+                        className="spammer-review-candidate__button spammer-review-candidate__button--approve"
+                        disabled={isReviewing}
+                        onClick={() => onReview(candidate, 'APPROVE')}
+                      >
+                        {isReviewing ? 'Сохраняем...' : 'Подтвердить'}
+                      </button>
+                      <button
+                        type="button"
+                        className="spammer-review-candidate__button spammer-review-candidate__button--suppress"
+                        disabled={isReviewing}
+                        onClick={() => onReview(candidate, 'SUPPRESS')}
+                      >
+                        Ложное
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ViolationModerationControls({
   api,
   chatId,
@@ -868,6 +1154,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
+  const [expandedSpammerCandidateId, setExpandedSpammerCandidateId] = useState<string | null>(null);
+  const [spammerReviewReasons, setSpammerReviewReasons] = useState<Record<string, string>>({});
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
   const [participantsSearch, setParticipantsSearch] = useState('');
   const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
@@ -1096,6 +1384,31 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     initialPage: includeModerationPreview ? (dashboard?.moderationFeed ?? null) : null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
+  const spammerReviewQueueQuery = useQuery({
+    queryKey: queryKeys.globalSpammerReviewQueue(chatId, 'PENDING', 6),
+    queryFn: ({ signal }) =>
+      getGlobalSpammerReviewQueue(
+        api,
+        chatId ?? '',
+        {
+          status: 'PENDING',
+          limit: 6,
+        },
+        { signal },
+      ),
+    enabled: Boolean(chatId) && section === 'moderation',
+    staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
+    refetchOnWindowFocus: false,
+  });
+  const spammerReviewMetricsQuery = useQuery({
+    queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
+    queryFn: ({ signal }) => getGlobalSpammerReviewMetrics(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId) && section === 'moderation',
+    staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
+    refetchOnWindowFocus: false,
+  });
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
@@ -1203,6 +1516,46 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const spammerReviewMutation = useMutation({
+    mutationFn: ({
+      userId,
+      action,
+      reason,
+    }: {
+      userId: string;
+      action: GlobalSpammerReviewAction;
+      reason?: string;
+    }) =>
+      reviewGlobalSpammerCandidate(api, chatId ?? '', userId, {
+        action,
+        ...(reason ? { reason } : {}),
+      }),
+    onSuccess: (result) => {
+      setExpandedSpammerCandidateId(null);
+      setSpammerReviewReasons((current) => {
+        const next = { ...current };
+        delete next[result.userId];
+        return next;
+      });
+      pushToast({
+        tone: 'success',
+        title: result.status === 'SUPPRESSED' ? 'Кандидат подавлен' : 'Кандидат подтверждён',
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.globalSpammerReviewQueue(chatId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
+      });
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить решение',
+        description: normalizeActionErrorMessage(error),
+      });
+    },
+  });
   const filterOptions = useMemo<
     Array<{ value: EventsFilter; label: string; count: number }>
   >(() => {
@@ -1235,6 +1588,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setExpandedViolationId(null);
+    setExpandedSpammerCandidateId(null);
   }, [eventsFilter, range, section]);
 
   useEffect(() => {
@@ -1289,6 +1643,30 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setEventsFilter(nextFilter);
     });
+  };
+  const handleSpammerCandidateToggle = (userId: string) => {
+    setExpandedSpammerCandidateId((current) => (current === userId ? null : userId));
+  };
+  const handleSpammerReviewReasonChange = (userId: string, value: string) => {
+    setSpammerReviewReasons((current) => ({
+      ...current,
+      [userId]: value,
+    }));
+  };
+  const handleSpammerReview = (
+    candidate: GlobalSpammerReviewCandidate,
+    action: GlobalSpammerReviewAction,
+  ) => {
+    const reason = spammerReviewReasons[candidate.userId]?.trim();
+    spammerReviewMutation.mutate({
+      userId: candidate.userId,
+      action,
+      ...(reason ? { reason } : {}),
+    });
+  };
+  const handleSpammerReviewRetry = () => {
+    void spammerReviewQueueQuery.refetch();
+    void spammerReviewMetricsQuery.refetch();
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
     if (nextFilter === activityFeed.filter) {
@@ -1669,6 +2047,27 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
       {section === 'moderation' ? (
         <>
+          <GlobalSpammerReviewPanel
+            metrics={spammerReviewMetricsQuery.data ?? null}
+            candidates={spammerReviewQueueQuery.data?.items ?? []}
+            isLoading={
+              (spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data) ||
+              (spammerReviewMetricsQuery.isLoading && !spammerReviewMetricsQuery.data)
+            }
+            error={spammerReviewQueueQuery.error ?? spammerReviewMetricsQuery.error}
+            expandedCandidateId={expandedSpammerCandidateId}
+            reviewingUserId={
+              spammerReviewMutation.isPending
+                ? (spammerReviewMutation.variables?.userId ?? null)
+                : null
+            }
+            reasonByUserId={spammerReviewReasons}
+            onToggleCandidate={handleSpammerCandidateToggle}
+            onReasonChange={handleSpammerReviewReasonChange}
+            onReview={handleSpammerReview}
+            onRetry={handleSpammerReviewRetry}
+          />
+
           {dashboardQuery.error && dashboard ? (
             <GlassCard className="events-inline-state">
               <StatusState

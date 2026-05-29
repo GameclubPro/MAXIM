@@ -3209,7 +3209,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
   });
 
-  it('adds user to global spammer registry on repeated 5-chat fanout without warnings when toggle is disabled', async () => {
+  it('keeps repeated 5-chat fanout out of the registry when toggle is disabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -3318,23 +3318,12 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-10', 'msg-10', 'Добрый день, команда 10'));
 
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-spam-1' },
-      create: expect.objectContaining({
-        userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
-        lastChatId: 'chat-10',
-      }),
-      update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
-        lastChatId: 'chat-10',
-      }),
-    });
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
   });
 
-  it('adds user to global spammer registry on repeated 5-chat fanout without warning', async () => {
+  it('keeps repeated 5-chat fanout in review without warning when toggle is enabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -3443,18 +3432,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-10', 'msg-10', 'Добрый день, команда 10'));
 
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-spam-1' },
-      create: expect.objectContaining({
-        userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
-        lastChatId: 'chat-10',
-      }),
-      update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
-        lastChatId: 'chat-10',
-      }),
-    });
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
   });

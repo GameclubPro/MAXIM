@@ -198,6 +198,8 @@ model Chat {
   dialogNotificationSubscriptions DialogNotificationSubscription[]
   participantImmunities           ChatParticipantModerationImmunity[]
   invitationAccessProgress        ChatInvitationAccessProgress[]
+  spammerObservations             SpammerObservation[]
+  globalSpammerCandidateChats     GlobalSpammerCandidateChat[]
 
   @@index([botId], map: "chats_bot_id_idx")
   @@index([primaryBotId], map: "chats_primary_bot_id_idx")
@@ -658,8 +660,104 @@ model GlobalSpammer {
   lastReason      String   @map("last_reason")
   lastChatId      String?  @map("last_chat_id")
   lastEvidence    Json?    @map("last_evidence")
+  confidenceScore Float    @default(1) @map("confidence_score")
+  confirmedAt     DateTime @default(now()) @map("confirmed_at")
+  expiresAt       DateTime? @map("expires_at")
+  sourceBreakdown Json     @default("{}") @map("source_breakdown")
 
+  @@index([lastDetectedAt(sort: Desc)], map: "global_spammers_last_detected_at_idx")
+  @@index([expiresAt], map: "global_spammers_expires_at_idx")
   @@map("global_spammers")
+}
+
+model GlobalSpammerCandidate {
+  userId           String   @id @map("user_id")
+  status           String   @default("PENDING")
+  firstDetectedAt  DateTime @default(now()) @map("first_detected_at")
+  lastDetectedAt   DateTime @updatedAt @map("last_detected_at")
+  detectionsCount  Int      @default(1) @map("detections_count")
+  lastReason       String   @map("last_reason")
+  lastChatId       String?  @map("last_chat_id")
+  lastEvidence     Json?    @map("last_evidence")
+  lastUserLabel    String?  @map("last_user_label")
+  confidenceScore  Float    @default(0) @map("confidence_score")
+  sourceBreakdown  Json     @default("{}") @map("source_breakdown")
+  suppressedUntil  DateTime? @map("suppressed_until")
+  reviewedAt       DateTime? @map("reviewed_at")
+  reviewedByUserId String?  @map("reviewed_by_user_id")
+  reviewReason     String?  @map("review_reason")
+  falsePositive    Boolean  @default(false) @map("false_positive")
+
+  chats GlobalSpammerCandidateChat[]
+
+  @@index([status, lastDetectedAt(sort: Desc)], map: "global_spammer_candidates_status_last_detected_at_idx")
+  @@index([suppressedUntil], map: "global_spammer_candidates_suppressed_until_idx")
+  @@index([confidenceScore], map: "global_spammer_candidates_confidence_score_idx")
+  @@map("global_spammer_candidates")
+}
+
+model GlobalSpammerCandidateChat {
+  candidateUserId String   @map("candidate_user_id")
+  chatId          String   @map("chat_id")
+  firstDetectedAt DateTime @default(now()) @map("first_detected_at")
+  lastDetectedAt  DateTime @updatedAt @map("last_detected_at")
+  detectionsCount Int      @default(1) @map("detections_count")
+  lastMessageId   String?  @map("last_message_id")
+  lastExcerpt     String?  @map("last_excerpt")
+  lastUserLabel   String?  @map("last_user_label")
+  lastEvidence    Json?    @map("last_evidence")
+
+  candidate GlobalSpammerCandidate @relation(fields: [candidateUserId], references: [userId], onDelete: Cascade)
+  chat      Chat                   @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([candidateUserId, chatId])
+  @@index([chatId, lastDetectedAt(sort: Desc)], map: "global_spammer_candidate_chats_chat_id_last_detected_at_idx")
+  @@map("global_spammer_candidate_chats")
+}
+
+model SpammerObservation {
+  id                String    @id @default(cuid())
+  userId            String    @map("user_id")
+  source            String
+  score             Float
+  confidenceLevel   String    @default("LOW") @map("confidence_level")
+  reason            String
+  chatId            String?   @map("chat_id")
+  messageId         String?   @map("message_id")
+  evidenceHash      String    @map("evidence_hash")
+  evidence          Json?
+  observedAt        DateTime  @default(now()) @map("observed_at")
+  expiresAt         DateTime  @map("expires_at")
+  suppressedAt      DateTime? @map("suppressed_at")
+  suppressionReason String?   @map("suppression_reason")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  chat Chat? @relation(fields: [chatId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, source, evidenceHash], map: "spammer_observations_user_source_evidence_key")
+  @@index([userId, expiresAt], map: "spammer_observations_user_expires_at_idx")
+  @@index([source, observedAt(sort: Desc)], map: "spammer_observations_source_observed_at_idx")
+  @@index([expiresAt], map: "spammer_observations_expires_at_idx")
+  @@index([suppressedAt], map: "spammer_observations_suppressed_at_idx")
+  @@map("spammer_observations")
+}
+
+model GlobalSpammerSuppression {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  source          String
+  reason          String
+  adminUserId     String?  @map("admin_user_id")
+  sourceChatId    String?  @map("source_chat_id")
+  suppressedUntil DateTime @map("suppressed_until")
+  evidence        Json?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, suppressedUntil], map: "global_spammer_suppressions_user_until_idx")
+  @@index([source, createdAt(sort: Desc)], map: "global_spammer_suppressions_source_created_at_idx")
+  @@map("global_spammer_suppressions")
 }
 
 model BadwordDictionary {

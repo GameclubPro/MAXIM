@@ -137,6 +137,10 @@ import {
   type CommercialCampaignContext,
 } from './commercial-campaign.util';
 import {
+  GlobalSpammerIntelligenceService,
+  type GlobalSpammerObservationSource,
+} from './global-spammer-intelligence.service';
+import {
   buildManagedPollButtons,
   buildManagedPollMessageText,
   buildManagedPollOptionSummaries,
@@ -469,6 +473,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
     @Optional()
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
+    @Optional()
+    private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -1510,6 +1516,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           score: topViolation.score,
         },
       });
+      if (this.globalSpammerIntelligence) {
+        this.runGlobalSpammerSideEffect(
+          { chatId, userId: senderId, messageId, action: 'record-commercial-spammer-observations' },
+          async () => {
+            await this.globalSpammerIntelligence!.recordCommercialObservations({
+              chatId,
+              userId: senderId,
+              messageId,
+              text,
+              topViolation,
+              commercialCampaignContext,
+            });
+          },
+        );
+      }
 
       const messageAgeMs = Date.now() - new Date(createdAt).getTime();
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -6699,14 +6720,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const {
-      chatId,
-      userId,
-      messageId,
-      text,
-      deleteSpammersEnabled,
-      exemptFromEnforcement,
-    } = params;
+    const { chatId, userId, messageId, text, deleteSpammersEnabled, exemptFromEnforcement } =
+      params;
     if (this.hasRecentLocalGlobalSpammerChatObservation(chatId, userId)) {
       return baseResult;
     }
@@ -7360,14 +7375,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
-    const row = await this.prisma.globalSpammer.findUnique({
-      where: {
-        userId,
-      },
-      select: {
-        userId: true,
-      },
-    });
+    const globalSpammerModel = this.prisma.globalSpammer as unknown as {
+      findFirst?: (args: unknown) => Promise<unknown>;
+      findUnique?: (args: unknown) => Promise<unknown>;
+    };
+    const row =
+      typeof globalSpammerModel.findFirst === 'function'
+        ? await globalSpammerModel.findFirst({
+            where: {
+              userId,
+              OR: [
+                {
+                  expiresAt: null,
+                },
+                {
+                  expiresAt: {
+                    gt: new Date(),
+                  },
+                },
+              ],
+            },
+            select: {
+              userId: true,
+            },
+          })
+        : await globalSpammerModel.findUnique?.({
+            where: {
+              userId,
+            },
+            select: {
+              userId: true,
+            },
+          });
     return Boolean(row);
   }
 
@@ -7380,6 +7419,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { userId, sourceChatId, reason, evidence } = params;
 
     try {
+      if (this.globalSpammerIntelligence) {
+        const observation = this.resolveGlobalSpammerObservation(params);
+        await this.globalSpammerIntelligence.recordObservation(observation);
+        return;
+      }
+
+      if (reason === 'HIGH_FANOUT_5_CHATS_REPEAT') {
+        return;
+      }
+
       await this.prisma.globalSpammer.upsert({
         where: {
           userId,
@@ -7410,6 +7459,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to upsert global spammer entry',
       );
     }
+  }
+
+  private resolveGlobalSpammerObservation(params: {
+    userId: string;
+    sourceChatId: string;
+    reason: string;
+    evidence?: Prisma.InputJsonValue;
+  }) {
+    const sourceAndScore = this.resolveGlobalSpammerObservationSource(params.reason);
+    return {
+      userId: params.userId,
+      source: sourceAndScore.source,
+      score: sourceAndScore.score,
+      reason: params.reason,
+      chatId: params.sourceChatId,
+      evidence: params.evidence,
+      forceRegistry: sourceAndScore.forceRegistry,
+      ttlDays: sourceAndScore.ttlDays,
+    };
+  }
+
+  private resolveGlobalSpammerObservationSource(reason: string): {
+    source: GlobalSpammerObservationSource;
+    score: number;
+    forceRegistry: boolean;
+    ttlDays?: number;
+  } {
+    if (reason === 'HIGH_FANOUT_6_CHATS_2M') {
+      return { source: 'FANOUT_HIGH', score: 0.94, forceRegistry: true, ttlDays: 21 };
+    }
+    if (reason === 'HIGH_FANOUT_5_CHATS_REPEAT') {
+      return { source: 'FANOUT_REPEAT', score: 0.68, forceRegistry: false, ttlDays: 14 };
+    }
+    if (reason === 'SANCTION_BAN' || reason === 'SANCTION_KICK') {
+      return { source: 'SANCTION_BAN', score: 0.74, forceRegistry: false, ttlDays: 21 };
+    }
+    return { source: 'SANCTION_BAN', score: 0.62, forceRegistry: false, ttlDays: 14 };
   }
 
   private async processNightModeAnnouncements() {

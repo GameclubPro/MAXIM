@@ -1693,6 +1693,114 @@ export const manualModerationActionResultSchema = z.object({
 });
 export type ManualModerationActionResult = z.infer<typeof manualModerationActionResultSchema>;
 
+export const globalSpammerCandidateStatusSchema = z.enum([
+  'PENDING',
+  'AUTO_APPROVED',
+  'APPROVED',
+  'SUPPRESSED',
+]);
+export type GlobalSpammerCandidateStatus = z.infer<typeof globalSpammerCandidateStatusSchema>;
+
+export const globalSpammerReviewActionSchema = z.enum(['APPROVE', 'SUPPRESS']);
+export type GlobalSpammerReviewAction = z.infer<typeof globalSpammerReviewActionSchema>;
+
+export const globalSpammerConfidenceLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
+export type GlobalSpammerConfidenceLevel = z.infer<typeof globalSpammerConfidenceLevelSchema>;
+
+export const globalSpammerReviewRequestSchema = z.object({
+  action: globalSpammerReviewActionSchema,
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+export type GlobalSpammerReviewRequest = z.infer<typeof globalSpammerReviewRequestSchema>;
+
+export const globalSpammerReviewResultSchema = z.object({
+  ok: z.literal(true),
+  status: globalSpammerCandidateStatusSchema,
+  userId: z.string(),
+});
+export type GlobalSpammerReviewResult = z.infer<typeof globalSpammerReviewResultSchema>;
+
+export const globalSpammerCandidateChatSchema = z.object({
+  chatId: z.string(),
+  detectionsCount: z.number().int().min(0),
+  lastMessageId: z.string().nullable(),
+  lastExcerpt: z.string().nullable(),
+  lastUserLabel: z.string().nullable(),
+  lastDetectedAt: z.string().datetime(),
+});
+export type GlobalSpammerCandidateChat = z.infer<typeof globalSpammerCandidateChatSchema>;
+
+export const globalSpammerObservationSchema = z.object({
+  id: z.string(),
+  source: z.string(),
+  score: z.number().min(0).max(1),
+  confidenceLevel: globalSpammerConfidenceLevelSchema,
+  reason: z.string(),
+  chatId: z.string().nullable(),
+  messageId: z.string().nullable(),
+  evidenceHash: z.string(),
+  evidence: z.unknown().nullable(),
+  observedAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  suppressedAt: z.string().datetime().nullable(),
+  suppressionReason: z.string().nullable(),
+});
+export type GlobalSpammerObservation = z.infer<typeof globalSpammerObservationSchema>;
+
+export const globalSpammerReviewCandidateSchema = z.object({
+  userId: z.string(),
+  status: globalSpammerCandidateStatusSchema,
+  confidenceScore: z.number().min(0).max(1),
+  sourceBreakdown: z.unknown(),
+  lastReason: z.string(),
+  lastChatId: z.string().nullable(),
+  lastEvidence: z.unknown().nullable(),
+  lastUserLabel: z.string().nullable(),
+  suppressedUntil: z.string().datetime().nullable(),
+  reviewedAt: z.string().datetime().nullable(),
+  reviewedByUserId: z.string().nullable(),
+  reviewReason: z.string().nullable(),
+  falsePositive: z.boolean(),
+  chats: z.array(globalSpammerCandidateChatSchema),
+  observations: z.array(globalSpammerObservationSchema),
+});
+export type GlobalSpammerReviewCandidate = z.infer<typeof globalSpammerReviewCandidateSchema>;
+
+export const globalSpammerReviewQueueSchema = z.object({
+  items: z.array(globalSpammerReviewCandidateSchema),
+  limit: z.number().int().min(1).max(100),
+});
+export type GlobalSpammerReviewQueue = z.infer<typeof globalSpammerReviewQueueSchema>;
+
+export const globalSpammerReviewMetricsSchema = z.object({
+  pending: z.number().int().min(0),
+  approved: z.number().int().min(0),
+  suppressed: z.number().int().min(0),
+  reviewed: z.number().int().min(0),
+  falsePositiveCount: z.number().int().min(0),
+  falsePositiveRate: z.number().min(0).max(1),
+  recentObservations: z.array(
+    z.object({
+      source: z.string(),
+      count: z.number().int().min(0),
+    }),
+  ),
+  suppressedObservations: z.array(
+    z.object({
+      source: z.string(),
+      count: z.number().int().min(0),
+    }),
+  ),
+  sourceAlerts: z.array(
+    z.object({
+      source: z.string(),
+      level: z.enum(['warning', 'critical']),
+      reason: z.string(),
+    }),
+  ),
+});
+export type GlobalSpammerReviewMetrics = z.infer<typeof globalSpammerReviewMetricsSchema>;
+
 export const updateSettingsRequestSchema = chatSettingsSchema;
 
 export const addAdminRequestSchema = z.object({

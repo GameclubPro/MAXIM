@@ -32,6 +32,7 @@ import {
 } from '../webhook/webhook-queues';
 import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
+import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
@@ -46,6 +47,7 @@ const moderationProviders = [
   },
   ModerationExecutionService,
   PrivateControlService,
+  GlobalSpammerIntelligenceService,
   RedisCounterService,
   RuleEngineService,
   SanctionService,
@@ -81,6 +83,6 @@ const moderationProviders = [
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,
-  exports: [ModerationExecutionService, ModerationService],
+  exports: [ModerationExecutionService, ModerationService, GlobalSpammerIntelligenceService],
 })
 export class ModerationModule {}

@@ -3,6 +3,10 @@ export const queryKeys = {
 
   logsDashboard: (chatId: string, range: string, ...scope: readonly unknown[]) =>
     ['logs-dashboard', chatId, range, ...scope] as const,
+  globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
+    ['global-spammer-review-queue', chatId, ...scope] as const,
+  globalSpammerReviewMetrics: (chatId: string | null | undefined) =>
+    ['global-spammer-review-metrics', chatId] as const,
   channelStats: (chatId: string, range: string) => ['channel-stats', chatId, range] as const,
 
   entityDialog: (

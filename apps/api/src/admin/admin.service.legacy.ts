@@ -173,6 +173,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
+import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { buildModerationEscalationCounterPattern } from '../moderation/moderation-escalation-state.util';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
@@ -589,6 +590,8 @@ export class AdminService implements OnModuleDestroy {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
+    @Optional()
+    private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -7249,8 +7252,7 @@ export class AdminService implements OnModuleDestroy {
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
-      buildAutofilledText: () =>
-        this.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
+      buildAutofilledText: () => this.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
       buildFormattedText: (sourceText, options) =>
         this.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
@@ -9077,11 +9079,7 @@ export class AdminService implements OnModuleDestroy {
           .map((segment) => segment.trim())
           .filter(Boolean);
         const rootSegment = pathSegments[0]?.toLowerCase();
-        if (
-          rootSegment !== 'chats' &&
-          rootSegment !== 'c' &&
-          rootSegment !== 'chat'
-        ) {
+        if (rootSegment !== 'chats' && rootSegment !== 'c' && rootSegment !== 'chat') {
           continue;
         }
 
@@ -9752,11 +9750,7 @@ export class AdminService implements OnModuleDestroy {
     broadcastId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.getChannelManagedBroadcast(
-      sourceChatId,
-      broadcastId,
-      user,
-    );
+    return this.managedBroadcastRuntime.getChannelManagedBroadcast(sourceChatId, broadcastId, user);
   }
 
   updateManagedBroadcast(
@@ -9765,7 +9759,12 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     body: unknown,
   ): Promise<ManagedBroadcastDetails> {
-    return this.managedBroadcastRuntime.updateManagedBroadcast(sourceChatId, broadcastId, user, body);
+    return this.managedBroadcastRuntime.updateManagedBroadcast(
+      sourceChatId,
+      broadcastId,
+      user,
+      body,
+    );
   }
 
   updateChannelManagedBroadcast(
@@ -11037,6 +11036,13 @@ export class AdminService implements OnModuleDestroy {
       }
 
       await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+      await this.globalSpammerIntelligence?.recordManualBanObservation({
+        chatId,
+        targetUserId,
+        actorUserId: user.userId,
+        source,
+        executionMode,
+      });
       const shouldFanoutMiniappBan = source === 'miniapp';
       const { sourceMessageCleanup, crossChatFanout } = shouldFanoutMiniappBan
         ? await this.resolveManualBanFollowUpSummaries({
@@ -11330,6 +11336,13 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+    await this.globalSpammerIntelligence?.recordManualBanObservation({
+      chatId,
+      targetUserId,
+      actorUserId: user.userId,
+      source,
+      executionMode,
+    });
 
     let recentMessageCleanup = this.summarizeManualModerationCleanup({
       candidateMessageIds: [],
@@ -13139,6 +13152,15 @@ export class AdminService implements OnModuleDestroy {
         reason: 'MANUAL_UNBAN',
       },
     });
+
+    await this.globalSpammerIntelligence?.recordSuppression({
+      userId: normalizedTargetUserId,
+      source: 'MANUAL_UNBAN',
+      reason: 'MANUAL_UNBAN',
+      adminUserId: normalizedAdminUserId,
+      sourceChatId,
+      falsePositive: true,
+    });
   }
 
   private async deleteAdminGlobalSpammerExemption(
@@ -13824,9 +13846,7 @@ export class AdminService implements OnModuleDestroy {
     return this.resolveSettingsApplyTargetChats(sourceChatId, user, target);
   }
 
-  async resolveSettingsApplyBotAssignmentData(
-    chatId: string,
-  ): Promise<ResolvedBotAssignmentData> {
+  async resolveSettingsApplyBotAssignmentData(chatId: string): Promise<ResolvedBotAssignmentData> {
     const resolvedBotId = await this.resolveBotAssignment(chatId);
     return this.buildResolvedBotAssignmentData(resolvedBotId);
   }
@@ -13935,9 +13955,7 @@ export class AdminService implements OnModuleDestroy {
     await this.sendRulesPublishedPrivateConfirmation(user, publishedUrl);
   }
 
-  async assertRequiredSubscriptionSettingsForChatSettings(
-    settings: ChatSettings,
-  ): Promise<void> {
+  async assertRequiredSubscriptionSettingsForChatSettings(settings: ChatSettings): Promise<void> {
     await this.assertRequiredSubscriptionSettings(settings);
   }
 

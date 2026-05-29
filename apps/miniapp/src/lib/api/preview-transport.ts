@@ -23,6 +23,10 @@ import {
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
   domainAllowlistEntrySchema,
+  globalSpammerReviewMetricsSchema,
+  globalSpammerReviewQueueSchema,
+  globalSpammerReviewRequestSchema,
+  globalSpammerReviewResultSchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
   managedEntityFavoritesResponseSchema,
@@ -81,6 +85,8 @@ import {
   type ChatSettingsScreenResponse,
   type ChatSummary,
   type DomainAllowlistEntry,
+  type GlobalSpammerReviewCandidate,
+  type GlobalSpammerReviewRequest,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
@@ -143,6 +149,7 @@ type PreviewState = {
   chatParticipants: ChatParticipantItem[];
   chatActivity: MembershipActivityItem[];
   chatViolations: LogsDashboardResponse['violations'];
+  spammerReviewCandidates: GlobalSpammerReviewCandidate[];
   channelHeaderParticipantsCount: number;
   channelSettings: ChannelSettings;
   channelPoll: ManagedPoll;
@@ -3349,6 +3356,7 @@ function createInitialState(): PreviewState {
       ],
     ),
     chatViolations: createChatViolations(now),
+    spammerReviewCandidates: createPreviewSpammerReviewCandidates(now),
     chatVkParsing,
     channelHeaderParticipantsCount: 9_240,
     channelDialogs,
@@ -4109,6 +4117,166 @@ function createModerationResult(
         ? addHours(now, payload.muteDurationHours ?? 24).toISOString()
         : null,
     message: buildModerationMessage(payload),
+  });
+}
+
+function createPreviewSpammerReviewCandidates(now: Date): GlobalSpammerReviewCandidate[] {
+  return globalSpammerReviewQueueSchema.parse({
+    limit: 6,
+    items: [
+      {
+        userId: 'preview-spam-1',
+        status: 'PENDING',
+        confidenceScore: 0.74,
+        sourceBreakdown: {
+          COMMERCIAL_CAMPAIGN: {
+            score: 0.72,
+            rawScore: 0.74,
+            count: 2,
+            latestAt: addHours(now, -1).toISOString(),
+            reasons: ['COMMERCIAL_AD_DETECTED'],
+          },
+          REPEATED_LINK: {
+            score: 0.58,
+            rawScore: 0.58,
+            count: 1,
+            latestAt: addHours(now, -1.2).toISOString(),
+            reasons: ['REPEATED_LINK_CROSS_CHAT'],
+          },
+        },
+        lastReason: 'COMMERCIAL_AD_DETECTED',
+        lastChatId: PREVIEW_CHAT_ID,
+        lastEvidence: {
+          excerpt: 'Прайс от 990, доставка сегодня, подробности в профиле',
+        },
+        lastUserLabel: 'Promo Mix',
+        suppressedUntil: null,
+        reviewedAt: null,
+        reviewedByUserId: null,
+        reviewReason: null,
+        falsePositive: false,
+        chats: [
+          {
+            chatId: PREVIEW_CHAT_ID,
+            detectionsCount: 2,
+            lastMessageId: 'preview-spam-message-1',
+            lastExcerpt: 'Прайс от 990, доставка сегодня, подробности в профиле',
+            lastUserLabel: 'Promo Mix',
+            lastDetectedAt: addHours(now, -1).toISOString(),
+          },
+        ],
+        observations: [
+          {
+            id: 'preview-observation-1',
+            source: 'COMMERCIAL_CAMPAIGN',
+            score: 0.74,
+            confidenceLevel: 'MEDIUM',
+            reason: 'COMMERCIAL_AD_DETECTED',
+            chatId: PREVIEW_CHAT_ID,
+            messageId: 'preview-spam-message-1',
+            evidenceHash: 'preview-hash-1',
+            evidence: {
+              excerpt: 'Прайс от 990, доставка сегодня, подробности в профиле',
+            },
+            observedAt: addHours(now, -1).toISOString(),
+            expiresAt: addDays(now, 14).toISOString(),
+            suppressedAt: null,
+            suppressionReason: null,
+          },
+          {
+            id: 'preview-observation-2',
+            source: 'REPEATED_LINK',
+            score: 0.58,
+            confidenceLevel: 'MEDIUM',
+            reason: 'REPEATED_LINK_CROSS_CHAT',
+            chatId: PREVIEW_CHAT_ID,
+            messageId: 'preview-spam-message-1',
+            evidenceHash: 'preview-hash-2',
+            evidence: {
+              repeatedLinkDistinctChatCount: 2,
+            },
+            observedAt: addHours(now, -1.2).toISOString(),
+            expiresAt: addDays(now, 10).toISOString(),
+            suppressedAt: null,
+            suppressionReason: null,
+          },
+        ],
+      },
+    ],
+  }).items;
+}
+
+function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerReviewCandidate[]) {
+  const pending = candidates.filter((item) => item.status === 'PENDING').length;
+  const approved = candidates.filter(
+    (item) => item.status === 'APPROVED' || item.status === 'AUTO_APPROVED',
+  ).length;
+  const suppressed = candidates.filter((item) => item.status === 'SUPPRESSED').length;
+  const reviewed = candidates.filter(
+    (item) => item.status === 'APPROVED' || item.status === 'SUPPRESSED',
+  ).length;
+  const falsePositiveCount = candidates.filter((item) => item.falsePositive).length;
+  const sourceCounts = new Map<string, number>();
+  const suppressedCounts = new Map<string, number>();
+  for (const candidate of candidates) {
+    for (const observation of candidate.observations) {
+      sourceCounts.set(observation.source, (sourceCounts.get(observation.source) ?? 0) + 1);
+      if (observation.suppressedAt) {
+        suppressedCounts.set(
+          observation.source,
+          (suppressedCounts.get(observation.source) ?? 0) + 1,
+        );
+      }
+    }
+  }
+
+  return globalSpammerReviewMetricsSchema.parse({
+    pending,
+    approved,
+    suppressed,
+    reviewed,
+    falsePositiveCount,
+    falsePositiveRate: reviewed > 0 ? falsePositiveCount / reviewed : 0,
+    recentObservations: [...sourceCounts.entries()].map(([source, count]) => ({ source, count })),
+    suppressedObservations: [...suppressedCounts.entries()].map(([source, count]) => ({
+      source,
+      count,
+    })),
+    sourceAlerts: [],
+  });
+}
+
+function createPreviewSpammerReviewResult(
+  candidates: GlobalSpammerReviewCandidate[],
+  userId: string,
+  payload: GlobalSpammerReviewRequest,
+) {
+  const now = new Date().toISOString();
+  const status = payload.action === 'SUPPRESS' ? 'SUPPRESSED' : 'APPROVED';
+  const index = candidates.findIndex((candidate) => candidate.userId === userId);
+  if (index >= 0) {
+    candidates[index] = {
+      ...candidates[index]!,
+      status,
+      reviewedAt: now,
+      reviewedByUserId: 'preview-admin',
+      reviewReason: payload.reason ?? null,
+      falsePositive: payload.action === 'SUPPRESS',
+      observations:
+        payload.action === 'SUPPRESS'
+          ? candidates[index]!.observations.map((observation) => ({
+              ...observation,
+              suppressedAt: now,
+              suppressionReason: payload.reason ?? 'REVIEW_SUPPRESSION',
+            }))
+          : candidates[index]!.observations,
+    };
+  }
+
+  return globalSpammerReviewResultSchema.parse({
+    ok: true,
+    userId,
+    status,
   });
 }
 
@@ -4922,6 +5090,37 @@ async function handleChatRequest(
         },
         new Date(),
       ),
+    );
+  }
+
+  if (tail[0] === 'spammer-review' && tail[1] === 'metrics' && method === 'GET') {
+    return cloneJson(buildPreviewSpammerReviewMetrics(state.spammerReviewCandidates));
+  }
+
+  if (tail[0] === 'spammer-review' && tail.length === 1 && method === 'GET') {
+    const status = url.searchParams.get('status') ?? 'PENDING';
+    const limit = Math.max(
+      1,
+      Math.min(Number.parseInt(url.searchParams.get('limit') ?? '50', 10), 100),
+    );
+    const items = state.spammerReviewCandidates
+      .filter((candidate) => status === 'ALL' || candidate.status === status)
+      .slice(0, limit);
+    return cloneJson(
+      globalSpammerReviewQueueSchema.parse({
+        items,
+        limit,
+      }),
+    );
+  }
+
+  if (tail[0] === 'spammer-review' && tail[1] && method === 'POST') {
+    const userId = decodeURIComponent(tail[1]);
+    const payload = globalSpammerReviewRequestSchema.parse(
+      parseJsonBody(init) as GlobalSpammerReviewRequest,
+    );
+    return cloneJson(
+      createPreviewSpammerReviewResult(state.spammerReviewCandidates, userId, payload),
     );
   }
 

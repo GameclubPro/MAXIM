@@ -118,6 +118,30 @@ export class AdminManualModerationController {
     return this.moderationService.getLogsDashboard(chatId, user, query);
   }
 
+  @Get('chats/:chatId/spammer-review')
+  getGlobalSpammerReviewQueue(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getGlobalSpammerReviewQueue(chatId, user, query);
+  }
+
+  @Get('chats/:chatId/spammer-review/metrics')
+  getGlobalSpammerReviewMetrics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.moderationService.getGlobalSpammerReviewMetrics(chatId, user);
+  }
+
+  @Post('chats/:chatId/spammer-review/:userId')
+  reviewGlobalSpammerCandidate(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.moderationService.reviewGlobalSpammerCandidate(chatId, targetUserId, user, body);
+  }
+
   @Post('chats/:chatId/members/:userId/moderation-action')
   applyManualModerationAction(
     @Param('chatId') chatId: string,

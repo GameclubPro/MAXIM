@@ -4,6 +4,11 @@ import type {
   ChatParticipantImmunityUpdateResult,
   ChatParticipantsPage,
   ChatParticipantsQuery,
+  GlobalSpammerCandidateStatus,
+  GlobalSpammerReviewMetrics,
+  GlobalSpammerReviewQueue,
+  GlobalSpammerReviewRequest,
+  GlobalSpammerReviewResult,
   LogsDashboardRange,
   LogsDashboardResponse,
   ManualModerationActionRequest,
@@ -30,6 +35,13 @@ const moderationFeedFilters = new Set<ModerationFeedQuery['filter']>([
   'BAN',
   'UNMUTE',
   'UNBAN',
+]);
+const globalSpammerCandidateStatuses = new Set<GlobalSpammerCandidateStatus | 'ALL'>([
+  'PENDING',
+  'AUTO_APPROVED',
+  'APPROVED',
+  'SUPPRESSED',
+  'ALL',
 ]);
 
 function parseLogsDashboardRange(range: LogsDashboardRange): LogsDashboardRange {
@@ -89,7 +101,9 @@ function normalizeModerationFeedQuery(query: Partial<ModerationFeedQuery>): Mode
   };
 }
 
-function normalizeChatParticipantsQuery(query: Partial<ChatParticipantsQuery>): ChatParticipantsQuery {
+function normalizeChatParticipantsQuery(
+  query: Partial<ChatParticipantsQuery>,
+): ChatParticipantsQuery {
   const range = query.range ?? '7d';
   if (!logsDashboardRanges.has(range)) {
     throw new Error('Invalid participants range');
@@ -252,6 +266,54 @@ export async function applyManualModerationAction(
     },
   );
   return response as ManualModerationActionResult;
+}
+
+export async function getGlobalSpammerReviewQueue(
+  api: ApiTransport,
+  chatId: string,
+  query: Partial<{ status: GlobalSpammerCandidateStatus | 'ALL'; limit: number }> = {},
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<GlobalSpammerReviewQueue> {
+  const status = query.status ?? 'PENDING';
+  if (!globalSpammerCandidateStatuses.has(status)) {
+    throw new Error('Invalid spammer review status');
+  }
+
+  const limit = normalizeLimit(query.limit, 50);
+  const params = new URLSearchParams({
+    status,
+    limit: String(limit),
+  });
+  const response = await api.request(
+    `/chats/${chatId}/spammer-review?${params.toString()}`,
+    request,
+  );
+  return response as GlobalSpammerReviewQueue;
+}
+
+export async function getGlobalSpammerReviewMetrics(
+  api: ApiTransport,
+  chatId: string,
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<GlobalSpammerReviewMetrics> {
+  const response = await api.request(`/chats/${chatId}/spammer-review/metrics`, request);
+  return response as GlobalSpammerReviewMetrics;
+}
+
+export async function reviewGlobalSpammerCandidate(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  payload: GlobalSpammerReviewRequest,
+): Promise<GlobalSpammerReviewResult> {
+  const response = await api.request(
+    `/chats/${chatId}/spammer-review/${encodeURIComponent(userId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+  return response as GlobalSpammerReviewResult;
 }
 
 export async function updateChatParticipantImmunity(
