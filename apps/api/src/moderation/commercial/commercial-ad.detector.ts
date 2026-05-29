@@ -103,14 +103,22 @@ export class CommercialAdDetector {
       !state.hasSearchRequestContext &&
       !state.hasPrivateSaleContext &&
       !state.hasPrivateGoodsItemContext;
+    const hasBalancedStructuredServicePhoneAnchor = [
+      'intent:language-lessons',
+      'intent:строительная-бригада',
+      'intent:все-виды-работ',
+      'intent:занимаюсь-услугами',
+      'service-specialty:tree-yard-repair-service',
+      'service-specialty:yard-cleanup-service',
+      'service-specialty:paving-landscaping-service',
+    ].some((signal) => state.matchedSignals.includes(signal));
     const hasStructuredServicePhoneEvidence =
       state.hasServiceContext &&
       state.hasPhoneContact &&
       !state.hasSearchRequestContext &&
       !state.hasPrivateSaleContext &&
       !state.hasPrivateGoodsItemContext &&
-      (appliedThresholds.strictness >= 0.2 ||
-        state.matchedSignals.includes('intent:language-lessons'));
+      (appliedThresholds.strictness >= 0.2 || hasBalancedStructuredServicePhoneAnchor);
     const hasStructuredPropertyContactEvidence =
       (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
       state.hasContact &&

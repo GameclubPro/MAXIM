@@ -306,7 +306,12 @@ export function hasCommercialAnchor(
 
   switch (anchor) {
     case 'commercialIntent':
-      return featureVector.commercialIntent > 0 || featureVector.highRisk > 0;
+      return (
+        featureVector.commercialIntent > 0 ||
+        featureVector.highRisk > 0 ||
+        hasPrefix('business:') ||
+        hasPrefix('promo:')
+      );
     case 'serviceSpecialty':
       return hasPrefix('service-specialty:') || hasPrefix('intent:');
     case 'retailStructure':
@@ -332,7 +337,7 @@ export function hasCommercialAnchor(
         featureVector.priceStructure > 0
       );
     case 'contactEvidence':
-      return featureVector.contactEvidence > 0;
+      return featureVector.contactEvidence > 0 || hasPrefix('deal-channel:');
     case 'priceStructure':
       return featureVector.priceStructure > 0;
     case 'cta':

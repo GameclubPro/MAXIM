@@ -1162,6 +1162,148 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 72,
     },
   },
+  {
+    label: 'balanced furniture store weekend sale from 24 hour audit miss',
+    text: `Крутое предложение в эти выходные. Мебель ОптТорг. Успейте обновить интерьер по выгодным ценам: диваны от 20 999 руб, кровати от 6000 руб, матрасы и спальные гарнитуры до 45%. Количество акционных моделей ограничено. Пишите, звоните и приезжайте для заказа и уточнения сроков доставки. Телефон +7 900 000 00 71.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:furniture-retail-sale',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 50,
+      commercialAdsDeleteThreshold: 70,
+    },
+  },
+  {
+    label: 'balanced incubation egg farm order from 24 hour audit miss',
+    text: `Набираю заказ на инкубационное яйцо бройлера Росс 308 на 5 июня, вывод проверен не ниже 80%. Яйцо загрязненное - цена 55₽. Утром получаем напрямую с фабрики свежее, после обеда передаем вам. Звоните +7 900 000 00 72.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:poultry-farm-order',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'balanced yard cleanup service from 24 hour audit miss',
+    text: `Группа занимается спилом деревьев, работаем быстро и качественно, любой сложности. Также покос травы, разбор старых построек, копка ям и траншей, вывоз мусора, чистка участков. Пенсионерам скидка. Звоните в любое удобное время, номер +7 900 000 00 73.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:занимаюсь-услугами',
+      'service-specialty:yard-cleanup-service',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced paving landscaping company from 24 hour audit miss',
+    text: `Компания Профблагоустройство предлагает услуги: асфальтирование ангаров, площадок, дорожек любой сложности, укладка брусчатки, установка бордюра, бетонирование отмостки и площадок. Выезд на замер и консультация бесплатно. Пенсионерам скидка 10%. Телефон +7 900 000 00 74.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:занимаюсь-услугами',
+      'service-specialty:бетон',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'paid wildberries review work from 24 hour audit miss',
+    text: `Платим 3500₽ за отзыв на Wildberries. Свободный график, ежедневные задания, без опыта и вложений. Выдаем аванс и товар в подарок. Чтобы начать, пишите плюс в чат: https://example.com/wb-review`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: [
+      'risk:paid-review-task',
+      'recruitment:marketplace-review-work',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'homemade pork order delivery from 24 hour audit miss',
+    text: `Мяско домашнего порося любой кусочек по вашему желанию. Телефон +7 900 000 00 75, заказ в личку, доставка и самовывоз Хабаровск.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:home-food-order', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 42,
+      commercialAdsDeleteThreshold: 60,
+    },
+  },
+  {
+    label: 'poultry factory broiler retail from 24 hour audit miss',
+    text: `Добрый день. Реализация бройлеров Росс 308 продолжается. Возраст 22 дня, средний вес 1200 гр. Цена 300₽. С уважением, Илишевская птицефабрика. Контакты для связи +7 900 000 00 76.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:poultry-farm-order',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 47,
+      commercialAdsDeleteThreshold: 67,
+    },
+  },
+  {
+    label: 'balanced contract military recruitment from 24 hour audit miss',
+    text: `Войска беспилотных систем по контракту с МО РФ. ЗП от 210 000 рублей за календарный месяц, проживание, питание и билеты. Оформление из разных регионов России. Звоните +7 900 000 00 77, Андрей.`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: [
+      'recruitment:контрактная-служба-мо',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 55,
+      commercialAdsDeleteThreshold: 76,
+    },
+  },
+  {
+    label: 'rental helper service from 24 hour audit miss',
+    text: `Срочно нужна квартира или дом в Казани? Помогу снять или сдать. Посуточно или на долгий срок, квартиры и дома по всему городу. Без предоплат и комиссий заранее, понравилось - едем на заселение, договор и оплата услуг сразу. Звоните +7 900 000 00 78, много эксклюзивных объектов.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: ['property-agent:помогу-снять-сдать', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'homemade salad meat order from 24 hour audit miss',
+    text: `Оливье с домашним мяском вкуснее чем в ресторане. Телефон +7 900 000 00 79, заказ в личку, доставка и самовывоз Хабаровск, 100р/100гр.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:home-food-order',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 42,
+      commercialAdsDeleteThreshold: 60,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -1415,6 +1557,60 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
       commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private taiga land owner listing from 24 hour false-positive guard',
+    text: `Продается земельный участок в живописном таежном месте деревни Кижа, на берегу водохранилища. Площадь 60 соток, кадастровый номер указан, есть дом с постройками, школа и магазины в деревне. Я собственник, цена и подробности по телефону +7 900 000 00 80.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'private single stand sale with phone from 24 hour false-positive guard',
+    text: `Продам подставку под емкость, ширина 1,25, длина 2,05, высота 50 см. Цена 3000₽. Звоните по номеру +7 900 000 00 81.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'private soviet faucet sale from 24 hour false-positive guard',
+    text: `Продается смеситель новый, СССР, без душа, цена 800₽. Только звонить +7 900 000 00 82.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 49,
+      commercialAdsDeleteThreshold: 69,
+    },
+  },
+  {
+    label: 'private leather clutch sale from 24 hour false-positive guard',
+    text: `Продается мужской клатч кожаный, цвет черный, новый, КНР, 18 отделений для карт и отделение на молнии. Цена 1600₽. На сообщения не отвечаю, только звонить +7 900 000 00 83.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 49,
+      commercialAdsDeleteThreshold: 69,
+    },
+  },
+  {
+    label: 'private aluminum flasks sale from 24 hour false-positive guard',
+    text: `Продаю фляги 40 литровые алюминиевые, была вода, состояние хорошее. В наличии 4 штуки, цена 2000 руб одна. Телефон +7 900 000 00 84.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'private owner cottage sale from 24 hour false-positive guard',
+    text: `Продается коттедж в центре Байкальска, 3 этажа, кирпичный дом, центральные сети, баня, бассейн, теплица и насаждения. 20 млн. Собственник +7 900 000 00 85.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
     },
   },
 ];
