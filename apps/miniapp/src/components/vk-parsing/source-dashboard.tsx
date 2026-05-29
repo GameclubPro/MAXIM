@@ -47,8 +47,8 @@ const PRESETS: Array<{ value: BulkUpdateVkParsingSourcesRequest['preset']; label
 
 const FREQUENCY_PRESETS = [
   { value: 'SLOW', label: 'Редко', minutes: 180 },
-  { value: 'NORMAL', label: 'Обычно', minutes: 60 },
-  { value: 'FAST', label: 'Быстро', minutes: 20 },
+  { value: 'NORMAL', label: 'Норма', minutes: 60 },
+  { value: 'FAST', label: 'Чаще', minutes: 20 },
   { value: 'CUSTOM', label: 'Свой', minutes: null },
 ] as const;
 
@@ -109,7 +109,7 @@ function SourceAutoControl({
       title="Автопостинг источника"
     >
       <span>
-        <b>Автопостинг</b>
+        <b>Авто</b>
         <small>{source.importEnabled ? formatSourceMode(source) : 'Пауза'}</small>
       </span>
       <NativeSwitch
@@ -363,7 +363,7 @@ export function SourceDashboard({
                   <div className="vk-source-card__metrics" aria-label="Сводка источника">
                     <span title="Следующее обновление">
                       <b>{formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}</b>
-                      <small>Обновление</small>
+                      <small>Обнов.</small>
                     </span>
                     <span title="Постов в очереди">
                       <b>{source.queuedPostCount}</b>

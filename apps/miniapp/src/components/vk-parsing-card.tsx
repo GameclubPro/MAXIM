@@ -109,31 +109,31 @@ function buildAutopostStatus(
     autoSourceCount > 0 &&
     timeWindow.ready;
 
-  let title = 'Ручной режим';
+  let title = 'Ручной';
   let reason = 'Автопостинг выключен';
   let tone: AutopostStatusTone = 'muted';
 
   if (isPaused) {
-    title = 'Всё на паузе';
+    title = 'Пауза';
     reason = 'Стоп включён';
     tone = 'danger';
   } else if (!settings.autoPublishEnabled) {
-    title = 'Ручной режим';
+    title = 'Ручной';
     reason = 'Общий тумблер выключен';
   } else if (activeSourceCount === 0) {
-    title = 'Ручной режим';
+    title = 'Ручной';
     reason = 'Нет активных источников';
     tone = 'warning';
   } else if (autoSourceCount === 0) {
-    title = 'Ручной режим';
+    title = 'Ручной';
     reason = 'Авто выключено у источников';
     tone = 'warning';
   } else if (!timeWindow.ready) {
-    title = 'Всё на паузе';
+    title = 'Пауза';
     reason = 'Тихие часы';
     tone = 'warning';
   } else if (isWorking) {
-    title = 'Автопостинг работает';
+    title = 'Работает';
     reason = 'Готово к публикации';
     tone = 'success';
   }

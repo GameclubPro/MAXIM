@@ -284,7 +284,7 @@ export function PostCard({
                 ) : null}
                 <button
                   type="button"
-                  className="button button--accent vk-parsing-action-button"
+                  className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
                   onClick={() => onStartEditing(post)}
                 >
                   <EditPencil aria-hidden />

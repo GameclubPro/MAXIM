@@ -40,8 +40,8 @@ const SOURCE_MODE_OPTIONS: Array<{
 
 const FREQUENCY_OPTIONS = [
   { value: 'SLOW', label: 'Редко', minutes: 180 },
-  { value: 'NORMAL', label: 'Обычно', minutes: 60 },
-  { value: 'FAST', label: 'Быстро', minutes: 20 },
+  { value: 'NORMAL', label: 'Норма', minutes: 60 },
+  { value: 'FAST', label: 'Чаще', minutes: 20 },
   { value: 'CUSTOM', label: 'Свой', minutes: null },
 ] as const;
 
@@ -157,17 +157,25 @@ export function SchedulerPanel({
           <span className="vk-setup-center__status-icon">
             {renderAutopostStatusIcon(status.tone)}
           </span>
-          <span>
+          <span className="vk-setup-center__status-copy">
             <strong>{status.title}</strong>
-            <small>
-              {status.reason} · Очередь {queueCount} · Опубликовано {publishedCount}
-            </small>
+            <small>{status.reason}</small>
+          </span>
+          <span className="vk-setup-center__status-facts" aria-label="Сводка автопостинга">
+            <span>
+              <b>{queueCount}</b>
+              <small>Очередь</small>
+            </span>
+            <span>
+              <b>{publishedCount}</b>
+              <small>Вышло</small>
+            </span>
           </span>
         </div>
         <div className="vk-setup-center__switches" aria-label="Включение автопостинга">
           <SwitchRow
             id="vk-parsing-automation-switch"
-            label="Автопостинг"
+            label="Авто"
             checked={settings.autoPublishEnabled}
             disabled={isSaving || settings.autoPublishKillSwitchEnabled}
             title="Общее включение автоматической публикации"
@@ -262,7 +270,7 @@ export function SchedulerPanel({
       </div>
 
       <details className="vk-advanced-fold">
-        <summary>Ещё</summary>
+        <summary>Расписание и защита</summary>
         <div id="vk-parsing-work-time" className="vk-quick-setup__row">
           <span>Время</span>
           <div className="vk-quick-time">
