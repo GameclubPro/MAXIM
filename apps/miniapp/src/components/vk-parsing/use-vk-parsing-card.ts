@@ -183,6 +183,42 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
+  const updateSourcesMutation = useMutation({
+    mutationFn: async ({
+      sourceIds,
+      payload,
+    }: {
+      sourceIds: string[];
+      payload: UpdateVkParsingSourceRequest;
+    }) => {
+      let nextFeed = feedQuery.data ?? null;
+      for (const sourceId of sourceIds) {
+        nextFeed = await updateVkParsingSource(api, entityType, chatId, sourceId, payload);
+      }
+      if (!nextFeed) {
+        throw new Error('Источники не выбраны.');
+      }
+      return nextFeed;
+    },
+    onSuccess: (nextFeed) => {
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Источники сохранены' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Источники не сохранены',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+    },
+  });
+
   const sourcePresetMutation = useMutation({
     mutationFn: (payload: BulkUpdateVkParsingSourcesRequest) =>
       applyVkParsingSourcePreset(api, entityType, chatId, payload),
@@ -368,12 +404,16 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }, [selectedSourceId, statusFilter]);
 
   useEffect(() => {
-    if (!selectedSourceId || sources.some((source) => source.id === selectedSourceId)) {
+    if (
+      !selectedSourceId ||
+      feedQuery.isLoading ||
+      sources.some((source) => source.id === selectedSourceId)
+    ) {
       return;
     }
 
     setSelectedSourceId(null);
-  }, [selectedSourceId, sources]);
+  }, [feedQuery.isLoading, selectedSourceId, sources]);
 
   useEffect(() => {
     if (!editingPostId || editingPost) {
@@ -441,7 +481,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }
 
   async function updateSource(sourceId: string, payload: UpdateVkParsingSourceRequest) {
-    if (updateSourceMutation.isPending) {
+    if (updateSourceMutation.isPending || updateSourcesMutation.isPending) {
       return;
     }
     if (payload.autoPublishEnabled === true) {
@@ -457,6 +497,18 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       }
     }
     updateSourceMutation.mutate({ sourceId, payload });
+  }
+
+  function updateSources(sourceIds: string[], payload: UpdateVkParsingSourceRequest) {
+    if (
+      updateSourceMutation.isPending ||
+      updateSourcesMutation.isPending ||
+      sourceIds.length === 0
+    ) {
+      return;
+    }
+
+    updateSourcesMutation.mutate({ sourceIds, payload });
   }
 
   function toggleHint(key: VkParsingHintKey) {
@@ -504,7 +556,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
       ? (refreshSourceMutation.variables ?? null)
       : null,
     isSavingSettings: updateSettingsMutation.isPending,
-    isSavingSource: updateSourceMutation.isPending,
+    isSavingSource: updateSourceMutation.isPending || updateSourcesMutation.isPending,
     isApplyingPreset: sourcePresetMutation.isPending,
     schedulingPostId: scheduleMutation.isPending
       ? (scheduleMutation.variables?.postId ?? null)
@@ -527,6 +579,7 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     toggleSetting,
     updateSetting,
     updateSource,
+    updateSources,
     toggleBulkSource,
     selectAllBulkSources,
     applySourcePreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => {

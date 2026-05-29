@@ -1,3 +1,5 @@
+import { CheckCircle, Clock, Pause, WarningCircle } from 'iconoir-react';
+import type { VkParsingSettings, VkParsingSource } from '@maxim/contracts';
 import type { VkParsingEntityType } from '../lib/api/vk-parsing-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { HealthSummary } from './vk-parsing/health-summary';
@@ -21,48 +23,250 @@ type VkParsingCardProps = {
   entityType?: VkParsingEntityType;
 };
 
+type AutopostStatusTone = 'success' | 'warning' | 'danger' | 'muted';
+
+type AutopostStatusModel = {
+  title: string;
+  reason: string;
+  tone: AutopostStatusTone;
+  facts: Array<{ label: string; value: string; tone?: AutopostStatusTone }>;
+  readiness: Array<{ label: string; value: string; ready: boolean; neutral?: boolean }>;
+};
+
+function parseTimeMinutes(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const match = /^(\d{2}):(\d{2})$/u.exec(value);
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function isWithinRange(now: number, start: number, end: number): boolean {
+  if (start === end) {
+    return true;
+  }
+  if (start < end) {
+    return now >= start && now < end;
+  }
+  return now >= start || now < end;
+}
+
+function getNowMinutes(timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('ru-RU', {
+      hour: '2-digit',
+      hour12: false,
+      minute: '2-digit',
+      timeZone,
+    }).formatToParts(new Date());
+    const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
+    const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
+    if (Number.isFinite(hour) && Number.isFinite(minute)) {
+      return hour * 60 + minute;
+    }
+  } catch {
+    // Fall through to local browser time if the runtime does not know this timezone.
+  }
+
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function resolveTimeWindow(settings: VkParsingSettings): { ready: boolean; label: string } {
+  const now = getNowMinutes(settings.schedulerTimezone);
+  const workStart = parseTimeMinutes(settings.workHoursStart) ?? 0;
+  const workEnd = parseTimeMinutes(settings.workHoursEnd) ?? 24 * 60;
+  const quietStart = parseTimeMinutes(settings.quietHoursStart);
+  const quietEnd = parseTimeMinutes(settings.quietHoursEnd);
+  const insideWork = isWithinRange(now, workStart, workEnd);
+  const insideQuiet =
+    quietStart !== null && quietEnd !== null ? isWithinRange(now, quietStart, quietEnd) : false;
+
+  return {
+    ready: insideWork && !insideQuiet,
+    label:
+      insideWork && !insideQuiet
+        ? `${settings.workHoursStart}-${settings.workHoursEnd}`
+        : 'Тихие часы',
+  };
+}
+
+function buildAutopostStatus(
+  settings: VkParsingSettings,
+  sources: VkParsingSource[],
+  queueCount: number,
+  publishedCount: number,
+): AutopostStatusModel {
+  const activeSourceCount = sources.filter((source) => source.importEnabled).length;
+  const autoSourceCount = sources.filter(
+    (source) => source.importEnabled && source.autoPublishEnabled,
+  ).length;
+  const timeWindow = resolveTimeWindow(settings);
+  const isPaused = settings.autoPublishKillSwitchEnabled;
+  const isWorking =
+    settings.autoPublishEnabled &&
+    !isPaused &&
+    activeSourceCount > 0 &&
+    autoSourceCount > 0 &&
+    timeWindow.ready;
+
+  let title = 'Ручной режим';
+  let reason = 'Автопостинг выключен';
+  let tone: AutopostStatusTone = 'muted';
+
+  if (isPaused) {
+    title = 'Всё на паузе';
+    reason = 'Пауза всего';
+    tone = 'danger';
+  } else if (!settings.autoPublishEnabled) {
+    title = 'Ручной режим';
+    reason = 'Общий тумблер выключен';
+  } else if (activeSourceCount === 0) {
+    title = 'Ручной режим';
+    reason = 'Нет активных источников';
+    tone = 'warning';
+  } else if (autoSourceCount === 0) {
+    title = 'Ручной режим';
+    reason = 'Авто выключено у источников';
+    tone = 'warning';
+  } else if (!timeWindow.ready) {
+    title = 'Всё на паузе';
+    reason = 'Тихие часы';
+    tone = 'warning';
+  } else if (isWorking) {
+    title = 'Автопостинг работает';
+    reason = 'Готово к публикации';
+    tone = 'success';
+  }
+
+  return {
+    title,
+    reason,
+    tone,
+    facts: [
+      { label: 'Источники', value: `${activeSourceCount}/${sources.length}` },
+      {
+        label: 'В очереди',
+        value: String(queueCount),
+        tone: queueCount > 0 ? 'warning' : undefined,
+      },
+      {
+        label: 'Опубл.',
+        value: String(publishedCount),
+        tone: publishedCount > 0 ? 'success' : undefined,
+      },
+    ],
+    readiness: [
+      {
+        label: 'Источник',
+        value: activeSourceCount > 0 ? `${activeSourceCount} вкл` : 'Нет',
+        ready: activeSourceCount > 0,
+      },
+      {
+        label: 'Авто',
+        value: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused ? 'Вкл' : 'Выкл',
+        ready: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused,
+      },
+      {
+        label: 'Время',
+        value: timeWindow.label,
+        ready: timeWindow.ready,
+      },
+      {
+        label: 'Очередь',
+        value: queueCount > 0 ? String(queueCount) : 'Пусто',
+        ready: queueCount > 0,
+        neutral: queueCount === 0,
+      },
+    ],
+  };
+}
+
+function renderAutopostStatusIcon(tone: AutopostStatusTone) {
+  if (tone === 'success') {
+    return <CheckCircle aria-hidden />;
+  }
+  if (tone === 'danger') {
+    return <Pause aria-hidden />;
+  }
+  if (tone === 'warning') {
+    return <WarningCircle aria-hidden />;
+  }
+  return <Clock aria-hidden />;
+}
+
+function AutopostStatusPanel({ model }: { model: AutopostStatusModel }) {
+  return (
+    <section
+      className={`vk-autopost-status vk-autopost-status--${model.tone}`}
+      aria-label="Статус автопостинга"
+    >
+      <div className="vk-autopost-status__main">
+        <span className="vk-autopost-status__icon">{renderAutopostStatusIcon(model.tone)}</span>
+        <span>
+          <strong>{model.title}</strong>
+          <small>{model.reason}</small>
+        </span>
+      </div>
+      <div className="vk-autopost-status__facts" aria-label="Сводка автопостинга">
+        {model.facts.map((fact) => (
+          <span
+            key={fact.label}
+            className={fact.tone ? `is-${fact.tone}` : undefined}
+            title={fact.label}
+          >
+            <b>{fact.value}</b>
+            <small>{fact.label}</small>
+          </span>
+        ))}
+      </div>
+      <div className="vk-autopost-readiness" aria-label="Готовность автопостинга">
+        {model.readiness.map((item) => (
+          <span
+            key={item.label}
+            className={item.neutral ? 'is-neutral' : item.ready ? 'is-ready' : 'is-blocked'}
+          >
+            <b>{item.label}</b>
+            <small>{item.value}</small>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: VkParsingCardProps) {
   const state = useVkParsingCard({ api, chatId, active, entityType });
   const { feed, feedQuery, settings, posts, sources } = state;
-  const activeSourceCount = sources.filter((source) => source.importEnabled).length;
-  const publishedCount = posts.filter((post) => post.status === 'PUBLISHED').length;
-  const autopublishLabel = settings.autoPublishKillSwitchEnabled
-    ? 'Стоп'
-    : settings.autoPublishEnabled
-      ? 'Вкл'
-      : 'Ручной';
+  const publishedCount =
+    sources.length > 0
+      ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
+      : posts.filter((post) => post.status === 'PUBLISHED').length;
+  const autopostStatus = feed
+    ? buildAutopostStatus(settings, sources, feed.queue.length, publishedCount)
+    : null;
 
   return (
     <div className="vk-parsing-card">
+      {autopostStatus ? <AutopostStatusPanel model={autopostStatus} /> : null}
+
       {feed ? (
-        <div className="vk-parsing-overview" aria-label="Сводка VK-парсинга">
-          <span>
-            <b>
-              {activeSourceCount}/{sources.length}
-            </b>
-            <small>Источн.</small>
-          </span>
-          <span>
-            <b>{feed.queue.length}</b>
-            <small>Очередь</small>
-          </span>
-          <span>
-            <b>{publishedCount}</b>
-            <small>Посты</small>
-          </span>
-          <span
-            className={
-              settings.autoPublishKillSwitchEnabled
-                ? 'is-danger'
-                : settings.autoPublishEnabled
-                  ? 'is-success'
-                  : undefined
-            }
-          >
-            <b>{autopublishLabel}</b>
-            <small>Авто</small>
-          </span>
-        </div>
+        <SchedulerPanel
+          settings={settings}
+          sources={sources}
+          isSaving={state.isSavingSettings}
+          isSavingSource={state.isSavingSource}
+          onUpdateSetting={state.updateSetting}
+          onUpdateSources={state.updateSources}
+        />
       ) : null}
 
       <SourceDashboard
@@ -90,16 +294,6 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
 
       {feed ? (
         <div className="vk-parsing-control-stack">
-          <details className="vk-parsing-fold">
-            <summary>Автопостинг</summary>
-            <SchedulerPanel
-              settings={settings}
-              isSaving={state.isSavingSettings}
-              onUpdateSetting={state.updateSetting}
-            />
-            <HealthSummary summary={feed.summary} />
-          </details>
-
           {feed.queue.length > 0 ? (
             <details className="vk-parsing-fold">
               <summary>Очередь · {feed.queue.length}</summary>
@@ -116,7 +310,8 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           ) : null}
 
           <details className="vk-parsing-fold">
-            <summary>Защита</summary>
+            <summary>Защита и история</summary>
+            <HealthSummary summary={feed.summary} />
             <SafetyPanel
               sources={sources}
               auditEvents={feed.auditEvents}
