@@ -883,9 +883,9 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSubtype: 'SERVICES',
     expectedSignals: ['service-specialty:кондиционер', 'contact:звоните', 'contact:phone'],
     overrides: {
-      commercialAdsSensitivity: 'STRICT',
-      commercialAdsWarnThreshold: 38,
-      commercialAdsDeleteThreshold: 55,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 54,
+      commercialAdsDeleteThreshold: 74,
     },
   },
   {
