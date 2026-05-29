@@ -80,11 +80,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'construction brigade all works from three hour audit miss',
     text: `СТРОИТЕЛЬНАЯ БРИГАДА Все виды работ: кровля, фасады, ремонт квартир, заливка фундамента и отмостки, тротуарная плитка, сантехника, электрика, навесы, металлоконструкции, заборы, пристройки, бани, сараи. Ремонт под ключ. Сайдинг, термопанели. Работаем со своим стройматериалом. Пенсионерам и участникам СВО — скидка 15%. Звоните: 8 900 000 00 31, 8 900 000 00 32.`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: [
-      'intent:строительная-бригада',
-      'service-specialty:ремонт',
-      'contact:phone',
-    ],
+    expectedSignals: ['intent:строительная-бригада', 'service-specialty:ремонт', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -110,11 +106,15 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'language tutor phone ad from three hour audit miss',
     text: `Английский, китайский для взрослых и детей. Опытный преподаватель. 8 900 000 00 33`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: ['service-specialty:language-tutor', 'contact:phone'],
+    expectedSignals: [
+      'intent:language-lessons',
+      'service-specialty:language-tutor',
+      'contact:phone',
+    ],
     overrides: {
-      commercialAdsSensitivity: 'STRICT',
-      commercialAdsWarnThreshold: 38,
-      commercialAdsDeleteThreshold: 55,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
     },
   },
   {
@@ -944,11 +944,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'split system cleaning service from three hour audit',
     text: `Ваш кондиционер пахнет неприятно? Выполним чистку и заправку сплит-систем. Звоните +7 900 000 00 58.`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: [
-      'service-specialty:appliance-repair',
-      'contact:звоните',
-      'contact:phone',
-    ],
+    expectedSignals: ['service-specialty:appliance-repair', 'contact:звоните', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 54,
@@ -997,10 +993,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'hr chat recruiter funnel from three hour audit',
     text: `МЕНЕДЖЕР ПО ПОДБОРУ ПЕРСОНАЛА. Работа с чатами и откликами, обучение. Пиши СТАРТ.`,
     expectedSubtype: 'RECRUITMENT',
-    expectedSignals: [
-      'recruitment:hr-chat-recruiter',
-      'contact:recruitment-response-keyword',
-    ],
+    expectedSignals: ['recruitment:hr-chat-recruiter', 'contact:recruitment-response-keyword'],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -1117,11 +1110,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'broker basement studio commercial use from three hour audit',
     text: `Большая студия 31 м2 на Комарова. Цоколь, по документам жилое, отдельный вход, можно использовать как коммерцию. Под ремонт, на ключах. Цена 2 100 000. Денис +7 900 000 00 69.`,
     expectedSubtype: 'PROPERTY_AGENT',
-    expectedSignals: [
-      'property-agent:на-ключах',
-      'contact:phone',
-      'combo:property-agent+deal',
-    ],
+    expectedSignals: ['property-agent:на-ключах', 'contact:phone', 'combo:property-agent+deal'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 45,

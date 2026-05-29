@@ -104,12 +104,13 @@ export class CommercialAdDetector {
       !state.hasPrivateSaleContext &&
       !state.hasPrivateGoodsItemContext;
     const hasStructuredServicePhoneEvidence =
-      appliedThresholds.strictness >= 0.2 &&
       state.hasServiceContext &&
       state.hasPhoneContact &&
       !state.hasSearchRequestContext &&
       !state.hasPrivateSaleContext &&
-      !state.hasPrivateGoodsItemContext;
+      !state.hasPrivateGoodsItemContext &&
+      (appliedThresholds.strictness >= 0.2 ||
+        state.matchedSignals.includes('intent:language-lessons'));
     const hasStructuredPropertyContactEvidence =
       (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
       state.hasContact &&
@@ -144,8 +145,7 @@ export class CommercialAdDetector {
       state.hasCommercialPropertyContext ||
       state.hasGoodsRetailContext ||
       state.hasCampaignContext;
-    const hasSelfPromotionalCommercialContext =
-      hasExplicitSelfPromotionalCommercialContext(state);
+    const hasSelfPromotionalCommercialContext = hasExplicitSelfPromotionalCommercialContext(state);
     const hasPrivateSaleCommercialOverride =
       state.hasPropertyAgentContext ||
       state.hasCommercialPropertyContext ||
@@ -299,5 +299,4 @@ export class CommercialAdDetector {
       classifierReasons: secondStage?.classifierReasons ?? [],
     };
   }
-
 }
