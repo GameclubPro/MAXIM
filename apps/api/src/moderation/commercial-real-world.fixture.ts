@@ -77,6 +77,69 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'construction brigade all works from three hour audit miss',
+    text: `СТРОИТЕЛЬНАЯ БРИГАДА Все виды работ: кровля, фасады, ремонт квартир, заливка фундамента и отмостки, тротуарная плитка, сантехника, электрика, навесы, металлоконструкции, заборы, пристройки, бани, сараи. Ремонт под ключ. Сайдинг, термопанели. Работаем со своим стройматериалом. Пенсионерам и участникам СВО — скидка 15%. Звоните: 8 900 000 00 31, 8 900 000 00 32.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:строительная-бригада',
+      'service-specialty:ремонт',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'tree trimming and welding service from three hour audit miss',
+    text: `Спилим, обрежем деревья небольшие сварочные работы, изготовление оградок, заборов, столов, лавочек, ремонт крыш, пластиковое водоснабжение. НОМЕР: 8 918-97-300-95`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'intent:сделаю',
+      'service-specialty:tree-yard-repair-service',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'language tutor phone ad from three hour audit miss',
+    text: `Английский, китайский для взрослых и детей. Опытный преподаватель. 8 900 000 00 33`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:language-tutor', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'fragrance retail teaser from three hour audit miss',
+    text: `Аромат, который говорит за тебя — громче слов. Парфюм по приятным ценам. Стойкие ароматы и тот самый вау-эффект в каждом флаконе. Подпишись и найди свой идеальный шлейф уже сегодня.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:fragrance-retail-promo', 'transaction:keywords'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'newcomer bonus link from three hour audit miss',
+    text: `https://example.com/promo НОВЕНЬКИМ БОНУС. ЖДЁМ ВАС`,
+    expectedSubtype: 'GOODS',
+    expectedSignals: ['business:newcomer-bonus-promo', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'multi-platform promotion service from production messages',
     text: `Нужны клиенты? В любой сфере сделаю продвижение, на рынке 11 лет. Сегодня скидки для всех желающих. Пишите либо звоните сразу. Продвижение WhatsApp, MAX, Telegram, ВКонтакте. Быстрый поиск клиентов по доступным ценам, запуск рекламных постов, создание групп, сообществ и каналов под вашу бизнес-деятельность. Телефон +7 900 000 00 04.`,
     expectedSubtype: 'SERVICES',
@@ -828,7 +891,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSubtype: 'SERVICES',
     expectedSignals: [
       'service-specialty:ремонт',
-      'service-specialty:холодильник',
+      'service-specialty:appliance-repair',
       'contact:handle',
     ],
     overrides: {
@@ -881,7 +944,11 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'split system cleaning service from three hour audit',
     text: `Ваш кондиционер пахнет неприятно? Выполним чистку и заправку сплит-систем. Звоните +7 900 000 00 58.`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: ['service-specialty:кондиционер', 'contact:звоните', 'contact:phone'],
+    expectedSignals: [
+      'service-specialty:appliance-repair',
+      'contact:звоните',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 54,
@@ -1328,6 +1395,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private one off bicycle sale with shortlink false positive guard',
     text: `Продам свой детский велосипед б/у после одного сезона. Цена 3500 руб, самовывоз. Фото тут: clck.ru/private-bike`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private working fridge sale from three hour false positive guard',
+    text: `Продам холодильник рабочий по вопросам пишите в л/с или звоните`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
