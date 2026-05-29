@@ -5,8 +5,8 @@ exports[`commercial deterministic benchmark meets recall, false-positive, subtyp
   "byAction": {
     "DELETE": 24,
     "DELETE_AND_ESCALATE": 10,
-    "REVIEW_ONLY": 6,
-    "WARN": 32,
+    "REVIEW_ONLY": 7,
+    "WARN": 31,
   },
   "bySubtype": {
     "BUYOUT": 3,

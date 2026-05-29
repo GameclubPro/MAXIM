@@ -894,9 +894,9 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSubtype: 'BUYOUT',
     expectedSignals: ['buyout:livestock-buyout', 'contact:phone'],
     overrides: {
-      commercialAdsSensitivity: 'STRICT',
-      commercialAdsWarnThreshold: 38,
-      commercialAdsDeleteThreshold: 55,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
     },
   },
   {

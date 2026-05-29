@@ -97,6 +97,12 @@ export class CommercialAdDetector {
     );
     const hasStructuredVacancyContactEvidence =
       state.hasContact && state.matchedSignals.includes('risk:structured-job-vacancy');
+    const hasStructuredBuyoutPhoneEvidence =
+      state.hasBuyoutContext &&
+      state.hasPhoneContact &&
+      !state.hasSearchRequestContext &&
+      !state.hasPrivateSaleContext &&
+      !state.hasPrivateGoodsItemContext;
     const hasStructuredServicePhoneEvidence =
       appliedThresholds.strictness >= 0.2 &&
       state.hasServiceContext &&
@@ -109,6 +115,7 @@ export class CommercialAdDetector {
       state.hasDealChannel ||
       (state.hasContact && state.hasTransactional) ||
       hasStructuredVacancyContactEvidence ||
+      hasStructuredBuyoutPhoneEvidence ||
       hasStructuredServicePhoneEvidence ||
       hasCampaignStrongEvidence;
     const hasStructuredCommercialContext =
