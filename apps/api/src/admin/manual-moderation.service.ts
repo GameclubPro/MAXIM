@@ -4,6 +4,7 @@ import {
   globalSpammerReviewQueueSchema,
   globalSpammerReviewRequestSchema,
   globalSpammerReviewResultSchema,
+  globalSpammerUserDiagnosticsSchema,
   type GlobalSpammerCandidateStatus,
 } from '@maxim/contracts';
 import { BadRequestException, Injectable } from '@nestjs/common';
@@ -89,6 +90,15 @@ export class ManualModerationService {
       chatId,
     });
     return globalSpammerReviewMetricsSchema.parse(response);
+  }
+
+  async getGlobalSpammerUserDiagnostics(chatId: string, targetUserId: string, user: AuthUser) {
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    const response = await this.globalSpammerIntelligence.getUserDiagnostics({
+      chatId,
+      userId: targetUserId,
+    });
+    return globalSpammerUserDiagnosticsSchema.parse(response);
   }
 
   async reviewGlobalSpammerCandidate(

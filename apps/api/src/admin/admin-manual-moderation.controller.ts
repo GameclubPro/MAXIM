@@ -132,6 +132,15 @@ export class AdminManualModerationController {
     return this.moderationService.getGlobalSpammerReviewMetrics(chatId, user);
   }
 
+  @Get('chats/:chatId/spammer-diagnostics/:userId')
+  getGlobalSpammerUserDiagnostics(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.moderationService.getGlobalSpammerUserDiagnostics(chatId, targetUserId, user);
+  }
+
   @Post('chats/:chatId/spammer-review/:userId')
   reviewGlobalSpammerCandidate(
     @Param('chatId') chatId: string,

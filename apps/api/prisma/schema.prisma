@@ -653,17 +653,17 @@ model AdminGlobalSpammerExemption {
 }
 
 model GlobalSpammer {
-  userId          String   @id @map("user_id")
-  firstDetectedAt DateTime @default(now()) @map("first_detected_at")
-  lastDetectedAt  DateTime @updatedAt @map("last_detected_at")
-  detectionsCount Int      @default(1) @map("detections_count")
-  lastReason      String   @map("last_reason")
-  lastChatId      String?  @map("last_chat_id")
-  lastEvidence    Json?    @map("last_evidence")
-  confidenceScore Float    @default(1) @map("confidence_score")
-  confirmedAt     DateTime @default(now()) @map("confirmed_at")
+  userId          String    @id @map("user_id")
+  firstDetectedAt DateTime  @default(now()) @map("first_detected_at")
+  lastDetectedAt  DateTime  @updatedAt @map("last_detected_at")
+  detectionsCount Int       @default(1) @map("detections_count")
+  lastReason      String    @map("last_reason")
+  lastChatId      String?   @map("last_chat_id")
+  lastEvidence    Json?     @map("last_evidence")
+  confidenceScore Float     @default(1) @map("confidence_score")
+  confirmedAt     DateTime  @default(now()) @map("confirmed_at")
   expiresAt       DateTime? @map("expires_at")
-  sourceBreakdown Json     @default("{}") @map("source_breakdown")
+  sourceBreakdown Json      @default("{}") @map("source_breakdown")
 
   @@index([lastDetectedAt(sort: Desc)], map: "global_spammers_last_detected_at_idx")
   @@index([expiresAt], map: "global_spammers_expires_at_idx")
@@ -671,22 +671,22 @@ model GlobalSpammer {
 }
 
 model GlobalSpammerCandidate {
-  userId           String   @id @map("user_id")
-  status           String   @default("PENDING")
-  firstDetectedAt  DateTime @default(now()) @map("first_detected_at")
-  lastDetectedAt   DateTime @updatedAt @map("last_detected_at")
-  detectionsCount  Int      @default(1) @map("detections_count")
-  lastReason       String   @map("last_reason")
-  lastChatId       String?  @map("last_chat_id")
-  lastEvidence     Json?    @map("last_evidence")
-  lastUserLabel    String?  @map("last_user_label")
-  confidenceScore  Float    @default(0) @map("confidence_score")
-  sourceBreakdown  Json     @default("{}") @map("source_breakdown")
+  userId           String    @id @map("user_id")
+  status           String    @default("PENDING")
+  firstDetectedAt  DateTime  @default(now()) @map("first_detected_at")
+  lastDetectedAt   DateTime  @updatedAt @map("last_detected_at")
+  detectionsCount  Int       @default(1) @map("detections_count")
+  lastReason       String    @map("last_reason")
+  lastChatId       String?   @map("last_chat_id")
+  lastEvidence     Json?     @map("last_evidence")
+  lastUserLabel    String?   @map("last_user_label")
+  confidenceScore  Float     @default(0) @map("confidence_score")
+  sourceBreakdown  Json      @default("{}") @map("source_breakdown")
   suppressedUntil  DateTime? @map("suppressed_until")
   reviewedAt       DateTime? @map("reviewed_at")
-  reviewedByUserId String?  @map("reviewed_by_user_id")
-  reviewReason     String?  @map("review_reason")
-  falsePositive    Boolean  @default(false) @map("false_positive")
+  reviewedByUserId String?   @map("reviewed_by_user_id")
+  reviewReason     String?   @map("review_reason")
+  falsePositive    Boolean   @default(false) @map("false_positive")
 
   chats GlobalSpammerCandidateChat[]
 
@@ -743,6 +743,27 @@ model SpammerObservation {
   @@map("spammer_observations")
 }
 
+model SpammerGraphSignal {
+  id         String   @id @default(cuid())
+  signalKey  String   @unique @map("signal_key")
+  userId     String   @map("user_id")
+  chatId     String?  @map("chat_id")
+  messageId  String?  @map("message_id")
+  signalType String   @map("signal_type")
+  signalHash String   @map("signal_hash")
+  source     String
+  score      Float
+  evidence   Json?
+  observedAt DateTime @default(now()) @map("observed_at")
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([signalType, signalHash, expiresAt], map: "spammer_graph_signals_type_hash_expires_idx")
+  @@index([userId, expiresAt], map: "spammer_graph_signals_user_expires_idx")
+  @@map("spammer_graph_signals")
+}
+
 model GlobalSpammerSuppression {
   id              String   @id @default(cuid())
   userId          String   @map("user_id")
@@ -758,6 +779,32 @@ model GlobalSpammerSuppression {
   @@index([userId, suppressedUntil], map: "global_spammer_suppressions_user_until_idx")
   @@index([source, createdAt(sort: Desc)], map: "global_spammer_suppressions_source_created_at_idx")
   @@map("global_spammer_suppressions")
+}
+
+model GlobalSpammerEnforcementDecision {
+  id                    String    @id @default(cuid())
+  userId                String    @map("user_id")
+  chatId                String?   @map("chat_id")
+  messageId             String?   @map("message_id")
+  trigger               String
+  registryStatus        String    @map("registry_status")
+  decision              String
+  enforcementMode       String    @map("enforcement_mode")
+  deleteSpammersEnabled Boolean   @map("delete_spammers_enabled")
+  adminExempt           Boolean   @default(false) @map("admin_exempt")
+  shadow                Boolean   @default(false)
+  wouldEnforce          Boolean   @default(false) @map("would_enforce")
+  enforced              Boolean   @default(false)
+  confidenceScore       Float?    @map("confidence_score")
+  reason                String
+  expiresAt             DateTime? @map("expires_at")
+  sourceBreakdown       Json?     @map("source_breakdown")
+  createdAt             DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_user_created_idx")
+  @@index([chatId, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_chat_created_idx")
+  @@index([shadow, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_shadow_created_idx")
+  @@map("global_spammer_enforcement_decisions")
 }
 
 model BadwordDictionary {

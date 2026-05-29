@@ -1798,8 +1798,121 @@ export const globalSpammerReviewMetricsSchema = z.object({
       reason: z.string(),
     }),
   ),
+  sourceReputation: z
+    .array(
+      z.object({
+        source: z.string(),
+        weight: z.number().min(0).max(1),
+        falsePositiveRate: z.number().min(0).max(1),
+        observations: z.number().int().min(0),
+        suppressed: z.number().int().min(0),
+      }),
+    )
+    .default([]),
 });
 export type GlobalSpammerReviewMetrics = z.infer<typeof globalSpammerReviewMetricsSchema>;
+
+export const globalSpammerRegistryStatusSchema = z.enum([
+  'NONE',
+  'ACTIVE_CONFIRMED',
+  'MEDIUM_REVIEW',
+  'SUPPRESSED',
+  'EXPIRED',
+  'ADMIN_EXEMPT',
+]);
+export type GlobalSpammerRegistryStatus = z.infer<typeof globalSpammerRegistryStatusSchema>;
+
+export const globalSpammerPolicyActionSchema = z.enum([
+  'NONE',
+  'DELETE_AND_KICK',
+  'SHADOW_DELETE_AND_KICK',
+]);
+export type GlobalSpammerPolicyAction = z.infer<typeof globalSpammerPolicyActionSchema>;
+
+export const globalSpammerPolicyDecisionSchema = z.object({
+  userId: z.string(),
+  chatId: z.string().nullable(),
+  trigger: z.string(),
+  registryStatus: globalSpammerRegistryStatusSchema,
+  action: globalSpammerPolicyActionSchema,
+  enforcementMode: z.enum(['enforce', 'shadow']),
+  deleteSpammersEnabled: z.boolean(),
+  adminExempt: z.boolean(),
+  shadow: z.boolean(),
+  wouldEnforce: z.boolean(),
+  enforced: z.boolean(),
+  confidenceScore: z.number().min(0).max(1).nullable(),
+  reason: z.string(),
+  expiresAt: z.string().datetime().nullable(),
+  sourceBreakdown: z.unknown().nullable(),
+});
+export type GlobalSpammerPolicyDecision = z.infer<typeof globalSpammerPolicyDecisionSchema>;
+
+export const globalSpammerUserDiagnosticsSchema = z.object({
+  userId: z.string(),
+  chatId: z.string().nullable(),
+  policy: globalSpammerPolicyDecisionSchema,
+  registry: z.object({
+    active: z.boolean(),
+    expired: z.boolean(),
+    confidenceScore: z.number().min(0).max(1).nullable(),
+    reason: z.string().nullable(),
+    expiresAt: z.string().datetime().nullable(),
+    sourceBreakdown: z.unknown().nullable(),
+  }),
+  candidate: z
+    .object({
+      status: z.string(),
+      confidenceScore: z.number().min(0).max(1),
+      lastReason: z.string(),
+      reviewedAt: z.string().datetime().nullable(),
+      reviewedByUserId: z.string().nullable(),
+      reviewReason: z.string().nullable(),
+      falsePositive: z.boolean(),
+    })
+    .nullable(),
+  activeSuppression: z
+    .object({
+      source: z.string(),
+      reason: z.string(),
+      adminUserId: z.string().nullable(),
+      suppressedUntil: z.string().datetime(),
+    })
+    .nullable(),
+  observations: z.array(
+    z.object({
+      id: z.string(),
+      source: z.string(),
+      score: z.number().min(0).max(1),
+      confidenceLevel: z.string(),
+      reason: z.string(),
+      chatId: z.string().nullable(),
+      observedAt: z.string().datetime(),
+      expiresAt: z.string().datetime(),
+      suppressedAt: z.string().datetime().nullable(),
+    }),
+  ),
+  graphSignals: z.array(
+    z.object({
+      signalType: z.string(),
+      source: z.string(),
+      score: z.number().min(0).max(1),
+      chatId: z.string().nullable(),
+      observedAt: z.string().datetime(),
+      expiresAt: z.string().datetime(),
+    }),
+  ),
+  sourceReputation: z.array(
+    z.object({
+      source: z.string(),
+      weight: z.number().min(0).max(1),
+      falsePositiveRate: z.number().min(0).max(1),
+      observations: z.number().int().min(0),
+      suppressed: z.number().int().min(0),
+    }),
+  ),
+});
+export type GlobalSpammerUserDiagnostics = z.infer<typeof globalSpammerUserDiagnosticsSchema>;
 
 export const updateSettingsRequestSchema = chatSettingsSchema;
 

@@ -6585,7 +6585,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text } = params;
-    const isKnownSpammer = await this.isUserKnownGlobalSpammer(userId);
+    const isKnownSpammer = await this.isUserKnownGlobalSpammer(userId, {
+      chatId,
+      messageId,
+      trigger: 'message',
+    });
     if (!isKnownSpammer) {
       return false;
     }
@@ -6743,18 +6747,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
-        this.runGlobalSpammerSideEffect({ chatId, userId, action: 'upsert-detected' }, async () =>
-          this.upsertGlobalSpammerEntry({
-            userId,
-            sourceChatId: chatId,
-            reason: 'HIGH_FANOUT_6_CHATS_2M',
-            evidence: {
-              uniqueChats: uniqueChatsState.size,
-              windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-            },
-          }),
-        );
-        if (deleteSpammersEnabled && !exemptFromEnforcement) {
+        await this.upsertGlobalSpammerEntry({
+          userId,
+          sourceChatId: chatId,
+          reason: 'HIGH_FANOUT_6_CHATS_2M',
+          evidence: {
+            uniqueChats: uniqueChatsState.size,
+            windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+          },
+        });
+        if (
+          deleteSpammersEnabled &&
+          !exemptFromEnforcement &&
+          (!this.globalSpammerIntelligence ||
+            (await this.isUserKnownGlobalSpammer(userId, { chatId, messageId, trigger: 'fanout' })))
+        ) {
           this.runGlobalSpammerSideEffect(
             { chatId, userId, messageId, action: 'delete-and-kick-detected' },
             async () =>
@@ -7378,7 +7385,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
+  private async isUserKnownGlobalSpammer(
+    userId: string,
+    context?: { chatId?: string; messageId?: string; trigger?: string },
+  ): Promise<boolean> {
+    if (this.globalSpammerIntelligence) {
+      const decision = await this.globalSpammerIntelligence.evaluatePolicy({
+        chatId: context?.chatId,
+        userId,
+        messageId: context?.messageId,
+        trigger: context?.trigger ?? 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: Boolean(context),
+      });
+      return decision.action === 'DELETE_AND_KICK';
+    }
+
     const globalSpammerModel = this.prisma.globalSpammer as unknown as {
       findFirst?: (args: unknown) => Promise<{ userId: string; expiresAt?: Date | null } | null>;
       findUnique?: (args: unknown) => Promise<{ userId: string; expiresAt?: Date | null } | null>;

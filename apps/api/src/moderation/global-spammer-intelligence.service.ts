@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
@@ -16,6 +17,11 @@ export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'COMMERCIAL_CAMPAIGN',
   'REPEATED_LINK',
   'REPEATED_PHONE',
+  'GRAPH_DOMAIN',
+  'GRAPH_PHONE',
+  'GRAPH_TEXT',
+  'GRAPH_CAMPAIGN',
+  'GRAPH_FANOUT_PATTERN',
   'SANCTION_BAN',
   'MANUAL_BAN',
   'REVIEW_APPROVED',
@@ -79,6 +85,8 @@ type AggregateSource = {
   source: string;
   score: number;
   rawScore: number;
+  reputationWeight: number;
+  falsePositiveRate: number;
   count: number;
   latestAt: string;
   reasons: string[];
@@ -92,6 +100,106 @@ type AggregateResult = {
 };
 
 type CandidateReviewAction = 'APPROVE' | 'SUPPRESS';
+type GlobalSpammerRegistryStatus =
+  | 'NONE'
+  | 'ACTIVE_CONFIRMED'
+  | 'MEDIUM_REVIEW'
+  | 'SUPPRESSED'
+  | 'EXPIRED'
+  | 'ADMIN_EXEMPT';
+type GlobalSpammerPolicyAction = 'NONE' | 'DELETE_AND_KICK' | 'SHADOW_DELETE_AND_KICK';
+type GlobalSpammerEnforcementMode = 'enforce' | 'shadow';
+type SpammerGraphSignalType = 'DOMAIN' | 'PHONE' | 'TEXT' | 'CAMPAIGN' | 'FANOUT_PATTERN';
+
+export type GlobalSpammerPolicyDecision = {
+  userId: string;
+  chatId: string | null;
+  trigger: string;
+  registryStatus: GlobalSpammerRegistryStatus;
+  action: GlobalSpammerPolicyAction;
+  enforcementMode: GlobalSpammerEnforcementMode;
+  deleteSpammersEnabled: boolean;
+  adminExempt: boolean;
+  shadow: boolean;
+  wouldEnforce: boolean;
+  enforced: boolean;
+  confidenceScore: number | null;
+  reason: string;
+  expiresAt: string | null;
+  sourceBreakdown: Prisma.InputJsonValue | null;
+};
+
+export type GlobalSpammerUserDiagnostics = {
+  userId: string;
+  chatId: string | null;
+  policy: GlobalSpammerPolicyDecision;
+  registry: {
+    active: boolean;
+    expired: boolean;
+    confidenceScore: number | null;
+    reason: string | null;
+    expiresAt: string | null;
+    sourceBreakdown: Prisma.JsonValue | null;
+  };
+  candidate: {
+    status: string;
+    confidenceScore: number;
+    lastReason: string;
+    reviewedAt: string | null;
+    reviewedByUserId: string | null;
+    reviewReason: string | null;
+    falsePositive: boolean;
+  } | null;
+  activeSuppression: {
+    source: string;
+    reason: string;
+    adminUserId: string | null;
+    suppressedUntil: string;
+  } | null;
+  observations: Array<{
+    id: string;
+    source: string;
+    score: number;
+    confidenceLevel: string;
+    reason: string;
+    chatId: string | null;
+    observedAt: string;
+    expiresAt: string;
+    suppressedAt: string | null;
+  }>;
+  graphSignals: Array<{
+    signalType: string;
+    source: string;
+    score: number;
+    chatId: string | null;
+    observedAt: string;
+    expiresAt: string;
+  }>;
+  sourceReputation: Array<{
+    source: string;
+    weight: number;
+    falsePositiveRate: number;
+    observations: number;
+    suppressed: number;
+  }>;
+};
+
+type SourceReputation = {
+  source: string;
+  weight: number;
+  falsePositiveRate: number;
+  observations: number;
+  suppressed: number;
+};
+
+type ExtractedGraphSignal = {
+  signalType: SpammerGraphSignalType;
+  source: GlobalSpammerObservationSource;
+  value: string;
+  reason: string;
+  score: number;
+  evidence: Prisma.InputJsonObject;
+};
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OBSERVATION_TTL_DAYS = 14;
@@ -107,16 +215,49 @@ const SOURCE_DEFAULT_TTL_DAYS: Partial<Record<GlobalSpammerObservationSource, nu
   COMMERCIAL_CAMPAIGN: 14,
   REPEATED_LINK: 10,
   REPEATED_PHONE: 14,
+  GRAPH_DOMAIN: 14,
+  GRAPH_PHONE: 14,
+  GRAPH_TEXT: 10,
+  GRAPH_CAMPAIGN: 21,
+  GRAPH_FANOUT_PATTERN: 7,
   SANCTION_BAN: 21,
   MANUAL_BAN: 30,
   REVIEW_APPROVED: 90,
 };
 
+const SOURCE_BASE_REPUTATION_WEIGHTS: Record<GlobalSpammerObservationSource, number> = {
+  FANOUT_HIGH: 1,
+  FANOUT_REPEAT: 0.82,
+  COMMERCIAL_AD: 0.74,
+  COMMERCIAL_CAMPAIGN: 0.9,
+  REPEATED_LINK: 0.78,
+  REPEATED_PHONE: 0.82,
+  GRAPH_DOMAIN: 0.72,
+  GRAPH_PHONE: 0.78,
+  GRAPH_TEXT: 0.68,
+  GRAPH_CAMPAIGN: 0.86,
+  GRAPH_FANOUT_PATTERN: 0.65,
+  SANCTION_BAN: 0.84,
+  MANUAL_BAN: 0.88,
+  REVIEW_APPROVED: 1,
+};
+
+const SOURCE_REPUTATION_WINDOW_DAYS = 30;
+const RECENT_SUPPRESSION_MEMORY_DAYS = 30;
+const GRAPH_SIGNAL_TTL_DAYS = 14;
+const GRAPH_OBSERVATION_TTL_DAYS = 14;
+
 @Injectable()
 export class GlobalSpammerIntelligenceService {
   private readonly logger = new Logger(GlobalSpammerIntelligenceService.name);
+  private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() configService?: ConfigService,
+  ) {
+    this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
+  }
 
   async recordCommercialObservations(params: {
     chatId: string;
@@ -307,6 +448,14 @@ export class GlobalSpammerIntelligenceService {
       },
     });
 
+    if (!this.isGraphObservationSource(input.source)) {
+      await this.recordGraphSignalsForObservation({
+        userId,
+        input,
+        observedAt: now,
+      });
+    }
+
     const aggregate = await this.computeAggregateForUser(userId, now);
     const sourceBreakdown = aggregate.sourceBreakdown;
 
@@ -337,7 +486,11 @@ export class GlobalSpammerIntelligenceService {
       };
     }
 
-    if (input.forceRegistry || aggregate.score >= HIGH_CONFIDENCE_THRESHOLD) {
+    const thresholdAdjustment = await this.resolveRecentSuppressionThresholdAdjustment(userId, now);
+    const highConfidenceThreshold = HIGH_CONFIDENCE_THRESHOLD + thresholdAdjustment;
+    const mediumConfidenceThreshold = MEDIUM_CONFIDENCE_THRESHOLD + thresholdAdjustment;
+
+    if (input.forceRegistry || aggregate.score >= highConfidenceThreshold) {
       await this.promoteToRegistry({
         userId,
         sourceChatId: input.chatId ?? null,
@@ -358,7 +511,7 @@ export class GlobalSpammerIntelligenceService {
       };
     }
 
-    if (aggregate.score >= MEDIUM_CONFIDENCE_THRESHOLD) {
+    if (aggregate.score >= mediumConfidenceThreshold) {
       await this.upsertCandidate({
         userId,
         status: 'PENDING',
@@ -650,6 +803,7 @@ export class GlobalSpammerIntelligenceService {
       falsePositiveCount,
       recentObservations,
       suppressedObservations,
+      sourceReputation,
     ] = await Promise.all([
       this.prisma.globalSpammerCandidate.count({
         where: {
@@ -709,6 +863,7 @@ export class GlobalSpammerIntelligenceService {
           _all: true,
         },
       }),
+      this.getSourceReputation(now),
     ]);
 
     const sourceAlerts = this.buildSourceAlerts({
@@ -738,6 +893,7 @@ export class GlobalSpammerIntelligenceService {
         count: row._count._all,
       })),
       sourceAlerts,
+      sourceReputation,
     };
   }
 
@@ -773,6 +929,773 @@ export class GlobalSpammerIntelligenceService {
     return alerts;
   }
 
+  async evaluatePolicy(params: {
+    chatId?: string | null;
+    userId: string;
+    messageId?: string | null;
+    trigger: string;
+    deleteSpammersEnabled: boolean;
+    adminExempt?: boolean;
+    enforcementMode?: GlobalSpammerEnforcementMode;
+    recordDecision?: boolean;
+    enforced?: boolean;
+  }): Promise<GlobalSpammerPolicyDecision> {
+    const userId = this.normalizeUserId(params.userId);
+    const chatId = this.normalizeText(params.chatId ?? '') || null;
+    const now = new Date();
+    const enforcementMode = params.enforcementMode ?? this.defaultEnforcementMode;
+    const activeSuppression = userId ? await this.findActiveSuppression(userId, now) : null;
+    const adminExempt = Boolean(params.adminExempt);
+
+    let decision: GlobalSpammerPolicyDecision;
+    if (!userId) {
+      decision = this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'NONE',
+        action: 'NONE',
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: null,
+        reason: 'USER_ID_REQUIRED',
+        expiresAt: null,
+        sourceBreakdown: null,
+        enforced: false,
+      });
+    } else if (adminExempt) {
+      decision = this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'ADMIN_EXEMPT',
+        action: 'NONE',
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: null,
+        reason: 'ADMIN_EXEMPT',
+        expiresAt: null,
+        sourceBreakdown: null,
+        enforced: false,
+      });
+    } else if (activeSuppression) {
+      decision = this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'SUPPRESSED',
+        action: 'NONE',
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: null,
+        reason: activeSuppression.reason,
+        expiresAt: activeSuppression.suppressedUntil.toISOString(),
+        sourceBreakdown: null,
+        enforced: false,
+      });
+    } else {
+      const registry = await this.prisma.globalSpammer.findUnique({
+        where: {
+          userId,
+        },
+      });
+      if (registry?.expiresAt && registry.expiresAt > now) {
+        const action = !params.deleteSpammersEnabled
+          ? 'NONE'
+          : enforcementMode === 'shadow'
+            ? 'SHADOW_DELETE_AND_KICK'
+            : 'DELETE_AND_KICK';
+        decision = this.buildPolicyDecision({
+          userId,
+          chatId,
+          trigger: params.trigger,
+          registryStatus: 'ACTIVE_CONFIRMED',
+          action,
+          enforcementMode,
+          deleteSpammersEnabled: params.deleteSpammersEnabled,
+          adminExempt,
+          confidenceScore: registry.confidenceScore,
+          reason: registry.lastReason,
+          expiresAt: registry.expiresAt.toISOString(),
+          sourceBreakdown: registry.sourceBreakdown,
+          enforced: Boolean(
+            (params.enforced ?? params.recordDecision) && action === 'DELETE_AND_KICK',
+          ),
+        });
+      } else if (registry) {
+        decision = this.buildPolicyDecision({
+          userId,
+          chatId,
+          trigger: params.trigger,
+          registryStatus: 'EXPIRED',
+          action: 'NONE',
+          enforcementMode,
+          deleteSpammersEnabled: params.deleteSpammersEnabled,
+          adminExempt,
+          confidenceScore: registry.confidenceScore,
+          reason: registry.lastReason,
+          expiresAt: registry.expiresAt?.toISOString() ?? null,
+          sourceBreakdown: registry.sourceBreakdown,
+          enforced: false,
+        });
+      } else {
+        const candidate = await this.prisma.globalSpammerCandidate.findUnique({
+          where: {
+            userId,
+          },
+        });
+        decision = this.buildPolicyDecision({
+          userId,
+          chatId,
+          trigger: params.trigger,
+          registryStatus:
+            candidate?.status === 'PENDING' &&
+            candidate.confidenceScore >= MEDIUM_CONFIDENCE_THRESHOLD
+              ? 'MEDIUM_REVIEW'
+              : 'NONE',
+          action: 'NONE',
+          enforcementMode,
+          deleteSpammersEnabled: params.deleteSpammersEnabled,
+          adminExempt,
+          confidenceScore: candidate?.confidenceScore ?? null,
+          reason: candidate?.lastReason ?? 'NO_ACTIVE_REGISTRY_ENTRY',
+          expiresAt: candidate?.suppressedUntil?.toISOString() ?? null,
+          sourceBreakdown: candidate?.sourceBreakdown ?? null,
+          enforced: false,
+        });
+      }
+    }
+
+    if (params.recordDecision) {
+      await this.recordPolicyDecision({
+        decision,
+        messageId: params.messageId ?? null,
+      });
+    }
+    return decision;
+  }
+
+  async getUserDiagnostics(params: {
+    chatId?: string | null;
+    userId: string;
+    deleteSpammersEnabled?: boolean;
+    adminExempt?: boolean;
+    enforcementMode?: GlobalSpammerEnforcementMode;
+  }): Promise<GlobalSpammerUserDiagnostics> {
+    const userId = this.normalizeUserId(params.userId);
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    const chatId = this.normalizeText(params.chatId ?? '') || null;
+    const now = new Date();
+    const [resolvedDeleteSpammersEnabled, resolvedAdminExempt] = await Promise.all([
+      params.deleteSpammersEnabled ?? this.resolveDeleteSpammersEnabled(chatId),
+      params.adminExempt ?? this.resolveAnyAdminExemption(userId, chatId),
+    ]);
+    const [registry, candidate, activeSuppression, observations, graphSignals, reputation] =
+      await Promise.all([
+        this.prisma.globalSpammer.findUnique({ where: { userId } }),
+        this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+        this.findActiveSuppression(userId, now),
+        this.prisma.spammerObservation.findMany({
+          where: { userId },
+          orderBy: { observedAt: 'desc' },
+          take: 20,
+        }),
+        this.prisma.spammerGraphSignal.findMany({
+          where: {
+            userId,
+            expiresAt: { gt: now },
+          },
+          orderBy: { observedAt: 'desc' },
+          take: 20,
+        }),
+        this.getSourceReputation(now),
+      ]);
+    const policy = await this.evaluatePolicy({
+      chatId,
+      userId,
+      trigger: 'diagnostics',
+      deleteSpammersEnabled: resolvedDeleteSpammersEnabled,
+      adminExempt: resolvedAdminExempt,
+      enforcementMode: params.enforcementMode ?? this.defaultEnforcementMode,
+    });
+
+    return {
+      userId,
+      chatId,
+      policy,
+      registry: {
+        active: Boolean(registry?.expiresAt && registry.expiresAt > now),
+        expired: Boolean(registry && (!registry.expiresAt || registry.expiresAt <= now)),
+        confidenceScore: registry?.confidenceScore ?? null,
+        reason: registry?.lastReason ?? null,
+        expiresAt: registry?.expiresAt?.toISOString() ?? null,
+        sourceBreakdown: registry?.sourceBreakdown ?? null,
+      },
+      candidate: candidate
+        ? {
+            status: candidate.status,
+            confidenceScore: candidate.confidenceScore,
+            lastReason: candidate.lastReason,
+            reviewedAt: candidate.reviewedAt?.toISOString() ?? null,
+            reviewedByUserId: candidate.reviewedByUserId,
+            reviewReason: candidate.reviewReason,
+            falsePositive: candidate.falsePositive,
+          }
+        : null,
+      activeSuppression: activeSuppression
+        ? {
+            source: activeSuppression.source,
+            reason: activeSuppression.reason,
+            adminUserId: activeSuppression.adminUserId,
+            suppressedUntil: activeSuppression.suppressedUntil.toISOString(),
+          }
+        : null,
+      observations: observations.map((row) => ({
+        id: row.id,
+        source: row.source,
+        score: row.score,
+        confidenceLevel: row.confidenceLevel,
+        reason: row.reason,
+        chatId: row.chatId,
+        observedAt: row.observedAt.toISOString(),
+        expiresAt: row.expiresAt.toISOString(),
+        suppressedAt: row.suppressedAt?.toISOString() ?? null,
+      })),
+      graphSignals: graphSignals.map((row) => ({
+        signalType: row.signalType,
+        source: row.source,
+        score: row.score,
+        chatId: row.chatId,
+        observedAt: row.observedAt.toISOString(),
+        expiresAt: row.expiresAt.toISOString(),
+      })),
+      sourceReputation: reputation,
+    };
+  }
+
+  private async resolveDeleteSpammersEnabled(chatId: string | null): Promise<boolean> {
+    if (!chatId) {
+      return false;
+    }
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        settings: {
+          select: {
+            deleteSpammersEnabled: true,
+          },
+        },
+      },
+    });
+    return Boolean(chat?.settings?.deleteSpammersEnabled);
+  }
+
+  private async resolveAnyAdminExemption(userId: string, chatId: string | null): Promise<boolean> {
+    const row = await this.prisma.adminGlobalSpammerExemption.findFirst({
+      where: {
+        userId,
+        OR: [{ sourceChatId: null }, ...(chatId ? [{ sourceChatId: chatId }] : [])],
+      },
+      select: {
+        userId: true,
+      },
+    });
+    return Boolean(row);
+  }
+
+  async getSourceReputation(now = new Date()): Promise<SourceReputation[]> {
+    const since = new Date(now.getTime() - SOURCE_REPUTATION_WINDOW_DAYS * DAY_MS);
+    const [observed, suppressed] = await Promise.all([
+      this.prisma.spammerObservation.groupBy({
+        by: ['source'],
+        where: {
+          observedAt: {
+            gte: since,
+          },
+        },
+        _count: {
+          _all: true,
+        },
+      }),
+      this.prisma.spammerObservation.groupBy({
+        by: ['source'],
+        where: {
+          suppressedAt: {
+            gte: since,
+          },
+        },
+        _count: {
+          _all: true,
+        },
+      }),
+    ]);
+    const suppressedBySource = new Map(suppressed.map((row) => [row.source, row._count._all]));
+    return observed
+      .map((row) => {
+        const observations = row._count._all;
+        const suppressedCount = suppressedBySource.get(row.source) ?? 0;
+        const falsePositiveRate = observations > 0 ? suppressedCount / observations : 0;
+        const weight = this.resolveSourceReputationWeight(
+          row.source,
+          observations,
+          falsePositiveRate,
+        );
+        return {
+          source: row.source,
+          weight,
+          falsePositiveRate: this.roundScore(falsePositiveRate),
+          observations,
+          suppressed: suppressedCount,
+        };
+      })
+      .sort((left, right) => left.source.localeCompare(right.source));
+  }
+
+  private async getSourceReputationMap(now: Date): Promise<Map<string, SourceReputation>> {
+    const rows = await this.getSourceReputation(now);
+    return new Map(rows.map((row) => [row.source, row]));
+  }
+
+  private resolveSourceReputationWeight(
+    source: string,
+    observations: number,
+    falsePositiveRate: number,
+  ): number {
+    const baseWeight = this.resolveSourceBaseWeight(source);
+    let qualityWeight = 1;
+    if (observations >= 10 && falsePositiveRate >= 0.6) {
+      qualityWeight = 0.5;
+    } else if (observations >= 10 && falsePositiveRate >= 0.35) {
+      qualityWeight = 0.65;
+    } else if (observations >= 10 && falsePositiveRate >= 0.2) {
+      qualityWeight = 0.8;
+    }
+    return this.roundScore(baseWeight * qualityWeight);
+  }
+
+  private resolveSourceBaseWeight(source: string): number {
+    return SOURCE_BASE_REPUTATION_WEIGHTS[source as GlobalSpammerObservationSource] ?? 1;
+  }
+
+  private resolveDefaultEnforcementMode(
+    configService?: ConfigService,
+  ): GlobalSpammerEnforcementMode {
+    const configuredMode = this.normalizeText(
+      configService?.get<string>('GLOBAL_SPAMMER_ENFORCEMENT_MODE'),
+    ).toLowerCase();
+    if (configuredMode === 'shadow') {
+      return 'shadow';
+    }
+    if (configuredMode === 'enforce') {
+      return 'enforce';
+    }
+
+    const shadowFlag = this.normalizeText(
+      configService?.get<string>('GLOBAL_SPAMMER_SHADOW_MODE'),
+    ).toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(shadowFlag) ? 'shadow' : 'enforce';
+  }
+
+  private buildPolicyDecision(params: {
+    userId: string;
+    chatId: string | null;
+    trigger: string;
+    registryStatus: GlobalSpammerRegistryStatus;
+    action: GlobalSpammerPolicyAction;
+    enforcementMode: GlobalSpammerEnforcementMode;
+    deleteSpammersEnabled: boolean;
+    adminExempt: boolean;
+    confidenceScore: number | null;
+    reason: string;
+    expiresAt: string | null;
+    sourceBreakdown: Prisma.InputJsonValue | null;
+    enforced: boolean;
+  }): GlobalSpammerPolicyDecision {
+    const wouldEnforce = params.registryStatus === 'ACTIVE_CONFIRMED';
+    return {
+      userId: params.userId,
+      chatId: params.chatId,
+      trigger: params.trigger,
+      registryStatus: params.registryStatus,
+      action: params.action,
+      enforcementMode: params.enforcementMode,
+      deleteSpammersEnabled: params.deleteSpammersEnabled,
+      adminExempt: params.adminExempt,
+      shadow: params.action === 'SHADOW_DELETE_AND_KICK',
+      wouldEnforce,
+      enforced: params.enforced,
+      confidenceScore:
+        typeof params.confidenceScore === 'number' ? this.roundScore(params.confidenceScore) : null,
+      reason: params.reason,
+      expiresAt: params.expiresAt,
+      sourceBreakdown: params.sourceBreakdown,
+    };
+  }
+
+  private async recordPolicyDecision(params: {
+    decision: GlobalSpammerPolicyDecision;
+    messageId: string | null;
+  }): Promise<void> {
+    const decision = params.decision;
+    await this.prisma.globalSpammerEnforcementDecision.create({
+      data: {
+        userId: decision.userId,
+        chatId: decision.chatId,
+        messageId: params.messageId,
+        trigger: decision.trigger,
+        registryStatus: decision.registryStatus,
+        decision: decision.action,
+        enforcementMode: decision.enforcementMode,
+        deleteSpammersEnabled: decision.deleteSpammersEnabled,
+        adminExempt: decision.adminExempt,
+        shadow: decision.shadow,
+        wouldEnforce: decision.wouldEnforce,
+        enforced: decision.enforced,
+        confidenceScore: decision.confidenceScore,
+        reason: decision.reason,
+        expiresAt: decision.expiresAt ? new Date(decision.expiresAt) : null,
+        sourceBreakdown: decision.sourceBreakdown ?? Prisma.JsonNull,
+      },
+    });
+  }
+
+  private async resolveRecentSuppressionThresholdAdjustment(
+    userId: string,
+    now: Date,
+  ): Promise<number> {
+    const recentSuppression = await this.prisma.globalSpammerSuppression.findFirst({
+      where: {
+        userId,
+        suppressedUntil: {
+          gte: new Date(now.getTime() - RECENT_SUPPRESSION_MEMORY_DAYS * DAY_MS),
+        },
+      },
+      orderBy: {
+        suppressedUntil: 'desc',
+      },
+    });
+    return recentSuppression ? 0.08 : 0;
+  }
+
+  private isGraphObservationSource(source: GlobalSpammerObservationSource): boolean {
+    return source.startsWith('GRAPH_');
+  }
+
+  private async recordGraphSignalsForObservation(params: {
+    userId: string;
+    input: GlobalSpammerObservationInput;
+    observedAt: Date;
+  }): Promise<void> {
+    const graphSignals = this.extractGraphSignals(params.input);
+    if (graphSignals.length === 0) {
+      return;
+    }
+
+    for (const signal of graphSignals) {
+      await this.recordGraphSignal({
+        userId: params.userId,
+        input: params.input,
+        signal,
+        observedAt: params.observedAt,
+      });
+    }
+  }
+
+  private async recordGraphSignal(params: {
+    userId: string;
+    input: GlobalSpammerObservationInput;
+    signal: ExtractedGraphSignal;
+    observedAt: Date;
+  }): Promise<void> {
+    const signalHash = this.buildEvidenceHash({
+      type: params.signal.signalType,
+      value: params.signal.value,
+    });
+    const chatId = params.input.chatId ?? null;
+    const signalKey = `${params.userId}:${chatId ?? 'global'}:${params.signal.signalType}:${signalHash}`;
+    const expiresAt = new Date(params.observedAt.getTime() + GRAPH_SIGNAL_TTL_DAYS * DAY_MS);
+    await this.prisma.spammerGraphSignal.upsert({
+      where: {
+        signalKey,
+      },
+      create: {
+        signalKey,
+        userId: params.userId,
+        chatId,
+        messageId: params.input.messageId ?? null,
+        signalType: params.signal.signalType,
+        signalHash,
+        source: params.signal.source,
+        score: params.signal.score,
+        evidence: params.signal.evidence,
+        observedAt: params.observedAt,
+        expiresAt,
+      },
+      update: {
+        messageId: params.input.messageId ?? null,
+        source: params.signal.source,
+        score: params.signal.score,
+        evidence: params.signal.evidence,
+        observedAt: params.observedAt,
+        expiresAt,
+      },
+    });
+
+    const activeSignals = await this.prisma.spammerGraphSignal.findMany({
+      where: {
+        signalType: params.signal.signalType,
+        signalHash,
+        expiresAt: {
+          gt: params.observedAt,
+        },
+      },
+      select: {
+        userId: true,
+        chatId: true,
+      },
+      take: 200,
+    });
+    const distinctUsers = new Set(activeSignals.map((row) => row.userId)).size;
+    const distinctChats = new Set(
+      activeSignals.map((row) => row.chatId).filter((value): value is string => Boolean(value)),
+    ).size;
+    const shouldCreateObservation =
+      distinctUsers >= 2 || distinctChats >= 2 || activeSignals.length >= 3;
+    if (!shouldCreateObservation) {
+      return;
+    }
+
+    const graphScore = this.resolveGraphObservationScore({
+      signal: params.signal,
+      distinctUsers,
+      distinctChats,
+      hits: activeSignals.length,
+    });
+    const graphEvidenceHash = `graph:${params.signal.signalType.toLowerCase()}:${signalHash}`;
+    await this.prisma.spammerObservation.upsert({
+      where: {
+        userId_source_evidenceHash: {
+          userId: params.userId,
+          source: params.signal.source,
+          evidenceHash: graphEvidenceHash,
+        },
+      },
+      create: {
+        userId: params.userId,
+        source: params.signal.source,
+        score: graphScore,
+        confidenceLevel: this.resolveConfidenceLevel(graphScore),
+        reason: params.signal.reason,
+        chatId,
+        messageId: params.input.messageId ?? null,
+        evidenceHash: graphEvidenceHash,
+        evidence: {
+          ...params.signal.evidence,
+          distinctUsers,
+          distinctChats,
+          hits: activeSignals.length,
+        },
+        observedAt: params.observedAt,
+        expiresAt: new Date(params.observedAt.getTime() + GRAPH_OBSERVATION_TTL_DAYS * DAY_MS),
+      },
+      update: {
+        score: graphScore,
+        confidenceLevel: this.resolveConfidenceLevel(graphScore),
+        reason: params.signal.reason,
+        chatId,
+        messageId: params.input.messageId ?? null,
+        evidence: {
+          ...params.signal.evidence,
+          distinctUsers,
+          distinctChats,
+          hits: activeSignals.length,
+        },
+        observedAt: params.observedAt,
+        expiresAt: new Date(params.observedAt.getTime() + GRAPH_OBSERVATION_TTL_DAYS * DAY_MS),
+        suppressedAt: null,
+        suppressionReason: null,
+      },
+    });
+  }
+
+  private resolveGraphObservationScore(params: {
+    signal: ExtractedGraphSignal;
+    distinctUsers: number;
+    distinctChats: number;
+    hits: number;
+  }): number {
+    const lift = Math.min(
+      0.14,
+      Math.max(params.distinctUsers, params.distinctChats, params.hits) * 0.025,
+    );
+    return this.roundScore(params.signal.score + lift);
+  }
+
+  private extractGraphSignals(input: GlobalSpammerObservationInput): ExtractedGraphSignal[] {
+    const evidence = this.asRecord(input.evidence);
+    const flattenedValues = this.collectEvidenceStrings(input.evidence);
+    const signals: ExtractedGraphSignal[] = [];
+    const domains = new Set<string>();
+    const phones = new Set<string>();
+
+    for (const value of flattenedValues) {
+      for (const domain of this.extractDomains(value)) {
+        domains.add(domain);
+      }
+      for (const phone of this.extractPhones(value)) {
+        phones.add(phone);
+      }
+    }
+
+    for (const domain of domains) {
+      signals.push({
+        signalType: 'DOMAIN',
+        source: 'GRAPH_DOMAIN',
+        value: domain,
+        reason: 'GRAPH_DOMAIN_REUSE',
+        score: 0.58,
+        evidence: { domain },
+      });
+    }
+    for (const phone of phones) {
+      signals.push({
+        signalType: 'PHONE',
+        source: 'GRAPH_PHONE',
+        value: phone,
+        reason: 'GRAPH_PHONE_REUSE',
+        score: 0.64,
+        evidence: { phoneHash: this.buildEvidenceHash(phone) },
+      });
+    }
+
+    const text = this.normalizeGraphText(
+      this.readString(evidence?.excerpt) ||
+        this.readString(evidence?.text) ||
+        this.readString(evidence?.messageText) ||
+        '',
+    );
+    if (text) {
+      signals.push({
+        signalType: 'TEXT',
+        source: 'GRAPH_TEXT',
+        value: text,
+        reason: 'GRAPH_TEXT_REUSE',
+        score: 0.54,
+        evidence: { textHash: this.buildEvidenceHash(text) },
+      });
+    }
+
+    const campaignValue =
+      this.readString(evidence?.campaignId) ||
+      this.readString(evidence?.campaignKey) ||
+      this.readString(evidence?.campaignHash) ||
+      this.readString(this.asRecord(evidence?.campaignContext)?.campaignKey) ||
+      this.readString(this.asRecord(evidence?.campaignContext)?.signature);
+    if (campaignValue) {
+      signals.push({
+        signalType: 'CAMPAIGN',
+        source: 'GRAPH_CAMPAIGN',
+        value: campaignValue,
+        reason: 'GRAPH_CAMPAIGN_REUSE',
+        score: 0.7,
+        evidence: { campaignHash: this.buildEvidenceHash(campaignValue) },
+      });
+    }
+
+    const uniqueChats = this.readNumber(evidence?.uniqueChats);
+    const windowSec = this.readNumber(evidence?.windowSec);
+    if (input.source.startsWith('FANOUT_') && uniqueChats && windowSec) {
+      signals.push({
+        signalType: 'FANOUT_PATTERN',
+        source: 'GRAPH_FANOUT_PATTERN',
+        value: `${input.reason}:${Math.floor(uniqueChats)}:${Math.floor(windowSec)}`,
+        reason: 'GRAPH_FANOUT_PATTERN_REUSE',
+        score: 0.56,
+        evidence: { uniqueChats, windowSec, source: input.source },
+      });
+    }
+
+    return signals.slice(0, 8);
+  }
+
+  private collectEvidenceStrings(value: unknown, depth = 0): string[] {
+    if (depth > 4 || value === null || value === undefined) {
+      return [];
+    }
+    if (typeof value === 'string') {
+      return [value];
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return [];
+    }
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => this.collectEvidenceStrings(item, depth + 1));
+    }
+    if (typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>).flatMap((item) =>
+        this.collectEvidenceStrings(item, depth + 1),
+      );
+    }
+    return [];
+  }
+
+  private extractDomains(value: string): string[] {
+    const domains = new Set<string>();
+    const urlMatches = value.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?:[/:?#]|$)/giu);
+    for (const match of urlMatches) {
+      const domain = this.normalizeDomain(match[1] ?? '');
+      if (domain) {
+        domains.add(domain);
+      }
+    }
+    const bareMatches = value.matchAll(
+      /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{2,})+)\b/giu,
+    );
+    for (const match of bareMatches) {
+      const domain = this.normalizeDomain(match[1] ?? '');
+      if (domain) {
+        domains.add(domain);
+      }
+    }
+    return [...domains].slice(0, 5);
+  }
+
+  private normalizeDomain(value: string): string | null {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/^www\./u, '');
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/u.test(normalized)) {
+      return null;
+    }
+    return normalized;
+  }
+
+  private extractPhones(value: string): string[] {
+    const phones = new Set<string>();
+    const matches = value.matchAll(/(?:\+?\d[\s().-]*){10,15}/gu);
+    for (const match of matches) {
+      const digits = (match[0] ?? '').replace(/\D/gu, '');
+      if (digits.length >= 10 && digits.length <= 15) {
+        phones.add(digits);
+      }
+    }
+    return [...phones].slice(0, 5);
+  }
+
+  private normalizeGraphText(value: string): string | null {
+    const normalized = value.trim().toLowerCase().replace(/\s+/gu, ' ');
+    if (normalized.length < 24) {
+      return null;
+    }
+    return normalized.slice(0, 500);
+  }
+
   private async findActiveSuppression(userId: string, now: Date) {
     return this.prisma.globalSpammerSuppression.findFirst({
       where: {
@@ -802,16 +1725,25 @@ export class GlobalSpammerIntelligenceService {
       take: 100,
     });
 
-    return this.computeAggregate(rows, now);
+    const sourceReputation = await this.getSourceReputationMap(now);
+    return this.computeAggregate(rows, now, sourceReputation);
   }
 
-  computeAggregate(rows: readonly ActiveObservationRow[], now: Date): AggregateResult {
+  computeAggregate(
+    rows: readonly ActiveObservationRow[],
+    now: Date,
+    sourceReputation: ReadonlyMap<string, SourceReputation> = new Map(),
+  ): AggregateResult {
     const sourceMap = new Map<string, AggregateSource>();
     for (const row of rows) {
       if (row.expiresAt <= now) {
         continue;
       }
+      const reputation = sourceReputation.get(row.source);
+      const reputationWeight = reputation?.weight ?? this.resolveSourceBaseWeight(row.source);
+      const falsePositiveRate = reputation?.falsePositiveRate ?? 0;
       const decayedScore = this.calculateDecayedScore(row.score, row.observedAt, now);
+      const adjustedScore = this.clampScore(decayedScore * reputationWeight);
       const existing = sourceMap.get(row.source);
       const latestAt =
         existing && Date.parse(existing.latestAt) > row.observedAt.getTime()
@@ -821,8 +1753,10 @@ export class GlobalSpammerIntelligenceService {
       reasons.add(row.reason);
       sourceMap.set(row.source, {
         source: row.source,
-        score: Math.max(existing?.score ?? 0, decayedScore),
+        score: Math.max(existing?.score ?? 0, adjustedScore),
         rawScore: Math.max(existing?.rawScore ?? 0, row.score),
+        reputationWeight,
+        falsePositiveRate,
         count: (existing?.count ?? 0) + 1,
         latestAt,
         reasons: [...reasons].slice(0, 5),
@@ -842,6 +1776,8 @@ export class GlobalSpammerIntelligenceService {
       sourceBreakdown[source.source] = {
         score: this.roundScore(source.score),
         rawScore: this.roundScore(source.rawScore),
+        reputationWeight: this.roundScore(source.reputationWeight),
+        falsePositiveRate: this.roundScore(source.falsePositiveRate),
         count: source.count,
         latestAt: source.latestAt,
         reasons: source.reasons,
@@ -1127,5 +2063,9 @@ export class GlobalSpammerIntelligenceService {
 
   private readNumber(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  private readString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
 }
