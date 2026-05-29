@@ -5630,6 +5630,85 @@ describe('ModerationService', () => {
     });
   });
 
+  it('records global spammer policy decisions for service join kicks', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-black-2' }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const globalSpammerIntelligence = {
+      evaluatePolicy: jest.fn().mockResolvedValue({ action: 'DELETE_AND_KICK' }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      globalSpammerIntelligence as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-black-2');
+    expect(globalSpammerIntelligence.evaluatePolicy).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-black-2',
+      messageId: 'msg-service-user-join-1',
+      trigger: 'member_join',
+      deleteSpammersEnabled: true,
+      adminExempt: false,
+      recordDecision: true,
+    });
+    expect(globalSpammerIntelligence.evaluatePolicy).toHaveBeenCalledTimes(1);
+  });
+
   it('does not auto-kick an exempted globally blacklisted user on service join event', async () => {
     const prisma = {
       chat: {

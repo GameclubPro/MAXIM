@@ -670,6 +670,28 @@ model GlobalSpammer {
   @@map("global_spammers")
 }
 
+model GlobalSpammerArchive {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  firstDetectedAt DateTime  @map("first_detected_at")
+  lastDetectedAt  DateTime  @map("last_detected_at")
+  detectionsCount Int       @map("detections_count")
+  lastReason      String    @map("last_reason")
+  lastChatId      String?   @map("last_chat_id")
+  lastEvidence    Json?     @map("last_evidence")
+  confidenceScore Float     @map("confidence_score")
+  confirmedAt     DateTime  @map("confirmed_at")
+  expiredAt       DateTime? @map("expired_at")
+  sourceBreakdown Json      @default("{}") @map("source_breakdown")
+  archiveReason   String    @default("EXPIRED") @map("archive_reason")
+  archivedAt      DateTime  @default(now()) @map("archived_at")
+
+  @@unique([userId, expiredAt, archiveReason], map: "global_spammer_archives_user_expired_reason_key")
+  @@index([userId, archivedAt(sort: Desc)], map: "global_spammer_archives_user_archived_idx")
+  @@index([expiredAt], map: "global_spammer_archives_expired_at_idx")
+  @@map("global_spammer_archives")
+}
+
 model GlobalSpammerCandidate {
   userId           String    @id @map("user_id")
   status           String    @default("PENDING")

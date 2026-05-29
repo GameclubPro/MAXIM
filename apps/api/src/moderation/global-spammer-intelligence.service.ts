@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
   type CommercialCampaignContext,
@@ -65,6 +65,16 @@ export type GlobalSpammerObservationDecision = {
   sourceBreakdown: Prisma.InputJsonValue;
   evidenceHash?: string;
   suppressedUntil?: string | null;
+};
+
+export type GlobalSpammerArchiveExpiredResult = {
+  ok: true;
+  dryRun: boolean;
+  cutoff: string;
+  scanned: number;
+  archived: number;
+  deleted: number;
+  remainingExpired: number;
 };
 
 type ActiveObservationRow = {
@@ -806,6 +816,9 @@ export class GlobalSpammerIntelligenceService {
       recentObservations,
       suppressedObservations,
       sourceReputation,
+      activeRegistry,
+      expiredRegistry,
+      archivedExpired,
     ] = await Promise.all([
       this.prisma.globalSpammerCandidate.count({
         where: {
@@ -866,6 +879,21 @@ export class GlobalSpammerIntelligenceService {
         },
       }),
       this.getSourceReputation(now),
+      this.prisma.globalSpammer.count({
+        where: {
+          expiresAt: {
+            gt: now,
+          },
+        },
+      }),
+      this.prisma.globalSpammer.count({
+        where: {
+          expiresAt: {
+            lte: now,
+          },
+        },
+      }),
+      this.prisma.globalSpammerArchive.count(),
     ]);
 
     const sourceAlerts = this.buildSourceAlerts({
@@ -884,6 +912,9 @@ export class GlobalSpammerIntelligenceService {
       approved,
       suppressed,
       reviewed,
+      activeRegistry,
+      expiredRegistry,
+      archivedExpired,
       enforcementMode: this.defaultEnforcementMode,
       falsePositiveCount,
       falsePositiveRate: reviewed > 0 ? this.roundScore(falsePositiveCount / reviewed) : 0,
@@ -897,6 +928,90 @@ export class GlobalSpammerIntelligenceService {
       })),
       sourceAlerts,
       sourceReputation,
+    };
+  }
+
+  async archiveExpiredRegistryEntries(
+    params: { limit?: number; dryRun?: boolean; now?: Date } = {},
+  ): Promise<GlobalSpammerArchiveExpiredResult> {
+    const now = params.now ?? new Date();
+    const limit = Math.max(1, Math.min(params.limit ?? 1000, 5000));
+    const expiredRows = await this.prisma.globalSpammer.findMany({
+      where: {
+        expiresAt: {
+          lte: now,
+        },
+      },
+      orderBy: [{ expiresAt: 'asc' }, { lastDetectedAt: 'asc' }],
+      take: limit,
+    });
+
+    if (params.dryRun || expiredRows.length === 0) {
+      const remainingExpired = await this.prisma.globalSpammer.count({
+        where: {
+          expiresAt: {
+            lte: now,
+          },
+        },
+      });
+      return {
+        ok: true,
+        dryRun: Boolean(params.dryRun),
+        cutoff: now.toISOString(),
+        scanned: expiredRows.length,
+        archived: 0,
+        deleted: 0,
+        remainingExpired,
+      };
+    }
+
+    const userIds = expiredRows.map((row) => row.userId);
+    const [archiveResult, deleteResult] = await this.prisma.$transaction([
+      this.prisma.globalSpammerArchive.createMany({
+        data: expiredRows.map((row) => ({
+          id: randomUUID(),
+          userId: row.userId,
+          firstDetectedAt: row.firstDetectedAt,
+          lastDetectedAt: row.lastDetectedAt,
+          detectionsCount: row.detectionsCount,
+          lastReason: row.lastReason,
+          lastChatId: row.lastChatId,
+          lastEvidence: row.lastEvidence ?? Prisma.JsonNull,
+          confidenceScore: row.confidenceScore,
+          confirmedAt: row.confirmedAt,
+          expiredAt: row.expiresAt,
+          sourceBreakdown: row.sourceBreakdown ?? {},
+          archiveReason: 'EXPIRED',
+        })),
+        skipDuplicates: true,
+      }),
+      this.prisma.globalSpammer.deleteMany({
+        where: {
+          userId: {
+            in: userIds,
+          },
+          expiresAt: {
+            lte: now,
+          },
+        },
+      }),
+    ]);
+    const remainingExpired = await this.prisma.globalSpammer.count({
+      where: {
+        expiresAt: {
+          lte: now,
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      dryRun: false,
+      cutoff: now.toISOString(),
+      scanned: expiredRows.length,
+      archived: archiveResult.count,
+      deleted: deleteResult.count,
+      remainingExpired,
     };
   }
 

@@ -15,6 +15,12 @@ function createPrismaMock() {
     upsert: jest.fn().mockResolvedValue({}),
     deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     findUnique: jest.fn().mockResolvedValue(null),
+    findMany: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+  };
+  const globalSpammerArchive = {
+    createMany: jest.fn().mockResolvedValue({ count: 0 }),
+    count: jest.fn().mockResolvedValue(0),
   };
   const globalSpammerCandidate = {
     upsert: jest.fn(async (args: any) => {
@@ -149,6 +155,7 @@ function createPrismaMock() {
       spammerObservation,
       spammerGraphSignal,
       globalSpammer,
+      globalSpammerArchive,
       globalSpammerCandidate,
       globalSpammerCandidateChat,
       globalSpammerSuppression,
@@ -331,6 +338,8 @@ describe('GlobalSpammerIntelligenceService', () => {
       .mockResolvedValueOnce(3)
       .mockResolvedValueOnce(5)
       .mockResolvedValueOnce(2);
+    prisma.globalSpammer.count.mockResolvedValueOnce(9).mockResolvedValueOnce(1);
+    prisma.globalSpammerArchive.count.mockResolvedValueOnce(8);
     prisma.spammerObservation.groupBy
       .mockResolvedValueOnce([
         {
@@ -357,10 +366,72 @@ describe('GlobalSpammerIntelligenceService', () => {
         approved: 7,
         suppressed: 3,
         reviewed: 5,
+        activeRegistry: 9,
+        expiredRegistry: 1,
+        archivedExpired: 8,
         falsePositiveCount: 2,
         falsePositiveRate: 0.4,
       }),
     );
+  });
+
+  it('archives expired registry rows before deleting them from the active registry', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    const now = new Date('2026-05-29T12:00:00.000Z');
+    const expiredAt = new Date('2026-05-28T12:00:00.000Z');
+    prisma.globalSpammer.findMany.mockResolvedValueOnce([
+      {
+        userId: 'user-expired-1',
+        firstDetectedAt: new Date('2026-05-20T12:00:00.000Z'),
+        lastDetectedAt: new Date('2026-05-22T12:00:00.000Z'),
+        detectionsCount: 3,
+        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
+        lastChatId: 'chat-1',
+        lastEvidence: { uniqueChats: 6 },
+        confidenceScore: 0.96,
+        confirmedAt: new Date('2026-05-22T12:00:00.000Z'),
+        expiresAt: expiredAt,
+        sourceBreakdown: { FANOUT_HIGH: { score: 0.96 } },
+      },
+    ]);
+    prisma.globalSpammerArchive.createMany.mockResolvedValueOnce({ count: 1 });
+    prisma.globalSpammer.deleteMany.mockResolvedValueOnce({ count: 1 });
+    prisma.globalSpammer.count.mockResolvedValueOnce(0);
+
+    await expect(
+      service.archiveExpiredRegistryEntries({ now, limit: 25 }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        dryRun: false,
+        scanned: 1,
+        archived: 1,
+        deleted: 1,
+        remainingExpired: 0,
+      }),
+    );
+    expect(prisma.globalSpammerArchive.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            userId: 'user-expired-1',
+            expiredAt,
+            archiveReason: 'EXPIRED',
+          }),
+        ],
+        skipDuplicates: true,
+      }),
+    );
+    expect(prisma.globalSpammer.deleteMany).toHaveBeenCalledWith({
+      where: {
+        userId: {
+          in: ['user-expired-1'],
+        },
+        expiresAt: {
+          lte: now,
+        },
+      },
+    });
   });
 
   it('down-weights noisy sources with recent false positives', () => {

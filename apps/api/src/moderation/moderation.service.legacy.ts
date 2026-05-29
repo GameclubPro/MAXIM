@@ -6655,21 +6655,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
       },
     );
+    const kickedUserIds: string[] = [];
 
     for (const row of rows) {
-      if (exemptUserIds.has(row.userId)) {
+      const adminExempt = exemptUserIds.has(row.userId);
+      if (this.globalSpammerIntelligence) {
+        const decision = await this.globalSpammerIntelligence.evaluatePolicy({
+          chatId,
+          userId: row.userId,
+          messageId,
+          trigger: 'member_join',
+          deleteSpammersEnabled: true,
+          adminExempt,
+          recordDecision: true,
+        });
+        if (decision.action !== 'DELETE_AND_KICK') {
+          continue;
+        }
+      } else if (adminExempt) {
         continue;
       }
-      await this.kickAndLogKnownSpammerEvent({
+      const enforced = await this.kickAndLogKnownSpammerEvent({
         chatId,
         userId: row.userId,
         messageId,
         text,
         reason: 'Member joined via service event and exists in global spammer registry',
       });
+      if (enforced) {
+        kickedUserIds.push(row.userId);
+      }
     }
 
-    return rows.map((row) => row.userId).filter((userId) => !exemptUserIds.has(userId));
+    return kickedUserIds;
   }
 
   private async kickAndLogKnownSpammerEvent(params: {
@@ -6678,7 +6696,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     reason: string;
-  }) {
+  }): Promise<boolean> {
     const { chatId, userId, messageId, text, reason } = params;
     try {
       if (await this.kickMemberImmediately(chatId, userId)) {
@@ -6698,6 +6716,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
           },
         });
+        return true;
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -6710,6 +6729,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to kick known global spammer',
       );
     }
+    return false;
   }
 
   private async trackAndRegisterGlobalSpammer(params: {

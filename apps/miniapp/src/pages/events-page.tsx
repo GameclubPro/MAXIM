@@ -813,9 +813,20 @@ function GlobalSpammerReviewPanel({
 }) {
   const pending = metrics?.pending ?? candidates.length;
   const approved = metrics?.approved ?? 0;
+  const activeRegistry = metrics?.activeRegistry ?? approved;
+  const reviewed = metrics?.reviewed ?? 0;
+  const suppressed = metrics?.suppressed ?? 0;
+  const expiredRegistry = metrics?.expiredRegistry ?? 0;
   const falsePositiveRate = metrics?.falsePositiveRate ?? 0;
   const sourceAlerts = metrics?.sourceAlerts ?? [];
   const errorMessage = error instanceof Error ? error.message : null;
+  const metricChips = [
+    `Проверка ${pending}`,
+    `Активных ${activeRegistry}`,
+    reviewed > 0 ? `Ошибки ${formatFalsePositiveRate(falsePositiveRate)}` : 'Проверено 0',
+    ...(suppressed > 0 ? [`Исключено ${suppressed}`] : []),
+    ...(expiredRegistry > 0 ? [`Истекло ${expiredRegistry}`] : []),
+  ];
   const shouldHide =
     !isLoading &&
     !errorMessage &&
@@ -834,9 +845,9 @@ function GlobalSpammerReviewPanel({
         </div>
 
         <div className="spammer-review__metrics" aria-label="Метрики базы спама">
-          <span>На проверке {pending}</span>
-          <span>В реестре {approved}</span>
-          <span>Ложные {formatFalsePositiveRate(falsePositiveRate)}</span>
+          {metricChips.map((chip) => (
+            <span key={chip}>{chip}</span>
+          ))}
         </div>
       </div>
 
@@ -867,7 +878,7 @@ function GlobalSpammerReviewPanel({
         </div>
       ) : candidates.length === 0 ? (
         <div className="spammer-review__state">
-          <span>Кандидатов нет</span>
+          <span>Очередь пуста</span>
         </div>
       ) : (
         <div className="spammer-review__list">
@@ -930,10 +941,10 @@ function GlobalSpammerReviewPanel({
                     </dl>
 
                     <label className="spammer-review-candidate__reason">
-                      <span>Причина</span>
+                      <span>Комментарий</span>
                       <input
                         value={reasonValue}
-                        placeholder="Необязательно"
+                        placeholder="Если нужно"
                         maxLength={500}
                         onChange={(event) => onReasonChange(candidate.userId, event.target.value)}
                       />
@@ -954,7 +965,7 @@ function GlobalSpammerReviewPanel({
                         disabled={isReviewing}
                         onClick={() => onReview(candidate, 'APPROVE')}
                       >
-                        {isReviewing ? 'Сохраняем...' : 'В реестр'}
+                        {isReviewing ? 'Сохраняем...' : 'Подтвердить'}
                       </button>
                       <button
                         type="button"
@@ -962,7 +973,7 @@ function GlobalSpammerReviewPanel({
                         disabled={isReviewing}
                         onClick={() => onReview(candidate, 'SUPPRESS')}
                       >
-                        Ложное
+                        Исключить
                       </button>
                     </div>
                   </div>
@@ -1796,7 +1807,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       });
       pushToast({
         tone: 'success',
-        title: result.status === 'SUPPRESSED' ? 'Отмечено как ложное' : 'Добавлено в реестр',
+        title: result.status === 'SUPPRESSED' ? 'Исключено' : 'Подтверждено',
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.globalSpammerReviewQueue(chatId),
