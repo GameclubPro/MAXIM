@@ -137,6 +137,8 @@ export type GlobalSpammerUserDiagnostics = {
     active: boolean;
     expired: boolean;
     confidenceScore: number | null;
+    confirmedAt: string | null;
+    confirmedByUserId: string | null;
     reason: string | null;
     expiresAt: string | null;
     sourceBreakdown: Prisma.JsonValue | null;
@@ -1132,6 +1134,8 @@ export class GlobalSpammerIntelligenceService {
         active: Boolean(registry?.expiresAt && registry.expiresAt > now),
         expired: Boolean(registry && (!registry.expiresAt || registry.expiresAt <= now)),
         confidenceScore: registry?.confidenceScore ?? null,
+        confirmedAt: registry?.confirmedAt?.toISOString() ?? null,
+        confirmedByUserId: candidate?.reviewedByUserId ?? null,
         reason: registry?.lastReason ?? null,
         expiresAt: registry?.expiresAt?.toISOString() ?? null,
         sourceBreakdown: registry?.sourceBreakdown ?? null,

@@ -1856,6 +1856,8 @@ export const globalSpammerUserDiagnosticsSchema = z.object({
     active: z.boolean(),
     expired: z.boolean(),
     confidenceScore: z.number().min(0).max(1).nullable(),
+    confirmedAt: z.string().datetime().nullable(),
+    confirmedByUserId: z.string().nullable(),
     reason: z.string().nullable(),
     expiresAt: z.string().datetime().nullable(),
     sourceBreakdown: z.unknown().nullable(),
