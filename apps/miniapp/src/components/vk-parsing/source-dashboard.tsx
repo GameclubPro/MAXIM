@@ -40,10 +40,9 @@ type SourceDashboardProps = {
 };
 
 const PRESETS: Array<{ value: BulkUpdateVkParsingSourcesRequest['preset']; label: string }> = [
-  { value: 'NEWS', label: 'Новости' },
-  { value: 'SLOW', label: 'Медленно' },
-  { value: 'REVIEW', label: 'Модерация' },
-  { value: 'CLEAN', label: 'Чисто' },
+  { value: 'CLEAN', label: 'Безопасно' },
+  { value: 'SLOW', label: 'Обычно' },
+  { value: 'NEWS', label: 'Активно' },
 ];
 
 const FREQUENCY_PRESETS = [
@@ -61,7 +60,7 @@ type SourceModeValue = NonNullable<UpdateVkParsingSourceRequest['publishMode']>;
 const SOURCE_MODE_OPTIONS: Array<{ value: SourceModeValue; label: string }> = [
   { value: 'IMMEDIATE', label: 'Сразу' },
   { value: 'QUEUE', label: 'Очередь' },
-  { value: 'REVIEW', label: 'На проверку' },
+  { value: 'REVIEW', label: 'Проверка' },
 ];
 
 function NativeSwitch({
@@ -87,6 +86,70 @@ function NativeSwitch({
         <span className="toggle-switch__thumb" />
       </span>
     </label>
+  );
+}
+
+function SourceForm({
+  sourceUrl,
+  isAdding,
+  onSourceUrlChange,
+  onSubmitSource,
+}: {
+  sourceUrl: string;
+  isAdding: boolean;
+  onSourceUrlChange: (value: string) => void;
+  onSubmitSource: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form className="vk-parsing-card__source-form" onSubmit={onSubmitSource}>
+      <label className="vk-parsing-source-input">
+        <span className="vk-parsing-sr-only">Источник VK</span>
+        <input
+          type="text"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          value={sourceUrl}
+          onChange={(event) => onSourceUrlChange(event.target.value)}
+          placeholder="vk.com/..."
+          disabled={isAdding}
+        />
+      </label>
+      <button
+        type="submit"
+        className="vk-parsing-icon-button vk-parsing-icon-button--accent"
+        aria-label="Добавить источник"
+        title="Добавить источник"
+        disabled={isAdding || !sourceUrl.trim()}
+      >
+        <PlusCircle aria-hidden />
+      </button>
+    </form>
+  );
+}
+
+function SourceStateToggle({
+  label,
+  value,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className={cn('vk-source-state-toggle', checked && 'is-on')}>
+      <span>
+        <b>{label}</b>
+        <small>{value}</small>
+      </span>
+      <NativeSwitch checked={checked} disabled={disabled} label={label} onChange={onChange} />
+    </div>
   );
 }
 
@@ -148,7 +211,7 @@ function formatSourceMode(source: VkParsingSource): string {
     return 'Сразу';
   }
   if (source.publishMode === 'REVIEW') {
-    return 'На проверку';
+    return 'Проверка';
   }
   return 'Очередь';
 }
@@ -183,44 +246,27 @@ export function SourceDashboard({
   const allSelected = sources.length > 0 && selectedBulkSourceIds.length === sources.length;
 
   return (
-    <section className="vk-source-dashboard" aria-label="VK-группы">
-      <div className="vk-parsing-command">
-        <form className="vk-parsing-card__source-form" onSubmit={onSubmitSource}>
-          <label className="vk-parsing-source-input">
-            <span className="vk-parsing-sr-only">Источник VK</span>
-            <input
-              type="text"
-              inputMode="url"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              value={sourceUrl}
-              onChange={(event) => onSourceUrlChange(event.target.value)}
-              placeholder="vk.com/..."
-              disabled={isAdding}
-            />
-          </label>
+    <section id="vk-parsing-source-section" className="vk-source-dashboard" aria-label="VK-группы">
+      {sources.length > 0 ? (
+        <div className="vk-parsing-command">
+          <SourceForm
+            sourceUrl={sourceUrl}
+            isAdding={isAdding}
+            onSourceUrlChange={onSourceUrlChange}
+            onSubmitSource={onSubmitSource}
+          />
           <button
-            type="submit"
-            className="vk-parsing-icon-button vk-parsing-icon-button--accent"
-            aria-label="Добавить источник"
-            title="Добавить источник"
-            disabled={isAdding || !sourceUrl.trim()}
+            type="button"
+            className="vk-parsing-icon-button"
+            aria-label="Обновить все"
+            title="Обновить все"
+            disabled={isRefreshing || sources.length === 0}
+            onClick={onRefresh}
           >
-            <PlusCircle aria-hidden />
+            <RefreshCircle aria-hidden />
           </button>
-        </form>
-        <button
-          type="button"
-          className="vk-parsing-icon-button"
-          aria-label="Обновить все"
-          title="Обновить все"
-          disabled={isRefreshing || sources.length === 0}
-          onClick={onRefresh}
-        >
-          <RefreshCircle aria-hidden />
-        </button>
-      </div>
+        </div>
+      ) : null}
 
       {selectedBulkSourceIds.length > 0 ? (
         <div className="vk-source-bulk">
@@ -243,7 +289,14 @@ export function SourceDashboard({
       ) : null}
 
       {sources.length === 0 ? (
-        <div className="vk-source-empty">Добавьте источник VK</div>
+        <div className="vk-source-empty">
+          <SourceForm
+            sourceUrl={sourceUrl}
+            isAdding={isAdding}
+            onSourceUrlChange={onSourceUrlChange}
+            onSubmitSource={onSubmitSource}
+          />
+        </div>
       ) : (
         <div className="vk-source-grid">
           {sources.map((source) => {
@@ -251,42 +304,6 @@ export function SourceDashboard({
             const selected = selectedSourceId === source.id;
             const bulkSelected = selectedBulkSourceIds.includes(source.id);
             const frequencyPreset = resolveFrequencyPreset(source.publishIntervalMinutes);
-            const sourceFacts = [
-              {
-                label: 'Импорт',
-                value: source.importEnabled ? 'Вкл' : 'Пауза',
-                title: 'Импорт постов из VK',
-              },
-              {
-                label: 'Режим',
-                value: formatSourceMode(source),
-                title: 'Автопубликация источника',
-              },
-              {
-                label: 'Лимит',
-                value: `${source.dailyLimit}/д`,
-                title: 'Дневной лимит',
-              },
-              {
-                label: 'След.',
-                value: formatShortDate(source.nextRetryAt ?? source.nextSyncAt),
-                title: 'Следующий импорт',
-              },
-            ];
-            if (source.queuedPostCount > 0) {
-              sourceFacts.push({
-                label: 'Очередь',
-                value: String(source.queuedPostCount),
-                title: 'Постов в очереди',
-              });
-            }
-            if (source.failedPostCount > 0) {
-              sourceFacts.push({
-                label: 'Ошибки',
-                value: String(source.failedPostCount),
-                title: 'Ошибки публикации',
-              });
-            }
             return (
               <article
                 key={source.id}
@@ -319,13 +336,23 @@ export function SourceDashboard({
                   </span>
                 </header>
 
-                <div className="vk-source-card__facts">
-                  {sourceFacts.map((fact) => (
-                    <span key={fact.label} title={fact.title}>
-                      <b>{fact.label}</b>
-                      {fact.value}
-                    </span>
-                  ))}
+                <div className="vk-source-card__states">
+                  <SourceStateToggle
+                    label="Импорт"
+                    value={source.importEnabled ? 'Вкл' : 'Пауза'}
+                    checked={source.importEnabled}
+                    disabled={isSavingSource}
+                    onChange={(checked) => onUpdateSource(source.id, { importEnabled: checked })}
+                  />
+                  <SourceStateToggle
+                    label="Авто"
+                    value={source.autoPublishEnabled ? 'Вкл' : 'Выкл'}
+                    checked={source.autoPublishEnabled}
+                    disabled={isSavingSource || !source.importEnabled}
+                    onChange={(checked) =>
+                      onUpdateSource(source.id, { autoPublishEnabled: checked })
+                    }
+                  />
                 </div>
 
                 <div className="vk-source-card__actions">
@@ -375,34 +402,33 @@ export function SourceDashboard({
 
                 {selected ? (
                   <div className="vk-source-config">
+                    <div className="vk-source-detail-strip">
+                      <span title="Текущий режим публикации">
+                        <b>Режим</b>
+                        {formatSourceMode(source)}
+                      </span>
+                      <span title="Следующий импорт">
+                        <b>След.</b>
+                        {formatShortDate(source.nextRetryAt ?? source.nextSyncAt)}
+                      </span>
+                      <span title="Постов в очереди">
+                        <b>Очередь</b>
+                        {source.queuedPostCount}
+                      </span>
+                      <span title="Ошибки публикации">
+                        <b>Ошибки</b>
+                        {source.failedPostCount}
+                      </span>
+                    </div>
+
                     <section className="vk-source-control-group">
-                      <h4>Публикация</h4>
+                      <h4>Режим</h4>
                       <div className="vk-source-controls">
-                        <div className="vk-source-toggle">
-                          <span>Импорт</span>
-                          <NativeSwitch
-                            checked={source.importEnabled}
-                            disabled={isSavingSource}
-                            label="Импорт"
-                            onChange={(checked) =>
-                              onUpdateSource(source.id, { importEnabled: checked })
-                            }
-                          />
-                        </div>
-                        <div className="vk-source-toggle">
-                          <span>Публиковать</span>
-                          <NativeSwitch
-                            checked={source.autoPublishEnabled}
-                            disabled={isSavingSource}
-                            label="Публиковать"
-                            onChange={(checked) =>
-                              onUpdateSource(source.id, { autoPublishEnabled: checked })
-                            }
-                          />
-                        </div>
                         <div className="vk-source-field vk-source-field--wide">
-                          <span>Режим</span>
-                          <div className="vk-segmented-buttons" role="group">
+                          <div
+                            className="vk-segmented-buttons vk-segmented-buttons--mode"
+                            role="group"
+                          >
                             {SOURCE_MODE_OPTIONS.map((option) => (
                               <button
                                 key={option.value}
@@ -453,6 +479,7 @@ export function SourceDashboard({
                               min={5}
                               max={10080}
                               value={source.publishIntervalMinutes}
+                              disabled={isSavingSource}
                               onChange={(event) =>
                                 onUpdateSource(source.id, {
                                   publishIntervalMinutes: Number(event.target.value),
@@ -468,6 +495,7 @@ export function SourceDashboard({
                             min={0}
                             max={1440}
                             value={source.minPublishIntervalMinutes}
+                            disabled={isSavingSource}
                             onChange={(event) =>
                               onUpdateSource(source.id, {
                                 minPublishIntervalMinutes: Number(event.target.value),
@@ -486,6 +514,7 @@ export function SourceDashboard({
                           <input
                             type="time"
                             value={source.quietHoursStart ?? ''}
+                            disabled={isSavingSource}
                             onChange={(event) =>
                               onUpdateSource(source.id, {
                                 quietHoursStart: event.target.value || null,
@@ -498,6 +527,7 @@ export function SourceDashboard({
                           <input
                             type="time"
                             value={source.quietHoursEnd ?? ''}
+                            disabled={isSavingSource}
                             onChange={(event) =>
                               onUpdateSource(source.id, {
                                 quietHoursEnd: event.target.value || null,
@@ -518,6 +548,7 @@ export function SourceDashboard({
                             min={1}
                             max={500}
                             value={source.dailyLimit}
+                            disabled={isSavingSource}
                             onChange={(event) =>
                               onUpdateSource(source.id, { dailyLimit: Number(event.target.value) })
                             }
@@ -527,6 +558,7 @@ export function SourceDashboard({
                           <span>Приоритет</span>
                           <select
                             value={source.priority}
+                            disabled={isSavingSource}
                             onChange={(event) =>
                               onUpdateSource(source.id, {
                                 priority: event.target

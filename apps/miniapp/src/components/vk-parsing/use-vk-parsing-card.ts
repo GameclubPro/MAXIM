@@ -587,6 +587,12 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
         sourcePresetMutation.mutate({ sourceIds: selectedBulkSourceIds, preset });
       }
     },
+    applyPresetToAllSources: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => {
+      const sourceIds = feedQuery.data?.sources.map((source) => source.id) ?? [];
+      if (sourceIds.length > 0) {
+        sourcePresetMutation.mutate({ sourceIds, preset });
+      }
+    },
     schedulePost: (postId: string, scheduledAt: string) =>
       scheduleMutation.mutate({ postId, scheduledAt }),
     cancelScheduledPost: (postId: string) => cancelPostMutation.mutate(postId),

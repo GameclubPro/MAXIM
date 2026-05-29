@@ -29,9 +29,21 @@ type AutopostStatusModel = {
   title: string;
   reason: string;
   tone: AutopostStatusTone;
-  facts: Array<{ label: string; value: string; tone?: AutopostStatusTone }>;
-  readiness: Array<{ label: string; value: string; ready: boolean; neutral?: boolean }>;
+  readiness: Array<{
+    label: string;
+    value: string;
+    ready: boolean;
+    neutral?: boolean;
+    targetId: string;
+  }>;
 };
+
+const VK_AUTOPUBLISH_TARGETS = {
+  source: 'vk-parsing-source-section',
+  automation: 'vk-parsing-automation-switch',
+  mode: 'vk-parsing-publish-mode',
+  time: 'vk-parsing-work-time',
+} as const;
 
 function parseTimeMinutes(value: string | null | undefined): number | null {
   if (!value) {
@@ -99,16 +111,41 @@ function resolveTimeWindow(settings: VkParsingSettings): { ready: boolean; label
   };
 }
 
+function resolveCommonValue<T>(values: T[]): T | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const [first] = values;
+  return values.every((value) => value === first) ? first : null;
+}
+
+function formatPublishMode(mode: VkParsingSource['publishMode'] | null): string {
+  if (!mode) {
+    return 'Выберите';
+  }
+  if (mode === 'IMMEDIATE') {
+    return 'Сразу';
+  }
+  if (mode === 'REVIEW') {
+    return 'Проверка';
+  }
+  return 'Очередь';
+}
+
 function buildAutopostStatus(
   settings: VkParsingSettings,
   sources: VkParsingSource[],
-  queueCount: number,
-  publishedCount: number,
 ): AutopostStatusModel {
   const activeSourceCount = sources.filter((source) => source.importEnabled).length;
   const autoSourceCount = sources.filter(
     (source) => source.importEnabled && source.autoPublishEnabled,
   ).length;
+  const activeAutoSources = sources.filter(
+    (source) => source.importEnabled && source.autoPublishEnabled,
+  );
+  const commonPublishMode = resolveCommonValue(
+    activeAutoSources.map((source) => source.publishMode),
+  );
   const timeWindow = resolveTimeWindow(settings);
   const isPaused = settings.autoPublishKillSwitchEnabled;
   const isWorking =
@@ -151,40 +188,36 @@ function buildAutopostStatus(
     title,
     reason,
     tone,
-    facts: [
-      { label: 'Источники', value: `${activeSourceCount}/${sources.length}` },
-      {
-        label: 'В очереди',
-        value: String(queueCount),
-        tone: queueCount > 0 ? 'warning' : undefined,
-      },
-      {
-        label: 'Опубл.',
-        value: String(publishedCount),
-        tone: publishedCount > 0 ? 'success' : undefined,
-      },
-    ],
     readiness: [
       {
         label: 'Источник',
         value: activeSourceCount > 0 ? `${activeSourceCount} вкл` : 'Нет',
         ready: activeSourceCount > 0,
+        targetId: VK_AUTOPUBLISH_TARGETS.source,
       },
       {
         label: 'Авто',
         value: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused ? 'Вкл' : 'Выкл',
         ready: settings.autoPublishEnabled && autoSourceCount > 0 && !isPaused,
+        targetId: VK_AUTOPUBLISH_TARGETS.automation,
+      },
+      {
+        label: 'Режим',
+        value:
+          activeAutoSources.length === 0
+            ? 'Нет авто'
+            : commonPublishMode
+              ? formatPublishMode(commonPublishMode)
+              : 'Разные',
+        ready: activeAutoSources.length > 0,
+        neutral: activeAutoSources.length > 0 && commonPublishMode === null,
+        targetId: VK_AUTOPUBLISH_TARGETS.mode,
       },
       {
         label: 'Время',
         value: timeWindow.label,
         ready: timeWindow.ready,
-      },
-      {
-        label: 'Очередь',
-        value: queueCount > 0 ? String(queueCount) : 'Пусто',
-        ready: queueCount > 0,
-        neutral: queueCount === 0,
+        targetId: VK_AUTOPUBLISH_TARGETS.time,
       },
     ],
   };
@@ -203,7 +236,17 @@ function renderAutopostStatusIcon(tone: AutopostStatusTone) {
   return <Clock aria-hidden />;
 }
 
-function AutopostStatusPanel({ model }: { model: AutopostStatusModel }) {
+function AutopostStatusPanel({
+  model,
+  queueCount,
+  publishedCount,
+  onSelectTarget,
+}: {
+  model: AutopostStatusModel;
+  queueCount: number;
+  publishedCount: number;
+  onSelectTarget: (targetId: string) => void;
+}) {
   return (
     <section
       className={`vk-autopost-status vk-autopost-status--${model.tone}`}
@@ -213,30 +256,22 @@ function AutopostStatusPanel({ model }: { model: AutopostStatusModel }) {
         <span className="vk-autopost-status__icon">{renderAutopostStatusIcon(model.tone)}</span>
         <span>
           <strong>{model.title}</strong>
-          <small>{model.reason}</small>
+          <small>
+            {model.reason} · Очередь {queueCount} · Опубл. {publishedCount}
+          </small>
         </span>
-      </div>
-      <div className="vk-autopost-status__facts" aria-label="Сводка автопостинга">
-        {model.facts.map((fact) => (
-          <span
-            key={fact.label}
-            className={fact.tone ? `is-${fact.tone}` : undefined}
-            title={fact.label}
-          >
-            <b>{fact.value}</b>
-            <small>{fact.label}</small>
-          </span>
-        ))}
       </div>
       <div className="vk-autopost-readiness" aria-label="Готовность автопостинга">
         {model.readiness.map((item) => (
-          <span
+          <button
+            type="button"
             key={item.label}
             className={item.neutral ? 'is-neutral' : item.ready ? 'is-ready' : 'is-blocked'}
+            onClick={() => onSelectTarget(item.targetId)}
           >
             <b>{item.label}</b>
             <small>{item.value}</small>
-          </span>
+          </button>
         ))}
       </div>
     </section>
@@ -250,13 +285,29 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
     sources.length > 0
       ? sources.reduce((sum, source) => sum + source.publishedPostCount, 0)
       : posts.filter((post) => post.status === 'PUBLISHED').length;
-  const autopostStatus = feed
-    ? buildAutopostStatus(settings, sources, feed.queue.length, publishedCount)
-    : null;
+  const autopostStatus = feed ? buildAutopostStatus(settings, sources) : null;
+  const focusAutopostTarget = (targetId: string) => {
+    const target = document.getElementById(targetId);
+    if (!target) {
+      return;
+    }
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const focusTarget = target.matches('button, input, select, textarea')
+      ? target
+      : target.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select');
+    focusTarget?.focus({ preventScroll: true });
+  };
 
   return (
     <div className="vk-parsing-card">
-      {autopostStatus ? <AutopostStatusPanel model={autopostStatus} /> : null}
+      {autopostStatus && feed ? (
+        <AutopostStatusPanel
+          model={autopostStatus}
+          queueCount={feed.queue.length}
+          publishedCount={publishedCount}
+          onSelectTarget={focusAutopostTarget}
+        />
+      ) : null}
 
       {feed ? (
         <SchedulerPanel
@@ -266,6 +317,7 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           isSavingSource={state.isSavingSource}
           onUpdateSetting={state.updateSetting}
           onUpdateSources={state.updateSources}
+          onApplyPreset={state.applyPresetToAllSources}
         />
       ) : null}
 

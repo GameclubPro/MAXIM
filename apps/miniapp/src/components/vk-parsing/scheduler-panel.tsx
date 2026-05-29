@@ -1,4 +1,5 @@
 import type {
+  BulkUpdateVkParsingSourcesRequest,
   UpdateVkParsingSettingsRequest,
   UpdateVkParsingSourceRequest,
   VkParsingSettings,
@@ -13,6 +14,7 @@ type SchedulerPanelProps = {
   isSavingSource: boolean;
   onUpdateSetting: (payload: UpdateVkParsingSettingsRequest) => void;
   onUpdateSources: (sourceIds: string[], payload: UpdateVkParsingSourceRequest) => void;
+  onApplyPreset: (preset: BulkUpdateVkParsingSourcesRequest['preset']) => void;
 };
 
 const SOURCE_MODE_OPTIONS: Array<{
@@ -21,7 +23,7 @@ const SOURCE_MODE_OPTIONS: Array<{
 }> = [
   { value: 'IMMEDIATE', label: 'Сразу' },
   { value: 'QUEUE', label: 'Очередь' },
-  { value: 'REVIEW', label: 'На проверку' },
+  { value: 'REVIEW', label: 'Проверка' },
 ];
 
 const FREQUENCY_OPTIONS = [
@@ -35,11 +37,26 @@ const CUSTOM_FREQUENCY_MINUTES = 90;
 
 type FrequencyOption = (typeof FREQUENCY_OPTIONS)[number]['value'];
 
+const QUICK_PRESETS: Array<{
+  value: BulkUpdateVkParsingSourcesRequest['preset'];
+  label: string;
+  title: string;
+}> = [
+  {
+    value: 'CLEAN',
+    label: 'Безопасно',
+    title: 'Очередь, умеренный темп, ссылки и реклама выключены',
+  },
+  { value: 'SLOW', label: 'Обычно', title: 'Очередь и спокойный темп публикаций' },
+  { value: 'NEWS', label: 'Активно', title: 'Очередь, высокий приоритет и быстрый темп' },
+];
+
 function SwitchRow({
   label,
   checked,
   disabled,
   danger = false,
+  id,
   title,
   onChange,
 }: {
@@ -47,6 +64,7 @@ function SwitchRow({
   checked: boolean;
   disabled: boolean;
   danger?: boolean;
+  id?: string;
   title?: string;
   onChange: (checked: boolean) => void;
 }) {
@@ -58,6 +76,7 @@ function SwitchRow({
       <span>{label}</span>
       <span className="settings-native-switch">
         <input
+          id={id}
           type="checkbox"
           checked={checked}
           disabled={disabled}
@@ -93,6 +112,7 @@ export function SchedulerPanel({
   isSavingSource,
   onUpdateSetting,
   onUpdateSources,
+  onApplyPreset,
 }: SchedulerPanelProps) {
   const sourceIds = sources.map((source) => source.id);
   const sourceMode = resolveCommonValue(sources.map((source) => source.publishMode));
@@ -100,17 +120,17 @@ export function SchedulerPanel({
   const frequencyPreset = resolveFrequencyPreset(commonInterval);
   const customInterval = commonInterval ?? CUSTOM_FREQUENCY_MINUTES;
   const sourceControlsDisabled = sourceIds.length === 0 || isSavingSource;
+  const presetDisabled = sourceIds.length === 0 || isSavingSource || isSaving;
 
   return (
     <section className="vk-scheduler-panel vk-quick-setup" aria-label="Быстрая настройка">
-      <div className="vk-quick-setup__title">
-        <strong>Быстрая настройка</strong>
-      </div>
-      <div className="vk-quick-setup__head">
+      <div className="vk-quick-setup__head" aria-label="Включение автопостинга">
         <SwitchRow
+          id="vk-parsing-automation-switch"
           label="Автопостинг"
           checked={settings.autoPublishEnabled}
           disabled={isSaving || settings.autoPublishKillSwitchEnabled}
+          title="Общее включение автоматической публикации"
           onChange={(checked) => onUpdateSetting({ autoPublishEnabled: checked })}
         />
         <SwitchRow
@@ -118,13 +138,35 @@ export function SchedulerPanel({
           checked={settings.autoPublishKillSwitchEnabled}
           disabled={isSaving}
           danger
+          title="Аварийная остановка автопубликации"
           onChange={(checked) => onUpdateSetting({ autoPublishKillSwitchEnabled: checked })}
         />
       </div>
 
-      <div className="vk-quick-setup__row">
-        <span>Публиковать</span>
-        <div className="vk-segmented-buttons" role="group" aria-label="Режим публикации">
+      <div className="vk-quick-preset-row" aria-label="Пресеты автопостинга">
+        {QUICK_PRESETS.map((preset) => (
+          <button
+            key={preset.value}
+            type="button"
+            disabled={presetDisabled}
+            title={preset.title}
+            onClick={() => {
+              onUpdateSetting({ autoPublishEnabled: true, autoPublishKillSwitchEnabled: false });
+              onApplyPreset(preset.value);
+            }}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+
+      <div id="vk-parsing-publish-mode" className="vk-quick-setup__row">
+        <span>Режим</span>
+        <div
+          className="vk-segmented-buttons vk-segmented-buttons--mode"
+          role="group"
+          aria-label="Режим публикации"
+        >
           {SOURCE_MODE_OPTIONS.map((option) => (
             <button
               key={option.value}
@@ -175,7 +217,7 @@ export function SchedulerPanel({
         ) : null}
       </div>
 
-      <div className="vk-quick-time">
+      <div id="vk-parsing-work-time" className="vk-quick-time">
         <label>
           <span>С</span>
           <input
@@ -197,36 +239,41 @@ export function SchedulerPanel({
       </div>
 
       <details className="vk-advanced-fold">
-        <summary>Защита и баланс</summary>
+        <summary>Дополнительно</summary>
         <div className="vk-scheduler-toggles">
           <SwitchRow
             label="Убирать ссылки"
             checked={settings.stripLinksEnabled}
             disabled={isSaving}
+            title="Удалять ссылки перед публикацией"
             onChange={(checked) => onUpdateSetting({ stripLinksEnabled: checked })}
           />
           <SwitchRow
             label="Без рекламы"
             checked={settings.skipAdsEnabled}
             disabled={isSaving}
+            title="Пропускать рекламные посты"
             onChange={(checked) => onUpdateSetting({ skipAdsEnabled: checked })}
           />
           <SwitchRow
             label="Равномерно"
             checked={settings.distributeEvenlyEnabled}
             disabled={isSaving}
+            title="Распределять публикации по рабочему времени"
             onChange={(checked) => onUpdateSetting({ distributeEvenlyEnabled: checked })}
           />
           <SwitchRow
             label="Чередовать"
             checked={settings.roundRobinEnabled}
             disabled={isSaving}
+            title="Чередовать источники"
             onChange={(checked) => onUpdateSetting({ roundRobinEnabled: checked })}
           />
           <SwitchRow
             label="Защита"
             checked={settings.circuitBreakerEnabled}
             disabled={isSaving}
+            title="Останавливать автопостинг при подозрительном всплеске"
             onChange={(checked) => onUpdateSetting({ circuitBreakerEnabled: checked })}
           />
         </div>
