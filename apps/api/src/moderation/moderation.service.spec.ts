@@ -5428,6 +5428,72 @@ describe('ModerationService', () => {
     });
   });
 
+  it('ignores legacy global spammer rows without an active expiry window', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      globalSpammer: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(prisma.globalSpammer.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+        expiresAt: {
+          gt: expect.any(Date),
+        },
+      },
+      select: {
+        userId: true,
+      },
+    });
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+  });
+
   it('does not auto-kick an exempted globally blacklisted sender', async () => {
     const prisma = {
       chat: {
@@ -5548,6 +5614,19 @@ describe('ModerationService', () => {
         ruleCode: 'GLOBAL_SPAMMER_KICK',
         action: SanctionAction.KICK,
       }),
+    });
+    expect(prisma.globalSpammer.findMany).toHaveBeenCalledWith({
+      where: {
+        userId: {
+          in: ['user-black-2'],
+        },
+        expiresAt: {
+          gt: expect.any(Date),
+        },
+      },
+      select: {
+        userId: true,
+      },
     });
   });
 

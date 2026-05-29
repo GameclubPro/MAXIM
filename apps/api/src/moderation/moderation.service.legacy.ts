@@ -376,6 +376,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
+  private readonly globalSpammerRegistryTtlMs = 30 * 24 * 60 * 60 * 1000;
   private readonly globalSpammerExemptionCache = new Map<
     string,
     {
@@ -6631,6 +6632,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         userId: {
           in: serviceMemberUserIds,
         },
+        expiresAt: {
+          gt: new Date(),
+        },
       },
       select: {
         userId: true,
@@ -7376,24 +7380,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
     const globalSpammerModel = this.prisma.globalSpammer as unknown as {
-      findFirst?: (args: unknown) => Promise<unknown>;
-      findUnique?: (args: unknown) => Promise<unknown>;
+      findFirst?: (args: unknown) => Promise<{ userId: string; expiresAt?: Date | null } | null>;
+      findUnique?: (args: unknown) => Promise<{ userId: string; expiresAt?: Date | null } | null>;
     };
+    const now = new Date();
     const row =
       typeof globalSpammerModel.findFirst === 'function'
         ? await globalSpammerModel.findFirst({
             where: {
               userId,
-              OR: [
-                {
-                  expiresAt: null,
-                },
-                {
-                  expiresAt: {
-                    gt: new Date(),
-                  },
-                },
-              ],
+              expiresAt: {
+                gt: now,
+              },
             },
             select: {
               userId: true,
@@ -7405,9 +7403,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             select: {
               userId: true,
+              expiresAt: true,
             },
           });
-    return Boolean(row);
+    if (!row) {
+      return false;
+    }
+    if ('expiresAt' in row) {
+      return row.expiresAt instanceof Date && row.expiresAt.getTime() > now.getTime();
+    }
+    return true;
   }
 
   private async upsertGlobalSpammerEntry(params: {
@@ -7429,6 +7434,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + this.globalSpammerRegistryTtlMs);
+      const sourceBreakdown: Prisma.InputJsonObject = {
+        LEGACY_FALLBACK: {
+          score: 1,
+          rawScore: 1,
+          count: 1,
+          latestAt: now.toISOString(),
+          reasons: [reason],
+        },
+      };
+
       await this.prisma.globalSpammer.upsert({
         where: {
           userId,
@@ -7438,6 +7455,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           lastReason: reason,
           lastChatId: sourceChatId,
           lastEvidence: evidence ?? Prisma.JsonNull,
+          confidenceScore: 1,
+          confirmedAt: now,
+          expiresAt,
+          sourceBreakdown,
         },
         update: {
           detectionsCount: {
@@ -7446,6 +7467,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           lastReason: reason,
           lastChatId: sourceChatId,
           lastEvidence: evidence ?? Prisma.JsonNull,
+          confidenceScore: 1,
+          confirmedAt: now,
+          expiresAt,
+          sourceBreakdown,
         },
       });
     } catch (error: unknown) {
