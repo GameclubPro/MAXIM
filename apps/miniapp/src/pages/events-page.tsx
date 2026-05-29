@@ -57,6 +57,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { resolveModerationFeedReason } from '../lib/moderation-feed-reason';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
@@ -2564,6 +2565,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   const isExpanded = expandedViolationId === violation.id;
                   const displayName = resolveOffenderName(violation);
                   const avatarUrl = resolveOffenderAvatarUrl(violation);
+                  const violationReason = resolveModerationFeedReason(violation);
                   const profileHandoffUrl = violation.profileHandoffUrl?.trim() ?? '';
                   const profileUrl = violation.profileUrl?.trim() ?? '';
                   const canOpenProfile = violation.userId.trim().length > 0;
@@ -2657,13 +2659,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                           </div>
 
                           <p className="event-feed-item__summary">
-                            {resolveViolationBlurb(violation)}
+                            {violationReason || resolveViolationBlurb(violation)}
                           </p>
                         </div>
                       </div>
 
                       {isExpanded ? (
                         <div className="event-feed-item__details">
+                          <div className="event-feed-item__reason">
+                            <span>Причина</span>
+                            <p>{violationReason || resolveViolationBlurb(violation)}</p>
+                          </div>
+
                           {violation.maskedExcerpt ? (
                             <div className="event-feed-item__excerpt">
                               <span>Фрагмент сообщения</span>
