@@ -51,6 +51,11 @@
   );
 }
 
+.app-shell--immersive.app-shell--suggest-dialog {
+  --suggest-dialog-top-bleed: max(var(--app-safe-top, 0px), var(--app-visual-viewport-top, 0px));
+  --immersive-top-bleed: var(--suggest-dialog-top-bleed);
+}
+
 .app-shell--immersive .shell-content {
   min-height: 100%;
   height: 100%;
