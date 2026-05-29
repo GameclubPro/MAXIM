@@ -12,7 +12,13 @@ import {
   type VkParsingDryRunResult,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { Queue } from 'bullmq';
@@ -26,6 +32,10 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  BackgroundRuntimeGovernorService,
+  type BackgroundRuntimeGovernorDecision,
+} from '../system/background-runtime-governor.service';
 import { AdminService } from './admin.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { parseVkWallPostAttachments } from './vk-parsing-attachments';
@@ -112,6 +122,8 @@ export class VkPublishService {
     @InjectQueue(VK_PARSING_PUBLISH_QUEUE)
     private readonly publishQueue: Queue<VkParsingPublishJob>,
     configService: ConfigService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.publishLeaseTtlMs =
@@ -518,6 +530,19 @@ export class VkPublishService {
     }
 
     try {
+      if (params.reason === 'autopublish') {
+        const governorDecision = await this.decideBackgroundAutoPublish();
+        if (governorDecision && governorDecision.action !== 'run') {
+          await this.deferQueuedPost(
+            post,
+            params.reason,
+            params.idempotencyKey,
+            new Date(now.getTime() + governorDecision.retryAfterMs),
+          );
+          return;
+        }
+      }
+
       const settings = await this.getSettingsForChat(post.chatId);
       if (params.reason === 'autopublish') {
         if (!this.canAutoPublishPost(post, settings)) {
@@ -1312,6 +1337,22 @@ export class VkPublishService {
       debugAction: 'auto_publish_post',
       auto: true,
     });
+  }
+
+  private async decideBackgroundAutoPublish(): Promise<BackgroundRuntimeGovernorDecision | null> {
+    if (!this.backgroundRuntimeGovernorService) {
+      return null;
+    }
+
+    try {
+      return await this.backgroundRuntimeGovernorService.decide({
+        component: 'vk_parsing_autopublish',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      });
+    } catch (error) {
+      this.logger.warn({ err: error }, 'VK autopublish governor check failed');
+      return null;
+    }
   }
 
   private async markQueuedPostPublishFailed(

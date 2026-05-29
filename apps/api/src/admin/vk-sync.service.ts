@@ -58,6 +58,7 @@ type ImportedPostsBatchResult = {
   imported: number;
   importedPosts: VkParsingPostWithSource[];
   publishCandidates: VkParsingPostWithSource[];
+  mediaPreflightPosts: NormalizedVkPost[];
 };
 
 const VK_SOURCE_STATUS_ACTIVE = 'ACTIVE';
@@ -185,7 +186,9 @@ export class VkSyncService {
           lastError: null,
         },
       });
-      void this.preflightPostMediaSafely(source, posts);
+      if (reason !== 'source-added') {
+        void this.preflightPostMediaSafely(source, importResult.mediaPreflightPosts);
+      }
       return importResult.imported;
     } catch (error) {
       const completedAt = new Date();
@@ -360,12 +363,16 @@ export class VkSyncService {
     );
 
     const autoPublishCandidatePostKeys = new Set<string>();
+    const mediaPreflightPosts: NormalizedVkPost[] = [];
     const preparedPosts = posts.map((post): PreparedVkPostImport => {
       const existing = existingByPostKey.get(this.buildPostKey(post.vkOwnerId, post.vkPostId));
       const status = this.resolveImportedPostStatus(existing ?? null, post);
       const postKey = this.buildPostKey(post.vkOwnerId, post.vkPostId);
       if (!existing) {
         autoPublishCandidatePostKeys.add(postKey);
+      }
+      if (!existing || existing.contentHash !== post.contentHash) {
+        mediaPreflightPosts.push(post);
       }
       return { post, status };
     });
@@ -400,6 +407,7 @@ export class VkSyncService {
       imported: importedCount,
       importedPosts,
       publishCandidates: importedPosts,
+      mediaPreflightPosts,
     };
   }
 

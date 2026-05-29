@@ -4,6 +4,7 @@ import { VkParsingMediaCacheService } from './vk-parsing-media-cache.service';
 import { VkParsingPostImportRepository } from './vk-parsing-post-import.repository';
 import { VkParsingAccessService } from './vk-parsing-access.service';
 import { VkApiClientService } from './vk-api-client.service';
+import { computeVkParsingPostContentHash } from './vk-parsing-content';
 import { VkParsingFeedService } from './vk-parsing-feed.service';
 import { VkParsingService } from './vk-parsing.service';
 import { VkPublishService } from './vk-publish.service';
@@ -650,6 +651,38 @@ describe('VkParsingService', () => {
     ).rejects.toThrow('Некорректная ссылка на VK-сообщество.');
   });
 
+  it('does not reset an active VK source sync lease on manual refresh', async () => {
+    const { service, prisma, syncQueue } = createFixture();
+    const source = createSource({
+      syncStatus: 'SYNCING',
+      syncLockedAt: new Date('2026-05-25T10:00:00.000Z'),
+      syncLockedBy: 'worker-1',
+      syncLockDeadlineAt: new Date(Date.now() + 60_000),
+      syncHeartbeatAt: new Date('2026-05-25T10:00:15.000Z'),
+    });
+    prisma.vkParsingSource.findFirst.mockResolvedValue(source);
+    prisma.vkParsingSource.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await service.refreshSource('channel-1', 'source-1', {
+      userId: '183470701',
+    } as never);
+
+    expect(result.queued).toBe(0);
+    expect(syncQueue.add).not.toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'source-1',
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              syncStatus: 'SYNCING',
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it('imports text, photos and links from a public VK community without videos', async () => {
     const { service, prisma, syncQueue } = createFixture();
     const source = createSource();
@@ -838,6 +871,106 @@ describe('VkParsingService', () => {
       (value): value is string[] => Array.isArray(value) && value.includes('VK marked_as_ads'),
     );
     expect(advertisingMarkers).toEqual(expect.arrayContaining(['VK marked_as_ads']));
+  });
+
+  it('does not preflight media for the initial source-added backfill', async () => {
+    const { service, prisma, mediaCache } = createFixture();
+    const source = createSource();
+    const preflightSpy = jest.spyOn(mediaCache, 'preflightMediaUrl');
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany.mockResolvedValue([]);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Фото из начального бэкфилла',
+              attachments: [
+                {
+                  type: 'photo',
+                  photo: {
+                    id: 1,
+                    owner_id: -36819802,
+                    access_key: 'photo-key',
+                    sizes: [
+                      {
+                        url: 'https://sun1.example/backfill.jpg',
+                        width: 1280,
+                        height: 720,
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'source-added');
+
+    expect(preflightSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips media preflight for unchanged scheduled posts', async () => {
+    const { service, prisma, mediaCache } = createFixture();
+    const source = createSource({ lastSuccessAt: new Date('2026-05-25T09:00:00.000Z') });
+    const photoUrl = 'https://sun1.example/unchanged.jpg';
+    const contentHash = computeVkParsingPostContentHash({
+      text: 'Без изменений',
+      photoUrls: [photoUrl],
+      linkUrls: [],
+      attachmentTypes: ['photo'],
+    });
+    const preflightSpy = jest.spyOn(mediaCache, 'preflightMediaUrl');
+    prisma.vkParsingSource.findUnique.mockResolvedValue(source);
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'post-1',
+          vkOwnerId: -36819802,
+          vkPostId: 101,
+          status: 'NEW',
+          contentHash,
+          publishedContentHash: null,
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    global.fetch = jest.fn().mockResolvedValue(
+      createJsonFetchResponse({
+        response: {
+          items: [
+            {
+              owner_id: -36819802,
+              id: 101,
+              date: 1_779_708_000,
+              text: 'Без изменений',
+              attachments: [
+                {
+                  type: 'photo',
+                  photo: {
+                    id: 1,
+                    owner_id: -36819802,
+                    access_key: 'photo-key',
+                    sizes: [{ url: photoUrl, width: 1280, height: 720 }],
+                  },
+                },
+              ],
+            },
+          ],
+          groups: [],
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await service.processSyncSourceJob('source-1', 'scheduled');
+
+    expect(preflightSpy).not.toHaveBeenCalled();
   });
 
   it('uses VK API 5.199 and overlap pagination offsets for scheduled sync', async () => {
@@ -1256,6 +1389,75 @@ describe('VkParsingService', () => {
         source: 'vk_parsing',
       }),
     );
+  });
+
+  it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
+    try {
+      const { service, prisma, maxClient, publishQueue, publishService } = createFixture();
+      const source = createSource();
+      const post = createPostRow({
+        source,
+        publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+        publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+        publishIdempotencyKey: 'publish-key-1',
+        publishReason: 'autopublish',
+      });
+      const governor = {
+        decide: jest.fn().mockResolvedValue({
+          action: 'pause',
+          retryAfterMs: 60_000,
+          reason: 'runtime pressure',
+        }),
+      };
+      (
+        publishService as unknown as {
+          backgroundRuntimeGovernorService: typeof governor;
+        }
+      ).backgroundRuntimeGovernorService = governor;
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+      await service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      });
+
+      expect(governor.decide).toHaveBeenCalledWith({
+        component: 'vk_parsing_autopublish',
+        sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+      });
+      expect(prisma.vkParsingSettings.findUnique).not.toHaveBeenCalled();
+      expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: { id: 'post-1', publishIdempotencyKey: 'publish-key-1' },
+          data: expect.objectContaining({
+            publishScheduledAt: new Date('2026-05-25T10:01:00.000Z'),
+            publishLockedAt: null,
+            publishReason: 'autopublish',
+          }),
+        }),
+      );
+      expect(publishQueue.add).toHaveBeenCalledWith(
+        'publish-vk-post',
+        expect.objectContaining({
+          postId: 'post-1',
+          chatId: 'channel-1',
+          reason: 'autopublish',
+          retryPolicyName: 'vk-parsing-publish',
+        }),
+        expect.objectContaining({
+          delay: 60_000,
+          attempts: 5,
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('publishes manual retry jobs immediately without scheduler deferral', async () => {

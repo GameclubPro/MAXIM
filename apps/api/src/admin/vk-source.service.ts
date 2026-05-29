@@ -340,8 +340,14 @@ export class VkSourceService {
         syncStatus: { not: VK_SOURCE_SYNC_STATUS_ERROR },
         circuitOpenedAt: null,
         OR: [
-          { nextSyncAt: null },
-          { nextSyncAt: { lte: now } },
+          {
+            syncStatus: { notIn: [VK_SOURCE_SYNC_STATUS_QUEUED, VK_SOURCE_SYNC_STATUS_SYNCING] },
+            OR: [{ nextSyncAt: null }, { nextSyncAt: { lte: now } }],
+          },
+          {
+            syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
+            updatedAt: { lt: staleLockBefore },
+          },
           {
             syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
             OR: [
@@ -374,11 +380,28 @@ export class VkSourceService {
   }
 
   private async enqueueSourceSync(sourceId: string, reason: VkParsingSyncReason): Promise<number> {
-    await this.prisma.vkParsingSource.update({
-      where: { id: sourceId },
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
+    const updated = await this.prisma.vkParsingSource.updateMany({
+      where: {
+        id: sourceId,
+        OR: [
+          { syncStatus: { not: VK_SOURCE_SYNC_STATUS_SYNCING } },
+          {
+            syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
+            OR: [
+              { syncLockDeadlineAt: { lt: now } },
+              {
+                syncLockDeadlineAt: null,
+                syncLockedAt: { lt: staleLockBefore },
+              },
+            ],
+          },
+        ],
+      },
       data: {
         syncStatus: VK_SOURCE_SYNC_STATUS_QUEUED,
-        nextSyncAt: new Date(),
+        nextSyncAt: now,
         syncLockedAt: null,
         syncLockedBy: null,
         syncLockDeadlineAt: null,
@@ -390,6 +413,9 @@ export class VkSourceService {
         circuitRetryAt: null,
       },
     });
+    if (updated.count === 0) {
+      return 0;
+    }
 
     await this.syncQueue.add(
       VK_SYNC_JOB_NAME,
@@ -397,7 +423,7 @@ export class VkSourceService {
         sourceId,
         reason,
         retryPolicyName: 'vk-parsing-sync',
-        createdAt: new Date().toISOString(),
+        createdAt: now.toISOString(),
       },
       {
         jobId: this.buildSyncJobId(sourceId),
