@@ -143,10 +143,13 @@ export function classifyCommercialDetection(params: {
     addSubtype('SERVICES', subtypeConfig.SERVICES_WEAK);
   }
 
+  const hasDominantRetailStructure = state.matchedSignals.includes(
+    'goods-retail:clearance-stock-retail',
+  );
   if (state.hasGoodsRetailContext) {
     addSubtype(
       'GOODS_RETAIL',
-      state.hasServiceContext
+      state.hasServiceContext && !hasDominantRetailStructure
         ? subtypeConfig.GOODS_RETAIL_WITH_SERVICE
         : subtypeConfig.GOODS_RETAIL,
     );

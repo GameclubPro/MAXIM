@@ -312,6 +312,7 @@ function hasStrongGoodsRetailEvidence(state: CommercialSignalState): boolean {
       signal === 'goods-retail:volume-price-table' ||
       signal === 'goods-retail:apparel-retail-order-flow' ||
       signal === 'goods-retail:plant-nursery-stock' ||
+      signal === 'goods-retail:clearance-stock-retail' ||
       signal === 'goods-retail:farm-livestock-retail' ||
       signal === 'goods-retail:commercial-equipment' ||
       signal === 'goods-retail:multi-sku',

@@ -116,7 +116,11 @@ export class CommercialAdDetector {
       !state.hasSearchRequestContext;
     const hasStructuredRetailTransactionalEvidence =
       state.hasGoodsRetailContext &&
-      (state.hasPhoneContact || state.hasDealChannel || state.hasPrice) &&
+      (state.hasPhoneContact ||
+        state.hasDealChannel ||
+        state.hasPrice ||
+        (state.hasTransactional &&
+          state.matchedSignals.includes('goods-retail:clearance-stock-retail'))) &&
       !state.hasSearchRequestContext &&
       !state.hasPrivateGoodsItemContext;
     const hasStrongCommercialEvidence =

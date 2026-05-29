@@ -1091,6 +1091,21 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 72,
     },
   },
+  {
+    label: 'mixed-script clearance gift boxes from three hour audit',
+    text: `Раcпрoдажa остатки товаpов вcё по низкoй цeнe ценa oт 30 pуб до 190 pуб Bcё нoвoе срoки в нopме можно оптом мoжнo пo рoзницу нaпишитe отвeчу нa любые интepеcующие вопpocы Также мoжно coбиpать пoдaрочныe бoкс в пoдaрочнoй кoрoбкe+наполнитель. Подарочный Набор боксы по вашему пожеланиям. Пишите отвечу на все интересующие вопросы.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: [
+      'goods-retail:clearance-stock-retail',
+      'transaction:keywords',
+      'combo:promo+deal',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 52,
+      commercialAdsDeleteThreshold: 72,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
