@@ -5052,3 +5052,234 @@ body.channel-settings-page-open .app-shell {
     max-width: min(32vw, 82px);
   }
 }
+
+/* Channel suggestion settings: compact fullscreen editor. */
+.settings-drilldown--post-suggestions-screen {
+  --settings-drilldown-top-offset: 0px;
+  padding-top: 0;
+}
+
+.settings-drilldown--screen .settings-drilldown__panel--post-suggestions-screen {
+  width: 100%;
+  max-width: 100%;
+  min-height: var(--app-viewport-height, 100dvh) !important;
+  height: var(--app-viewport-height, 100dvh) !important;
+  max-height: var(--app-viewport-height, 100dvh) !important;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #f5fafb;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__header {
+  min-height: 52px;
+  padding: 9px 12px 8px;
+  border-bottom-color: rgba(142, 164, 181, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(14px) saturate(132%);
+  -webkit-backdrop-filter: blur(14px) saturate(132%);
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__header::before {
+  content: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 0;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__title {
+  flex: 0 1 auto;
+  font-size: 1.08rem;
+  line-height: 1.06;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-color: rgba(20, 166, 122, 0.2);
+  background: rgba(20, 166, 122, 0.08);
+  color: #0b7e59;
+  font-size: 0.62rem;
+  font-weight: 820;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__close {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__content,
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__body {
+  background: #f5fafb;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__body {
+  scrollbar-gutter: auto;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-section__collapse-inner {
+  width: min(100%, 640px);
+  margin: 0 auto;
+  gap: 7px;
+  padding: 8px 9px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-toggle-card,
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-mode-card,
+.settings-drilldown__panel--post-suggestions-screen .field {
+  border-radius: 14px;
+  border-color: rgba(188, 205, 220, 0.68);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-toggle-card {
+  min-height: 46px;
+  padding: 7px 9px 7px 10px;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-toggle-card.is-on {
+  border-color: rgba(20, 166, 122, 0.22);
+  background: rgba(237, 249, 245, 0.86);
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-toggle-card__copy strong {
+  font-size: 0.88rem;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-mode-card {
+  grid-template-columns: minmax(74px, auto) minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px 8px;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-mode-card__label,
+.settings-drilldown__panel--post-suggestions-screen .field > span,
+.settings-drilldown__panel--post-suggestions-screen .field__label {
+  color: #526b80;
+  font-size: 0.68rem;
+  font-weight: 820;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-mode-card__control {
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(245, 249, 252, 0.88);
+}
+
+.settings-drilldown__panel--post-suggestions-screen
+  .channel-settings-mode-card__control
+  .segmented-control__item {
+  min-height: 32px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .channel-settings-form-grid {
+  gap: 7px;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .field {
+  gap: 6px;
+  padding: 8px;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .field input,
+.settings-drilldown__panel--post-suggestions-screen .field select,
+.settings-drilldown__panel--post-suggestions-screen .field textarea {
+  min-height: 40px;
+  border-radius: 12px;
+  border-color: rgba(188, 205, 220, 0.76);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 8px 10px;
+  font-size: 0.88rem;
+  line-height: 1.28;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .field textarea {
+  min-height: 68px;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .field__number-wrap {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .field__number-wrap small {
+  color: #63798b;
+  font-size: 0.76rem;
+  font-weight: 780;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__footer {
+  padding: 7px 10px calc(7px + env(safe-area-inset-bottom, 0px));
+  border-top-color: rgba(142, 164, 181, 0.16);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__footer-actions {
+  width: min(100%, 640px);
+  margin: 0 auto;
+}
+
+.settings-drilldown__panel--post-suggestions-screen .settings-drilldown__footer-actions .button {
+  min-height: 38px;
+  border-radius: 13px;
+  font-size: 0.82rem;
+  background: #6fc2a9;
+  box-shadow: none;
+}
+
+@media (min-width: 620px) {
+  .settings-drilldown__panel--post-suggestions-screen .channel-settings-form-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(132px, 0.38fr);
+  }
+}
+
+@media (max-width: 430px) {
+  .settings-drilldown__panel--post-suggestions-screen .settings-drilldown__header {
+    min-height: 50px;
+    padding: 8px 10px 7px;
+  }
+
+  .settings-drilldown__panel--post-suggestions-screen .settings-drilldown__title {
+    font-size: 0.98rem;
+  }
+
+  .settings-drilldown__panel--post-suggestions-screen .settings-drilldown__summary {
+    max-width: 42vw;
+    min-height: 22px;
+    font-size: 0.56rem;
+  }
+
+  .settings-drilldown__panel--post-suggestions-screen .settings-section__collapse-inner {
+    padding: 7px 8px calc(9px + env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+  }
+
+  .settings-drilldown__panel--post-suggestions-screen .channel-settings-toggle-card,
+  .settings-drilldown__panel--post-suggestions-screen .channel-settings-mode-card,
+  .settings-drilldown__panel--post-suggestions-screen .field {
+    border-radius: 13px;
+  }
+
+  .settings-drilldown__panel--post-suggestions-screen .field textarea {
+    min-height: 64px;
+  }
+}

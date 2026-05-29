@@ -14,6 +14,7 @@ type SettingsDrilldownPanelProps = {
   onClose: () => void;
   children: ReactNode;
   className?: string;
+  overlayClassName?: string;
   footer?: ReactNode;
   keepFooterVisibleWhenKeyboardOpen?: boolean;
 };
@@ -50,6 +51,7 @@ export function SettingsDrilldownPanel({
   onClose,
   children,
   className,
+  overlayClassName,
   footer,
   keepFooterVisibleWhenKeyboardOpen = false,
 }: SettingsDrilldownPanelProps) {
@@ -127,7 +129,11 @@ export function SettingsDrilldownPanel({
 
   return createPortal(
     <div
-      className={cn('settings-drilldown', variant === 'screen' && 'settings-drilldown--screen')}
+      className={cn(
+        'settings-drilldown',
+        variant === 'screen' && 'settings-drilldown--screen',
+        overlayClassName,
+      )}
       aria-hidden={!open}
     >
       <button

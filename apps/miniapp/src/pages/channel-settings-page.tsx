@@ -2846,8 +2846,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           open={expandedSections.postSuggestions}
           title="Предложка"
           summary={postSuggestionsCardSummary}
+          variant="screen"
           tone="mint"
-          className="settings-drilldown__panel--notice settings-drilldown__panel--post-suggestions"
+          className="settings-drilldown__panel--notice settings-drilldown__panel--post-suggestions settings-drilldown__panel--post-suggestions-screen"
+          overlayClassName="settings-drilldown--post-suggestions-screen"
           onClose={() => toggleSection('postSuggestions')}
           footer={renderChannelSectionFooter('postSuggestions')}
         >

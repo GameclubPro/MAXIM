@@ -1104,14 +1104,12 @@ function SuggestionRequirements({ text }: { text: string }) {
     return null;
   }
 
+  const summary = paragraphs.join(' ');
+
   return (
     <section className="channel-suggest-requirements" aria-label="Требования">
       <span className="channel-suggest-requirements__label">Требования</span>
-      <div className="channel-suggest-requirements__text">
-        {paragraphs.map((paragraph, index) => (
-          <p key={`${paragraph}-${index}`}>{paragraph}</p>
-        ))}
-      </div>
+      <p className="channel-suggest-requirements__text">{summary}</p>
     </section>
   );
 }
@@ -3311,6 +3309,97 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  const suggestImageControl =
+    dialogType === 'suggest' ? (
+      <div className="channel-suggest-composer__tools">
+        {useNativeTapFileInputs ? (
+          <label
+            className={cn(
+              'channel-suggest-composer__tool',
+              (isComposePending || isPreparingAttachment) && 'is-disabled',
+              draftImageAttachments.length > 0 && 'is-active',
+            )}
+            aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
+            aria-disabled={isComposePending || isPreparingAttachment}
+            role="button"
+            tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+            onClick={() => {
+              armDraftAttachmentInputWatcher('image');
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') {
+                return;
+              }
+              event.preventDefault();
+              armDraftAttachmentInputWatcher('image');
+              imageInputRef.current?.click();
+            }}
+          >
+            <input
+              ref={imageInputRef}
+              className="channel-dialog-compose__attach-input"
+              type="file"
+              accept="image/*"
+              multiple
+              disabled={isComposePending || isPreparingAttachment}
+              onChange={handleDraftImagesChange}
+              onInput={handleDraftImagesInput}
+              onClickCapture={() => {
+                armDraftAttachmentInputWatcher('image');
+              }}
+              onPointerDownCapture={() => {
+                armDraftAttachmentInputWatcher('image');
+              }}
+              tabIndex={-1}
+            />
+            <IconoirCamera aria-hidden focusable="false" />
+          </label>
+        ) : (
+          <>
+            <button
+              type="button"
+              className={cn(
+                'channel-suggest-composer__tool',
+                draftImageAttachments.length > 0 && 'is-active',
+              )}
+              aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
+              disabled={isComposePending || isPreparingAttachment}
+              onClick={() => {
+                armDraftAttachmentInputWatcher('image');
+                openFileInputPicker(imageInputRef.current);
+              }}
+            >
+              <IconoirCamera aria-hidden focusable="false" />
+            </button>
+            <input
+              ref={imageInputRef}
+              className="channel-dialog-compose__picker-input"
+              type="file"
+              accept="image/*"
+              multiple
+              disabled={isComposePending || isPreparingAttachment}
+              onChange={handleDraftImagesChange}
+              onInput={handleDraftImagesInput}
+              onClickCapture={() => {
+                armDraftAttachmentInputWatcher('image');
+              }}
+              onPointerDownCapture={() => {
+                armDraftAttachmentInputWatcher('image');
+              }}
+              tabIndex={-1}
+            />
+          </>
+        )}
+
+        {suggestPreparingImageLabel || draftImageAttachments.length > 0 ? (
+          <span className="channel-suggest-composer__asset">
+            {suggestPreparingImageLabel ??
+              `${draftImageAttachments.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES}`}
+          </span>
+        ) : null}
+      </div>
+    ) : null;
+
   return (
     <div
       ref={screenRef}
@@ -3449,96 +3538,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       </span>
                     </div>
 
-                    <div className="channel-suggest-composer__media-row">
-                      <div className="channel-suggest-composer__tools">
-                        {useNativeTapFileInputs ? (
-                          <label
-                            className={cn(
-                              'channel-suggest-composer__tool',
-                              (isComposePending || isPreparingAttachment) && 'is-disabled',
-                              draftImageAttachments.length > 0 && 'is-active',
-                            )}
-                            aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
-                            aria-disabled={isComposePending || isPreparingAttachment}
-                            role="button"
-                            tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                            onClick={() => {
-                              armDraftAttachmentInputWatcher('image');
-                            }}
-                            onKeyDown={(event) => {
-                              if (event.key !== 'Enter' && event.key !== ' ') {
-                                return;
-                              }
-                              event.preventDefault();
-                              armDraftAttachmentInputWatcher('image');
-                              imageInputRef.current?.click();
-                            }}
-                          >
-                            <input
-                              ref={imageInputRef}
-                              className="channel-dialog-compose__attach-input"
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              disabled={isComposePending || isPreparingAttachment}
-                              onChange={handleDraftImagesChange}
-                              onInput={handleDraftImagesInput}
-                              onClickCapture={() => {
-                                armDraftAttachmentInputWatcher('image');
-                              }}
-                              onPointerDownCapture={() => {
-                                armDraftAttachmentInputWatcher('image');
-                              }}
-                              tabIndex={-1}
-                            />
-                            <IconoirCamera aria-hidden focusable="false" />
-                          </label>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              className={cn(
-                                'channel-suggest-composer__tool',
-                                draftImageAttachments.length > 0 && 'is-active',
-                              )}
-                              aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
-                              disabled={isComposePending || isPreparingAttachment}
-                              onClick={() => {
-                                armDraftAttachmentInputWatcher('image');
-                                openFileInputPicker(imageInputRef.current);
-                              }}
-                            >
-                              <IconoirCamera aria-hidden focusable="false" />
-                            </button>
-                            <input
-                              ref={imageInputRef}
-                              className="channel-dialog-compose__picker-input"
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              disabled={isComposePending || isPreparingAttachment}
-                              onChange={handleDraftImagesChange}
-                              onInput={handleDraftImagesInput}
-                              onClickCapture={() => {
-                                armDraftAttachmentInputWatcher('image');
-                              }}
-                              onPointerDownCapture={() => {
-                                armDraftAttachmentInputWatcher('image');
-                              }}
-                              tabIndex={-1}
-                            />
-                          </>
-                        )}
-                      </div>
-
-                      <span className="channel-suggest-composer__asset">
-                        {suggestPreparingImageLabel ??
-                          (draftImageAttachments.length > 0
-                            ? `${draftImageAttachments.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES}`
-                            : null)}
-                      </span>
-                    </div>
-
                     <div
                       className={cn(
                         'channel-suggest-composer__phone',
@@ -3582,6 +3581,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     </div>
 
                     <div className="channel-suggest-composer__bar">
+                      {suggestImageControl}
+
                       <div
                         className="channel-suggest-composer__modifier-row"
                         role="toolbar"

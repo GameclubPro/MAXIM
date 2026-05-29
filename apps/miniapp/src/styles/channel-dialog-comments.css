@@ -5064,3 +5064,373 @@ button.channel-dialog-message__avatar {
     100% auto,
     100% 100%;
 }
+
+/* Compact suggestion composer polish. */
+.channel-dialog-screen--suggest {
+  --dialog-bg-start: #f4f8f8;
+  --dialog-bg-end: #eaf6f7;
+  --suggest-ink: #172535;
+  --suggest-muted: rgba(68, 84, 98, 0.58);
+  --suggest-line: rgba(59, 94, 112, 0.12);
+  --suggest-surface: rgba(255, 255, 255, 0.86);
+  --suggest-surface-strong: rgba(255, 255, 255, 0.96);
+  --suggest-shadow: rgba(34, 67, 84, 0.08);
+  --suggest-coral: #e66a4b;
+  --suggest-cyan: #2399aa;
+  --suggest-green: #2c9a68;
+  --suggest-plum: #6f69c9;
+}
+
+.channel-dialog-screen--suggest .channel-dialog-screen__backdrop {
+  background:
+    linear-gradient(180deg, rgba(249, 251, 250, 0.98), rgba(232, 246, 248, 0.94)),
+    linear-gradient(135deg, rgba(230, 106, 75, 0.06), rgba(35, 153, 170, 0.07));
+}
+
+.channel-dialog-shell--suggest {
+  width: min(100%, 620px);
+  gap: 0;
+}
+
+.channel-suggest-body {
+  padding: 0 0 10px;
+  overscroll-behavior: contain;
+}
+
+.channel-suggest-workspace {
+  gap: 8px;
+  padding: 0 0 8px;
+}
+
+.channel-suggest-requirements {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-color: rgba(35, 153, 170, 0.14);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+
+.channel-suggest-requirements::before {
+  content: none;
+}
+
+.channel-suggest-requirements__label {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(230, 106, 75, 0.1);
+  color: #9e5039;
+  font-size: 0.62rem;
+  font-weight: 860;
+}
+
+.channel-suggest-requirements__text {
+  margin: 1px 0 0;
+  display: block;
+  color: rgba(34, 48, 62, 0.72);
+  font-size: 0.76rem;
+  font-weight: 660;
+  line-height: 1.32;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.channel-suggest-composer {
+  gap: 7px;
+  padding: 8px;
+  border-color: rgba(59, 94, 112, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 10px 24px var(--suggest-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  backdrop-filter: blur(12px) saturate(130%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+}
+
+.channel-suggest-composer__head {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 18px;
+}
+
+.channel-suggest-composer__status {
+  display: none;
+}
+
+.channel-suggest-composer__counter {
+  justify-self: end;
+  color: rgba(68, 84, 98, 0.5);
+  font-size: 0.66rem;
+}
+
+.channel-suggest-composer__media-row {
+  display: none;
+}
+
+.channel-suggest-composer__phone {
+  min-height: 152px;
+  padding: 7px;
+  border-radius: 14px;
+  border-color: rgba(59, 94, 112, 0.08);
+  background: #edf6f8;
+}
+
+.channel-suggest-composer__bubble {
+  width: 100%;
+  gap: 7px;
+  padding: 9px 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: 16px 16px 5px 16px;
+  background: #e2f5ff;
+  box-shadow: none;
+}
+
+.channel-suggest-composer__tail {
+  right: -4px;
+  width: 10px;
+  height: 13px;
+  background: #e2f5ff;
+}
+
+.channel-suggest-composer__rich-editor .max-rich-text-editor__surface,
+.channel-suggest-composer__field textarea {
+  min-height: 96px;
+  max-height: 190px;
+  font-size: 0.91rem;
+}
+
+.channel-suggest-composer__bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 5px;
+  border: 1px solid rgba(59, 94, 112, 0.09);
+  border-radius: 15px;
+  background: rgba(248, 252, 253, 0.88);
+}
+
+.channel-suggest-composer__tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.channel-suggest-composer__tool,
+.channel-suggest-composer__modifier {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border-color: rgba(35, 153, 170, 0.16);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: none;
+}
+
+.channel-suggest-composer__tool.is-active,
+.channel-suggest-composer__modifier:active {
+  border-color: rgba(35, 153, 170, 0.26);
+  background: rgba(35, 153, 170, 0.1);
+}
+
+.channel-suggest-composer__asset {
+  max-width: 56px;
+  color: rgba(68, 84, 98, 0.56);
+  font-size: 0.62rem;
+}
+
+.channel-suggest-composer__modifier-row {
+  gap: 5px;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.channel-suggest-composer__submit {
+  min-width: 42px;
+  min-height: 38px;
+  padding: 0 11px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--suggest-coral), var(--suggest-cyan));
+  box-shadow: 0 8px 18px rgba(35, 126, 148, 0.18);
+}
+
+.channel-suggest-card,
+.channel-suggest-empty {
+  border-color: rgba(59, 94, 112, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 20px var(--suggest-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.channel-suggest-card {
+  gap: 8px;
+  padding: 10px 11px;
+  border-radius: 13px;
+}
+
+.channel-suggest-card::before {
+  width: 2px;
+  background: var(--suggest-cyan);
+}
+
+.channel-suggest-card.is-published::before {
+  background: var(--suggest-green);
+}
+
+.channel-suggest-card.is-cancelled::before {
+  background: #d9556a;
+}
+
+.channel-suggest-status,
+.channel-suggest-card__media {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.66rem;
+}
+
+.channel-suggest-card p {
+  font-size: 0.9rem;
+  line-height: 1.38;
+}
+
+.channel-suggest-card__link {
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: 11px;
+  font-size: 0.74rem;
+  box-shadow: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .channel-dialog-screen--suggest {
+    --dialog-bg-start: #10171b;
+    --dialog-bg-end: #0c2027;
+    --suggest-ink: rgba(242, 246, 248, 0.94);
+    --suggest-muted: rgba(190, 207, 216, 0.62);
+    --suggest-line: rgba(255, 255, 255, 0.08);
+    --suggest-surface: rgba(20, 30, 36, 0.78);
+    --suggest-surface-strong: rgba(31, 42, 49, 0.92);
+    --suggest-shadow: rgba(0, 0, 0, 0.24);
+  }
+
+  .channel-dialog-screen--suggest .channel-dialog-screen__backdrop {
+    background:
+      linear-gradient(180deg, rgba(15, 22, 27, 0.98), rgba(8, 30, 37, 0.96)),
+      linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
+  }
+
+  .channel-suggest-requirements,
+  .channel-suggest-composer,
+  .channel-suggest-card,
+  .channel-suggest-empty {
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(18, 28, 34, 0.82);
+  }
+
+  .channel-suggest-requirements__text {
+    color: rgba(229, 240, 244, 0.76);
+  }
+
+  .channel-suggest-composer__phone,
+  .channel-suggest-composer__bar {
+    background: rgba(14, 27, 34, 0.92);
+  }
+
+  .channel-suggest-composer__bubble,
+  .channel-suggest-composer__tail {
+    background: #173746;
+  }
+
+  .channel-suggest-composer__tool,
+  .channel-suggest-composer__modifier {
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+
+@media (max-width: 420px) {
+  .channel-dialog-screen--suggest {
+    padding: max(7px, env(safe-area-inset-top, 0px)) 7px max(7px, calc(var(--safe-bottom) + 4px));
+  }
+
+  .channel-suggest-workspace {
+    gap: 7px;
+  }
+
+  .channel-suggest-requirements {
+    padding: 7px 8px;
+  }
+
+  .channel-suggest-requirements__text {
+    font-size: 0.72rem;
+  }
+
+  .channel-suggest-composer__phone {
+    min-height: 132px;
+    padding: 6px;
+  }
+
+  .channel-suggest-composer__bubble {
+    padding: 8px 9px 13px;
+  }
+
+  .channel-suggest-composer__rich-editor .max-rich-text-editor__surface,
+  .channel-suggest-composer__field textarea {
+    min-height: 78px;
+    font-size: 0.88rem;
+  }
+
+  .channel-suggest-composer__bar {
+    gap: 5px;
+  }
+
+  .channel-suggest-composer__tool,
+  .channel-suggest-composer__modifier {
+    width: 33px;
+    min-width: 33px;
+    height: 33px;
+    border-radius: 11px;
+  }
+
+  .channel-suggest-composer__submit {
+    width: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .channel-suggest-composer {
+    padding: 7px;
+  }
+
+  .channel-suggest-composer__bar {
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .channel-suggest-composer__phone {
+    min-height: 118px;
+  }
+
+  .channel-suggest-composer__tool,
+  .channel-suggest-composer__modifier {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+  }
+
+  .channel-suggest-composer__submit {
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+  }
+}
