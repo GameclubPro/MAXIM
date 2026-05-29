@@ -145,8 +145,7 @@ body.settings-drilldown-open .toast__close {
   white-space: nowrap;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy small,
-.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label {
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__copy small {
   display: none;
 }
 
@@ -217,20 +216,25 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-copy,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label,
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
   min-width: 0;
   max-width: 100%;
 }
 
-.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label {
   display: block;
   overflow: hidden;
   color: var(--broadcast-polish-ink);
-  font-size: 0.58rem;
+  font-size: 0.6rem;
   font-weight: 920;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal strong {
+  display: none;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-ready {
@@ -1663,6 +1667,64 @@ body.settings-drilldown-open .toast__close {
 
 .settings-drilldown__panel--broadcast-screen .managed-broadcast-card__actions {
   margin-top: 2px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signals {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal {
+  min-height: 23px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-color: transparent;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.44);
+  padding: 0 4px;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal::before {
+  content: '';
+  position: static;
+  inset: auto;
+  flex: 0 0 auto;
+  width: 3px;
+  height: 13px;
+  border-radius: 999px;
+  background: #a5b1bc;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-ready,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-warning,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-danger,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-pending {
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-ready::before {
+  background: #15986a;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-warning::before,
+.settings-drilldown__panel--broadcast-screen
+  .broadcast-studio-command__signal.is-ready-total::before {
+  background: #b57510;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-danger::before {
+  background: #cc4661;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-pending::before,
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal.is-neutral::before {
+  background: #a5b1bc;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-studio-command__signal-label {
+  font-size: 0.56rem;
 }
 
 .settings-drilldown__panel--rules-screen .broadcast-studio-screen__chrome {

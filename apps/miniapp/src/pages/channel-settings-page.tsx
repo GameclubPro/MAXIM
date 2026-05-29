@@ -2065,16 +2065,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : broadcastHasVisibleButtons
       ? `${broadcastVisibleButtons.length} кноп.`
       : 'Без кнопок';
-  const broadcastHistorySignalValue =
-    broadcastHistoryCounts.error > 0
-      ? `Ошибки ${broadcastHistoryCounts.error}`
-      : broadcastHistoryCounts.future > 0
-        ? `План ${broadcastHistoryCounts.future}`
-        : broadcastHistoryCounts.active > 0
-          ? `Идут ${broadcastHistoryCounts.active}`
-          : orderedManagedBroadcasts.length > 0
-            ? `${orderedManagedBroadcasts.length} запис.`
-            : 'История';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить автопостинг';
@@ -2097,17 +2087,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
-      ? 'Отправить'
-      : broadcastTimingMode === 'cycle'
-        ? 'Запустить'
-        : 'Запланировать';
+      ? 'Опубликовать'
+      : 'В план';
   const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
-      ? 'Отправить'
-      : broadcastTimingMode === 'cycle'
-        ? 'Старт'
-        : 'В план';
+      ? 'Опубликовать'
+      : 'В план';
   const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
@@ -2141,21 +2127,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         setBroadcastButtonsSheetOpen(true);
       },
     },
-    {
-      label: 'История',
-      value: broadcastHistorySignalValue,
-      tone:
-        broadcastHistoryCounts.error > 0
-          ? 'danger'
-          : broadcastHistoryCounts.future > 0 || broadcastHistoryCounts.active > 0
-            ? 'ready'
-            : 'neutral',
-      icon: 'channel',
-      onClick:
-        showBroadcastWorkspaceTabs && orderedManagedBroadcasts.length > 0
-          ? () => setBroadcastWorkspaceView('history')
-          : undefined,
-    },
   ];
   const broadcastStudioReadyCount = [
     broadcastContentReady,
@@ -2176,7 +2147,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ? 'Сохраняем...'
           : sendBroadcastMutation.isPending
             ? broadcastTimingMode === 'now'
-              ? 'Отправляем...'
+              ? 'Публикуем...'
               : 'Планируем...'
             : isOpeningManagedBroadcastEditor
               ? 'Открываем...'
@@ -3487,9 +3458,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           facts={pendingBroadcastReviewFacts}
           confirmLabel={broadcastPrimaryActionLabel}
           confirmBusyLabel={
-            sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending
+            updateManagedBroadcastMutation.isPending
               ? 'Сохраняем...'
-              : '...'
+              : sendBroadcastMutation.isPending
+                ? broadcastTimingMode === 'now'
+                  ? 'Публикуем...'
+                  : 'Планируем...'
+                : '...'
           }
           isBusy={sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending}
           extraActionBusy={sendBroadcastTestMutation.isPending}

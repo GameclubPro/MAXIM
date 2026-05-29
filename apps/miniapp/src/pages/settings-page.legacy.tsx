@@ -4603,16 +4603,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : mailingHasDirectContent
         ? 'Проверка'
         : 'Пусто';
-  const mailingAudienceSignalValue =
-    mailingTargetMode === 'all'
-      ? mailingCalendarTargetChatIds.length > 0
-        ? `Все ${mailingCalendarTargetChatIds.length}`
-        : 'Все'
-      : mailingTargetMode === 'selected'
-        ? mailingAudiencePayload.targetChatIds.length > 0
-          ? `${mailingAudiencePayload.targetChatIds.length} чат.`
-          : 'Не выбрано'
-        : 'Текущий';
   const mailingTimingSignalValue =
     mailingTimingMode === 'now'
       ? 'Сейчас'
@@ -4628,16 +4618,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingHasVisibleButtons
       ? `${mailingVisibleButtons.length} кноп.`
       : 'Без кнопок';
-  const mailingHistorySignalValue =
-    mailingHistoryCounts.error > 0
-      ? `Ошибки ${mailingHistoryCounts.error}`
-      : mailingHistoryCounts.future > 0
-        ? `План ${mailingHistoryCounts.future}`
-        : mailingHistoryCounts.active > 0
-          ? `Идут ${mailingHistoryCounts.active}`
-          : orderedManagedBroadcasts.length > 0
-            ? `${orderedManagedBroadcasts.length} запис.`
-            : 'История';
   const mailingPlannerPending = mailingPlannerState.isDaySheetOpen;
   const mailingAudienceReady =
     mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
@@ -4701,17 +4681,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : mailingTimingMode === 'now'
-      ? 'Отправить'
-      : mailingTimingMode === 'cycle'
-        ? 'Запустить'
-        : 'Запланировать';
+      ? 'Опубликовать'
+      : 'В план';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : mailingTimingMode === 'now'
-      ? 'Отправить'
-      : mailingTimingMode === 'cycle'
-        ? 'Старт'
-        : 'В план';
+      ? 'Опубликовать'
+      : 'В план';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
@@ -4722,13 +4698,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       value: mailingContentSignalValue,
       tone: mailingContentReady ? 'ready' : mailingHasDirectContent ? 'warning' : 'pending',
       icon: 'content',
-      onClick: () => setMailingWorkspaceView('compose'),
-    },
-    {
-      label: 'Кому',
-      value: mailingAudienceSignalValue,
-      tone: mailingAudienceReady ? 'ready' : 'danger',
-      icon: 'audience',
       onClick: () => setMailingWorkspaceView('compose'),
     },
     {
@@ -4747,21 +4716,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         setMailingWorkspaceView('compose');
         setMailingButtonsSheetOpen(true);
       },
-    },
-    {
-      label: 'История',
-      value: mailingHistorySignalValue,
-      tone:
-        mailingHistoryCounts.error > 0
-          ? 'danger'
-          : mailingHistoryCounts.future > 0 || mailingHistoryCounts.active > 0
-            ? 'ready'
-            : 'neutral',
-      icon: 'channel',
-      onClick:
-        showMailingWorkspaceTabs && orderedManagedBroadcasts.length > 0
-          ? () => setMailingWorkspaceView('history')
-          : undefined,
     },
   ];
   const mailingStudioReadyCount = [
@@ -4801,7 +4755,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? 'Сохраняем...'
           : sendBroadcastMutation.isPending
             ? mailingTimingMode === 'now'
-              ? 'Отправляем...'
+              ? 'Публикуем...'
               : 'Планируем...'
             : isOpeningManagedBroadcastEditor
               ? 'Открываем...'
@@ -11380,9 +11334,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           facts={pendingMailingReviewFacts}
           confirmLabel={mailingPrimaryActionLabel}
           confirmBusyLabel={
-            sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending
+            updateManagedBroadcastMutation.isPending
               ? 'Сохраняем...'
-              : '...'
+              : sendBroadcastMutation.isPending
+                ? mailingTimingMode === 'now'
+                  ? 'Публикуем...'
+                  : 'Планируем...'
+                : '...'
           }
           isBusy={sendBroadcastMutation.isPending || updateManagedBroadcastMutation.isPending}
           extraActionBusy={sendBroadcastTestMutation.isPending}
