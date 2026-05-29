@@ -788,14 +788,19 @@ export function BroadcastSchedulePlanner({
                     type="button"
                     className={cn(
                       'broadcast-planner__intent-chip',
+                      'has-info',
                       timingMode === 'cycle' && 'is-active',
                     )}
                     onClick={() => selectTimingMode('cycle')}
                     disabled={disabled}
                     aria-pressed={timingMode === 'cycle'}
+                    aria-label="Цикл: повторяет этот автопостинг с выбранным интервалом"
                     title="Цикл повторяет этот автопостинг с выбранным интервалом."
                   >
                     <strong>Цикл</strong>
+                    <span className="broadcast-planner__info-mark" aria-hidden>
+                      i
+                    </span>
                     <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
                   </button>
                 </div>
@@ -1531,6 +1536,11 @@ export function BroadcastSchedulePlanner({
                                 }
                               >
                                 {formatMinuteLabel(minutes)}
+                                {chipState.hasBusy ? (
+                                  <span className="broadcast-planner__info-mark" aria-hidden>
+                                    i
+                                  </span>
+                                ) : null}
                               </button>
                             );
                           })}
@@ -1615,6 +1625,11 @@ export function BroadcastSchedulePlanner({
                                       }
                                     >
                                       <strong>{formatMinuteLabel(minutes)}</strong>
+                                      {chipState.hasBusy ? (
+                                        <span className="broadcast-planner__info-mark" aria-hidden>
+                                          i
+                                        </span>
+                                      ) : null}
                                     </button>
                                   );
                                 })}

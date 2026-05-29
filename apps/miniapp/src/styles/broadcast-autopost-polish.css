@@ -1727,6 +1727,40 @@ body.settings-drilldown-open .toast__close {
   font-size: 0.56rem;
 }
 
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-chip.has-info,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__suggested-chip,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__time-chip {
+  position: relative;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__info-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 10px;
+  height: 10px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(16, 34, 51, 0.1);
+  color: #5d7181;
+  font-size: 7px;
+  font-weight: 950;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__intent-chip.is-active .broadcast-planner__info-mark {
+  background: rgba(11, 127, 198, 0.14);
+  color: #086fae;
+}
+
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__suggested-chip.is-busy .broadcast-planner__info-mark,
+.settings-drilldown__panel--broadcast-screen .broadcast-planner__time-chip.is-busy .broadcast-planner__info-mark {
+  background: rgba(184, 120, 18, 0.16);
+  color: #85590f;
+}
+
 .settings-drilldown__panel--rules-screen .broadcast-studio-screen__chrome {
   display: none;
 }
