@@ -25,6 +25,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy --config prisma.config.ts",
     "prisma:seed": "tsx prisma/seed.ts",
     "moderation:audit-commercial": "tsx src/scripts/audit-commercial-filter.ts",
+    "moderation:validate-commercial-corpus": "tsx src/scripts/validate-commercial-corpus.ts",
     "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
     "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts",
     "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --"

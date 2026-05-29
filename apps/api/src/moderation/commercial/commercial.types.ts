@@ -38,6 +38,51 @@ export type CommercialPatternRule = {
   examples: readonly string[];
 };
 
+export type CommercialSignalState = {
+  score: number;
+  matchedSignals: string[];
+  negativeSignals: string[];
+  hasIntent: boolean;
+  hasServiceOfferContext: boolean;
+  hasServiceSpecialtyContext: boolean;
+  hasPrice: boolean;
+  hasContact: boolean;
+  hasPhoneContact: boolean;
+  hasDealChannel: boolean;
+  hasTransactional: boolean;
+  hasDealSignal: boolean;
+  hasPromoContext: boolean;
+  hasBusinessContext: boolean;
+  hasBuyoutContext: boolean;
+  hasRecruitmentContext: boolean;
+  hasInfoProductContext: boolean;
+  hasGroupPromotionIntent: boolean;
+  hasGroupPromoContext: boolean;
+  hasCommercialAudienceContext: boolean;
+  hasChannelPlacementContext: boolean;
+  hasSearchRequestContext: boolean;
+  hasJobSeekingContext: boolean;
+  hasServiceContext: boolean;
+  hasCallToActionContext: boolean;
+  hasCommercialContext: boolean;
+  hasCampaignContext: boolean;
+  hasPrivateSaleContext: boolean;
+  hasPropertyPrivateContext: boolean;
+  hasPropertyAgentContext: boolean;
+  hasCommercialPropertyContext: boolean;
+  hasGoodsRetailContext: boolean;
+  hasPrivateGoodsItemContext: boolean;
+  hasStrongNegativeContext: boolean;
+};
+
+export type CommercialClassification = {
+  primarySubtype: CommercialSubtype;
+  supportingSubtypes: CommercialSubtype[];
+  evidenceStrength: CommercialLegacyEvidenceStrength;
+  reviewRecommended: boolean;
+  reviewReasons: string[];
+};
+
 export type CommercialSubtypePolicy = {
   subtype: CommercialSubtype;
   taxonomyClass: CommercialTaxonomyClass;
@@ -60,6 +105,11 @@ export type CommercialEvidenceTier =
   | 'CAMPAIGN'
   | 'DIRECT'
   | 'HIGH_RISK';
+
+export type CommercialLegacyEvidenceStrength = Exclude<
+  CommercialEvidenceTier,
+  'NONE' | 'HIGH_RISK'
+>;
 
 export type CommercialFeatureVector = {
   commercialIntent: number;

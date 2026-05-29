@@ -15,6 +15,12 @@ import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { normalizeCommercialText } from './commercial-normalization';
 import { COMMERCIAL_DECISION_VERSION, enrichCommercialDetection } from './commercial-explain';
 import { countPatternMatches, sigmoid } from './commercial-scorer';
+import { classifyCommercialDetection } from './commercial-subtypes';
+import type {
+  CommercialClassification,
+  CommercialLegacyEvidenceStrength,
+  CommercialSignalState,
+} from './commercial.types';
 
 export type CommercialDetection = {
   confidenceScore: number;
@@ -23,7 +29,7 @@ export type CommercialDetection = {
   negativeSignals: string[];
   primarySubtype: CommercialSubtype;
   supportingSubtypes: CommercialSubtype[];
-  evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
+  evidenceStrength: CommercialLegacyEvidenceStrength;
   reviewRecommended: boolean;
   reviewReasons: string[];
   campaignContext: CommercialCampaignContext | null;
@@ -47,54 +53,9 @@ export type CommercialDetection = {
   featureVector?: Record<string, number>;
 };
 
-type CommercialClassification = {
-  primarySubtype: CommercialSubtype;
-  supportingSubtypes: CommercialSubtype[];
-  evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
-  reviewRecommended: boolean;
-  reviewReasons: string[];
-};
-
 type LabeledPattern = {
   label: string;
   pattern: RegExp;
-};
-
-type CommercialSignalState = {
-  score: number;
-  matchedSignals: string[];
-  negativeSignals: string[];
-  hasIntent: boolean;
-  hasServiceOfferContext: boolean;
-  hasServiceSpecialtyContext: boolean;
-  hasPrice: boolean;
-  hasContact: boolean;
-  hasPhoneContact: boolean;
-  hasDealChannel: boolean;
-  hasTransactional: boolean;
-  hasDealSignal: boolean;
-  hasPromoContext: boolean;
-  hasBusinessContext: boolean;
-  hasBuyoutContext: boolean;
-  hasRecruitmentContext: boolean;
-  hasInfoProductContext: boolean;
-  hasGroupPromotionIntent: boolean;
-  hasGroupPromoContext: boolean;
-  hasCommercialAudienceContext: boolean;
-  hasChannelPlacementContext: boolean;
-  hasSearchRequestContext: boolean;
-  hasJobSeekingContext: boolean;
-  hasServiceContext: boolean;
-  hasCallToActionContext: boolean;
-  hasCommercialContext: boolean;
-  hasCampaignContext: boolean;
-  hasPrivateSaleContext: boolean;
-  hasPropertyPrivateContext: boolean;
-  hasPropertyAgentContext: boolean;
-  hasCommercialPropertyContext: boolean;
-  hasGoodsRetailContext: boolean;
-  hasPrivateGoodsItemContext: boolean;
-  hasStrongNegativeContext: boolean;
 };
 
 type CommercialMarkerContext = {
@@ -1711,12 +1672,14 @@ export class CommercialAdDetector {
         : confidenceScore >= appliedThresholds.warnThreshold
           ? 'MEDIUM'
           : 'LOW';
-    let classification = this.classifyCommercialDetection({
+    let classification = classifyCommercialDetection({
       state,
       confidenceScore,
       decisionBand,
       appliedThresholds,
-      commercialCampaignContext,
+      hasCampaignDependentEvidence:
+        state.hasCampaignContext &&
+        this.hasStrongCommercialCampaignEvidence(commercialCampaignContext, state),
     });
     const secondStage = this.evaluateCommercialSecondStage({
       normalizedText,
@@ -2252,186 +2215,6 @@ export class CommercialAdDetector {
       (state.hasCommercialPropertyContext &&
         classification.primarySubtype !== 'PROPERTY_COMMERCIAL')
     );
-  }
-
-  private classifyCommercialDetection(params: {
-    state: CommercialSignalState;
-    confidenceScore: number;
-    decisionBand: CommercialDecisionBand;
-    appliedThresholds: CommercialThresholdProfile;
-    commercialCampaignContext?: CommercialCampaignContext | null;
-  }): CommercialClassification {
-    const { state, confidenceScore, decisionBand, appliedThresholds, commercialCampaignContext } =
-      params;
-    const subtypeConfig = COMMERCIAL_ENGINE_CONFIG.subtypeScores;
-    const subtypeScores = new Map<CommercialSubtype, number>();
-    const addSubtype = (subtype: CommercialSubtype, score: number) => {
-      subtypeScores.set(subtype, Math.max(score, subtypeScores.get(subtype) ?? 0));
-    };
-
-    if (
-      state.hasChannelPlacementContext ||
-      (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent)
-    ) {
-      addSubtype('CHANNEL_PLACEMENT', subtypeConfig.CHANNEL_PLACEMENT);
-    }
-
-    if (state.hasPropertyAgentContext) {
-      addSubtype('PROPERTY_AGENT', subtypeConfig.PROPERTY_AGENT);
-    }
-
-    if (state.hasCommercialPropertyContext) {
-      addSubtype('PROPERTY_COMMERCIAL', subtypeConfig.PROPERTY_COMMERCIAL);
-    }
-
-    if (state.hasRecruitmentContext) {
-      addSubtype('RECRUITMENT', subtypeConfig.RECRUITMENT);
-    }
-
-    if (state.hasInfoProductContext) {
-      addSubtype('INFO_PRODUCT', subtypeConfig.INFO_PRODUCT);
-    }
-
-    if (state.hasBuyoutContext) {
-      addSubtype('BUYOUT', subtypeConfig.BUYOUT);
-    }
-
-    if (state.hasServiceContext) {
-      addSubtype('SERVICES', subtypeConfig.SERVICES);
-    } else if (state.hasServiceOfferContext || state.hasServiceSpecialtyContext) {
-      addSubtype('SERVICES', subtypeConfig.SERVICES_WEAK);
-    }
-
-    if (state.hasGoodsRetailContext) {
-      addSubtype(
-        'GOODS_RETAIL',
-        state.hasServiceContext
-          ? subtypeConfig.GOODS_RETAIL_WITH_SERVICE
-          : subtypeConfig.GOODS_RETAIL,
-      );
-    }
-
-    if (state.hasGroupPromoContext || (state.hasGroupPromotionIntent && state.hasDealChannel)) {
-      addSubtype(
-        'GROUP_PROMOTION',
-        state.hasGroupPromoContext
-          ? subtypeConfig.GROUP_PROMOTION
-          : subtypeConfig.GROUP_PROMOTION_WEAK,
-      );
-    }
-
-    if (
-      !state.hasServiceContext &&
-      !state.hasPropertyAgentContext &&
-      !state.hasCommercialPropertyContext &&
-      !state.hasRecruitmentContext &&
-      !state.hasInfoProductContext &&
-      !state.hasGoodsRetailContext &&
-      (state.hasIntent || state.hasPromoContext || state.hasBusinessContext) &&
-      (state.hasPrice || state.hasTransactional || state.hasContact || state.hasDealChannel)
-    ) {
-      addSubtype('GOODS', subtypeConfig.GOODS);
-    }
-
-    if (subtypeScores.size === 0) {
-      addSubtype('GENERIC', subtypeConfig.GENERIC);
-    }
-
-    const rankedSubtypes = [...subtypeScores.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .map(([subtype, score]) => ({ subtype, score }));
-    const primarySubtype = rankedSubtypes[0]?.subtype ?? 'GENERIC';
-    const supportingSubtypes = rankedSubtypes
-      .filter(
-        (entry, index) =>
-          index > 0 && entry.score >= rankedSubtypes[0].score - subtypeConfig.supportingWindow,
-      )
-      .slice(0, subtypeConfig.maxSupportingSubtypes)
-      .map((entry) => entry.subtype);
-
-    const hasDirectEvidence =
-      (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
-      (state.hasDealChannel && state.hasContact);
-    const hasCampaignDependentEvidence =
-      state.hasCampaignContext &&
-      this.hasStrongCommercialCampaignEvidence(commercialCampaignContext, state);
-    const hasStructuredEvidence =
-      (state.hasPropertyAgentContext ||
-        state.hasCommercialPropertyContext ||
-        state.hasRecruitmentContext ||
-        state.hasInfoProductContext ||
-        state.hasBuyoutContext ||
-        state.hasServiceContext ||
-        state.hasGoodsRetailContext ||
-        state.hasGroupPromoContext ||
-        state.hasBusinessContext ||
-        state.hasPromoContext) &&
-      (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-    const evidenceStrength: CommercialClassification['evidenceStrength'] = hasDirectEvidence
-      ? 'DIRECT'
-      : hasCampaignDependentEvidence
-        ? 'CAMPAIGN'
-        : hasStructuredEvidence
-          ? 'STRUCTURED'
-          : 'BORDERLINE';
-    const suppressPropertyAgentReviewNoise =
-      primarySubtype === 'PROPERTY_AGENT' &&
-      confidenceScore >= appliedThresholds.deleteThreshold &&
-      (state.hasPrice || state.hasContact || state.hasTransactional);
-    const suppressStructuredGoodsReviewNoise =
-      (primarySubtype === 'GOODS_RETAIL' || primarySubtype === 'PROPERTY_COMMERCIAL') &&
-      confidenceScore >= appliedThresholds.deleteThreshold &&
-      (state.hasPrice || state.hasContact || state.hasTransactional);
-
-    const reviewReasons: string[] = [];
-    if (decisionBand !== 'HIGH') {
-      reviewReasons.push('medium-band');
-    }
-    if (
-      confidenceScore <=
-      appliedThresholds.warnThreshold +
-        COMMERCIAL_ENGINE_CONFIG.secondStage.reviewLogit.nearWarnWindow
-    ) {
-      reviewReasons.push('near-threshold');
-    }
-    if (
-      (state.hasStrongNegativeContext || state.negativeSignals.length > 0) &&
-      !suppressPropertyAgentReviewNoise &&
-      !suppressStructuredGoodsReviewNoise
-    ) {
-      reviewReasons.push('conflicting-negative-signals');
-    }
-    if (hasCampaignDependentEvidence && evidenceStrength === 'CAMPAIGN') {
-      reviewReasons.push('campaign-dependent');
-    }
-    if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
-      reviewReasons.push('generic-subtype');
-    }
-    if (
-      state.hasPrivateSaleContext &&
-      (state.hasServiceContext ||
-        state.hasPropertyAgentContext ||
-        state.hasCommercialPropertyContext) &&
-      !suppressPropertyAgentReviewNoise &&
-      !suppressStructuredGoodsReviewNoise
-    ) {
-      reviewReasons.push('private-sale-override');
-    }
-
-    const reviewRecommended =
-      reviewReasons.length > 0 &&
-      (decisionBand !== 'HIGH' ||
-        reviewReasons.includes('campaign-dependent') ||
-        reviewReasons.includes('generic-subtype') ||
-        reviewReasons.includes('conflicting-negative-signals'));
-
-    return {
-      primarySubtype,
-      supportingSubtypes: [...new Set(supportingSubtypes)],
-      evidenceStrength,
-      reviewRecommended,
-      reviewReasons: [...new Set(reviewReasons)],
-    };
   }
 
   private collectCommercialSignals(

@@ -1,9 +1,14 @@
 import type { CommercialSubtype } from '../rule-engine.contract';
+import type { CommercialDecisionBand } from '../rule-engine.contract';
+import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
+import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import type {
   CommercialActionBand,
+  CommercialClassification,
   CommercialEvidenceTier,
   CommercialFeatureVector,
   CommercialRequiredAnchor,
+  CommercialSignalState,
   CommercialSubtypePolicy,
 } from './commercial.types';
 
@@ -89,6 +94,183 @@ export const COMMERCIAL_SUBTYPE_POLICIES = {
     ambiguousActionBands: AMBIGUOUS_ACTION_BANDS,
   },
 } as const satisfies Record<CommercialSubtype, CommercialSubtypePolicy>;
+
+export function classifyCommercialDetection(params: {
+  state: CommercialSignalState;
+  confidenceScore: number;
+  decisionBand: CommercialDecisionBand;
+  appliedThresholds: CommercialThresholdProfile;
+  hasCampaignDependentEvidence: boolean;
+}): CommercialClassification {
+  const { state, confidenceScore, decisionBand, appliedThresholds, hasCampaignDependentEvidence } =
+    params;
+  const subtypeConfig = COMMERCIAL_ENGINE_CONFIG.subtypeScores;
+  const subtypeScores = new Map<CommercialSubtype, number>();
+  const addSubtype = (subtype: CommercialSubtype, score: number) => {
+    subtypeScores.set(subtype, Math.max(score, subtypeScores.get(subtype) ?? 0));
+  };
+
+  if (
+    state.hasChannelPlacementContext ||
+    (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent)
+  ) {
+    addSubtype('CHANNEL_PLACEMENT', subtypeConfig.CHANNEL_PLACEMENT);
+  }
+
+  if (state.hasPropertyAgentContext) {
+    addSubtype('PROPERTY_AGENT', subtypeConfig.PROPERTY_AGENT);
+  }
+
+  if (state.hasCommercialPropertyContext) {
+    addSubtype('PROPERTY_COMMERCIAL', subtypeConfig.PROPERTY_COMMERCIAL);
+  }
+
+  if (state.hasRecruitmentContext) {
+    addSubtype('RECRUITMENT', subtypeConfig.RECRUITMENT);
+  }
+
+  if (state.hasInfoProductContext) {
+    addSubtype('INFO_PRODUCT', subtypeConfig.INFO_PRODUCT);
+  }
+
+  if (state.hasBuyoutContext) {
+    addSubtype('BUYOUT', subtypeConfig.BUYOUT);
+  }
+
+  if (state.hasServiceContext) {
+    addSubtype('SERVICES', subtypeConfig.SERVICES);
+  } else if (state.hasServiceOfferContext || state.hasServiceSpecialtyContext) {
+    addSubtype('SERVICES', subtypeConfig.SERVICES_WEAK);
+  }
+
+  if (state.hasGoodsRetailContext) {
+    addSubtype(
+      'GOODS_RETAIL',
+      state.hasServiceContext
+        ? subtypeConfig.GOODS_RETAIL_WITH_SERVICE
+        : subtypeConfig.GOODS_RETAIL,
+    );
+  }
+
+  if (state.hasGroupPromoContext || (state.hasGroupPromotionIntent && state.hasDealChannel)) {
+    addSubtype(
+      'GROUP_PROMOTION',
+      state.hasGroupPromoContext
+        ? subtypeConfig.GROUP_PROMOTION
+        : subtypeConfig.GROUP_PROMOTION_WEAK,
+    );
+  }
+
+  if (
+    !state.hasServiceContext &&
+    !state.hasPropertyAgentContext &&
+    !state.hasCommercialPropertyContext &&
+    !state.hasRecruitmentContext &&
+    !state.hasInfoProductContext &&
+    !state.hasGoodsRetailContext &&
+    (state.hasIntent || state.hasPromoContext || state.hasBusinessContext) &&
+    (state.hasPrice || state.hasTransactional || state.hasContact || state.hasDealChannel)
+  ) {
+    addSubtype('GOODS', subtypeConfig.GOODS);
+  }
+
+  if (subtypeScores.size === 0) {
+    addSubtype('GENERIC', subtypeConfig.GENERIC);
+  }
+
+  const rankedSubtypes = [...subtypeScores.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([subtype, score]) => ({ subtype, score }));
+  const primarySubtype = rankedSubtypes[0]?.subtype ?? 'GENERIC';
+  const supportingSubtypes = rankedSubtypes
+    .filter(
+      (entry, index) =>
+        index > 0 && entry.score >= rankedSubtypes[0].score - subtypeConfig.supportingWindow,
+    )
+    .slice(0, subtypeConfig.maxSupportingSubtypes)
+    .map((entry) => entry.subtype);
+
+  const hasDirectEvidence =
+    (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
+    (state.hasDealChannel && state.hasContact);
+  const hasStructuredEvidence =
+    (state.hasPropertyAgentContext ||
+      state.hasCommercialPropertyContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext ||
+      state.hasBuyoutContext ||
+      state.hasServiceContext ||
+      state.hasGoodsRetailContext ||
+      state.hasGroupPromoContext ||
+      state.hasBusinessContext ||
+      state.hasPromoContext) &&
+    (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
+  const evidenceStrength: CommercialClassification['evidenceStrength'] = hasDirectEvidence
+    ? 'DIRECT'
+    : hasCampaignDependentEvidence
+      ? 'CAMPAIGN'
+      : hasStructuredEvidence
+        ? 'STRUCTURED'
+        : 'BORDERLINE';
+  const suppressPropertyAgentReviewNoise =
+    primarySubtype === 'PROPERTY_AGENT' &&
+    confidenceScore >= appliedThresholds.deleteThreshold &&
+    (state.hasPrice || state.hasContact || state.hasTransactional);
+  const suppressStructuredGoodsReviewNoise =
+    (primarySubtype === 'GOODS_RETAIL' || primarySubtype === 'PROPERTY_COMMERCIAL') &&
+    confidenceScore >= appliedThresholds.deleteThreshold &&
+    (state.hasPrice || state.hasContact || state.hasTransactional);
+
+  const reviewReasons: string[] = [];
+  if (decisionBand !== 'HIGH') {
+    reviewReasons.push('medium-band');
+  }
+  if (
+    confidenceScore <=
+    appliedThresholds.warnThreshold +
+      COMMERCIAL_ENGINE_CONFIG.secondStage.reviewLogit.nearWarnWindow
+  ) {
+    reviewReasons.push('near-threshold');
+  }
+  if (
+    (state.hasStrongNegativeContext || state.negativeSignals.length > 0) &&
+    !suppressPropertyAgentReviewNoise &&
+    !suppressStructuredGoodsReviewNoise
+  ) {
+    reviewReasons.push('conflicting-negative-signals');
+  }
+  if (hasCampaignDependentEvidence && evidenceStrength === 'CAMPAIGN') {
+    reviewReasons.push('campaign-dependent');
+  }
+  if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
+    reviewReasons.push('generic-subtype');
+  }
+  if (
+    state.hasPrivateSaleContext &&
+    (state.hasServiceContext ||
+      state.hasPropertyAgentContext ||
+      state.hasCommercialPropertyContext) &&
+    !suppressPropertyAgentReviewNoise &&
+    !suppressStructuredGoodsReviewNoise
+  ) {
+    reviewReasons.push('private-sale-override');
+  }
+
+  const reviewRecommended =
+    reviewReasons.length > 0 &&
+    (decisionBand !== 'HIGH' ||
+      reviewReasons.includes('campaign-dependent') ||
+      reviewReasons.includes('generic-subtype') ||
+      reviewReasons.includes('conflicting-negative-signals'));
+
+  return {
+    primarySubtype,
+    supportingSubtypes: [...new Set(supportingSubtypes)],
+    evidenceStrength,
+    reviewRecommended,
+    reviewReasons: [...new Set(reviewReasons)],
+  };
+}
 
 export function getCommercialSubtypePolicy(subtype: CommercialSubtype): CommercialSubtypePolicy {
   return COMMERCIAL_SUBTYPE_POLICIES[subtype];

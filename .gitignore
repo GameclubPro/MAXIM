@@ -9,6 +9,7 @@ coverage/
 .vite/
 artifacts/miniapp-screenshots/
 artifacts/vps-review/
+artifacts/commercial-audit/
 apps/api/src/generated/prisma/
 
 # Env

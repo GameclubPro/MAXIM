@@ -8,7 +8,10 @@ import {
 import { config as loadEnv } from 'dotenv';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { InMemoryCommercialCampaignTracker } from '../moderation/commercial-campaign.util';
+import {
+  InMemoryCommercialCampaignTracker,
+  type CommercialCampaignContext,
+} from '../moderation/commercial-campaign.util';
 import { COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES } from '../moderation/commercial/commercial-suppressors';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
 
@@ -27,6 +30,7 @@ type CliOptions = {
   sample: number;
   chatId?: string;
   exportJsonlPath?: string;
+  exportCorpusJsonlPath?: string;
   includeStableHits: boolean;
 };
 
@@ -89,6 +93,11 @@ type AuditCorpusLabel =
 
 type AuditCorpusLabelSource = 'commercial-audit-policy-v1' | null;
 
+type AuditCorpusSettings = Pick<
+  ChatSettings,
+  'commercialAdsSensitivity' | 'commercialAdsWarnThreshold' | 'commercialAdsDeleteThreshold'
+>;
+
 type CommercialSnapshot = {
   hit: boolean;
   score: number | null;
@@ -134,6 +143,8 @@ type AuditRecord = {
   sanitizedText: string;
   historical: CommercialSnapshot;
   current: CommercialSnapshot;
+  settings: AuditCorpusSettings;
+  commercialCampaignContext: CommercialCampaignContext | null;
 };
 
 const NOOP_REDIS_COUNTER = {
@@ -172,6 +183,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
   const sample = readPositiveIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
   const exportJsonlPath = readStringOption(args, '--export-jsonl');
+  const exportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
   const includeStableHits = args.includes('--include-stable-hits');
 
   if (since.getTime() > until.getTime()) {
@@ -185,6 +197,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
     sample,
     ...(chatId ? { chatId } : {}),
     ...(exportJsonlPath ? { exportJsonlPath } : {}),
+    ...(exportCorpusJsonlPath ? { exportCorpusJsonlPath } : {}),
     includeStableHits,
   };
 }
@@ -876,12 +889,46 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
         messageId: record.messageId,
         senderId: record.senderId,
         text: record.sanitizedText,
+        settings: record.settings,
+        commercialCampaignContext: record.commercialCampaignContext,
         historical: record.historical,
         current: record.current,
       }),
     )
     .join('\n');
   await writeFile(pathname, `${payload}\n`, 'utf8');
+}
+
+async function exportCorpusJsonl(pathname: string, records: readonly AuditRecord[]) {
+  await mkdir(dirname(pathname), { recursive: true });
+  const payload = records
+    .map((record) =>
+      JSON.stringify({
+        label: record.label,
+        labelSource: record.labelSource,
+        expectedAction: record.expectedAction,
+        expectedSubtype: record.expectedSubtype,
+        isHardNegative: record.isHardNegative,
+        category: record.category,
+        policyCategory: record.policyCategory,
+        segment: record.segment,
+        text: record.sanitizedText,
+        settings: record.settings,
+        commercialCampaignContext: record.commercialCampaignContext,
+        historical: record.historical,
+        current: record.current,
+      }),
+    )
+    .join('\n');
+  await writeFile(pathname, `${payload}\n`, 'utf8');
+}
+
+function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
+  return {
+    commercialAdsSensitivity: settings.commercialAdsSensitivity,
+    commercialAdsWarnThreshold: settings.commercialAdsWarnThreshold,
+    commercialAdsDeleteThreshold: settings.commercialAdsDeleteThreshold,
+  };
 }
 
 function sanitizeAuditText(value: string): string {
@@ -1027,6 +1074,8 @@ async function main() {
         sanitizedText,
         historical,
         current,
+        settings: pickAuditCorpusSettings(chatContext.settings),
+        commercialCampaignContext,
       });
 
       if ((index + 1) % PROGRESS_EVERY === 0) {
@@ -1173,6 +1222,11 @@ async function main() {
       await exportJsonl(options.exportJsonlPath, exportable);
       console.log('');
       console.log(`exported=${exportable.length} path=${options.exportJsonlPath}`);
+    }
+    if (options.exportCorpusJsonlPath) {
+      await exportCorpusJsonl(options.exportCorpusJsonlPath, exportable);
+      console.log('');
+      console.log(`exported_corpus=${exportable.length} path=${options.exportCorpusJsonlPath}`);
     }
   } finally {
     await prisma.$disconnect();
