@@ -18,11 +18,11 @@ export const VK_PARSING_STATUS_FILTERS: Array<{
 }> = [
   { value: 'ALL', label: 'Все' },
   { value: 'NEW', label: 'Новые' },
-  { value: 'QUEUED', label: 'В очереди' },
-  { value: 'PUBLISHED', label: 'Опубликованы' },
+  { value: 'QUEUED', label: 'Очередь' },
+  { value: 'PUBLISHED', label: 'Опубл.' },
   { value: 'FAILED', label: 'Ошибка' },
-  { value: 'SKIPPED', label: 'Пропущены' },
-  { value: 'CHANGED_AFTER_PUBLISH', label: 'Изменены' },
+  { value: 'SKIPPED', label: 'Пропущ.' },
+  { value: 'CHANGED_AFTER_PUBLISH', label: 'Измен.' },
 ];
 
 export const VK_PARSING_SETTING_TOGGLES: Array<{
