@@ -500,7 +500,11 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'city event channel invite missed in last six hour clear sweep',
     text: `Уважаемые участники группы. Приглашаем вас на наш канал "Афиша города. Куда сходить с детьми". Все события и мероприятия города: https://max.ru/join/example-city-events`,
     expectedSubtype: 'CHANNEL_PLACEMENT',
-    expectedSignals: ['channel-placement:invite-to-channel', 'group-promo:приглашаем', 'deal-channel:link'],
+    expectedSignals: [
+      'channel-placement:invite-to-channel',
+      'group-promo:приглашаем',
+      'deal-channel:link',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -512,7 +516,11 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `Сдам меблированную 1к квартиру с хорошим ремонтом. Центр энергетика, ул. Погодаева 7. Цена 17000 руб., коммунальные платежи включены. Звоните, тел. +7 900 000 00 31. АН.`,
     expectedSubtype: 'PROPERTY_AGENT',
     reviewRecommended: false,
-    expectedSignals: ['property-agent:агентство-недвижимости', 'transaction:price', 'contact:phone'],
+    expectedSignals: [
+      'property-agent:агентство-недвижимости',
+      'transaction:price',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -523,7 +531,11 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'broker price feed with safe request missed in last six hour clear sweep',
     text: `ЖК Лучший. Мини-2к.кв., 10/24 этаж, S=37 кв.м. Новый ремонт, мебель, техника. Сейф по запросу. Разбивка 4 150 000. Цена: 6 300 000. Светлана +7 900 000 00 32.`,
     expectedSubtype: 'PROPERTY_AGENT',
-    expectedSignals: ['property-agent:сейф-по-запросу', 'property-agent:разбивка-цены', 'contact:phone'],
+    expectedSignals: [
+      'property-agent:сейф-по-запросу',
+      'property-agent:разбивка-цены',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -536,6 +548,134 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSubtype: 'RECRUITMENT',
     reviewRecommended: false,
     expectedSignals: ['recruitment:приглашает-на-службу', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'nationwide clothing retail delivery from six hour manual review',
+    text: `Футболка турецкая, люкс качество, размер от 58 до 62, вискоза. Доставка по Ростову и всей России любой транспортной компанией, писать в личку или звонить по телефону +7 900 000 00 34.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['promo:доставк', 'goods-retail:apparel-retail-order-flow', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'clothing preorder with prepayment from six hour manual review',
+    text: `Платье производство Турция, размер 50/52, купить и заказать можно по предоплате. Писать в телеграмм или звонить по номеру +7 900 000 00 35.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: true,
+    expectedSignals: [
+      'goods-retail:apparel-retail-order-flow',
+      'contact:telegram',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'concrete works contractor from six hour manual review',
+    text: `Бетонные работы под ключ по Краснодарскому краю и Адыгее. Работаем с юрлицами и физлицами, любые объёмы и сложность. Делаем фундаменты, отмостки, дорожки, площадки, бетонные полы и стяжки. Работаем по договору, звоните +7 900 000 00 36.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'service-specialty:бетон',
+      'service-specialty:concrete-works',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'seedling nursery stock from six hour manual review',
+    text: `Саженцы винограда районированные для Сибири и Урала. С закрытой корневой системой, в больших горшках, 100% приживаемость. Цена от 700р. Звоните +7 900 000 00 37 или пишите в лс.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:plant-nursery-stock', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'broiler delivery sale from six hour manual review',
+    text: `Реализуем и доставляем на дом цыплят бройлеров Кобб 500, возрастом 65 дней, весом от 4 до 5 кг. Цена 180 руб за кг. +7 900 000 00 38.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:farm-livestock-retail', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'restaurant waiter recruitment from six hour manual review',
+    text: `Приглашаем в ресторан официантов. Рассматриваем кандидатов без опыта, всему обучаем. График 2/2, 3/2 или 5/2, ставка за смену от 1500 до 2100 ₽, личные чаевые. WhatsApp +7 900 000 00 39.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:приглашаем-роли', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'insurance service from six hour manual review',
+    text: `По любым видам страхования: недвижимость, ОСАГО, КАСКО, здоровье, жизнь, путешествия. Елена, специалист по страхованию. Телефон +7 900 000 00 40.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['business:страхован', 'service-specialty:insurance-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'travel agency offer from six hour manual review',
+    text: `Турагентство Елены Сафиной. Туры в любую точку мира, работаем 10 лет, подберём тур из любого города. Телефон +7 900 000 00 41, офис в Уфе.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['business:турагентств', 'service-specialty:tour-agency', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'paid raffle transfer from six hour manual review',
+    text: `Встречаем новый лот с повтором чисел. По 300 рублей, перевод по номеру +7 900 000 00 42 Тбанк Анна. 1 место 600, 2 место 350, 3 место 250. Всем удачи.`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: false,
+    expectedSignals: ['risk:paid-raffle-transfer', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'vpn referral bonus from six hour manual review',
+    text: `Отправьте другу ссылку и получите 67 ₽ на баланс avoVPN: https://avobonus.com/ref?start=example`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: false,
+    expectedSignals: ['risk:referral-bonus-link', 'deal-channel:link'],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -674,6 +814,60 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'ordinary no-link invite without commercial deal from clear sweep guard',
     text: `Приглашаем соседей в чат дома обсудить субботник и график уборки подъезда.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private single shoes sale with phone from six hour false-positive guard',
+    text: `Продам новые женские лакированные туфли Renaissance черного цвета, 41 размер, за 3000 р. Писать в личку или по телефону +7 900 000 00 43.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'travel agency recommendation request from six hour false-positive guard',
+    text: `Подскажите хорошее турагентство для семейной поездки, кто уже летал и остался доволен?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'insurance recommendation request from six hour false-positive guard',
+    text: `Кто оформлял ОСАГО онлайн, подскажите нормальный сервис без переплат?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'buyer availability question from six hour false-positive guard',
+    text: `Здравствуйте, черешня есть в наличии. Можно подъехать?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private bed chair with banquette from six hour false-positive guard',
+    text: `Продам кресло-кровать и банкетку в комплекте. Есть отдел для постельного, цена 7000 рублей.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private single sofa sale with delivery from six hour false-positive guard',
+    text: `Продам диван за 10000 ₽, возможна доставка. Все вопросы по телефону +7 900 000 00 44.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
