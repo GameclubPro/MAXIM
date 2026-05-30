@@ -2638,6 +2638,8 @@ export type VkParsingPost = z.infer<typeof vkParsingPostSchema>;
 export const vkParsingCapabilitySchema = z.object({
   enabled: z.boolean().default(false),
   canUse: z.boolean().default(false),
+  reasonCode: z.enum(['NOT_CONFIGURED', 'ACCESS_DENIED', 'NOT_FOUND']).nullable().default(null),
+  reason: z.string().nullable().default(null),
 });
 export type VkParsingCapability = z.infer<typeof vkParsingCapabilitySchema>;
 
@@ -2678,7 +2680,12 @@ export const vkParsingHealthSummarySchema = z.object({
 export type VkParsingHealthSummary = z.infer<typeof vkParsingHealthSummarySchema>;
 
 export const vkParsingFeedSchema = z.object({
-  capabilities: vkParsingCapabilitySchema.default({ enabled: false, canUse: false }),
+  capabilities: vkParsingCapabilitySchema.default({
+    enabled: false,
+    canUse: false,
+    reasonCode: null,
+    reason: null,
+  }),
   settings: vkParsingSettingsSchema.default({
     chatId: '',
     autoPublishEnabled: false,

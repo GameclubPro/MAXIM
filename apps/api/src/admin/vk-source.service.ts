@@ -3,6 +3,7 @@ import {
   bulkUpdateVkParsingSourcesRequestSchema,
   updateVkParsingSourceRequestSchema,
   type VkParsingFeed,
+  type VkParsingCapability,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -51,6 +52,12 @@ const VK_SOURCE_SYNC_STATUS_ERROR = 'ERROR';
 const VK_SOURCE_PUBLISH_MODE_QUEUE = 'QUEUE';
 const VK_SOURCE_PRIORITY_NORMAL = 'NORMAL';
 const VK_SYNC_JOB_NAME = 'sync-vk-source';
+const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
+  enabled: true,
+  canUse: true,
+  reasonCode: null,
+  reason: null,
+};
 
 @Injectable()
 export class VkSourceService {
@@ -126,7 +133,7 @@ export class VkSourceService {
     });
 
     const queued = await this.enqueueSourceSync(source.id, 'source-added');
-    const feed = await this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    const feed = await this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
     return { ...feed, imported: 0, queued };
   }
 
@@ -203,7 +210,7 @@ export class VkSourceService {
       after: parsed.data,
     });
 
-    return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
   }
 
   async applyBulkPreset(
@@ -270,7 +277,7 @@ export class VkSourceService {
       sourceIds,
       settings: preset,
     });
-    return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
   }
 
   async removeSource(chatId: string, sourceId: string): Promise<VkParsingFeed> {
@@ -299,7 +306,7 @@ export class VkSourceService {
         circuitRetryAt: null,
       },
     });
-    return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
   }
 
   async refresh(chatId: string): Promise<VkParsingRefreshResult> {
@@ -310,7 +317,7 @@ export class VkSourceService {
 
     const queued = await this.enqueueSources(sources, 'manual');
 
-    const feed = await this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    const feed = await this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
     return { ...feed, imported: 0, queued };
   }
 
@@ -326,7 +333,7 @@ export class VkSourceService {
     }
 
     const queued = await this.enqueueSourceSync(source.id, 'manual');
-    const feed = await this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    const feed = await this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
     return { ...feed, imported: 0, queued };
   }
 

@@ -896,7 +896,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
   };
 
   const feed = vkParsingFeedSchema.parse({
-    capabilities: { enabled: true, canUse: true },
+    capabilities: { enabled: true, canUse: true, reasonCode: null, reason: null },
     settings,
     sources: [sourceOne, sourceTwo],
     posts: [
@@ -1158,7 +1158,12 @@ function handleVkParsingPreviewRequest(
   if (tail[1] === 'capability' && method === 'GET') {
     return {
       handled: true,
-      value: vkParsingCapabilitySchema.parse({ enabled: true, canUse: true }),
+      value: vkParsingCapabilitySchema.parse({
+        enabled: true,
+        canUse: true,
+        reasonCode: null,
+        reason: null,
+      }),
     };
   }
 

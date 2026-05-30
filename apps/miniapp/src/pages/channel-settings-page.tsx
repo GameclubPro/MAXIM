@@ -1006,7 +1006,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
-  const canAccessVkParsing = vkParsingCapabilityQuery.data?.canUse === true;
+  const vkParsingCapability = vkParsingCapabilityQuery.data ?? null;
+  const canAccessVkParsing = vkParsingCapability?.canUse === true;
+  const shouldShowVkParsingSection =
+    canAccessVkParsing || vkParsingCapability?.reasonCode === 'NOT_CONFIGURED';
   const broadcastTargetContextLabel = channelHeader?.title?.trim() || 'Текущий канал';
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const broadcastCalendarQuery = useQuery({
@@ -2784,7 +2787,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </SettingsDrilldownPanel>
       </GlassCard>
 
-      {canAccessVkParsing ? (
+      {shouldShowVkParsingSection ? (
         <GlassCard className="channel-settings-card" elevated>
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
@@ -2813,13 +2816,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             >
               {expandedSections.vkParsing ? (
                 <div className="settings-section__collapse-inner">
-                  <Suspense fallback={null}>
-                    <LazyVkParsingCard
-                      api={api}
-                      chatId={chatId}
-                      active={expandedSections.vkParsing}
+                  {canAccessVkParsing ? (
+                    <Suspense fallback={null}>
+                      <LazyVkParsingCard
+                        api={api}
+                        chatId={chatId}
+                        active={expandedSections.vkParsing}
+                      />
+                    </Suspense>
+                  ) : vkParsingCapability ? (
+                    <StatusState
+                      tone="warning"
+                      title="VK-парсинг не настроен"
+                      description={
+                        vkParsingCapability.reason ??
+                        'Сервер не подключён к VK API: нужен VK_SERVICE_TOKEN в окружении API.'
+                      }
+                      action={
+                        <button
+                          type="button"
+                          className="button button--ghost"
+                          disabled={vkParsingCapabilityQuery.isFetching}
+                          onClick={() => void vkParsingCapabilityQuery.refetch()}
+                        >
+                          Проверить снова
+                        </button>
+                      }
                     />
-                  </Suspense>
+                  ) : null}
                 </div>
               ) : null}
             </div>

@@ -1,5 +1,6 @@
 import type { VkParsingCapability } from '@maxim/contracts';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,6 +11,7 @@ export class VkParsingAccessService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly adminService: AdminService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getCapability(chatId: string, user: AuthUser): Promise<VkParsingCapability> {
@@ -18,7 +20,12 @@ export class VkParsingAccessService {
       select: { entityType: true },
     });
     if (!chat) {
-      return { enabled: true, canUse: false };
+      return {
+        enabled: true,
+        canUse: false,
+        reasonCode: 'NOT_FOUND',
+        reason: 'Чат или канал не найден.',
+      };
     }
 
     try {
@@ -28,10 +35,24 @@ export class VkParsingAccessService {
         this.resolveAdminEntityType(chat.entityType),
       );
     } catch {
-      return { enabled: true, canUse: false };
+      return {
+        enabled: true,
+        canUse: false,
+        reasonCode: 'ACCESS_DENIED',
+        reason: 'Недостаточно прав администратора.',
+      };
     }
 
-    return { enabled: true, canUse: true };
+    if (!this.hasVkServiceToken()) {
+      return {
+        enabled: false,
+        canUse: false,
+        reasonCode: 'NOT_CONFIGURED',
+        reason: 'VK_SERVICE_TOKEN не настроен на сервере.',
+      };
+    }
+
+    return { enabled: true, canUse: true, reasonCode: null, reason: null };
   }
 
   async assertAccess(chatId: string, user: AuthUser): Promise<ChatEntityType> {
@@ -48,6 +69,7 @@ export class VkParsingAccessService {
       user.userId,
       this.resolveAdminEntityType(chat.entityType),
     );
+    this.assertConfigured();
     return chat.entityType;
   }
 
@@ -61,5 +83,17 @@ export class VkParsingAccessService {
 
   private resolveAdminEntityType(entityType: ChatEntityType): 'chat' | 'channel' {
     return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+  }
+
+  private hasVkServiceToken(): boolean {
+    return Boolean(this.configService.get<string>('VK_SERVICE_TOKEN')?.trim());
+  }
+
+  private assertConfigured(): void {
+    if (this.hasVkServiceToken()) {
+      return;
+    }
+
+    throw new ServiceUnavailableException('VK_SERVICE_TOKEN не настроен на сервере.');
   }
 }

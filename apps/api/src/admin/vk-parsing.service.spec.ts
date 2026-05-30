@@ -213,7 +213,11 @@ describe('VkParsingService', () => {
     });
     const mediaCache = new VkParsingMediaCacheService(prisma as never, configService as never);
     const postImportRepository = new VkParsingPostImportRepository(prisma as never);
-    const accessService = new VkParsingAccessService(prisma as never, adminService as never);
+    const accessService = new VkParsingAccessService(
+      prisma as never,
+      adminService as never,
+      configService as never,
+    );
     const feedService = new VkParsingFeedService(
       prisma as never,
       vkRateLimitService as never,
@@ -397,6 +401,46 @@ describe('VkParsingService', () => {
       'not-allowlisted',
       'channel',
     );
+  });
+
+  it('reports VK parsing as not configured to channel admins when the VK token is missing', async () => {
+    const { service, adminService } = createFixture({ VK_SERVICE_TOKEN: '' });
+
+    await expect(
+      service.getCapability('channel-1', { userId: 'channel-admin' } as never),
+    ).resolves.toEqual({
+      enabled: false,
+      canUse: false,
+      reasonCode: 'NOT_CONFIGURED',
+      reason: 'VK_SERVICE_TOKEN не настроен на сервере.',
+    });
+    expect(adminService.assertChatAdmin).toHaveBeenCalledWith(
+      'channel-1',
+      'channel-admin',
+      'channel',
+    );
+  });
+
+  it('does not expose VK token configuration to users without admin access', async () => {
+    const { service, adminService } = createFixture({ VK_SERVICE_TOKEN: '' });
+    adminService.assertChatAdmin.mockRejectedValue(new Error('not admin'));
+
+    await expect(
+      service.getCapability('channel-1', { userId: 'guest' } as never),
+    ).resolves.toEqual({
+      enabled: true,
+      canUse: false,
+      reasonCode: 'ACCESS_DENIED',
+      reason: 'Недостаточно прав администратора.',
+    });
+  });
+
+  it('fails VK parsing operations early when the VK token is missing', async () => {
+    const { service } = createFixture({ VK_SERVICE_TOKEN: '' });
+
+    await expect(
+      service.listVkParsing('channel-1', { userId: 'channel-admin' } as never),
+    ).rejects.toThrow('VK_SERVICE_TOKEN не настроен на сервере.');
   });
 
   it('allows chat admins to use VK parsing in chats', async () => {

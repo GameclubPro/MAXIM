@@ -697,7 +697,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-  const canAccessVkParsing = vkParsingCapabilityQuery.data?.canUse === true;
+  const vkParsingCapability = vkParsingCapabilityQuery.data ?? null;
+  const canAccessVkParsing = vkParsingCapability?.canUse === true;
+  const shouldShowVkParsingSection =
+    canAccessVkParsing || vkParsingCapability?.reasonCode === 'NOT_CONFIGURED';
   const adminContactProfileUrl = useMemo(
     () => resolveAdminContactProfileUrl(meQuery.data ?? {}),
     [meQuery.data],
@@ -10230,7 +10233,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </SettingsDrilldownPanel>
             </GlassCard>
 
-            {canAccessVkParsing ? (
+            {shouldShowVkParsingSection ? (
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
                 style={{ animationDelay: '326ms', order: 6 }}
@@ -10268,14 +10271,35 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   >
                     {expandedSections.vkParsing ? (
                       <div className="settings-section__collapse-inner">
-                        <Suspense fallback={null}>
-                          <LazyVkParsingCard
-                            api={api}
-                            chatId={chatId ?? ''}
-                            active={expandedSections.vkParsing}
-                            entityType="chat"
+                        {canAccessVkParsing ? (
+                          <Suspense fallback={null}>
+                            <LazyVkParsingCard
+                              api={api}
+                              chatId={chatId ?? ''}
+                              active={expandedSections.vkParsing}
+                              entityType="chat"
+                            />
+                          </Suspense>
+                        ) : vkParsingCapability ? (
+                          <StatusState
+                            tone="warning"
+                            title="VK-парсинг не настроен"
+                            description={
+                              vkParsingCapability.reason ??
+                              'Сервер не подключён к VK API: нужен VK_SERVICE_TOKEN в окружении API.'
+                            }
+                            action={
+                              <button
+                                type="button"
+                                className="button button--ghost"
+                                disabled={vkParsingCapabilityQuery.isFetching}
+                                onClick={() => void vkParsingCapabilityQuery.refetch()}
+                              >
+                                Проверить снова
+                              </button>
+                            }
                           />
-                        </Suspense>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

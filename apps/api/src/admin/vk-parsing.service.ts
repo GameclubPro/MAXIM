@@ -23,6 +23,13 @@ import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
 
+const VK_PARSING_AVAILABLE_CAPABILITY: VkParsingCapability = {
+  enabled: true,
+  canUse: true,
+  reasonCode: null,
+  reason: null,
+};
+
 @Injectable()
 export class VkParsingService {
   constructor(
@@ -44,7 +51,7 @@ export class VkParsingService {
 
   async listVkParsing(chatId: string, user: AuthUser, query: unknown = {}): Promise<VkParsingFeed> {
     await this.accessService.assertAccess(chatId, user);
-    return this.feedService.buildFeed(chatId, { enabled: true, canUse: true }, query);
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY, query);
   }
 
   async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<VkParsingFeed> {
@@ -104,7 +111,7 @@ export class VkParsingService {
       changed: parsed.data,
     });
 
-    return this.feedService.buildFeed(chatId, { enabled: true, canUse: true });
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
   }
 
   async getHealthSummary(chatId: string, user: AuthUser): Promise<VkParsingHealthSummary> {

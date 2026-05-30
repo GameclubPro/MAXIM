@@ -81,7 +81,12 @@ export class VkParsingFeedService {
 
   async buildFeed(
     chatId: string,
-    capabilities: VkParsingCapability = { enabled: false, canUse: false },
+    capabilities: VkParsingCapability = {
+      enabled: false,
+      canUse: false,
+      reasonCode: null,
+      reason: null,
+    },
     rawQuery: unknown = {},
   ): Promise<VkParsingFeed> {
     const parsedQuery = vkParsingFeedQuerySchema.safeParse(rawQuery);
