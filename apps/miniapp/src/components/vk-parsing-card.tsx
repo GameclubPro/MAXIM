@@ -202,36 +202,6 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
         onRemoveSource={state.removeSource}
       />
 
-      {feed ? (
-        <div className="vk-parsing-secondary-stack" aria-label="Дополнительно">
-          {feed.queue.length > 0 ? (
-            <details className="vk-parsing-fold vk-parsing-fold--secondary">
-              <summary>Очередь · {feed.queue.length}</summary>
-              <QueueTimeline
-                posts={feed.queue}
-                schedulingPostId={state.schedulingPostId}
-                cancelingPostId={state.cancelingPostId}
-                publishingNowPostId={state.publishingNowPostId}
-                onSchedulePost={state.schedulePost}
-                onCancelPost={state.cancelScheduledPost}
-                onPublishNow={state.publishPostNow}
-              />
-            </details>
-          ) : null}
-
-          <details className="vk-parsing-fold vk-parsing-fold--secondary">
-            <summary>Состояние и откат</summary>
-            <HealthSummary summary={feed.summary} />
-            <SafetyPanel
-              sources={sources}
-              auditEvents={feed.auditEvents}
-              isRollingBack={state.isRollingBack}
-              onRollback={state.rollback}
-            />
-          </details>
-        </div>
-      ) : null}
-
       <section className="vk-feed-section" aria-label="Посты VK">
         {feed ? (
           <StatusFilterBar
@@ -289,6 +259,36 @@ export function VkParsingCard({ api, chatId, active, entityType = 'channel' }: V
           onPageOffsetChange={state.setPageOffset}
         />
       </section>
+
+      {feed ? (
+        <section className="vk-parsing-service-section" aria-label="Служебные действия">
+          {feed.queue.length > 0 ? (
+            <details className="vk-parsing-fold vk-parsing-fold--secondary">
+              <summary>Очередь · {feed.queue.length}</summary>
+              <QueueTimeline
+                posts={feed.queue}
+                schedulingPostId={state.schedulingPostId}
+                cancelingPostId={state.cancelingPostId}
+                publishingNowPostId={state.publishingNowPostId}
+                onSchedulePost={state.schedulePost}
+                onCancelPost={state.cancelScheduledPost}
+                onPublishNow={state.publishPostNow}
+              />
+            </details>
+          ) : null}
+
+          <details className="vk-parsing-fold vk-parsing-fold--secondary">
+            <summary>Состояние и откат</summary>
+            <HealthSummary summary={feed.summary} />
+            <SafetyPanel
+              sources={sources}
+              auditEvents={feed.auditEvents}
+              isRollingBack={state.isRollingBack}
+              onRollback={state.rollback}
+            />
+          </details>
+        </section>
+      ) : null}
     </div>
   );
 }

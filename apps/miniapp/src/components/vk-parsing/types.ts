@@ -19,10 +19,10 @@ export const VK_PARSING_STATUS_FILTERS: Array<{
   { value: 'ALL', label: 'Все' },
   { value: 'NEW', label: 'Новые' },
   { value: 'QUEUED', label: 'Очередь' },
-  { value: 'PUBLISHED', label: 'Опубл.' },
-  { value: 'FAILED', label: 'Ошибка' },
-  { value: 'SKIPPED', label: 'Пропущ.' },
-  { value: 'CHANGED_AFTER_PUBLISH', label: 'Измен.' },
+  { value: 'FAILED', label: 'Ошибки' },
+  { value: 'PUBLISHED', label: 'Опубликованные' },
+  { value: 'SKIPPED', label: 'Пропущенные' },
+  { value: 'CHANGED_AFTER_PUBLISH', label: 'Измененные' },
 ];
 
 export const VK_PARSING_SETTING_TOGGLES: Array<{

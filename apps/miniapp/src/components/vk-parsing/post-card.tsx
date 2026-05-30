@@ -227,59 +227,45 @@ export function PostCard({
             ) : null}
           </div>
 
-          <div className="vk-parsing-post-card__actions">
-            {post.status === 'PUBLISHED' ? (
-              post.publishedUrl ? (
-                <a
-                  className="button button--ghost vk-parsing-action-button"
-                  href={post.publishedUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <OpenNewWindow aria-hidden />
-                  MAX
-                </a>
-              ) : null
-            ) : post.status === 'UNAVAILABLE' ? (
-              <button
-                type="button"
+          {post.status === 'PUBLISHED' && post.publishedUrl ? (
+            <div className="vk-parsing-post-card__actions">
+              <a
                 className="button button--ghost vk-parsing-action-button"
-                disabled
+                href={post.publishedUrl}
+                target="_blank"
+                rel="noreferrer"
               >
-                Недоступен
-              </button>
-            ) : post.status === 'SKIPPED' ? (
-              <button
-                type="button"
-                className="button button--ghost vk-parsing-action-button"
-                disabled
-              >
-                Пропущен
-              </button>
-            ) : (
-              <>
-                {post.status === 'FAILED' ? (
-                  <button
-                    type="button"
-                    className="button button--ghost vk-parsing-action-button"
-                    disabled={isRetrying}
-                    onClick={() => onRetryPost(post.id)}
-                  >
-                    <RefreshCircle aria-hidden />
-                    {isRetrying ? 'В очереди...' : 'Повторить'}
-                  </button>
-                ) : null}
+                <OpenNewWindow aria-hidden />
+                MAX
+              </a>
+            </div>
+          ) : null}
+
+          {post.status !== 'PUBLISHED' &&
+          post.status !== 'SKIPPED' &&
+          post.status !== 'UNAVAILABLE' ? (
+            <div className="vk-parsing-post-card__actions">
+              {post.status === 'FAILED' ? (
                 <button
                   type="button"
-                  className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
-                  onClick={() => onStartEditing(post)}
+                  className="button button--ghost vk-parsing-action-button"
+                  disabled={isRetrying}
+                  onClick={() => onRetryPost(post.id)}
                 >
-                  <EditPencil aria-hidden />
-                  Редактировать
+                  <RefreshCircle aria-hidden />
+                  {isRetrying ? 'В очереди...' : 'Повторить'}
                 </button>
-              </>
-            )}
-          </div>
+              ) : null}
+              <button
+                type="button"
+                className="button button--ghost vk-parsing-action-button vk-parsing-action-button--primary"
+                onClick={() => onStartEditing(post)}
+              >
+                <EditPencil aria-hidden />
+                Редактировать
+              </button>
+            </div>
+          ) : null}
         </>
       )}
     </article>
