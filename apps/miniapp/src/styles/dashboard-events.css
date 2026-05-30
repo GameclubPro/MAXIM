@@ -876,9 +876,9 @@
 
 .spammer-review-candidate__headline {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 5px;
 }
 
 .spammer-review-candidate__headline strong {
@@ -891,7 +891,14 @@
   line-height: 1.15;
 }
 
+.spammer-review-candidate.is-expanded .spammer-review-candidate__headline strong {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .spammer-review-candidate__headline span {
+  width: fit-content;
+  max-width: 100%;
   color: #a43242;
   background: rgba(255, 239, 242, 0.96);
   border: 1px solid rgba(220, 75, 93, 0.18);
@@ -899,7 +906,9 @@
   padding: 3px 7px;
   font-size: 0.64rem;
   font-weight: 820;
-  white-space: nowrap;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .spammer-review-candidate__meta {
@@ -920,6 +929,8 @@
   border: 1px solid rgba(211, 224, 236, 0.74);
   font-size: 0.6rem;
   font-weight: 780;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
 }
 
 .spammer-review-candidate__body p {
@@ -999,11 +1010,12 @@
 
 .spammer-review-candidate__actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
   gap: 7px;
 }
 
 .spammer-review-candidate__button {
+  min-width: 0;
   min-height: 36px;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -1039,6 +1051,11 @@
   background: rgba(246, 250, 253, 0.98);
 }
 
+.spammer-diagnostics-sheet .settings-drilldown__summary {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .spammer-diagnostics__state {
   min-height: 132px;
   display: grid;
@@ -1052,165 +1069,163 @@
 
 .spammer-diagnostics {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
-.spammer-diagnostics__verdict,
-.spammer-diagnostics__facts,
-.spammer-diagnostics__signals,
-.spammer-diagnostics__actions,
+.spammer-diagnostics__answer,
+.spammer-diagnostics__signals-list,
 .spammer-diagnostics__technical {
   border: 1px solid rgba(211, 224, 236, 0.86);
-  border-radius: 12px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
 }
 
-.spammer-diagnostics__verdict {
+.spammer-diagnostics__answer {
   display: grid;
-  gap: 7px;
-  padding: 12px;
+  gap: 8px;
+  padding: 11px;
 }
 
-.spammer-diagnostics__verdict--danger {
+.spammer-diagnostics__answer--danger {
   border-color: rgba(228, 83, 99, 0.24);
   background:
     linear-gradient(135deg, rgba(255, 239, 242, 0.96), rgba(255, 255, 255, 0.96)),
     #fff;
 }
 
-.spammer-diagnostics__verdict--warning {
+.spammer-diagnostics__answer--warning {
   border-color: rgba(240, 164, 43, 0.26);
   background:
     linear-gradient(135deg, rgba(255, 248, 235, 0.96), rgba(255, 255, 255, 0.96)),
     #fff;
 }
 
-.spammer-diagnostics__verdict--success {
+.spammer-diagnostics__answer--success {
   border-color: rgba(39, 181, 124, 0.24);
   background:
     linear-gradient(135deg, rgba(231, 250, 242, 0.96), rgba(255, 255, 255, 0.96)),
     #fff;
 }
 
-.spammer-diagnostics__verdict small,
-.spammer-diagnostics__facts dt,
-.spammer-diagnostics__signals > span,
-.spammer-diagnostics__actions > span,
+.spammer-diagnostics__answer-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.spammer-diagnostics__answer small,
+.spammer-diagnostics__brief dt,
+.spammer-diagnostics__signals-list h4,
 .spammer-diagnostics__technical summary,
 .spammer-diagnostics__technical section > span {
+  margin: 0;
   color: #71879b;
   font-size: 0.62rem;
   font-weight: 820;
   line-height: 1.12;
 }
 
-.spammer-diagnostics__verdict strong {
+.spammer-diagnostics__answer strong {
   min-width: 0;
   color: #17324a;
-  font-size: 1.02rem;
+  font-size: 0.98rem;
   line-height: 1.12;
   overflow-wrap: anywhere;
 }
 
-.spammer-diagnostics__verdict > span {
+.spammer-diagnostics__answer-head > span {
   width: fit-content;
   max-width: 100%;
-  min-height: 26px;
+  min-height: 24px;
   display: inline-flex;
   align-items: center;
-  padding: 0 9px;
+  padding: 0 8px;
   border: 1px solid rgba(188, 205, 220, 0.82);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(247, 250, 253, 0.94);
   color: #2f4c64;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 840;
-  line-height: 1.05;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
 }
 
-.spammer-diagnostics__verdict p {
+.spammer-diagnostics__answer p {
   margin: 0;
   color: #536b80;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   font-weight: 680;
-  line-height: 1.38;
+  line-height: 1.34;
 }
 
-.spammer-diagnostics__facts {
+.spammer-diagnostics__brief {
   display: grid;
-  gap: 7px;
-  margin: 0;
-  padding: 10px;
-}
-
-.spammer-diagnostics__facts div {
-  display: grid;
-  grid-template-columns: minmax(88px, 38%) minmax(0, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  margin: 0;
+  padding-top: 2px;
 }
 
-.spammer-diagnostics__facts dd {
+.spammer-diagnostics__brief div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.spammer-diagnostics__brief dd {
   min-width: 0;
   margin: 0;
   color: #2f4c64;
-  font-size: 0.74rem;
-  font-weight: 760;
-  line-height: 1.28;
-  overflow-wrap: anywhere;
-}
-
-.spammer-diagnostics__signals {
-  display: grid;
-  gap: 7px;
-  padding: 10px;
-}
-
-.spammer-diagnostics__signals div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.spammer-diagnostics__signals small {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  max-width: 100%;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(211, 224, 236, 0.78);
-  background: rgba(246, 250, 253, 0.94);
-  color: #526a80;
-  font-size: 0.64rem;
-  font-weight: 780;
-  line-height: 1.18;
-  overflow-wrap: anywhere;
-}
-
-.spammer-diagnostics__actions {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-}
-
-.spammer-diagnostics__actions div {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
-  gap: 7px;
-}
-
-.spammer-diagnostics__actions .button {
-  min-height: 36px;
-  padding-inline: 10px;
   font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
 }
 
-.spammer-diagnostics__actions p {
+.spammer-diagnostics__answer > small {
+  color: #667e92;
+  font-size: 0.66rem;
+  font-weight: 720;
+  line-height: 1.24;
+}
+
+.spammer-diagnostics__signals-list {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+}
+
+.spammer-diagnostics__signal-rows {
+  display: grid;
+  gap: 5px;
+}
+
+.spammer-diagnostics__signal-row {
+  min-width: 0;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(246, 250, 253, 0.94);
+}
+
+.spammer-diagnostics__signal-row span {
+  min-width: 0;
+  color: #2f4c64;
+  font-size: 0.72rem;
+  font-weight: 780;
+  line-height: 1.24;
+  overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__signal-rows > small {
   margin: 0;
-  color: #61768a;
-  font-size: 0.68rem;
-  font-weight: 700;
-  line-height: 1.32;
+  color: #667e92;
+  font-size: 0.66rem;
+  font-weight: 720;
+  line-height: 1.24;
 }
 
 .spammer-diagnostics__technical {
@@ -1227,6 +1242,11 @@
   padding: 0 10px;
   cursor: pointer;
   list-style: none;
+}
+
+.spammer-diagnostics__technical summary:focus-visible {
+  outline: 2px solid rgba(11, 132, 255, 0.36);
+  outline-offset: -2px;
 }
 
 .spammer-diagnostics__technical summary::-webkit-details-marker {
@@ -1249,10 +1269,49 @@
   content: '−';
 }
 
+.spammer-diagnostics__technical-scroll {
+  display: grid;
+  gap: 8px;
+  max-height: min(38dvh, 320px);
+  overflow-y: auto;
+  padding: 0 10px 10px;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
 .spammer-diagnostics__technical section {
   display: grid;
   gap: 6px;
-  padding: 0 10px 10px;
+  min-width: 0;
+}
+
+.spammer-diagnostics__technical-table {
+  display: grid;
+  gap: 5px;
+}
+
+.spammer-diagnostics__technical-table div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 0.9fr));
+  gap: 5px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(211, 224, 236, 0.66);
+}
+
+.spammer-diagnostics__technical-table strong,
+.spammer-diagnostics__technical-table span {
+  min-width: 0;
+  color: #526a80;
+  font-size: 0.64rem;
+  font-weight: 720;
+  line-height: 1.24;
+  overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__technical-table strong {
+  color: #2f4c64;
+  font-weight: 820;
 }
 
 .spammer-diagnostics__technical ul {
@@ -1269,6 +1328,27 @@
   font-weight: 700;
   line-height: 1.34;
   overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__footer {
+  display: grid;
+  gap: 7px;
+}
+
+.spammer-diagnostics__footer .settings-drilldown__footer-actions {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+
+.spammer-diagnostics__footer .settings-drilldown__footer-actions.is-single-action {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.spammer-diagnostics__footer .settings-drilldown__footer-actions .button {
+  min-height: 40px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  line-height: 1.08;
+  white-space: normal;
 }
 
 .events-feed {
@@ -1414,6 +1494,12 @@
   white-space: nowrap;
   font-size: 0.82rem;
   line-height: 1.15;
+}
+
+.event-feed-item.is-expanded .event-feed-item__identity strong,
+.event-feed-item.is-expanded .event-feed-item__name-link {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .event-feed-item__stamp {
@@ -3223,6 +3309,7 @@
 }
 
 .logs-violation-item__offender {
+  min-width: 0;
   font-size: 0.88rem;
   font-weight: 800;
   color: var(--text-primary);
@@ -3272,14 +3359,12 @@
 }
 
 .logs-violation-item__quick-actions {
-  flex-wrap: wrap;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   gap: 6px;
 }
 
 .logs-violation-item__quick-button {
-  flex: 1 1 0;
   min-width: 0;
   border: 1px solid rgba(214, 225, 237, 0.94);
   background: rgba(249, 251, 253, 0.98);
@@ -3294,6 +3379,8 @@
   min-height: 34px;
   border-radius: 9px;
   font-size: 0.72rem;
+  line-height: 1.08;
+  white-space: normal;
 }
 
 .logs-violation-item__quick-button:disabled {
@@ -3538,13 +3625,13 @@ body.events-page-open .app-shell {
 }
 
 @supports (content-visibility: auto) {
-  .event-feed-item {
+  .event-feed-item:not(.is-expanded) {
     content-visibility: auto;
     contain: layout paint style;
     contain-intrinsic-size: 112px;
   }
 
-  .spammer-review-candidate {
+  .spammer-review-candidate:not(.is-expanded) {
     content-visibility: auto;
     contain: layout paint style;
     contain-intrinsic-size: 128px;
@@ -3693,6 +3780,15 @@ body.events-page-open .app-shell {
 
   .spammer-review__metrics {
     justify-content: flex-start;
+  }
+
+  .spammer-diagnostics__brief {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .spammer-diagnostics__technical-table div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .events-dashboard__metric {
@@ -4083,6 +4179,11 @@ body.events-page-open .app-shell {
     grid-template-columns: minmax(0, 1fr) 24px;
   }
 
+  .logs-violation-item__offender {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .events-dashboard__activity {
     grid-template-columns: minmax(82px, 0.7fr) minmax(0, 1.3fr);
   }
@@ -4152,6 +4253,12 @@ body.events-page-open .app-shell {
     min-width: 32px;
     height: 32px;
     grid-column: 1;
+  }
+
+  .spammer-review-candidate__actions,
+  .logs-violation-item__quick-actions,
+  .logs-violation-item__quick-actions--single {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .membership-feed--immersive .membership-feed__item {

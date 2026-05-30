@@ -22,6 +22,7 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
@@ -868,12 +869,6 @@ function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): st
   return reason ? resolveSpammerReasonLabel(reason) : '—';
 }
 
-function resolveDiagnosticsConfirmedBy(diagnostics: GlobalSpammerUserDiagnostics): string {
-  const value =
-    diagnostics.registry.confirmedByUserId || diagnostics.candidate?.reviewedByUserId || '';
-  return value && !/[A-Za-z]/.test(value) ? value : value ? 'модератор' : '—';
-}
-
 function formatOptionalDate(value: string | null | undefined): string | null {
   return value ? formatViolationDate(value) : null;
 }
@@ -995,42 +990,22 @@ function formatDiagnosticsConfidence(value: number | null): string | null {
   }
 
   const normalized = Math.max(0, Math.min(1, value));
-  const level = normalized >= 0.86 ? 'высокая' : normalized >= 0.68 ? 'средняя' : 'низкая';
-  return `${level} (${formatConfidenceScore(normalized)})`;
+  return normalized >= 0.86 ? 'высокая' : normalized >= 0.68 ? 'средняя' : 'низкая';
 }
 
-function buildDiagnosticsSummaryFacts(
-  diagnostics: GlobalSpammerUserDiagnostics,
-): Array<{ label: string; value: string }> {
-  const facts: Array<{ label: string; value: string }> = [];
-  const reason = resolveDiagnosticsReason(diagnostics);
-  if (reason !== '—') {
-    facts.push({ label: 'Причина', value: reason });
+function formatDiagnosticsConfidenceLevel(value: number | null): string | null {
+  if (typeof value !== 'number') {
+    return null;
   }
 
-  const confidence = formatDiagnosticsConfidence(resolveDiagnosticsConfidenceScore(diagnostics));
-  if (confidence) {
-    facts.push({ label: 'Уверенность', value: confidence });
+  const normalized = Math.max(0, Math.min(1, value));
+  if (normalized >= 0.86) {
+    return 'высокая';
   }
-
-  const activeUntil = formatOptionalDate(
-    diagnostics.activeSuppression?.suppressedUntil ??
-      diagnostics.policy.expiresAt ??
-      diagnostics.registry.expiresAt,
-  );
-  if (activeUntil) {
-    facts.push({
-      label: diagnostics.activeSuppression ? 'Исключение до' : 'Запись активна до',
-      value: activeUntil,
-    });
+  if (normalized >= 0.68) {
+    return 'средняя';
   }
-
-  const confirmedBy = resolveDiagnosticsConfirmedBy(diagnostics);
-  if (confirmedBy !== '—') {
-    facts.push({ label: 'Решение принял', value: confirmedBy });
-  }
-
-  return facts;
+  return 'низкая';
 }
 
 type DiagnosticsSignalGroup = {
@@ -1039,6 +1014,14 @@ type DiagnosticsSignalGroup = {
   count: number;
   maxScore: number;
 };
+
+function formatDisplaySentence(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return `${trimmed.charAt(0).toLocaleUpperCase('ru-RU')}${trimmed.slice(1)}`;
+}
 
 function buildDiagnosticsSignalGroups(
   diagnostics: GlobalSpammerUserDiagnostics,
@@ -1073,21 +1056,20 @@ function buildDiagnosticsSignalGroups(
     .slice(0, 5);
 }
 
-function formatDiagnosticsSignalGroup(group: DiagnosticsSignalGroup): string {
-  const score = formatConfidenceScore(group.maxScore);
-  if (group.count > 1) {
-    return `${group.label} · ${group.count} ${formatRussianCountLabel(
-      group.count,
-      'сигнал',
-      'сигнала',
-      'сигналов',
-    )} · сила до ${score}`;
-  }
-  return `${group.label} · сила сигнала ${score}`;
+function formatDiagnosticsSignalSummary(group: DiagnosticsSignalGroup): string {
+  return `${formatDisplaySentence(group.label)} · ${group.count} ${formatRussianCountLabel(
+    group.count,
+    'совпадение',
+    'совпадения',
+    'совпадений',
+  )}`;
 }
 
-function buildDiagnosticsRawSignals(diagnostics: GlobalSpammerUserDiagnostics): string[] {
-  return [
+function buildDiagnosticsRawSignals(diagnostics: GlobalSpammerUserDiagnostics): {
+  items: string[];
+  hiddenCount: number;
+} {
+  const signals = [
     ...diagnostics.observations.map(
       (item) =>
         `${resolveSpammerSourceLabel(item.source)} · наблюдение · сила ${formatConfidenceScore(
@@ -1100,10 +1082,20 @@ function buildDiagnosticsRawSignals(diagnostics: GlobalSpammerUserDiagnostics): 
           item.score,
         )}`,
     ),
-  ].slice(0, 8);
+  ];
+
+  return {
+    items: signals.slice(0, 5),
+    hiddenCount: Math.max(0, signals.length - 5),
+  };
 }
 
-function buildDiagnosticsSourceQuality(diagnostics: GlobalSpammerUserDiagnostics): string[] {
+function buildDiagnosticsSourceQuality(diagnostics: GlobalSpammerUserDiagnostics): Array<{
+  source: string;
+  weight: string;
+  falsePositiveRate: string;
+  observations: string;
+}> {
   return diagnostics.sourceReputation.slice(0, 5).map((item) => {
     const observationsLabel = `${item.observations} ${formatRussianCountLabel(
       item.observations,
@@ -1111,11 +1103,12 @@ function buildDiagnosticsSourceQuality(diagnostics: GlobalSpammerUserDiagnostics
       'наблюдения',
       'наблюдений',
     )}`;
-    return `${resolveSpammerSourceLabel(item.source)}: вес источника ${formatConfidenceScore(
-      item.weight,
-    )}, ложные срабатывания ${formatFalsePositiveRate(
-      item.falsePositiveRate,
-    )}, ${observationsLabel}`;
+    return {
+      source: formatDisplaySentence(resolveSpammerSourceLabel(item.source)),
+      weight: formatConfidenceScore(item.weight),
+      falsePositiveRate: formatFalsePositiveRate(item.falsePositiveRate),
+      observations: observationsLabel,
+    };
   });
 }
 
@@ -1157,17 +1150,17 @@ function resolveDiagnosticsReviewActions(
 
   if (status === 'MEDIUM_REVIEW' || diagnostics.candidate?.status === 'PENDING') {
     return [
-      { action: 'APPROVE', label: 'Подтвердить спамера', tone: 'accent' },
-      { action: 'SUPPRESS', label: 'Исключить из базы', tone: 'danger' },
+      { action: 'APPROVE', label: 'Подтвердить', tone: 'accent' },
+      { action: 'SUPPRESS', label: 'Исключить', tone: 'danger' },
     ];
   }
 
   if (status === 'ACTIVE_CONFIRMED') {
-    return [{ action: 'SUPPRESS', label: 'Исключить из базы', tone: 'danger' }];
+    return [{ action: 'SUPPRESS', label: 'Исключить', tone: 'danger' }];
   }
 
   if (diagnostics.candidate && diagnostics.candidate.status !== 'SUPPRESSED') {
-    return [{ action: 'SUPPRESS', label: 'Исключить из базы', tone: 'danger' }];
+    return [{ action: 'SUPPRESS', label: 'Исключить', tone: 'danger' }];
   }
 
   return [];
@@ -1178,7 +1171,7 @@ function resolveDiagnosticsActionHint(
   reviewActions: ReadonlyArray<{ action: GlobalSpammerReviewAction; label: string }>,
 ): string {
   if (reviewActions.length > 0) {
-    return 'Решение применяется к базе спама и будущим проверкам пользователя.';
+    return 'Повлияет на будущие проверки.';
   }
   if (
     diagnostics.policy.registryStatus === 'SUPPRESSED' ||
@@ -1190,6 +1183,47 @@ function resolveDiagnosticsActionHint(
     return 'Запись истекла. Новые совпадения появятся в очереди проверки.';
   }
   return 'Ручные мут и бан доступны в карточке нарушения.';
+}
+
+function countDiagnosticsMatches(diagnostics: GlobalSpammerUserDiagnostics): number {
+  return diagnostics.observations.length + diagnostics.graphSignals.length;
+}
+
+function buildDiagnosticsBriefFacts(
+  diagnostics: GlobalSpammerUserDiagnostics,
+): Array<{ label: string; value: string }> {
+  const reason = resolveDiagnosticsReason(diagnostics);
+  const confidence =
+    formatDiagnosticsConfidenceLevel(resolveDiagnosticsConfidenceScore(diagnostics)) ?? 'нет данных';
+  const matchCount = countDiagnosticsMatches(diagnostics);
+  return [
+    { label: 'Причина', value: reason === '—' ? 'не указана' : formatDisplaySentence(reason) },
+    { label: 'Уверенность', value: confidence },
+    {
+      label: 'Совпадения',
+      value:
+        matchCount > 0
+          ? `${matchCount} ${formatRussianCountLabel(
+              matchCount,
+              'совпадение',
+              'совпадения',
+              'совпадений',
+            )}`
+          : 'нет',
+    },
+  ];
+}
+
+function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
+  const activeUntil = formatOptionalDate(
+    diagnostics.activeSuppression?.suppressedUntil ??
+      diagnostics.policy.expiresAt ??
+      diagnostics.registry.expiresAt,
+  );
+  if (!activeUntil) {
+    return null;
+  }
+  return diagnostics.activeSuppression ? `Исключение до ${activeUntil}` : `Запись до ${activeUntil}`;
 }
 
 function formatSpammerSourceAlertReason(reason: string): string {
@@ -1236,15 +1270,12 @@ function GlobalSpammerReviewPanel({
   const reviewed = metrics?.reviewed ?? 0;
   const suppressed = metrics?.suppressed ?? 0;
   const expiredRegistry = metrics?.expiredRegistry ?? 0;
-  const falsePositiveRate = metrics?.falsePositiveRate ?? 0;
   const sourceAlerts = metrics?.sourceAlerts ?? [];
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const metricChips = [
     `Проверка ${pending}`,
     `Активных ${activeRegistry}`,
-    reviewed > 0
-      ? `Ложные срабатывания ${formatFalsePositiveRate(falsePositiveRate)}`
-      : 'Проверено 0',
+    reviewed > 0 ? `Проверено ${reviewed}` : 'Проверено 0',
     ...(suppressed > 0 ? [`Исключено ${suppressed}`] : []),
     ...(expiredRegistry > 0 ? [`Истекло ${expiredRegistry}`] : []),
   ];
@@ -1334,7 +1365,7 @@ function GlobalSpammerReviewPanel({
                     <div className="spammer-review-candidate__headline">
                       <strong>{label}</strong>
                       <span>
-                        Уверенность: {formatDiagnosticsConfidence(candidate.confidenceScore)}
+                        Уверенность {formatDiagnosticsConfidence(candidate.confidenceScore)}
                       </span>
                     </div>
                     <div className="spammer-review-candidate__meta">
@@ -1432,14 +1463,74 @@ function SpammerDiagnosticsSheet({
   onReview: (userId: string, action: GlobalSpammerReviewAction) => void;
 }) {
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
-  const summaryFacts = diagnostics ? buildDiagnosticsSummaryFacts(diagnostics) : [];
+  const briefFacts = diagnostics ? buildDiagnosticsBriefFacts(diagnostics) : [];
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
-  const rawSignals = diagnostics ? buildDiagnosticsRawSignals(diagnostics) : [];
+  const visibleSignalGroups = signalGroups.slice(0, 3);
+  const hiddenSignalGroupCount = Math.max(0, signalGroups.length - visibleSignalGroups.length);
+  const rawSignals = diagnostics
+    ? buildDiagnosticsRawSignals(diagnostics)
+    : { items: [], hiddenCount: 0 };
   const sourceQuality = diagnostics ? buildDiagnosticsSourceQuality(diagnostics) : [];
   const policyDetails = diagnostics ? buildDiagnosticsPolicyDetails(diagnostics) : [];
   const reviewActions = diagnostics ? resolveDiagnosticsReviewActions(diagnostics) : [];
   const actionHint = diagnostics ? resolveDiagnosticsActionHint(diagnostics, reviewActions) : null;
+  const activeUntil = diagnostics ? resolveDiagnosticsActiveUntil(diagnostics) : null;
   const isReviewing = Boolean(reviewingAction);
+  const technicalDetailsRef = useRef<HTMLDetailsElement | null>(null);
+  const hasTechnicalDetails =
+    sourceQuality.length > 0 || rawSignals.items.length > 0 || policyDetails.length > 0;
+  const handleTechnicalToggle = () => {
+    const details = technicalDetailsRef.current;
+    if (!details?.open) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const body = details.closest('.settings-drilldown__body');
+      if (!(body instanceof HTMLElement)) {
+        details.scrollIntoView({ block: 'end', behavior: 'auto' });
+        return;
+      }
+
+      const bodyRect = body.getBoundingClientRect();
+      const detailsRect = details.getBoundingClientRect();
+      const hiddenBottom = detailsRect.bottom - bodyRect.bottom;
+      if (hiddenBottom > 0) {
+        body.scrollTop += hiddenBottom + 8;
+      }
+    });
+  };
+  const footer = diagnostics ? (
+    <div className="spammer-diagnostics__footer">
+      {actionHint ? <p className="settings-drilldown__footer-note">{actionHint}</p> : null}
+      <div
+        className={`settings-drilldown__footer-actions ${
+          reviewActions.length === 0 ? 'is-single-action' : ''
+        }`}
+        aria-label="Решение модератора"
+      >
+        {reviewActions.map((item) => (
+          <button
+            key={item.action}
+            type="button"
+            className={`button button--${item.tone}`}
+            disabled={isReviewing}
+            onClick={() => onReview(diagnostics.userId, item.action)}
+          >
+            {reviewingAction === item.action ? 'Сохраняем...' : item.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={isReviewing}
+          onClick={onClose}
+        >
+          Закрыть
+        </button>
+      </div>
+    </div>
+  ) : undefined;
 
   return (
     <SettingsDrilldownPanel
@@ -1450,6 +1541,8 @@ function SpammerDiagnosticsSheet({
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
+      footer={footer}
+      keepFooterVisibleWhenKeyboardOpen
     >
       {isLoading ? (
         <div className="spammer-diagnostics__state">
@@ -1465,97 +1558,95 @@ function SpammerDiagnosticsSheet({
       ) : diagnostics ? (
         <section className="spammer-diagnostics">
           <article
-            className={`spammer-diagnostics__verdict spammer-diagnostics__verdict--${resolveDiagnosticsVerdictTone(
+            className={`spammer-diagnostics__answer spammer-diagnostics__answer--${resolveDiagnosticsVerdictTone(
               diagnostics,
             )}`}
           >
-            <small>Решение по базе</small>
-            <strong>{resolveDiagnosticsHeadline(diagnostics)}</strong>
-            <span>{resolveDiagnosticsAutoAction(diagnostics)}</span>
+            <div className="spammer-diagnostics__answer-head">
+              <strong>{resolveDiagnosticsHeadline(diagnostics)}</strong>
+              <span>{resolveDiagnosticsAutoAction(diagnostics)}</span>
+            </div>
             <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
-          </article>
-
-          {summaryFacts.length > 0 ? (
-            <dl className="spammer-diagnostics__facts">
-              {summaryFacts.map((fact) => (
+            <dl className="spammer-diagnostics__brief">
+              {briefFacts.map((fact) => (
                 <div key={fact.label}>
                   <dt>{fact.label}</dt>
                   <dd>{fact.value}</dd>
                 </div>
               ))}
             </dl>
-          ) : null}
+            {activeUntil ? <small>{activeUntil}</small> : null}
+          </article>
 
-          {signalGroups.length > 0 ? (
-            <div className="spammer-diagnostics__signals">
-              <span>Почему попал в базу</span>
-              <div>
-                {signalGroups.map((group) => (
-                  <small key={group.key}>{formatDiagnosticsSignalGroup(group)}</small>
+          {visibleSignalGroups.length > 0 ? (
+            <section className="spammer-diagnostics__signals-list" aria-label="Почему попал в базу">
+              <h4>Почему попал в базу</h4>
+              <div className="spammer-diagnostics__signal-rows">
+                {visibleSignalGroups.map((group) => (
+                  <div key={group.key} className="spammer-diagnostics__signal-row">
+                    <span>{formatDiagnosticsSignalSummary(group)}</span>
+                  </div>
                 ))}
+                {hiddenSignalGroupCount > 0 ? (
+                  <small>
+                    Еще {hiddenSignalGroupCount}{' '}
+                    {formatRussianCountLabel(
+                      hiddenSignalGroupCount,
+                      'тип совпадения',
+                      'типа совпадений',
+                      'типов совпадений',
+                    )}
+                  </small>
+                ) : null}
               </div>
-            </div>
+            </section>
           ) : null}
 
-          <div className="spammer-diagnostics__actions" aria-label="Решение модератора">
-            <span>Что можно сделать</span>
-            <div>
-              {reviewActions.map((item) => (
-                <button
-                  key={item.action}
-                  type="button"
-                  className={`button button--${item.tone}`}
-                  disabled={isReviewing}
-                  onClick={() => onReview(diagnostics.userId, item.action)}
-                >
-                  {reviewingAction === item.action ? 'Сохраняем...' : item.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={isReviewing}
-                onClick={onClose}
-              >
-                Закрыть
-              </button>
-            </div>
-            {actionHint ? <p>{actionHint}</p> : null}
-          </div>
-
-          {sourceQuality.length > 0 || rawSignals.length > 0 || policyDetails.length > 0 ? (
-            <details className="spammer-diagnostics__technical">
-              <summary>Технические детали</summary>
-              {sourceQuality.length > 0 ? (
-                <section>
-                  <span>Вес источников</span>
-                  <ul>
-                    {sourceQuality.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              ) : null}
-              {rawSignals.length > 0 ? (
-                <section>
-                  <span>Сырые сигналы</span>
-                  <ul>
-                    {rawSignals.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              ) : null}
-              {policyDetails.length > 0 ? (
-                <section>
-                  <span>Политика</span>
-                  <ul>
-                    {policyDetails.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              ) : null}
+          {hasTechnicalDetails ? (
+            <details
+              ref={technicalDetailsRef}
+              className="spammer-diagnostics__technical"
+              onToggle={handleTechnicalToggle}
+            >
+              <summary>Для диагностики</summary>
+              <div className="spammer-diagnostics__technical-scroll">
+                {sourceQuality.length > 0 ? (
+                  <section>
+                    <span>Источники</span>
+                    <div className="spammer-diagnostics__technical-table">
+                      {sourceQuality.map((item) => (
+                        <div key={item.source}>
+                          <strong>{item.source}</strong>
+                          <span>Вес {item.weight}</span>
+                          <span>Ошибки {item.falsePositiveRate}</span>
+                          <span>{item.observations}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {rawSignals.items.length > 0 ? (
+                  <section>
+                    <span>Сырые сигналы</span>
+                    <ul>
+                      {rawSignals.items.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                      {rawSignals.hiddenCount > 0 ? <li>Еще {rawSignals.hiddenCount}</li> : null}
+                    </ul>
+                  </section>
+                ) : null}
+                {policyDetails.length > 0 ? (
+                  <section>
+                    <span>Политика</span>
+                    <ul>
+                      {policyDetails.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+              </div>
             </details>
           ) : null}
         </section>
