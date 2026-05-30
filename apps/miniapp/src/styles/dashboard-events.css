@@ -1632,6 +1632,8 @@
   gap: 10px;
   border-top: 1px solid rgba(216, 227, 238, 0.92);
   background: rgba(250, 252, 254, 0.98);
+  min-width: 0;
+  max-width: 100%;
   padding: 0 9px 9px 15px;
 }
 
@@ -1639,6 +1641,8 @@
 .event-feed-item__excerpt {
   display: grid;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
   padding: 12px 0 0 48px;
   padding-top: 9px;
 }
@@ -1663,8 +1667,12 @@
 .event-feed-item__reason p,
 .event-feed-item__excerpt p {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   font-size: 0.76rem;
   line-height: 1.42;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .event-feed-item__reason p {
@@ -3232,9 +3240,11 @@
 
 .ban-duration-stepper {
   display: inline-grid;
-  grid-template-columns: 32px auto 32px;
+  grid-template-columns: 32px minmax(0, auto) 32px;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ban-duration-stepper__button {
@@ -3257,10 +3267,14 @@
 
 .ban-duration-stepper__value {
   min-width: 58px;
+  max-width: 100%;
   text-align: center;
   font-size: 0.86rem;
   font-weight: 700;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .logs-violation-item {
@@ -3389,6 +3403,8 @@
 .logs-violation-item__moderation {
   border: 1px solid rgba(216, 227, 238, 0.94);
   background: rgba(255, 255, 255, 0.96);
+  min-width: 0;
+  max-width: 100%;
   padding: 7px;
   border-radius: 11px;
 }
@@ -3397,6 +3413,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .logs-violation-item__quick-button {
@@ -3460,6 +3478,8 @@
 .logs-violation-item__ban-config {
   display: grid;
   gap: 7px;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 7px;
 }
 
@@ -3475,6 +3495,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+  min-width: 0;
 }
 
 .logs-violation-item__ban-preset {
@@ -3500,6 +3521,8 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .logs-violation-item__hours-input {
