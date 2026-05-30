@@ -890,6 +890,25 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
   return 'Нет активной записи';
 }
 
+function formatDiagnosticsHeadline(
+  diagnostics: GlobalSpammerUserDiagnostics,
+  displayName: string | null | undefined,
+): string {
+  const headline = resolveDiagnosticsHeadline(diagnostics);
+  const subject = displayName?.trim();
+  if (!subject) {
+    return headline;
+  }
+
+  if (diagnostics.policy.registryStatus === 'ACTIVE_CONFIRMED') {
+    return `${subject} в базе спама`;
+  }
+  if (diagnostics.policy.registryStatus === 'MEDIUM_REVIEW') {
+    return `${subject} на проверке`;
+  }
+  return headline;
+}
+
 function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
@@ -942,7 +961,7 @@ function resolveDiagnosticsVerdictTone(
 function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Причина: автоудаление спамеров выключено в этом чате.';
+    return 'Причина: автоудаление выключено в этом чате.';
   }
   if (policy.action === 'DELETE_AND_KICK') {
     return 'Причина: автоудаление спамеров включено в этом чате.';
@@ -1132,6 +1151,11 @@ function buildDiagnosticsPolicyDetails(diagnostics: GlobalSpammerUserDiagnostics
         diagnostics.activeSuppression.suppressedUntil,
       )}`,
     );
+  } else {
+    const activeUntil = formatOptionalDate(policy.expiresAt ?? diagnostics.registry.expiresAt);
+    if (activeUntil) {
+      details.push(`Запись активна до ${activeUntil}`);
+    }
   }
   if (policy.wouldEnforce && policy.action !== 'DELETE_AND_KICK') {
     details.push('Совпадение найдено, но текущее правило не удаляет пользователя автоматически');
@@ -1190,18 +1214,6 @@ function formatDiagnosticsMatchLine(diagnostics: GlobalSpammerUserDiagnostics): 
     'совпадения',
     'совпадений',
   )} в базе`;
-}
-
-function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
-  const activeUntil = formatOptionalDate(
-    diagnostics.activeSuppression?.suppressedUntil ??
-      diagnostics.policy.expiresAt ??
-      diagnostics.registry.expiresAt,
-  );
-  if (!activeUntil) {
-    return null;
-  }
-  return diagnostics.activeSuppression ? `Исключение до ${activeUntil}` : `Запись до ${activeUntil}`;
 }
 
 function formatSpammerSourceAlertReason(reason: string): string {
@@ -1443,7 +1455,6 @@ function SpammerDiagnosticsSheet({
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const visibleSignalGroups = signalGroups.slice(0, 2);
-  const hiddenSignalGroupCount = Math.max(0, signalGroups.length - visibleSignalGroups.length);
   const rawSignals = diagnostics
     ? buildDiagnosticsRawSignals(diagnostics)
     : { items: [], hiddenCount: 0 };
@@ -1451,7 +1462,6 @@ function SpammerDiagnosticsSheet({
   const policyDetails = diagnostics ? buildDiagnosticsPolicyDetails(diagnostics) : [];
   const reviewActions = diagnostics ? resolveDiagnosticsReviewActions(diagnostics) : [];
   const actionHint = diagnostics ? resolveDiagnosticsActionHint(diagnostics, reviewActions) : null;
-  const activeUntil = diagnostics ? resolveDiagnosticsActiveUntil(diagnostics) : null;
   const confidenceLine = diagnostics ? formatDiagnosticsConfidenceLine(diagnostics) : null;
   const matchLine = diagnostics ? formatDiagnosticsMatchLine(diagnostics) : null;
   const isReviewing = Boolean(reviewingAction);
@@ -1481,7 +1491,6 @@ function SpammerDiagnosticsSheet({
   };
   const footer = diagnostics ? (
     <div className="spammer-diagnostics__footer">
-      {actionHint ? <p className="settings-drilldown__footer-note">{actionHint}</p> : null}
       <div
         className={`settings-drilldown__footer-actions ${
           reviewActions.length === 0 ? 'is-single-action' : ''
@@ -1508,6 +1517,7 @@ function SpammerDiagnosticsSheet({
           Закрыть
         </button>
       </div>
+      {actionHint ? <p className="settings-drilldown__footer-note">{actionHint}</p> : null}
     </div>
   ) : undefined;
 
@@ -1542,7 +1552,7 @@ function SpammerDiagnosticsSheet({
             )}`}
           >
             <div className="spammer-diagnostics__answer-head">
-              <strong>{resolveDiagnosticsHeadline(diagnostics)}</strong>
+              <strong>{formatDiagnosticsHeadline(diagnostics, target?.displayName)}</strong>
               <span>{resolveDiagnosticsAutoAction(diagnostics)}</span>
             </div>
             <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
@@ -1557,20 +1567,8 @@ function SpammerDiagnosticsSheet({
                     <span>{formatDiagnosticsSignalSummary(group)}</span>
                   </div>
                 ))}
-                {hiddenSignalGroupCount > 0 ? (
-                  <small>
-                    Еще {hiddenSignalGroupCount}{' '}
-                    {formatRussianCountLabel(
-                      hiddenSignalGroupCount,
-                      'тип совпадения',
-                      'типа совпадений',
-                      'типов совпадений',
-                    )}
-                  </small>
-                ) : null}
               </div>
             ) : null}
-            {activeUntil ? <small>{activeUntil}</small> : null}
           </article>
 
           {hasTechnicalDetails ? (
