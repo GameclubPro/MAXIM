@@ -357,6 +357,7 @@ export function SourceDashboard({
             const problem = formatSourceProblem(source);
             const nextRun = formatSourceNextRun(source);
             const workCount = source.newPostCount + source.queuedPostCount;
+            const statusLabel = resolveSourceLabel(source);
             return (
               <article
                 key={source.id}
@@ -377,9 +378,9 @@ export function SourceDashboard({
                     <span>{source.screenName}</span>
                   </button>
                   <div className="vk-source-card__tools">
-                    <span className="vk-source-status">
+                    <span className="vk-source-status" title={statusLabel}>
                       {tone === 'danger' ? <WarningCircle aria-hidden /> : <Clock aria-hidden />}
-                      {resolveSourceLabel(source)}
+                      {statusLabel}
                     </span>
                     <button
                       type="button"
@@ -483,7 +484,7 @@ export function SourceDashboard({
                         checked={bulkSelected}
                         onChange={() => onToggleBulkSource(source.id)}
                       />
-                      <span>Выбрать для массового действия</span>
+                      <span>Массовое действие</span>
                     </label>
 
                     <section className="vk-source-control-group">

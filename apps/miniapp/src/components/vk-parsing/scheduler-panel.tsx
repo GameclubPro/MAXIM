@@ -193,7 +193,7 @@ export function SchedulerPanel({
       </div>
 
       <details className="vk-autopost-advanced">
-        <summary>Настройки публикации</summary>
+        <summary>Параметры</summary>
         <div className="vk-autopost-advanced__body">
           <section className="vk-advanced-group">
             <h3>Быстро</h3>
