@@ -465,6 +465,7 @@ export class GlobalSpammerIntelligenceService {
         userId,
         input,
         observedAt: now,
+        activeSuppression,
       });
     }
 
@@ -887,11 +888,7 @@ export class GlobalSpammerIntelligenceService {
         },
       }),
       this.prisma.globalSpammer.count({
-        where: {
-          expiresAt: {
-            lte: now,
-          },
-        },
+        where: this.buildExpiredRegistryWhere(now),
       }),
       this.prisma.globalSpammerArchive.count(),
     ]);
@@ -936,23 +933,16 @@ export class GlobalSpammerIntelligenceService {
   ): Promise<GlobalSpammerArchiveExpiredResult> {
     const now = params.now ?? new Date();
     const limit = Math.max(1, Math.min(params.limit ?? 1000, 5000));
+    const expiredWhere = this.buildExpiredRegistryWhere(now);
     const expiredRows = await this.prisma.globalSpammer.findMany({
-      where: {
-        expiresAt: {
-          lte: now,
-        },
-      },
+      where: expiredWhere,
       orderBy: [{ expiresAt: 'asc' }, { lastDetectedAt: 'asc' }],
       take: limit,
     });
 
     if (params.dryRun || expiredRows.length === 0) {
       const remainingExpired = await this.prisma.globalSpammer.count({
-        where: {
-          expiresAt: {
-            lte: now,
-          },
-        },
+        where: expiredWhere,
       });
       return {
         ok: true,
@@ -990,18 +980,12 @@ export class GlobalSpammerIntelligenceService {
           userId: {
             in: userIds,
           },
-          expiresAt: {
-            lte: now,
-          },
+          ...expiredWhere,
         },
       }),
     ]);
     const remainingExpired = await this.prisma.globalSpammer.count({
-      where: {
-        expiresAt: {
-          lte: now,
-        },
-      },
+      where: expiredWhere,
     });
 
     return {
@@ -1315,6 +1299,21 @@ export class GlobalSpammerIntelligenceService {
     return Boolean(chat?.settings?.deleteSpammersEnabled);
   }
 
+  private buildExpiredRegistryWhere(now: Date): Prisma.GlobalSpammerWhereInput {
+    return {
+      OR: [
+        {
+          expiresAt: null,
+        },
+        {
+          expiresAt: {
+            lte: now,
+          },
+        },
+      ],
+    };
+  }
+
   private async resolveAnyAdminExemption(userId: string, chatId: string | null): Promise<boolean> {
     const row = await this.prisma.adminGlobalSpammerExemption.findFirst({
       where: {
@@ -1510,6 +1509,7 @@ export class GlobalSpammerIntelligenceService {
     userId: string;
     input: GlobalSpammerObservationInput;
     observedAt: Date;
+    activeSuppression: { reason: string } | null;
   }): Promise<void> {
     const graphSignals = this.extractGraphSignals(params.input);
     if (graphSignals.length === 0) {
@@ -1522,6 +1522,7 @@ export class GlobalSpammerIntelligenceService {
         input: params.input,
         signal,
         observedAt: params.observedAt,
+        activeSuppression: params.activeSuppression,
       });
     }
   }
@@ -1531,6 +1532,7 @@ export class GlobalSpammerIntelligenceService {
     input: GlobalSpammerObservationInput;
     signal: ExtractedGraphSignal;
     observedAt: Date;
+    activeSuppression: { reason: string } | null;
   }): Promise<void> {
     const signalHash = this.buildEvidenceHash({
       type: params.signal.signalType,
@@ -1597,6 +1599,8 @@ export class GlobalSpammerIntelligenceService {
       hits: activeSignals.length,
     });
     const graphEvidenceHash = `graph:${params.signal.signalType.toLowerCase()}:${signalHash}`;
+    const suppressedAt = params.activeSuppression ? params.observedAt : null;
+    const suppressionReason = params.activeSuppression?.reason ?? null;
     await this.prisma.spammerObservation.upsert({
       where: {
         userId_source_evidenceHash: {
@@ -1622,6 +1626,8 @@ export class GlobalSpammerIntelligenceService {
         },
         observedAt: params.observedAt,
         expiresAt: new Date(params.observedAt.getTime() + GRAPH_OBSERVATION_TTL_DAYS * DAY_MS),
+        suppressedAt,
+        suppressionReason,
       },
       update: {
         score: graphScore,
@@ -1637,8 +1643,8 @@ export class GlobalSpammerIntelligenceService {
         },
         observedAt: params.observedAt,
         expiresAt: new Date(params.observedAt.getTime() + GRAPH_OBSERVATION_TTL_DAYS * DAY_MS),
-        suppressedAt: null,
-        suppressionReason: null,
+        suppressedAt,
+        suppressionReason,
       },
     });
   }

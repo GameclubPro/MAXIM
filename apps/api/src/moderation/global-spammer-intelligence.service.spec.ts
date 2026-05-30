@@ -427,11 +427,78 @@ describe('GlobalSpammerIntelligenceService', () => {
         userId: {
           in: ['user-expired-1'],
         },
-        expiresAt: {
-          lte: now,
-        },
+        OR: [
+          {
+            expiresAt: null,
+          },
+          {
+            expiresAt: {
+              lte: now,
+            },
+          },
+        ],
       },
     });
+  });
+
+  it('archives nullable legacy registry rows as expired', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    const now = new Date('2026-05-29T12:00:00.000Z');
+    prisma.globalSpammer.findMany.mockResolvedValueOnce([
+      {
+        userId: 'user-legacy-null-expiry',
+        firstDetectedAt: new Date('2026-05-20T12:00:00.000Z'),
+        lastDetectedAt: new Date('2026-05-22T12:00:00.000Z'),
+        detectionsCount: 1,
+        lastReason: 'legacy row',
+        lastChatId: null,
+        lastEvidence: null,
+        confidenceScore: 1,
+        confirmedAt: new Date('2026-05-22T12:00:00.000Z'),
+        expiresAt: null,
+        sourceBreakdown: {},
+      },
+    ]);
+    prisma.globalSpammerArchive.createMany.mockResolvedValueOnce({ count: 1 });
+    prisma.globalSpammer.deleteMany.mockResolvedValueOnce({ count: 1 });
+    prisma.globalSpammer.count.mockResolvedValueOnce(0);
+
+    await expect(service.archiveExpiredRegistryEntries({ now })).resolves.toEqual(
+      expect.objectContaining({
+        scanned: 1,
+        archived: 1,
+        deleted: 1,
+        remainingExpired: 0,
+      }),
+    );
+
+    expect(prisma.globalSpammer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [
+            {
+              expiresAt: null,
+            },
+            {
+              expiresAt: {
+                lte: now,
+              },
+            },
+          ],
+        },
+      }),
+    );
+    expect(prisma.globalSpammerArchive.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            userId: 'user-legacy-null-expiry',
+            expiredAt: null,
+          }),
+        ],
+      }),
+    );
   });
 
   it('down-weights noisy sources with recent false positives', () => {
@@ -541,6 +608,52 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(
       observations.some((row) => row.userId === 'user-graph-2' && row.source === 'GRAPH_DOMAIN'),
     ).toBe(true);
+  });
+
+  it('suppresses graph observations created during an active suppression window', async () => {
+    const { prisma, observations } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-graph-seed',
+      source: 'COMMERCIAL_AD',
+      score: 0.58,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-1',
+      evidence: { excerpt: 'Реклама услуги на https://bad.example/order сегодня' },
+    });
+    await service.recordSuppression({
+      userId: 'user-graph-suppressed',
+      source: 'MANUAL_UNBAN',
+      reason: 'manual false positive',
+    });
+    const result = await service.recordObservation({
+      userId: 'user-graph-suppressed',
+      source: 'COMMERCIAL_AD',
+      score: 0.58,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-2',
+      evidence: { excerpt: 'Реклама услуги на https://bad.example/order сегодня' },
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: 'suppressed',
+        aggregateScore: 0,
+      }),
+    );
+    expect(
+      observations.filter(
+        (row) => row.userId === 'user-graph-suppressed' && row.source.startsWith('GRAPH_'),
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          suppressedAt: expect.any(Date),
+          suppressionReason: 'manual false positive',
+        }),
+      ]),
+    );
   });
 
   it('evaluates the spammer toggle through an explicit policy decision', async () => {
