@@ -893,10 +893,10 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
 function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Автодействие выключено';
+    return 'Бот сейчас не действует';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'Бот удалит сообщение и уберет из чата';
+    return 'Бот удалит и уберет из чата';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK') {
     return 'Только проверка';
@@ -942,27 +942,27 @@ function resolveDiagnosticsVerdictTone(
 function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Пользователь найден в базе, но автоудаление спамеров для этого чата выключено.';
+    return 'Причина: автоудаление спамеров выключено в этом чате.';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'При новом сообщении бот удалит его и уберет пользователя из чата.';
+    return 'Причина: автоудаление спамеров включено в этом чате.';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK' || policy.shadow) {
-    return 'База работает в режиме проверки: бот фиксирует совпадение без удаления.';
+    return 'Причина: база работает в режиме проверки без удаления.';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT' || policy.adminExempt) {
-    return 'Пользователь в исключениях админов, поэтому база спама к нему не применяется.';
+    return 'Причина: пользователь в исключениях админов.';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
-    return 'Пользователь исключен из базы вручную, автоудаление не применяется.';
+    return 'Причина: пользователь исключен из базы вручную.';
   }
   if (policy.registryStatus === 'MEDIUM_REVIEW') {
-    return 'Запись еще не подтверждена. Можно подтвердить спамера или исключить ложное срабатывание.';
+    return 'Причина: запись еще не подтверждена.';
   }
   if (policy.registryStatus === 'EXPIRED') {
-    return 'Срок записи закончился, поэтому автоудаление не применяется.';
+    return 'Причина: срок записи закончился.';
   }
-  return 'Активной записи нет: доступны только диагностические совпадения.';
+  return 'Причина: активной записи нет.';
 }
 
 function resolveDiagnosticsConfidenceScore(
@@ -1142,24 +1142,17 @@ function buildDiagnosticsPolicyDetails(diagnostics: GlobalSpammerUserDiagnostics
 
 function resolveDiagnosticsReviewActions(
   diagnostics: GlobalSpammerUserDiagnostics,
-): Array<{ action: GlobalSpammerReviewAction; label: string; tone: 'accent' | 'danger' }> {
+): Array<{ action: GlobalSpammerReviewAction; label: string; tone: 'danger' }> {
   const status = diagnostics.policy.registryStatus;
   if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
     return [];
   }
 
-  if (status === 'MEDIUM_REVIEW' || diagnostics.candidate?.status === 'PENDING') {
-    return [
-      { action: 'APPROVE', label: 'Подтвердить', tone: 'accent' },
-      { action: 'SUPPRESS', label: 'Исключить', tone: 'danger' },
-    ];
-  }
-
-  if (status === 'ACTIVE_CONFIRMED') {
-    return [{ action: 'SUPPRESS', label: 'Исключить', tone: 'danger' }];
-  }
-
-  if (diagnostics.candidate && diagnostics.candidate.status !== 'SUPPRESSED') {
+  if (
+    status === 'ACTIVE_CONFIRMED' ||
+    status === 'MEDIUM_REVIEW' ||
+    (diagnostics.candidate && diagnostics.candidate.status !== 'SUPPRESSED')
+  ) {
     return [{ action: 'SUPPRESS', label: 'Исключить', tone: 'danger' }];
   }
 
@@ -1169,49 +1162,34 @@ function resolveDiagnosticsReviewActions(
 function resolveDiagnosticsActionHint(
   diagnostics: GlobalSpammerUserDiagnostics,
   reviewActions: ReadonlyArray<{ action: GlobalSpammerReviewAction; label: string }>,
-): string {
+): string | null {
   if (reviewActions.length > 0) {
     return 'Повлияет на будущие проверки.';
   }
-  if (
-    diagnostics.policy.registryStatus === 'SUPPRESSED' ||
-    diagnostics.policy.registryStatus === 'ADMIN_EXEMPT'
-  ) {
-    return 'Пользователь уже исключен из базы спама, автодействия к нему не применяются.';
-  }
-  if (diagnostics.policy.registryStatus === 'EXPIRED') {
-    return 'Запись истекла. Новые совпадения появятся в очереди проверки.';
-  }
-  return 'Ручные мут и бан доступны в карточке нарушения.';
+  void diagnostics;
+  return null;
 }
 
 function countDiagnosticsMatches(diagnostics: GlobalSpammerUserDiagnostics): number {
   return diagnostics.observations.length + diagnostics.graphSignals.length;
 }
 
-function buildDiagnosticsBriefFacts(
-  diagnostics: GlobalSpammerUserDiagnostics,
-): Array<{ label: string; value: string }> {
-  const reason = resolveDiagnosticsReason(diagnostics);
-  const confidence =
-    formatDiagnosticsConfidenceLevel(resolveDiagnosticsConfidenceScore(diagnostics)) ?? 'нет данных';
+function formatDiagnosticsConfidenceLine(diagnostics: GlobalSpammerUserDiagnostics): string {
+  const confidence = formatDiagnosticsConfidenceLevel(resolveDiagnosticsConfidenceScore(diagnostics));
+  return confidence ? `Уверенность ${confidence}` : 'Уверенность не определена';
+}
+
+function formatDiagnosticsMatchLine(diagnostics: GlobalSpammerUserDiagnostics): string | null {
   const matchCount = countDiagnosticsMatches(diagnostics);
-  return [
-    { label: 'Причина', value: reason === '—' ? 'не указана' : formatDisplaySentence(reason) },
-    { label: 'Уверенность', value: confidence },
-    {
-      label: 'Совпадения',
-      value:
-        matchCount > 0
-          ? `${matchCount} ${formatRussianCountLabel(
-              matchCount,
-              'совпадение',
-              'совпадения',
-              'совпадений',
-            )}`
-          : 'нет',
-    },
-  ];
+  if (matchCount <= 0) {
+    return null;
+  }
+  return `${matchCount} ${formatRussianCountLabel(
+    matchCount,
+    'совпадение',
+    'совпадения',
+    'совпадений',
+  )} в базе`;
 }
 
 function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
@@ -1463,9 +1441,8 @@ function SpammerDiagnosticsSheet({
   onReview: (userId: string, action: GlobalSpammerReviewAction) => void;
 }) {
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
-  const briefFacts = diagnostics ? buildDiagnosticsBriefFacts(diagnostics) : [];
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
-  const visibleSignalGroups = signalGroups.slice(0, 3);
+  const visibleSignalGroups = signalGroups.slice(0, 2);
   const hiddenSignalGroupCount = Math.max(0, signalGroups.length - visibleSignalGroups.length);
   const rawSignals = diagnostics
     ? buildDiagnosticsRawSignals(diagnostics)
@@ -1475,6 +1452,8 @@ function SpammerDiagnosticsSheet({
   const reviewActions = diagnostics ? resolveDiagnosticsReviewActions(diagnostics) : [];
   const actionHint = diagnostics ? resolveDiagnosticsActionHint(diagnostics, reviewActions) : null;
   const activeUntil = diagnostics ? resolveDiagnosticsActiveUntil(diagnostics) : null;
+  const confidenceLine = diagnostics ? formatDiagnosticsConfidenceLine(diagnostics) : null;
+  const matchLine = diagnostics ? formatDiagnosticsMatchLine(diagnostics) : null;
   const isReviewing = Boolean(reviewingAction);
   const technicalDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const hasTechnicalDetails =
@@ -1537,7 +1516,7 @@ function SpammerDiagnosticsSheet({
       id="spammer-diagnostics-sheet"
       open={open}
       title={target?.displayName ?? 'База спама'}
-      summary={target?.userId ? formatUserReference(target.userId) : ''}
+      summary={target?.userId ? `ID ${target.userId}` : ''}
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
@@ -1567,21 +1546,12 @@ function SpammerDiagnosticsSheet({
               <span>{resolveDiagnosticsAutoAction(diagnostics)}</span>
             </div>
             <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
-            <dl className="spammer-diagnostics__brief">
-              {briefFacts.map((fact) => (
-                <div key={fact.label}>
-                  <dt>{fact.label}</dt>
-                  <dd>{fact.value}</dd>
-                </div>
-              ))}
-            </dl>
-            {activeUntil ? <small>{activeUntil}</small> : null}
-          </article>
-
-          {visibleSignalGroups.length > 0 ? (
-            <section className="spammer-diagnostics__signals-list" aria-label="Почему попал в базу">
-              <h4>Почему попал в базу</h4>
-              <div className="spammer-diagnostics__signal-rows">
+            <div className="spammer-diagnostics__evidence">
+              {confidenceLine ? <span>{confidenceLine}</span> : null}
+              {matchLine ? <small>{matchLine}</small> : null}
+            </div>
+            {visibleSignalGroups.length > 0 ? (
+              <div className="spammer-diagnostics__signal-rows" aria-label="Совпадения в базе">
                 {visibleSignalGroups.map((group) => (
                   <div key={group.key} className="spammer-diagnostics__signal-row">
                     <span>{formatDiagnosticsSignalSummary(group)}</span>
@@ -1599,8 +1569,9 @@ function SpammerDiagnosticsSheet({
                   </small>
                 ) : null}
               </div>
-            </section>
-          ) : null}
+            ) : null}
+            {activeUntil ? <small>{activeUntil}</small> : null}
+          </article>
 
           {hasTechnicalDetails ? (
             <details
