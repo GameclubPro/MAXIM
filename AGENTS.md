@@ -33,7 +33,7 @@
   - local runtime rollback wrapper: `./infra/scripts/vps-connect.sh rollback-runtime <git-ref> [services...]`
   - direct VPS deploy script, from the VPS host only: `./infra/scripts/vps-pull-build-up.sh main [services...]`
   - direct runtime rollback script, from the VPS host only: `./infra/scripts/vps-runtime-rollback.sh <git-ref> [services...]`
-- `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default. Use `--include-agents` only when you intentionally want to commit agent-note changes.
+- `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default. Use `--include-agents` only when you intentionally want to commit agent-note changes. In a dirty tree it stages tracked changes broadly, so for partial commits use explicit `git add <paths> && git commit && git push`.
 - Rebuild only changed services. In practice that is usually `miniapp-static` and/or the shared API image.
 - If shared API code or `packages/contracts` changed, recreate every prod API role that uses that image:
   - `api-ingress`
