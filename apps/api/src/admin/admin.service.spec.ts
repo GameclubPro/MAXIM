@@ -22585,10 +22585,9 @@ describe('AdminService.sendBroadcast', () => {
     expect(replyText).toContain('Чат: <a href="https://max.ru/chats/chat-1">Команда MAX</a>');
     expect(replyText).toContain('<a href="max://user/user-2">Иван &lt;script&gt;</a>');
     expect(replyText).toContain('Комментарий: Ответ с &lt;тегом&gt;');
-    expect(replyText).toContain('https://max.ru/777000_bot?startapp=');
-    expect(replyText).toContain(
-      '<a href="https://max.ru/chats/chat-1/message/bot-copy-1">Открыть пост</a>',
-    );
+    expect(replyText).not.toContain('<a href="https://max.ru/777000_bot?startapp=');
+    expect(replyText).not.toContain('>Открыть комментарии</a>');
+    expect(replyText).not.toContain('>Открыть пост</a>');
     expect(replyOptions.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
     expect(replyOptions.buttons[1][0].url).toBe(
       'https://max.ru/chats/chat-1/message/bot-copy-1',

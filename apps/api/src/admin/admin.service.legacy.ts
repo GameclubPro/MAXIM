@@ -18062,10 +18062,6 @@ export class AdminService implements OnModuleDestroy {
       `${entityLabel}: ${entityTarget}`,
       `${params.kind === 'reply' ? 'Ответил' : 'Автор'}: ${authorLink}`,
       `Комментарий: ${escapeHtml(params.preview)}`,
-      `<a href="${escapeHtmlAttribute(params.dialogUrl)}">Открыть комментарии</a>`,
-      ...(params.postUrl
-        ? [`<a href="${escapeHtmlAttribute(params.postUrl)}">Открыть пост</a>`]
-        : []),
     ].join('\n');
   }
 
