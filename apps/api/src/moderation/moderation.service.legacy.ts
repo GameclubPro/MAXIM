@@ -7610,12 +7610,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const rulesButtonReferences = await this.loadRulesButtonReferenceMap(
         nightModeChats.map((settings) => settings.chatId),
       );
-
-      for (const [index, settings] of nightModeChats.entries()) {
-        if (index > 0) {
+      let scheduledNoticeDispatches = 0;
+      const throttleScheduledNoticeDispatch = async () => {
+        if (scheduledNoticeDispatches > 0) {
           await this.sleep(this.nightModeScheduledNoticeSpacingMs);
         }
+        scheduledNoticeDispatches += 1;
+      };
 
+      for (const settings of nightModeChats) {
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
         const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
         const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
@@ -7669,6 +7672,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
               rulesPublishedUrl: rulesButtonReference?.publishedUrl ?? null,
               rulesPublishedMessageId: rulesButtonReference?.publishedMessageId ?? null,
+              beforeDelivery: throttleScheduledNoticeDispatch,
               reason: 'Night mode notice sent by schedule',
             });
           } catch (error: unknown) {
@@ -7730,6 +7734,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             botSpeechStyle: settings.botSpeechStyle,
             nightModeOpenMessageEnabled: settings.nightModeOpenMessageEnabled,
             nightModeOpenMessageText: settings.nightModeOpenMessageText,
+            beforeDelivery: throttleScheduledNoticeDispatch,
           });
         } catch (error: unknown) {
           this.logger.warn(
@@ -13011,6 +13016,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedUrl?: string | null;
     rulesPublishedMessageId?: string | null;
     sessionMoment?: 'current' | 'start';
+    beforeDelivery?: () => Promise<void>;
     reason: string;
     sourceMessageId?: string;
   }): Promise<void> {
@@ -13051,6 +13057,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
       let noticeMessageId: string | null = null;
       try {
+        await params.beforeDelivery?.();
         noticeMessageId = await this.sendScheduledBotMessage({
           chatId: params.chatId,
           text: messageText,
@@ -13113,6 +13120,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     nightModeOpenMessageEnabled: boolean;
     nightModeOpenMessageText: string;
+    beforeDelivery?: () => Promise<void>;
   }): Promise<void> {
     const noticeLockKey = this.buildNightModeNoticeLockKey(
       params.chatId,
@@ -13144,6 +13152,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let closedNoticeDeleted = false;
       if (closedNoticeMessageId) {
         try {
+          await params.beforeDelivery?.();
           await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId, {
             immediate: true,
             ...(closedNoticeBotId ? { botId: closedNoticeBotId } : {}),
@@ -13183,6 +13192,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
 
         try {
+          if (!closedNoticeMessageId) {
+            await params.beforeDelivery?.();
+          }
           reopenNoticeMessageId = await this.sendScheduledBotMessage({
             chatId: params.chatId,
             text: messageText,

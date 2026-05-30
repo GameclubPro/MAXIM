@@ -338,6 +338,33 @@ function createSettings(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createScheduledNightModeSettings(overrides: Record<string, unknown> = {}) {
+  return {
+    chatId: 'chat-1',
+    botSpeechStyle: null,
+    deleteBotMessagesEnabled: false,
+    deleteBotMessagesDelayMinutes: 2,
+    nightModeStartTimeMinutes: 23 * 60,
+    nightModeEndTimeMinutes: 8 * 60,
+    nightModeTimezone: 'Europe/Moscow',
+    nightModeBotMessageEnabled: true,
+    nightModeBotMessageText: '',
+    commentsEnabled: false,
+    nightModeCommentsEnabled: false,
+    nightModeOpenMessageEnabled: true,
+    nightModeOpenMessageText: '',
+    nightModeBotButtons: [],
+    nightModeBotButtonEnabled: false,
+    nightModeBotButtonUrl: '',
+    nightModeBotButtonText: 'Открыть',
+    nightModeRulesButtonEnabled: false,
+    nightModeForceCloseEnabled: false,
+    nightModeForceCloseForever: false,
+    nightModeForceCloseUntil: '',
+    ...overrides,
+  };
+}
+
 function createUpdate(): MaxUpdate {
   return {
     updateId: 'upd-1',
@@ -6998,6 +7025,145 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('does not delay the first due scheduled night notice behind inactive chats', async () => {
+    const currentMinutes = 10 * 60 + 15;
+    const inactiveChats = Array.from({ length: 5 }, (_, index) =>
+      createScheduledNightModeSettings({
+        chatId: `chat-inactive-${index + 1}`,
+        nightModeStartTimeMinutes: 12 * 60,
+        nightModeEndTimeMinutes: 13 * 60,
+      }),
+    );
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          ...inactiveChats,
+          createScheduledNightModeSettings({
+            chatId: 'chat-due-1',
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+          }),
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'msg-night-close-1',
+        url: null,
+      }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const serviceInternals = service as unknown as {
+      getCurrentMinutesInTimeZone: (timeZone: string) => number | null;
+      processNightModeAnnouncements: () => Promise<void>;
+      sleep: (ms: number) => Promise<void>;
+    };
+    serviceInternals.getCurrentMinutesInTimeZone = jest.fn(() => currentMinutes);
+    serviceInternals.sleep = jest.fn().mockResolvedValue(undefined);
+
+    await serviceInternals.processNightModeAnnouncements();
+
+    expect(serviceInternals.sleep).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-due-1',
+      expect.stringContaining('Ночной патруль на линии'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
+  });
+
+  it('keeps scheduled night notice spacing between actual dispatches', async () => {
+    const currentMinutes = 10 * 60 + 15;
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          createScheduledNightModeSettings({
+            chatId: 'chat-due-1',
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+          }),
+          createScheduledNightModeSettings({
+            chatId: 'chat-due-2',
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+          }),
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValueOnce({
+          messageId: 'msg-night-close-1',
+          url: null,
+        })
+        .mockResolvedValueOnce({
+          messageId: 'msg-night-close-2',
+          url: null,
+        }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const serviceInternals = service as unknown as {
+      getCurrentMinutesInTimeZone: (timeZone: string) => number | null;
+      processNightModeAnnouncements: () => Promise<void>;
+      sleep: jest.Mock<Promise<void>, [number]>;
+    };
+    serviceInternals.getCurrentMinutesInTimeZone = jest.fn(() => currentMinutes);
+    serviceInternals.sleep = jest.fn().mockResolvedValue(undefined);
+
+    await serviceInternals.processNightModeAnnouncements();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(serviceInternals.sleep).toHaveBeenCalledTimes(1);
+    expect(serviceInternals.sleep).toHaveBeenCalledWith(150);
+    expect(maxClient.sendMessageImmediateWithId.mock.invocationCallOrder[0]).toBeLessThan(
+      serviceInternals.sleep.mock.invocationCallOrder[0],
+    );
+    expect(serviceInternals.sleep.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.sendMessageImmediateWithId.mock.invocationCallOrder[1],
+    );
   });
 
   it('sends scheduled night closed notice once per active window', async () => {
