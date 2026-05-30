@@ -508,6 +508,137 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'custom knitted slippers service from twelve hour audit miss',
+    text: `Всем привет! Меня зовут Аня, я вяжу на заказ крутые мягкие домашние тапочки на войлочной подошве, которые не порвутся после нескольких стирок. Два вида подошвы: экокожа до 45, резина до 41 размера. Открытый и закрытый носик. Отправляю по всей России. Все вопросы по телефону +7 900 000 00 92.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:на заказ',
+      'service-specialty:custom-handmade-order',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'paid survey referral from twelve hour audit miss',
+    text: `Присоединяйся к Анкетке и зарабатывай на опросах! https://www.anketka.ru/referral/16481224`,
+    expectedSubtype: 'GROUP_PROMOTION',
+    reviewRecommended: false,
+    expectedSignals: [
+      'business:paid-survey-referral',
+      'group-promo:присоединяйся',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'construction multi service from twelve hour audit miss',
+    text: `Здравствуйте! Построим без переплаты: беседки, гаражи, пристройки, веранды, теплицы. Фасад, кровля, обшивка, отделка любым материалом. Строительство фундамента, установка заборов, сварочные работы, демонтаж старых сооружений. Телефон +7 900 000 00 93.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['intent:construction-multi-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 81,
+    },
+  },
+  {
+    label: 'building sheet stock campaign from twelve hour audit miss',
+    text: `НОВЫЕ ПРОФЛИСТЫ! 2 метра. Коричневый. Двухсторонний. Одна сторона матовая, другая глянец. Количество 46 листов. Цена 1200 руб лист. При покупке всех привезем бесплатно. Оплата на месте. Телефон +7 900 000 00 94.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'goods-retail:building-material-sheet-stock',
+      'contact:phone',
+      'campaign:cross-chat-text',
+    ],
+    campaignContext: {
+      senderDistinctChatCount: 4,
+      sameTextDistinctChatCount: 4,
+      repeatedPhoneDistinctChatCount: 4,
+      repeatedLinkDistinctChatCount: 0,
+      nearTextDistinctChatCount: 4,
+      repeatedDomainDistinctChatCount: 0,
+      repeatedHandleDistinctChatCount: 0,
+      senderDistinctChatCount30m: 4,
+      senderDistinctChatCount120m: 4,
+    },
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'custom leather goods service from twelve hour audit miss',
+    text: `Из натуральной кожи изготавливаем обложки, бумажники, кошельки, портмоне, мужские ремни, сумки, клатчи и органайзеры. С гравировкой ваш текст, пожелание или фото. По всем вопросам обращаться сюда +7 900 000 00 95, MAX, telegram. Мои работы смотрите в МАХ https://max.ru/u/leatherwork`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:сделаю',
+      'service-specialty:custom-handmade-order',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 81,
+    },
+  },
+  {
+    label: 'warehouse job in Moscow from twelve hour audit miss',
+    text: `Работа в Москве, склад. Бесплатная регистрация, трудовой договор, зарплата каждый месяц, аванс каждую неделю. Работа на складе через ТСД-сканер, сортировка товаров. 120000-200000 рублей. Телефон +7 900 000 00 96.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: true,
+    expectedSignals: ['recruitment:warehouse-job-conditions', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 48,
+      commercialAdsDeleteThreshold: 68,
+    },
+  },
+  {
+    label: 'mobile data package retail from twelve hour audit miss',
+    text: `Продам ГИГАБАЙТЫ Теле2. 5 гб - 70 рублей, 10 гб - 100 рублей, 20 гб - 200 рублей, 30 гб - 300 рублей. Обращаться в лс +7 900 000 00 97.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'goods-retail:mobile-data-package-retail',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 56,
+    },
+  },
+  {
+    label: 'kizlyar knives retail catalog from twelve hour audit miss',
+    text: `КИЗЛЯРСКИЕ НОЖИ - легенда ручной ковки. Что предлагаем: охотничьи ножи, кинжалы, шашки, шашлычные наборы. Где купить: в МАХ https://max.ru/join/kizlyar, Telegram https://t.me/kizlyar, WhatsApp заказ https://wa.me/79000000098. Телефон +7 900 000 00 98.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: true,
+    expectedSignals: [
+      'goods-retail:knife-retail-catalog',
+      'deal-channel:link',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
     label: 'kitchen worker vacancy with adjective role from last six hour audit',
     text: `Срочно требуется кухонный работник, объем небольшой, с 8 до 14. Просьба звонить, работу в ленте не просматриваю. Телефон +7 900 000 00 24.`,
     expectedSubtype: 'RECRUITMENT',
@@ -1794,6 +1925,42 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'non promotional accounting report mention from false-positive regression pack',
     text: `Бухгалтер сдал отчетность, декларации и налоги вчера, можно больше не переживать.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private child shirt sale from twelve hour clear audit guard',
+    text: `Новая детская футболка лонгслив Синсей, размер 128. Цена 300 ₽. Томск. Пишите в ЛС.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private owner vehicle sale from twelve hour clear audit guard',
+    text: `Улан-Удэ. Продам Тойота 2007 год, собственник я. Машина без вложений, ходовая обслуженная. Цена 650000 ₽, телефон +7 900 000 00 99.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private lamb sale from twelve hour clear audit guard',
+    text: `Продам овечку эдильбаевской породы, возраст 11 месяцев. Цена 22000 руб. Тюменская область, Ялуторовск. Телефон +7 900 000 01 00.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private one off clothes size listing from twelve hour clear audit guard',
+    text: `Костюм двойка. Цена 1850 руб. Размеры 44, 46, 48, 50, 52, 54. Материал сингапур.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
