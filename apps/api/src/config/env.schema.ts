@@ -240,7 +240,6 @@ const envSchema = z.object({
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE: z.coerce.number().int().positive().default(4),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE: z.coerce.number().min(0.5).max(1).default(0.75),
-  NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS: z.coerce.number().int().min(0).default(150),
   ACTION_CONCURRENCY: z.coerce.number().int().positive().default(8),
   CHANNEL_STATS_STARTUP_SYNC_ENABLED: envBoolean(false),
   CHANNEL_STATS_STARTUP_MAX_CHANNELS: z.coerce.number().int().min(0).default(6),
