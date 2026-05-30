@@ -229,6 +229,88 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'office rent commercial space from edge-case audit',
+    text: `Сдам офис 30 м² в деловом центре, первая линия, отдельный вход. Подойдёт под услуги или небольшой шоурум. Звоните: +7 900 000 00 86.`,
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    reviewRecommended: false,
+    expectedSignals: ['intent:сдам', 'property-commercial:commercial-space', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'warehouse rent commercial space from edge-case audit',
+    text: `Аренда склада 120 м², тёплый бокс, ворота под газель, круглосуточный доступ. Телефон +7 900 000 00 87.`,
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    reviewRecommended: false,
+    expectedSignals: ['intent:аренда', 'property-commercial:commercial-space', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'passive trading space rent from edge-case audit',
+    text: `Сдаётся торговое помещение 45 м², первая линия, отдельный вход, 60 000 руб/мес. Звоните +7 900 000 00 88.`,
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    reviewRecommended: false,
+    expectedSignals: ['property-commercial:commercial-space', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'ready business sale from edge-case audit',
+    text: `Продажа готового бизнеса: кофейня в центре, оборудование остаётся, выручка подтверждена. Цена 1 200 000 руб, звоните +7 900 000 00 89.`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: false,
+    expectedSignals: ['business:business-sale', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'spaced letters retail offer from edge-case audit',
+    text: `П Р О Д А Е М мебель от производителя. Каталог, доставка по городу, оплата при получении. Телефон +7 900 000 00 90.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:продаем',
+      'goods-retail:manufacturer',
+      'goods-retail:order-flow',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'punctuated letters retail offer from edge-case audit',
+    text: `П.Р.О.Д.А.Е.М мебель от производителя. Каталог, доставка по городу, оплата при получении. Телефон +7 900 000 00 91.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:продаем',
+      'goods-retail:manufacturer',
+      'goods-retail:order-flow',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'bike sales with delivery from production logs',
     text: `В продаже новые велосипеды. Цены от 15 000 р. Возможна доставка. В наличии разные размеры и цвета. Пишите или звоните, отвечу на все вопросы, скину подробные фото и видео. Телефон +7 900 000 00 08.`,
     expectedSubtype: 'GOODS_RETAIL',
@@ -1611,6 +1693,42 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 45,
       commercialAdsDeleteThreshold: 65,
+    },
+  },
+  {
+    label: 'office rent search request from edge-case false-positive guard',
+    text: `Сниму офис или кабинет для занятий на пару дней в неделю, недорого. Контакты можно в лс.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'office coworking recommendation request from edge-case false-positive guard',
+    text: `Подскажите, кто сдаёт офис или переговорку для коворкинга на пару часов? Нужен проверенный вариант.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'spaced letters private bicycle sale from edge-case false-positive guard',
+    text: `П Р О Д А М свой велосипед б/у после одного сезона. Цена 3500 руб, самовывоз.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'punctuated letters private sofa sale from edge-case false-positive guard',
+    text: `П.Р.О.Д.А.М свой диван б/у после переезда. Цена 8000 руб, самовывоз.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
     },
   },
 ];

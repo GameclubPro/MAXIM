@@ -15,6 +15,7 @@ import {
   CommercialSecondStageScorer,
   hasStrongCommercialCampaignEvidence,
 } from './commercial-scorer';
+import { normalizeCommercialText } from './commercial-normalization';
 import { classifyCommercialDetection } from './commercial-subtypes';
 import type { CommercialLegacyEvidenceStrength } from './commercial.types';
 
@@ -72,7 +73,8 @@ export class CommercialAdDetector {
     settings: ChatSettings;
     commercialCampaignContext?: CommercialCampaignContext | null;
   }): CommercialDetection | null {
-    const { normalizedText, rawLoweredText, settings, commercialCampaignContext } = params;
+    const { rawLoweredText, settings, commercialCampaignContext } = params;
+    const normalizedText = normalizeCommercialText(params.normalizedText);
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;

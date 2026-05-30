@@ -115,6 +115,7 @@ describe('commercial deterministic benchmark', () => {
     const subtypeMisses: string[] = [];
     const deleteWithoutStrongEvidence: string[] = [];
     const deleteFalsePositives: string[] = [];
+    const missingExpectedSignals: string[] = [];
     const missingRequiredAnchors: string[] = [];
     const unsafeDeleteActions: string[] = [];
     const bySubtype = new Map<string, number>();
@@ -154,6 +155,12 @@ describe('commercial deterministic benchmark', () => {
 
       const matchedSignals = readStringArray(metadata.matchedSignals);
       const negativeSignals = readStringArray(metadata.negativeSignals);
+      const expectedSignalsMissing = item.expectedSignals.filter(
+        (signal) => !matchedSignals.includes(signal),
+      );
+      if (expectedSignalsMissing.length > 0) {
+        missingExpectedSignals.push(`${item.label}: missing=${expectedSignalsMissing.join(',')}`);
+      }
       const featureVector = buildCommercialFeatureVector(matchedSignals, negativeSignals);
       if (typedSubtype) {
         const anchorAudit = auditCommercialRequiredAnchors({
@@ -253,6 +260,7 @@ describe('commercial deterministic benchmark', () => {
     expect(deleteFalsePositives).toEqual([]);
     expect(deleteWithoutStrongEvidence).toEqual([]);
     expect(unsafeDeleteActions).toEqual([]);
+    expect(missingExpectedSignals).toEqual([]);
     expect(missingRequiredAnchors).toEqual([]);
   });
 
