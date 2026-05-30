@@ -103,6 +103,7 @@ export async function publishChannelEngagementMessage(params: {
   let updatedExisting = false;
   let recreatedFromMessageId: string | null = null;
   let publishedAt = persistedSettings.engagementPublishedAt ?? null;
+  let publishedUrl: string | null = null;
 
   if (messageId) {
     try {
@@ -157,6 +158,7 @@ export async function publishChannelEngagementMessage(params: {
             options,
           );
       messageId = published.messageId;
+      publishedUrl = published.url ?? null;
     } catch (error: unknown) {
       const maxApiMessage = extractMaxApiErrorMessage(error);
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать пост с кнопками.');
@@ -195,6 +197,7 @@ export async function publishChannelEngagementMessage(params: {
         suggestPayload,
         suggestUrl,
         suggestionEntryMode,
+        ...(publishedUrl ? { publishedUrl } : {}),
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       },
     },

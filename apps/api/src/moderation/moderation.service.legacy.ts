@@ -15106,6 +15106,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'edit_message';
     let replacementMessageId: string | null = null;
     let replyMessageId: string | null = null;
+    let publishedUrl: string | null = null;
     let originalDeleted = false;
 
     try {
@@ -15128,6 +15129,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           mutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
+        publishedUrl = sent.url ?? null;
         deliveryMode = 'replace_with_bot_message';
 
         try {
@@ -15259,6 +15261,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deliveryMode,
           linkType,
           replacementMessageId,
+          ...(publishedUrl ? { publishedUrl } : {}),
           ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
           source,
@@ -15540,6 +15543,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'edit_message';
     let replacementMessageId: string | null = null;
     let replyMessageId: string | null = null;
+    let publishedUrl: string | null = null;
     let originalDeleted = false;
 
     if (senderIsAdmin) {
@@ -15558,6 +15562,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           mutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
+        publishedUrl = sent.url ?? null;
         deliveryMode = 'replace_with_bot_message';
       } catch (error: unknown) {
         const status = this.extractStatusCode(error);
@@ -15606,6 +15611,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             source: 'webhook',
             deliveryMode,
             replacementMessageId,
+            ...(publishedUrl ? { publishedUrl } : {}),
             originalDeleted,
             ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           },
@@ -15687,6 +15693,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           source: 'webhook',
           deliveryMode,
           ...(replacementMessageId ? { replacementMessageId } : {}),
+          ...(publishedUrl ? { publishedUrl } : {}),
           ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
           ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),

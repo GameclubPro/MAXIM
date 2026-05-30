@@ -49,6 +49,7 @@ type AdminServicePrivateAccess = {
     authorDisplayName: string | null;
     preview: string;
     dialogUrl: string;
+    postUrl: string | null;
   }) => string;
 };
 
@@ -22478,6 +22479,23 @@ describe('AdminService.sendBroadcast', () => {
         mode: 'ALL',
       },
     ]);
+    prisma.auditLog.findMany.mockImplementation(async (args: any) => {
+      if (args?.take === 5) {
+        return [
+          {
+            action: 'AUTO_ATTACH_CHAT_COMMENTS',
+            payload: {
+              threadId: 'chat-thread-notify-replies',
+              publishedUrl: 'https://max.ru/chats/chat-1/message/bot-copy-1',
+              deliveryMode: 'replace_with_bot_message',
+              replacementMessageId: 'mid-bot-copy-1',
+            },
+          },
+        ];
+      }
+
+      return [];
+    });
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -22539,7 +22557,15 @@ describe('AdminService.sendBroadcast', () => {
       expect.stringContaining('Вам ответили в комментариях'),
       expect.objectContaining({
         textFormat: 'html',
-        buttons: [[expect.objectContaining({ text: 'Открыть комментарии' })]],
+        buttons: [
+          [expect.objectContaining({ text: 'Открыть комментарии' })],
+          [
+            expect.objectContaining({
+              text: 'Открыть пост',
+              url: 'https://max.ru/chats/chat-1/message/bot-copy-1',
+            }),
+          ],
+        ],
       }),
       expect.objectContaining({
         trafficClass: 'background',
@@ -22560,7 +22586,13 @@ describe('AdminService.sendBroadcast', () => {
     expect(replyText).toContain('<a href="max://user/user-2">Иван &lt;script&gt;</a>');
     expect(replyText).toContain('Комментарий: Ответ с &lt;тегом&gt;');
     expect(replyText).toContain('https://max.ru/777000_bot?startapp=');
+    expect(replyText).toContain(
+      '<a href="https://max.ru/chats/chat-1/message/bot-copy-1">Открыть пост</a>',
+    );
     expect(replyOptions.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(replyOptions.buttons[1][0].url).toBe(
+      'https://max.ru/chats/chat-1/message/bot-copy-1',
+    );
     expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
       'user-2',
       expect.anything(),
@@ -22594,6 +22626,7 @@ describe('AdminService.sendBroadcast', () => {
       authorDisplayName: 'Иван',
       preview: 'Комментарий',
       dialogUrl: 'https://max.ru/777000_bot?startapp=comments',
+      postUrl: null,
     });
 
     expect(text).toContain(

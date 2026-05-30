@@ -565,6 +565,7 @@ describe('ModerationService channel auto post buttons', () => {
             deliveryMode: 'replace_with_bot_message',
             linkType: 'forward',
             replacementMessageId: 'mid-forward-copy-1',
+            publishedUrl: 'https://max.ru/chats/channel-1/message/1001',
             originalDeleted: true,
           }),
         }),

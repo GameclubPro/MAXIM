@@ -775,6 +775,7 @@ export class VkPublishService {
           chatId: post.chatId,
           actorUserId: params.actorUserId,
           messageId: result.messageId,
+          publishedUrl: result.url,
           engagementContext,
           botId,
         });
@@ -840,6 +841,7 @@ export class VkPublishService {
     chatId: string;
     actorUserId: string;
     messageId: string;
+    publishedUrl?: string | null;
     engagementContext: Awaited<
       ReturnType<AdminService['buildChannelPublicationEngagementContext']>
     >;
@@ -850,6 +852,7 @@ export class VkPublishService {
         chatId: params.chatId,
         actorUserId: params.actorUserId,
         messageId: params.messageId,
+        publishedUrl: params.publishedUrl,
         context: params.engagementContext,
         source: 'vk_parsing',
         botId: params.botId,

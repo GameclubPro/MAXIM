@@ -893,10 +893,10 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
 function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Автодействие выключено';
+    return 'Бот сейчас не действует';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'Бот удалит сообщение и уберет из чата';
+    return 'Бот удалит и уберет из чата';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK') {
     return 'Только проверка';
@@ -942,7 +942,7 @@ function resolveDiagnosticsVerdictTone(
 function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Пользователь найден в базе, но автоудаление спамеров для этого чата выключено.';
+    return 'Причина: автоудаление спамеров выключено в этом чате.';
   }
   if (policy.action === 'DELETE_AND_KICK') {
     return 'При новом сообщении бот удалит его и уберет пользователя из чата.';
@@ -1169,49 +1169,34 @@ function resolveDiagnosticsReviewActions(
 function resolveDiagnosticsActionHint(
   diagnostics: GlobalSpammerUserDiagnostics,
   reviewActions: ReadonlyArray<{ action: GlobalSpammerReviewAction; label: string }>,
-): string {
+): string | null {
   if (reviewActions.length > 0) {
     return 'Повлияет на будущие проверки.';
   }
-  if (
-    diagnostics.policy.registryStatus === 'SUPPRESSED' ||
-    diagnostics.policy.registryStatus === 'ADMIN_EXEMPT'
-  ) {
-    return 'Пользователь уже исключен из базы спама, автодействия к нему не применяются.';
-  }
-  if (diagnostics.policy.registryStatus === 'EXPIRED') {
-    return 'Запись истекла. Новые совпадения появятся в очереди проверки.';
-  }
-  return 'Ручные мут и бан доступны в карточке нарушения.';
+  void diagnostics;
+  return null;
 }
 
 function countDiagnosticsMatches(diagnostics: GlobalSpammerUserDiagnostics): number {
   return diagnostics.observations.length + diagnostics.graphSignals.length;
 }
 
-function buildDiagnosticsBriefFacts(
-  diagnostics: GlobalSpammerUserDiagnostics,
-): Array<{ label: string; value: string }> {
-  const reason = resolveDiagnosticsReason(diagnostics);
-  const confidence =
-    formatDiagnosticsConfidenceLevel(resolveDiagnosticsConfidenceScore(diagnostics)) ?? 'нет данных';
+function formatDiagnosticsConfidenceLine(diagnostics: GlobalSpammerUserDiagnostics): string {
+  const confidence = formatDiagnosticsConfidenceLevel(resolveDiagnosticsConfidenceScore(diagnostics));
+  return confidence ? `Уверенность ${confidence}` : 'Уверенность не определена';
+}
+
+function formatDiagnosticsMatchLine(diagnostics: GlobalSpammerUserDiagnostics): string | null {
   const matchCount = countDiagnosticsMatches(diagnostics);
-  return [
-    { label: 'Причина', value: reason === '—' ? 'не указана' : formatDisplaySentence(reason) },
-    { label: 'Уверенность', value: confidence },
-    {
-      label: 'Совпадения',
-      value:
-        matchCount > 0
-          ? `${matchCount} ${formatRussianCountLabel(
-              matchCount,
-              'совпадение',
-              'совпадения',
-              'совпадений',
-            )}`
-          : 'нет',
-    },
-  ];
+  if (matchCount <= 0) {
+    return null;
+  }
+  return `${matchCount} ${formatRussianCountLabel(
+    matchCount,
+    'совпадение',
+    'совпадения',
+    'совпадений',
+  )} в базе`;
 }
 
 function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {

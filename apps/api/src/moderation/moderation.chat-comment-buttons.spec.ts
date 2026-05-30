@@ -179,6 +179,7 @@ describe('ModerationService chat comment buttons', () => {
           payload: expect.objectContaining({
             deliveryMode: 'replace_with_bot_message',
             replacementMessageId: 'mid-bot-copy-1',
+            publishedUrl: 'https://max.ru/chats/chat-1/message/bot-copy-1',
             originalDeleted: true,
           }),
         }),
