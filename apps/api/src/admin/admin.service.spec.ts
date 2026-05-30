@@ -48,6 +48,7 @@ type AdminServicePrivateAccess = {
     authorUserId: string;
     authorDisplayName: string | null;
     preview: string;
+    postPreview: string | null;
     dialogUrl: string;
     postUrl: string | null;
   }) => string;
@@ -22486,6 +22487,7 @@ describe('AdminService.sendBroadcast', () => {
             action: 'AUTO_ATTACH_CHAT_COMMENTS',
             payload: {
               threadId: 'chat-thread-notify-replies',
+              text: 'Первая строка поста <важно>\nВторая строка поста',
               publishedUrl: 'https://max.ru/chats/chat-1/message/bot-copy-1',
               deliveryMode: 'replace_with_bot_message',
               replacementMessageId: 'mid-bot-copy-1',
@@ -22583,6 +22585,7 @@ describe('AdminService.sendBroadcast', () => {
       maxClient.sendMessageImmediateToUser.mock.calls[0] ?? [];
     expect(replyUserId).toBe('user-1');
     expect(replyText).toContain('Чат: <a href="https://max.ru/chats/chat-1">Команда MAX</a>');
+    expect(replyText).toContain('Пост: Первая строка поста &lt;важно&gt;');
     expect(replyText).toContain('<a href="max://user/user-2">Иван &lt;script&gt;</a>');
     expect(replyText).toContain('Комментарий: Ответ с &lt;тегом&gt;');
     expect(replyText).not.toContain('<a href="https://max.ru/777000_bot?startapp=');
@@ -22624,6 +22627,7 @@ describe('AdminService.sendBroadcast', () => {
       authorUserId: 'user-2',
       authorDisplayName: 'Иван',
       preview: 'Комментарий',
+      postPreview: null,
       dialogUrl: 'https://max.ru/777000_bot?startapp=comments',
       postUrl: null,
     });

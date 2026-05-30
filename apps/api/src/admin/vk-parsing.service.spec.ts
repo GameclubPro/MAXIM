@@ -3290,6 +3290,7 @@ describe('VkParsingService', () => {
       chatId: 'channel-1',
       actorUserId: '183470701',
       messageId: 'mid-1',
+      text: 'Мой текст',
       publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
       context: engagementContext,
       source: 'vk_parsing',

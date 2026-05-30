@@ -10151,12 +10151,13 @@ export class AdminService implements OnModuleDestroy {
     chatId: string;
     actorUserId: string;
     messageId: string;
+    text?: string | null;
     publishedUrl?: string | null;
     context: ChannelPublicationEngagementContext;
     source: string;
     botId?: string | null;
   }): Promise<void> {
-    const { chatId, actorUserId, messageId, publishedUrl, context, source, botId } = params;
+    const { chatId, actorUserId, messageId, text, publishedUrl, context, source, botId } = params;
     if (
       !messageId.trim() ||
       !context.threadId ||
@@ -10178,6 +10179,7 @@ export class AdminService implements OnModuleDestroy {
           autoPostButtonsMode: context.autoPostButtonsMode,
           suggestionEntryMode: context.suggestionEntryMode,
           source,
+          ...(this.readRawString(text)?.trim() ? { text } : {}),
           ...(publishedUrl ? { publishedUrl } : {}),
           ...(botId ? { botId } : {}),
           ...(context.suggestButtonText ? { suggestButtonText: context.suggestButtonText } : {}),
@@ -17635,13 +17637,16 @@ export class AdminService implements OnModuleDestroy {
       botId: deliveryBotId,
     });
     let postUrl: string | null = null;
+    let postPreview: string | null = null;
     try {
-      postUrl = await this.resolveDialogNotificationPostUrl({
+      const postContext = await this.resolveDialogNotificationPostContext({
         entityType: params.entityType,
         chatId: params.chatId,
         threadId,
         botId: deliveryBotId,
       });
+      postUrl = postContext.url;
+      postPreview = postContext.preview;
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -17692,6 +17697,7 @@ export class AdminService implements OnModuleDestroy {
               authorUserId,
               authorDisplayName: params.authorDisplayName,
               preview,
+              postPreview,
               dialogUrl,
               postUrl,
             }),
@@ -17753,12 +17759,12 @@ export class AdminService implements OnModuleDestroy {
     return this.readTrimmedString(row?.actorUserId);
   }
 
-  private async resolveDialogNotificationPostUrl(params: {
+  private async resolveDialogNotificationPostContext(params: {
     entityType: ManagedEntityType;
     chatId: string;
     threadId: string;
     botId?: string | null;
-  }): Promise<string | null> {
+  }): Promise<{ url: string | null; preview: string | null }> {
     const actions =
       params.entityType === 'channel'
         ? [CHANNEL_DIALOG_ACTION_PUBLISH, CHANNEL_DIALOG_ACTION_AUTO_ATTACH]
@@ -17785,11 +17791,26 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
+    let preview: string | null = null;
+    for (const row of rows) {
+      const payload = this.readObjectPayload(row.payload);
+      preview ??= this.buildCommentDialogPostPreview(this.readRawString(payload.text));
+      if (preview) {
+        break;
+      }
+    }
+
     for (const row of rows) {
       const payload = this.readObjectPayload(row.payload);
       const persistedUrl = this.normalizeMaxEntityLink(this.readTrimmedString(payload.publishedUrl));
       if (persistedUrl) {
-        return persistedUrl;
+        if (!preview) {
+          const messageId = this.resolveDialogNotificationPostMessageId(row.action, payload);
+          preview = messageId
+            ? await this.resolveDialogNotificationPostMessagePreview(messageId, params.botId)
+            : null;
+        }
+        return { url: persistedUrl, preview };
       }
     }
 
@@ -17802,11 +17823,12 @@ export class AdminService implements OnModuleDestroy {
 
       const resolvedUrl = await this.resolveDialogNotificationMessageUrl(messageId, params.botId);
       if (resolvedUrl) {
-        return resolvedUrl;
+        preview ??= await this.resolveDialogNotificationPostMessagePreview(messageId, params.botId);
+        return { url: resolvedUrl, preview };
       }
     }
 
-    return null;
+    return { url: null, preview };
   }
 
   private resolveDialogNotificationPostMessageId(
@@ -17851,6 +17873,37 @@ export class AdminService implements OnModuleDestroy {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to resolve comment notification post link',
+      );
+      return null;
+    }
+  }
+
+  private async resolveDialogNotificationPostMessagePreview(
+    messageId: string,
+    botId?: string | null,
+  ): Promise<string | null> {
+    const maxClient = this.maxClient as MaxClientService & {
+      getMessageTextAsMarkdown?: MaxClientService['getMessageTextAsMarkdown'];
+    };
+    if (typeof maxClient.getMessageTextAsMarkdown !== 'function') {
+      return null;
+    }
+
+    try {
+      return this.buildCommentDialogPostPreview(
+        await maxClient.getMessageTextAsMarkdown(messageId, {
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.COMMENT_NOTIFICATION,
+          ...(botId ? { botId } : {}),
+        }),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          messageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve comment notification post preview',
       );
       return null;
     }
@@ -18029,6 +18082,30 @@ export class AdminService implements OnModuleDestroy {
     return 'Комментарий без текста';
   }
 
+  private buildCommentDialogPostPreview(text: string | null): string | null {
+    if (typeof text !== 'string') {
+      return null;
+    }
+
+    for (const line of text.split(/\r\n|\r|\n/u)) {
+      const normalizedLine = line.replace(/\s+/gu, ' ').trim();
+      if (!normalizedLine) {
+        continue;
+      }
+
+      const symbols = Array.from(normalizedLine);
+      if (symbols.length <= COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH) {
+        return normalizedLine;
+      }
+      return `${symbols
+        .slice(0, COMMENT_NOTIFICATION_PREVIEW_MAX_LENGTH - 1)
+        .join('')
+        .trimEnd()}…`;
+    }
+
+    return null;
+  }
+
   private buildCommentDialogNotificationText(params: {
     kind: CommentDialogNotificationKind;
     entityType: ManagedEntityType;
@@ -18037,6 +18114,7 @@ export class AdminService implements OnModuleDestroy {
     authorUserId: string;
     authorDisplayName: string | null;
     preview: string;
+    postPreview: string | null;
     dialogUrl: string;
     postUrl: string | null;
   }): string {
@@ -18060,6 +18138,7 @@ export class AdminService implements OnModuleDestroy {
     return [
       `<strong>${escapeHtml(title)}</strong>`,
       `${entityLabel}: ${entityTarget}`,
+      ...(params.postPreview ? [`Пост: ${escapeHtml(params.postPreview)}`] : []),
       `${params.kind === 'reply' ? 'Ответил' : 'Автор'}: ${authorLink}`,
       `Комментарий: ${escapeHtml(params.preview)}`,
     ].join('\n');
