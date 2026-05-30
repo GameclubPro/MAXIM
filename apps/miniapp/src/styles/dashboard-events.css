@@ -1055,37 +1055,85 @@
   gap: 10px;
 }
 
-.spammer-diagnostics__summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.spammer-diagnostics__summary article {
-  display: grid;
-  gap: 4px;
-  min-height: 58px;
-  padding: 10px;
+.spammer-diagnostics__verdict,
+.spammer-diagnostics__facts,
+.spammer-diagnostics__signals,
+.spammer-diagnostics__actions,
+.spammer-diagnostics__technical {
   border: 1px solid rgba(211, 224, 236, 0.86);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.94);
 }
 
-.spammer-diagnostics__summary small,
+.spammer-diagnostics__verdict {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.spammer-diagnostics__verdict--danger {
+  border-color: rgba(228, 83, 99, 0.24);
+  background:
+    linear-gradient(135deg, rgba(255, 239, 242, 0.96), rgba(255, 255, 255, 0.96)),
+    #fff;
+}
+
+.spammer-diagnostics__verdict--warning {
+  border-color: rgba(240, 164, 43, 0.26);
+  background:
+    linear-gradient(135deg, rgba(255, 248, 235, 0.96), rgba(255, 255, 255, 0.96)),
+    #fff;
+}
+
+.spammer-diagnostics__verdict--success {
+  border-color: rgba(39, 181, 124, 0.24);
+  background:
+    linear-gradient(135deg, rgba(231, 250, 242, 0.96), rgba(255, 255, 255, 0.96)),
+    #fff;
+}
+
+.spammer-diagnostics__verdict small,
 .spammer-diagnostics__facts dt,
-.spammer-diagnostics__signals > span {
+.spammer-diagnostics__signals > span,
+.spammer-diagnostics__actions > span,
+.spammer-diagnostics__technical summary,
+.spammer-diagnostics__technical section > span {
   color: #71879b;
   font-size: 0.62rem;
   font-weight: 820;
   line-height: 1.12;
 }
 
-.spammer-diagnostics__summary strong {
+.spammer-diagnostics__verdict strong {
   min-width: 0;
   color: #17324a;
-  font-size: 0.88rem;
+  font-size: 1.02rem;
   line-height: 1.12;
   overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__verdict > span {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid rgba(188, 205, 220, 0.82);
+  border-radius: 999px;
+  background: rgba(247, 250, 253, 0.94);
+  color: #2f4c64;
+  font-size: 0.68rem;
+  font-weight: 840;
+  line-height: 1.05;
+}
+
+.spammer-diagnostics__verdict p {
+  margin: 0;
+  color: #536b80;
+  font-size: 0.76rem;
+  font-weight: 680;
+  line-height: 1.38;
 }
 
 .spammer-diagnostics__facts {
@@ -1093,14 +1141,11 @@
   gap: 7px;
   margin: 0;
   padding: 10px;
-  border: 1px solid rgba(211, 224, 236, 0.86);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
 }
 
 .spammer-diagnostics__facts div {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: minmax(88px, 38%) minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -1118,9 +1163,6 @@
   display: grid;
   gap: 7px;
   padding: 10px;
-  border: 1px solid rgba(211, 224, 236, 0.86);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.94);
 }
 
 .spammer-diagnostics__signals div {
@@ -1141,10 +1183,92 @@
   color: #526a80;
   font-size: 0.64rem;
   font-weight: 780;
-  line-height: 1.05;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__actions {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.spammer-diagnostics__actions div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+  gap: 7px;
+}
+
+.spammer-diagnostics__actions .button {
+  min-height: 36px;
+  padding-inline: 10px;
+  font-size: 0.72rem;
+}
+
+.spammer-diagnostics__actions p {
+  margin: 0;
+  color: #61768a;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.32;
+}
+
+.spammer-diagnostics__technical {
+  padding: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.spammer-diagnostics__technical summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.spammer-diagnostics__technical summary::-webkit-details-marker {
+  display: none;
+}
+
+.spammer-diagnostics__technical summary::after {
+  content: '+';
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(188, 205, 220, 0.82);
+  border-radius: 999px;
+  color: #526a80;
+  background: rgba(246, 250, 253, 0.94);
+}
+
+.spammer-diagnostics__technical[open] summary::after {
+  content: '−';
+}
+
+.spammer-diagnostics__technical section {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
+.spammer-diagnostics__technical ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spammer-diagnostics__technical li {
+  color: #526a80;
+  font-size: 0.67rem;
+  font-weight: 700;
+  line-height: 1.34;
+  overflow-wrap: anywhere;
 }
 
 .events-feed {

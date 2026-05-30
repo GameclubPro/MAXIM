@@ -4263,6 +4263,123 @@ function buildPreviewSpammerDiagnostics(
   userId: string,
 ): GlobalSpammerUserDiagnostics {
   const now = new Date();
+  if (userId === 'preview-spammer-1') {
+    const expiresAt = addDays(now, 30).toISOString();
+    const observedAt = addHours(now, -1).toISOString();
+    const duplicateSignals = [
+      {
+        id: 'preview-registry-observation-1',
+        source: 'FANOUT_HIGH',
+        score: 0.94,
+        confidenceLevel: 'HIGH',
+        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        chatId,
+        observedAt,
+        expiresAt,
+        suppressedAt: null,
+      },
+      {
+        id: 'preview-registry-observation-2',
+        source: 'FANOUT_HIGH',
+        score: 0.91,
+        confidenceLevel: 'HIGH',
+        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        chatId,
+        observedAt: addHours(now, -1.4).toISOString(),
+        expiresAt,
+        suppressedAt: null,
+      },
+      {
+        id: 'preview-registry-observation-3',
+        source: 'GRAPH_FANOUT_PATTERN',
+        score: 0.7,
+        confidenceLevel: 'MEDIUM',
+        reason: 'GRAPH_FANOUT_PATTERN',
+        chatId,
+        observedAt: addHours(now, -2).toISOString(),
+        expiresAt,
+        suppressedAt: null,
+      },
+    ];
+
+    return globalSpammerUserDiagnosticsSchema.parse({
+      userId,
+      chatId,
+      policy: {
+        userId,
+        chatId,
+        trigger: 'diagnostics',
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'NONE',
+        enforcementMode: 'enforce',
+        deleteSpammersEnabled: false,
+        adminExempt: false,
+        shadow: false,
+        wouldEnforce: true,
+        enforced: false,
+        confidenceScore: 0.94,
+        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        expiresAt,
+        sourceBreakdown: {
+          FANOUT_HIGH: { score: 0.94, count: 2 },
+          GRAPH_FANOUT_PATTERN: { score: 0.7, count: 2 },
+          GRAPH_TEXT: { score: 0.56, count: 1 },
+        },
+      },
+      registry: {
+        active: true,
+        expired: false,
+        confidenceScore: 0.94,
+        confirmedAt: addHours(now, -2).toISOString(),
+        confirmedByUserId: null,
+        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        expiresAt,
+        sourceBreakdown: {
+          FANOUT_HIGH: { score: 0.94, count: 2 },
+          GRAPH_FANOUT_PATTERN: { score: 0.7, count: 2 },
+          GRAPH_TEXT: { score: 0.56, count: 1 },
+        },
+      },
+      candidate: null,
+      activeSuppression: null,
+      observations: duplicateSignals,
+      graphSignals: [
+        {
+          signalType: 'FANOUT_PATTERN',
+          source: 'GRAPH_FANOUT_PATTERN',
+          score: 0.68,
+          chatId,
+          observedAt: addHours(now, -1.7).toISOString(),
+          expiresAt,
+        },
+        {
+          signalType: 'TEXT',
+          source: 'GRAPH_TEXT',
+          score: 0.56,
+          chatId,
+          observedAt: addHours(now, -2.2).toISOString(),
+          expiresAt,
+        },
+      ],
+      sourceReputation: [
+        {
+          source: 'FANOUT_HIGH',
+          weight: 0.94,
+          falsePositiveRate: 0.03,
+          observations: 58,
+          suppressed: 2,
+        },
+        {
+          source: 'GRAPH_FANOUT_PATTERN',
+          weight: 0.7,
+          falsePositiveRate: 0.08,
+          observations: 23,
+          suppressed: 2,
+        },
+      ],
+    });
+  }
+
   const candidate = candidates.find((item) => item.userId === userId) ?? null;
   const isApproved = candidate?.status === 'APPROVED' || candidate?.status === 'AUTO_APPROVED';
   const isSuppressed = candidate?.status === 'SUPPRESSED';

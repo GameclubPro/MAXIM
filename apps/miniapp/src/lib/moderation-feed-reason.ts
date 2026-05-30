@@ -104,7 +104,7 @@ function resolveStructuredReason(
   }
 
   if (ruleCode === 'MUTE_ACTIVE_DELETE') {
-    return 'Сообщение отправлено во время активного ограничения участника.';
+    return 'Сообщение отправлено во время активного мута участника.';
   }
 
   if (ruleCode === 'NIGHT_MODE_DELETE') {
@@ -223,7 +223,7 @@ function normalizeRawModerationReason(reason: string | null): string | null {
     'Voice messages are disabled by chat settings': 'Голосовые сообщения в этом чате отключены.',
     'Duplicate message removed': 'Повтор сообщения удален.',
     'Message removed during active mute window':
-      'Сообщение отправлено во время активного ограничения участника.',
+      'Сообщение отправлено во время активного мута участника.',
     'Message removed while chat is closed for the night': 'Чат закрыт по ночному режиму.',
     'Message removed while group is manually closed':
       'Группа закрыта вручную, новые сообщения временно удаляются.',
@@ -261,10 +261,10 @@ function resolveFallbackReason(ruleCode: string): string {
     GLOBAL_USER_BLACKLIST_KICK: 'Участник есть в базе запретов.',
     BOT_ACCOUNT_KICK: 'Бот-аккаунты запрещены настройками чата.',
     BOT_MESSAGE_AUTO_DELETE: 'Сообщение бота удаляется по настройкам автоочистки.',
-    MANUAL_MUTE: 'Модератор вручную ограничил участника.',
-    MANUAL_BAN: 'Модератор вручную заблокировал участника.',
-    MANUAL_UNMUTE: 'Модератор вручную снял ограничение.',
-    MANUAL_UNBAN: 'Модератор вручную снял блокировку.',
+    MANUAL_MUTE: 'Модератор вручную выдал мут.',
+    MANUAL_BAN: 'Модератор вручную выдал бан.',
+    MANUAL_UNMUTE: 'Модератор вручную снял мут.',
+    MANUAL_UNBAN: 'Модератор вручную снял бан.',
   };
 
   return labels[ruleCode] ?? 'Сработало правило модерации.';
