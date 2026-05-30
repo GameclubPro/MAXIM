@@ -3,13 +3,13 @@
 exports[`commercial deterministic benchmark meets recall, false-positive, subtype, and action-policy gates 1`] = `
 {
   "byAction": {
-    "DELETE": 33,
+    "DELETE": 35,
     "DELETE_AND_ESCALATE": 11,
     "REVIEW_ONLY": 12,
-    "WARN": 42,
+    "WARN": 44,
   },
   "bySubtype": {
-    "BUYOUT": 3,
+    "BUYOUT": 4,
     "CHANNEL_PLACEMENT": 3,
     "GOODS": 6,
     "GOODS_RETAIL": 24,
@@ -17,13 +17,13 @@ exports[`commercial deterministic benchmark meets recall, false-positive, subtyp
     "PROPERTY_AGENT": 9,
     "PROPERTY_COMMERCIAL": 6,
     "RECRUITMENT": 12,
-    "SERVICES": 33,
+    "SERVICES": 36,
   },
   "confusionMatrix": {
     "FN": 0,
     "FP": 0,
-    "TN": 38,
-    "TP": 98,
+    "TN": 43,
+    "TP": 102,
   },
   "topFalseNegativeSignals": {},
   "topFalsePositiveSignals": {},

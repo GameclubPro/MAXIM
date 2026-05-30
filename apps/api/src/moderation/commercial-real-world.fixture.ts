@@ -1248,11 +1248,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'balanced furniture store weekend sale from 24 hour audit miss',
     text: `Крутое предложение в эти выходные. Мебель ОптТорг. Успейте обновить интерьер по выгодным ценам: диваны от 20 999 руб, кровати от 6000 руб, матрасы и спальные гарнитуры до 45%. Количество акционных моделей ограничено. Пишите, звоните и приезжайте для заказа и уточнения сроков доставки. Телефон +7 900 000 00 71.`,
     expectedSubtype: 'GOODS_RETAIL',
-    expectedSignals: [
-      'goods-retail:furniture-retail-sale',
-      'transaction:price',
-      'contact:phone',
-    ],
+    expectedSignals: ['goods-retail:furniture-retail-sale', 'transaction:price', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 50,
@@ -1263,11 +1259,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'balanced incubation egg farm order from 24 hour audit miss',
     text: `Набираю заказ на инкубационное яйцо бройлера Росс 308 на 5 июня, вывод проверен не ниже 80%. Яйцо загрязненное - цена 55₽. Утром получаем напрямую с фабрики свежее, после обеда передаем вам. Звоните +7 900 000 00 72.`,
     expectedSubtype: 'GOODS_RETAIL',
-    expectedSignals: [
-      'goods-retail:poultry-farm-order',
-      'transaction:price',
-      'contact:phone',
-    ],
+    expectedSignals: ['goods-retail:poultry-farm-order', 'transaction:price', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 45,
@@ -1293,11 +1285,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'balanced paving landscaping company from 24 hour audit miss',
     text: `Компания Профблагоустройство предлагает услуги: асфальтирование ангаров, площадок, дорожек любой сложности, укладка брусчатки, установка бордюра, бетонирование отмостки и площадок. Выезд на замер и консультация бесплатно. Пенсионерам скидка 10%. Телефон +7 900 000 00 74.`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: [
-      'intent:занимаюсь-услугами',
-      'service-specialty:бетон',
-      'contact:phone',
-    ],
+    expectedSignals: ['intent:занимаюсь-услугами', 'service-specialty:бетон', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 57,
@@ -1334,11 +1322,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'poultry factory broiler retail from 24 hour audit miss',
     text: `Добрый день. Реализация бройлеров Росс 308 продолжается. Возраст 22 дня, средний вес 1200 гр. Цена 300₽. С уважением, Илишевская птицефабрика. Контакты для связи +7 900 000 00 76.`,
     expectedSubtype: 'GOODS_RETAIL',
-    expectedSignals: [
-      'goods-retail:poultry-farm-order',
-      'transaction:price',
-      'contact:phone',
-    ],
+    expectedSignals: ['goods-retail:poultry-farm-order', 'transaction:price', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 47,
@@ -1349,11 +1333,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'balanced contract military recruitment from 24 hour audit miss',
     text: `Войска беспилотных систем по контракту с МО РФ. ЗП от 210 000 рублей за календарный месяц, проживание, питание и билеты. Оформление из разных регионов России. Звоните +7 900 000 00 77, Андрей.`,
     expectedSubtype: 'RECRUITMENT',
-    expectedSignals: [
-      'recruitment:контрактная-служба-мо',
-      'transaction:price',
-      'contact:phone',
-    ],
+    expectedSignals: ['recruitment:контрактная-служба-мо', 'transaction:price', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 55,
@@ -1375,15 +1355,59 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'homemade salad meat order from 24 hour audit miss',
     text: `Оливье с домашним мяском вкуснее чем в ресторане. Телефон +7 900 000 00 79, заказ в личку, доставка и самовывоз Хабаровск, 100р/100гр.`,
     expectedSubtype: 'GOODS_RETAIL',
-    expectedSignals: [
-      'goods-retail:home-food-order',
-      'transaction:price',
-      'contact:phone',
-    ],
+    expectedSignals: ['goods-retail:home-food-order', 'transaction:price', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 42,
       commercialAdsDeleteThreshold: 60,
+    },
+  },
+  {
+    label: 'accounting subscription service from recall regression pack',
+    text: `Бухгалтер для ИП и ООО. Отчётность, декларации, налоги, кадровый учет. Абонентское обслуживание от 3000 руб. +7 900 000 00 92.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:accounting-service', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'yandex direct contextual ads service from recall regression pack',
+    text: `Настрою Яндекс Директ и контекстную рекламу. Аудит бесплатно, заявки уже через неделю. Пишите https://max.ru/u/directolog`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: [
+      'service-specialty:digital-service',
+      'service-specialty:promotion-service',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'medical center service avoids buyout subtype from fp regression pack',
+    text: `Медицинский центр: УЗИ, анализы, прием терапевта и невролога. Скидка 15%, запись +7 900 000 00 93.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:medical-service', 'promo:скидк', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'scrap metal buyout contextual priem from recall regression pack',
+    text: `Приём металлолома, цветной и черный металл. Расчет сразу, выезд, звоните +7 900 000 00 94.`,
+    expectedSubtype: 'BUYOUT',
+    expectedSignals: ['buyout:scrap-metal-buyout', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
     },
   },
 ];
@@ -1725,6 +1749,51 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'punctuated letters private sofa sale from edge-case false-positive guard',
     text: `П.Р.О.Д.А.М свой диван б/у после переезда. Цена 8000 руб, самовывоз.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'accountant recommendation request from false-positive regression pack',
+    text: `Посоветуйте бухгалтера для ИП, кто хорошо сдаёт отчетность?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'yandex direct recommendation request from false-positive regression pack',
+    text: `Кто настраивал Яндекс Директ, подскажите нормального специалиста?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'medical center recommendation request from false-positive regression pack',
+    text: `Кто знает хороший медицинский центр для УЗИ?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'plain medical appointment queue from false-positive regression pack',
+    text: `Прием у врача задержали на 40 минут, кто сейчас в очереди?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'non promotional accounting report mention from false-positive regression pack',
+    text: `Бухгалтер сдал отчетность, декларации и налоги вчера, можно больше не переживать.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
