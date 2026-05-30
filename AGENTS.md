@@ -201,6 +201,7 @@
 - Use `npm run vk-parsing:diagnose --workspace @maxim/api -- --json --limit 20` for VK parsing source/media/publish/queue diagnostics; pass `--window-hours` to change the recent-error window and ensure `REDIS_URL` is available for BullMQ counts.
 - VK parsing automation settings are stored per managed entity in `vk_parsing_settings`. Scheduled/manual sync can autopublish newly imported posts, but the initial `source-added` backfill and the first successful source sync with no previous `lastSuccessAt` must not autopublish old fetched posts. Autopublish eligibility must require `autoPublishEnabledAt` plus a real VK publish timestamp at or after that baseline; do not fall back to local import time for posts with missing VK dates.
 - VK autoposting is controlled by both managed-entity settings and per-source settings. Source-level `autoPublishEnabled`, baseline, mode, daily/min-interval limits, quiet hours, and priority must be respected before queueing; queued posts use `publishScheduledAt` and must be rechecked by the publish worker before sending.
+- VK autoposting should treat `BackgroundRuntimeGovernorService` `pause` decisions as deferrable, but `slow` decisions must not fully starve single publish jobs. Count `publishAttemptCount` only when a job reaches a real MAX publish attempt, not when it is locked or deferred.
 
 ## Repo hygiene
 

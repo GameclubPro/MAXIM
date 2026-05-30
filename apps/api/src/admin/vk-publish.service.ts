@@ -516,7 +516,6 @@ export class VkPublishService {
       data: {
         publishLockedAt: now,
         publishReason: params.reason,
-        publishAttemptCount: { increment: 1 },
       },
     });
     if (locked.count === 0) {
@@ -538,7 +537,7 @@ export class VkPublishService {
     try {
       if (params.reason === 'autopublish') {
         const governorDecision = await this.decideBackgroundAutoPublish();
-        if (governorDecision && governorDecision.action !== 'run') {
+        if (governorDecision?.action === 'pause') {
           await this.deferQueuedPost(
             post,
             params.reason,
@@ -574,6 +573,7 @@ export class VkPublishService {
         );
         return;
       }
+      await this.recordPublishAttempt(post.id, params.idempotencyKey);
       await this.autoPublishPost(post, settings);
     } catch (error) {
       const classified = classifyVkParsingPublishError(error);
@@ -1181,6 +1181,13 @@ export class VkPublishService {
       },
     });
     await this.addPublishJob(post, reason, nextIdempotencyKey, new Date(), scheduledAt);
+  }
+
+  private async recordPublishAttempt(postId: string, idempotencyKey: string): Promise<void> {
+    await this.prisma.vkParsingPost.updateMany({
+      where: { id: postId, publishIdempotencyKey: idempotencyKey },
+      data: { publishAttemptCount: { increment: 1 } },
+    });
   }
 
   private resolveAllowedScheduleAt(

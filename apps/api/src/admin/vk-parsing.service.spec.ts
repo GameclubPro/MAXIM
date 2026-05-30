@@ -1504,6 +1504,104 @@ describe('VkParsingService', () => {
     }
   });
 
+  it('continues VK autopublish jobs while the runtime governor only asks to slow down', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
+    try {
+      const { service, prisma, maxClient, publishQueue, publishService } = createFixture();
+      const source = createSource();
+      const post = createPostRow({
+        source,
+        publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+        publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+        publishIdempotencyKey: 'publish-key-1',
+        publishReason: 'autopublish',
+      });
+      const governor = {
+        decide: jest.fn().mockResolvedValue({
+          action: 'slow',
+          retryAfterMs: 60_000,
+          reason: 'background share 92%',
+        }),
+      };
+      (
+        publishService as unknown as {
+          backgroundRuntimeGovernorService: typeof governor;
+        }
+      ).backgroundRuntimeGovernorService = governor;
+      prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+      prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+      prisma.vkParsingSettings.findUnique.mockResolvedValue({
+        id: 'settings-1',
+        chatId: 'channel-1',
+        autoPublishEnabled: true,
+        autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+        autoPublishKillSwitchEnabled: false,
+        stripLinksEnabled: false,
+        skipAdsEnabled: false,
+        schedulerTimezone: 'Europe/Moscow',
+        quietHoursStart: null,
+        quietHoursEnd: null,
+        workHoursStart: '09:00',
+        workHoursEnd: '22:00',
+        distributeEvenlyEnabled: true,
+        roundRobinEnabled: true,
+        circuitBreakerEnabled: true,
+        circuitBreakerWindowMinutes: 10,
+        circuitBreakerPostLimit: 10,
+        createdAt: new Date('2026-05-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+      });
+      prisma.vkParsingPost.update.mockResolvedValue({
+        ...post,
+        status: 'PUBLISHED',
+        publishedMessageId: 'mid-1',
+        publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
+        publishedAtMax: new Date('2026-05-25T10:00:00.000Z'),
+        autoPublishedAt: new Date('2026-05-25T10:00:00.000Z'),
+      });
+      maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+        messageId: 'mid-1',
+        url: 'https://max.ru/channels/channel-1/message/mid-1',
+      });
+
+      await service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      });
+
+      expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+        'channel-1',
+        'Продам авто',
+        expect.any(Object),
+        {
+          botId: 'bot-1',
+          trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.VK_PARSING,
+        },
+      );
+      expect(publishQueue.add).not.toHaveBeenCalled();
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          data: expect.not.objectContaining({
+            publishAttemptCount: expect.anything(),
+          }),
+        }),
+      );
+      expect(prisma.vkParsingPost.updateMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          where: { id: 'post-1', publishIdempotencyKey: 'publish-key-1' },
+          data: { publishAttemptCount: { increment: 1 } },
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('publishes manual retry jobs immediately without scheduler deferral', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-25T10:00:00.000Z'));
     try {
