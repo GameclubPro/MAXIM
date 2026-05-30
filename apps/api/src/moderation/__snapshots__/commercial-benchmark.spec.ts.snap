@@ -23,7 +23,7 @@ exports[`commercial deterministic benchmark meets recall, false-positive, subtyp
   "confusionMatrix": {
     "FN": 0,
     "FP": 0,
-    "TN": 47,
+    "TN": 48,
     "TP": 110,
   },
   "topFalseNegativeSignals": {},
