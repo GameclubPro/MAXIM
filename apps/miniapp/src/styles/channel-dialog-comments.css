@@ -1115,7 +1115,10 @@
   --channel-dialog-compose-fade-start: rgba(199, 239, 253, 0);
   --channel-dialog-compose-fade-mid: rgba(199, 239, 253, 0.68);
   --channel-dialog-compose-fade-end: rgba(199, 239, 253, 0.92);
-  padding: 0 clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
+  padding: calc(
+      var(--comments-dialog-top-safe-space, 0px) + var(--comments-dialog-top-overscan, 0px)
+    )
+    clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 48px), 37rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 54px), 33rem);
   --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 66px), 26rem);

@@ -45,9 +45,12 @@
 
 .app-shell--immersive.app-shell--comments-dialog {
   --comments-dialog-top-overscan: 10px;
+  --comments-dialog-top-safe-space: max(
+    var(--app-safe-top, 0px),
+    var(--app-visual-viewport-top, 0px)
+  );
   --immersive-top-bleed: calc(
-    max(var(--app-safe-top, 0px), var(--app-visual-viewport-top, 0px)) +
-      var(--comments-dialog-top-overscan)
+    var(--comments-dialog-top-safe-space) + var(--comments-dialog-top-overscan)
   );
 }
 
