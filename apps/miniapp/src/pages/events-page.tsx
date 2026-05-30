@@ -485,18 +485,18 @@ function resolveApplyActionLabel(
   muteDurationHours: number,
 ): string {
   if (action === 'MUTE') {
-    return `Ограничить на ${formatMuteDurationCompact(muteDurationHours)}`;
+    return `Мут на ${formatMuteDurationCompact(muteDurationHours)}`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять ограничение';
+    return 'Снять мут';
   }
 
   if (action === 'UNBAN') {
     return 'Вернуть участника';
   }
 
-  return 'Заблокировать';
+  return 'Бан';
 }
 
 function resolveConfirmMessage(
@@ -505,11 +505,11 @@ function resolveConfirmMessage(
   violation?: ViolationItem,
 ): string {
   if (action === 'MUTE') {
-    return `Ограничить участника на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
+    return `Выдать мут на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
   }
 
   if (action === 'UNMUTE') {
-    return 'Снять ограничение у участника?';
+    return 'Снять мут у участника?';
   }
 
   if (action === 'UNBAN') {
@@ -527,7 +527,7 @@ function resolveConfirmMessage(
     return 'Вернуть участника в чат?';
   }
 
-  return 'Заблокировать участника в чате MAX, пока модератор не вернет его вручную?';
+  return 'Выдать бан в чате MAX, пока модератор не вернет участника вручную?';
 }
 
 function isMuteActiveFromViolation(violation: ViolationItem): boolean {
@@ -605,7 +605,7 @@ function resolveReleaseAction(
 }
 
 function resolveReleaseLabel(action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>): string {
-  return action === 'UNMUTE' ? 'Снять ограничение' : 'Вернуть';
+  return action === 'UNMUTE' ? 'Снять мут' : 'Вернуть';
 }
 
 function normalizeActionErrorMessage(error: unknown): string {
@@ -968,7 +968,9 @@ function GlobalSpammerReviewPanel({
   const metricChips = [
     `Проверка ${pending}`,
     `Активных ${activeRegistry}`,
-    reviewed > 0 ? `Ошибки ${formatFalsePositiveRate(falsePositiveRate)}` : 'Проверено 0',
+    reviewed > 0
+      ? `Ложные срабатывания ${formatFalsePositiveRate(falsePositiveRate)}`
+      : 'Проверено 0',
     ...(suppressed > 0 ? [`Исключено ${suppressed}`] : []),
     ...(expiredRegistry > 0 ? [`Истекло ${expiredRegistry}`] : []),
   ];
@@ -1057,7 +1059,7 @@ function GlobalSpammerReviewPanel({
                   <div className="spammer-review-candidate__body">
                     <div className="spammer-review-candidate__headline">
                       <strong>{label}</strong>
-                      <span>{formatConfidenceScore(candidate.confidenceScore)}</span>
+                      <span>Уверенность {formatConfidenceScore(candidate.confidenceScore)}</span>
                     </div>
                     <div className="spammer-review-candidate__meta">
                       <span>{resolveSpammerSourceSummary(candidate)}</span>
@@ -1318,7 +1320,7 @@ function ViolationModerationControls({
             onOpenDiagnostics();
           }}
         >
-          База
+          База спама
         </button>
         {!releaseAction ? (
           <button
@@ -1333,7 +1335,7 @@ function ViolationModerationControls({
               setMuteExpanded((current) => !current);
             }}
           >
-            Ограничить
+            Мут
           </button>
         ) : null}
         {!releaseAction ? (
@@ -1347,7 +1349,7 @@ function ViolationModerationControls({
               setPendingAction((current) => (current === 'BAN' ? null : 'BAN'));
             }}
           >
-            Блокировать
+            Бан
           </button>
         ) : null}
         {releaseAction ? (
@@ -1371,7 +1373,7 @@ function ViolationModerationControls({
           <div className="logs-violation-item__duration-summary">
             <div className="logs-violation-item__duration-label">
               <ClockIcon />
-              <span>Срок ограничения</span>
+              <span>Срок мута</span>
             </div>
             <output className="logs-violation-item__duration-output" aria-live="polite">
               {formatMuteDurationCompact(muteDurationHours)}
@@ -1401,7 +1403,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev - 1))}
                 disabled={applyMutation.isPending || muteDurationHours <= MUTE_DURATION_MIN_HOURS}
-                aria-label="Уменьшить срок ограничения"
+                aria-label="Уменьшить срок мута"
               >
                 -
               </button>
@@ -1413,7 +1415,7 @@ function ViolationModerationControls({
                 className="ban-duration-stepper__button"
                 onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev + 1))}
                 disabled={applyMutation.isPending || muteDurationHours >= MUTE_DURATION_MAX_HOURS}
-                aria-label="Увеличить срок ограничения"
+                aria-label="Увеличить срок мута"
               >
                 +
               </button>
