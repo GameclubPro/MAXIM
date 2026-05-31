@@ -797,67 +797,6 @@ function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate)
   return matched ? matched[0]!.toUpperCase() : 'S';
 }
 
-function resolveSpammerCandidateExcerpt(candidate: GlobalSpammerReviewCandidate): string | null {
-  const chatExcerpt = candidate.chats.find((chat) => chat.lastExcerpt?.trim())?.lastExcerpt?.trim();
-  if (chatExcerpt) {
-    return chatExcerpt;
-  }
-
-  const evidence = readJsonRecord(candidate.lastEvidence);
-  const direct = typeof evidence?.excerpt === 'string' ? evidence.excerpt.trim() : '';
-  if (direct) {
-    return direct;
-  }
-
-  const nested = readJsonRecord(evidence?.evidence);
-  const nestedExcerpt = typeof nested?.excerpt === 'string' ? nested.excerpt.trim() : '';
-  return nestedExcerpt || null;
-}
-
-function resolveSpammerSourceSummary(candidate: GlobalSpammerReviewCandidate): string {
-  const breakdown = readJsonRecord(candidate.sourceBreakdown);
-  const sources = breakdown ? Object.keys(breakdown) : [];
-  const fallbackSources = candidate.observations.map((observation) => observation.source);
-  const uniqueSources = [...new Set(sources.length > 0 ? sources : fallbackSources)];
-  const displayed = uniqueSources.slice(0, 3).map(resolveSpammerSourceLabel);
-  const sourcesSummary =
-    uniqueSources.length > displayed.length
-      ? `${displayed.join(' · ')} · +${uniqueSources.length - displayed.length}`
-      : displayed.join(' · ');
-  const chatsCount = candidate.chats.length;
-  const chatsSummary =
-    chatsCount > 0
-      ? `${chatsCount} ${formatRussianCountLabel(chatsCount, 'чат', 'чата', 'чатов')}`
-      : '';
-
-  return [chatsSummary, sourcesSummary || resolveSpammerReasonLabel(candidate.lastReason)]
-    .filter(Boolean)
-    .join(' · ');
-}
-
-function resolveSpammerReasons(candidate: GlobalSpammerReviewCandidate): string[] {
-  const breakdown = readJsonRecord(candidate.sourceBreakdown);
-  const sources = breakdown ? Object.keys(breakdown) : [];
-  const fallbackSources = candidate.observations.map((observation) => observation.source);
-  const labels = [...new Set(sources.length > 0 ? sources : fallbackSources)]
-    .map(resolveSpammerSourceLabel)
-    .filter(Boolean);
-  return labels.length > 0 ? labels.slice(0, 4) : [resolveSpammerReasonLabel(candidate.lastReason)];
-}
-
-function resolveSpammerChatFacts(candidate: GlobalSpammerReviewCandidate): string {
-  if (candidate.chats.length === 0) {
-    return 'Нет чатов';
-  }
-
-  const visible = candidate.chats.slice(0, 3).map((chat) => {
-    const countSuffix = chat.detectionsCount > 1 ? ` · ${chat.detectionsCount}` : '';
-    return `${chat.chatId}${countSuffix}`;
-  });
-  const hiddenCount = candidate.chats.length - visible.length;
-  return hiddenCount > 0 ? `${visible.join(', ')} · +${hiddenCount} ещё` : visible.join(', ');
-}
-
 function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
   const reason =
     diagnostics.registry.reason ||
@@ -1312,237 +1251,190 @@ function formatDiagnosticsMatchLine(diagnostics: GlobalSpammerUserDiagnostics): 
   )} в базе`;
 }
 
-function formatSpammerSourceAlertReason(reason: string): string {
-  const normalized = reason.toLowerCase();
-  if (normalized.includes('dominates')) {
-    return 'аномальная доля источника';
-  }
-  if (normalized.includes('suppression')) {
-    return 'много ложных срабатываний';
-  }
-  return 'требует внимания';
-}
-
 function GlobalSpammerReviewPanel({
   metrics,
   candidates,
   isLoading,
   error,
-  expandedCandidateId,
-  reviewingUserId,
-  reasonByUserId,
-  onToggleCandidate,
-  onReasonChange,
-  onReview,
-  onOpenDiagnostics,
-  onRetry,
+  onOpen,
 }: {
   metrics: GlobalSpammerReviewMetrics | null;
   candidates: GlobalSpammerReviewCandidate[];
   isLoading: boolean;
   error: unknown;
-  expandedCandidateId: string | null;
-  reviewingUserId: string | null;
-  reasonByUserId: Record<string, string>;
-  onToggleCandidate: (userId: string) => void;
-  onReasonChange: (userId: string, value: string) => void;
-  onReview: (candidate: GlobalSpammerReviewCandidate, action: GlobalSpammerReviewAction) => void;
-  onOpenDiagnostics: (candidate: GlobalSpammerReviewCandidate) => void;
-  onRetry: () => void;
+  onOpen: () => void;
 }) {
   const pending = metrics?.pending ?? candidates.length;
   const approved = metrics?.approved ?? 0;
   const activeRegistry = metrics?.activeRegistry ?? approved;
-  const reviewed = metrics?.reviewed ?? 0;
-  const suppressed = metrics?.suppressed ?? 0;
-  const expiredRegistry = metrics?.expiredRegistry ?? 0;
-  const newCandidates24h = metrics?.newCandidates24h ?? 0;
-  const autoApproved24h = metrics?.autoApproved24h ?? 0;
-  const shadowWouldEnforceCount = metrics?.shadowWouldEnforceCount ?? 0;
-  const sourceAlerts = metrics?.sourceAlerts ?? [];
-  const topCampaigns = metrics?.topCampaigns ?? [];
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
-  const metricChips = [
-    `Проверка ${pending}`,
-    `Активных ${activeRegistry}`,
-    reviewed > 0 ? `Проверено ${reviewed}` : 'Проверено 0',
-    ...(newCandidates24h > 0 ? [`Новых ${newCandidates24h}`] : []),
-    ...(autoApproved24h > 0 ? [`Авто ${autoApproved24h}`] : []),
-    ...(shadowWouldEnforceCount > 0 ? [`Shadow ${shadowWouldEnforceCount}`] : []),
-    ...(suppressed > 0 ? [`Исключено ${suppressed}`] : []),
-    ...(expiredRegistry > 0 ? [`Истекло ${expiredRegistry}`] : []),
-  ];
-  const shouldHide =
-    !isLoading &&
-    !errorMessage &&
-    candidates.length === 0 &&
-    pending === 0 &&
-    sourceAlerts.length === 0 &&
-    topCampaigns.length === 0;
+  const visibleCandidates = candidates.slice(0, 3);
+  const hiddenCandidateCount = Math.max(0, pending - visibleCandidates.length);
+  const pendingLabel = `${pending} ${formatRussianCountLabel(
+    pending,
+    'кандидат',
+    'кандидата',
+    'кандидатов',
+  )}`;
+  const activeLabel =
+    activeRegistry > 0
+      ? `${activeRegistry} ${formatRussianCountLabel(
+          activeRegistry,
+          'запись',
+          'записи',
+          'записей',
+        )} в базе`
+      : null;
+  const statusLabel = errorMessage ? 'Ошибка загрузки' : isLoading ? 'Обновляем' : pendingLabel;
+  const shouldHide = !isLoading && !errorMessage && candidates.length === 0 && pending === 0;
   if (shouldHide) {
     return null;
   }
 
   return (
     <section className="spammer-review" aria-label="Очередь базы спама">
-      <div className="spammer-review__head">
-        <div className="spammer-review__title">
-          <strong>База спама</strong>
-        </div>
+      <button type="button" className="spammer-review__entry" onClick={onOpen}>
+        <span className="spammer-review__mark" aria-hidden="true">
+          !
+        </span>
 
-        <div className="spammer-review__metrics" aria-label="Метрики базы спама">
-          {metricChips.map((chip) => (
-            <span key={chip}>{chip}</span>
-          ))}
-        </div>
-      </div>
+        <span className="spammer-review__copy">
+          <span className="spammer-review__label">База спама</span>
+          <strong>{statusLabel}</strong>
+          {activeLabel ? <small>{activeLabel}</small> : null}
+        </span>
 
-      {sourceAlerts.length > 0 ? (
-        <div className="spammer-review__alerts">
-          {sourceAlerts.slice(0, 2).map((alert) => (
-            <span
-              key={`${alert.source}-${alert.reason}`}
-              className={`spammer-review__alert is-${alert.level}`}
-            >
-              {resolveSpammerSourceLabel(alert.source)}:{' '}
-              {formatSpammerSourceAlertReason(alert.reason)}
+        <span className="spammer-review__side" aria-hidden="true">
+          {visibleCandidates.length > 0 ? (
+            <span className="spammer-review__avatars">
+              {visibleCandidates.map((candidate) => (
+                <PersonAvatar
+                  key={candidate.userId}
+                  avatarUrl={null}
+                  fallback={resolveSpammerCandidateInitial(candidate)}
+                  className="spammer-review__avatar"
+                />
+              ))}
+              {hiddenCandidateCount > 0 ? (
+                <span className="spammer-review__avatar spammer-review__avatar--more">
+                  +{hiddenCandidateCount}
+                </span>
+              ) : null}
             </span>
-          ))}
-        </div>
-      ) : null}
+          ) : null}
+          <span className="spammer-review__chevron">›</span>
+        </span>
+      </button>
+    </section>
+  );
+}
 
-      {topCampaigns.length > 0 ? (
-        <div className="spammer-review__campaigns" aria-label="Кампании базы спама">
-          {topCampaigns.slice(0, 3).map((campaign) => (
-            <span key={campaign.clusterId}>
-              {formatDisplaySentence(resolveCampaignSignalLabel(campaign.signalType))}:{' '}
-              {formatConfidenceScore(campaign.confidenceScore)}
-            </span>
-          ))}
-        </div>
-      ) : null}
+function SpammerReviewSheet({
+  open,
+  metrics,
+  candidates,
+  isLoading,
+  error,
+  onClose,
+  onRetry,
+  onOpenDiagnostics,
+}: {
+  open: boolean;
+  metrics: GlobalSpammerReviewMetrics | null;
+  candidates: GlobalSpammerReviewCandidate[];
+  isLoading: boolean;
+  error: unknown;
+  onClose: () => void;
+  onRetry: () => void;
+  onOpenDiagnostics: (candidate: GlobalSpammerReviewCandidate) => void;
+}) {
+  const pending = metrics?.pending ?? candidates.length;
+  const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
+  const summary =
+    pending > 0
+      ? `${pending} ${formatRussianCountLabel(
+          pending,
+          'кандидат',
+          'кандидата',
+          'кандидатов',
+        )} на проверке`
+      : undefined;
 
-      {errorMessage ? (
-        <div className="spammer-review__state">
+  return (
+    <SettingsDrilldownPanel
+      id="spammer-review-sheet"
+      open={open}
+      title="База спама"
+      summary={summary}
+      tone="rose"
+      onClose={onClose}
+      className="spammer-review-sheet"
+    >
+      {isLoading ? (
+        <div className="spammer-review-sheet__state">
+          <Spinner size="sm" label="Загружаем список" />
+        </div>
+      ) : errorMessage ? (
+        <div className="spammer-review-sheet__state">
           <span>{errorMessage}</span>
           <button type="button" className="button button--ghost" onClick={onRetry}>
             Обновить
           </button>
         </div>
-      ) : isLoading ? (
-        <div className="spammer-review__state">
-          <Spinner size="sm" label="Загружаем очередь базы спама" />
-        </div>
       ) : candidates.length === 0 ? (
-        <div className="spammer-review__state">
-          <span>Очередь пуста</span>
+        <div className="spammer-review-sheet__state">
+          <span>На проверке никого нет</span>
         </div>
       ) : (
-        <div className="spammer-review__list">
+        <div className="spammer-review-sheet__list">
           {candidates.map((candidate) => {
-            const expanded = expandedCandidateId === candidate.userId;
             const label = resolveSpammerCandidateName(candidate);
-            const excerpt = resolveSpammerCandidateExcerpt(candidate);
-            const reasonValue = reasonByUserId[candidate.userId] ?? '';
-            const isReviewing = reviewingUserId === candidate.userId;
+            const reason = formatDisplaySentence(resolveSpammerReasonLabel(candidate.lastReason));
+            const chatsCount = candidate.chats.length;
+            const chatsLabel =
+              chatsCount > 0
+                ? `${chatsCount} ${formatRussianCountLabel(chatsCount, 'чат', 'чата', 'чатов')}`
+                : null;
+            const confidence = formatDiagnosticsConfidenceLevel(candidate.confidenceScore);
 
             return (
-              <article
+              <button
                 key={candidate.userId}
-                className={`spammer-review-candidate ${
-                  expanded ? 'is-expanded' : ''
-                } spammer-review-candidate--${candidate.status.toLowerCase()}`}
+                type="button"
+                className="spammer-review-sheet__row"
+                onClick={() => onOpenDiagnostics(candidate)}
               >
-                <div
-                  className="spammer-review-candidate__trigger"
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={expanded}
-                  onClick={() => onToggleCandidate(candidate.userId)}
-                  onKeyDown={(event) =>
-                    handleExpandableCardKeyDown(event, () => onToggleCandidate(candidate.userId))
-                  }
-                >
-                  <span className="spammer-review-candidate__avatar" aria-hidden="true">
-                    {resolveSpammerCandidateInitial(candidate)}
+                <PersonAvatar
+                  avatarUrl={null}
+                  fallback={resolveSpammerCandidateInitial(candidate)}
+                  className="spammer-review-sheet__avatar"
+                />
+
+                <span className="spammer-review-sheet__person">
+                  <strong>{label}</strong>
+                  <span>
+                    {[reason, chatsLabel].filter(Boolean).join(' · ')}
                   </span>
-                  <div className="spammer-review-candidate__body">
-                    <div className="spammer-review-candidate__headline">
-                      <strong>{label}</strong>
-                      <span>
-                        Уверенность {formatDiagnosticsConfidence(candidate.confidenceScore)}
-                      </span>
-                    </div>
-                    <div className="spammer-review-candidate__meta">
-                      <span>{resolveSpammerSourceSummary(candidate)}</span>
-                    </div>
-                    {excerpt ? <p>{excerpt}</p> : null}
-                  </div>
-                </div>
+                </span>
 
-                {expanded ? (
-                  <div className="spammer-review-candidate__details">
-                    <dl className="spammer-review-candidate__facts">
-                      <div>
-                        <dt>Почему</dt>
-                        <dd>{resolveSpammerReasons(candidate).join(', ')}</dd>
-                      </div>
-                      <div>
-                        <dt>Где</dt>
-                        <dd>{resolveSpammerChatFacts(candidate)}</dd>
-                      </div>
-                      {excerpt ? (
-                        <div>
-                          <dt>Пример</dt>
-                          <dd>{excerpt}</dd>
-                        </div>
-                      ) : null}
-                    </dl>
-
-                    <label className="spammer-review-candidate__reason">
-                      <span>Комментарий</span>
-                      <input
-                        value={reasonValue}
-                        placeholder="Если нужно"
-                        maxLength={500}
-                        onChange={(event) => onReasonChange(candidate.userId, event.target.value)}
-                      />
-                    </label>
-
-                    <div className="spammer-review-candidate__actions">
-                      <button
-                        type="button"
-                        className="spammer-review-candidate__button spammer-review-candidate__button--ghost"
-                        disabled={isReviewing}
-                        onClick={() => onOpenDiagnostics(candidate)}
-                      >
-                        Детали
-                      </button>
-                      <button
-                        type="button"
-                        className="spammer-review-candidate__button spammer-review-candidate__button--approve"
-                        disabled={isReviewing}
-                        onClick={() => onReview(candidate, 'APPROVE')}
-                      >
-                        {isReviewing ? 'Сохраняем...' : 'Подтвердить'}
-                      </button>
-                      <button
-                        type="button"
-                        className="spammer-review-candidate__button spammer-review-candidate__button--suppress"
-                        disabled={isReviewing}
-                        onClick={() => onReview(candidate, 'SUPPRESS')}
-                      >
-                        Исключить
-                      </button>
-                    </div>
-                  </div>
+                {confidence ? (
+                  <span
+                    className="spammer-review-sheet__confidence"
+                    aria-label={`уверенность ${confidence}`}
+                  >
+                    {confidence}
+                  </span>
                 ) : null}
-              </article>
+
+                <span className="spammer-review-sheet__chevron" aria-hidden="true">
+                  ›
+                </span>
+              </button>
             );
           })}
         </div>
       )}
-    </section>
+    </SettingsDrilldownPanel>
   );
 }
 
@@ -2090,8 +1982,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
-  const [expandedSpammerCandidateId, setExpandedSpammerCandidateId] = useState<string | null>(null);
-  const [spammerReviewReasons, setSpammerReviewReasons] = useState<Record<string, string>>({});
+  const [spammerReviewOpen, setSpammerReviewOpen] = useState(false);
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
@@ -2485,12 +2376,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       if (spammerDiagnosticsTarget?.userId === result.userId) {
         setSpammerDiagnosticsTarget(null);
       }
-      setExpandedSpammerCandidateId(null);
-      setSpammerReviewReasons((current) => {
-        const next = { ...current };
-        delete next[result.userId];
-        return next;
-      });
       pushToast({
         tone: 'success',
         title: result.status === 'SUPPRESSED' ? 'Исключено' : 'Подтверждено',
@@ -2545,7 +2430,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setExpandedViolationId(null);
-    setExpandedSpammerCandidateId(null);
+    setSpammerReviewOpen(false);
   }, [eventsFilter, range, section]);
 
   useEffect(() => {
@@ -2601,26 +2486,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setEventsFilter(nextFilter);
     });
   };
-  const handleSpammerCandidateToggle = (userId: string) => {
-    setExpandedSpammerCandidateId((current) => (current === userId ? null : userId));
-  };
-  const handleSpammerReviewReasonChange = (userId: string, value: string) => {
-    setSpammerReviewReasons((current) => ({
-      ...current,
-      [userId]: value,
-    }));
-  };
-  const handleSpammerReview = (
-    candidate: GlobalSpammerReviewCandidate,
-    action: GlobalSpammerReviewAction,
-  ) => {
-    const reason = spammerReviewReasons[candidate.userId]?.trim();
-    spammerReviewMutation.mutate({
-      userId: candidate.userId,
-      action,
-      ...(reason ? { reason } : {}),
-    });
-  };
   const handleSpammerDiagnosticsReview = (
     userId: string,
     action: GlobalSpammerReviewAction,
@@ -2646,6 +2511,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     setSpammerDiagnosticsTarget(target);
   };
   const handleSpammerCandidateDiagnostics = (candidate: GlobalSpammerReviewCandidate) => {
+    setSpammerReviewOpen(false);
     openSpammerDiagnostics({
       userId: candidate.userId,
       displayName: resolveSpammerCandidateName(candidate),
@@ -3038,18 +2904,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               (spammerReviewMetricsQuery.isLoading && !spammerReviewMetricsQuery.data)
             }
             error={spammerReviewQueueQuery.error ?? spammerReviewMetricsQuery.error}
-            expandedCandidateId={expandedSpammerCandidateId}
-            reviewingUserId={
-              spammerReviewMutation.isPending
-                ? (spammerReviewMutation.variables?.userId ?? null)
-                : null
-            }
-            reasonByUserId={spammerReviewReasons}
-            onToggleCandidate={handleSpammerCandidateToggle}
-            onReasonChange={handleSpammerReviewReasonChange}
-            onReview={handleSpammerReview}
-            onOpenDiagnostics={handleSpammerCandidateDiagnostics}
-            onRetry={handleSpammerReviewRetry}
+            onOpen={() => setSpammerReviewOpen(true)}
           />
 
           {dashboardQuery.error && dashboard ? (
@@ -3275,6 +3130,20 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
         </>
       ) : null}
+
+      <SpammerReviewSheet
+        open={spammerReviewOpen}
+        metrics={spammerReviewMetricsQuery.data ?? null}
+        candidates={spammerReviewQueueQuery.data?.items ?? []}
+        isLoading={
+          (spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data) ||
+          (spammerReviewMetricsQuery.isLoading && !spammerReviewMetricsQuery.data)
+        }
+        error={spammerReviewQueueQuery.error ?? spammerReviewMetricsQuery.error}
+        onClose={() => setSpammerReviewOpen(false)}
+        onRetry={handleSpammerReviewRetry}
+        onOpenDiagnostics={handleSpammerCandidateDiagnostics}
+      />
 
       <SpammerDiagnosticsSheet
         open={Boolean(spammerDiagnosticsTarget)}
