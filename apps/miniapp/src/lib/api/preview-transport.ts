@@ -764,6 +764,10 @@ function addHours(value: Date, hours: number): Date {
   return new Date(value.getTime() + hours * 60 * 60 * 1_000);
 }
 
+function addMinutes(value: Date, minutes: number): Date {
+  return new Date(value.getTime() + minutes * 60 * 1_000);
+}
+
 function addDays(value: Date, days: number): Date {
   return addHours(value, days * 24);
 }
@@ -4214,6 +4218,7 @@ function createPreviewSpammerReviewCandidates(now: Date): GlobalSpammerReviewCan
 }
 
 function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerReviewCandidate[]) {
+  const now = new Date();
   const pending = candidates.filter((item) => item.status === 'PENDING').length;
   const approved = candidates.filter(
     (item) => item.status === 'APPROVED' || item.status === 'AUTO_APPROVED',
@@ -4245,6 +4250,11 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
     activeRegistry: Math.max(approved, 12),
     expiredRegistry: 0,
     archivedExpired: 4,
+    newCandidates24h: Math.max(pending, 2),
+    autoApproved24h: Math.max(approved, 1),
+    suppressed24h: suppressed,
+    shadowWouldEnforceCount: 3,
+    topCampaigns: createPreviewSpammerCampaigns(now).slice(0, 3),
     enforcementMode: 'enforce',
     falsePositiveCount,
     falsePositiveRate: reviewed > 0 ? falsePositiveCount / reviewed : 0,
@@ -4255,6 +4265,33 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
     })),
     sourceAlerts: [],
   });
+}
+
+function createPreviewSpammerCampaigns(now: Date) {
+  return [
+    {
+      clusterId: 'preview-campaign-domain',
+      signalType: 'DOMAIN',
+      status: 'CONFIRMED',
+      confidenceScore: 0.91,
+      distinctUsersCount: 7,
+      distinctChatsCount: 5,
+      observationsCount: 18,
+      lastSeenAt: addHours(now, -0.8).toISOString(),
+      preview: 'promo-bad.example',
+    },
+    {
+      clusterId: 'preview-campaign-text',
+      signalType: 'TEXT_SIGNATURE',
+      status: 'ACTIVE',
+      confidenceScore: 0.78,
+      distinctUsersCount: 4,
+      distinctChatsCount: 3,
+      observationsCount: 9,
+      lastSeenAt: addHours(now, -2.4).toISOString(),
+      preview: null,
+    },
+  ];
 }
 
 function buildPreviewSpammerDiagnostics(
@@ -4318,12 +4355,21 @@ function buildPreviewSpammerDiagnostics(
         wouldEnforce: true,
         enforced: false,
         confidenceScore: 0.94,
+        policyBand: 'VERY_HIGH',
+        shadowScore: 0.98,
         reason: 'HIGH_FANOUT_6_CHATS_2M',
         expiresAt,
         sourceBreakdown: {
           FANOUT_HIGH: { score: 0.94, count: 2 },
           GRAPH_FANOUT_PATTERN: { score: 0.7, count: 2 },
           GRAPH_TEXT: { score: 0.56, count: 1 },
+        },
+        campaignBreakdown: {
+          'preview-campaign-domain': {
+            confidenceScore: 0.91,
+            distinctUsersCount: 7,
+            distinctChatsCount: 5,
+          },
         },
       },
       registry: {
@@ -4377,6 +4423,17 @@ function buildPreviewSpammerDiagnostics(
           suppressed: 2,
         },
       ],
+      campaigns: createPreviewSpammerCampaigns(now),
+      latestShadowScore: {
+        currentScore: 0.94,
+        v2Score: 0.98,
+        scoreDelta: 0.04,
+        currentBand: 'VERY_HIGH',
+        v2Band: 'CONFIRMED',
+        wouldPromote: false,
+        wouldSuppress: false,
+        createdAt: addMinutes(now, -25).toISOString(),
+      },
     });
   }
 
@@ -4409,9 +4466,20 @@ function buildPreviewSpammerDiagnostics(
       wouldEnforce: isApproved,
       enforced: false,
       confidenceScore,
+      policyBand: isApproved ? 'CONFIRMED' : isSuppressed ? 'LOW' : 'MEDIUM',
+      shadowScore: candidate ? Math.min(1, candidate.confidenceScore + 0.08) : null,
       reason: candidate?.lastReason ?? 'NO_ACTIVE_REGISTRY_ENTRY',
       expiresAt,
       sourceBreakdown: candidate?.sourceBreakdown ?? null,
+      campaignBreakdown: candidate
+        ? {
+            'preview-campaign-domain': {
+              confidenceScore: 0.78,
+              distinctUsersCount: 3,
+              distinctChatsCount: 2,
+            },
+          }
+        : null,
     },
     registry: {
       active: isApproved,
@@ -4472,6 +4540,19 @@ function buildPreviewSpammerDiagnostics(
         suppressed: 2,
       },
     ],
+    campaigns: candidate ? createPreviewSpammerCampaigns(now).slice(0, 1) : [],
+    latestShadowScore: candidate
+      ? {
+          currentScore: candidate.confidenceScore,
+          v2Score: Math.min(1, candidate.confidenceScore + 0.08),
+          scoreDelta: 0.08,
+          currentBand: isApproved ? 'CONFIRMED' : 'MEDIUM',
+          v2Band: isApproved ? 'CONFIRMED' : 'HIGH',
+          wouldPromote: !isApproved && !isSuppressed,
+          wouldSuppress: isSuppressed,
+          createdAt: addMinutes(now, -12).toISOString(),
+        }
+      : null,
   });
 }
 

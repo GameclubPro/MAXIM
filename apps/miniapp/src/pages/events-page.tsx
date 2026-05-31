@@ -1027,6 +1027,96 @@ function formatDiagnosticsConfidenceLevel(value: number | null): string | null {
   return 'низкая';
 }
 
+function resolvePolicyBandLabel(value: string | null | undefined): string {
+  const band = value?.trim().toUpperCase();
+  const labels: Record<string, string> = {
+    LOW: 'низкий',
+    MEDIUM: 'проверка',
+    HIGH: 'высокий',
+    VERY_HIGH: 'очень высокий',
+    CONFIRMED: 'подтвержден',
+  };
+  return labels[band ?? ''] ?? 'не определен';
+}
+
+function resolvePolicyBandTone(value: string | null | undefined): 'danger' | 'warning' | 'neutral' {
+  const band = value?.trim().toUpperCase();
+  if (band === 'CONFIRMED' || band === 'VERY_HIGH') {
+    return 'danger';
+  }
+  if (band === 'HIGH' || band === 'MEDIUM') {
+    return 'warning';
+  }
+  return 'neutral';
+}
+
+function formatShadowScoreLine(
+  shadowScore: GlobalSpammerUserDiagnostics['latestShadowScore'],
+): string | null {
+  if (!shadowScore) {
+    return null;
+  }
+  const delta = Math.round(shadowScore.scoreDelta * 100);
+  const deltaPrefix = delta > 0 ? '+' : '';
+  return `v2 ${formatConfidenceScore(shadowScore.v2Score)} · было ${formatConfidenceScore(
+    shadowScore.currentScore,
+  )} · ${deltaPrefix}${delta} п.п.`;
+}
+
+function resolveCampaignSignalLabel(signalType: string): string {
+  const labels: Record<string, string> = {
+    DOMAIN: 'домен',
+    PHONE: 'телефон',
+    URL: 'ссылка',
+    TEXT_SIGNATURE: 'текст',
+    MEDIA_SIGNATURE: 'медиа',
+    CAMPAIGN: 'кампания',
+    FANOUT_PATTERN: 'схема рассылки',
+  };
+  return labels[signalType] ?? signalType.toLocaleLowerCase('ru-RU');
+}
+
+function buildDiagnosticsCampaignItems(diagnostics: GlobalSpammerUserDiagnostics): Array<{
+  key: string;
+  label: string;
+  meta: string;
+  preview: string | null;
+}> {
+  return diagnostics.campaigns.slice(0, 5).map((campaign) => ({
+    key: campaign.clusterId,
+    label: formatDisplaySentence(resolveCampaignSignalLabel(campaign.signalType)),
+    meta: `${formatConfidenceScore(campaign.confidenceScore)} · ${
+      campaign.distinctUsersCount
+    } ${formatRussianCountLabel(campaign.distinctUsersCount, 'пользователь', 'пользователя', 'пользователей')} · ${
+      campaign.distinctChatsCount
+    } ${formatRussianCountLabel(campaign.distinctChatsCount, 'чат', 'чата', 'чатов')}`,
+    preview: campaign.preview,
+  }));
+}
+
+function resolveDiagnosticsAutoOutcome(diagnostics: GlobalSpammerUserDiagnostics): string {
+  const { policy } = diagnostics;
+  if (policy.adminExempt || policy.registryStatus === 'ADMIN_EXEMPT') {
+    return 'Автоудаление не применяется из-за исключения админа.';
+  }
+  if (policy.registryStatus === 'SUPPRESSED') {
+    return 'Автоудаление не применяется: пользователь исключен из базы.';
+  }
+  if (policy.action === 'DELETE_AND_KICK') {
+    return 'Сейчас бот удалит сообщение и уберет пользователя из чата.';
+  }
+  if (policy.action === 'SHADOW_DELETE_AND_KICK' || policy.shadow) {
+    return 'Сейчас решение пишется в shadow без удаления.';
+  }
+  if (policy.wouldEnforce && !policy.deleteSpammersEnabled) {
+    return 'При включенном автоудалении бот удалит сообщение и уберет пользователя из чата.';
+  }
+  if (policy.registryStatus === 'MEDIUM_REVIEW') {
+    return 'Сейчас пользователь остается в очереди проверки.';
+  }
+  return 'Автоудаление сейчас не сработает.';
+}
+
 type DiagnosticsSignalGroup = {
   key: string;
   label: string;
@@ -1166,15 +1256,21 @@ function buildDiagnosticsPolicyDetails(diagnostics: GlobalSpammerUserDiagnostics
 
 function resolveDiagnosticsReviewActions(
   diagnostics: GlobalSpammerUserDiagnostics,
-): Array<{ action: GlobalSpammerReviewAction; label: string; tone: 'danger' }> {
+): Array<{ action: GlobalSpammerReviewAction; label: string; tone: 'accent' | 'danger' }> {
   const status = diagnostics.policy.registryStatus;
   if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
     return [];
   }
 
+  if (status === 'MEDIUM_REVIEW' || diagnostics.candidate?.status === 'PENDING') {
+    return [
+      { action: 'APPROVE', label: 'Подтвердить', tone: 'accent' },
+      { action: 'SUPPRESS', label: 'Исключить', tone: 'danger' },
+    ];
+  }
+
   if (
     status === 'ACTIVE_CONFIRMED' ||
-    status === 'MEDIUM_REVIEW' ||
     (diagnostics.candidate && diagnostics.candidate.status !== 'SUPPRESSED')
   ) {
     return [{ action: 'SUPPRESS', label: 'Исключить', tone: 'danger' }];
@@ -1260,12 +1356,19 @@ function GlobalSpammerReviewPanel({
   const reviewed = metrics?.reviewed ?? 0;
   const suppressed = metrics?.suppressed ?? 0;
   const expiredRegistry = metrics?.expiredRegistry ?? 0;
+  const newCandidates24h = metrics?.newCandidates24h ?? 0;
+  const autoApproved24h = metrics?.autoApproved24h ?? 0;
+  const shadowWouldEnforceCount = metrics?.shadowWouldEnforceCount ?? 0;
   const sourceAlerts = metrics?.sourceAlerts ?? [];
+  const topCampaigns = metrics?.topCampaigns ?? [];
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const metricChips = [
     `Проверка ${pending}`,
     `Активных ${activeRegistry}`,
     reviewed > 0 ? `Проверено ${reviewed}` : 'Проверено 0',
+    ...(newCandidates24h > 0 ? [`Новых ${newCandidates24h}`] : []),
+    ...(autoApproved24h > 0 ? [`Авто ${autoApproved24h}`] : []),
+    ...(shadowWouldEnforceCount > 0 ? [`Shadow ${shadowWouldEnforceCount}`] : []),
     ...(suppressed > 0 ? [`Исключено ${suppressed}`] : []),
     ...(expiredRegistry > 0 ? [`Истекло ${expiredRegistry}`] : []),
   ];
@@ -1274,7 +1377,8 @@ function GlobalSpammerReviewPanel({
     !errorMessage &&
     candidates.length === 0 &&
     pending === 0 &&
-    sourceAlerts.length === 0;
+    sourceAlerts.length === 0 &&
+    topCampaigns.length === 0;
   if (shouldHide) {
     return null;
   }
@@ -1302,6 +1406,17 @@ function GlobalSpammerReviewPanel({
             >
               {resolveSpammerSourceLabel(alert.source)}:{' '}
               {formatSpammerSourceAlertReason(alert.reason)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {topCampaigns.length > 0 ? (
+        <div className="spammer-review__campaigns" aria-label="Кампании базы спама">
+          {topCampaigns.slice(0, 3).map((campaign) => (
+            <span key={campaign.clusterId}>
+              {formatDisplaySentence(resolveCampaignSignalLabel(campaign.signalType))}:{' '}
+              {formatConfidenceScore(campaign.confidenceScore)}
             </span>
           ))}
         </div>
@@ -1464,6 +1579,11 @@ function SpammerDiagnosticsSheet({
   const actionHint = diagnostics ? resolveDiagnosticsActionHint(diagnostics, reviewActions) : null;
   const confidenceLine = diagnostics ? formatDiagnosticsConfidenceLine(diagnostics) : null;
   const matchLine = diagnostics ? formatDiagnosticsMatchLine(diagnostics) : null;
+  const campaignItems = diagnostics ? buildDiagnosticsCampaignItems(diagnostics) : [];
+  const shadowScoreLine = diagnostics
+    ? formatShadowScoreLine(diagnostics.latestShadowScore)
+    : null;
+  const policyBandTone = diagnostics ? resolvePolicyBandTone(diagnostics.policy.policyBand) : 'neutral';
   const isReviewing = Boolean(reviewingAction);
   const technicalDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const hasTechnicalDetails =
@@ -1570,6 +1690,52 @@ function SpammerDiagnosticsSheet({
               </div>
             ) : null}
           </article>
+
+          <section className="spammer-diagnostics__cockpit" aria-label="Сводка проверки">
+            <div className="spammer-diagnostics__scoreline">
+              <span className={`spammer-diagnostics__band is-${policyBandTone}`}>
+                Риск {resolvePolicyBandLabel(diagnostics.policy.policyBand)}
+              </span>
+              {shadowScoreLine ? <span>{shadowScoreLine}</span> : null}
+            </div>
+
+            <dl className="spammer-diagnostics__facts">
+              <div>
+                <dt>Главная причина</dt>
+                <dd>{resolveDiagnosticsReason(diagnostics)}</dd>
+              </div>
+              <div>
+                <dt>Действие</dt>
+                <dd>{resolveDiagnosticsAutoOutcome(diagnostics)}</dd>
+              </div>
+            </dl>
+
+            {signalGroups.length > 0 ? (
+              <div className="spammer-diagnostics__key-signals">
+                <span>Ключевые сигналы</span>
+                <ul>
+                  {signalGroups.slice(0, 5).map((group) => (
+                    <li key={group.key}>{formatDiagnosticsSignalSummary(group)}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {campaignItems.length > 0 ? (
+              <div className="spammer-diagnostics__campaigns">
+                <span>Связанные кампании</span>
+                <div>
+                  {campaignItems.map((campaign) => (
+                    <article key={campaign.key}>
+                      <strong>{campaign.label}</strong>
+                      <span>{campaign.meta}</span>
+                      {campaign.preview ? <small>{campaign.preview}</small> : null}
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </section>
 
           {hasTechnicalDetails ? (
             <details

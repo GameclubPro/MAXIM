@@ -1772,6 +1772,33 @@ export const globalSpammerReviewQueueSchema = z.object({
 });
 export type GlobalSpammerReviewQueue = z.infer<typeof globalSpammerReviewQueueSchema>;
 
+export const globalSpammerCampaignSummarySchema = z.object({
+  clusterId: z.string(),
+  signalType: z.string(),
+  status: z.string(),
+  confidenceScore: z.number().min(0).max(1),
+  distinctUsersCount: z.number().int().min(0),
+  distinctChatsCount: z.number().int().min(0),
+  observationsCount: z.number().int().min(0),
+  lastSeenAt: z.string().datetime(),
+  preview: z.string().nullable(),
+});
+export type GlobalSpammerCampaignSummary = z.infer<typeof globalSpammerCampaignSummarySchema>;
+
+export const globalSpammerShadowScoreSummarySchema = z.object({
+  currentScore: z.number().min(0).max(1),
+  v2Score: z.number().min(0).max(1),
+  scoreDelta: z.number().min(-1).max(1),
+  currentBand: z.string(),
+  v2Band: z.string(),
+  wouldPromote: z.boolean(),
+  wouldSuppress: z.boolean(),
+  createdAt: z.string().datetime(),
+});
+export type GlobalSpammerShadowScoreSummary = z.infer<
+  typeof globalSpammerShadowScoreSummarySchema
+>;
+
 export const globalSpammerReviewMetricsSchema = z.object({
   pending: z.number().int().min(0),
   approved: z.number().int().min(0),
@@ -1780,6 +1807,11 @@ export const globalSpammerReviewMetricsSchema = z.object({
   activeRegistry: z.number().int().min(0).default(0),
   expiredRegistry: z.number().int().min(0).default(0),
   archivedExpired: z.number().int().min(0).default(0),
+  newCandidates24h: z.number().int().min(0).default(0),
+  autoApproved24h: z.number().int().min(0).default(0),
+  suppressed24h: z.number().int().min(0).default(0),
+  shadowWouldEnforceCount: z.number().int().min(0).default(0),
+  topCampaigns: z.array(globalSpammerCampaignSummarySchema).default([]),
   enforcementMode: z.enum(['enforce', 'shadow']).default('enforce'),
   falsePositiveCount: z.number().int().min(0),
   falsePositiveRate: z.number().min(0).max(1),
@@ -1840,15 +1872,20 @@ export const globalSpammerPolicyDecisionSchema = z.object({
   registryStatus: globalSpammerRegistryStatusSchema,
   action: globalSpammerPolicyActionSchema,
   enforcementMode: z.enum(['enforce', 'shadow']),
+  policyBand: z
+    .enum(['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH', 'CONFIRMED'])
+    .default('LOW'),
   deleteSpammersEnabled: z.boolean(),
   adminExempt: z.boolean(),
   shadow: z.boolean(),
   wouldEnforce: z.boolean(),
   enforced: z.boolean(),
   confidenceScore: z.number().min(0).max(1).nullable(),
+  shadowScore: z.number().min(0).max(1).nullable().default(null),
   reason: z.string(),
   expiresAt: z.string().datetime().nullable(),
   sourceBreakdown: z.unknown().nullable(),
+  campaignBreakdown: z.unknown().nullable().default(null),
 });
 export type GlobalSpammerPolicyDecision = z.infer<typeof globalSpammerPolicyDecisionSchema>;
 
@@ -1917,6 +1954,8 @@ export const globalSpammerUserDiagnosticsSchema = z.object({
       suppressed: z.number().int().min(0),
     }),
   ),
+  campaigns: z.array(globalSpammerCampaignSummarySchema).default([]),
+  latestShadowScore: globalSpammerShadowScoreSummarySchema.nullable().default(null),
 });
 export type GlobalSpammerUserDiagnostics = z.infer<typeof globalSpammerUserDiagnosticsSchema>;
 

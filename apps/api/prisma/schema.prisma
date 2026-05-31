@@ -748,6 +748,11 @@ model SpammerObservation {
   messageId         String?   @map("message_id")
   evidenceHash      String    @map("evidence_hash")
   evidence          Json?
+  normalizedFeatures Json     @default("{}") @map("normalized_features")
+  ttlDays           Int       @default(14) @map("ttl_days")
+  explainReason     String    @default("") @map("explain_reason")
+  privacyClass      String    @default("STANDARD") @map("privacy_class")
+  rawEvidenceExpiresAt DateTime? @map("raw_evidence_expires_at")
   observedAt        DateTime  @default(now()) @map("observed_at")
   expiresAt         DateTime  @map("expires_at")
   suppressedAt      DateTime? @map("suppressed_at")
@@ -762,7 +767,60 @@ model SpammerObservation {
   @@index([source, observedAt(sort: Desc)], map: "spammer_observations_source_observed_at_idx")
   @@index([expiresAt], map: "spammer_observations_expires_at_idx")
   @@index([suppressedAt], map: "spammer_observations_suppressed_at_idx")
+  @@index([privacyClass, rawEvidenceExpiresAt], map: "spammer_observations_privacy_raw_expiry_idx")
   @@map("spammer_observations")
+}
+
+model SpammerCampaignCluster {
+  id                 String    @id @default(cuid())
+  clusterKey         String    @unique @map("cluster_key")
+  signalType         String    @map("signal_type")
+  signalHash         String    @map("signal_hash")
+  signalValuePreview String?   @map("signal_value_preview")
+  status             String    @default("SUSPECTED")
+  confidenceScore    Float     @default(0) @map("confidence_score")
+  firstSeenAt        DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt         DateTime  @default(now()) @map("last_seen_at")
+  lastObservationId  String?   @map("last_observation_id")
+  distinctUsersCount Int       @default(1) @map("distinct_users_count")
+  distinctChatsCount Int       @default(0) @map("distinct_chats_count")
+  observationsCount  Int       @default(1) @map("observations_count")
+  sourceBreakdown    Json      @default("{}") @map("source_breakdown")
+  reviewedAt         DateTime? @map("reviewed_at")
+  reviewedByUserId   String?   @map("reviewed_by_user_id")
+  reviewReason       String?   @map("review_reason")
+  expiresAt          DateTime? @map("expires_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  members SpammerCampaignClusterMember[]
+
+  @@unique([signalType, signalHash], map: "spammer_campaign_clusters_type_hash_key")
+  @@index([status, confidenceScore], map: "spammer_campaign_clusters_status_confidence_idx")
+  @@index([lastSeenAt(sort: Desc)], map: "spammer_campaign_clusters_last_seen_idx")
+  @@index([expiresAt], map: "spammer_campaign_clusters_expires_at_idx")
+  @@map("spammer_campaign_clusters")
+}
+
+model SpammerCampaignClusterMember {
+  clusterId         String   @map("cluster_id")
+  userId            String   @map("user_id")
+  chatId            String?  @map("chat_id")
+  firstSeenAt       DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt        DateTime @default(now()) @map("last_seen_at")
+  observationsCount Int      @default(1) @map("observations_count")
+  lastObservationId String?  @map("last_observation_id")
+  lastSource        String   @map("last_source")
+  lastReason        String   @map("last_reason")
+  lastScore         Float    @default(0) @map("last_score")
+  memberScore       Float    @default(0) @map("member_score")
+
+  cluster SpammerCampaignCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+
+  @@id([clusterId, userId])
+  @@index([userId, lastSeenAt(sort: Desc)], map: "spammer_campaign_members_user_last_idx")
+  @@index([clusterId, memberScore], map: "spammer_campaign_members_cluster_score_idx")
+  @@map("spammer_campaign_cluster_members")
 }
 
 model SpammerGraphSignal {
@@ -812,21 +870,71 @@ model GlobalSpammerEnforcementDecision {
   registryStatus        String    @map("registry_status")
   decision              String
   enforcementMode       String    @map("enforcement_mode")
+  policyBand            String    @default("LOW") @map("policy_band")
   deleteSpammersEnabled Boolean   @map("delete_spammers_enabled")
   adminExempt           Boolean   @default(false) @map("admin_exempt")
   shadow                Boolean   @default(false)
   wouldEnforce          Boolean   @default(false) @map("would_enforce")
   enforced              Boolean   @default(false)
   confidenceScore       Float?    @map("confidence_score")
+  shadowScore           Float?    @map("shadow_score")
   reason                String
   expiresAt             DateTime? @map("expires_at")
   sourceBreakdown       Json?     @map("source_breakdown")
+  campaignBreakdown     Json?     @map("campaign_breakdown")
   createdAt             DateTime  @default(now()) @map("created_at")
 
   @@index([userId, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_user_created_idx")
   @@index([chatId, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_chat_created_idx")
   @@index([shadow, createdAt(sort: Desc)], map: "global_spammer_enforcement_decisions_shadow_created_idx")
   @@map("global_spammer_enforcement_decisions")
+}
+
+model GlobalSpammerShadowScore {
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  chatId             String?   @map("chat_id")
+  messageId          String?   @map("message_id")
+  observationId      String?   @map("observation_id")
+  trigger            String
+  currentScore       Float     @map("current_score")
+  v2Score            Float     @map("v2_score")
+  scoreDelta         Float     @map("score_delta")
+  currentBand        String    @map("current_band")
+  v2Band             String    @map("v2_band")
+  wouldPromote       Boolean   @default(false) @map("would_promote")
+  wouldSuppress      Boolean   @default(false) @map("would_suppress")
+  humanReviewOutcome String?   @map("human_review_outcome")
+  reviewedAt         DateTime? @map("reviewed_at")
+  reviewedByUserId   String?   @map("reviewed_by_user_id")
+  sourceBreakdown    Json      @default("{}") @map("source_breakdown")
+  campaignBreakdown  Json      @default("{}") @map("campaign_breakdown")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_user_created_idx")
+  @@index([chatId, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_chat_created_idx")
+  @@index([v2Band, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_band_created_idx")
+  @@index([wouldPromote, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_promote_created_idx")
+  @@map("global_spammer_shadow_scores")
+}
+
+model GlobalSpammerReviewFeedback {
+  id                    String   @id @default(cuid())
+  userId                String   @map("user_id")
+  chatId                String?  @map("chat_id")
+  reviewerUserId        String   @map("reviewer_user_id")
+  action                String
+  reason                String
+  candidateStatusBefore String?  @map("candidate_status_before")
+  confidenceScoreBefore Float?   @map("confidence_score_before")
+  sourceBreakdown       Json?    @map("source_breakdown")
+  campaignBreakdown     Json?    @map("campaign_breakdown")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)], map: "global_spammer_review_feedback_user_created_idx")
+  @@index([chatId, createdAt(sort: Desc)], map: "global_spammer_review_feedback_chat_created_idx")
+  @@index([action, createdAt(sort: Desc)], map: "global_spammer_review_feedback_action_created_idx")
+  @@map("global_spammer_review_feedback")
 }
 
 model BadwordDictionary {

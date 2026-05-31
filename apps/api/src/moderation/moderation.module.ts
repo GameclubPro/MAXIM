@@ -22,6 +22,7 @@ import {
   ModerationService,
 } from './moderation.service';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
+import { GlobalSpammerArchiveRunnerService } from './global-spammer-archive-runner.service';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -48,6 +49,7 @@ const moderationProviders = [
   ModerationExecutionService,
   PrivateControlService,
   GlobalSpammerIntelligenceService,
+  GlobalSpammerArchiveRunnerService,
   RedisCounterService,
   RuleEngineService,
   SanctionService,

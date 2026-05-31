@@ -8,13 +8,58 @@ function createConfigMock(values: Record<string, string | undefined>): ConfigSer
 }
 
 function createPrismaMock() {
+  const registry = new Map<string, any>();
   const observations: any[] = [];
   const candidates = new Map<string, any>();
   const suppressions: any[] = [];
+  const campaignClusters: any[] = [];
+  const campaignMembers: any[] = [];
+  const shadowScores: any[] = [];
+  const reviewFeedback: any[] = [];
+  const applyData = (row: any, data: any) => {
+    const next = { ...row };
+    for (const [key, value] of Object.entries(data ?? {})) {
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'increment' in value
+      ) {
+        next[key] = (next[key] ?? 0) + Number((value as { increment: number }).increment);
+      } else {
+        next[key] = value;
+      }
+    }
+    return next;
+  };
   const globalSpammer = {
-    upsert: jest.fn().mockResolvedValue({}),
-    deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-    findUnique: jest.fn().mockResolvedValue(null),
+    upsert: jest.fn(async (args: any) => {
+      const userId = args.where.userId;
+      const existing = registry.get(userId);
+      const next = {
+        ...(existing ?? {}),
+        ...(existing ? applyData(existing, args.update) : args.create),
+        userId,
+      };
+      registry.set(userId, next);
+      return next;
+    }),
+    deleteMany: jest.fn(async ({ where }: any) => {
+      if (where?.userId?.in) {
+        let count = 0;
+        for (const userId of where.userId.in) {
+          if (registry.delete(userId)) {
+            count += 1;
+          }
+        }
+        return { count };
+      }
+      if (where?.userId) {
+        return { count: registry.delete(where.userId) ? 1 : 0 };
+      }
+      return { count: 0 };
+    }),
+    findUnique: jest.fn(async ({ where }: any) => registry.get(where.userId) ?? null),
     findMany: jest.fn().mockResolvedValue([]),
     count: jest.fn().mockResolvedValue(0),
   };
@@ -41,7 +86,7 @@ function createPrismaMock() {
       return next;
     }),
     findMany: jest.fn().mockResolvedValue([]),
-    findUnique: jest.fn().mockResolvedValue(null),
+    findUnique: jest.fn(async ({ where }: any) => candidates.get(where.userId) ?? null),
     count: jest.fn().mockResolvedValue(0),
   };
   const globalSpammerCandidateChat = {
@@ -120,14 +165,51 @@ function createPrismaMock() {
       }
       return next;
     }),
-    findMany: jest.fn(async ({ where }: any) =>
-      observations.filter(
-        (row) =>
-          row.userId === where.userId &&
-          row.expiresAt > where.expiresAt.gt &&
-          row.suppressedAt === where.suppressedAt,
-      ),
-    ),
+    findMany: jest.fn(async ({ where, orderBy, take }: any) => {
+      let rows = observations.filter((row) => {
+        if (where.userId?.in && !where.userId.in.includes(row.userId)) {
+          return false;
+        }
+        if (typeof where.userId === 'string' && row.userId !== where.userId) {
+          return false;
+        }
+        if (where.expiresAt?.gt && !(row.expiresAt > where.expiresAt.gt)) {
+          return false;
+        }
+        if ('suppressedAt' in where && row.suppressedAt !== where.suppressedAt) {
+          return false;
+        }
+        if (
+          where.rawEvidenceExpiresAt?.lte &&
+          !(row.rawEvidenceExpiresAt && row.rawEvidenceExpiresAt <= where.rawEvidenceExpiresAt.lte)
+        ) {
+          return false;
+        }
+        if (where.privacyClass?.not && row.privacyClass === where.privacyClass.not) {
+          return false;
+        }
+        return true;
+      });
+      if (orderBy?.observedAt === 'desc') {
+        rows = rows.sort((left, right) => right.observedAt.getTime() - left.observedAt.getTime());
+      }
+      if (Array.isArray(orderBy) && orderBy.some((item) => item.rawEvidenceExpiresAt === 'asc')) {
+        rows = rows.sort(
+          (left, right) =>
+            (left.rawEvidenceExpiresAt?.getTime() ?? 0) -
+            (right.rawEvidenceExpiresAt?.getTime() ?? 0),
+        );
+      }
+      return typeof take === 'number' ? rows.slice(0, take) : rows;
+    }),
+    update: jest.fn(async ({ where, data }: any) => {
+      const index = observations.findIndex((row) => row.id === where.id);
+      if (index < 0) {
+        throw new Error(`Observation ${where.id} not found`);
+      }
+      observations[index] = { ...observations[index], ...data };
+      return observations[index];
+    }),
     updateMany: jest.fn(async ({ where, data }: any) => {
       let count = 0;
       for (const row of observations) {
@@ -144,10 +226,162 @@ function createPrismaMock() {
     }),
     groupBy: jest.fn().mockResolvedValue([]),
   };
+  const spammerCampaignCluster = {
+    upsert: jest.fn(async ({ where, create, update }: any) => {
+      const index = campaignClusters.findIndex((row) => row.clusterKey === where.clusterKey);
+      const now = new Date();
+      const next = {
+        id: campaignClusters[index]?.id ?? `cluster-${campaignClusters.length + 1}`,
+        createdAt: campaignClusters[index]?.createdAt ?? now,
+        updatedAt: now,
+        ...(index >= 0 ? campaignClusters[index] : {}),
+        ...(index >= 0 ? applyData(campaignClusters[index], update) : create),
+      };
+      if (index >= 0) {
+        campaignClusters[index] = next;
+      } else {
+        campaignClusters.push(next);
+      }
+      return next;
+    }),
+    update: jest.fn(async ({ where, data }: any) => {
+      const index = campaignClusters.findIndex((row) => row.id === where.id);
+      if (index < 0) {
+        throw new Error(`Campaign cluster ${where.id} not found`);
+      }
+      campaignClusters[index] = applyData(campaignClusters[index], {
+        ...data,
+        updatedAt: new Date(),
+      });
+      return campaignClusters[index];
+    }),
+    findMany: jest.fn(async ({ where, take }: any) => {
+      let rows = campaignClusters.filter((row) => {
+        if (where?.lastSeenAt?.gte && !(row.lastSeenAt >= where.lastSeenAt.gte)) {
+          return false;
+        }
+        if (where?.members?.some?.chatId) {
+          return campaignMembers.some(
+            (member) =>
+              member.clusterId === row.id && member.chatId === where.members.some.chatId,
+          );
+        }
+        return true;
+      });
+      rows = rows.sort(
+        (left, right) =>
+          (right.confidenceScore ?? 0) - (left.confidenceScore ?? 0) ||
+          (right.observationsCount ?? 0) - (left.observationsCount ?? 0) ||
+          (right.lastSeenAt?.getTime() ?? 0) - (left.lastSeenAt?.getTime() ?? 0),
+      );
+      return typeof take === 'number' ? rows.slice(0, take) : rows;
+    }),
+  };
+  const spammerCampaignClusterMember = {
+    upsert: jest.fn(async ({ where, create, update }: any) => {
+      const key = where.clusterId_userId;
+      const index = campaignMembers.findIndex(
+        (row) => row.clusterId === key.clusterId && row.userId === key.userId,
+      );
+      const next = {
+        ...(index >= 0 ? campaignMembers[index] : {}),
+        ...(index >= 0 ? applyData(campaignMembers[index], update) : create),
+      };
+      if (index >= 0) {
+        campaignMembers[index] = next;
+      } else {
+        campaignMembers.push(next);
+      }
+      return next;
+    }),
+    findMany: jest.fn(async ({ where, select, include, take }: any) => {
+      let rows = campaignMembers.filter((row) => {
+        if (where.clusterId && row.clusterId !== where.clusterId) {
+          return false;
+        }
+        if (where.userId && row.userId !== where.userId) {
+          return false;
+        }
+        return true;
+      });
+      rows = rows.sort(
+        (left, right) => (right.lastSeenAt?.getTime() ?? 0) - (left.lastSeenAt?.getTime() ?? 0),
+      );
+      if (include?.cluster) {
+        rows = rows.map((row) => ({
+          ...row,
+          cluster: campaignClusters.find((cluster) => cluster.id === row.clusterId),
+        }));
+      }
+      if (select?.userId || select?.chatId) {
+        rows = rows.map((row) => ({
+          ...(select.userId ? { userId: row.userId } : {}),
+          ...(select.chatId ? { chatId: row.chatId } : {}),
+        }));
+      }
+      return typeof take === 'number' ? rows.slice(0, take) : rows;
+    }),
+  };
+  const globalSpammerShadowScore = {
+    create: jest.fn(async ({ data }: any) => {
+      const row = {
+        id: `shadow-${shadowScores.length + 1}`,
+        createdAt: new Date(),
+        humanReviewOutcome: null,
+        reviewedAt: null,
+        reviewedByUserId: null,
+        ...data,
+      };
+      shadowScores.push(row);
+      return row;
+    }),
+    count: jest.fn(async ({ where }: any) =>
+      shadowScores.filter(
+        (row) =>
+          (!where.createdAt?.gte || row.createdAt >= where.createdAt.gte) &&
+          (!('wouldPromote' in where) || row.wouldPromote === where.wouldPromote) &&
+          (!where.chatId || row.chatId === where.chatId),
+      ).length,
+    ),
+    findFirst: jest.fn(async ({ where }: any) =>
+      [...shadowScores]
+        .filter((row) => row.userId === where.userId)
+        .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null,
+    ),
+    updateMany: jest.fn(async ({ where, data }: any) => {
+      let count = 0;
+      for (const row of shadowScores) {
+        if (
+          row.userId === where.userId &&
+          (!('humanReviewOutcome' in where) || row.humanReviewOutcome === where.humanReviewOutcome)
+        ) {
+          Object.assign(row, data);
+          count += 1;
+        }
+      }
+      return { count };
+    }),
+  };
+  const globalSpammerReviewFeedback = {
+    create: jest.fn(async ({ data }: any) => {
+      const row = {
+        id: `feedback-${reviewFeedback.length + 1}`,
+        createdAt: new Date(),
+        ...data,
+      };
+      reviewFeedback.push(row);
+      return row;
+    }),
+  };
 
   return {
+    registry,
     observations,
     candidates,
+    campaignClusters,
+    campaignMembers,
+    shadowScores,
+    reviewFeedback,
     spammerGraphSignalRows,
     prisma: {
       chat,
@@ -160,6 +394,10 @@ function createPrismaMock() {
       globalSpammerCandidateChat,
       globalSpammerSuppression,
       globalSpammerEnforcementDecision,
+      spammerCampaignCluster,
+      spammerCampaignClusterMember,
+      globalSpammerShadowScore,
+      globalSpammerReviewFeedback,
       $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
     },
   };
@@ -215,6 +453,78 @@ describe('GlobalSpammerIntelligenceService', () => {
           sourceBreakdown: expect.objectContaining({
             FANOUT_HIGH: expect.any(Object),
           }),
+        }),
+      }),
+    );
+  });
+
+  it('stores risk-ledger metadata and prunes raw evidence after retention', async () => {
+    const { observations, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    const observedAt = new Date('2026-05-29T12:00:00.000Z');
+
+    await service.recordObservation({
+      userId: 'user-ledger',
+      source: 'COMMERCIAL_AD',
+      score: 0.74,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-ledger',
+      observedAt,
+      evidence: {
+        excerpt:
+          'Продам рекламный доступ сегодня: https://Bad.Example/order?utm=spam +7 (999) 123-45-67',
+        mediaFileId: 'photo-cdn-123456789',
+      },
+    });
+
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        userId: 'user-ledger',
+        normalizedFeatures: expect.objectContaining({
+          source: 'COMMERCIAL_AD',
+          ttlDays: 10,
+          domains: expect.arrayContaining(['bad.example']),
+          urls: expect.arrayContaining(['https://bad.example/order?utm=spam']),
+          phoneHashes: expect.arrayContaining([expect.any(String)]),
+          mediaSignatures: expect.arrayContaining([expect.any(String)]),
+        }),
+        ttlDays: 10,
+        explainReason: expect.stringContaining('COMMERCIAL_AD'),
+        privacyClass: 'HIGH_SENSITIVITY',
+        rawEvidenceExpiresAt: expect.any(Date),
+      }),
+    );
+
+    await expect(
+      service.pruneExpiredRawEvidence({
+        now: new Date('2026-06-20T12:00:00.000Z'),
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        scanned: 1,
+        pruned: 1,
+      }),
+    );
+
+    expect(prisma.spammerObservation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          privacyClass: 'MINIMIZED',
+          rawEvidenceExpiresAt: null,
+          evidence: expect.objectContaining({
+            rawEvidencePruned: true,
+            domains: expect.arrayContaining(['bad.example']),
+            phoneHashes: expect.arrayContaining([expect.any(String)]),
+          }),
+        }),
+      }),
+    );
+    expect(observations[0]).toEqual(
+      expect.objectContaining({
+        privacyClass: 'MINIMIZED',
+        rawEvidenceExpiresAt: null,
+        evidence: expect.objectContaining({
+          rawEvidencePruned: true,
         }),
       }),
     );
@@ -606,8 +916,87 @@ describe('GlobalSpammerIntelligenceService', () => {
 
     expect(spammerGraphSignalRows).toHaveLength(4);
     expect(
-      observations.some((row) => row.userId === 'user-graph-2' && row.source === 'GRAPH_DOMAIN'),
-    ).toBe(true);
+      observations.find((row) => row.userId === 'user-graph-2' && row.source === 'GRAPH_DOMAIN'),
+    ).toEqual(
+      expect.objectContaining({
+        normalizedFeatures: expect.objectContaining({
+          domains: expect.arrayContaining(['bad.example']),
+        }),
+        explainReason: expect.stringContaining('GRAPH_DOMAIN'),
+        privacyClass: 'STANDARD',
+      }),
+    );
+  });
+
+  it('links campaign clusters into shadow scoring and diagnostics', async () => {
+    const { campaignClusters, campaignMembers, prisma, shadowScores } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-campaign-1',
+      source: 'COMMERCIAL_AD',
+      score: 0.72,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-1',
+      evidence: { excerpt: 'Промо https://network.example/order общий текст кампании сегодня' },
+    });
+    await service.recordObservation({
+      userId: 'user-campaign-2',
+      source: 'COMMERCIAL_AD',
+      score: 0.72,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-2',
+      evidence: { excerpt: 'Промо https://network.example/order общий текст кампании сегодня' },
+    });
+
+    expect(campaignClusters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: 'ACTIVE',
+          distinctUsersCount: 2,
+          distinctChatsCount: 2,
+        }),
+      ]),
+    );
+    expect(campaignMembers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ userId: 'user-campaign-1' }),
+        expect.objectContaining({ userId: 'user-campaign-2' }),
+      ]),
+    );
+    const latestShadowScore = shadowScores.at(-1);
+    expect(latestShadowScore).toEqual(
+      expect.objectContaining({
+        userId: 'user-campaign-2',
+        currentScore: expect.any(Number),
+        v2Score: expect.any(Number),
+        campaignBreakdown: expect.any(Object),
+      }),
+    );
+    expect(latestShadowScore.v2Score).toBeGreaterThan(latestShadowScore.currentScore);
+
+    await expect(
+      service.getUserDiagnostics({
+        chatId: 'chat-2',
+        userId: 'user-campaign-2',
+        deleteSpammersEnabled: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        campaigns: expect.arrayContaining([
+          expect.objectContaining({
+            distinctUsersCount: 2,
+          }),
+        ]),
+        latestShadowScore: expect.objectContaining({
+          v2Score: latestShadowScore.v2Score,
+        }),
+        policy: expect.objectContaining({
+          shadowScore: latestShadowScore.v2Score,
+          campaignBreakdown: expect.any(Object),
+        }),
+      }),
+    );
   });
 
   it('suppresses graph observations created during an active suppression window', async () => {
@@ -705,6 +1094,7 @@ describe('GlobalSpammerIntelligenceService', () => {
           decision: 'SHADOW_DELETE_AND_KICK',
           enforced: false,
           shadow: true,
+          policyBand: 'CONFIRMED',
         }),
       }),
     );
@@ -722,6 +1112,7 @@ describe('GlobalSpammerIntelligenceService', () => {
           decision: 'DELETE_AND_KICK',
           enforced: true,
           shadow: false,
+          policyBand: 'CONFIRMED',
         }),
       }),
     );
@@ -738,6 +1129,116 @@ describe('GlobalSpammerIntelligenceService', () => {
       expect.objectContaining({
         registryStatus: 'ADMIN_EXEMPT',
         action: 'NONE',
+      }),
+    );
+  });
+
+  it('records shadow and campaign context with policy decisions', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-policy-context',
+      source: 'FANOUT_HIGH',
+      score: 0.94,
+      reason: 'HIGH_FANOUT_6_CHATS_2M',
+      chatId: 'chat-policy',
+      evidence: {
+        uniqueChats: 6,
+        windowSec: 120,
+        excerpt: 'Одинаковая рассылка https://context.example/join сегодня',
+      },
+    });
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-policy',
+        userId: 'user-policy-context',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        policyBand: 'CONFIRMED',
+        shadowScore: expect.any(Number),
+        campaignBreakdown: expect.any(Object),
+      }),
+    );
+
+    expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          policyBand: 'CONFIRMED',
+          shadowScore: expect.any(Number),
+          campaignBreakdown: expect.any(Object),
+        }),
+      }),
+    );
+  });
+
+  it('records review feedback and marks shadow scores with human outcomes', async () => {
+    const { candidates, prisma, reviewFeedback, shadowScores } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-review-feedback',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-review',
+      evidence: {
+        uniqueChats: 5,
+        windowSec: 120,
+        excerpt: 'Повторная рассылка https://feedback.example/order сегодня',
+      },
+    });
+
+    await expect(
+      service.reviewCandidate({
+        chatId: 'chat-review',
+        userId: 'user-review-feedback',
+        reviewerUserId: 'admin-reviewer',
+        action: 'SUPPRESS',
+        reason: 'false positive from local context',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'SUPPRESSED',
+      }),
+    );
+
+    expect(reviewFeedback).toEqual([
+      expect.objectContaining({
+        userId: 'user-review-feedback',
+        reviewerUserId: 'admin-reviewer',
+        action: 'SUPPRESS',
+        candidateStatusBefore: 'PENDING',
+        confidenceScoreBefore: expect.any(Number),
+        campaignBreakdown: expect.any(Object),
+      }),
+    ]);
+    expect(candidates.get('user-review-feedback')).toEqual(
+      expect.objectContaining({
+        status: 'SUPPRESSED',
+        falsePositive: true,
+        reviewReason: 'false positive from local context',
+      }),
+    );
+    expect(shadowScores).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          humanReviewOutcome: 'SUPPRESS',
+          reviewedByUserId: 'admin-reviewer',
+        }),
+      ]),
+    );
+    expect(prisma.globalSpammerShadowScore.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          humanReviewOutcome: 'SUPPRESS',
+        }),
       }),
     );
   });
