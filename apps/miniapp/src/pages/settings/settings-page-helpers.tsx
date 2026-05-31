@@ -2035,11 +2035,18 @@ export type BotMessageEditorProps = {
 };
 
 export function BotMessageEditor(props: BotMessageEditorProps) {
+  const defaultValue = getSpeechTemplateFallback(
+    props.botSpeechStyle,
+    BOT_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
+    props.botSpeechPreviewContext,
+  );
+
   return (
     <Suspense fallback={null}>
       <LazyBotSpeechMessageEditorSheet
         title={BOT_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
         value={props.value}
+        defaultValue={defaultValue}
         ariaLabel="Редактор текста сообщения"
         onChange={props.onChange}
         onReset={props.onReset}
@@ -2083,11 +2090,18 @@ export function areBroadcastPlannerStatesEqual(
 }
 
 export function WarnMessageEditor(props: WarnMessageEditorProps) {
+  const defaultValue = getSpeechTemplateFallback(
+    props.botSpeechStyle,
+    WARN_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
+    props.botSpeechPreviewContext,
+  );
+
   return (
     <Suspense fallback={null}>
       <LazyBotSpeechMessageEditorSheet
         title={WARN_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
         value={props.value}
+        defaultValue={defaultValue}
         ariaLabel="Редактор текста предупреждения"
         onChange={props.onChange}
         onReset={props.onReset}

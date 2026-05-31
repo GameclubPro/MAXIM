@@ -9,6 +9,7 @@ type BotSpeechMessageEditorSheetProps = {
   title: string;
   ariaLabel: string;
   value: string;
+  defaultValue: string;
   onChange: (value: string) => void;
   onReset: () => void;
   onClose: () => void;
@@ -47,6 +48,7 @@ export function BotSpeechMessageEditorSheet({
   title,
   ariaLabel,
   value,
+  defaultValue,
   onChange,
   onReset,
   onClose,
@@ -55,7 +57,8 @@ export function BotSpeechMessageEditorSheet({
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const isDefaultTemplate = value.trim().length === 0;
-  const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - value.length;
+  const editorValue = isDefaultTemplate ? defaultValue : value;
+  const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
 
@@ -118,7 +121,7 @@ export function BotSpeechMessageEditorSheet({
         <header className="bot-message-editor-sheet__header">
           <div className="bot-message-editor-sheet__title-wrap">
             <span className="bot-message-editor-sheet__status">
-              {isDefaultTemplate ? 'Стандартный' : 'Свой текст'}
+              {isDefaultTemplate ? 'Готовый текст' : 'Свой текст'}
             </span>
             <h2>{title}</h2>
           </div>
@@ -141,14 +144,14 @@ export function BotSpeechMessageEditorSheet({
             )}
             aria-live="polite"
           >
-            {value.length}/{BOT_MESSAGE_EDITOR_MAX_LENGTH}
+            {editorValue.length}/{BOT_MESSAGE_EDITOR_MAX_LENGTH}
           </span>
         </div>
 
         <div className="bot-message-editor-sheet__body">
           <MaxRichTextEditor
             ref={editorRef}
-            value={value}
+            value={editorValue}
             onChange={onChange}
             maxLength={BOT_MESSAGE_EDITOR_MAX_LENGTH}
             placeholder="Свой текст"
