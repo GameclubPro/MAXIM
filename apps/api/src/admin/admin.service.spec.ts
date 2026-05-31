@@ -22609,6 +22609,130 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('uses fallback reply messages for comment notification post buttons', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-fallback-1',
+      actorUserId: 'user-2',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-reply-fallback',
+        text: 'Комментарий',
+        authorDisplayName: 'Иван',
+      },
+      createdAt: new Date('2026-03-06T09:05:00.000Z'),
+    });
+    prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
+      {
+        userId: 'user-1',
+        mode: 'ALL',
+      },
+    ]);
+    prisma.auditLog.findMany.mockImplementation(async (args: any) => {
+      if (args?.take === 5) {
+        return [
+          {
+            action: 'AUTO_ATTACH_CHAT_COMMENTS',
+            payload: {
+              threadId: 'chat-thread-reply-fallback',
+              messageId: 'mid-original-post',
+              replyMessageId: 'mid-fallback-reply',
+              deliveryMode: 'reply_message',
+            },
+          },
+        ];
+      }
+
+      return [];
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockImplementation(async (messageId: string) =>
+        messageId === 'mid-fallback-reply'
+          ? 'https://max.ru/chats/chat-1/message/fallback-reply'
+          : null,
+      ),
+      getMessageTextAsMarkdown: jest.fn().mockResolvedValue('Исходный пост\nВторая строка'),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'private-notification-1',
+        url: null,
+      }),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue(
+        createManagedEntityHeaderFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          entityType: 'chat',
+          link: 'https://max.ru/chats/chat-1',
+        }),
+      ),
+    });
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-reply-fallback') as string;
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-2',
+        username: 'ivan',
+        displayName: 'Иван',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Комментарий',
+      },
+    );
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    expect(maxClient.resolveMessageLink).toHaveBeenNthCalledWith(
+      1,
+      'mid-original-post',
+      expect.objectContaining({
+        sourceTag: 'comment_notification',
+      }),
+    );
+    expect(maxClient.resolveMessageLink).toHaveBeenNthCalledWith(
+      2,
+      'mid-fallback-reply',
+      expect.objectContaining({
+        sourceTag: 'comment_notification',
+      }),
+    );
+    expect(maxClient.getMessageTextAsMarkdown).toHaveBeenCalledWith(
+      'mid-original-post',
+      expect.objectContaining({
+        sourceTag: 'comment_notification',
+      }),
+    );
+    const [, notificationText, notificationOptions] =
+      maxClient.sendMessageImmediateToUser.mock.calls[0] ?? [];
+    expect(notificationText).toContain('Пост: Исходный пост');
+    expect(notificationOptions.buttons[1][0]).toMatchObject({
+      text: 'Открыть пост',
+      url: 'https://max.ru/chats/chat-1/message/fallback-reply',
+    });
+  });
+
   it('renders linked channel titles in private comment notifications', () => {
     const service = new AdminService(
       createPrismaMock() as never,

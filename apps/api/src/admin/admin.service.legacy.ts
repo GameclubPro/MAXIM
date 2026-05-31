@@ -17805,7 +17805,10 @@ export class AdminService implements OnModuleDestroy {
       const persistedUrl = this.normalizeMaxEntityLink(this.readTrimmedString(payload.publishedUrl));
       if (persistedUrl) {
         if (!preview) {
-          const messageId = this.resolveDialogNotificationPostMessageId(row.action, payload);
+          const messageId = this.resolveDialogNotificationPostPreviewMessageId(
+            row.action,
+            payload,
+          );
           preview = messageId
             ? await this.resolveDialogNotificationPostMessagePreview(messageId, params.botId)
             : null;
@@ -17816,22 +17819,62 @@ export class AdminService implements OnModuleDestroy {
 
     for (const row of rows) {
       const payload = this.readObjectPayload(row.payload);
-      const messageId = this.resolveDialogNotificationPostMessageId(row.action, payload);
-      if (!messageId) {
-        continue;
-      }
-
-      const resolvedUrl = await this.resolveDialogNotificationMessageUrl(messageId, params.botId);
-      if (resolvedUrl) {
-        preview ??= await this.resolveDialogNotificationPostMessagePreview(messageId, params.botId);
-        return { url: resolvedUrl, preview };
+      const messageIds = this.resolveDialogNotificationPostMessageIds(row.action, payload);
+      for (const messageId of messageIds) {
+        const resolvedUrl = await this.resolveDialogNotificationMessageUrl(messageId, params.botId);
+        if (resolvedUrl) {
+          if (!preview) {
+            const previewMessageId = this.resolveDialogNotificationPostPreviewMessageId(
+              row.action,
+              payload,
+            );
+            preview = previewMessageId
+              ? await this.resolveDialogNotificationPostMessagePreview(
+                  previewMessageId,
+                  params.botId,
+                )
+              : null;
+          }
+          return { url: resolvedUrl, preview };
+        }
       }
     }
 
     return { url: null, preview };
   }
 
-  private resolveDialogNotificationPostMessageId(
+  private resolveDialogNotificationPostMessageIds(
+    action: string,
+    payload: Record<string, unknown>,
+  ): string[] {
+    const candidates: Array<string | null> = [];
+    if (action === CHANNEL_DIALOG_ACTION_PUBLISH) {
+      candidates.push(this.readTrimmedString(payload.messageId));
+      return this.uniqueDialogNotificationMessageIds(candidates);
+    }
+
+    const deliveryMode = this.readTrimmedString(payload.deliveryMode);
+    if (deliveryMode === 'replace_with_bot_message') {
+      candidates.push(
+        this.readTrimmedString(payload.replacementMessageId),
+        this.readTrimmedString(payload.messageId),
+      );
+      return this.uniqueDialogNotificationMessageIds(candidates);
+    }
+
+    if (deliveryMode === 'reply_message') {
+      candidates.push(
+        this.readTrimmedString(payload.messageId),
+        this.readTrimmedString(payload.replyMessageId),
+      );
+      return this.uniqueDialogNotificationMessageIds(candidates);
+    }
+
+    candidates.push(this.readTrimmedString(payload.messageId));
+    return this.uniqueDialogNotificationMessageIds(candidates);
+  }
+
+  private resolveDialogNotificationPostPreviewMessageId(
     action: string,
     payload: Record<string, unknown>,
   ): string | null {
@@ -17845,6 +17888,22 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.readTrimmedString(payload.messageId);
+  }
+
+  private uniqueDialogNotificationMessageIds(candidates: Array<string | null>): string[] {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+
+    for (const candidate of candidates) {
+      const messageId = this.readTrimmedString(candidate);
+      if (!messageId || seen.has(messageId)) {
+        continue;
+      }
+      seen.add(messageId);
+      ids.push(messageId);
+    }
+
+    return ids;
   }
 
   private async resolveDialogNotificationMessageUrl(
