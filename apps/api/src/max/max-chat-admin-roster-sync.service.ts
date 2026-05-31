@@ -9,6 +9,7 @@ import {
   type ManagedEntitiesPublishedSnapshot,
 } from '../chat-context/chat-context-cache.service';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
@@ -61,6 +62,8 @@ export class MaxChatAdminRosterSyncService {
     @Optional()
     @InjectQueue(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE)
     private readonly queue?: Queue<MaxChatAdminRosterSyncJob>,
+    @Optional()
+    private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
   ) {}
 
   async scheduleDiscoverySnapshotSync(chats: readonly MaxBotChat[]): Promise<void> {
@@ -220,6 +223,7 @@ export class MaxChatAdminRosterSyncService {
           botId,
           botRole: this.resolveManagedEntityAccessRole(access),
         });
+        await this.reconcileNightModeAfterConfirmedAccess(normalized.chatId, botId);
         return true;
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
@@ -1274,6 +1278,28 @@ export class MaxChatAdminRosterSyncService {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to persist bot self access snapshot during chat admin roster sync',
+      );
+    }
+  }
+
+  private async reconcileNightModeAfterConfirmedAccess(
+    chatId: string,
+    botId: string,
+  ): Promise<void> {
+    if (!this.nightModeTransitionScheduler) {
+      return;
+    }
+
+    try {
+      await this.nightModeTransitionScheduler.reconcileChat(chatId);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to reconcile night mode jobs after confirmed MAX access',
       );
     }
   }

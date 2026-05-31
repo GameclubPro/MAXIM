@@ -30,6 +30,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -130,6 +131,8 @@ export class VkPublishService {
     configService: ConfigService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional()
+    private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {
     this.queueBatchSize = configService.get<number>('VK_PARSING_QUEUE_BATCH_SIZE') ?? 100;
     this.publishLeaseTtlMs =
@@ -825,6 +828,15 @@ export class VkPublishService {
     } catch (error) {
       const classified = classifyVkParsingPublishError(error);
       const formattedError = formatVkParsingClassifiedErrorMessage(classified);
+      const accessLossResult =
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+          chatId: post.chatId,
+          botId,
+          entityType,
+          source: 'vk_parsing:publish',
+          operation: 'send',
+          error,
+        });
       await this.prisma.vkParsingPost.update({
         where: { id: post.id },
         data: {
@@ -832,6 +844,14 @@ export class VkPublishService {
           publishLockedAt: null,
           lastError: formattedError,
           autoPublishError: params.auto ? formattedError : post.autoPublishError,
+          ...(accessLossResult?.recorded
+            ? {
+                publishQueuedAt: null,
+                publishScheduledAt: null,
+                publishIdempotencyKey: null,
+                publishReason: null,
+              }
+            : {}),
         },
       });
       throw error;

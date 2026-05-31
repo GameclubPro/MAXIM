@@ -1,16 +1,31 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { ManagedEntityType } from '@maxim/contracts';
-import { ChatEntityType, ManagedEntityAccessState, type Prisma } from '../prisma/prisma-client';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
+import {
+  ChatEntityType,
+  ManagedBroadcastDeliveryStatus,
+  ManagedBroadcastStatus,
+  ManagedEntityAccessState,
+  type Prisma,
+} from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import {
+  MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
+  type MaxChatAdminRosterSyncJob,
+} from './max-chat-admin-roster-sync.queue';
 import { MaxBotLinkService } from './max-bot-link.service';
 
 export type ManagedEntityAccessLossReason =
   | 'chat_not_found'
-  | 'chat_denied'
-  | 'bot_not_chat_member'
+  | 'bot_denied'
+  | 'bot_removed'
   | 'chat_inaccessible';
+
+export type ManagedEntityAccessLossOperation = 'send' | 'delete' | 'read' | 'lookup';
 
 export type MaxTerminalChatActionErrorClassification = {
   kind: 'managed_entity_access_lost' | 'message_not_found' | 'terminal_unknown';
@@ -29,11 +44,36 @@ export type RecordManagedEntityAccessLostParams = {
   source: string;
 };
 
+export type RecordManagedEntityAccessLostFromErrorParams = Omit<
+  RecordManagedEntityAccessLostParams,
+  'reason'
+> & {
+  error: unknown;
+  operation: ManagedEntityAccessLossOperation;
+};
+
 export type RecordManagedEntityAccessLostResult = {
   chatId: string;
   botId: string | null;
   nextOwnerBotId: string | null;
   updatedAccessEdges: number | null;
+  cleanup: ManagedEntityAccessLossCleanupResult;
+};
+
+export type RecordManagedEntityAccessLostFromErrorResult = {
+  classification: MaxTerminalChatActionErrorClassification;
+  reason: ManagedEntityAccessLossReason | null;
+  recorded: RecordManagedEntityAccessLostResult | null;
+};
+
+export type ManagedEntityAccessLossCleanupResult = {
+  nightModeJobsCleared: boolean;
+  canceledBroadcasts: number | null;
+  canceledBroadcastDeliveries: number | null;
+  canceledBroadcastOccurrences: number | null;
+  clearedVkPublishPosts: number | null;
+  pausedVkSources: number | null;
+  removedRosterSyncJobs: number | null;
 };
 
 @Injectable()
@@ -46,13 +86,47 @@ export class ManagedEntityAccessLossService {
     private readonly chatContextCache: ChatContextCacheService,
     @Optional()
     private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
+    @Optional()
+    @InjectQueue(MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE)
+    private readonly rosterSyncQueue?: Queue<MaxChatAdminRosterSyncJob>,
   ) {}
+
+  async recordIfManagedEntityAccessLost(
+    params: RecordManagedEntityAccessLostFromErrorParams,
+  ): Promise<RecordManagedEntityAccessLostFromErrorResult | null> {
+    const classification = classifyMaxTerminalChatActionError(params.error);
+    if (!classification) {
+      return null;
+    }
+
+    const reason = resolveManagedEntityAccessLossReason(params.operation, classification);
+    if (!reason) {
+      return {
+        classification,
+        reason: null,
+        recorded: null,
+      };
+    }
+
+    return {
+      classification,
+      reason,
+      recorded: await this.recordManagedEntityAccessLost({
+        chatId: params.chatId,
+        botId: params.botId,
+        entityType: params.entityType,
+        title: params.title,
+        source: params.source,
+        reason,
+      }),
+    };
+  }
 
   async recordManagedEntityAccessLost(
     params: RecordManagedEntityAccessLostParams,
   ): Promise<RecordManagedEntityAccessLostResult | null> {
     const chatId = params.chatId.trim();
-    if (!chatId) {
+    if (!chatId || isPrivateDirectChatId(chatId)) {
       return null;
     }
 
@@ -80,6 +154,11 @@ export class ManagedEntityAccessLossService {
       reason: params.reason,
       source: params.source,
     });
+    const cleanup = await this.cleanupRuntimeWork({
+      chatId,
+      reason: params.reason,
+      source: params.source,
+    });
 
     await Promise.all([
       this.chatContextCache.invalidate(chatId),
@@ -87,7 +166,6 @@ export class ManagedEntityAccessLossService {
         chatId,
         mapManagedEntityType(entityType),
       ),
-      this.nightModeTransitionScheduler?.clearChatJobs(chatId) ?? Promise.resolve(),
     ]);
 
     this.logger.warn(
@@ -98,6 +176,7 @@ export class ManagedEntityAccessLossService {
         reason: params.reason,
         source: params.source,
         updatedAccessEdges,
+        cleanup,
       },
       'Recorded managed entity access lost',
     );
@@ -107,7 +186,215 @@ export class ManagedEntityAccessLossService {
       botId,
       nextOwnerBotId,
       updatedAccessEdges,
+      cleanup,
     };
+  }
+
+  private async cleanupRuntimeWork(params: {
+    chatId: string;
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): Promise<ManagedEntityAccessLossCleanupResult> {
+    const cleanup: ManagedEntityAccessLossCleanupResult = {
+      nightModeJobsCleared: false,
+      canceledBroadcasts: null,
+      canceledBroadcastDeliveries: null,
+      canceledBroadcastOccurrences: null,
+      clearedVkPublishPosts: null,
+      pausedVkSources: null,
+      removedRosterSyncJobs: null,
+    };
+
+    await Promise.all([
+      this.clearNightModeJobs(params.chatId, cleanup),
+      this.cancelManagedBroadcastRuntime(params, cleanup),
+      this.clearVkParsingRuntime(params, cleanup),
+      this.clearRosterSyncJobs(params.chatId, cleanup),
+    ]);
+
+    return cleanup;
+  }
+
+  private async clearNightModeJobs(
+    chatId: string,
+    cleanup: ManagedEntityAccessLossCleanupResult,
+  ): Promise<void> {
+    if (!this.nightModeTransitionScheduler) {
+      return;
+    }
+    await this.nightModeTransitionScheduler.clearChatJobs(chatId);
+    cleanup.nightModeJobsCleared = true;
+  }
+
+  private async cancelManagedBroadcastRuntime(
+    params: {
+      chatId: string;
+      reason: ManagedEntityAccessLossReason;
+      source: string;
+    },
+    cleanup: ManagedEntityAccessLossCleanupResult,
+  ): Promise<void> {
+    if (
+      typeof this.prisma.managedBroadcast?.updateMany !== 'function' ||
+      typeof this.prisma.managedBroadcastDelivery?.updateMany !== 'function'
+    ) {
+      return;
+    }
+
+    const lastError = this.buildCleanupReasonMessage(params);
+    const activeBroadcastStatuses = [
+      ManagedBroadcastStatus.ACTIVE,
+      ManagedBroadcastStatus.PARTIAL,
+      ManagedBroadcastStatus.FAILED,
+    ];
+    const pendingDeliveryStatuses = [
+      ManagedBroadcastDeliveryStatus.PENDING,
+      ManagedBroadcastDeliveryStatus.SENDING,
+      ManagedBroadcastDeliveryStatus.FAILED,
+    ];
+
+    const [broadcasts, deliveries, occurrences] = await Promise.all([
+      this.prisma.managedBroadcast.updateMany({
+        where: {
+          sourceChatId: params.chatId,
+          status: { in: activeBroadcastStatuses },
+        },
+        data: {
+          status: ManagedBroadcastStatus.CANCELED,
+          nextSendAt: null,
+          lockedAt: null,
+          lastError,
+        },
+      }),
+      this.prisma.managedBroadcastDelivery.updateMany({
+        where: {
+          targetChatId: params.chatId,
+          status: { in: pendingDeliveryStatuses },
+        },
+        data: {
+          status: ManagedBroadcastDeliveryStatus.CANCELED,
+          lockedAt: null,
+          lastError,
+        },
+      }),
+      typeof this.prisma.managedBroadcastOccurrence?.updateMany === 'function'
+        ? this.prisma.managedBroadcastOccurrence.updateMany({
+            where: {
+              sourceChatId: params.chatId,
+              status: { in: activeBroadcastStatuses },
+            },
+            data: {
+              status: ManagedBroadcastStatus.CANCELED,
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    cleanup.canceledBroadcasts = this.readCount(broadcasts);
+    cleanup.canceledBroadcastDeliveries = this.readCount(deliveries);
+    cleanup.canceledBroadcastOccurrences = this.readCount(occurrences);
+  }
+
+  private async clearVkParsingRuntime(
+    params: {
+      chatId: string;
+      reason: ManagedEntityAccessLossReason;
+      source: string;
+    },
+    cleanup: ManagedEntityAccessLossCleanupResult,
+  ): Promise<void> {
+    const lastError = this.buildCleanupReasonMessage(params);
+    const [posts, sources] = await Promise.all([
+      typeof this.prisma.vkParsingPost?.updateMany === 'function'
+        ? this.prisma.vkParsingPost.updateMany({
+            where: {
+              chatId: params.chatId,
+              status: { in: ['NEW', 'FAILED'] },
+              OR: [
+                { publishQueuedAt: { not: null } },
+                { publishLockedAt: { not: null } },
+                { publishIdempotencyKey: { not: null } },
+                { publishReason: { not: null } },
+                { publishScheduledAt: { not: null } },
+              ],
+            },
+            data: {
+              publishQueuedAt: null,
+              publishLockedAt: null,
+              publishIdempotencyKey: null,
+              publishReason: null,
+              publishScheduledAt: null,
+              lastError,
+              autoPublishError: lastError,
+            },
+          })
+        : Promise.resolve(null),
+      typeof this.prisma.vkParsingSource?.updateMany === 'function'
+        ? this.prisma.vkParsingSource.updateMany({
+            where: {
+              chatId: params.chatId,
+              status: 'ACTIVE',
+            },
+            data: {
+              nextSyncAt: null,
+              syncStatus: 'ERROR',
+              syncLockedAt: null,
+              syncLockedBy: null,
+              syncLockDeadlineAt: null,
+              syncHeartbeatAt: null,
+              lastErrorCode: 'max.access_lost',
+              lastError,
+              circuitOpenedAt: new Date(),
+              circuitReasonCode: 'max.access_lost',
+              circuitReason: lastError,
+              circuitRetryAt: null,
+              autoPublishPausedAt: new Date(),
+              autoPublishPausedReason: lastError,
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    cleanup.clearedVkPublishPosts = this.readCount(posts);
+    cleanup.pausedVkSources = this.readCount(sources);
+  }
+
+  private async clearRosterSyncJobs(
+    chatId: string,
+    cleanup: ManagedEntityAccessLossCleanupResult,
+  ): Promise<void> {
+    if (!this.rosterSyncQueue) {
+      return;
+    }
+
+    try {
+      const job = await this.rosterSyncQueue.getJob(this.buildRosterSyncJobId(chatId));
+      if (!job) {
+        cleanup.removedRosterSyncJobs = 0;
+        return;
+      }
+
+      const state = await job.getState();
+      if (state === 'active') {
+        cleanup.removedRosterSyncJobs = 0;
+        return;
+      }
+
+      await job.remove();
+      cleanup.removedRosterSyncJobs = 1;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to clear roster sync jobs after managed entity access loss',
+      );
+    }
+  }
+
+  private buildRosterSyncJobId(chatId: string): string {
+    return `chat-admin-roster-sync__${chatId}`;
   }
 
   private async resolveBotId(
@@ -158,6 +445,18 @@ export class ManagedEntityAccessLossService {
   private readTrimmedString(value: string | null | undefined): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
+
+  private readCount(value: unknown): number | null {
+    const count = (value as { count?: unknown } | null)?.count;
+    return typeof count === 'number' ? count : null;
+  }
+
+  private buildCleanupReasonMessage(params: {
+    reason: ManagedEntityAccessLossReason;
+    source: string;
+  }): string {
+    return `Бот потерял доступ к чату (${params.reason}, ${params.source}); фоновые доставки остановлены.`;
+  }
 }
 
 export function classifyMaxTerminalChatActionError(
@@ -189,7 +488,7 @@ export function classifyMaxTerminalChatActionError(
   if (code === 'chat.denied') {
     return {
       kind: 'managed_entity_access_lost',
-      reason: 'chat_denied',
+      reason: 'bot_denied',
       statusCode,
       code,
       message,
@@ -199,7 +498,7 @@ export function classifyMaxTerminalChatActionError(
   if (message.includes('bot is not a chat member')) {
     return {
       kind: 'managed_entity_access_lost',
-      reason: 'bot_not_chat_member',
+      reason: 'bot_removed',
       statusCode,
       code,
       message,
@@ -223,6 +522,34 @@ export function classifyMaxTerminalChatActionError(
       code,
       message,
     };
+  }
+
+  return null;
+}
+
+export function resolveManagedEntityAccessLossReason(
+  operation: ManagedEntityAccessLossOperation,
+  classification: MaxTerminalChatActionErrorClassification,
+): ManagedEntityAccessLossReason | null {
+  if (classification.kind === 'managed_entity_access_lost') {
+    return classification.reason ?? 'chat_inaccessible';
+  }
+
+  if (classification.kind !== 'terminal_unknown') {
+    return null;
+  }
+
+  if (operation === 'send' || operation === 'read' || operation === 'lookup') {
+    if (classification.statusCode === 404) {
+      return 'chat_not_found';
+    }
+    if (classification.statusCode === 403) {
+      return 'bot_denied';
+    }
+  }
+
+  if (operation === 'delete' && classification.statusCode === 403) {
+    return 'bot_denied';
   }
 
   return null;

@@ -35,6 +35,18 @@ function createJsonFetchResponse(payload: unknown): MockFetchResponse {
   };
 }
 
+function createMaxApiError(status: number, message: string, code?: string): Error {
+  return Object.assign(new Error(message), {
+    response: {
+      status,
+      data: {
+        ...(code ? { code } : {}),
+        message,
+      },
+    },
+  });
+}
+
 function readExecuteRawValues(prisma: { $executeRaw: jest.Mock }): unknown[] {
   return prisma.$executeRaw.mock.calls.flatMap(([query]) => {
     const values = (query as { values?: unknown[] })?.values;
@@ -193,6 +205,9 @@ describe('VkParsingService', () => {
     const publishQueue = {
       add: jest.fn().mockResolvedValue(undefined),
     };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
+    };
     const configService = createConfig({
       VK_SERVICE_TOKEN: 'vk-service-token',
       VK_API_BASE_URL: 'https://api.vk.ru',
@@ -241,6 +256,8 @@ describe('VkParsingService', () => {
       feedService,
       publishQueue as never,
       configService as never,
+      undefined,
+      managedEntityAccessLossService as never,
     );
     const syncService = new VkSyncService(
       prisma as never,
@@ -269,6 +286,7 @@ describe('VkParsingService', () => {
       vkRateLimitService,
       syncQueue,
       publishQueue,
+      managedEntityAccessLossService,
       mediaCache,
       postImportRepository,
       accessService,
@@ -1433,6 +1451,94 @@ describe('VkParsingService', () => {
         source: 'vk_parsing',
       }),
     );
+  });
+
+  it('records MAX access loss and clears VK publish queue when a target chat is denied', async () => {
+    const { service, prisma, maxClient, publishQueue, managedEntityAccessLossService } =
+      createFixture();
+    const source = createSource();
+    const post = createPostRow({
+      source,
+      publishQueuedAt: new Date('2026-05-25T09:59:00.000Z'),
+      publishScheduledAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishIdempotencyKey: 'publish-key-1',
+      publishReason: 'autopublish',
+    });
+    const error = createMaxApiError(
+      403,
+      'Request failed with status code 403',
+      'chat.denied',
+    );
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingSettings.findUnique.mockResolvedValue({
+      id: 'settings-1',
+      chatId: 'channel-1',
+      autoPublishEnabled: true,
+      autoPublishEnabledAt: new Date('2026-05-25T09:00:00.000Z'),
+      stripLinksEnabled: false,
+      skipAdsEnabled: false,
+      createdAt: new Date('2026-05-25T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-25T10:00:00.000Z'),
+    });
+    managedEntityAccessLossService.recordIfManagedEntityAccessLost.mockResolvedValue({
+      classification: {
+        kind: 'managed_entity_access_lost',
+        reason: 'bot_denied',
+        statusCode: 403,
+        code: 'chat.denied',
+        message: 'request failed with status code 403',
+      },
+      reason: 'bot_denied',
+      recorded: {
+        chatId: 'channel-1',
+        botId: 'bot-1',
+        nextOwnerBotId: null,
+        updatedAccessEdges: 1,
+        cleanup: {
+          nightModeJobsCleared: false,
+          canceledBroadcasts: 0,
+          canceledBroadcastDeliveries: 0,
+          canceledBroadcastOccurrences: 0,
+          clearedVkPublishPosts: 1,
+          pausedVkSources: 1,
+          removedRosterSyncJobs: 0,
+        },
+      },
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(error);
+
+    await expect(
+      service.processPublishPostJob({
+        postId: 'post-1',
+        chatId: 'channel-1',
+        reason: 'autopublish',
+        idempotencyKey: 'publish-key-1',
+      }),
+    ).rejects.toBe(error);
+
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      botId: 'bot-1',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'vk_parsing:publish',
+      operation: 'send',
+      error,
+    });
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'post-1' },
+        data: expect.objectContaining({
+          status: 'FAILED',
+          publishQueuedAt: null,
+          publishScheduledAt: null,
+          publishIdempotencyKey: null,
+          publishReason: null,
+          publishLockedAt: null,
+        }),
+      }),
+    );
+    expect(publishQueue.add).not.toHaveBeenCalled();
   });
 
   it('defers VK autopublish jobs while the runtime governor reports pressure', async () => {

@@ -162,6 +162,7 @@ import {
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
@@ -592,6 +593,8 @@ export class AdminService implements OnModuleDestroy {
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
     @Optional()
     private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
+    @Optional()
+    private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),

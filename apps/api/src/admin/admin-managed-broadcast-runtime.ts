@@ -2441,9 +2441,10 @@ export class AdminManagedBroadcastRuntime {
         }
 
         let sentMessageId: string;
+        let resolvedBotId: string | undefined;
         let commentDialogReference: ManagedBroadcastCommentDialogReference | null = null;
         try {
-          const resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
+          resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
           const media = await resolveMedia(resolvedBotId);
           const message = await this.buildManagedBroadcastMessage(
             delivery.targetChatId,
@@ -2485,6 +2486,36 @@ export class AdminManagedBroadcastRuntime {
               firstSendError: error,
               nextSendAt: null,
             };
+          }
+          const accessLossResult =
+            await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+              chatId: delivery.targetChatId,
+              botId: resolvedBotId ?? null,
+              entityType: row.entityType,
+              source: 'managed_broadcast:delivery',
+              operation: 'send',
+              error,
+            });
+          if (accessLossResult?.recorded) {
+            await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
+              targetChatId: delivery.targetChatId,
+              currentDeliveryId: delivery.id,
+              lastError: deliveryFailureMessage,
+            });
+            this.logger.warn(
+              {
+                sourceChatId: row.sourceChatId,
+                broadcastId: row.id,
+                targetChatId: delivery.targetChatId,
+                botId: resolvedBotId ?? null,
+                actorUserId: row.actorUserId,
+                occurrenceIndex: currentOccurrence,
+                reason: accessLossResult.reason,
+                err: deliveryFailureMessage,
+              },
+              'Managed broadcast target lost MAX access and runtime work was stopped',
+            );
+            continue;
           }
           if (
             this.isManagedBroadcastPermanentTargetDeliveryFailure(error, deliveryFailureMessage)

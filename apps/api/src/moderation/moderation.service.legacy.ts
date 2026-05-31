@@ -62,8 +62,7 @@ import {
 import {
   ManagedEntityAccessLossService,
   classifyMaxTerminalChatActionError,
-  type ManagedEntityAccessLossReason,
-  type MaxTerminalChatActionErrorClassification,
+  resolveManagedEntityAccessLossReason,
 } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
@@ -16505,8 +16504,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logTerminalNightModeTransitionError(params);
-    const accessLossReason = this.resolveNightModeTransitionAccessLossReason(
-      params.operation,
+    const accessLossReason = resolveManagedEntityAccessLossReason(
+      this.mapNightModeTransitionOperation(params.operation),
       classification,
     );
     if (!accessLossReason) {
@@ -16522,32 +16521,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return NIGHT_MODE_TRANSITION_PROCESS_STOP;
   }
 
-  private resolveNightModeTransitionAccessLossReason(
+  private mapNightModeTransitionOperation(
     operation: NightModeTransitionOperation,
-    classification: MaxTerminalChatActionErrorClassification,
-  ): ManagedEntityAccessLossReason | null {
-    if (classification.kind === 'managed_entity_access_lost') {
-      return classification.reason ?? 'chat_inaccessible';
-    }
-
-    if (classification.kind !== 'terminal_unknown') {
-      return null;
-    }
-
-    if (operation === 'send-close-notice' || operation === 'send-open-notice') {
-      if (classification.statusCode === 404) {
-        return 'chat_not_found';
-      }
-      if (classification.statusCode === 403) {
-        return 'chat_denied';
-      }
-    }
-
-    if (operation === 'delete-close-notice' && classification.statusCode === 403) {
-      return 'chat_denied';
-    }
-
-    return null;
+  ): 'send' | 'delete' {
+    return operation === 'delete-close-notice' ? 'delete' : 'send';
   }
 
   private logTerminalNightModeTransitionError(params: {

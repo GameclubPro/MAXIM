@@ -7146,7 +7146,7 @@ describe('ModerationService', () => {
       expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
         chatId: 'chat-1',
         botId: 'bot-1',
-        reason: 'chat_denied',
+        reason: 'bot_denied',
         source: 'night_mode_transition:send-open-notice',
       });
     } finally {

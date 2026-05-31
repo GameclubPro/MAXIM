@@ -45,6 +45,9 @@ describe('MaxChatAdminRosterSyncService', () => {
       getJob: jest.fn().mockResolvedValue(null),
       add: jest.fn().mockResolvedValue(undefined),
     };
+    const nightModeTransitionScheduler = {
+      reconcileChat: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new MaxChatAdminRosterSyncService(
       prisma as never,
@@ -53,6 +56,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       maxBotRegistry as never,
       chatContextCache as never,
       queue as never,
+      nightModeTransitionScheduler as never,
     );
 
     return {
@@ -63,6 +67,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       maxBotRegistry,
       chatContextCache,
       queue,
+      nightModeTransitionScheduler,
     };
   }
 
@@ -165,7 +170,14 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
-    const { service, prisma, maxClient, maxBotLinkService, chatContextCache } = createService();
+    const {
+      service,
+      prisma,
+      maxClient,
+      maxBotLinkService,
+      chatContextCache,
+      nightModeTransitionScheduler,
+    } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       { userId: 'user-1' },
       { userId: 'user-3' },
@@ -274,10 +286,12 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100123',
       'chat',
     );
+    expect(nightModeTransitionScheduler.reconcileChat).toHaveBeenCalledWith('-100123');
   });
 
   it('clears stale allowlist rows when no bot keeps admin access', async () => {
-    const { service, prisma, maxClient, chatContextCache } = createService();
+    const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
+      createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       { userId: 'user-7' },
       { userId: 'user-8' },
@@ -313,10 +327,12 @@ describe('MaxChatAdminRosterSyncService', () => {
       '-100124',
       null,
     );
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
   it('retries a fresh webhook bot_added sync while bot admin rights are still propagating', async () => {
-    const { service, prisma, maxClient, chatContextCache } = createService();
+    const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
+      createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
     maxClient.getCurrentChatMemberAccess.mockResolvedValue({
       userId: 'bot-user-1',
@@ -347,6 +363,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
     expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith('-100125', []);
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
   it('keeps non-webhook roster sync reads on the background traffic lane', async () => {
