@@ -34,10 +34,6 @@ type RepairCandidateRow = {
   recentAccessLossSources: string | null;
 };
 
-type NoticeEventExistsRow = {
-  exists: boolean;
-};
-
 type RepairStats = {
   totalCandidates: number;
   sent: number;
@@ -224,17 +220,18 @@ async function hasCloseNoticeEvent(
   prisma: PrismaService,
   candidate: RepairCandidateRow,
 ): Promise<boolean> {
-  const rows = await prisma.$queryRaw<NoticeEventExistsRow[]>(Prisma.sql`
-    select exists (
-      select 1
-      from moderation_events close_notice
-      where close_notice.chat_id = ${candidate.chatId}
-        and close_notice.rule_code = 'NIGHT_MODE_CLOSE_NOTICE'
-        and close_notice.created_at >= ${candidate.scheduledFor} - interval '2 minutes'
-        and close_notice.created_at < ${candidate.sessionEndsAt}
-    ) as "exists"
-  `);
-  return rows[0]?.exists ?? false;
+  const closeNotice = await prisma.moderationEvent.findFirst({
+    where: {
+      chatId: candidate.chatId,
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      createdAt: {
+        gte: new Date(candidate.scheduledFor.getTime() - 2 * 60 * 1000),
+        lt: candidate.sessionEndsAt,
+      },
+    },
+    select: { id: true },
+  });
+  return Boolean(closeNotice);
 }
 
 function renderCandidate(candidate: RepairCandidateRow): Record<string, unknown> {
