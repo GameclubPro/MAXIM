@@ -75,7 +75,9 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    selectedChannelById.set(channel.id, toManagedEntityHeader(channel));
+    const header = toManagedEntityHeader(channel);
+    availableChoiceById.set(channel.id, header);
+    selectedChannelById.set(channel.id, header);
   }
 
   for (const channel of params.managedChannels ?? []) {

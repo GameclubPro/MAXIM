@@ -745,11 +745,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isSyncing: channelsList.isRefreshing,
     phase: channelsList.phase,
   };
-  const requiredSubscriptionEntitiesLoading = channelsQuery.isLoading;
+  const requiredSubscriptionEntitiesLoading =
+    shouldLoadRequiredSubscriptionChannels && (channelsList.isLoading || chatsList.isLoading);
   const requiredSubscriptionEntitiesSyncing =
-    shouldLoadRequiredSubscriptionChannels && channelsQuery.isSyncing;
-  const requiredSubscriptionEntitiesError = channelsQuery.error;
-  const requiredSubscriptionEntitiesBackoffActive = channelsQuery.isBackoffActive;
+    shouldLoadRequiredSubscriptionChannels && (channelsList.isRefreshing || chatsList.isRefreshing);
+  const requiredSubscriptionEntitiesError = channelsList.error ?? chatsList.error;
+  const requiredSubscriptionEntitiesBackoffActive =
+    channelsList.isBackoffActive || chatsList.isBackoffActive;
   const settledChatsListMarker = useMemo(
     () =>
       buildManagedEntitiesSettledMarker({
@@ -857,13 +859,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const requiredSubscriptionChannelCollections = useMemo(
     () =>
       buildRequiredSubscriptionChannelCollections({
-        managedChats: [],
-        managedChannels: channelsQuery.data,
+        managedChats: chatsList.data,
+        managedChannels: channelsList.data,
         resolvedChannels: resolvedRequiredSubscriptionChannelCandidates,
         selectedChannelIds: draft?.requiredSubscriptionChannelIds ?? [],
       }),
     [
-      channelsQuery.data,
+      chatsList.data,
+      channelsList.data,
       draft?.requiredSubscriptionChannelIds,
       resolvedRequiredSubscriptionChannelCandidates,
     ],
@@ -1981,6 +1984,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function refreshRequiredSubscriptionChannels() {
+    setChatsListRefreshRequest((current) => ({
+      nonce: current.nonce + 1,
+      behavior: 'manual',
+    }));
     setRequiredSubscriptionChannelsRefreshRequest((current) => ({
       nonce: current.nonce + 1,
       behavior: 'manual',
@@ -4240,11 +4247,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS
       ? 'Достигнут лимит выбранных чатов и каналов.'
       : requiredSubscriptionUnavailableCount > 0
-        ? 'Нет доступных каналов для добавления. Недоступные каналы показаны ниже.'
-        : 'Нет доступных каналов в списке. Добавьте ссылку на чат или канал вручную.';
+        ? 'Нет доступных чатов или каналов для добавления. Недоступные элементы показаны ниже.'
+        : 'Нет доступных чатов или каналов в списке. Добавьте ссылку вручную.';
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? areChannelsSyncing
-      ? 'Синхронизируем список каналов...'
+      ? 'Синхронизируем список чатов и каналов...'
       : requiredSubscriptionStaleCount > 0
         ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
         : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionTimerBadge}`
@@ -10680,7 +10687,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="managed-giveaway__section required-subscription__board">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
-                            <strong>Каналы</strong>
+                            <strong>Чаты и каналы</strong>
                             <small>
                               {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
@@ -10693,7 +10700,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onToggleHint={toggleHint}
                             label="Пояснение для обязательной подписки"
                           >
-                            В списке только ваши каналы. Чаты и чужие каналы добавляйте ссылкой,
+                            В списке ваши чаты и каналы. Чужие чаты и каналы добавляйте ссылкой,
                             если бот там администратор.
                           </SettingsHintAnchor>
                         </div>
@@ -10828,15 +10835,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         <div className="managed-giveaway__channel-picker">
                           {requiredSubscriptionEntitiesLoading ? (
-                            <span>Загружаем ваши каналы...</span>
+                            <span>Загружаем ваши чаты и каналы...</span>
                           ) : null}
                           {!requiredSubscriptionEntitiesLoading &&
                           requiredSubscriptionEntitiesSyncing ? (
-                            <span>Синхронизируем список каналов...</span>
+                            <span>Синхронизируем список чатов и каналов...</span>
                           ) : null}
                           {requiredSubscriptionEntitiesError ? (
                             <span>
-                              Ошибка загрузки каналов:{' '}
+                              Ошибка загрузки списка:{' '}
                               {formatApiError(requiredSubscriptionEntitiesError)}
                             </span>
                           ) : null}
@@ -10869,8 +10876,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Эти каналы сейчас не удалось подготовить для выбора. Обновите список и
-                              проверьте права.
+                              Эти элементы сейчас не удалось подготовить для выбора. Обновите
+                              список и проверьте права.
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
