@@ -15733,6 +15733,8 @@ describe('ModerationService', () => {
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
       expect(noticeText).toContain('Общий чат');
