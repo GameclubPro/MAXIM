@@ -87,6 +87,7 @@
 - `npm run screenshots:miniapp` defaults to the production app URL; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
 - For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
+- Chat and channel broadcast/autoposting compose screens share components but keep page-level footer/validation copy in `apps/miniapp/src/pages/settings-page.legacy.tsx` and `apps/miniapp/src/pages/channel-settings-page.tsx`; keep those labels synchronized.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.
 - Keep `VkParsingCard` lazy-loaded from chat/channel settings pages; static importing it into those settings routes can push the settings JS chunk over budget.
