@@ -3697,10 +3697,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function toggleBotMessageEditor(key: BotMessageEditorKey) {
+    setOpenWarnEditorKey(null);
     setOpenBotEditorKey((current) => (current === key ? null : key));
   }
 
   function toggleWarnMessageEditor(key: WarnMessageEditorKey) {
+    setOpenBotEditorKey(null);
     setOpenWarnEditorKey((current) => (current === key ? null : key));
   }
 
@@ -5736,6 +5738,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )
                                   }
                                   onReset={() => setFieldValue('linkBotMessageText', '')}
+                                  onClose={() => setOpenBotEditorKey(null)}
                                 />
                               ) : null}
                             </div>
@@ -5789,6 +5792,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )
                                   }
                                   onReset={() => setFieldValue('linkWarnMessageText', '')}
+                                  onClose={() => setOpenWarnEditorKey(null)}
                                 />
                               ) : null}
                             </div>
@@ -6430,6 +6434,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )
                                 }
                                 onReset={() => setFieldValue('greetingBotMessageText', '')}
+                                onClose={() => setOpenBotEditorKey(null)}
                               />
                             ) : null}
                           </div>
@@ -7037,6 +7042,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )
                                 }
                                 onReset={() => setFieldValue('textFiltersBotMessageText', '')}
+                                onClose={() => setOpenBotEditorKey(null)}
                               />
                             ) : null}
                           </div>
@@ -7113,6 +7119,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )
                                 }
                                 onReset={() => setFieldValue('textFiltersWarnMessageText', '')}
+                                onClose={() => setOpenWarnEditorKey(null)}
                               />
                             ) : null}
                           </div>
@@ -7773,6 +7780,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 )
                               }
                               onReset={() => setFieldValue('duplicateBotMessageText', '')}
+                              onClose={() => setOpenBotEditorKey(null)}
                             />
                           ) : null}
                         </div>
@@ -8812,6 +8820,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )
                             }
                             onReset={() => setFieldValue('messageLimitsBotMessageText', '')}
+                            onClose={() => setOpenBotEditorKey(null)}
                           />
                         ) : null}
                       </div>
@@ -9472,6 +9481,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )
                                 }
                                 onReset={() => setFieldValue('nightModeBotMessageText', '')}
+                                onClose={() => setOpenBotEditorKey(null)}
                               />
                             ) : null}
                           </div>
@@ -9549,6 +9559,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )
                                 }
                                 onReset={() => setFieldValue('nightModeOpenMessageText', '')}
+                                onClose={() => setOpenBotEditorKey(null)}
                               />
                             ) : null}
                           </div>
@@ -10876,8 +10887,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Эти элементы сейчас не удалось подготовить для выбора. Обновите
-                              список и проверьте права.
+                              Эти элементы сейчас не удалось подготовить для выбора. Обновите список
+                              и проверьте права.
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
@@ -11040,6 +11051,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )
                             }
                             onReset={() => setFieldValue('requiredSubscriptionBotMessageText', '')}
+                            onClose={() => setOpenBotEditorKey(null)}
                           />
                         ) : null}
                       </div>
@@ -11121,6 +11133,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )
                             }
                             onReset={() => setFieldValue('requiredSubscriptionWarnMessageText', '')}
+                            onClose={() => setOpenWarnEditorKey(null)}
                           />
                         ) : null}
                       </div>

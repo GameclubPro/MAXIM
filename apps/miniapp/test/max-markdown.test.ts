@@ -40,6 +40,16 @@ test('renders every nested rich text modifier combination without leaking marker
   }
 });
 
+test('keeps bot template placeholders literal when requested', () => {
+  assert.equal(
+    renderSupportedMarkdownAsHtml('{message_status} {required_invites_count}', {
+      blockMode: 'inline',
+      preserveCurlyBracePlaceholders: true,
+    }),
+    '{message_status} {required_invites_count}',
+  );
+});
+
 function buildNestedModifierSamples(): string[] {
   const wrappers: Array<[string, string]> = [
     ['**', '**'],

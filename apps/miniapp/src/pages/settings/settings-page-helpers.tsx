@@ -172,6 +172,11 @@ export const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
+const LazyBotSpeechMessageEditorSheet = lazy(() =>
+  import('../../components/bot-speech-message-editor-sheet').then((module) => ({
+    default: module.BotSpeechMessageEditorSheet,
+  })),
+);
 export const LazyBroadcastContentComposer = lazy(
   () => import('../../components/broadcast-content-composer'),
 );
@@ -832,6 +837,26 @@ export const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<
   textFiltersWarn: 'textFiltersWarnMessageText',
 };
 
+const BOT_MESSAGE_EDITOR_SHEET_TITLES: Record<BotMessageEditorKey, string> = {
+  link: 'Объяснение о ссылках',
+  greeting: 'Приветствие',
+  requiredSubscription: 'Объяснение о подписке',
+  invitationAccess: 'Объяснение о приглашениях',
+  textFilters: 'Объяснение о тексте',
+  duplicate: 'Объяснение о дублях',
+  messageLimits: 'Объяснение об ограничениях',
+  phoneNumbers: 'Объяснение о телефонах',
+  night: 'Ночной режим',
+  nightOpen: 'Открытие чата',
+};
+
+const WARN_MESSAGE_EDITOR_SHEET_TITLES: Record<WarnMessageEditorKey, string> = {
+  linkWarn: 'Предупреждение о ссылках',
+  requiredSubscriptionWarn: 'Предупреждение о подписке',
+  invitationAccessWarn: 'Предупреждение о приглашениях',
+  textFiltersWarn: 'Предупреждение о тексте',
+};
+
 export const BOT_SPEECH_SYNC_SETTING_KEYS = [
   'botSpeechStyle',
   ...BOT_SPEECH_EDITABLE_FIELD_KEYS,
@@ -849,34 +874,6 @@ export const BOT_SPEECH_STYLE_SELECTOR_LABELS: Record<BotSpeechStyle, string> = 
   FRIENDLY: 'Друг',
   POLICE: 'Коп',
   IRONIC: 'Шут',
-};
-
-export const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
-  link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
-  greeting: 'Плейсхолдеры: {user}, {greeting}. Поддерживается Markdown MAX.',
-  requiredSubscription:
-    'Плейсхолдеры: {user}, {channels}, {message_status}. Поддерживается Markdown MAX.',
-  invitationAccess:
-    'Плейсхолдеры: {user}, {message_status}, {required_invites}, {required_invites_count}, {invited_count}, {remaining_invites}. Поддерживается Markdown MAX.',
-  textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
-  duplicate:
-    'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {mute_duration}. Старый {ban_duration} тоже поддерживается. Поддерживается Markdown MAX.',
-  messageLimits:
-    'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}, {message_limit_count}, {message_limit_window_hours}. Поддерживается Markdown MAX.',
-  phoneNumbers: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
-  night:
-    'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}. Поддерживается Markdown MAX.',
-  nightOpen:
-    'Плейсхолдеры: {night_window}, {night_timezone}, {opening_status}. Поддерживается Markdown MAX.',
-};
-
-export const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
-  linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
-  requiredSubscriptionWarn:
-    'Плейсхолдеры: {user}, {warning}, {reason}, {channels}. Поддерживается Markdown MAX.',
-  invitationAccessWarn:
-    'Плейсхолдеры: {user}, {warning}, {reason}, {required_invites}, {required_invites_count}, {invited_count}, {remaining_invites}. Поддерживается Markdown MAX.',
-  textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
 
 export type BotSpeechPreviewContext = {
@@ -2034,52 +2031,21 @@ export type BotMessageEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
+  onClose: () => void;
 };
 
-export function BotMessageEditor({
-  editorKey,
-  botSpeechStyle,
-  botSpeechPreviewContext,
-  value,
-  onChange,
-  onReset,
-}: BotMessageEditorProps) {
-  const defaultTemplate = getSpeechTemplateFallback(
-    botSpeechStyle,
-    BOT_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
-    botSpeechPreviewContext,
-  );
-  const templateHint = BOT_MESSAGE_TEMPLATE_HINTS[editorKey];
-  const isDefaultTemplate = value.trim().length === 0;
-  const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
-
+export function BotMessageEditor(props: BotMessageEditorProps) {
   return (
-    <div className="bot-message-editor">
-      <label className="field bot-message-editor__field">
-        <span className="field__label">Текст сообщения</span>
-        <textarea
-          value={editorValue}
-          maxLength={1000}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={defaultTemplate}
-          rows={4}
-        />
-      </label>
-
-      <div className="bot-message-editor__meta">
-        <span className="chip">{isDefaultTemplate ? 'По умолчанию' : 'Кастомный'}</span>
-        <button
-          type="button"
-          className="button button--ghost bot-message-editor__reset"
-          onClick={onReset}
-          disabled={isDefaultTemplate}
-        >
-          Сбросить
-        </button>
-      </div>
-
-      <p className="field__hint bot-message-editor__hint">{templateHint}</p>
-    </div>
+    <Suspense fallback={null}>
+      <LazyBotSpeechMessageEditorSheet
+        title={BOT_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
+        value={props.value}
+        ariaLabel="Редактор текста сообщения"
+        onChange={props.onChange}
+        onReset={props.onReset}
+        onClose={props.onClose}
+      />
+    </Suspense>
   );
 }
 
@@ -2090,6 +2056,7 @@ export type WarnMessageEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
+  onClose: () => void;
 };
 
 export const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
@@ -2115,49 +2082,17 @@ export function areBroadcastPlannerStatesEqual(
   );
 }
 
-export function WarnMessageEditor({
-  editorKey,
-  botSpeechStyle,
-  botSpeechPreviewContext,
-  value,
-  onChange,
-  onReset,
-}: WarnMessageEditorProps) {
-  const defaultTemplate = getSpeechTemplateFallback(
-    botSpeechStyle,
-    WARN_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
-    botSpeechPreviewContext,
-  );
-  const templateHint = WARN_MESSAGE_TEMPLATE_HINTS[editorKey];
-  const isDefaultTemplate = value.trim().length === 0;
-  const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
-
+export function WarnMessageEditor(props: WarnMessageEditorProps) {
   return (
-    <div className="bot-message-editor">
-      <label className="field bot-message-editor__field">
-        <span className="field__label">Текст предупреждения</span>
-        <textarea
-          value={editorValue}
-          maxLength={1000}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={defaultTemplate}
-          rows={3}
-        />
-      </label>
-
-      <div className="bot-message-editor__meta">
-        <span className="chip">{isDefaultTemplate ? 'По умолчанию' : 'Кастомный'}</span>
-        <button
-          type="button"
-          className="button button--ghost bot-message-editor__reset"
-          onClick={onReset}
-          disabled={isDefaultTemplate}
-        >
-          Сбросить
-        </button>
-      </div>
-
-      <p className="field__hint bot-message-editor__hint">{templateHint}</p>
-    </div>
+    <Suspense fallback={null}>
+      <LazyBotSpeechMessageEditorSheet
+        title={WARN_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
+        value={props.value}
+        ariaLabel="Редактор текста предупреждения"
+        onChange={props.onChange}
+        onReset={props.onReset}
+        onClose={props.onClose}
+      />
+    </Suspense>
   );
 }

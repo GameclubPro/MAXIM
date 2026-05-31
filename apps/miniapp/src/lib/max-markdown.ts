@@ -7,11 +7,13 @@ type InlineToken =
 type RenderMarkdownOptions = {
   linkMode?: 'anchor' | 'underline';
   blockMode?: 'paragraphs' | 'raw' | 'inline';
+  preserveCurlyBracePlaceholders?: boolean;
 };
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
 const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
+const CURLY_BRACE_PLACEHOLDER_PATTERN = /^\{[A-Za-z0-9_]+\}/u;
 
 export function stripSupportedMarkdownToPlainText(source: string): string {
   const normalized = source.replace(/\r/g, '').trim();
@@ -109,12 +111,15 @@ export function renderSupportedMarkdownAsHtml(
 
       const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
       if (headingMatch) {
-        const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+        const content = renderInlineTokens(
+          parseInlineTokens(headingMatch[2] ?? '', options),
+          options,
+        );
         renderedLines.push(renderHeadingHtml(content));
         continue;
       }
 
-      renderedLines.push(renderInlineTokens(parseInlineTokens(rawLine), options));
+      renderedLines.push(renderInlineTokens(parseInlineTokens(rawLine, options), options));
     }
 
     return renderedLines.join('\n');
@@ -151,8 +156,10 @@ export function renderSupportedMarkdownAsHtml(
 
       const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
       const content = headingMatch
-        ? renderHeadingHtml(renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options))
-        : renderInlineTokens(parseInlineTokens(line), options);
+        ? renderHeadingHtml(
+            renderInlineTokens(parseInlineTokens(headingMatch[2] ?? '', options), options),
+          )
+        : renderInlineTokens(parseInlineTokens(line, options), options);
 
       if (lines.length > 0 && !previousWasGap) {
         lines.push('<br>');
@@ -174,7 +181,7 @@ export function renderSupportedMarkdownAsHtml(
     }
 
     const renderedLines = paragraphLines.map((line) =>
-      renderInlineTokens(parseInlineTokens(line), options),
+      renderInlineTokens(parseInlineTokens(line, options), options),
     );
     blocks.push(`<p>${renderedLines.join('<br>')}</p>`);
     paragraphLines = [];
@@ -200,7 +207,10 @@ export function renderSupportedMarkdownAsHtml(
     const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
     if (headingMatch) {
       flushParagraph();
-      const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+      const content = renderInlineTokens(
+        parseInlineTokens(headingMatch[2] ?? '', options),
+        options,
+      );
       blocks.push(`<p>${renderHeadingHtml(content)}</p>`);
       continue;
     }
@@ -249,7 +259,7 @@ function readFencedCodeBlock(
   };
 }
 
-function parseInlineTokens(source: string): InlineToken[] {
+function parseInlineTokens(source: string, options: RenderMarkdownOptions = {}): InlineToken[] {
   const tokens: InlineToken[] = [];
   let cursor = 0;
   let plainText = '';
@@ -264,6 +274,15 @@ function parseInlineTokens(source: string): InlineToken[] {
   };
 
   while (cursor < source.length) {
+    if (options.preserveCurlyBracePlaceholders) {
+      const placeholderMatch = CURLY_BRACE_PLACEHOLDER_PATTERN.exec(source.slice(cursor));
+      if (placeholderMatch) {
+        plainText += placeholderMatch[0];
+        cursor += placeholderMatch[0].length;
+        continue;
+      }
+    }
+
     if (
       source[cursor] === '\\' &&
       cursor + 1 < source.length &&
@@ -274,7 +293,7 @@ function parseInlineTokens(source: string): InlineToken[] {
       continue;
     }
 
-    const token = matchToken(source.slice(cursor));
+    const token = matchToken(source.slice(cursor), options);
     if (!token) {
       plainText += source[cursor];
       cursor += 1;
@@ -290,7 +309,10 @@ function parseInlineTokens(source: string): InlineToken[] {
   return tokens;
 }
 
-function matchToken(value: string): { rawLength: number; node: InlineToken } | null {
+function matchToken(
+  value: string,
+  options: RenderMarkdownOptions,
+): { rawLength: number; node: InlineToken } | null {
   const linkMatch = /^\[([^\]\n]+)\]\(([^)\s]+)\)/u.exec(value);
   if (linkMatch) {
     const href = linkMatch[2] ?? '';
@@ -303,7 +325,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
       node: {
         type: 'link',
         href,
-        children: parseInlineTokens(linkMatch[1] ?? ''),
+        children: parseInlineTokens(linkMatch[1] ?? '', options),
       },
     };
   }
@@ -328,7 +350,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
         children: [
           {
             type: 'italic',
-            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? ''),
+            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? '', options),
           },
         ],
       },
@@ -341,7 +363,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
       rawLength: boldMatch[0].length,
       node: {
         type: 'bold',
-        children: parseInlineTokens(boldMatch[1] ?? boldMatch[2] ?? ''),
+        children: parseInlineTokens(boldMatch[1] ?? boldMatch[2] ?? '', options),
       },
     };
   }
@@ -352,7 +374,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
       rawLength: underlineMatch[0].length,
       node: {
         type: 'underline',
-        children: parseInlineTokens(underlineMatch[1] ?? ''),
+        children: parseInlineTokens(underlineMatch[1] ?? '', options),
       },
     };
   }
@@ -363,7 +385,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
       rawLength: strikeMatch[0].length,
       node: {
         type: 'strike',
-        children: parseInlineTokens(strikeMatch[1] ?? ''),
+        children: parseInlineTokens(strikeMatch[1] ?? '', options),
       },
     };
   }
@@ -374,7 +396,7 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
       rawLength: italicMatch[0].length,
       node: {
         type: 'italic',
-        children: parseInlineTokens(italicMatch[1] ?? italicMatch[2] ?? ''),
+        children: parseInlineTokens(italicMatch[1] ?? italicMatch[2] ?? '', options),
       },
     };
   }

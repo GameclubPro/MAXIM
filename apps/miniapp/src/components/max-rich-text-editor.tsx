@@ -24,6 +24,7 @@ type MaxRichTextEditorProps = {
   maxLength: number;
   placeholder: string;
   disabled?: boolean;
+  preserveCurlyBracePlaceholders?: boolean;
   ariaLabel: string;
   className?: string;
   onPasteFiles?: (files: File[]) => void;
@@ -50,6 +51,7 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
       maxLength,
       placeholder,
       disabled = false,
+      preserveCurlyBracePlaceholders = false,
       ariaLabel,
       className,
       onPasteFiles,
@@ -72,8 +74,9 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         renderSupportedMarkdownAsHtml(value, {
           blockMode: 'inline',
           linkMode: 'anchor',
+          preserveCurlyBracePlaceholders,
         }),
-      [value],
+      [preserveCurlyBracePlaceholders, value],
     );
 
     const emitCurrentMarkdown = useCallback(() => {
@@ -82,10 +85,12 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
         return;
       }
 
-      const nextMarkdown = serializeEditorMarkdown(editor);
+      const nextMarkdown = serializeEditorMarkdown(editor, {
+        preserveCurlyBracePlaceholders,
+      });
       lastEmittedMarkdownRef.current = nextMarkdown;
       onChange(nextMarkdown);
-    }, [onChange]);
+    }, [onChange, preserveCurlyBracePlaceholders]);
 
     const syncActiveTools = useCallback(() => {
       const editor = editorRef.current;
@@ -342,7 +347,12 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
               .then(({ clipboardHtmlToSupportedMarkdown }) => {
                 restorePasteRange(editorRef.current, pasteRange);
                 const pastedMarkdown = clipboardHtmlToSupportedMarkdown(pastedHtml);
-                if (pastedMarkdown && insertSupportedMarkdownAtCurrentRange(pastedMarkdown)) {
+                if (
+                  pastedMarkdown &&
+                  insertSupportedMarkdownAtCurrentRange(pastedMarkdown, {
+                    preserveCurlyBracePlaceholders,
+                  })
+                ) {
                   emitCurrentMarkdown();
                   syncActiveTools();
                   return;
@@ -555,7 +565,14 @@ function insertPlainTextAtCurrentRange(text: string): void {
   applyDocumentRange(range);
 }
 
-function insertSupportedMarkdownAtCurrentRange(markdown: string): boolean {
+type RichTextSerializationOptions = {
+  preserveCurlyBracePlaceholders?: boolean;
+};
+
+function insertSupportedMarkdownAtCurrentRange(
+  markdown: string,
+  options: RichTextSerializationOptions = {},
+): boolean {
   if (typeof document === 'undefined') {
     return false;
   }
@@ -568,6 +585,7 @@ function insertSupportedMarkdownAtCurrentRange(markdown: string): boolean {
   const html = renderSupportedMarkdownAsHtml(markdown, {
     blockMode: 'inline',
     linkMode: 'anchor',
+    preserveCurlyBracePlaceholders: options.preserveCurlyBracePlaceholders,
   });
   if (!html) {
     return false;
@@ -649,21 +667,27 @@ function findClosestElement(node: Node, root: HTMLElement, selector: string): HT
   return closest && root.contains(closest) ? (closest as HTMLElement) : null;
 }
 
-function serializeEditorMarkdown(root: HTMLElement): string {
-  return serializeChildNodes(root.childNodes)
+function serializeEditorMarkdown(
+  root: HTMLElement,
+  options: RichTextSerializationOptions = {},
+): string {
+  return serializeChildNodes(root.childNodes, options)
     .replace(/\n{3,}/gu, '\n\n')
     .trimEnd();
 }
 
-function serializeChildNodes(nodes: NodeListOf<ChildNode> | ChildNode[]): string {
+function serializeChildNodes(
+  nodes: NodeListOf<ChildNode> | ChildNode[],
+  options: RichTextSerializationOptions = {},
+): string {
   return Array.from(nodes)
-    .map((node) => serializeNode(node))
+    .map((node) => serializeNode(node, options))
     .join('');
 }
 
-function serializeNode(node: Node): string {
+function serializeNode(node: Node, options: RichTextSerializationOptions = {}): string {
   if (node.nodeType === Node.TEXT_NODE) {
-    return escapeMarkdownText((node.textContent ?? '').replace(/\u00a0/g, ' '));
+    return escapeMarkdownText((node.textContent ?? '').replace(/\u00a0/g, ' '), options);
   }
 
   if (node.nodeType !== Node.ELEMENT_NODE) {
@@ -685,7 +709,7 @@ function serializeNode(node: Node): string {
     return appendBlockBreak(`\`\`\`\n${serializeCodeBlockText(element.textContent ?? '')}\n\`\`\``);
   }
 
-  const content = serializeChildNodes(element.childNodes);
+  const content = serializeChildNodes(element.childNodes, options);
 
   if (isHeadingElement(element, tagName)) {
     const headingContent = content.replace(/\n+/gu, ' ').trim();
@@ -722,7 +746,26 @@ function appendBlockBreak(content: string): string {
   return content.endsWith('\n') ? content : `${content}\n`;
 }
 
-function escapeMarkdownText(value: string): string {
+function escapeMarkdownText(value: string, options: RichTextSerializationOptions = {}): string {
+  if (options.preserveCurlyBracePlaceholders) {
+    const parts: string[] = [];
+    const placeholderPattern = /\{[A-Za-z0-9_]+\}/gu;
+    let cursor = 0;
+
+    for (const match of value.matchAll(placeholderPattern)) {
+      parts.push(escapePlainMarkdownText(value.slice(cursor, match.index)));
+      parts.push(match[0]);
+      cursor = match.index + match[0].length;
+    }
+
+    parts.push(escapePlainMarkdownText(value.slice(cursor)));
+    return parts.join('');
+  }
+
+  return escapePlainMarkdownText(value);
+}
+
+function escapePlainMarkdownText(value: string): string {
   return value.replace(/[\\`*_()[\]~+]/gu, '\\$&');
 }
 
