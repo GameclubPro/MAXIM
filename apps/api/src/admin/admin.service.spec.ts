@@ -85,6 +85,11 @@ function createManagedEntityHeaderFixture(
     primaryBotId: overrides.primaryBotId ?? null,
     assignedBots: overrides.assignedBots ?? [],
     sharedMode: overrides.sharedMode ?? 'owned',
+    accessDiagnostics: overrides.accessDiagnostics ?? {
+      state: 'ok',
+      lastDetectedAt: null,
+      lostBots: [],
+    },
   };
 }
 
@@ -16478,6 +16483,11 @@ describe('AdminService settings screen endpoints', () => {
         primaryBotId: null,
         assignedBots: [],
         sharedMode: 'owned',
+        accessDiagnostics: {
+          state: 'ok',
+          lastDetectedAt: null,
+          lostBots: [],
+        },
       },
       requiredSubscriptionChannels: [],
       domains: [

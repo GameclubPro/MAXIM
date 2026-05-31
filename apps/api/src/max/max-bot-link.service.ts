@@ -680,6 +680,11 @@ export class MaxBotLinkService {
     botId?: string | null;
     title?: string | null;
     entityType?: ChatEntityType | null;
+    accessLostReason?: string | null;
+    accessLostSource?: string | null;
+    lastMaxErrorCode?: string | null;
+    lastMaxErrorMessage?: string | null;
+    lastMaxStatusCode?: number | null;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
     const botId = this.botRegistry.getBotById(params.botId)?.id ?? null;
@@ -690,6 +695,21 @@ export class MaxBotLinkService {
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
+    const accessLossSnapshot =
+      params.accessLostReason ||
+      params.accessLostSource ||
+      params.lastMaxErrorCode ||
+      params.lastMaxErrorMessage ||
+      typeof params.lastMaxStatusCode === 'number'
+        ? {
+            accessLostReason: params.accessLostReason ?? null,
+            accessLostSource: params.accessLostSource ?? null,
+            lastMaxErrorCode: params.lastMaxErrorCode ?? null,
+            lastMaxErrorMessage: params.lastMaxErrorMessage ?? null,
+            lastMaxStatusCode: params.lastMaxStatusCode ?? null,
+            accessLostAt: now.toISOString(),
+          }
+        : null;
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -716,12 +736,14 @@ export class MaxBotLinkService {
         botId,
         role: ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.REMOVED,
+        ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
         lastSeenAt: now,
         lastWebhookAt: now,
       },
       update: {
         role: ChatBotMembershipRole.STANDBY,
         status: ChatBotMembershipStatus.REMOVED,
+        ...(accessLossSnapshot ? { permissionsSnapshot: accessLossSnapshot } : {}),
         lastSeenAt: now,
         lastWebhookAt: now,
       },
@@ -1672,6 +1694,10 @@ export class MaxBotLinkService {
       lastWebhookAt?: Date | null;
     },
   ): Promise<void> {
+    if (params.status === ChatBotMembershipStatus.ACTIVE) {
+      await this.clearRemovedChatBotAccessLossSnapshot(chatId, botId);
+    }
+
     await this.prisma.chatBotMembership.upsert({
       where: {
         chatId_botId: {
@@ -1692,6 +1718,19 @@ export class MaxBotLinkService {
         status: params.status,
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+      },
+    });
+  }
+
+  private async clearRemovedChatBotAccessLossSnapshot(chatId: string, botId: string): Promise<void> {
+    await this.prisma.chatBotMembership.updateMany({
+      where: {
+        chatId,
+        botId,
+        status: ChatBotMembershipStatus.REMOVED,
+      },
+      data: {
+        permissionsSnapshot: Prisma.JsonNull,
       },
     });
   }

@@ -9236,6 +9236,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             primaryBotId: metadataBotId,
             assignedBots: [],
             sharedMode: 'owned',
+            accessDiagnostics: {
+              state: 'ok',
+              lastDetectedAt: null,
+              lostBots: [],
+            },
           });
           return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
@@ -16687,6 +16692,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botId: params.botId,
       reason: accessLossReason,
       source: `night_mode_transition:${params.operation}`,
+      lastMaxErrorCode: classification.code,
+      lastMaxErrorMessage: classification.message,
+      lastMaxStatusCode: classification.statusCode,
     });
     return NIGHT_MODE_TRANSITION_PROCESS_STOP;
   }

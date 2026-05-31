@@ -83,6 +83,11 @@ function createManagedEntityHeader(overrides: Record<string, unknown> = {}) {
     primaryBotId: null,
     assignedBots: [],
     sharedMode: 'owned',
+    accessDiagnostics: {
+      state: 'ok',
+      lastDetectedAt: null,
+      lostBots: [],
+    },
     ...overrides,
   };
 }
@@ -326,6 +331,7 @@ function createService(
     uploadImage: jest.fn().mockResolvedValue({ token: 'rules-image-1' }),
   };
   const managedEntitiesService = {
+    assertManagedEntityDiagnosticsAccess: jest.fn().mockResolvedValue(undefined),
     getChatHeader: jest
       .fn()
       .mockResolvedValue(options.managedEntityHeader ?? createManagedEntityHeader()),

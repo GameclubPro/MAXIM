@@ -38,6 +38,11 @@ function createManagedEntityHeader(params: {
     primaryBotId: readTrimmedString(params.primaryBotId) ?? null,
     assignedBots,
     sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),
+    accessDiagnostics: {
+      state: 'ok',
+      lastDetectedAt: null,
+      lostBots: [],
+    },
   };
 }
 

@@ -6816,6 +6816,9 @@ describe('ModerationService', () => {
         botId: 'bot-1',
         reason: 'chat_not_found',
         source: 'night_mode_transition:send-close-notice',
+        lastMaxErrorCode: null,
+        lastMaxErrorMessage: 'request failed with status code 404',
+        lastMaxStatusCode: 404,
       });
     } finally {
       jest.useRealTimers();
@@ -7122,6 +7125,9 @@ describe('ModerationService', () => {
         botId: 'bot-1',
         reason: 'bot_denied',
         source: 'night_mode_transition:send-open-notice',
+        lastMaxErrorCode: null,
+        lastMaxErrorMessage: 'request failed with status code 403',
+        lastMaxStatusCode: 403,
       });
     } finally {
       jest.useRealTimers();
@@ -14790,6 +14796,11 @@ describe('ModerationService', () => {
         primaryBotId: null,
         assignedBots: [],
         sharedMode: 'owned',
+        accessDiagnostics: {
+          state: 'ok',
+          lastDetectedAt: null,
+          lostBots: [],
+        },
       });
       expect(channels).toEqual([
         {
@@ -14874,6 +14885,11 @@ describe('ModerationService', () => {
         primaryBotId: 'id613002203036_bot',
         assignedBots: [],
         sharedMode: 'owned',
+        accessDiagnostics: {
+          state: 'ok',
+          lastDetectedAt: null,
+          lostBots: [],
+        },
       });
       expect(channels).toEqual([
         {

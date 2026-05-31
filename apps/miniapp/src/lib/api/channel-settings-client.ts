@@ -4,6 +4,7 @@ import {
   broadcastHandoffStateSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
+  managedEntityAccessRecheckResponseSchema,
   managedEntityBotExecutionPlanSchema,
   managedBroadcastCalendarResponseSchema,
   managedBroadcastDetailsSchema,
@@ -28,6 +29,7 @@ import {
   type BroadcastHandoffState,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
+  type ManagedEntityAccessRecheckResponse,
   type ManagedBroadcastCalendarResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
@@ -120,6 +122,19 @@ export async function getChannelSettingsScreen(
 ): Promise<ChannelSettingsScreenResponse> {
   const response = await api.request(`/channels/${chatId}/settings-screen`, request);
   return channelSettingsScreenResponseSchema.parse(response);
+}
+
+export async function recheckChannelManagedEntityAccess(
+  api: ApiTransport,
+  chatId: string,
+): Promise<ManagedEntityAccessRecheckResponse> {
+  const response = await api.request(
+    `/managed-entities/channel/${encodeURIComponent(chatId)}/access/recheck`,
+    {
+      method: 'POST',
+    },
+  );
+  return managedEntityAccessRecheckResponseSchema.parse(response);
 }
 
 export async function updateChannelSettings(

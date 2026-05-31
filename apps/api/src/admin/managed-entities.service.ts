@@ -1,4 +1,5 @@
 import {
+  managedEntityAccessRecheckResponseSchema,
   managedEntityFavoritesResponseSchema,
   managedEntityTypeSchema,
   managedEntityBotExecutionPlanSchema,
@@ -8,6 +9,10 @@ import {
   updateManagedEntityPrimaryBotRequestSchema,
   type ChatSummary,
   type Me,
+  type ManagedEntityAccessDiagnostics,
+  type ManagedEntityAccessLossDiagnosticItem,
+  type ManagedEntityAccessLossReason,
+  type ManagedEntityAccessRecheckResponse,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityFavoriteType,
   type ManagedEntityFavoritesResponse,
@@ -30,7 +35,12 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
+import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxClientService } from '../max/max-client.service';
+import {
+  ChatBotMembershipStatus,
+  ManagedEntityAccessState,
+} from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   canUserAccessSystem,
@@ -68,6 +78,22 @@ import {
 } from './admin.service.support';
 import { AdminService } from './admin.service';
 
+const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason>([
+  'chat_not_found',
+  'bot_denied',
+  'bot_removed',
+  'chat_inaccessible',
+]);
+
+type AccessLossSnapshot = {
+  reason: ManagedEntityAccessLossReason;
+  detectedAt: string | null;
+  source: string;
+  lastMaxErrorCode: string | null;
+  lastMaxErrorMessage: string | null;
+  lastMaxStatusCode: number | null;
+};
+
 @Injectable()
 export class ManagedEntitiesService {
   private readonly logger = new Logger(ManagedEntitiesService.name);
@@ -83,6 +109,7 @@ export class ManagedEntitiesService {
     @Optional() private readonly maxBotExecutionPlanner?: MaxBotExecutionPlannerService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
+    @Optional() private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -293,7 +320,16 @@ export class ManagedEntitiesService {
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions,
   ): Promise<ManagedEntityHeader> {
-    return getManagedEntityHeaderValue({
+    return this.getManagedEntityHeaderWithDiagnostics(chatId, user, entityType, options);
+  }
+
+  private async getManagedEntityHeaderWithDiagnostics(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    options: AdminReadBypassOptions,
+  ): Promise<ManagedEntityHeader> {
+    const header = await getManagedEntityHeaderValue({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       maxClient: this.maxClient,
@@ -312,6 +348,11 @@ export class ManagedEntitiesService {
       attachBotAssignments: (header) =>
         this.legacyAdminService.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
     });
+
+    return {
+      ...header,
+      accessDiagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
+    };
   }
 
   getChatBotExecutionPlan(
@@ -454,6 +495,35 @@ export class ManagedEntitiesService {
     });
   }
 
+  async recheckManagedEntityAccess(
+    entityTypeRaw: string,
+    entityId: string,
+    user: AuthUser,
+  ): Promise<ManagedEntityAccessRecheckResponse> {
+    const entityType = managedEntityTypeSchema.parse(entityTypeRaw);
+    const chatId = readTrimmedString(entityId);
+    if (!chatId) {
+      throw new BadRequestException('Managed entity id is required.');
+    }
+
+    await this.assertManagedEntityDiagnosticsAccess(chatId, user, entityType);
+    const scheduled =
+      (await this.maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync({
+        chatId,
+        entityType,
+        source: 'admin_access_validation',
+        retryUntilMs: null,
+      })) ?? false;
+    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId, entityType);
+
+    return managedEntityAccessRecheckResponseSchema.parse({
+      entityType,
+      entityId: chatId,
+      scheduled,
+      diagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
+    });
+  }
+
   private async attachManagedEntityFavoriteTypes(
     userId: string,
     items: readonly ChatSummary[],
@@ -546,6 +616,26 @@ export class ManagedEntitiesService {
     );
   }
 
+  async assertManagedEntityDiagnosticsAccess(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    try {
+      await this.assertManagedEntityAdminAccess(chatId, user, entityType);
+      return;
+    } catch (error: unknown) {
+      const [hasPersistedAccess, diagnostics] = await Promise.all([
+        this.hasPersistedManagedEntityAccess(chatId, user.userId, entityType),
+        this.getManagedEntityAccessDiagnostics(chatId),
+      ]);
+      if (hasPersistedAccess && diagnostics.state === 'bot_access_lost') {
+        return;
+      }
+      throw error;
+    }
+  }
+
   private async getManagedEntityBotExecutionPlan(
     chatId: string,
     user: AuthUser,
@@ -623,7 +713,172 @@ export class ManagedEntitiesService {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<void> {
-    return this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, entityType);
+    return this.legacyAdminService.assertManagedEntityAdminAccess(
+      chatId,
+      user.userId,
+      entityType,
+    );
+  }
+
+  private async getManagedEntityAccessDiagnostics(
+    chatId: string,
+  ): Promise<ManagedEntityAccessDiagnostics> {
+    const [membershipRows, accessEdgeRows] = await Promise.all([
+      this.prisma.chatBotMembership.findMany({
+        where: {
+          chatId,
+          status: ChatBotMembershipStatus.REMOVED,
+        },
+        select: {
+          botId: true,
+          permissionsSnapshot: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          chatId,
+          state: ManagedEntityAccessState.BOT_DENIED,
+        },
+        select: {
+          botId: true,
+          checkedAt: true,
+          deniedReason: true,
+          source: true,
+          lastMaxErrorCode: true,
+          lastMaxErrorMessage: true,
+          lastMaxStatusCode: true,
+        },
+      }),
+    ]);
+
+    const diagnosticsByBotId = new Map<string, ManagedEntityAccessLossDiagnosticItem>();
+    for (const row of membershipRows) {
+      const snapshot = this.readAccessLossSnapshot(row.permissionsSnapshot);
+      if (!snapshot) {
+        continue;
+      }
+      this.upsertAccessLossDiagnostic(diagnosticsByBotId, {
+        botId: row.botId,
+        botLabel: this.maxBotRegistry?.getBotById(row.botId)?.label ?? null,
+        reason: snapshot.reason,
+        detectedAt: snapshot.detectedAt ?? row.updatedAt.toISOString(),
+        source: snapshot.source,
+        lastMaxErrorCode: snapshot.lastMaxErrorCode,
+        lastMaxErrorMessage: snapshot.lastMaxErrorMessage,
+        lastMaxStatusCode: snapshot.lastMaxStatusCode,
+      });
+    }
+
+    for (const row of accessEdgeRows) {
+      const reason = this.readAccessLossReason(row.deniedReason);
+      if (!reason || !this.hasTerminalAccessLossEvidence(row)) {
+        continue;
+      }
+      this.upsertAccessLossDiagnostic(diagnosticsByBotId, {
+        botId: row.botId,
+        botLabel: this.maxBotRegistry?.getBotById(row.botId)?.label ?? null,
+        reason,
+        detectedAt: row.checkedAt.toISOString(),
+        source: row.source || 'managed_entity_access_loss',
+        lastMaxErrorCode: readTrimmedString(row.lastMaxErrorCode),
+        lastMaxErrorMessage: readTrimmedString(row.lastMaxErrorMessage),
+        lastMaxStatusCode:
+          typeof row.lastMaxStatusCode === 'number' ? row.lastMaxStatusCode : null,
+      });
+    }
+
+    const lostBots = [...diagnosticsByBotId.values()].sort((left, right) =>
+      right.detectedAt.localeCompare(left.detectedAt),
+    );
+
+    return {
+      state: lostBots.length > 0 ? 'bot_access_lost' : 'ok',
+      lastDetectedAt: lostBots[0]?.detectedAt ?? null,
+      lostBots,
+    };
+  }
+
+  private upsertAccessLossDiagnostic(
+    diagnosticsByBotId: Map<string, ManagedEntityAccessLossDiagnosticItem>,
+    item: ManagedEntityAccessLossDiagnosticItem,
+  ): void {
+    const current = diagnosticsByBotId.get(item.botId);
+    if (!current || item.detectedAt > current.detectedAt) {
+      diagnosticsByBotId.set(item.botId, item);
+    }
+  }
+
+  private readAccessLossSnapshot(value: unknown): AccessLossSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const reason = this.readAccessLossReason(row.accessLostReason);
+    const source = readTrimmedString(row.accessLostSource);
+    const detectedAt = readTrimmedString(row.accessLostAt);
+    if (!reason || !source) {
+      return null;
+    }
+
+    return {
+      reason,
+      detectedAt: detectedAt && !Number.isNaN(Date.parse(detectedAt)) ? detectedAt : null,
+      source,
+      lastMaxErrorCode: readTrimmedString(row.lastMaxErrorCode),
+      lastMaxErrorMessage: readTrimmedString(row.lastMaxErrorMessage),
+      lastMaxStatusCode:
+        typeof row.lastMaxStatusCode === 'number' && Number.isFinite(row.lastMaxStatusCode)
+          ? row.lastMaxStatusCode
+          : null,
+    };
+  }
+
+  private hasTerminalAccessLossEvidence(row: {
+    source: string;
+    lastMaxErrorCode: string | null;
+    lastMaxErrorMessage: string | null;
+    lastMaxStatusCode: number | null;
+  }): boolean {
+    return (
+      row.source.startsWith('night_mode_transition:') ||
+      row.source === 'managed_broadcast:delivery' ||
+      row.source === 'vk_parsing:publish' ||
+      readTrimmedString(row.lastMaxErrorCode) !== null ||
+      readTrimmedString(row.lastMaxErrorMessage) !== null ||
+      row.lastMaxStatusCode === 403 ||
+      row.lastMaxStatusCode === 404
+    );
+  }
+
+  private readAccessLossReason(value: unknown): ManagedEntityAccessLossReason | null {
+    const normalized = readTrimmedString(value);
+    return normalized &&
+      MANAGED_ENTITY_ACCESS_LOSS_REASONS.has(normalized as ManagedEntityAccessLossReason)
+      ? (normalized as ManagedEntityAccessLossReason)
+      : null;
+  }
+
+  private async hasPersistedManagedEntityAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<boolean> {
+    const rows = await this.prisma.chatAdminAllowlist.findMany({
+      where: {
+        chatId,
+        userId,
+        chat: {
+          entityType: toPrismaEntityType(entityType),
+        },
+      },
+      select: {
+        chatId: true,
+      },
+      take: 1,
+    });
+    return rows.length > 0;
   }
 
   private requireBotExecutionPlanner(): MaxBotExecutionPlannerService {

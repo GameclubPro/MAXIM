@@ -933,6 +933,11 @@ describe('ChatContextCacheService', () => {
       primaryBotId: null,
       assignedBots: [],
       sharedMode: 'owned' as const,
+      accessDiagnostics: {
+        state: 'ok' as const,
+        lastDetectedAt: null,
+        lostBots: [],
+      },
     };
 
     await service.setManagedEntityHeader(header);

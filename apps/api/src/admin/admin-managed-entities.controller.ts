@@ -127,6 +127,15 @@ export class AdminManagedEntitiesController {
     return this.entitiesService.updateManagedEntityFavorites(entityType, entityId, user, body);
   }
 
+  @Post('managed-entities/:entityType/:entityId/access/recheck')
+  recheckManagedEntityAccess(
+    @Param('entityType') entityType: string,
+    @Param('entityId') entityId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.entitiesService.recheckManagedEntityAccess(entityType, entityId, user);
+  }
+
   @Get('channels/:chatId/bots/plan')
   getChannelBotExecutionPlan(
     @Param('chatId') chatId: string,

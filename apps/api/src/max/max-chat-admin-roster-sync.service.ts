@@ -736,6 +736,9 @@ export class MaxChatAdminRosterSyncService {
             checkedAt: now,
             expiresAt,
             deniedReason: null,
+            lastMaxErrorCode: null,
+            lastMaxErrorMessage: null,
+            lastMaxStatusCode: null,
             source: params.source,
           },
           update: {
@@ -746,6 +749,9 @@ export class MaxChatAdminRosterSyncService {
             checkedAt: now,
             expiresAt,
             deniedReason: null,
+            lastMaxErrorCode: null,
+            lastMaxErrorMessage: null,
+            lastMaxStatusCode: null,
             source: params.source,
           },
         });

@@ -8,6 +8,7 @@ import {
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
+  managedEntityAccessRecheckResponseSchema,
   managedEntityBotExecutionPlanSchema,
   domainAllowlistEntrySchema,
   managedBroadcastDetailsSchema,
@@ -39,6 +40,7 @@ import {
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
   type ManagedEntityBotExecutionPlan,
+  type ManagedEntityAccessRecheckResponse,
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChatRulesResult,
@@ -123,6 +125,20 @@ export async function getSettingsScreen(
 ): Promise<ChatSettingsScreenResponse> {
   const response = await api.request(`/chats/${chatId}/settings-screen`, request);
   return chatSettingsScreenResponseSchema.parse(response);
+}
+
+export async function recheckManagedEntityAccess(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+): Promise<ManagedEntityAccessRecheckResponse> {
+  const response = await api.request(
+    `/managed-entities/${entityType}/${encodeURIComponent(entityId)}/access/recheck`,
+    {
+      method: 'POST',
+    },
+  );
+  return managedEntityAccessRecheckResponseSchema.parse(response);
 }
 
 export async function resolveRequiredSubscriptionChannel(

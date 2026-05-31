@@ -43,6 +43,11 @@ function toManagedEntityHeader(channel: ChatSummary): ManagedEntityHeader {
     primaryBotId: channel.primaryBotId ?? null,
     assignedBots: channel.assignedBots ?? [],
     sharedMode: channel.sharedMode ?? 'owned',
+    accessDiagnostics: {
+      state: 'ok',
+      lastDetectedAt: null,
+      lostBots: [],
+    },
   };
 }
 

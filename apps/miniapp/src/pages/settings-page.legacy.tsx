@@ -68,6 +68,7 @@ import {
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
+import { ManagedEntityAccessDiagnosticsBanner } from '../components/managed-entity-access-diagnostics';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -92,6 +93,7 @@ import {
   previewApplySettingsSectionTarget,
   publishRules,
   removeDomain,
+  recheckManagedEntityAccess,
   resolveRequiredSubscriptionChannel,
   resetPublishedRules,
   retryManagedBroadcast,
@@ -1187,6 +1189,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isSavingComments = saveCommentsMutation.isPending;
   const mutateCommentsAsync = saveCommentsMutation.mutateAsync;
+
+  const recheckAccessMutation = useMutation({
+    mutationFn: () => recheckManagedEntityAccess(api, 'chat', chatId ?? ''),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.chatSettingsScreen(chatId) });
+      pushToast({
+        tone: 'success',
+        title: 'Проверка доступа запущена',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить проверку доступа',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
 
   const resolveRequiredSubscriptionChannelMutation = useMutation({
     mutationFn: (value: string) => resolveRequiredSubscriptionChannel(api, chatId ?? '', value),
@@ -5091,6 +5113,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </span>
               ) : null
             }
+          />
+
+          <ManagedEntityAccessDiagnosticsBanner
+            diagnostics={settingsScreenQuery.data?.header.accessDiagnostics}
+            entityLabel="чат"
+            isRechecking={recheckAccessMutation.isPending}
+            onRecheck={() => recheckAccessMutation.mutate()}
           />
 
           {headerBotLoadItems.length > 0 ? (

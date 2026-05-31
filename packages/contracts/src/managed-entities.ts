@@ -184,6 +184,37 @@ export const managedEntitiesListResponseSchema = z.object({
 });
 export type ManagedEntitiesListResponse = z.infer<typeof managedEntitiesListResponseSchema>;
 
+export const managedEntityAccessLossReasonSchema = z.enum([
+  'chat_not_found',
+  'bot_denied',
+  'bot_removed',
+  'chat_inaccessible',
+]);
+export type ManagedEntityAccessLossReason = z.infer<typeof managedEntityAccessLossReasonSchema>;
+
+export const managedEntityAccessLossDiagnosticItemSchema = z.object({
+  botId: z.string(),
+  botLabel: z.string().nullable().optional().default(null),
+  reason: managedEntityAccessLossReasonSchema,
+  detectedAt: z.string().datetime(),
+  source: z.string().trim().min(1),
+  lastMaxErrorCode: z.string().trim().min(1).nullable().optional().default(null),
+  lastMaxErrorMessage: z.string().trim().min(1).nullable().optional().default(null),
+  lastMaxStatusCode: z.number().int().nullable().optional().default(null),
+});
+export type ManagedEntityAccessLossDiagnosticItem = z.infer<
+  typeof managedEntityAccessLossDiagnosticItemSchema
+>;
+
+export const managedEntityAccessDiagnosticsSchema = z.object({
+  state: z.enum(['ok', 'bot_access_lost']),
+  lastDetectedAt: z.string().datetime().nullable().optional().default(null),
+  lostBots: z.array(managedEntityAccessLossDiagnosticItemSchema).optional().default([]),
+});
+export type ManagedEntityAccessDiagnostics = z.infer<
+  typeof managedEntityAccessDiagnosticsSchema
+>;
+
 export const managedEntityHeaderSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -194,8 +225,21 @@ export const managedEntityHeaderSchema = z.object({
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
+  accessDiagnostics: managedEntityAccessDiagnosticsSchema
+    .optional()
+    .default({ state: 'ok', lastDetectedAt: null, lostBots: [] }),
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
+
+export const managedEntityAccessRecheckResponseSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  entityId: z.string().trim().min(1),
+  scheduled: z.boolean(),
+  diagnostics: managedEntityAccessDiagnosticsSchema,
+});
+export type ManagedEntityAccessRecheckResponse = z.infer<
+  typeof managedEntityAccessRecheckResponseSchema
+>;
 
 export const updateManagedEntityFavoritesRequestSchema = z
   .object({

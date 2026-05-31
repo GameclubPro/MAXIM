@@ -247,6 +247,10 @@ describe('MaxChatAdminRosterSyncService', () => {
           userRole: 'ADMIN',
           botRole: 'ADMIN',
           expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+          deniedReason: null,
+          lastMaxErrorCode: null,
+          lastMaxErrorMessage: null,
+          lastMaxStatusCode: null,
         }),
       }),
     );

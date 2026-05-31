@@ -46,7 +46,6 @@ import {
 } from './admin-settings-apply';
 import { AdminService } from './admin.service';
 import {
-  SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
   type AdminActionSource,
   type AdminReadBypassOptions,
   type ApplySettingsToAllChatsResult,
@@ -105,11 +104,14 @@ export class AdminSettingsService {
     user: AuthUser,
     options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChatSettingsScreenResponse> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
-      forceRemote: options.liveAdminCheck !== false,
-      timeoutMs:
-        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
-    });
+    if (options.liveAdminCheck === false) {
+      await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'chat', {
+        forceRemote: false,
+        timeoutMs: undefined,
+      });
+    } else {
+      await this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(chatId, user, 'chat');
+    }
 
     const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
       this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
@@ -361,11 +363,18 @@ export class AdminSettingsService {
     user: AuthUser,
     options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChannelSettingsScreenResponse> {
-    await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
-      forceRemote: options.liveAdminCheck !== false,
-      timeoutMs:
-        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
-    });
+    if (options.liveAdminCheck === false) {
+      await this.legacyAdminService.assertManagedEntityReadAccess(chatId, user.userId, 'channel', {
+        forceRemote: false,
+        timeoutMs: undefined,
+      });
+    } else {
+      await this.managedEntitiesService.assertManagedEntityDiagnosticsAccess(
+        chatId,
+        user,
+        'channel',
+      );
+    }
 
     const [settings, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),

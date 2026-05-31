@@ -42,6 +42,7 @@ import {
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
+import { ManagedEntityAccessDiagnosticsBanner } from '../components/managed-entity-access-diagnostics';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -63,6 +64,7 @@ import {
   getChannelManagedBroadcast,
   getChannelSettingsScreen,
   getChannelVkParsingCapability,
+  recheckChannelManagedEntityAccess,
   retryChannelManagedBroadcast,
   sendChannelBroadcast,
   sendChannelBroadcastTest,
@@ -1444,6 +1446,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return request;
   };
 
+  const recheckAccessMutation = useMutation({
+    mutationFn: () => recheckChannelManagedEntityAccess(api, chatId ?? ''),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelSettingsScreen(chatId) });
+      pushToast({
+        tone: 'success',
+        title: 'Проверка доступа запущена',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить проверку доступа',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const sendBroadcastMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
     onSuccess: (result) => {
@@ -2678,6 +2700,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             </div>
           ) : null
         }
+      />
+
+      <ManagedEntityAccessDiagnosticsBanner
+        diagnostics={channelHeader?.accessDiagnostics}
+        entityLabel="канал"
+        isRechecking={recheckAccessMutation.isPending}
+        onRecheck={() => recheckAccessMutation.mutate()}
       />
 
       <GlassCard className="channel-settings-card" elevated>

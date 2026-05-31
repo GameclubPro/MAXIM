@@ -34,6 +34,15 @@ function createPrismaMock() {
       }),
       update: jest.fn().mockResolvedValue({}),
     },
+    chatAdminAllowlist: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    chatBotMembership: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    managedEntityAccessEdge: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     managedEntityFavorite: {
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn(() => ({ operation: 'delete-many-favorites' })),
@@ -86,10 +95,20 @@ function createMaxBotExecutionPlannerMock() {
   };
 }
 
+function createMaxBotRegistryMock() {
+  return {
+    getBotById: jest.fn((botId?: string | null) =>
+      botId ? { id: botId, label: botId === 'bot-1' ? 'Основной бот' : botId } : null,
+    ),
+  };
+}
+
 function createService(
   options: {
     maxClient?: Record<string, unknown>;
     maxBotExecutionPlanner?: ReturnType<typeof createMaxBotExecutionPlannerMock> | null;
+    maxBotRegistry?: ReturnType<typeof createMaxBotRegistryMock> | null;
+    maxChatAdminRosterSyncService?: { scheduleChatAdminRosterSync: jest.Mock } | null;
     config?: Parameters<typeof createConfigMock>[0];
   } = {},
 ) {
@@ -164,6 +183,14 @@ function createService(
     options.maxBotExecutionPlanner === null
       ? undefined
       : (options.maxBotExecutionPlanner ?? createMaxBotExecutionPlannerMock());
+  const maxBotRegistry =
+    options.maxBotRegistry === null ? undefined : (options.maxBotRegistry ?? createMaxBotRegistryMock());
+  const maxChatAdminRosterSyncService =
+    options.maxChatAdminRosterSyncService === null
+      ? undefined
+      : (options.maxChatAdminRosterSyncService ?? {
+          scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+        });
   const service = new ManagedEntitiesService(
     legacyAdminService as never,
     prisma as never,
@@ -171,6 +198,9 @@ function createService(
     maxClient as never,
     configService as never,
     maxBotExecutionPlanner as never,
+    undefined,
+    maxBotRegistry as never,
+    maxChatAdminRosterSyncService as never,
   );
 
   return {
@@ -179,6 +209,8 @@ function createService(
     legacyAdminService,
     maxClient,
     maxBotExecutionPlanner,
+    maxBotRegistry,
+    maxChatAdminRosterSyncService,
     prisma,
     service,
   };
@@ -681,6 +713,11 @@ describe('ManagedEntitiesService headers', () => {
       primaryBotId: 'bot-1',
       assignedBots: [],
       sharedMode: 'owned',
+      accessDiagnostics: {
+        state: 'ok',
+        lastDetectedAt: null,
+        lostBots: [],
+      },
     });
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
       'chat-1',
@@ -732,6 +769,11 @@ describe('ManagedEntitiesService headers', () => {
     await expect(service.getChannelHeader('channel-1', user as never)).resolves.toEqual({
       ...cachedHeader,
       primaryBotId: 'bot-1',
+      accessDiagnostics: {
+        state: 'ok',
+        lastDetectedAt: null,
+        lostBots: [],
+      },
     });
 
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
@@ -743,6 +785,43 @@ describe('ManagedEntitiesService headers', () => {
     expect(legacyAdminService.getChannelHeader).not.toHaveBeenCalled();
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
     expect(chatContextCache.setManagedEntityHeader).not.toHaveBeenCalled();
+  });
+
+  it('attaches terminal access-loss diagnostics to managed entity headers', async () => {
+    const { prisma, service } = createService();
+    prisma.chatBotMembership.findMany.mockResolvedValueOnce([
+      {
+        botId: 'bot-1',
+        updatedAt: new Date('2026-05-31T10:00:00.000Z'),
+        permissionsSnapshot: {
+          accessLostReason: 'bot_denied',
+          accessLostSource: 'night_mode_transition:open',
+          accessLostAt: '2026-05-31T09:59:00.000Z',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      },
+    ]);
+
+    const result = await service.getChatHeader('chat-1', user as never);
+
+    expect(result.accessDiagnostics).toEqual({
+      state: 'bot_access_lost',
+      lastDetectedAt: '2026-05-31T09:59:00.000Z',
+      lostBots: [
+        {
+          botId: 'bot-1',
+          botLabel: 'Основной бот',
+          reason: 'bot_denied',
+          detectedAt: '2026-05-31T09:59:00.000Z',
+          source: 'night_mode_transition:open',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+        },
+      ],
+    });
   });
 });
 
@@ -868,5 +947,41 @@ describe('ManagedEntitiesService bot execution plan', () => {
       },
     });
     expect(prisma.$transaction.mock.calls[0][0]).toHaveLength(4);
+  });
+
+  it('schedules a roster access recheck when persisted admins need diagnostics recovery', async () => {
+    const { legacyAdminService, maxChatAdminRosterSyncService, prisma, service } = createService();
+    legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValueOnce(new Error('lost'));
+    prisma.chatAdminAllowlist.findMany.mockResolvedValueOnce([{ chatId: 'chat-1' }]);
+    prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
+      {
+        botId: 'bot-1',
+        checkedAt: new Date('2026-05-31T09:59:00.000Z'),
+        deniedReason: 'bot_denied',
+        source: 'managed_broadcast:delivery',
+        lastMaxErrorCode: 'chat.denied',
+        lastMaxErrorMessage: 'Forbidden',
+        lastMaxStatusCode: 403,
+      },
+    ]);
+
+    await expect(
+      service.recheckManagedEntityAccess('chat', 'chat-1', user as never),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        entityType: 'chat',
+        entityId: 'chat-1',
+        scheduled: true,
+        diagnostics: expect.objectContaining({
+          state: 'bot_access_lost',
+        }),
+      }),
+    );
+    expect(maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      source: 'admin_access_validation',
+      retryUntilMs: null,
+    });
   });
 });

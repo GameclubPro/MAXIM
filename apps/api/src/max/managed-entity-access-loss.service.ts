@@ -42,6 +42,9 @@ export type RecordManagedEntityAccessLostParams = {
   title?: string | null;
   reason: ManagedEntityAccessLossReason;
   source: string;
+  lastMaxErrorCode?: string | null;
+  lastMaxErrorMessage?: string | null;
+  lastMaxStatusCode?: number | null;
 };
 
 export type RecordManagedEntityAccessLostFromErrorParams = Omit<
@@ -118,6 +121,9 @@ export class ManagedEntityAccessLossService {
         title: params.title,
         source: params.source,
         reason,
+        lastMaxErrorCode: classification.code,
+        lastMaxErrorMessage: classification.message,
+        lastMaxStatusCode: classification.statusCode,
       }),
     };
   }
@@ -146,6 +152,11 @@ export class ManagedEntityAccessLossService {
           botId,
           title,
           entityType,
+          accessLostReason: params.reason,
+          accessLostSource: params.source,
+          lastMaxErrorCode: params.lastMaxErrorCode,
+          lastMaxErrorMessage: params.lastMaxErrorMessage,
+          lastMaxStatusCode: params.lastMaxStatusCode,
         })
       : null;
     const updatedAccessEdges = await this.markAccessEdgesBotDenied({
@@ -153,6 +164,9 @@ export class ManagedEntityAccessLossService {
       botId,
       reason: params.reason,
       source: params.source,
+      lastMaxErrorCode: params.lastMaxErrorCode,
+      lastMaxErrorMessage: params.lastMaxErrorMessage,
+      lastMaxStatusCode: params.lastMaxStatusCode,
     });
     const cleanup = await this.cleanupRuntimeWork({
       chatId,
@@ -162,6 +176,7 @@ export class ManagedEntityAccessLossService {
 
     await Promise.all([
       this.chatContextCache.invalidate(chatId),
+      this.chatContextCache.invalidateManagedEntityHeader?.(chatId),
       this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat(
         chatId,
         mapManagedEntityType(entityType),
@@ -419,6 +434,9 @@ export class ManagedEntityAccessLossService {
     botId: string | null;
     reason: string;
     source: string;
+    lastMaxErrorCode?: string | null;
+    lastMaxErrorMessage?: string | null;
+    lastMaxStatusCode?: number | null;
   }): Promise<number | null> {
     if (typeof this.prisma.managedEntityAccessEdge?.updateMany !== 'function') {
       return null;
@@ -435,6 +453,9 @@ export class ManagedEntityAccessLossService {
         checkedAt: new Date(),
         expiresAt: null,
         deniedReason: params.reason,
+        lastMaxErrorCode: params.lastMaxErrorCode ?? null,
+        lastMaxErrorMessage: params.lastMaxErrorMessage ?? null,
+        lastMaxStatusCode: params.lastMaxStatusCode ?? null,
         source: params.source,
       } satisfies Prisma.ManagedEntityAccessEdgeUpdateManyMutationInput,
     });

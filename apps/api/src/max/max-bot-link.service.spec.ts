@@ -311,6 +311,41 @@ describe('MaxBotLinkService', () => {
     expect(resolved).toBe('id613002203036_4_bot');
   });
 
+  it('stores access-loss diagnostics on removed bot memberships', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-access-lost', {
+      id: 'chat-access-lost',
+      title: 'Lost chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+
+    await fixture.service.markChatBotRemoved({
+      chatId: 'chat-access-lost',
+      botId: 'id613002203036_bot',
+      title: 'Lost chat',
+      accessLostReason: 'bot_denied',
+      accessLostSource: 'night_mode_transition:close',
+      lastMaxErrorCode: 'chat.denied',
+      lastMaxErrorMessage: 'Forbidden',
+      lastMaxStatusCode: 403,
+    });
+
+    expect(fixture.memberships.find((membership) => membership.chatId === 'chat-access-lost')).toEqual(
+      expect.objectContaining({
+        status: ChatBotMembershipStatus.REMOVED,
+        permissionsSnapshot: expect.objectContaining({
+          accessLostReason: 'bot_denied',
+          accessLostSource: 'night_mode_transition:close',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: 'Forbidden',
+          lastMaxStatusCode: 403,
+          accessLostAt: expect.any(String),
+        }),
+      }),
+    );
+  });
+
   it('reports non-primary shared chat bindings as non-executable for group updates', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-1', {

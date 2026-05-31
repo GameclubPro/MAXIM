@@ -160,6 +160,11 @@ describe('ManagedEntityAccessLossService', () => {
       botId: 'bot-1',
       title: 'Managed chat',
       entityType: ChatEntityType.CHAT,
+      accessLostReason: 'chat_not_found',
+      accessLostSource: 'unit-test',
+      lastMaxErrorCode: undefined,
+      lastMaxErrorMessage: undefined,
+      lastMaxStatusCode: undefined,
     });
     expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
       where: {
