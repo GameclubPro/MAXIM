@@ -290,16 +290,20 @@ export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState):
   return (
     state.hasBusinessContext ||
     state.hasDealChannel ||
-    state.hasCampaignContext ||
     state.hasGroupPromoContext ||
     state.hasCommercialAudienceContext ||
     state.hasChannelPlacementContext ||
     state.hasServiceOfferContext ||
-    hasStrongGoodsRetailEvidence(state)
+    hasStrongGoodsRetailEvidence(state, { includePrivateResaleWeakSignals: false })
   );
 }
 
-function hasStrongGoodsRetailEvidence(state: CommercialSignalState): boolean {
+function hasStrongGoodsRetailEvidence(
+  state: CommercialSignalState,
+  options: { includePrivateResaleWeakSignals: boolean } = {
+    includePrivateResaleWeakSignals: true,
+  },
+): boolean {
   return state.matchedSignals.some(
     (signal) =>
       signal === 'goods-retail:sizes-and-colors' ||
@@ -312,10 +316,16 @@ function hasStrongGoodsRetailEvidence(state: CommercialSignalState): boolean {
       signal === 'goods-retail:volume-price-table' ||
       signal === 'goods-retail:apparel-retail-order-flow' ||
       signal === 'goods-retail:plant-nursery-stock' ||
+      signal === 'goods-retail:plant-nursery-shipping' ||
       signal === 'goods-retail:clearance-stock-retail' ||
       signal === 'goods-retail:farm-livestock-retail' ||
+      signal === 'goods-retail:poultry-farm-order' ||
+      signal === 'goods-retail:home-food-order' ||
       signal === 'goods-retail:commercial-equipment' ||
-      signal === 'goods-retail:multi-sku',
+      signal === 'goods-retail:bath-tub-retail' ||
+      signal === 'goods-retail:auto-parts-retail' ||
+      signal === 'goods-retail:knife-retail-catalog' ||
+      (options.includePrivateResaleWeakSignals && signal === 'goods-retail:multi-sku'),
   );
 }
 

@@ -205,7 +205,9 @@ describe('commercial deterministic benchmark', () => {
     }
 
     for (const item of COMMERCIAL_NEGATIVE_CASES) {
-      const violation = await detectCommercialViolation(service, item.text, item.overrides);
+      const violation = await detectCommercialViolation(service, item.text, item.overrides, {
+        commercialCampaignContext: item.campaignContext ?? null,
+      });
       if (!violation) {
         continue;
       }

@@ -195,6 +195,10 @@ export class CommercialAdDetector {
       return null;
     }
 
+    if (isLikelyDeliveryDiscussionNoise(state, rawLoweredText)) {
+      return null;
+    }
+
     if (
       hasRideShareContext(rawLoweredText) &&
       !state.hasBusinessContext &&
@@ -311,4 +315,50 @@ export class CommercialAdDetector {
       classifierReasons: secondStage?.classifierReasons ?? [],
     };
   }
+}
+
+function isLikelyDeliveryDiscussionNoise(
+  state: ReturnType<typeof collectCommercialSignals>,
+  rawLoweredText: string,
+): boolean {
+  if (
+    !state.matchedSignals.includes('promo:доставк') ||
+    state.hasIntent ||
+    state.hasBusinessContext ||
+    state.hasBuyoutContext ||
+    state.hasRecruitmentContext ||
+    state.hasInfoProductContext ||
+    state.hasServiceContext ||
+    state.hasServiceOfferContext ||
+    state.hasServiceSpecialtyContext ||
+    state.hasGoodsRetailContext ||
+    state.hasGroupPromoContext ||
+    state.hasCommercialAudienceContext ||
+    state.hasChannelPlacementContext ||
+    state.hasPropertyAgentContext ||
+    state.hasCommercialPropertyContext ||
+    state.hasCampaignContext ||
+    state.hasPrice ||
+    state.hasPhoneContact ||
+    state.hasDealChannel
+  ) {
+    return false;
+  }
+
+  const hasOnlyWeakContact = state.matchedSignals.some(
+    (signal) =>
+      signal === 'contact:в личк' ||
+      signal === 'contact:в личные сообщения' ||
+      signal === 'contact:личные сообщения' ||
+      signal === 'contact:пишите в лич' ||
+      signal === 'contact:пишите в личные сообщения' ||
+      signal === 'contact:писать в личку',
+  );
+  if (!hasOnlyWeakContact) {
+    return false;
+  }
+
+  return /(?:^|[^\p{L}\p{N}_-])(?:мне|меня|она|он|они|я\s+писал[аи]?|пишет|звонит|адрес|удалил[аи]?|разборк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+    rawLoweredText,
+  );
 }

@@ -21,6 +21,7 @@ export type CommercialRealWorldPositiveCase = {
 export type CommercialRealWorldNegativeCase = {
   label: string;
   text: string;
+  campaignContext?: CommercialCampaignContext;
   overrides?: CommercialFixtureOverrides;
 };
 
@@ -1541,6 +1542,61 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'truck spare parts retail from fourteen hour audit miss',
+    text: `Продам запчасти грузовые. Рессоры FAW J6, амортизаторы, бортовые, генератор, стартер. Новые, цена от 5000 руб. Телефон +7 900 000 00 95.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:auto-parts-retail', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'multi object flora residential showcase from fourteen hour audit miss',
+    text: `ЖК Флора. Студия 24 м2 цена 3.450.000, квартира 32 м2 цена 4.250.000, студия 28 м2 цена 3.900.000. Звоните +7 900 000 00 96.`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    expectedSignals: ['property-agent:витрина-объектов-прайс', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'bath tub retail subtype guard from fourteen hour audit',
+    text: `Банный чан из нержавеющей стали. Цена за полный комплект, доставка, гарантия. Телефон +7 900 000 00 97.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:bath-tub-retail', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'electromontage service procurement wording from fourteen hour audit',
+    text: `Все виды электромонтажных работ, помощь закупки материалов, розетки, автоматы, щитки. Телефон +7 900 000 00 98.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:электромонтаж', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'livestock procurement still detected after generic zakup tightening',
+    text: `Закуп КРС и МРС: коровы, быки, телята, овцы. Расчет сразу, выезд по району. Телефон +7 900 000 00 99.`,
+    expectedSubtype: 'BUYOUT',
+    expectedSignals: ['buyout:livestock-procurement', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -1970,6 +2026,63 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private one off clothes size listing from twelve hour clear audit guard',
     text: `Костюм двойка. Цена 1850 руб. Размеры 44, 46, 48, 50, 52, 54. Материал сингапур.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'delivery discussion in private messages from fourteen hour audit guard',
+    text: `Эта доставка мне в личку пишет.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'long delivery complaint from fourteen hour audit guard',
+    text: `Я писала выше, что на доставке она мне в личку ещё звонит, адрес знает, потом всё удалили после разборки.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private one off shoes resale from fourteen hour audit guard',
+    text: `Продам полусапожки весна осень, размер 38, состояние отличное - 1300 руб.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'repeated private children clothes resale from fourteen hour audit guard',
+    text: `Продам детские вещи: куртка р-р 122 сост. отличное 700 руб, сапоги р-р 30 сост. хорошее 500 руб, шапка 150 руб. Пишите в личку.`,
+    campaignContext: {
+      senderDistinctChatCount: 5,
+      sameTextDistinctChatCount: 3,
+      repeatedPhoneDistinctChatCount: 0,
+      repeatedLinkDistinctChatCount: 0,
+      nearTextDistinctChatCount: 3,
+      repeatedDomainDistinctChatCount: 0,
+      repeatedHandleDistinctChatCount: 0,
+      senderDistinctChatCount5m: 4,
+      senderDistinctChatCount30m: 5,
+      senderDistinctChatCount120m: 5,
+    },
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'animal adoption relocation mention from fourteen hour audit guard',
+    text: `Кошка ищет дом, отдают в добрые руки при переезде, пишите в личку.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
