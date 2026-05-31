@@ -27,17 +27,24 @@ const REPEATED_PRIVATE_RESALE_CONTEXT: CommercialCampaignContext = {
 
 function detect(
   text: string,
-  options: { commercialCampaignContext?: CommercialCampaignContext | null } = {},
+  options: {
+    commercialCampaignContext?: CommercialCampaignContext | null;
+    settings?: Partial<ChatSettings>;
+  } = {},
 ) {
+  const settings = {
+    ...BASE_SETTINGS,
+    ...options.settings,
+  } as ChatSettings;
   const context = createRuleDetectionContext({
     text,
-    settings: BASE_SETTINGS,
+    settings,
   });
 
   return detector.detect({
     normalizedText: context.normalizedText,
     rawLoweredText: context.rawLoweredText,
-    settings: BASE_SETTINGS,
+    settings,
     commercialCampaignContext: options.commercialCampaignContext,
   });
 }
@@ -120,6 +127,62 @@ describe('commercial pattern regressions', () => {
     expect(result?.primarySubtype).toBe('GOODS_RETAIL');
     expect(result?.matchedSignals).toContain('goods-retail:bath-tub-retail');
     expect(result?.matchedSignals).not.toContain('recruitment:работа-условия');
+  });
+
+  it('detects emoji separated multi-object Flora showcase under balanced thresholds', () => {
+    const result = detect(
+      'ЖК Флора 🌱 Г.Сочи Кудепста ♦️ Студия ♦️ 24м2 ♦️ черновая 🔥7.200.000 ♦️ Студия ♦️ 24м2 ♦️ РМТ 🔥8.500.000 ♦️ Студия ♦️ 26м2 ♦️ РМТ 🔥8.600.000 Все предложения по комплексам Флора, Летний и Лестория от собственника на ключах 🔑 📱 +7 900 000 01 01 Виктория',
+      {
+        commercialCampaignContext: {
+          ...REPEATED_PRIVATE_RESALE_CONTEXT,
+          senderDistinctChatCount: 1,
+          sameTextDistinctChatCount: 1,
+          nearTextDistinctChatCount: 1,
+          repeatedPhoneDistinctChatCount: 1,
+          senderDistinctChatCount5m: 1,
+          senderDistinctChatCount30m: 1,
+          senderDistinctChatCount120m: 1,
+        },
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 55,
+          commercialAdsDeleteThreshold: 76,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('PROPERTY_AGENT');
+    expect(result?.matchedSignals).toContain('property-agent:витрина-объектов-прайс');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('detects conditioner install and refill services under balanced thresholds', () => {
+    const result = detect(
+      'Здравствуйте, оперативно, быстро и качественно выполняем работы по: - установке кондиционеров - обслуживанию -заправке -ремонту Звоните прямо сейчас - начинается горячий сезон. Выезжаем за город. +7 900 000 01 02',
+      {
+        commercialCampaignContext: {
+          ...REPEATED_PRIVATE_RESALE_CONTEXT,
+          senderDistinctChatCount: 1,
+          sameTextDistinctChatCount: 1,
+          nearTextDistinctChatCount: 1,
+          repeatedPhoneDistinctChatCount: 1,
+          senderDistinctChatCount5m: 1,
+          senderDistinctChatCount30m: 1,
+          senderDistinctChatCount120m: 1,
+        },
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 58,
+          commercialAdsDeleteThreshold: 78,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining(['service-specialty:appliance-repair', 'contact:phone']),
+    );
+    expect(['REVIEW_ONLY', 'WARN']).toContain(result?.actionBand);
   });
 
   it('does not let generic medical appointment wording become buyout evidence', () => {

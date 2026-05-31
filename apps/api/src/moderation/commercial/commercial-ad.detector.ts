@@ -111,6 +111,7 @@ export class CommercialAdDetector {
       'intent:все-виды-работ',
       'intent:construction-multi-service',
       'intent:занимаюсь-услугами',
+      'service-specialty:appliance-repair',
       'service-specialty:custom-handmade-order',
       'service-specialty:tree-yard-repair-service',
       'service-specialty:yard-cleanup-service',
