@@ -24,8 +24,10 @@ import {
   updateManagedGiveawayRequestSchema,
 } from '@maxim/contracts';
 import {
+  ChatBotMembershipStatus,
   ChatEntityType,
   GiveawayEligibilityState,
+  ManagedEntityAccessState,
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
   Prisma,
@@ -71,6 +73,7 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
+import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
@@ -168,6 +171,7 @@ export class ManagedGiveawayService {
     configService: ConfigService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional() private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -870,13 +874,20 @@ export class ManagedGiveawayService {
       },
       orderBy: [{ endsAt: 'asc' }, { startsAt: 'asc' }],
       take: GIVEAWAY_DUE_FETCH_BATCH_SIZE,
-      select: { id: true },
+      select: { id: true, sourceChatId: true },
     });
+    const accessBlockedSourceChatIds = await this.findAccessBlockedGiveawaySourceChatIds(
+      rows.map((row) => row.sourceChatId),
+    );
 
     let processed = 0;
     for (const row of rows) {
       if (processed >= GIVEAWAY_DUE_BATCH_SIZE) {
         break;
+      }
+      const sourceChatId = this.normalizeNonEmptyString(row.sourceChatId);
+      if (sourceChatId && accessBlockedSourceChatIds.has(sourceChatId)) {
+        continue;
       }
       if ((await this.getManagedGiveawayRunnerDeferRemainingMs(row.id)) > 0) {
         continue;
@@ -887,6 +898,60 @@ export class ManagedGiveawayService {
       await this.processDueManagedGiveaway(row.id, reason, staleLockBefore);
       processed += 1;
     }
+  }
+
+  private async findAccessBlockedGiveawaySourceChatIds(
+    sourceChatIds: readonly (string | null | undefined)[],
+  ): Promise<Set<string>> {
+    const normalizedSourceChatIds = Array.from(
+      new Set(
+        sourceChatIds
+          .map((chatId) => this.normalizeNonEmptyString(chatId))
+          .filter((chatId): chatId is string => Boolean(chatId)),
+      ),
+    );
+    if (normalizedSourceChatIds.length === 0) {
+      return new Set();
+    }
+
+    const [deniedRows, removedMembershipRows] = await Promise.all([
+      typeof this.prisma.managedEntityAccessEdge?.findMany === 'function'
+        ? this.prisma.managedEntityAccessEdge.findMany({
+            where: {
+              chatId: { in: normalizedSourceChatIds },
+              state: ManagedEntityAccessState.BOT_DENIED,
+            },
+            select: { chatId: true },
+          })
+        : Promise.resolve([]),
+      typeof this.prisma.chatBotMembership?.findMany === 'function'
+        ? this.prisma.chatBotMembership.findMany({
+            where: {
+              chatId: { in: normalizedSourceChatIds },
+              status: {
+                in: [ChatBotMembershipStatus.ACTIVE, ChatBotMembershipStatus.REMOVED],
+              },
+            },
+            select: { chatId: true, status: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const activeMembershipChatIds = new Set(
+      removedMembershipRows
+        .filter((row) => row.status === ChatBotMembershipStatus.ACTIVE)
+        .map((row) => this.normalizeNonEmptyString(row.chatId))
+        .filter((chatId): chatId is string => Boolean(chatId)),
+    );
+    const removedOnlyMembershipRows = removedMembershipRows.filter(
+      (row) =>
+        row.status === ChatBotMembershipStatus.REMOVED &&
+        !activeMembershipChatIds.has(this.normalizeNonEmptyString(row.chatId) ?? ''),
+    );
+    return new Set(
+      [...deniedRows, ...removedOnlyMembershipRows]
+        .map((row) => this.normalizeNonEmptyString(row.chatId))
+        .filter((chatId): chatId is string => Boolean(chatId)),
+    );
   }
 
   getGiveawaySettingsMiniappUrl(chatId: string, entityType: ManagedEntityType): string | null {
@@ -1799,8 +1864,9 @@ export class ManagedGiveawayService {
       return;
     }
 
+    let publicationBotId: string | undefined;
     try {
-      const publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
+      publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
       const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
         this.buildGiveawayPublicationText(giveaway),
       );
@@ -1885,6 +1951,13 @@ export class ManagedGiveawayService {
         },
         'Failed to edit giveaway publication message',
       );
+      await this.recordManagedGiveawayMaxAccessLoss({
+        giveaway,
+        botId: publicationBotId ?? null,
+        source: 'managed_giveaway:publication',
+        operation: 'edit',
+        error,
+      });
     }
   }
 
@@ -1926,6 +1999,13 @@ export class ManagedGiveawayService {
           },
           'Failed to publish giveaway results message',
         );
+        await this.recordManagedGiveawayMaxAccessLoss({
+          giveaway,
+          botId: publicationBotId ?? null,
+          source: 'managed_giveaway:results',
+          operation: 'send',
+          error,
+        });
       }
       return;
     }
@@ -1954,6 +2034,55 @@ export class ManagedGiveawayService {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to refresh giveaway results message',
+      );
+      await this.recordManagedGiveawayMaxAccessLoss({
+        giveaway,
+        botId: publicationBotId ?? null,
+        source: 'managed_giveaway:results',
+        operation: 'edit',
+        error,
+      });
+    }
+  }
+
+  private async recordManagedGiveawayMaxAccessLoss(params: {
+    giveaway: PersistedGiveawayWithRelations;
+    botId: string | null;
+    source: string;
+    operation: 'send' | 'edit';
+    error: unknown;
+  }): Promise<void> {
+    try {
+      const result =
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+          chatId: params.giveaway.sourceChatId,
+          botId: params.botId,
+          entityType: params.giveaway.entityType,
+          source: params.source,
+          operation: params.operation,
+          error: params.error,
+        });
+      if (result?.recorded) {
+        this.logger.warn(
+          {
+            giveawayId: params.giveaway.id,
+            sourceChatId: params.giveaway.sourceChatId,
+            botId: params.botId,
+            source: params.source,
+            operation: params.operation,
+            reason: result.reason,
+          },
+          'Managed giveaway source lost MAX access and runtime work was stopped',
+        );
+      }
+    } catch (accessLossError: unknown) {
+      this.logger.debug(
+        {
+          giveawayId: params.giveaway.id,
+          sourceChatId: params.giveaway.sourceChatId,
+          err: accessLossError instanceof Error ? accessLossError.message : String(accessLossError),
+        },
+        'Failed to record managed giveaway MAX access loss',
       );
     }
   }
@@ -2677,7 +2806,23 @@ export class ManagedGiveawayService {
       },
     });
 
-    for (const giveawayId of new Set(dueWinners.map((winner) => winner.giveawayId))) {
+    const giveawayIds = Array.from(new Set(dueWinners.map((winner) => winner.giveawayId)));
+    const giveawaySourceRows = await this.prisma.managedGiveaway.findMany({
+      where: { id: { in: giveawayIds } },
+      select: { id: true, sourceChatId: true },
+    });
+    const sourceChatIdByGiveawayId = new Map(
+      giveawaySourceRows.map((row) => [row.id, this.normalizeNonEmptyString(row.sourceChatId)]),
+    );
+    const accessBlockedSourceChatIds = await this.findAccessBlockedGiveawaySourceChatIds(
+      giveawaySourceRows.map((row) => row.sourceChatId),
+    );
+
+    for (const giveawayId of giveawayIds) {
+      const sourceChatId = sourceChatIdByGiveawayId.get(giveawayId) ?? null;
+      if (sourceChatId && accessBlockedSourceChatIds.has(sourceChatId)) {
+        continue;
+      }
       try {
         const giveaway = await this.findGiveawayById(giveawayId);
         await this.editGiveawayPublicationIfNeeded(giveaway, ManagedGiveawayStatus.COMPLETED);
@@ -3125,6 +3270,15 @@ export class ManagedGiveawayService {
   }
 
   private normalizeOwnBotUserId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeNonEmptyString(value: string | null | undefined): string | null {
     if (typeof value !== 'string') {
       return null;
     }

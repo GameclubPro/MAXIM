@@ -1,6 +1,7 @@
 import {
   ChatEntityType,
   GiveawayEligibilityState,
+  ManagedEntityAccessState,
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
 } from '../prisma/prisma-client';
@@ -62,11 +63,29 @@ function createPrismaMock() {
       upsert: jest.fn().mockResolvedValue(undefined),
       findUnique: jest.fn().mockResolvedValue({ title: 'Основной канал' }),
     },
+    managedEntityAccessEdge: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    chatBotMembership: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     auditLog: {
       create: jest.fn().mockResolvedValue(undefined),
     },
     $transaction: jest.fn(),
   };
+}
+
+function createMaxApiError(status: number, message: string, code?: string): Error {
+  return Object.assign(new Error(message), {
+    response: {
+      status,
+      data: {
+        ...(code ? { code } : {}),
+        message,
+      },
+    },
+  });
 }
 
 function createMaxClientMock() {
@@ -77,6 +96,12 @@ function createMaxClientMock() {
     sendMessageImmediateWithResolvedLink: jest.fn(),
     sendMessageImmediateToUser: jest.fn(),
     editMessageInlineKeyboard: jest.fn(),
+  };
+}
+
+function createManagedEntityAccessLossMock() {
+  return {
+    recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -782,6 +807,68 @@ describe('ManagedGiveawayService', () => {
         resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
       },
     });
+  });
+
+  it('records MAX access loss when publishing giveaway results is denied', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const maxBotLinkService = createMaxBotLinkMock();
+    const managedEntityAccessLossService = createManagedEntityAccessLossMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+      managedEntityAccessLossService as never,
+    );
+    const error = createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      publicationUrl: 'https://max.ru/channels/source-1/messages/publication-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+    maxClient.sendMessageImmediateWithResolvedLink.mockRejectedValue(error);
+    managedEntityAccessLossService.recordIfManagedEntityAccessLost.mockResolvedValue({
+      classification: {
+        kind: 'managed_entity_access_lost',
+        reason: 'bot_denied',
+        statusCode: 403,
+        code: 'chat.denied',
+        message: 'request failed with status code 403',
+      },
+      reason: 'bot_denied',
+      recorded: {
+        chatId: 'source-1',
+        botId: 'id613002203036_4_bot',
+        nextOwnerBotId: null,
+        updatedAccessEdges: 1,
+        cleanup: {
+          nightModeJobsCleared: false,
+          canceledBroadcasts: 0,
+          canceledBroadcastDeliveries: 0,
+          canceledBroadcastOccurrences: 0,
+          clearedVkPublishPosts: 0,
+          pausedVkSources: 0,
+          removedRosterSyncJobs: 0,
+        },
+      },
+    });
+
+    await (service as any).republishGiveawayResults(giveaway);
+
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'source-1',
+      botId: 'id613002203036_4_bot',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'managed_giveaway:results',
+      operation: 'send',
+      error,
+    });
+    expect(prisma.managedGiveaway.update).not.toHaveBeenCalled();
   });
 
   it('publishes giveaway text with markdown format when the bot draft contains markup', async () => {
@@ -1641,6 +1728,46 @@ describe('ManagedGiveawayService', () => {
 
       expect(processSpy).toHaveBeenCalledTimes(1);
       expect(processSpy).toHaveBeenCalledWith('giveaway-2', 'scheduled', expect.any(Date));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('skips due giveaways for chats with bot-denied access edges', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:22:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.managedGiveaway.findMany.mockResolvedValue([
+        { id: 'giveaway-denied', sourceChatId: 'source-denied' },
+        { id: 'giveaway-open', sourceChatId: 'source-open' },
+      ]);
+      prisma.managedEntityAccessEdge.findMany.mockResolvedValue([
+        { chatId: 'source-denied' },
+      ]);
+
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        createChatContextCacheMock() as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      const processSpy = jest
+        .spyOn(service as any, 'processDueManagedGiveaway')
+        .mockResolvedValue(undefined);
+
+      await service.processDueManagedGiveaways('scheduled');
+
+      expect(prisma.managedEntityAccessEdge.findMany).toHaveBeenCalledWith({
+        where: {
+          chatId: { in: ['source-denied', 'source-open'] },
+          state: ManagedEntityAccessState.BOT_DENIED,
+        },
+        select: { chatId: true },
+      });
+      expect(processSpy).toHaveBeenCalledTimes(1);
+      expect(processSpy).toHaveBeenCalledWith('giveaway-open', 'scheduled', expect.any(Date));
     } finally {
       jest.useRealTimers();
     }

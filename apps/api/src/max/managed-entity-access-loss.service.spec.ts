@@ -76,6 +76,21 @@ describe('classifyMaxTerminalChatActionError', () => {
       ),
     ).toBe('chat_not_found');
   });
+
+  it('does not resolve bare edit 404 as access loss but resolves edit 403', () => {
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'edit',
+        classifyMaxTerminalChatActionError(createMaxApiError(404, 'Not found'))!,
+      ),
+    ).toBeNull();
+    expect(
+      resolveManagedEntityAccessLossReason(
+        'edit',
+        classifyMaxTerminalChatActionError(createMaxApiError(403, 'Forbidden'))!,
+      ),
+    ).toBe('bot_denied');
+  });
 });
 
 describe('ManagedEntityAccessLossService', () => {
