@@ -522,29 +522,6 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   return path;
 }
 
-function buildRulerPath(values: Array<number | null>, width = 320): string {
-  const numericValues = values.filter((value): value is number => typeof value === 'number');
-  if (numericValues.length === 0) {
-    return '';
-  }
-
-  const minValue = Math.min(...numericValues);
-  const maxValue = Math.max(...numericValues);
-  const range = Math.max(1, maxValue - minValue);
-  const top = 5;
-  const bottom = 25;
-  const plotWidth = width - 10;
-  const points = values.map((value, index) => {
-    const resolvedValue = typeof value === 'number' ? value : minValue;
-    return {
-      x: values.length === 1 ? width / 2 : 5 + (plotWidth * index) / Math.max(1, values.length - 1),
-      y: top + ((maxValue - resolvedValue) / range) * (bottom - top),
-    };
-  });
-
-  return buildAudiencePath(points);
-}
-
 function resolvePostPinPositions(
   posts: ChannelStatsResponse['official']['content']['topPosts'],
   anchors: Array<{ at: string; x: number }>,
@@ -668,8 +645,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   linePath: string;
   areaPath: string;
   previousLinePath: string;
-  rulerPath: string;
-  previousRulerPath: string;
   hasLine: boolean;
   hasPreviousLine: boolean;
   guideYs: number[];
@@ -694,8 +669,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       linePath: '',
       areaPath: '',
       previousLinePath: '',
-      rulerPath: '',
-      previousRulerPath: '',
       hasLine: false,
       hasPreviousLine: false,
       guideYs: [],
@@ -844,8 +817,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       lineFloor,
     ),
     previousLinePath,
-    rulerPath: buildRulerPath(points.map((point) => point.cumulativeNet)),
-    previousRulerPath: buildRulerPath(previousPoints.map((point) => point.cumulativeNet)),
     hasLine: points.length > 0,
     hasPreviousLine: previousPoints.length > 0,
     guideYs: [lineTop, Math.round((lineTop + lineBottom) / 2), lineBottom],
@@ -868,8 +839,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   cumulativeLinePath: string;
   cumulativeAreaPath: string;
   previousCumulativeLinePath: string;
-  rulerPath: string;
-  previousRulerPath: string;
   guideYs: number[];
   leftPad: number;
   rightPad: number;
@@ -888,8 +857,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       cumulativeLinePath: '',
       cumulativeAreaPath: '',
       previousCumulativeLinePath: '',
-      rulerPath: '',
-      previousRulerPath: '',
       guideYs: [],
       leftPad: 22,
       rightPad: 16,
@@ -970,8 +937,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
     cumulativeLinePath,
     cumulativeAreaPath: buildAudienceAreaPath(cumulativeLinePath, cumulativePoints, baselineY),
     previousCumulativeLinePath,
-    rulerPath: buildRulerPath(series.map((item) => item.cumulativeViews)),
-    previousRulerPath: buildRulerPath(previousSeries.map((item) => item.cumulativeViews)),
     guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
     leftPad,
     rightPad,
@@ -981,45 +946,13 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   };
 }
 
-function ChartMiniRuler({
-  activeX,
-  currentPath,
-  previousPath,
-}: {
-  activeX: number;
-  currentPath: string;
-  previousPath: string;
-}) {
-  if (!currentPath && !previousPath) {
-    return null;
-  }
-
-  return (
-    <div className="channel-stats-graph__ruler" aria-hidden="true">
-      <svg viewBox="0 0 320 30" focusable="false">
-        {previousPath ? (
-          <path d={previousPath} className="channel-stats-graph__ruler-line is-previous" />
-        ) : null}
-        {currentPath ? (
-          <path d={currentPath} className="channel-stats-graph__ruler-line is-current" />
-        ) : null}
-        <circle
-          cx={clamp(activeX, 5, 315)}
-          cy="15"
-          r="4.5"
-          className="channel-stats-graph__ruler-dot"
-        />
-      </svg>
-    </div>
-  );
-}
-
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildAudienceChart(stats);
   const labels = chart.points;
   const [activeIndex, setActiveIndex] = useState(() =>
     resolveInitialAudienceChartIndex(chart.points),
   );
+  const [isTooltipVisible, setIsTooltipVisible] = useState(false);
 
   useEffect(() => {
     setActiveIndex(resolveInitialAudienceChartIndex(chart.points));
@@ -1099,15 +1032,15 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
       ) : (
         <>
-          <div className="channel-stats-graph__summary">
-            <div className="channel-stats-graph__summary-copy">
-              <small>
-                {activePoint
-                  ? formatChartDetailDate(activePoint.at, stats.period.bucket)
-                  : 'Нет данных'}
-              </small>
-              <strong>{activeAudiencePrimaryLabel}</strong>
-            </div>
+          <header className="channel-stats-graph__summary">
+            <small className="channel-stats-graph__summary-date">
+              {activePoint
+                ? formatChartDetailDate(activePoint.at, stats.period.bucket)
+                : 'Нет данных'}
+            </small>
+            <strong className="channel-stats-graph__summary-value">
+              {activeAudiencePrimaryLabel}
+            </strong>
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--line">
@@ -1132,7 +1065,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 </span>
               ) : null}
             </div>
-          </div>
+          </header>
 
           <div
             className="channel-stats-graph__canvas channel-stats-graph__canvas--audience"
@@ -1145,28 +1078,36 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuetext={activeGuideLabel}
             onPointerDown={(event) => {
               captureChartPointer(event);
+              setIsTooltipVisible(true);
               setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
             }}
             onPointerMove={(event) => {
-              if (event.pointerType !== 'mouse' && event.buttons !== 1) {
+              if (event.buttons !== 1) {
                 return;
               }
 
+              setIsTooltipVisible(true);
               setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
             }}
+            onPointerUp={() => setIsTooltipVisible(false)}
+            onPointerCancel={() => setIsTooltipVisible(false)}
+            onPointerLeave={() => setIsTooltipVisible(false)}
+            onBlur={() => setIsTooltipVisible(false)}
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft') {
                 event.preventDefault();
+                setIsTooltipVisible(true);
                 setActiveIndex((current) => clamp(current - 1, 0, chart.points.length - 1));
               }
 
               if (event.key === 'ArrowRight') {
                 event.preventDefault();
+                setIsTooltipVisible(true);
                 setActiveIndex((current) => clamp(current + 1, 0, chart.points.length - 1));
               }
             }}
           >
-            {activePoint ? (
+            {activePoint && isTooltipVisible ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activePoint.at, stats.period.bucket)}</small>
                 <strong>
@@ -1348,9 +1289,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 const tone =
                   point.left > point.joined ? 'left' : point.joined > 0 ? 'joined' : 'neutral';
                 const opacity =
-                  maxMembershipActivity > 0
-                    ? clamp(activity / maxMembershipActivity, 0.32, 1)
-                    : 0.28;
+                  safeActiveIndex === index
+                    ? 0.96
+                    : maxMembershipActivity > 0
+                      ? clamp(activity / maxMembershipActivity, 0.16, 0.58)
+                      : 0.16;
 
                 return (
                   <circle
@@ -1433,12 +1376,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             ))}
           </div>
 
-          <ChartMiniRuler
-            activeX={activePoint?.x ?? 160}
-            currentPath={chart.rulerPath}
-            previousPath={chart.previousRulerPath}
-          />
-
           <output className="channel-stats-graph__sr" aria-live="polite">
             {activePreviousPoint
               ? `${activeGuideLabel}. Прошлый период: ${formatSignedCount(
@@ -1456,6 +1393,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildViewsChart(stats);
   const labels = stats.official.series.views;
   const [activeIndex, setActiveIndex] = useState(() => resolveInitialViewsChartIndex(chart.bars));
+  const [isTooltipVisible, setIsTooltipVisible] = useState(false);
 
   useEffect(() => {
     setActiveIndex(resolveInitialViewsChartIndex(chart.bars));
@@ -1522,17 +1460,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
         <>
-          <div className="channel-stats-graph__summary">
-            <div className="channel-stats-graph__summary-copy">
-              <small>
-                {activeBar
-                  ? formatChartDetailDate(activeBar.at, stats.period.bucket)
-                  : 'Нет данных'}
-              </small>
-              <strong>
-                {activeViewsLabel} {viewsModeLabel}
-              </strong>
-            </div>
+          <header className="channel-stats-graph__summary">
+            <small className="channel-stats-graph__summary-date">
+              {activeBar ? formatChartDetailDate(activeBar.at, stats.period.bucket) : 'Нет данных'}
+            </small>
+            <strong className="channel-stats-graph__summary-value">
+              {activeViewsLabel} {viewsModeLabel}
+            </strong>
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
@@ -1550,7 +1484,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 </span>
               ) : null}
             </div>
-          </div>
+          </header>
 
           <div
             className="channel-stats-graph__canvas"
@@ -1563,28 +1497,36 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             aria-valuetext={activeGuideLabel}
             onPointerDown={(event) => {
               captureChartPointer(event);
+              setIsTooltipVisible(true);
               setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
             }}
             onPointerMove={(event) => {
-              if (event.pointerType !== 'mouse' && event.buttons !== 1) {
+              if (event.buttons !== 1) {
                 return;
               }
 
+              setIsTooltipVisible(true);
               setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
             }}
+            onPointerUp={() => setIsTooltipVisible(false)}
+            onPointerCancel={() => setIsTooltipVisible(false)}
+            onPointerLeave={() => setIsTooltipVisible(false)}
+            onBlur={() => setIsTooltipVisible(false)}
             onKeyDown={(event) => {
               if (event.key === 'ArrowLeft') {
                 event.preventDefault();
+                setIsTooltipVisible(true);
                 setActiveIndex((current) => clamp(current - 1, 0, chart.bars.length - 1));
               }
 
               if (event.key === 'ArrowRight') {
                 event.preventDefault();
+                setIsTooltipVisible(true);
                 setActiveIndex((current) => clamp(current + 1, 0, chart.bars.length - 1));
               }
             }}
           >
-            {activeBar ? (
+            {activeBar && isTooltipVisible ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
                 <strong>{activeViewsCompactLabel} просмотров</strong>
@@ -1778,12 +1720,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             ))}
           </div>
 
-          <ChartMiniRuler
-            activeX={activeBar?.x ?? 160}
-            currentPath={chart.rulerPath}
-            previousPath={chart.previousRulerPath}
-          />
-
           <output className="channel-stats-graph__sr" aria-live="polite">
             {activePreviousBar
               ? `${activeGuideLabel}. Прошлый период: ${formatCount(
@@ -1925,10 +1861,8 @@ function ChannelStatsOverview({
       aria-label="Сводка по каналу"
     >
       <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-        <div className="channel-insights__panel-head channel-insights__panel-head--chart">
-          <div className="channel-insights__panel-copy">
-            <strong>{chartTitle}</strong>
-          </div>
+        <header className="channel-insights__chart-header">
+          <strong className="channel-insights__chart-title">{chartTitle}</strong>
 
           <div className="channel-insights__chart-controls">
             {chartTabs.length > 1 ? (
@@ -1946,7 +1880,7 @@ function ChannelStatsOverview({
               className="channel-insights__range"
             />
           </div>
-        </div>
+        </header>
 
         {effectiveChartTab === 'audience' ? (
           <AudienceChart stats={stats} />
