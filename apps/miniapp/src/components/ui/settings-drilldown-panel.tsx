@@ -4,6 +4,11 @@ import { cn } from '../../lib/cn';
 import { useNativeBackHandler } from '../../lib/native-back';
 import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 
+type DrilldownScrollLockState = {
+  bodyOverflow: string;
+  documentOverflow: string;
+};
+
 type SettingsDrilldownPanelProps = {
   id: string;
   open: boolean;
@@ -18,6 +23,10 @@ type SettingsDrilldownPanelProps = {
   footer?: ReactNode;
   keepFooterVisibleWhenKeyboardOpen?: boolean;
 };
+
+let activeDrilldownLocks = 0;
+let drilldownScrollLockState: DrilldownScrollLockState | null = null;
+let drilldownUnlockFrame: number | null = null;
 
 function CloseIcon() {
   return (
@@ -39,6 +48,56 @@ function resolveDrilldownPortalTarget(): Element | null {
   }
 
   return document.querySelector('.design-preview__device-screen') ?? document.body;
+}
+
+function cancelScheduledDrilldownUnlock(): void {
+  if (drilldownUnlockFrame === null || typeof window === 'undefined') {
+    return;
+  }
+
+  window.cancelAnimationFrame(drilldownUnlockFrame);
+  drilldownUnlockFrame = null;
+}
+
+function restoreDrilldownScrollLock(): void {
+  drilldownUnlockFrame = null;
+
+  if (activeDrilldownLocks > 0 || !drilldownScrollLockState) {
+    return;
+  }
+
+  const { body, documentElement } = document;
+  body.classList.remove('settings-drilldown-open');
+  body.style.overflow = drilldownScrollLockState.bodyOverflow;
+  documentElement.style.overflow = drilldownScrollLockState.documentOverflow;
+  drilldownScrollLockState = null;
+}
+
+function acquireDrilldownScrollLock(): void {
+  cancelScheduledDrilldownUnlock();
+
+  if (activeDrilldownLocks === 0) {
+    const { body, documentElement } = document;
+    drilldownScrollLockState ??= {
+      bodyOverflow: body.style.overflow,
+      documentOverflow: documentElement.style.overflow,
+    };
+    body.classList.add('settings-drilldown-open');
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+  }
+
+  activeDrilldownLocks += 1;
+}
+
+function releaseDrilldownScrollLock(): void {
+  activeDrilldownLocks = Math.max(0, activeDrilldownLocks - 1);
+
+  if (activeDrilldownLocks > 0 || drilldownUnlockFrame !== null || typeof window === 'undefined') {
+    return;
+  }
+
+  drilldownUnlockFrame = window.requestAnimationFrame(restoreDrilldownScrollLock);
 }
 
 export function SettingsDrilldownPanel({
@@ -72,24 +131,27 @@ export function SettingsDrilldownPanel({
       return undefined;
     }
 
-    const { body, documentElement } = document;
-    const previousBodyOverflow = body.style.overflow;
-    const previousDocumentOverflow = documentElement.style.overflow;
+    acquireDrilldownScrollLock();
+
+    return () => {
+      releaseDrilldownScrollLock();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         onClose();
       }
     };
 
-    body.classList.add('settings-drilldown-open');
-    body.style.overflow = 'hidden';
-    documentElement.style.overflow = 'hidden';
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
-      body.classList.remove('settings-drilldown-open');
-      body.style.overflow = previousBodyOverflow;
-      documentElement.style.overflow = previousDocumentOverflow;
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [onClose, open]);

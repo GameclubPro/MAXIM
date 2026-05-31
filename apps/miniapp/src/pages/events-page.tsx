@@ -17,6 +17,7 @@ import '../styles/settings-drilldown-core.css';
 import '../styles/dashboard-events.css';
 import {
   startTransition,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   useDeferredValue,
@@ -1040,7 +1041,7 @@ function buildDiagnosticsFacts(
       value: formatDisplaySentence(resolveDiagnosticsReason(diagnostics)),
     },
     {
-      label: 'Что сделает бот',
+      label: 'Действие',
       value: resolveDiagnosticsAutoAction(diagnostics),
     },
   ];
@@ -1057,7 +1058,7 @@ function buildDiagnosticsFacts(
   }
   if (matchCount > 0) {
     facts.push({
-      label: 'Найдено',
+      label: 'Сигналы',
       value: `${matchCount} ${formatRussianCountLabel(
         matchCount,
         'сигнал',
@@ -1288,6 +1289,9 @@ function SpammerDiagnosticsSheet({
   const confidenceScore = diagnostics ? resolveDiagnosticsConfidenceScore(diagnostics) : null;
   const confidencePercent = scoreToPercent(confidenceScore);
   const confidenceLabel = formatDiagnosticsConfidenceLevel(confidenceScore);
+  const confidenceCaption = confidenceLabel
+    ? `${formatDisplaySentence(confidenceLabel)} уверенность`
+    : 'Оценка появится после сигналов';
   const verdictTone = diagnostics ? resolveDiagnosticsVerdictTone(diagnostics) : 'neutral';
   const signalCount = diagnostics ? countDiagnosticsMatches(diagnostics) : 0;
   const isReviewing = Boolean(reviewingAction);
@@ -1303,7 +1307,7 @@ function SpammerDiagnosticsSheet({
           aria-label="Исключить из базы спамеров"
         >
           <span>{reviewingAction === 'SUPPRESS' ? 'Исключаем...' : 'Исключить'}</span>
-          <small>из базы</small>
+          <small>из базы спамеров</small>
         </button>
         <button
           type="button"
@@ -1313,7 +1317,7 @@ function SpammerDiagnosticsSheet({
           aria-label="Внести в базу спамеров"
         >
           <span>{reviewingAction === 'APPROVE' ? 'Вносим...' : 'Внести'}</span>
-          <small>в базу</small>
+          <small>в базу спамеров</small>
         </button>
         <button
           type="button"
@@ -1338,6 +1342,7 @@ function SpammerDiagnosticsSheet({
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
+      overlayClassName="spammer-diagnostics-overlay"
       footer={footer}
       keepFooterVisibleWhenKeyboardOpen
     >
@@ -1354,27 +1359,38 @@ function SpammerDiagnosticsSheet({
         </div>
       ) : diagnostics ? (
         <section className="spammer-diagnostics">
-          <article className={`spammer-diagnostics__hero spammer-diagnostics__hero--${verdictTone}`}>
+          <article
+            className={`spammer-diagnostics__hero spammer-diagnostics__hero--${verdictTone}`}
+            style={
+              { '--spammer-confidence-percent': `${confidencePercent ?? 0}%` } as CSSProperties
+            }
+          >
             <div className="spammer-diagnostics__hero-top">
-              <span>Вердикт</span>
+              <span>Досье спам-базы</span>
               <strong>{resolveDiagnosticsAutoAction(diagnostics)}</strong>
             </div>
-            <h4>{resolveDiagnosticsHeadline(diagnostics)}</h4>
-            <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
+
+            <div className="spammer-diagnostics__hero-main">
+              <div className="spammer-diagnostics__confidence-orb" aria-hidden="true">
+                <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет'}</strong>
+                <span>{confidencePercent !== null ? 'уверенность' : 'оценки'}</span>
+              </div>
+
+              <div className="spammer-diagnostics__verdict-copy">
+                <h4>{resolveDiagnosticsHeadline(diagnostics)}</h4>
+                <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
+              </div>
+            </div>
 
             <div className="spammer-diagnostics__confidence" aria-label="Уверенность проверки">
               <div className="spammer-diagnostics__confidence-head">
-                <span>Уверенность</span>
-                <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет данных'}</strong>
+                <span>Уверенность решения</span>
+                <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет оценки'}</strong>
               </div>
-              <div className="spammer-diagnostics__meter" aria-hidden="true">
+              <div className="spammer-diagnostics__meter spammer-diagnostics__meter--confidence" aria-hidden="true">
                 <span style={{ width: `${confidencePercent ?? 0}%` }} />
               </div>
-              <small>
-                {confidenceLabel
-                  ? `${formatDisplaySentence(confidenceLabel)} уверенность`
-                  : 'Недостаточно сигналов для оценки'}
-              </small>
+              <small>{confidenceCaption}</small>
             </div>
           </article>
 
@@ -1406,16 +1422,19 @@ function SpammerDiagnosticsSheet({
                 {signalGroups.map((group) => {
                   const percent = scoreToPercent(group.maxScore) ?? 0;
                   return (
-                    <article key={group.key} className="spammer-diagnostics__signal-card">
+                    <article
+                      key={group.key}
+                      className="spammer-diagnostics__signal-card"
+                      style={{ '--spammer-signal-percent': `${percent}%` } as CSSProperties}
+                    >
                       <div className="spammer-diagnostics__signal-copy">
                         <strong>{formatDisplaySentence(group.label)}</strong>
-                        <span>
-                          {formatDiagnosticsSignalCount(group)} · сила до {percent}%
-                        </span>
+                        <span>{formatDiagnosticsSignalCount(group)}</span>
                       </div>
                       <div className="spammer-diagnostics__signal-score">
+                        <span>Сила до</span>
                         <strong>{percent}%</strong>
-                        <div className="spammer-diagnostics__meter" aria-hidden="true">
+                        <div className="spammer-diagnostics__meter spammer-diagnostics__meter--signal" aria-hidden="true">
                           <span style={{ width: `${percent}%` }} />
                         </div>
                       </div>
@@ -1432,16 +1451,20 @@ function SpammerDiagnosticsSheet({
           </section>
 
           {diagnostics.campaigns.length > 0 ? (
-            <section className="spammer-diagnostics__campaigns" aria-label="Связанные схемы">
+            <section className="spammer-diagnostics__campaigns" aria-label="Похожие совпадения">
               <div className="spammer-diagnostics__section-head">
-                <span>Связанные схемы</span>
+                <span>Похожие совпадения</span>
                 <strong>{diagnostics.campaigns.length}</strong>
               </div>
               <div className="spammer-diagnostics__campaign-list">
                 {diagnostics.campaigns.slice(0, 3).map((campaign) => {
                   const percent = scoreToPercent(campaign.confidenceScore) ?? 0;
                   return (
-                    <article key={campaign.clusterId} className="spammer-diagnostics__campaign">
+                    <article
+                      key={campaign.clusterId}
+                      className="spammer-diagnostics__campaign"
+                      style={{ '--spammer-signal-percent': `${percent}%` } as CSSProperties}
+                    >
                       <strong>
                         {formatDisplaySentence(resolveCampaignSignalLabel(campaign.signalType))}
                       </strong>
@@ -1455,7 +1478,9 @@ function SpammerDiagnosticsSheet({
                         )}{' '}
                         · сила {percent}%
                       </span>
-                      {campaign.preview ? <small>{campaign.preview}</small> : null}
+                      <div className="spammer-diagnostics__meter spammer-diagnostics__meter--signal" aria-hidden="true">
+                        <span style={{ width: `${percent}%` }} />
+                      </div>
                     </article>
                   );
                 })}
@@ -2331,11 +2356,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     setSpammerDiagnosticsTarget(target);
   };
   const handleSpammerCandidateDiagnostics = (candidate: GlobalSpammerReviewCandidate) => {
+    setSpammerReviewOpen(false);
     openSpammerDiagnostics({
       userId: candidate.userId,
       displayName: resolveSpammerCandidateName(candidate),
     });
-    window.requestAnimationFrame(() => setSpammerReviewOpen(false));
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
     if (nextFilter === activityFeed.filter) {
