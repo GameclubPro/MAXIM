@@ -1749,6 +1749,10 @@ export type GlobalSpammerObservation = z.infer<typeof globalSpammerObservationSc
 
 export const globalSpammerReviewCandidateSchema = z.object({
   userId: z.string(),
+  displayName: z.string().trim().nullable().optional().default(null),
+  avatarUrl: z.string().trim().url().nullable().optional().default(null),
+  profileUrl: z.string().trim().url().nullable().optional().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().optional().default(null),
   status: globalSpammerCandidateStatusSchema,
   confidenceScore: z.number().min(0).max(1),
   sourceBreakdown: z.unknown(),
@@ -1896,6 +1900,10 @@ export type LocalAdminSpammerDecision = z.infer<typeof localAdminSpammerDecision
 export const globalSpammerUserDiagnosticsSchema = z.object({
   userId: z.string(),
   chatId: z.string().nullable(),
+  displayName: z.string().trim().nullable().optional().default(null),
+  avatarUrl: z.string().trim().url().nullable().optional().default(null),
+  profileUrl: z.string().trim().url().nullable().optional().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().optional().default(null),
   policy: globalSpammerPolicyDecisionSchema,
   registry: z.object({
     active: z.boolean(),

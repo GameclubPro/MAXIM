@@ -72,6 +72,9 @@ type EventsSection = 'activity' | 'moderation' | 'participants';
 type SpammerDiagnosticsTarget = {
   userId: string;
   displayName: string;
+  avatarUrl?: string | null;
+  profileUrl?: string | null;
+  profileHandoffUrl?: string | null;
 };
 
 const MUTE_DURATION_MIN_HOURS = 1;
@@ -782,7 +785,11 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
 }
 
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
-  return candidate.lastUserLabel?.trim() || formatUserReference(candidate.userId);
+  return (
+    candidate.displayName?.trim() ||
+    candidate.lastUserLabel?.trim() ||
+    formatUserReference(candidate.userId)
+  );
 }
 
 function formatUserReference(userId: string): string {
@@ -797,6 +804,52 @@ function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate)
   const name = resolveSpammerCandidateName(candidate);
   const matched = name.match(/[A-Za-zА-Яа-яЁё0-9]/);
   return matched ? matched[0]!.toUpperCase() : 'S';
+}
+
+function resolveSpammerCandidateAvatarUrl(candidate: GlobalSpammerReviewCandidate): string | null {
+  const normalized = candidate.avatarUrl?.trim() ?? '';
+  return normalized || null;
+}
+
+function resolveSpammerDiagnosticsName(
+  target: SpammerDiagnosticsTarget | null,
+  diagnostics: GlobalSpammerUserDiagnostics | null,
+): string {
+  return (
+    diagnostics?.displayName?.trim() ||
+    target?.displayName?.trim() ||
+    formatUserReference(diagnostics?.userId ?? target?.userId ?? '')
+  );
+}
+
+function resolveSpammerDiagnosticsInitial(
+  target: SpammerDiagnosticsTarget | null,
+  diagnostics: GlobalSpammerUserDiagnostics | null,
+): string {
+  const matched = resolveSpammerDiagnosticsName(target, diagnostics).match(/[A-Za-zА-Яа-яЁё0-9]/);
+  return matched ? matched[0]!.toUpperCase() : 'S';
+}
+
+function resolveSpammerDiagnosticsAvatarUrl(
+  target: SpammerDiagnosticsTarget | null,
+  diagnostics: GlobalSpammerUserDiagnostics | null,
+): string | null {
+  const normalized = diagnostics?.avatarUrl?.trim() || target?.avatarUrl?.trim() || '';
+  return normalized || null;
+}
+
+function resolveSpammerDiagnosticsProfileUrl(
+  target: SpammerDiagnosticsTarget | null,
+  diagnostics: GlobalSpammerUserDiagnostics | null,
+): string {
+  return diagnostics?.profileUrl?.trim() || target?.profileUrl?.trim() || '';
+}
+
+function resolveSpammerDiagnosticsProfileHandoffUrl(
+  target: SpammerDiagnosticsTarget | null,
+  diagnostics: GlobalSpammerUserDiagnostics | null,
+): string {
+  return diagnostics?.profileHandoffUrl?.trim() || target?.profileHandoffUrl?.trim() || '';
 }
 
 function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
@@ -1031,12 +1084,7 @@ function buildDiagnosticsSignalGroups(
 }
 
 function formatDiagnosticsSignalCount(group: DiagnosticsSignalGroup): string {
-  return `${group.count} ${formatRussianCountLabel(
-    group.count,
-    'сигнал',
-    'сигнала',
-    'сигналов',
-  )}`;
+  return `${group.count} ${formatRussianCountLabel(group.count, 'сигнал', 'сигнала', 'сигналов')}`;
 }
 
 function countDiagnosticsMatches(diagnostics: GlobalSpammerUserDiagnostics): number {
@@ -1080,8 +1128,7 @@ function buildDiagnosticsFacts(
   if (activeUntil) {
     facts.push({
       label:
-        diagnostics.policy.registryStatus === 'SUPPRESSED' ||
-        diagnostics.activeSuppression
+        diagnostics.policy.registryStatus === 'SUPPRESSED' || diagnostics.activeSuppression
           ? 'Исключение до'
           : 'Активна до',
       value: activeUntil,
@@ -1207,7 +1254,7 @@ function GlobalSpammerReviewPanel({
               {visibleCandidates.map((candidate) => (
                 <PersonAvatar
                   key={candidate.userId}
-                  avatarUrl={null}
+                  avatarUrl={resolveSpammerCandidateAvatarUrl(candidate)}
                   fallback={resolveSpammerCandidateInitial(candidate)}
                   className="spammer-review__avatar"
                 />
@@ -1302,16 +1349,14 @@ function SpammerReviewSheet({
                 onClick={() => onOpenDiagnostics(candidate)}
               >
                 <PersonAvatar
-                  avatarUrl={null}
+                  avatarUrl={resolveSpammerCandidateAvatarUrl(candidate)}
                   fallback={resolveSpammerCandidateInitial(candidate)}
                   className="spammer-review-sheet__avatar"
                 />
 
                 <span className="spammer-review-sheet__person">
                   <strong>{label}</strong>
-                  <span>
-                    {[reason, chatsLabel].filter(Boolean).join(' · ')}
-                  </span>
+                  <span>{[reason, chatsLabel].filter(Boolean).join(' · ')}</span>
                 </span>
 
                 {confidence ? (
@@ -1347,6 +1392,7 @@ function SpammerDiagnosticsSheet({
   onRetry,
   onReview,
   onBan,
+  onProfileActivate,
 }: {
   open: boolean;
   target: SpammerDiagnosticsTarget | null;
@@ -1359,10 +1405,22 @@ function SpammerDiagnosticsSheet({
   onRetry: () => void;
   onReview: (userId: string, action: GlobalSpammerReviewAction) => void;
   onBan: (userId: string) => void;
+  onProfileActivate: (
+    userId: string,
+    displayName: string,
+    profileHandoffUrl: string | null | undefined,
+  ) => void;
 }) {
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
+  const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
+  const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
+  const profileAvatarUrl = resolveSpammerDiagnosticsAvatarUrl(target, diagnostics);
+  const profileUrl = resolveSpammerDiagnosticsProfileUrl(target, diagnostics);
+  const profileHandoffUrl = resolveSpammerDiagnosticsProfileHandoffUrl(target, diagnostics);
+  const profileHref = profileHandoffUrl || profileUrl || '#';
+  const canOpenProfile = profileUserId.length > 0;
   const confidenceScore = diagnostics ? resolveDiagnosticsConfidenceScore(diagnostics) : null;
   const confidencePercent = scoreToPercent(confidenceScore);
   const confidenceLabel = formatDiagnosticsConfidenceLevel(confidenceScore);
@@ -1414,8 +1472,8 @@ function SpammerDiagnosticsSheet({
     <SettingsDrilldownPanel
       id="spammer-diagnostics-sheet"
       open={open}
-      title={target?.displayName ?? 'База спама'}
-      summary={target?.userId ? `ID ${target.userId}` : ''}
+      title={profileDisplayName || 'База спама'}
+      summary={profileUserId ? `ID ${profileUserId}` : ''}
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
@@ -1436,6 +1494,52 @@ function SpammerDiagnosticsSheet({
         </div>
       ) : diagnostics ? (
         <section className="spammer-diagnostics">
+          <div className="spammer-diagnostics__profile">
+            {canOpenProfile ? (
+              <a
+                href={profileHref}
+                className="spammer-diagnostics__profile-avatar-link"
+                aria-label={`Открыть профиль ${profileDisplayName} в MAX`}
+                onClick={(event) =>
+                  handleProfileLinkClick(event, () =>
+                    onProfileActivate(profileUserId, profileDisplayName, profileHandoffUrl),
+                  )
+                }
+              >
+                <PersonAvatar
+                  avatarUrl={profileAvatarUrl}
+                  fallback={resolveSpammerDiagnosticsInitial(target, diagnostics)}
+                  className="spammer-diagnostics__profile-avatar"
+                />
+              </a>
+            ) : (
+              <PersonAvatar
+                avatarUrl={profileAvatarUrl}
+                fallback={resolveSpammerDiagnosticsInitial(target, diagnostics)}
+                className="spammer-diagnostics__profile-avatar"
+              />
+            )}
+
+            <div className="spammer-diagnostics__profile-copy">
+              {canOpenProfile ? (
+                <a
+                  href={profileHref}
+                  className="spammer-diagnostics__profile-name"
+                  onClick={(event) =>
+                    handleProfileLinkClick(event, () =>
+                      onProfileActivate(profileUserId, profileDisplayName, profileHandoffUrl),
+                    )
+                  }
+                >
+                  {profileDisplayName}
+                </a>
+              ) : (
+                <strong>{profileDisplayName}</strong>
+              )}
+              {profileUserId ? <span>ID {profileUserId}</span> : null}
+            </div>
+          </div>
+
           <article
             className={`spammer-diagnostics__hero spammer-diagnostics__hero--${verdictTone}`}
             style={
@@ -1462,9 +1566,14 @@ function SpammerDiagnosticsSheet({
             <div className="spammer-diagnostics__confidence" aria-label="Уверенность проверки">
               <div className="spammer-diagnostics__confidence-head">
                 <span>Уверенность решения</span>
-                <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет оценки'}</strong>
+                <strong>
+                  {confidencePercent !== null ? `${confidencePercent}%` : 'нет оценки'}
+                </strong>
               </div>
-              <div className="spammer-diagnostics__meter spammer-diagnostics__meter--confidence" aria-hidden="true">
+              <div
+                className="spammer-diagnostics__meter spammer-diagnostics__meter--confidence"
+                aria-hidden="true"
+              >
                 <span style={{ width: `${confidencePercent ?? 0}%` }} />
               </div>
               <small>{confidenceCaption}</small>
@@ -1511,7 +1620,10 @@ function SpammerDiagnosticsSheet({
                       <div className="spammer-diagnostics__signal-score">
                         <span>Сила до</span>
                         <strong>{percent}%</strong>
-                        <div className="spammer-diagnostics__meter spammer-diagnostics__meter--signal" aria-hidden="true">
+                        <div
+                          className="spammer-diagnostics__meter spammer-diagnostics__meter--signal"
+                          aria-hidden="true"
+                        >
                           <span style={{ width: `${percent}%` }} />
                         </div>
                       </div>
@@ -1555,7 +1667,10 @@ function SpammerDiagnosticsSheet({
                         )}{' '}
                         · сила {percent}%
                       </span>
-                      <div className="spammer-diagnostics__meter spammer-diagnostics__meter--signal" aria-hidden="true">
+                      <div
+                        className="spammer-diagnostics__meter spammer-diagnostics__meter--signal"
+                        aria-hidden="true"
+                      >
                         <span style={{ width: `${percent}%` }} />
                       </div>
                     </article>
@@ -2398,10 +2513,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       setEventsFilter(nextFilter);
     });
   };
-  const handleSpammerDiagnosticsReview = (
-    userId: string,
-    action: GlobalSpammerReviewAction,
-  ) => {
+  const handleSpammerDiagnosticsReview = (userId: string, action: GlobalSpammerReviewAction) => {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
       return;
@@ -2437,6 +2549,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     openSpammerDiagnostics({
       userId: candidate.userId,
       displayName: resolveSpammerCandidateName(candidate),
+      avatarUrl: candidate.avatarUrl ?? null,
+      profileUrl: candidate.profileUrl ?? null,
+      profileHandoffUrl: candidate.profileHandoffUrl ?? null,
     });
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
@@ -3024,6 +3139,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                               openSpammerDiagnostics({
                                 userId: violation.userId,
                                 displayName,
+                                avatarUrl,
+                                profileUrl,
+                                profileHandoffUrl,
                               })
                             }
                             onApplied={() => {
@@ -3087,6 +3205,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onRetry={() => void spammerDiagnosticsQuery.refetch()}
         onReview={handleSpammerDiagnosticsReview}
         onBan={handleSpammerDiagnosticsBan}
+        onProfileActivate={activateProfile}
       />
 
       <ChatParticipantSheet
@@ -3137,6 +3256,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           openSpammerDiagnostics({
             userId: selectedParticipant.userId,
             displayName: selectedParticipant.userDisplayName || selectedParticipant.userId,
+            avatarUrl: selectedParticipant.avatarUrl,
+            profileUrl: selectedParticipant.profileUrl,
+            profileHandoffUrl: selectedParticipant.profileHandoffUrl,
           });
         }}
         onMute={(durationHours) => {

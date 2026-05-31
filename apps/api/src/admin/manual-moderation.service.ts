@@ -6,11 +6,14 @@ import {
   globalSpammerReviewResultSchema,
   globalSpammerUserDiagnosticsSchema,
   type GlobalSpammerCandidateStatus,
+  type GlobalSpammerReviewQueue,
+  type GlobalSpammerUserDiagnostics,
 } from '@maxim/contracts';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { AdminService } from './admin.service';
+import { type ResolvedUserProfile } from './admin.service.support';
 
 @Injectable()
 export class ManualModerationService {
@@ -81,7 +84,9 @@ export class ManualModerationService {
       status,
       limit,
     });
-    return globalSpammerReviewQueueSchema.parse(response);
+    const parsedResponse = globalSpammerReviewQueueSchema.parse(response);
+    const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(chatId, parsedResponse);
+    return globalSpammerReviewQueueSchema.parse(enrichedResponse);
   }
 
   async getGlobalSpammerReviewMetrics(chatId: string, user: AuthUser) {
@@ -98,7 +103,12 @@ export class ManualModerationService {
       chatId,
       userId: targetUserId,
     });
-    return globalSpammerUserDiagnosticsSchema.parse(response);
+    const parsedResponse = globalSpammerUserDiagnosticsSchema.parse(response);
+    const enrichedResponse = await this.attachGlobalSpammerDiagnosticsProfile(
+      chatId,
+      parsedResponse,
+    );
+    return globalSpammerUserDiagnosticsSchema.parse(enrichedResponse);
   }
 
   async reviewGlobalSpammerCandidate(
@@ -142,6 +152,66 @@ export class ManualModerationService {
       return normalized as GlobalSpammerCandidateStatus;
     }
     return undefined;
+  }
+
+  private async attachGlobalSpammerReviewProfiles(
+    chatId: string,
+    response: GlobalSpammerReviewQueue,
+  ): Promise<GlobalSpammerReviewQueue> {
+    const profiles = await this.resolveGlobalSpammerProfiles(
+      chatId,
+      response.items.map((item) => item.userId),
+    );
+
+    return {
+      ...response,
+      items: response.items.map((item) => {
+        const profile = profiles.get(item.userId.trim());
+        return {
+          ...item,
+          displayName: profile?.displayName ?? item.displayName ?? item.lastUserLabel ?? null,
+          avatarUrl: profile?.avatarUrl ?? item.avatarUrl ?? null,
+          profileUrl: profile?.profileUrl ?? item.profileUrl ?? null,
+          profileHandoffUrl: profile?.profileHandoffUrl ?? item.profileHandoffUrl ?? null,
+        };
+      }),
+    };
+  }
+
+  private async attachGlobalSpammerDiagnosticsProfile(
+    chatId: string,
+    response: GlobalSpammerUserDiagnostics,
+  ): Promise<GlobalSpammerUserDiagnostics> {
+    const profile = (await this.resolveGlobalSpammerProfiles(chatId, [response.userId])).get(
+      response.userId.trim(),
+    );
+
+    return {
+      ...response,
+      displayName: profile?.displayName ?? response.displayName ?? null,
+      avatarUrl: profile?.avatarUrl ?? response.avatarUrl ?? null,
+      profileUrl: profile?.profileUrl ?? response.profileUrl ?? null,
+      profileHandoffUrl: profile?.profileHandoffUrl ?? response.profileHandoffUrl ?? null,
+    };
+  }
+
+  private async resolveGlobalSpammerProfiles(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, ResolvedUserProfile>> {
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
+
+    return this.legacyAdminService.resolveUserProfilesForAdminSurface(
+      chatId,
+      'chat',
+      normalizedUserIds,
+      {
+        allowRemoteLookup: true,
+      },
+    );
   }
 
   applyManualModerationAction(

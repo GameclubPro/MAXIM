@@ -4137,6 +4137,10 @@ function createPreviewSpammerReviewCandidates(now: Date): GlobalSpammerReviewCan
     items: [
       {
         userId: 'preview-spam-1',
+        displayName: 'Promo Mix',
+        avatarUrl: buildPreviewAvatarDataUrl('Promo Mix', '#f1a44b', '#ea7b4b'),
+        profileUrl: buildPreviewProfileUrl('promo-mix-preview'),
+        profileHandoffUrl: buildPreviewProfileHandoffUrl('promo-mix-preview'),
         status: 'PENDING',
         confidenceScore: 0.74,
         sourceBreakdown: {
@@ -4330,6 +4334,7 @@ function buildPreviewSpammerDiagnostics(
   if (userId === 'preview-spammer-1') {
     const expiresAt = addDays(now, 30).toISOString();
     const observedAt = addHours(now, -1).toISOString();
+    const displayName = 'Олег Повтор';
     const duplicateSignals = [
       {
         id: 'preview-registry-observation-1',
@@ -4369,6 +4374,10 @@ function buildPreviewSpammerDiagnostics(
     return globalSpammerUserDiagnosticsSchema.parse({
       userId,
       chatId,
+      displayName,
+      avatarUrl: buildPreviewAvatarDataUrl(displayName, '#7db8ff', '#4d89ff'),
+      profileUrl: buildPreviewProfileUrl('oleg-repeat'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('oleg-repeat'),
       policy: {
         userId,
         chatId,
@@ -4473,6 +4482,7 @@ function buildPreviewSpammerDiagnostics(
   }
 
   const candidate = candidates.find((item) => item.userId === userId) ?? null;
+  const displayName = candidate?.displayName ?? candidate?.lastUserLabel ?? null;
   const isApproved = candidate?.status === 'APPROVED' || candidate?.status === 'AUTO_APPROVED';
   const isSuppressed = candidate?.status === 'SUPPRESSED';
   const localAdminDecision = isApproved
@@ -4522,6 +4532,10 @@ function buildPreviewSpammerDiagnostics(
   return globalSpammerUserDiagnosticsSchema.parse({
     userId,
     chatId,
+    displayName,
+    avatarUrl: candidate?.avatarUrl ?? null,
+    profileUrl: candidate?.profileUrl ?? null,
+    profileHandoffUrl: candidate?.profileHandoffUrl ?? null,
     policy: {
       userId,
       chatId,
@@ -4537,10 +4551,7 @@ function buildPreviewSpammerDiagnostics(
       confidenceScore,
       policyBand: isApproved ? 'HIGH' : isSuppressed ? 'LOW' : 'MEDIUM',
       shadowScore: candidate ? Math.min(1, candidate.confidenceScore + 0.08) : null,
-      reason:
-        localAdminDecision?.reason ??
-        candidate?.lastReason ??
-        'NO_ACTIVE_REGISTRY_ENTRY',
+      reason: localAdminDecision?.reason ?? candidate?.lastReason ?? 'NO_ACTIVE_REGISTRY_ENTRY',
       expiresAt,
       sourceBreakdown: candidate?.sourceBreakdown ?? null,
       campaignBreakdown: candidate

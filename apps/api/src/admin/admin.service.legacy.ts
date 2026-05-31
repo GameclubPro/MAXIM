@@ -13878,6 +13878,15 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  async resolveUserProfilesForAdminSurface(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userIds: readonly string[],
+    options: ResolveUserProfilesOptions = {},
+  ): Promise<Map<string, ResolvedUserProfile>> {
+    return this.resolveUserProfiles(chatId, entityType, userIds, options);
+  }
+
   async resolveChatSettingsReadBotAssignmentData(
     chatId: string,
   ): Promise<ResolvedBotAssignmentData> {
