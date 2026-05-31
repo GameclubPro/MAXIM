@@ -544,6 +544,16 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
+type ManagedBroadcastCommentDialogReference = {
+  entityType: ManagedEntityType;
+  threadId: string;
+  includeCommentsButton: boolean;
+  includeSuggestButton: boolean;
+  suggestButtonText: string | null;
+  autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
+  suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
+  botId: string | null;
+};
 
 export class AdminManagedBroadcastRuntime {
   [key: string]: any;
@@ -1892,7 +1902,19 @@ export class AdminManagedBroadcastRuntime {
             media,
             resolvedBotId,
           );
-          if (occurrenceDelayMs === 0 && this.hasRetriableMaxAttachment(message.messageOptions)) {
+          let sentMessageId: string | null = null;
+          if (occurrenceDelayMs === 0 && message.commentDialogReference) {
+            sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
+              chatId,
+              message.messageText,
+              message.messageOptions,
+              resolvedBotId,
+              maxApiOptions,
+            );
+          } else if (
+            occurrenceDelayMs === 0 &&
+            this.hasRetriableMaxAttachment(message.messageOptions)
+          ) {
             await this.sendBroadcastImageMessageWithRetry(
               chatId,
               message.messageText,
@@ -1918,6 +1940,13 @@ export class AdminManagedBroadcastRuntime {
                   },
             );
           }
+          await this.recordManagedBroadcastCommentDialogReference({
+            chatId,
+            actorUserId: user.userId,
+            messageId: sentMessageId,
+            reference: message.commentDialogReference,
+            source,
+          });
         } catch (error: unknown) {
           if (!firstSendError) {
             firstSendError = error;
@@ -2412,6 +2441,7 @@ export class AdminManagedBroadcastRuntime {
         }
 
         let sentMessageId: string;
+        let commentDialogReference: ManagedBroadcastCommentDialogReference | null = null;
         try {
           const resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
           const media = await resolveMedia(resolvedBotId);
@@ -2423,6 +2453,7 @@ export class AdminManagedBroadcastRuntime {
             media,
             resolvedBotId,
           );
+          commentDialogReference = message.commentDialogReference;
           sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
             delivery.targetChatId,
             message.messageText,
@@ -2552,6 +2583,16 @@ export class AdminManagedBroadcastRuntime {
             continue;
           }
 
+          await this.recordManagedBroadcastCommentDialogReference({
+            chatId: delivery.targetChatId,
+            actorUserId: row.actorUserId,
+            messageId: sentMessageId,
+            reference: commentDialogReference,
+            source: reason,
+            broadcastId: row.id,
+            occurrenceIndex: currentOccurrence,
+          });
+
           await this.prisma.managedBroadcastDelivery.updateMany({
             where: {
               id: delivery.id,
@@ -2666,18 +2707,20 @@ export class AdminManagedBroadcastRuntime {
     messageOptions:
       | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined;
+    commentDialogReference: ManagedBroadcastCommentDialogReference | null;
   }> {
-    const broadcastButtons = await this.resolveBroadcastButtons(
-      chatId,
-      entityType,
-      {
-        customButtons: payload.buttons,
-        includeCustomButton: payload.buttonEnabled,
-        customButtonText: payload.buttonText.trim(),
-        customButtonUrl: payload.buttonUrl.trim(),
-      },
-      botId,
-    );
+    const { buttons: broadcastButtons, commentDialogReference } =
+      await this.resolveBroadcastButtonContext(
+        chatId,
+        entityType,
+        {
+          customButtons: payload.buttons,
+          includeCustomButton: payload.buttonEnabled,
+          customButtonText: payload.buttonText.trim(),
+          customButtonUrl: payload.buttonUrl.trim(),
+        },
+        botId,
+      );
     const hasMedia = Boolean(media.imagePayload) || Boolean(media.attachments?.length);
     const hasMeaningfulText = normalizedSourceText.trim().length > 0;
     const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
@@ -2702,7 +2745,71 @@ export class AdminManagedBroadcastRuntime {
     return {
       messageText,
       messageOptions,
+      commentDialogReference,
     };
+  }
+
+  private async recordManagedBroadcastCommentDialogReference(params: {
+    chatId: string;
+    actorUserId: string;
+    messageId: string | null;
+    reference: ManagedBroadcastCommentDialogReference | null;
+    source: string;
+    broadcastId?: string;
+    occurrenceIndex?: number;
+  }): Promise<void> {
+    const { chatId, actorUserId, messageId, reference } = params;
+    if (!messageId || !reference?.includeCommentsButton) {
+      return;
+    }
+
+    const commonPayload = {
+      messageId,
+      threadId: reference.threadId,
+      source: 'managed_broadcast',
+      managedBroadcastSource: params.source,
+      ...(params.broadcastId ? { broadcastId: params.broadcastId } : {}),
+      ...(params.occurrenceIndex ? { occurrenceIndex: params.occurrenceIndex } : {}),
+      ...(reference.botId ? { botId: reference.botId } : {}),
+    };
+    const payload =
+      reference.entityType === 'channel'
+        ? {
+            ...commonPayload,
+            includeCommentsButton: reference.includeCommentsButton,
+            includeSuggestButton: reference.includeSuggestButton,
+            autoPostButtonsMode: reference.autoPostButtonsMode,
+            suggestionEntryMode: reference.suggestionEntryMode,
+            ...(reference.suggestButtonText
+              ? { suggestButtonText: reference.suggestButtonText }
+              : {}),
+          }
+        : commonPayload;
+
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId,
+          action:
+            reference.entityType === 'channel'
+              ? CHANNEL_DIALOG_ACTION_AUTO_ATTACH
+              : CHAT_DIALOG_ACTION_AUTO_ATTACH,
+          payload,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          entityType: reference.entityType,
+          messageId,
+          threadId: reference.threadId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record managed broadcast comments button reference',
+      );
+    }
   }
 
   private async resolveManagedBroadcastMedia(

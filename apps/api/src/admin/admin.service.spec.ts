@@ -19801,6 +19801,90 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 
+  it('records chat broadcast comments button target after immediate delivery', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    prisma.chatSettings.upsert.mockResolvedValue({
+      chatId: 'chat-1',
+      commentsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-chat-comments-1', url: null }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Объявление с обсуждением',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['chat-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Объявление с обсуждением',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
+      }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHAT_COMMENTS',
+        payload: expect.objectContaining({
+          messageId: 'mid-chat-comments-1',
+          threadId: expect.any(String),
+          source: 'managed_broadcast',
+          managedBroadcastSource: 'immediate',
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+        }),
+      }),
+    });
+  });
+
   it('overwrites conflicting calendar slots from an older broadcast', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -22935,6 +23019,107 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
   });
 
+  it('records channel broadcast comments button target after immediate delivery', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'COMMENTS',
+      postSuggestionsEnabled: true,
+      postSuggestionsEntryMode: 'MINIAPP',
+      postSuggestionsButtonText: 'Предложить пост',
+      commentsEnabled: true,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-comments-1', url: null }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Пост с обсуждением',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(result.sentChats).toBe(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'channel-1',
+      'Пост с обсуждением',
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
+        ],
+      }),
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-comments-1',
+          threadId: expect.any(String),
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+          autoPostButtonsMode: 'COMMENTS',
+          suggestionEntryMode: 'MINIAPP',
+          suggestButtonText: 'Предложить пост',
+          source: 'managed_broadcast',
+          managedBroadcastSource: 'miniapp',
+        }),
+      }),
+    });
+  });
+
   it('sends immediate channel broadcast with image gallery attachments', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -23445,6 +23630,9 @@ describe('AdminService.sendChannelBroadcast', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
       sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-system-comments-1', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -23511,12 +23699,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    const [, messageText, options, dispatch] = maxClient.sendMessageImmediateWithId.mock.calls[0];
     expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
     expect(dispatch).toEqual(
       expect.objectContaining({
-        immediate: true,
         botId: 'channel-bot-2',
         trafficClass: 'interactive',
         actionHealthLane: 'interactive',
@@ -23541,6 +23729,22 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
     expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-system-comments-1',
+          threadId: expect.any(String),
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+          source: 'managed_broadcast',
+          managedBroadcastSource: 'miniapp',
+          botId: 'channel-bot-2',
+        }),
+      }),
+    });
   });
 
   it('publishes channel broadcast with system suggestion button in the first message', async () => {

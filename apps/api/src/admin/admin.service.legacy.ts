@@ -10202,6 +10202,37 @@ export class AdminService implements OnModuleDestroy {
     },
     botId?: string,
   ): Promise<MaxMessageButton[][]> {
+    return (
+      await this.resolveBroadcastButtonContext(chatId, entityType, options, botId)
+    ).buttons;
+  }
+
+  private async resolveBroadcastButtonContext(
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: {
+      customButtons?: BroadcastLinkButton[];
+      buttonEnabled?: boolean;
+      buttonUrl?: string;
+      buttonText?: string;
+      includeCustomButton: boolean;
+      customButtonText: string;
+      customButtonUrl: string;
+    },
+    botId?: string,
+  ): Promise<{
+    buttons: MaxMessageButton[][];
+    commentDialogReference: {
+      entityType: ManagedEntityType;
+      threadId: string;
+      includeCommentsButton: boolean;
+      includeSuggestButton: boolean;
+      suggestButtonText: string | null;
+      autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
+      suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
+      botId: string | null;
+    } | null;
+  }> {
     const rows = this.buildBroadcastLinkButtonRows(
       this.normalizeManagedBroadcastButtons(options.customButtons, {
         buttonEnabled: options.includeCustomButton,
@@ -10223,6 +10254,16 @@ export class AdminService implements OnModuleDestroy {
         },
       });
       const threadId = randomUUID();
+      let commentDialogReference: {
+        entityType: ManagedEntityType;
+        threadId: string;
+        includeCommentsButton: boolean;
+        includeSuggestButton: boolean;
+        suggestButtonText: string | null;
+        autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
+        suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
+        botId: string | null;
+      } | null = null;
 
       if (this.shouldIncludeChatCommentsButton(chatSettings)) {
         rows.push([
@@ -10234,13 +10275,29 @@ export class AdminService implements OnModuleDestroy {
             botId,
           ),
         ]);
+        commentDialogReference = {
+          entityType: 'chat',
+          threadId,
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+          suggestButtonText: null,
+          autoPostButtonsMode: null,
+          suggestionEntryMode: null,
+          botId: botId ?? null,
+        };
       }
 
-      return rows;
+      return {
+        buttons: rows,
+        commentDialogReference,
+      };
     }
 
     if (entityType !== 'channel') {
-      return rows;
+      return {
+        buttons: rows,
+        commentDialogReference: null,
+      };
     }
 
     const channelSettings = await this.prisma.channelSettings.upsert({
@@ -10259,8 +10316,12 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     const threadId = randomUUID();
+    const includeCommentsButton = channelSettings.commentsEnabled;
+    const includeSuggestButton = channelSettings.postSuggestionsEnabled;
+    const suggestButtonText =
+      channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
 
-    if (channelSettings.commentsEnabled) {
+    if (includeCommentsButton) {
       rows.push([
         this.buildChannelDialogButton(
           chatId,
@@ -10272,20 +10333,34 @@ export class AdminService implements OnModuleDestroy {
       ]);
     }
 
-    if (channelSettings.postSuggestionsEnabled) {
+    if (includeSuggestButton) {
       rows.push([
         this.buildChannelDialogButton(
           chatId,
           'suggest',
           threadId,
-          channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+          suggestButtonText,
           botId,
           channelSettings.postSuggestionsEntryMode,
         ),
       ]);
     }
 
-    return rows;
+    return {
+      buttons: rows,
+      commentDialogReference: includeCommentsButton
+        ? {
+            entityType: 'channel',
+            threadId,
+            includeCommentsButton,
+            includeSuggestButton,
+            suggestButtonText: includeSuggestButton ? suggestButtonText : null,
+            autoPostButtonsMode: channelSettings.autoPostButtonsMode,
+            suggestionEntryMode: channelSettings.postSuggestionsEntryMode,
+            botId: botId ?? null,
+          }
+        : null,
+    };
   }
 
   private buildChannelDialogButton(
