@@ -17277,6 +17277,202 @@ describe('ModerationService', () => {
       }),
     });
   });
+
+  it('records managed channel access loss when the background auto-post scan cannot read the channel', async () => {
+    const maxError = createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
+    const maxClient = {
+      listMessages: jest.fn().mockRejectedValue(maxError),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'managed_entity_access_lost',
+          reason: 'bot_denied',
+          statusCode: 403,
+          code: 'chat.denied',
+          message: 'request failed with status code 403',
+        },
+        reason: 'bot_denied',
+        recorded: {
+          chatId: 'channel-1',
+        },
+      }),
+    };
+
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntityAccessLossService as never,
+    );
+    jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await (service as any).processManagedChannelAutoPostButtons({
+      channelSettings: {
+        chatId: 'channel-1',
+        updatedAt: new Date('2026-04-13T00:00:00.000Z'),
+        autoPostButtonsMode: 'COMMENTS',
+        commentsEnabled: true,
+        postSuggestionsEnabled: false,
+      },
+      adminUserIds: ['admin-1'],
+    });
+
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
+      count: 10,
+      trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
+      botId: 'scan-bot-2',
+    });
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      botId: 'scan-bot-2',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'channel_auto_post:scan',
+      operation: 'read',
+      error: maxError,
+    });
+  });
+
+  it('keeps message-not-found auto-post attach failures as per-message skips', async () => {
+    const maxError = createMaxApiError(
+      404,
+      'Request failed with status code 404',
+      'message.not.found',
+    );
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(maxError),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || 'scan-bot-2')}?startapp=${startParam}`,
+        ),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'scan-bot-2' ? '990002' : null,
+      ),
+    };
+    const managedEntityAccessLossService = {
+      recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+        classification: {
+          kind: 'message_not_found',
+          statusCode: 404,
+          code: 'message.not.found',
+          message: 'request failed with status code 404',
+        },
+        reason: null,
+        recorded: null,
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'MAX_BOT_ID') {
+            return '777000_bot';
+          }
+          if (key === 'APP_BASE_URL') {
+            return 'https://maxim.play-team.ru';
+          }
+          return undefined;
+        }),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntityAccessLossService as never,
+    );
+    jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-1',
+      text: 'Пост канала',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-04-13T00:00:00.000Z'),
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      botId: 'scan-bot-2',
+      entityType: ChatEntityType.CHANNEL,
+      source: 'channel_auto_post:poll_attach',
+      operation: 'edit',
+      error: maxError,
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'system',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-1',
+          reason: 'terminal_delivery_failure',
+          source: 'poll',
+          deliveryMode: 'edit_message',
+          status: 404,
+        }),
+      }),
+    });
+  });
 });
 
 describe('ModerationService participant immunity', () => {

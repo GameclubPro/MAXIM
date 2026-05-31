@@ -10850,6 +10850,52 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return await this.resolveChatReadBotId(chatId);
   }
 
+  private async recordChannelAutoPostAccessLossIfTerminal(params: {
+    chatId: string;
+    botId: string | null;
+    source: string;
+    operation: 'send' | 'edit' | 'read';
+    error: unknown;
+  }): Promise<boolean> {
+    try {
+      const result =
+        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+          chatId: params.chatId,
+          botId: params.botId,
+          entityType: ChatEntityType.CHANNEL,
+          source: params.source,
+          operation: params.operation,
+          error: params.error,
+        });
+      if (!result?.recorded) {
+        return false;
+      }
+
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          source: params.source,
+          operation: params.operation,
+          reason: result.reason,
+        },
+        'Channel auto-post background work stopped after managed channel lost MAX access',
+      );
+      return true;
+    } catch (accessLossError: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          source: params.source,
+          err:
+            accessLossError instanceof Error ? accessLossError.message : String(accessLossError),
+        },
+        'Failed to record channel auto-post MAX access loss',
+      );
+      return false;
+    }
+  }
+
   private async executeModerationActionWithFallback(params: {
     chatId: string;
     action: 'delete_message' | 'moderate_member';
@@ -13184,6 +13230,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             maxNewMessagesPerScan: executionPlan.maxNewMessagesPerScan,
           });
         } catch (error: unknown) {
+          const accessLossHandled = await this.recordChannelAutoPostAccessLossIfTerminal({
+            chatId: managedChannel.channelSettings.chatId,
+            botId: null,
+            source: 'channel_auto_post:scan',
+            operation: 'read',
+            error,
+          });
+          if (accessLossHandled) {
+            break;
+          }
+
           this.logger.warn(
             {
               chatId: managedChannel.channelSettings.chatId,
@@ -13284,12 +13341,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         capability: 'background_scans',
       })) ??
       undefined;
-    const messages = await this.maxClient.listMessages(chatId, {
-      count: 10,
-      trafficClass: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
-      ...(scanBotId ? { botId: scanBotId } : {}),
-    });
+    let messages: Awaited<ReturnType<MaxClientService['listMessages']>>;
+    try {
+      messages = await this.maxClient.listMessages(chatId, {
+        count: 10,
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        ...(scanBotId ? { botId: scanBotId } : {}),
+      });
+    } catch (error: unknown) {
+      if (
+        await this.recordChannelAutoPostAccessLossIfTerminal({
+          chatId,
+          botId: scanBotId ?? null,
+          source: 'channel_auto_post:scan',
+          operation: 'read',
+          error,
+        })
+      ) {
+        return;
+      }
+      throw error;
+    }
     const normalizedMessages = messages
       .map((message) => this.parseChannelListedMessage(message))
       .filter(
@@ -13874,6 +13947,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
+      if (
+        source === 'poll' &&
+        (await this.recordChannelAutoPostAccessLossIfTerminal({
+          chatId,
+          botId: autoAttachBotId,
+          source: 'channel_auto_post:poll_attach',
+          operation: linkType === 'forward' ? 'send' : 'edit',
+          error,
+        }))
+      ) {
+        return;
+      }
       if (status && status < 500 && status !== 429) {
         this.logger.warn(
           {
@@ -13921,6 +14006,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           replyMessageId = sent?.messageId ?? null;
         } catch (fallbackError: unknown) {
           const fallbackStatus = this.extractStatusCode(fallbackError);
+          if (
+            source === 'poll' &&
+            (await this.recordChannelAutoPostAccessLossIfTerminal({
+              chatId,
+              botId: autoAttachBotId,
+              source: 'channel_auto_post:poll_attach_fallback',
+              operation: 'send',
+              error: fallbackError,
+            }))
+          ) {
+            return;
+          }
           if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
             this.logger.warn(
               {
