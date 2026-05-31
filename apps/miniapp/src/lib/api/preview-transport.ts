@@ -4278,7 +4278,7 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
     approved,
     suppressed,
     reviewed,
-    activeRegistry: Math.max(approved, 12),
+    activeRegistry: approved,
     expiredRegistry: 0,
     archivedExpired: 4,
     newCandidates24h: Math.max(pending, 2),

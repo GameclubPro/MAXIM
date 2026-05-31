@@ -688,32 +688,6 @@ function formatRussianCountLabel(count: number, one: string, few: string, many: 
   return many;
 }
 
-function resolveSpammerSourceLabel(source: string): string {
-  const labels: Record<string, string> = {
-    FANOUT_HIGH: 'массовая рассылка',
-    FANOUT_REPEAT: 'повторная рассылка',
-    COMMERCIAL_AD: 'коммерция',
-    COMMERCIAL_CAMPAIGN: 'кампания',
-    REPEATED_LINK: 'повтор ссылки',
-    REPEATED_PHONE: 'повтор телефона',
-    GRAPH_DOMAIN: 'одинаковый домен',
-    GRAPH_PHONE: 'одинаковый телефон',
-    GRAPH_TEXT: 'связанный шаблон',
-    GRAPH_CAMPAIGN: 'одна кампания',
-    GRAPH_FANOUT_PATTERN: 'похожая схема',
-    SANCTION_BAN: 'бан',
-    MANUAL_BAN: 'ручной бан',
-    LOCAL_ADMIN_BLOCK: 'локальная блокировка',
-    LOCAL_ADMIN_ALLOW: 'локальное исключение',
-    MANUAL_UNBAN: 'возврат вручную',
-    ADMIN_EXEMPTION: 'исключение админа',
-    REVIEW_APPROVED: 'проверено',
-    REVIEW_SUPPRESSION: 'исключено вручную',
-  };
-
-  return labels[source] ?? resolveSpammerReasonLabel(source);
-}
-
 function resolveSpammerReasonLabel(reason: string | null | undefined): string {
   const raw = reason?.trim() ?? '';
   if (!raw) {
@@ -721,67 +695,32 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
   }
 
   const normalized = raw.toUpperCase();
-  const labels: Record<string, string> = {
-    HIGH_FANOUT_6_CHATS_2M: 'массовая рассылка',
-    HIGH_FANOUT_5_CHATS_REPEAT: 'повторная рассылка',
-    FANOUT_EPISODE_OBSERVED: 'массовая рассылка',
-    FANOUT_EPISODE_MEDIUM: 'повторная массовость',
-    FANOUT_EPISODE_STRONG: 'сильная массовость',
-    FANOUT_EPISODE_CONFIRMED: 'подтвержденная массовость',
-    FANOUT_EPISODE_CRITICAL: 'критическая массовость',
-    COMMERCIAL_AD_DETECTED: 'коммерция',
-    REPEATED_LINK_CROSS_CHAT: 'повтор ссылки',
-    REPEATED_PHONE_CROSS_CHAT: 'повтор телефона',
-    REVIEW_APPROVED: 'проверено вручную',
-    REVIEW_SUPPRESSED: 'исключено вручную',
-    REVIEW_SUPPRESSION: 'исключено вручную',
-    MANUAL_BAN: 'ручной бан',
-    MANUAL_UNBAN: 'ручной возврат',
-    LOCAL_ADMIN_BLOCK: 'локальная блокировка',
-    LOCAL_ADMIN_ALLOW: 'локальное исключение',
-    LOCAL_ADMIN_REVIEW: 'локальная проверка',
-    SANCTION_BAN: 'бан',
-    SANCTION_KICK: 'удаление из чата',
-    NO_ACTIVE_REGISTRY_ENTRY: 'нет активной записи',
-    USER_ID_REQUIRED: 'нет номера пользователя',
-    ADMIN_EXEMPT: 'исключение админа',
-    ADMIN_EXEMPTION: 'исключение админа',
-  };
-
-  if (labels[normalized]) {
-    return labels[normalized];
-  }
-  if (/[А-Яа-яЁё]/.test(raw) && !/^[A-Z0-9_]+$/.test(raw)) {
-    return raw;
-  }
-  if (normalized.includes('FANOUT') || normalized.includes('SPAM')) {
-    return 'массовая рассылка';
-  }
-  if (normalized.includes('COMMERCIAL')) {
-    return 'коммерция';
-  }
-  if (normalized.includes('REPEATED_LINK') || normalized.includes('LINK')) {
-    return 'повтор ссылки';
-  }
-  if (normalized.includes('REPEATED_PHONE') || normalized.includes('PHONE')) {
-    return 'повтор телефона';
-  }
-  if (normalized.includes('GRAPH') || normalized.includes('CAMPAIGN')) {
-    return 'похожее поведение';
-  }
-  if (normalized.includes('SUPPRESS') || normalized.includes('FALSE')) {
-    return 'исключено вручную';
-  }
   if (normalized.includes('EXEMPT')) {
     return 'исключение админа';
   }
-  if (normalized.includes('BAN')) {
-    return 'бан';
+  if (
+    normalized.includes('ALLOW') ||
+    normalized.includes('SUPPRESS') ||
+    normalized.includes('UNBAN') ||
+    normalized.includes('FALSE')
+  ) {
+    return 'исключено вручную';
   }
-  if (normalized.includes('KICK')) {
-    return 'удаление из чата';
+  if (normalized.includes('NO_ACTIVE') || normalized.includes('USER_ID_REQUIRED')) {
+    return 'нет активной записи';
   }
-  return 'другой сигнал';
+  if (
+    /[А-Яа-яЁё]/.test(raw) &&
+    !normalized.includes('СХЕМ') &&
+    !normalized.includes('РАССЫЛ') &&
+    !normalized.includes('БАН') &&
+    !normalized.includes('ЖАЛОБ') &&
+    !normalized.includes('РЕКЛАМ') &&
+    !normalized.includes('ПОВТОР')
+  ) {
+    return raw;
+  }
+  return DIAGNOSTICS_SIGNAL_CATEGORIES[resolveSpammerSignalCategory(raw)].reasonLabel;
 }
 
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
@@ -852,26 +791,6 @@ function resolveSpammerDiagnosticsProfileHandoffUrl(
   return diagnostics?.profileHandoffUrl?.trim() || target?.profileHandoffUrl?.trim() || '';
 }
 
-function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
-  if (
-    diagnostics.localAdminDecision &&
-    (diagnostics.policy.registryStatus === 'LOCAL_BLOCKED' ||
-      diagnostics.policy.registryStatus === 'ADMIN_EXEMPT' ||
-      diagnostics.policy.adminExempt)
-  ) {
-    return resolveSpammerReasonLabel(diagnostics.localAdminDecision.reason);
-  }
-
-  const reason =
-    diagnostics.registry.reason ||
-    diagnostics.candidate?.lastReason ||
-    diagnostics.activeSuppression?.reason ||
-    diagnostics.policy.reason ||
-    null;
-
-  return reason ? resolveSpammerReasonLabel(reason) : 'нет явной причины';
-}
-
 function formatOptionalDate(value: string | null | undefined): string | null {
   return value ? formatViolationDate(value) : null;
 }
@@ -882,16 +801,16 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
     return 'В базе спама';
   }
   if (status === 'LOCAL_BLOCKED') {
-    return 'Блокируется локально';
+    return 'Локально заблокирован';
   }
   if (status === 'MEDIUM_REVIEW') {
     return 'На проверке';
   }
   if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
-    return 'Локальное исключение';
+    return 'Исключён';
   }
   if (status === 'EXPIRED') {
-    return 'Запись истекла';
+    return 'Нет активной записи';
   }
   return 'Нет активной записи';
 }
@@ -899,30 +818,30 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
 function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Автодействие выключено';
+    return 'Автобан выключен';
   }
   if (policy.registryStatus === 'LOCAL_BLOCKED') {
-    return policy.action === 'NONE' ? 'Локальная блокировка' : 'Блокирует в этом чате';
+    return policy.action === 'NONE' ? 'Блокировка сохранена' : 'Забанит в чате';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'Удалит сообщение и забанит';
+    return 'Забанит в чате';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK') {
-    return 'Только проверка';
+    return 'Ждёт решения админа';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT') {
-    return 'Исключение админа';
+    return 'Не будет банить';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
-    return 'Исключен вручную';
+    return 'Не будет банить';
   }
   if (policy.registryStatus === 'MEDIUM_REVIEW') {
-    return 'Только проверка';
+    return 'Ждёт решения админа';
   }
   if (policy.registryStatus === 'EXPIRED') {
-    return 'Не применяется';
+    return 'Ничего не делает';
   }
-  return 'Нет активного действия';
+  return 'Ничего не делает';
 }
 
 function resolveDiagnosticsVerdictTone(
@@ -954,30 +873,30 @@ function resolveDiagnosticsVerdictTone(
 function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics): string {
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Пользователь найден в базе, но автоудаление для этого чата выключено.';
+    return 'Пользователь в базе спама, но автобан в этом чате выключен. Админ может решить вручную.';
   }
   if (policy.registryStatus === 'LOCAL_BLOCKED') {
-    return 'Это решение админа действует только в его чатах. Для глобальной базы оно остается слабым сигналом.';
+    return 'Админ уже отметил пользователя как спамера для своих чатов. Глобальный автобан без подтверждения не включается.';
   }
   if (policy.action === 'DELETE_AND_KICK') {
-    return 'При новом сообщении бот удалит его и применит бан.';
+    return 'Пользователь в базе спама: при новом сообщении бот удалит сообщение и забанит в чате.';
   }
   if (policy.action === 'SHADOW_DELETE_AND_KICK' || policy.shadow) {
-    return 'База работает в режиме проверки: решение видно админу, без автоматического бана.';
+    return 'Пользователь похож на спамера: есть массовые повторы, жалобы или баны в других чатах. Автобан пока не включён без подтверждения админа.';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT' || policy.adminExempt) {
-    return 'Пользователь локально исключен из спам-базы для этого админского контура.';
+    return 'Пользователь исключён из спам-базы для этого админского контура. Автобан не применяется.';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
-    return 'Пользователь исключен из базы вручную, автодействие не применяется.';
+    return 'Пользователь отмечен как не спамер. Автобан не применяется.';
   }
   if (policy.registryStatus === 'MEDIUM_REVIEW') {
-    return 'Сигналов достаточно для проверки, но для глобальной базы нужны массовость, повторы или ручное подтверждение.';
+    return 'Пользователь похож на спамера: есть массовые повторы, жалобы или баны в других чатах. Автобан пока не включён без подтверждения админа.';
   }
   if (policy.registryStatus === 'EXPIRED') {
-    return 'Запись была в базе, но срок действия уже закончился.';
+    return 'Запись больше не активна. Система ничего не сделает без новых сигналов.';
   }
-  return 'Активной записи и автодействия сейчас нет.';
+  return 'Активной записи нет. Система ничего не сделает без новых сигналов.';
 }
 
 function resolveDiagnosticsConfidenceScore(
@@ -1014,21 +933,73 @@ function formatDiagnosticsConfidenceLevel(value: number | null): string | null {
   return 'низкая';
 }
 
-function resolveCampaignSignalLabel(signalType: string): string {
-  const labels: Record<string, string> = {
-    DOMAIN: 'домен',
-    PHONE: 'телефон',
-    URL: 'ссылка',
-    TEXT_SIGNATURE: 'текст',
-    MEDIA_SIGNATURE: 'медиа',
-    CAMPAIGN: 'кампания',
-    FANOUT_PATTERN: 'схема рассылки',
-  };
-  return labels[signalType] ?? signalType.toLocaleLowerCase('ru-RU');
+type DiagnosticsSignalCategoryKey = 'fanout' | 'bans' | 'ads' | 'system';
+
+const DIAGNOSTICS_SIGNAL_CATEGORIES: Record<
+  DiagnosticsSignalCategoryKey,
+  { label: string; reasonLabel: string }
+> = {
+  fanout: { label: 'Массовая рассылка', reasonLabel: 'массовая рассылка' },
+  bans: { label: 'Баны в других чатах', reasonLabel: 'баны в других чатах' },
+  ads: { label: 'Реклама и повторы', reasonLabel: 'реклама и повторы' },
+  system: { label: 'Алгоритмы системы', reasonLabel: 'алгоритмы системы' },
+};
+
+function resolveSpammerSignalCategory(
+  value: string | null | undefined,
+  fallback: DiagnosticsSignalCategoryKey = 'system',
+): DiagnosticsSignalCategoryKey {
+  const normalized = value?.trim().toUpperCase() ?? '';
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (
+    normalized.includes('MANUAL_BAN') ||
+    normalized.includes('SANCTION_BAN') ||
+    normalized.includes('SANCTION_KICK') ||
+    normalized.includes('LOCAL_ADMIN_BLOCK') ||
+    normalized.includes('REVIEW_APPROVED') ||
+    normalized.includes('БАН') ||
+    normalized.includes('ЖАЛОБ')
+  ) {
+    return 'bans';
+  }
+  if (
+    normalized.includes('COMMERCIAL') ||
+    normalized.includes('REPEATED_LINK') ||
+    normalized.includes('REPEATED_PHONE') ||
+    normalized.includes('РЕКЛАМ') ||
+    normalized.includes('ПОВТОР')
+  ) {
+    return 'ads';
+  }
+  if (
+    normalized.includes('FANOUT') ||
+    normalized.includes('GRAPH') ||
+    normalized.includes('CAMPAIGN') ||
+    normalized.includes('SCHEME') ||
+    normalized.includes('СХЕМ') ||
+    normalized.includes('РАССЫЛ')
+  ) {
+    return 'fanout';
+  }
+  if (normalized.includes('BAN') || normalized.includes('KICK')) {
+    return 'bans';
+  }
+  if (
+    normalized.includes('LINK') ||
+    normalized.includes('PHONE') ||
+    normalized.includes('URL') ||
+    normalized.includes('DOMAIN')
+  ) {
+    return 'ads';
+  }
+  return fallback;
 }
 
 type DiagnosticsSignalGroup = {
-  key: string;
+  key: DiagnosticsSignalCategoryKey;
   label: string;
   count: number;
   maxScore: number;
@@ -1045,38 +1016,41 @@ function formatDisplaySentence(value: string): string {
 function buildDiagnosticsSignalGroups(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): DiagnosticsSignalGroup[] {
-  const groups = new Map<string, DiagnosticsSignalGroup>();
-  const addSignal = (label: string, score: number, count = 1) => {
-    const normalizedLabel = label.trim() || 'другой сигнал';
-    const key = normalizedLabel.toLocaleLowerCase('ru-RU');
+  const groups = new Map<DiagnosticsSignalCategoryKey, DiagnosticsSignalGroup>();
+  const addSignal = (category: DiagnosticsSignalCategoryKey, score: number, count = 1) => {
+    const meta = DIAGNOSTICS_SIGNAL_CATEGORIES[category];
     const normalizedCount = Math.max(1, Math.trunc(count));
-    const current = groups.get(key);
+    const current = groups.get(category);
     if (current) {
       current.count += normalizedCount;
       current.maxScore = Math.max(current.maxScore, score);
       return;
     }
-    groups.set(key, {
-      key,
-      label: normalizedLabel,
+    groups.set(category, {
+      key: category,
+      label: meta.label,
       count: normalizedCount,
       maxScore: score,
     });
   };
 
   diagnostics.observations.forEach((item) => {
-    addSignal(resolveSpammerSourceLabel(item.source), item.score);
+    addSignal(resolveSpammerSignalCategory(item.source), item.score);
   });
   diagnostics.graphSignals.forEach((item) => {
-    addSignal(resolveSpammerSourceLabel(item.source), item.score);
+    addSignal(resolveSpammerSignalCategory(item.source), item.score);
   });
   diagnostics.campaigns.forEach((item) => {
     addSignal(
-      resolveCampaignSignalLabel(item.signalType),
+      resolveSpammerSignalCategory(item.signalType, 'fanout'),
       item.confidenceScore,
       item.observationsCount,
     );
   });
+
+  if (diagnostics.reputationSummary.naturalBanSignals > 0 && !groups.has('bans')) {
+    addSignal('bans', 0.34, diagnostics.reputationSummary.naturalBanSignals);
+  }
 
   return [...groups.values()]
     .sort((left, right) => right.maxScore - left.maxScore || right.count - left.count)
@@ -1085,14 +1059,6 @@ function buildDiagnosticsSignalGroups(
 
 function formatDiagnosticsSignalCount(group: DiagnosticsSignalGroup): string {
   return `${group.count} ${formatRussianCountLabel(group.count, 'сигнал', 'сигнала', 'сигналов')}`;
-}
-
-function countDiagnosticsMatches(diagnostics: GlobalSpammerUserDiagnostics): number {
-  return (
-    diagnostics.observations.length +
-    diagnostics.graphSignals.length +
-    diagnostics.campaigns.reduce((sum, item) => sum + Math.max(1, item.observationsCount), 0)
-  );
 }
 
 function scoreToPercent(value: number | null): number | null {
@@ -1112,43 +1078,22 @@ function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics
 function buildDiagnosticsFacts(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): Array<{ label: string; value: string }> {
-  const matchCount = countDiagnosticsMatches(diagnostics);
   const activeUntil = resolveDiagnosticsActiveUntil(diagnostics);
-  const facts: Array<{ label: string; value: string }> = [
-    {
-      label: 'Причина',
-      value: formatDisplaySentence(resolveDiagnosticsReason(diagnostics)),
-    },
-    {
-      label: 'Действие',
-      value: resolveDiagnosticsAutoAction(diagnostics),
-    },
-  ];
+  const facts: Array<{ label: string; value: string }> = [];
 
   if (activeUntil) {
     facts.push({
       label:
         diagnostics.policy.registryStatus === 'SUPPRESSED' || diagnostics.activeSuppression
           ? 'Исключение до'
-          : 'Активна до',
+          : 'Действует до',
       value: activeUntil,
-    });
-  }
-  if (matchCount > 0) {
-    facts.push({
-      label: 'Сигналы',
-      value: `${matchCount} ${formatRussianCountLabel(
-        matchCount,
-        'сигнал',
-        'сигнала',
-        'сигналов',
-      )}`,
     });
   }
   if (diagnostics.localAdminDecision) {
     const decisionLabels: Record<string, string> = {
-      ALLOW: 'Не считать в моих чатах',
-      BLOCK: 'Блокировать в моих чатах',
+      ALLOW: 'Не спамер',
+      BLOCK: 'Блокировать',
       REVIEW: 'Отправить на проверку',
     };
     facts.push({
@@ -1156,39 +1101,6 @@ function buildDiagnosticsFacts(
       value:
         decisionLabels[diagnostics.localAdminDecision.decision] ??
         'Локальное решение для этого чата',
-    });
-  }
-  if (diagnostics.reputationSummary.naturalBanSignals > 0) {
-    const banSignals = diagnostics.reputationSummary.naturalBanSignals;
-    const strength =
-      banSignals >= 6
-        ? 'сильный'
-        : banSignals >= 4
-          ? 'средний'
-          : banSignals >= 2
-            ? 'заметный'
-            : 'слабый';
-    facts.push({
-      label: 'Другие чаты',
-      value: `Есть баны: ${strength} сигнал, сам по себе не банит`,
-    });
-  }
-  if (diagnostics.reputationSummary.localAllowSignals > 0) {
-    facts.push({
-      label: 'Исключения',
-      value: 'Есть локальное исключение от админа',
-    });
-  }
-  if (diagnostics.reputationSummary.localBlockSignals > 0) {
-    facts.push({
-      label: 'Админы',
-      value: 'Есть локальная блокировка: слабый сигнал риска',
-    });
-  }
-  if (diagnostics.reputationSummary.onlyReputationSignals) {
-    facts.push({
-      label: 'Глобальная база',
-      value: 'Нужны массовость, повторы или ручное подтверждение',
     });
   }
 
@@ -1209,8 +1121,6 @@ function GlobalSpammerReviewPanel({
   onOpen: () => void;
 }) {
   const pending = metrics?.pending ?? candidates.length;
-  const approved = metrics?.approved ?? 0;
-  const activeRegistry = metrics?.activeRegistry ?? approved;
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const visibleCandidates = candidates.slice(0, 3);
   const hiddenCandidateCount = Math.max(0, pending - visibleCandidates.length);
@@ -1219,16 +1129,7 @@ function GlobalSpammerReviewPanel({
     'кандидат',
     'кандидата',
     'кандидатов',
-  )}`;
-  const activeLabel =
-    activeRegistry > 0
-      ? `${activeRegistry} ${formatRussianCountLabel(
-          activeRegistry,
-          'запись',
-          'записи',
-          'записей',
-        )} в базе`
-      : null;
+  )} на проверке`;
   const statusLabel = errorMessage ? 'Ошибка загрузки' : isLoading ? 'Обновляем' : pendingLabel;
   const shouldHide = !isLoading && !errorMessage && candidates.length === 0 && pending === 0;
   if (shouldHide) {
@@ -1245,7 +1146,6 @@ function GlobalSpammerReviewPanel({
         <span className="spammer-review__copy">
           <span className="spammer-review__label">База спама</span>
           <strong>{statusLabel}</strong>
-          {activeLabel ? <small>{activeLabel}</small> : null}
         </span>
 
         <span className="spammer-review__side" aria-hidden="true">
@@ -1414,6 +1314,7 @@ function SpammerDiagnosticsSheet({
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
+  const signalCount = signalGroups.reduce((sum, group) => sum + group.count, 0);
   const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
   const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
   const profileAvatarUrl = resolveSpammerDiagnosticsAvatarUrl(target, diagnostics);
@@ -1423,12 +1324,7 @@ function SpammerDiagnosticsSheet({
   const canOpenProfile = profileUserId.length > 0;
   const confidenceScore = diagnostics ? resolveDiagnosticsConfidenceScore(diagnostics) : null;
   const confidencePercent = scoreToPercent(confidenceScore);
-  const confidenceLabel = formatDiagnosticsConfidenceLevel(confidenceScore);
-  const confidenceCaption = confidenceLabel
-    ? `${formatDisplaySentence(confidenceLabel)} уверенность`
-    : 'Оценка появится после сигналов';
   const verdictTone = diagnostics ? resolveDiagnosticsVerdictTone(diagnostics) : 'neutral';
-  const signalCount = diagnostics ? countDiagnosticsMatches(diagnostics) : 0;
   const isReviewing = Boolean(reviewingAction);
   const isActionBusy = isReviewing || isBanning;
   const footer = diagnostics ? (
@@ -1439,30 +1335,27 @@ function SpammerDiagnosticsSheet({
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'SUPPRESS')}
-          aria-label="Не считать спамером в моих чатах"
+          aria-label="Не спамер"
         >
-          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не считать'}</span>
-          <small>в моих чатах</small>
+          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не спамер'}</span>
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--accent"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
-          aria-label="Блокировать в моих чатах"
+          aria-label="Блокировать"
         >
           <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Блокировать'}</span>
-          <small>в моих чатах</small>
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--danger"
           disabled={isActionBusy}
           onClick={() => onBan(diagnostics.userId)}
-          aria-label="Забанить пользователя"
+          aria-label="Забанить в чате"
         >
-          <span>{isBanning ? 'Баним...' : 'Забанить'}</span>
-          <small>в чате</small>
+          <span>{isBanning ? 'Баним...' : 'Забанить в чате'}</span>
         </button>
       </div>
     </div>
@@ -1472,8 +1365,8 @@ function SpammerDiagnosticsSheet({
     <SettingsDrilldownPanel
       id="spammer-diagnostics-sheet"
       open={open}
-      title={profileDisplayName || 'База спама'}
-      summary={profileUserId ? `ID ${profileUserId}` : ''}
+      title="Досье спамера"
+      summary=""
       tone="sky"
       onClose={onClose}
       className="spammer-diagnostics-sheet"
@@ -1547,8 +1440,8 @@ function SpammerDiagnosticsSheet({
             }
           >
             <div className="spammer-diagnostics__hero-top">
-              <span>Проверка спам-базы</span>
-              <strong>{resolveDiagnosticsAutoAction(diagnostics)}</strong>
+              <span>Статус</span>
+              <strong>{resolveDiagnosticsHeadline(diagnostics)}</strong>
             </div>
 
             <div className="spammer-diagnostics__hero-main">
@@ -1558,40 +1451,26 @@ function SpammerDiagnosticsSheet({
               </div>
 
               <div className="spammer-diagnostics__verdict-copy">
-                <h4>{resolveDiagnosticsHeadline(diagnostics)}</h4>
+                <h4>{resolveDiagnosticsAutoAction(diagnostics)}</h4>
                 <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
               </div>
             </div>
-
-            <div className="spammer-diagnostics__confidence" aria-label="Уверенность проверки">
-              <div className="spammer-diagnostics__confidence-head">
-                <span>Уверенность решения</span>
-                <strong>
-                  {confidencePercent !== null ? `${confidencePercent}%` : 'нет оценки'}
-                </strong>
-              </div>
-              <div
-                className="spammer-diagnostics__meter spammer-diagnostics__meter--confidence"
-                aria-hidden="true"
-              >
-                <span style={{ width: `${confidencePercent ?? 0}%` }} />
-              </div>
-              <small>{confidenceCaption}</small>
-            </div>
           </article>
 
-          <dl className="spammer-diagnostics__facts" aria-label="Сводка по пользователю">
-            {facts.map((item) => (
-              <div key={`${item.label}:${item.value}`}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
+          {facts.length > 0 ? (
+            <dl className="spammer-diagnostics__facts" aria-label="Сводка по пользователю">
+              {facts.map((item) => (
+                <div key={`${item.label}:${item.value}`}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
 
-          <section className="spammer-diagnostics__signals" aria-label="Сигналы и репутация">
+          <section className="spammer-diagnostics__signals" aria-label="Почему система так решила">
             <div className="spammer-diagnostics__section-head">
-              <span>Сигналы и репутация</span>
+              <span>Почему система так решила</span>
               <strong>
                 {signalCount > 0
                   ? `${signalCount} ${formatRussianCountLabel(
@@ -1608,24 +1487,12 @@ function SpammerDiagnosticsSheet({
                 {signalGroups.map((group) => {
                   const percent = scoreToPercent(group.maxScore) ?? 0;
                   return (
-                    <article
-                      key={group.key}
-                      className="spammer-diagnostics__signal-card"
-                      style={{ '--spammer-signal-percent': `${percent}%` } as CSSProperties}
-                    >
+                    <article key={group.key} className="spammer-diagnostics__signal-card">
                       <div className="spammer-diagnostics__signal-copy">
-                        <strong>{formatDisplaySentence(group.label)}</strong>
-                        <span>{formatDiagnosticsSignalCount(group)}</span>
-                      </div>
-                      <div className="spammer-diagnostics__signal-score">
-                        <span>Сила до</span>
-                        <strong>{percent}%</strong>
-                        <div
-                          className="spammer-diagnostics__meter spammer-diagnostics__meter--signal"
-                          aria-hidden="true"
-                        >
-                          <span style={{ width: `${percent}%` }} />
-                        </div>
+                        <strong>{group.label}</strong>
+                        <span>
+                          {formatDiagnosticsSignalCount(group)} · {percent}%
+                        </span>
                       </div>
                     </article>
                   );
@@ -1633,52 +1500,11 @@ function SpammerDiagnosticsSheet({
               </div>
             ) : (
               <div className="spammer-diagnostics__empty">
-                <strong>Пока нет сохраненных совпадений</strong>
+                <strong>Пока нет сигналов</strong>
                 <span>Можно внести пользователя вручную или закрыть досье.</span>
               </div>
             )}
           </section>
-
-          {diagnostics.campaigns.length > 0 ? (
-            <section className="spammer-diagnostics__campaigns" aria-label="Похожие совпадения">
-              <div className="spammer-diagnostics__section-head">
-                <span>Похожие совпадения</span>
-                <strong>{diagnostics.campaigns.length}</strong>
-              </div>
-              <div className="spammer-diagnostics__campaign-list">
-                {diagnostics.campaigns.slice(0, 3).map((campaign) => {
-                  const percent = scoreToPercent(campaign.confidenceScore) ?? 0;
-                  return (
-                    <article
-                      key={campaign.clusterId}
-                      className="spammer-diagnostics__campaign"
-                      style={{ '--spammer-signal-percent': `${percent}%` } as CSSProperties}
-                    >
-                      <strong>
-                        {formatDisplaySentence(resolveCampaignSignalLabel(campaign.signalType))}
-                      </strong>
-                      <span>
-                        {campaign.distinctUsersCount}{' '}
-                        {formatRussianCountLabel(
-                          campaign.distinctUsersCount,
-                          'пользователь',
-                          'пользователя',
-                          'пользователей',
-                        )}{' '}
-                        · сила {percent}%
-                      </span>
-                      <div
-                        className="spammer-diagnostics__meter spammer-diagnostics__meter--signal"
-                        aria-hidden="true"
-                      >
-                        <span style={{ width: `${percent}%` }} />
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
         </section>
       ) : null}
     </SettingsDrilldownPanel>
