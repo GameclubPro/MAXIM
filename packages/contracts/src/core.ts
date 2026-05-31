@@ -1851,6 +1851,7 @@ export type GlobalSpammerReviewMetrics = z.infer<typeof globalSpammerReviewMetri
 export const globalSpammerRegistryStatusSchema = z.enum([
   'NONE',
   'ACTIVE_CONFIRMED',
+  'LOCAL_BLOCKED',
   'MEDIUM_REVIEW',
   'SUPPRESSED',
   'EXPIRED',
@@ -1888,6 +1889,9 @@ export const globalSpammerPolicyDecisionSchema = z.object({
   campaignBreakdown: z.unknown().nullable().default(null),
 });
 export type GlobalSpammerPolicyDecision = z.infer<typeof globalSpammerPolicyDecisionSchema>;
+
+export const localAdminSpammerDecisionSchema = z.enum(['ALLOW', 'BLOCK', 'REVIEW']);
+export type LocalAdminSpammerDecision = z.infer<typeof localAdminSpammerDecisionSchema>;
 
 export const globalSpammerUserDiagnosticsSchema = z.object({
   userId: z.string(),
@@ -1956,6 +1960,31 @@ export const globalSpammerUserDiagnosticsSchema = z.object({
   ),
   campaigns: z.array(globalSpammerCampaignSummarySchema).default([]),
   latestShadowScore: globalSpammerShadowScoreSummarySchema.nullable().default(null),
+  localAdminDecision: z
+    .object({
+      decision: localAdminSpammerDecisionSchema,
+      reason: z.string(),
+      sourceChatId: z.string().nullable(),
+      decidedByUserIds: z.array(z.string()).default([]),
+      updatedAt: z.string().datetime(),
+    })
+    .nullable()
+    .default(null),
+  reputationSummary: z
+    .object({
+      naturalBanSignals: z.number().int().min(0).default(0),
+      localBlockSignals: z.number().int().min(0).default(0),
+      localAllowSignals: z.number().int().min(0).default(0),
+      onlyReputationSignals: z.boolean().default(false),
+      note: z.string().default('Репутационные сигналы учитываются как фон, а не как приговор.'),
+    })
+    .default({
+      naturalBanSignals: 0,
+      localBlockSignals: 0,
+      localAllowSignals: 0,
+      onlyReputationSignals: false,
+      note: 'Репутационные сигналы учитываются как фон, а не как приговор.',
+    }),
 });
 export type GlobalSpammerUserDiagnostics = z.infer<typeof globalSpammerUserDiagnosticsSchema>;
 

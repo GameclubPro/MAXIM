@@ -265,10 +265,13 @@ import {
   GLOBAL_SPAMMER_REDIS_TTL_SEC,
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
   GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
-  GLOBAL_SPAMMER_REPEAT_FANOUT_MIN_CHATS,
   GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS,
-  GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD,
-  GLOBAL_SPAMMER_REPEAT_FANOUT_COUNTER_TTL_SEC,
+  GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC,
+  GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
+  GLOBAL_SPAMMER_MEDIUM_FANOUT_EPISODE_THRESHOLD,
+  GLOBAL_SPAMMER_STRONG_FANOUT_EPISODE_THRESHOLD,
+  GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD,
+  GLOBAL_SPAMMER_CRITICAL_FANOUT_MIN_CHATS,
   GREETING_BURST_WINDOW_SEC,
   GREETING_BURST_LIMIT,
   GREETING_AUTO_DISABLE_SEC,
@@ -292,6 +295,7 @@ import {
   type ChannelAutoPostExecutionPlan,
   type PendingChatAdminLookupBatch,
   type PendingChatAdminSharedCacheBatch,
+  type LocalGlobalSpammerAdminDecision,
   type PendingGlobalSpammerExemptionLookupBatch,
   type NightModeTransitionState,
   type WebhookHotPathProfile,
@@ -389,10 +393,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     string,
     {
       expiresAtMs: number;
-      exempt: boolean;
+      decision: LocalGlobalSpammerAdminDecision | null;
     }
   >();
-  private readonly globalSpammerExemptionLookupInFlight = new Map<string, Promise<boolean>>();
+  private readonly globalSpammerExemptionLookupInFlight = new Map<
+    string,
+    Promise<LocalGlobalSpammerAdminDecision | null>
+  >();
   private readonly pendingGlobalSpammerExemptionLookupBatches = new Map<
     string,
     PendingGlobalSpammerExemptionLookupBatch
@@ -1087,13 +1094,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const mediaFlags = detectMediaFlags(update);
       if (!deferHotChatModerationSkipUntilAfterAccessGates) {
-        const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
-          ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
+        const globalSpammerAdminDecisions = settings.deleteSpammersEnabled
+          ? await this.resolveGlobalSpammerAdminDecisions([senderId], chat.adminUserIds, {
               chatId,
             })
-          : new Set<string>();
+          : new Map<string, LocalGlobalSpammerAdminDecision>();
         this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
-        const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
+        const globalSpammerAdminDecision = globalSpammerAdminDecisions.get(senderId) ?? null;
+        if (globalSpammerAdminDecision === 'BLOCK') {
+          const handled = await this.handleLocalAdminBlockedSenderMessage({
+            chatId,
+            userId: senderId,
+            messageId,
+            text,
+          });
+          if (handled) {
+            return;
+          }
+        }
+        const isGlobalSpammerExempt = globalSpammerAdminDecision === 'ALLOW';
         this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
         const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
           chatId,
@@ -6552,6 +6571,37 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
+  private async handleLocalAdminBlockedSenderMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+  }): Promise<boolean> {
+    const { chatId, userId, messageId, text } = params;
+    try {
+      await this.deleteMessageImmediately(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete message from locally blocked spammer',
+      );
+    }
+
+    return this.kickAndLogKnownSpammerEvent({
+      chatId,
+      userId,
+      messageId,
+      text,
+      reason: 'Local admin block for this admin scope',
+      ruleCode: 'LOCAL_ADMIN_BLOCK',
+    });
+  }
+
   private async handleServiceKnownSpammerMembersEvent(params: {
     chatId: string;
     adminUserIds: string[];
@@ -6563,6 +6613,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
     if (serviceMemberUserIds.length === 0) {
       return [];
+    }
+
+    const localAdminDecisions = await this.resolveGlobalSpammerAdminDecisions(
+      serviceMemberUserIds,
+      adminUserIds,
+      {
+        chatId,
+      },
+    );
+    const kickedUserIds: string[] = [];
+    for (const userId of serviceMemberUserIds) {
+      if (localAdminDecisions.get(userId) !== 'BLOCK') {
+        continue;
+      }
+      const enforced = await this.kickAndLogKnownSpammerEvent({
+        chatId,
+        userId,
+        messageId,
+        text,
+        reason: 'Member joined via service event and has a local admin block',
+        ruleCode: 'LOCAL_ADMIN_BLOCK',
+      });
+      if (enforced) {
+        kickedUserIds.push(userId);
+      }
     }
 
     const rows = await this.prisma.globalSpammer.findMany({
@@ -6579,20 +6654,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
     if (rows.length === 0) {
-      return [];
+      return kickedUserIds;
     }
 
-    const exemptUserIds = await this.resolveGlobalSpammerExemptUserIds(
-      rows.map((row) => row.userId),
-      adminUserIds,
-      {
-        chatId,
-      },
-    );
-    const kickedUserIds: string[] = [];
-
     for (const row of rows) {
-      const adminExempt = exemptUserIds.has(row.userId);
+      if (kickedUserIds.includes(row.userId)) {
+        continue;
+      }
+      const adminExempt = localAdminDecisions.get(row.userId) === 'ALLOW';
       if (this.globalSpammerIntelligence) {
         const decision = await this.globalSpammerIntelligence.evaluatePolicy({
           chatId,
@@ -6615,6 +6684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         messageId,
         text,
         reason: 'Member joined via service event and exists in global spammer registry',
+        ruleCode: 'GLOBAL_SPAMMER_KICK',
       });
       if (enforced) {
         kickedUserIds.push(row.userId);
@@ -6630,8 +6700,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     reason: string;
+    ruleCode?: string;
   }): Promise<boolean> {
-    const { chatId, userId, messageId, text, reason } = params;
+    const { chatId, userId, messageId, text, reason, ruleCode = 'GLOBAL_SPAMMER_KICK' } = params;
     try {
       if (await this.kickMemberImmediately(chatId, userId)) {
         await this.createBotModerationEvent({
@@ -6640,7 +6711,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId,
             messageId,
             eventType: EventType.MEMBER_ACTION,
-            ruleCode: 'GLOBAL_SPAMMER_KICK',
+            ruleCode,
             action: SanctionAction.KICK,
             maskedExcerpt: maskText(text),
             score: 0.95,
@@ -6701,18 +6772,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
+        const episodeLockKey = this.buildGlobalSpammerFanoutEpisodeLockRedisKey(userId);
+        const lockState = await this.redisCounter.addToSetWithTtl(
+          episodeLockKey,
+          'active',
+          GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC,
+        );
+        if (!lockState.added && uniqueChatsState.size < GLOBAL_SPAMMER_CRITICAL_FANOUT_MIN_CHATS) {
+          return baseResult;
+        }
+
+        const episodeCounterKey = this.buildGlobalSpammerFanoutEpisodeRedisKey(userId);
+        const fanoutEpisodeCount = lockState.added
+          ? await this.redisCounter.incrementWithTtl(
+              episodeCounterKey,
+              GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
+            )
+          : await this.readGlobalSpammerFanoutEpisodeCount(episodeCounterKey);
+        const fanoutReason = this.resolveGlobalSpammerFanoutEpisodeReason({
+          uniqueChats: uniqueChatsState.size,
+          fanoutEpisodeCount,
+        });
         await this.upsertGlobalSpammerEntry({
           userId,
           sourceChatId: chatId,
-          reason: 'HIGH_FANOUT_6_CHATS_2M',
+          reason: fanoutReason,
           evidence: {
             uniqueChats: uniqueChatsState.size,
             windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+            fanoutEpisodeCount,
+            fanoutEpisodeWindowSec: GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC,
           },
         });
+        const shouldCheckKnownSpammer =
+          fanoutReason === 'FANOUT_EPISODE_CONFIRMED' ||
+          fanoutReason === 'FANOUT_EPISODE_CRITICAL';
         if (
           deleteSpammersEnabled &&
           !exemptFromEnforcement &&
+          shouldCheckKnownSpammer &&
           (!this.globalSpammerIntelligence ||
             (await this.isUserKnownGlobalSpammer(userId, { chatId, messageId, trigger: 'fanout' })))
         ) {
@@ -6735,40 +6833,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         return {
           handled: false,
-          skipKnownSpammerCheck: false,
+          skipKnownSpammerCheck: deleteSpammersEnabled && shouldCheckKnownSpammer,
         };
-      }
-
-      if (uniqueChatsState.size < GLOBAL_SPAMMER_REPEAT_FANOUT_MIN_CHATS) {
-        return baseResult;
-      }
-
-      const repeatedFanoutCount = await this.redisCounter.incrementWithTtl(
-        this.buildGlobalSpammerRepeatFanoutRedisKey(userId),
-        GLOBAL_SPAMMER_REPEAT_FANOUT_COUNTER_TTL_SEC,
-      );
-
-      if (repeatedFanoutCount >= GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD) {
-        this.runGlobalSpammerSideEffect(
-          { chatId, userId, action: 'upsert-repeat-fanout-threshold' },
-          async () =>
-            this.upsertGlobalSpammerEntry({
-              userId,
-              sourceChatId: chatId,
-              reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
-              evidence: {
-                uniqueChats: uniqueChatsState.size,
-                windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-                repeatedFanoutCount,
-                repeatedFanoutThreshold: GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD,
-              },
-            }),
-        );
       }
 
       return {
         handled: false,
-        skipKnownSpammerCheck: deleteSpammersEnabled,
+        skipKnownSpammerCheck: false,
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -7052,8 +7123,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `global-spammer:any:v1:${userId}`;
   }
 
-  private buildGlobalSpammerRepeatFanoutRedisKey(userId: string): string {
-    return `global-spammer:fanout:v1:${userId}`;
+  private buildGlobalSpammerFanoutEpisodeRedisKey(userId: string): string {
+    return `global-spammer:fanout-episodes:v2:${userId}`;
+  }
+
+  private buildGlobalSpammerFanoutEpisodeLockRedisKey(userId: string): string {
+    return `global-spammer:fanout-episode-lock:v2:${userId}`;
+  }
+
+  private async readGlobalSpammerFanoutEpisodeCount(key: string): Promise<number> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (!getString || !this.redisCounter) {
+      return 1;
+    }
+    const raw = await getString.call(this.redisCounter, key);
+    const parsed = Number.parseInt(raw ?? '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  }
+
+  private resolveGlobalSpammerFanoutEpisodeReason(params: {
+    uniqueChats: number;
+    fanoutEpisodeCount: number;
+  }): string {
+    if (params.uniqueChats >= GLOBAL_SPAMMER_CRITICAL_FANOUT_MIN_CHATS) {
+      return 'FANOUT_EPISODE_CRITICAL';
+    }
+    if (params.fanoutEpisodeCount >= GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD) {
+      return 'FANOUT_EPISODE_CONFIRMED';
+    }
+    if (params.fanoutEpisodeCount >= GLOBAL_SPAMMER_STRONG_FANOUT_EPISODE_THRESHOLD) {
+      return 'FANOUT_EPISODE_STRONG';
+    }
+    if (params.fanoutEpisodeCount >= GLOBAL_SPAMMER_MEDIUM_FANOUT_EPISODE_THRESHOLD) {
+      return 'FANOUT_EPISODE_MEDIUM';
+    }
+    return 'FANOUT_EPISODE_OBSERVED';
   }
 
   private buildLocalGlobalSpammerChatObservationKey(chatId: string, userId: string): string {
@@ -7093,8 +7197,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId?: string;
     } = {},
   ): Promise<Set<string>> {
+    const decisions = await this.resolveGlobalSpammerAdminDecisions(userIds, adminUserIds, options);
+    const exemptUserIds = new Set<string>();
+    for (const [userId, decision] of decisions.entries()) {
+      if (decision === 'ALLOW') {
+        exemptUserIds.add(userId);
+      }
+    }
+    return exemptUserIds;
+  }
+
+  private async resolveGlobalSpammerAdminDecisions(
+    userIds: readonly string[],
+    adminUserIds: readonly string[] | undefined,
+    options: {
+      chatId?: string;
+    } = {},
+  ): Promise<Map<string, LocalGlobalSpammerAdminDecision>> {
     if (!Array.isArray(adminUserIds) || adminUserIds.length === 0 || userIds.length === 0) {
-      return new Set<string>();
+      return new Map();
     }
 
     const normalizedAdminUserIds = [
@@ -7104,7 +7225,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       options.chatId ?? null,
       normalizedAdminUserIds,
     );
-    const cachedExemptUserIds = new Set<string>();
+    const cachedDecisions = new Map<string, LocalGlobalSpammerAdminDecision>();
     const unresolvedUserIds: string[] = [];
     for (const rawUserId of userIds) {
       const normalizedUserId = rawUserId.trim();
@@ -7117,20 +7238,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         unresolvedUserIds.push(normalizedUserId);
         continue;
       }
-      if (cached) {
-        cachedExemptUserIds.add(normalizedUserId);
-      }
+      cachedDecisions.set(normalizedUserId, cached);
     }
 
     if (unresolvedUserIds.length === 0) {
-      return cachedExemptUserIds;
+      return cachedDecisions;
     }
 
-    const exemptUserIds = new Set<string>(cachedExemptUserIds);
+    const decisions = new Map(cachedDecisions);
     const unresolvedLookups = await Promise.all(
       [...new Set(unresolvedUserIds)].map(async (normalizedUserId) => ({
         userId: normalizedUserId,
-        exempt: await this.enqueueGlobalSpammerExemptionLookupBatch(
+        decision: await this.enqueueGlobalSpammerExemptionLookupBatch(
           cacheScopeKey,
           normalizedAdminUserIds,
           normalizedUserId,
@@ -7139,19 +7258,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     for (const lookup of unresolvedLookups) {
-      if (lookup.exempt) {
-        exemptUserIds.add(lookup.userId);
+      if (lookup.decision) {
+        decisions.set(lookup.userId, lookup.decision);
       }
     }
 
-    return exemptUserIds;
+    return decisions;
   }
 
   private enqueueGlobalSpammerExemptionLookupBatch(
     scopeKey: string,
     adminUserIds: readonly string[],
     userId: string,
-  ): Promise<boolean> {
+  ): Promise<LocalGlobalSpammerAdminDecision | null> {
     const cacheKey = `${scopeKey}|${userId}`;
     const inFlight = this.globalSpammerExemptionLookupInFlight.get(cacheKey);
     if (inFlight) {
@@ -7169,7 +7288,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.pendingGlobalSpammerExemptionLookupBatches.set(scopeKey, batch);
     }
 
-    const lookupPromise = new Promise<boolean>((resolve, reject) => {
+    const lookupPromise = new Promise<LocalGlobalSpammerAdminDecision | null>((resolve, reject) => {
       batch!.lookups.set(cacheKey, {
         userId,
         resolve,
@@ -7208,15 +7327,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const exemptUserIds = await this.loadGlobalSpammerExemptionBatch(
+      const decisions = await this.loadGlobalSpammerExemptionBatch(
         batch.adminUserIds,
         lookups.map((lookup) => lookup.userId),
       );
 
       for (const lookup of lookups) {
-        const exempt = exemptUserIds.has(lookup.userId);
-        this.writeGlobalSpammerExemptionCache(scopeKey, lookup.userId, exempt);
-        lookup.resolve(exempt);
+        const decision = decisions.get(lookup.userId) ?? null;
+        this.writeGlobalSpammerExemptionCache(scopeKey, lookup.userId, decision);
+        lookup.resolve(decision);
       }
     } catch (error: unknown) {
       for (const lookup of lookups) {
@@ -7228,14 +7347,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async loadGlobalSpammerExemptionBatch(
     adminUserIds: readonly string[],
     userIds: readonly string[],
-  ): Promise<Set<string>> {
+  ): Promise<Map<string, LocalGlobalSpammerAdminDecision>> {
     const normalizedAdminUserIds = [
       ...new Set(adminUserIds.map((item) => item.trim()).filter(Boolean)),
     ].sort();
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
-    const exemptUserIds = new Set<string>();
+    const decisions = new Map<string, LocalGlobalSpammerAdminDecision>();
     if (normalizedAdminUserIds.length === 0 || normalizedUserIds.length === 0) {
-      return exemptUserIds;
+      return decisions;
     }
 
     const adminUserVariants = new Set<string>();
@@ -7245,7 +7364,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
     if (adminUserVariants.size === 0) {
-      return exemptUserIds;
+      return decisions;
     }
 
     const userIdVariants = new Set<string>();
@@ -7259,7 +7378,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
     if (userIdVariants.size === 0) {
-      return exemptUserIds;
+      return decisions;
     }
 
     const prismaWithAdminGlobalSpammerExemption = this.prisma as unknown as {
@@ -7269,14 +7388,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             adminUserId: { in: string[] };
             userId: { in: string[] };
           };
-          select: { userId: true };
-        }) => Promise<Array<{ userId: string }>>;
+          select: { userId: true; decision: true; updatedAt: true };
+        }) => Promise<Array<{ userId: string; decision?: string | null; updatedAt?: Date }>>;
       };
     };
     const adminGlobalSpammerExemptionModel =
       prismaWithAdminGlobalSpammerExemption.adminGlobalSpammerExemption ?? {};
     if (typeof adminGlobalSpammerExemptionModel.findMany !== 'function') {
-      return exemptUserIds;
+      return decisions;
     }
 
     const rows = await adminGlobalSpammerExemptionModel.findMany({
@@ -7290,6 +7409,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
       select: {
         userId: true,
+        decision: true,
+        updatedAt: true,
       },
     });
 
@@ -7299,12 +7420,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
+      const decision = this.normalizeLocalGlobalSpammerAdminDecision(row.decision) ?? 'ALLOW';
       for (const matchingUserId of matchingUserIds) {
-        exemptUserIds.add(matchingUserId);
+        const currentDecision = decisions.get(matchingUserId);
+        decisions.set(
+          matchingUserId,
+          this.resolveLocalGlobalSpammerAdminDecisionPrecedence(currentDecision, decision),
+        );
       }
     }
 
-    return exemptUserIds;
+    return decisions;
   }
 
   private buildGlobalSpammerExemptionCacheScopeKey(
@@ -7314,7 +7440,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${chatId?.trim() || 'global'}|${adminUserIds.join(',')}`;
   }
 
-  private readGlobalSpammerExemptionCache(scopeKey: string, userId: string): boolean | null {
+  private readGlobalSpammerExemptionCache(
+    scopeKey: string,
+    userId: string,
+  ): LocalGlobalSpammerAdminDecision | null {
     const cacheKey = `${scopeKey}|${userId}`;
     const cached = this.globalSpammerExemptionCache.get(cacheKey);
     if (!cached) {
@@ -7325,18 +7454,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    return cached.exempt;
+    return cached.decision;
   }
 
   private writeGlobalSpammerExemptionCache(
     scopeKey: string,
     userId: string,
-    exempt: boolean,
+    decision: LocalGlobalSpammerAdminDecision | null,
   ): void {
     this.globalSpammerExemptionCache.set(`${scopeKey}|${userId}`, {
       expiresAtMs: Date.now() + GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
-      exempt,
+      decision,
     });
+  }
+
+  private normalizeLocalGlobalSpammerAdminDecision(
+    value: string | null | undefined,
+  ): LocalGlobalSpammerAdminDecision | null {
+    const normalized = value?.trim().toUpperCase();
+    if (normalized === 'ALLOW' || normalized === 'BLOCK' || normalized === 'REVIEW') {
+      return normalized;
+    }
+    return null;
+  }
+
+  private resolveLocalGlobalSpammerAdminDecisionPrecedence(
+    current: LocalGlobalSpammerAdminDecision | undefined,
+    next: LocalGlobalSpammerAdminDecision,
+  ): LocalGlobalSpammerAdminDecision {
+    if (!current || current === 'REVIEW') {
+      return next;
+    }
+    if (current === 'ALLOW' || next === 'ALLOW') {
+      return 'ALLOW';
+    }
+    return 'BLOCK';
   }
 
   private async isUserKnownGlobalSpammer(
@@ -7406,7 +7558,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (reason === 'HIGH_FANOUT_5_CHATS_REPEAT') {
+      if (
+        reason === 'HIGH_FANOUT_5_CHATS_REPEAT' ||
+        reason === 'HIGH_FANOUT_6_CHATS_2M' ||
+        reason === 'FANOUT_EPISODE_OBSERVED' ||
+        reason === 'FANOUT_EPISODE_MEDIUM' ||
+        reason === 'FANOUT_EPISODE_STRONG'
+      ) {
         return;
       }
 
@@ -7487,8 +7645,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     forceRegistry: boolean;
     ttlDays?: number;
   } {
-    if (reason === 'HIGH_FANOUT_6_CHATS_2M') {
+    if (reason === 'FANOUT_EPISODE_CRITICAL') {
+      return { source: 'FANOUT_HIGH', score: 0.97, forceRegistry: true, ttlDays: 21 };
+    }
+    if (reason === 'FANOUT_EPISODE_CONFIRMED') {
       return { source: 'FANOUT_HIGH', score: 0.94, forceRegistry: true, ttlDays: 21 };
+    }
+    if (reason === 'FANOUT_EPISODE_STRONG') {
+      return { source: 'FANOUT_HIGH', score: 0.82, forceRegistry: false, ttlDays: 21 };
+    }
+    if (reason === 'FANOUT_EPISODE_MEDIUM') {
+      return { source: 'FANOUT_REPEAT', score: 0.68, forceRegistry: false, ttlDays: 14 };
+    }
+    if (reason === 'FANOUT_EPISODE_OBSERVED' || reason === 'HIGH_FANOUT_6_CHATS_2M') {
+      return { source: 'FANOUT_HIGH', score: 0.48, forceRegistry: false, ttlDays: 7 };
     }
     if (reason === 'HIGH_FANOUT_5_CHATS_REPEAT') {
       return { source: 'FANOUT_REPEAT', score: 0.68, forceRegistry: false, ttlDays: 14 };

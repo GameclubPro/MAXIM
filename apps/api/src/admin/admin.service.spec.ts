@@ -6623,7 +6623,7 @@ describe('AdminService.applyManualModerationAction', () => {
       setStringWithTtl: jest.fn().mockResolvedValue(undefined),
     };
     const globalSpammerIntelligence = {
-      recordSuppression: jest.fn().mockResolvedValue({ ok: true }),
+      recordLocalAdminDecision: jest.fn().mockResolvedValue({ ok: true }),
     };
 
     const service = new AdminService(
@@ -6670,19 +6670,21 @@ describe('AdminService.applyManualModerationAction', () => {
         adminUserId: 'admin-1',
         userId: 'user-4',
         sourceChatId: 'chat-1',
+        decision: 'ALLOW',
+        reason: 'MANUAL_UNBAN',
       },
       update: {
         sourceChatId: 'chat-1',
+        decision: 'ALLOW',
         reason: 'MANUAL_UNBAN',
       },
     });
-    expect(globalSpammerIntelligence.recordSuppression).toHaveBeenCalledWith({
+    expect(globalSpammerIntelligence.recordLocalAdminDecision).toHaveBeenCalledWith({
+      chatId: 'chat-1',
       userId: 'user-4',
-      source: 'MANUAL_UNBAN',
+      reviewerUserId: 'admin-1',
+      decision: 'ALLOW',
       reason: 'MANUAL_UNBAN',
-      adminUserId: 'admin-1',
-      sourceChatId: 'chat-1',
-      falsePositive: true,
     });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -7021,9 +7023,12 @@ describe('AdminService.applyManualModerationAction', () => {
         adminUserId: 'admin-1',
         userId: 'user-4',
         sourceChatId: 'chat-1',
+        decision: 'ALLOW',
+        reason: 'MANUAL_UNBAN',
       },
       update: {
         sourceChatId: 'chat-1',
+        decision: 'ALLOW',
         reason: 'MANUAL_UNBAN',
       },
     });

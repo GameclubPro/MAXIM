@@ -4141,18 +4141,27 @@ function createPreviewSpammerReviewCandidates(now: Date): GlobalSpammerReviewCan
         confidenceScore: 0.74,
         sourceBreakdown: {
           COMMERCIAL_CAMPAIGN: {
-            score: 0.72,
+            score: 0.58,
             rawScore: 0.74,
             count: 2,
             latestAt: addHours(now, -1).toISOString(),
             reasons: ['COMMERCIAL_AD_DETECTED'],
           },
           REPEATED_LINK: {
-            score: 0.58,
+            score: 0.62,
             rawScore: 0.58,
             count: 1,
             latestAt: addHours(now, -1.2).toISOString(),
             reasons: ['REPEATED_LINK_CROSS_CHAT'],
+          },
+          MANUAL_BAN: {
+            score: 0.34,
+            rawScore: 1,
+            count: 2,
+            latestAt: addHours(now, -2.4).toISOString(),
+            reasons: ['MANUAL_BAN'],
+            effect: 'risk',
+            mitigating: false,
           },
         },
         lastReason: 'COMMERCIAL_AD_DETECTED',
@@ -4208,6 +4217,24 @@ function createPreviewSpammerReviewCandidates(now: Date): GlobalSpammerReviewCan
             },
             observedAt: addHours(now, -1.2).toISOString(),
             expiresAt: addDays(now, 10).toISOString(),
+            suppressedAt: null,
+            suppressionReason: null,
+          },
+          {
+            id: 'preview-observation-3',
+            source: 'MANUAL_BAN',
+            score: 0.34,
+            confidenceLevel: 'LOW',
+            reason: 'MANUAL_BAN',
+            chatId: 'preview-other-chat-1',
+            messageId: null,
+            evidenceHash: 'preview-hash-3',
+            evidence: {
+              actorUserId: 'preview-other-admin',
+              sourceCause: 'MANUAL_BAN',
+            },
+            observedAt: addHours(now, -2.4).toISOString(),
+            expiresAt: addDays(now, 21).toISOString(),
             suppressedAt: null,
             suppressionReason: null,
           },
@@ -4309,7 +4336,7 @@ function buildPreviewSpammerDiagnostics(
         source: 'FANOUT_HIGH',
         score: 0.94,
         confidenceLevel: 'HIGH',
-        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        reason: 'FANOUT_EPISODE_CONFIRMED',
         chatId,
         observedAt,
         expiresAt,
@@ -4320,7 +4347,7 @@ function buildPreviewSpammerDiagnostics(
         source: 'FANOUT_HIGH',
         score: 0.91,
         confidenceLevel: 'HIGH',
-        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        reason: 'FANOUT_EPISODE_CONFIRMED',
         chatId,
         observedAt: addHours(now, -1.4).toISOString(),
         expiresAt,
@@ -4357,7 +4384,7 @@ function buildPreviewSpammerDiagnostics(
         confidenceScore: 0.94,
         policyBand: 'VERY_HIGH',
         shadowScore: 0.98,
-        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        reason: 'FANOUT_EPISODE_CONFIRMED',
         expiresAt,
         sourceBreakdown: {
           FANOUT_HIGH: { score: 0.94, count: 2 },
@@ -4378,7 +4405,7 @@ function buildPreviewSpammerDiagnostics(
         confidenceScore: 0.94,
         confirmedAt: addHours(now, -2).toISOString(),
         confirmedByUserId: null,
-        reason: 'HIGH_FANOUT_6_CHATS_2M',
+        reason: 'FANOUT_EPISODE_CONFIRMED',
         expiresAt,
         sourceBreakdown: {
           FANOUT_HIGH: { score: 0.94, count: 2 },
@@ -4424,6 +4451,14 @@ function buildPreviewSpammerDiagnostics(
         },
       ],
       campaigns: createPreviewSpammerCampaigns(now),
+      localAdminDecision: null,
+      reputationSummary: {
+        naturalBanSignals: 0,
+        localBlockSignals: 0,
+        localAllowSignals: 0,
+        onlyReputationSignals: false,
+        note: 'Репутационные сигналы учитываются как фон, а не как приговор.',
+      },
       latestShadowScore: {
         currentScore: 0.94,
         v2Score: 0.98,
@@ -4440,15 +4475,49 @@ function buildPreviewSpammerDiagnostics(
   const candidate = candidates.find((item) => item.userId === userId) ?? null;
   const isApproved = candidate?.status === 'APPROVED' || candidate?.status === 'AUTO_APPROVED';
   const isSuppressed = candidate?.status === 'SUPPRESSED';
-  const policyStatus = isApproved
-    ? 'ACTIVE_CONFIRMED'
+  const localAdminDecision = isApproved
+    ? {
+        decision: 'BLOCK',
+        reason: candidate?.reviewReason ?? 'LOCAL_ADMIN_BLOCK',
+        sourceChatId: chatId,
+        decidedByUserIds: [candidate?.reviewedByUserId ?? 'preview-admin'],
+        updatedAt: candidate?.reviewedAt ?? now.toISOString(),
+      }
     : isSuppressed
-      ? 'SUPPRESSED'
+      ? {
+          decision: 'ALLOW',
+          reason: candidate?.reviewReason ?? 'LOCAL_ADMIN_ALLOW',
+          sourceChatId: chatId,
+          decidedByUserIds: [candidate?.reviewedByUserId ?? 'preview-admin'],
+          updatedAt: candidate?.reviewedAt ?? now.toISOString(),
+        }
+      : null;
+  const observations = candidate?.observations ?? [];
+  const naturalBanSignals = observations.filter(
+    (observation) => observation.source === 'SANCTION_BAN' || observation.source === 'MANUAL_BAN',
+  ).length;
+  const localBlockSignals =
+    observations.filter((observation) => observation.source === 'LOCAL_ADMIN_BLOCK').length +
+    (isApproved ? 1 : 0);
+  const localAllowSignals =
+    observations.filter((observation) => observation.source === 'LOCAL_ADMIN_ALLOW').length +
+    (isSuppressed ? 1 : 0);
+  const onlyReputationSignals =
+    observations.length > 0 &&
+    observations.every((observation) =>
+      ['SANCTION_BAN', 'MANUAL_BAN', 'LOCAL_ADMIN_BLOCK', 'LOCAL_ADMIN_ALLOW'].includes(
+        observation.source,
+      ),
+    );
+  const policyStatus = isApproved
+    ? 'LOCAL_BLOCKED'
+    : isSuppressed
+      ? 'ADMIN_EXEMPT'
       : candidate?.status === 'PENDING'
         ? 'MEDIUM_REVIEW'
         : 'NONE';
   const confidenceScore = candidate?.confidenceScore ?? null;
-  const expiresAt = isApproved ? addDays(now, 30).toISOString() : null;
+  const expiresAt = null;
 
   return globalSpammerUserDiagnosticsSchema.parse({
     userId,
@@ -4461,14 +4530,17 @@ function buildPreviewSpammerDiagnostics(
       action: isApproved ? 'DELETE_AND_KICK' : 'NONE',
       enforcementMode: 'enforce',
       deleteSpammersEnabled: true,
-      adminExempt: false,
+      adminExempt: isSuppressed,
       shadow: false,
-      wouldEnforce: isApproved,
+      wouldEnforce: false,
       enforced: false,
       confidenceScore,
-      policyBand: isApproved ? 'CONFIRMED' : isSuppressed ? 'LOW' : 'MEDIUM',
+      policyBand: isApproved ? 'HIGH' : isSuppressed ? 'LOW' : 'MEDIUM',
       shadowScore: candidate ? Math.min(1, candidate.confidenceScore + 0.08) : null,
-      reason: candidate?.lastReason ?? 'NO_ACTIVE_REGISTRY_ENTRY',
+      reason:
+        localAdminDecision?.reason ??
+        candidate?.lastReason ??
+        'NO_ACTIVE_REGISTRY_ENTRY',
       expiresAt,
       sourceBreakdown: candidate?.sourceBreakdown ?? null,
       campaignBreakdown: candidate
@@ -4482,14 +4554,14 @@ function buildPreviewSpammerDiagnostics(
         : null,
     },
     registry: {
-      active: isApproved,
+      active: false,
       expired: false,
-      confidenceScore: isApproved ? confidenceScore : null,
-      confirmedAt: isApproved ? (candidate?.reviewedAt ?? now.toISOString()) : null,
-      confirmedByUserId: isApproved ? (candidate?.reviewedByUserId ?? null) : null,
-      reason: isApproved ? (candidate?.lastReason ?? null) : null,
-      expiresAt,
-      sourceBreakdown: isApproved ? (candidate?.sourceBreakdown ?? null) : null,
+      confidenceScore: null,
+      confirmedAt: null,
+      confirmedByUserId: null,
+      reason: null,
+      expiresAt: null,
+      sourceBreakdown: null,
     },
     candidate: candidate
       ? {
@@ -4502,15 +4574,8 @@ function buildPreviewSpammerDiagnostics(
           falsePositive: candidate.falsePositive,
         }
       : null,
-    activeSuppression: isSuppressed
-      ? {
-          source: 'REVIEW_SUPPRESSION',
-          reason: candidate?.reviewReason ?? 'Ложное',
-          adminUserId: candidate?.reviewedByUserId ?? null,
-          suppressedUntil: candidate?.suppressedUntil ?? addDays(now, 30).toISOString(),
-        }
-      : null,
-    observations: (candidate?.observations ?? []).map((observation) => ({
+    activeSuppression: null,
+    observations: observations.map((observation) => ({
       id: observation.id,
       source: observation.source,
       score: observation.score,
@@ -4539,8 +4604,33 @@ function buildPreviewSpammerDiagnostics(
         observations: 42,
         suppressed: 2,
       },
+      {
+        source: 'MANUAL_BAN',
+        weight: 0.36,
+        falsePositiveRate: 0.12,
+        observations: 18,
+        suppressed: 2,
+      },
     ],
     campaigns: candidate ? createPreviewSpammerCampaigns(now).slice(0, 1) : [],
+    localAdminDecision,
+    reputationSummary: {
+      naturalBanSignals,
+      localBlockSignals,
+      localAllowSignals,
+      onlyReputationSignals:
+        onlyReputationSignals ||
+        (naturalBanSignals + localBlockSignals + localAllowSignals > 0 &&
+          !candidate?.observations.some((observation) =>
+            ['FANOUT_HIGH', 'FANOUT_REPEAT', 'COMMERCIAL_AD', 'COMMERCIAL_CAMPAIGN'].includes(
+              observation.source,
+            ),
+          )),
+      note:
+        naturalBanSignals + localBlockSignals + localAllowSignals > 0
+          ? 'Есть репутационные сигналы, но сами по себе они не отправляют пользователя в глобальную базу.'
+          : 'Репутационные сигналы учитываются как фон, а не как приговор.',
+    },
     latestShadowScore: candidate
       ? {
           currentScore: candidate.confidenceScore,

@@ -700,6 +700,8 @@ function resolveSpammerSourceLabel(source: string): string {
     GRAPH_FANOUT_PATTERN: 'похожая схема',
     SANCTION_BAN: 'бан',
     MANUAL_BAN: 'ручной бан',
+    LOCAL_ADMIN_BLOCK: 'локальная блокировка',
+    LOCAL_ADMIN_ALLOW: 'локальное исключение',
     MANUAL_UNBAN: 'возврат вручную',
     ADMIN_EXEMPTION: 'исключение админа',
     REVIEW_APPROVED: 'проверено',
@@ -719,6 +721,11 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
   const labels: Record<string, string> = {
     HIGH_FANOUT_6_CHATS_2M: 'массовая рассылка',
     HIGH_FANOUT_5_CHATS_REPEAT: 'повторная рассылка',
+    FANOUT_EPISODE_OBSERVED: 'массовая рассылка',
+    FANOUT_EPISODE_MEDIUM: 'повторная массовость',
+    FANOUT_EPISODE_STRONG: 'сильная массовость',
+    FANOUT_EPISODE_CONFIRMED: 'подтвержденная массовость',
+    FANOUT_EPISODE_CRITICAL: 'критическая массовость',
     COMMERCIAL_AD_DETECTED: 'коммерция',
     REPEATED_LINK_CROSS_CHAT: 'повтор ссылки',
     REPEATED_PHONE_CROSS_CHAT: 'повтор телефона',
@@ -727,6 +734,9 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
     REVIEW_SUPPRESSION: 'исключено вручную',
     MANUAL_BAN: 'ручной бан',
     MANUAL_UNBAN: 'ручной возврат',
+    LOCAL_ADMIN_BLOCK: 'локальная блокировка',
+    LOCAL_ADMIN_ALLOW: 'локальное исключение',
+    LOCAL_ADMIN_REVIEW: 'локальная проверка',
     SANCTION_BAN: 'бан',
     SANCTION_KICK: 'удаление из чата',
     NO_ACTIVE_REGISTRY_ENTRY: 'нет активной записи',
@@ -790,6 +800,15 @@ function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate)
 }
 
 function resolveDiagnosticsReason(diagnostics: GlobalSpammerUserDiagnostics): string {
+  if (
+    diagnostics.localAdminDecision &&
+    (diagnostics.policy.registryStatus === 'LOCAL_BLOCKED' ||
+      diagnostics.policy.registryStatus === 'ADMIN_EXEMPT' ||
+      diagnostics.policy.adminExempt)
+  ) {
+    return resolveSpammerReasonLabel(diagnostics.localAdminDecision.reason);
+  }
+
   const reason =
     diagnostics.registry.reason ||
     diagnostics.candidate?.lastReason ||
@@ -809,11 +828,14 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
   if (status === 'ACTIVE_CONFIRMED') {
     return 'В базе спама';
   }
+  if (status === 'LOCAL_BLOCKED') {
+    return 'Блокируется локально';
+  }
   if (status === 'MEDIUM_REVIEW') {
     return 'На проверке';
   }
   if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
-    return 'Исключен из базы';
+    return 'Локальное исключение';
   }
   if (status === 'EXPIRED') {
     return 'Запись истекла';
@@ -825,6 +847,9 @@ function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics)
   const { policy } = diagnostics;
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
     return 'Автодействие выключено';
+  }
+  if (policy.registryStatus === 'LOCAL_BLOCKED') {
+    return policy.action === 'NONE' ? 'Локальная блокировка' : 'Блокирует в этом чате';
   }
   if (policy.action === 'DELETE_AND_KICK') {
     return 'Удалит сообщение и забанит';
@@ -851,6 +876,9 @@ function resolveDiagnosticsVerdictTone(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): 'danger' | 'warning' | 'success' | 'neutral' {
   const { policy } = diagnostics;
+  if (policy.registryStatus === 'LOCAL_BLOCKED') {
+    return policy.action === 'NONE' ? 'warning' : 'danger';
+  }
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
     return 'warning';
   }
@@ -875,6 +903,9 @@ function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics
   if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
     return 'Пользователь найден в базе, но автоудаление для этого чата выключено.';
   }
+  if (policy.registryStatus === 'LOCAL_BLOCKED') {
+    return 'Это решение админа действует только в его чатах. Для глобальной базы оно остается слабым сигналом.';
+  }
   if (policy.action === 'DELETE_AND_KICK') {
     return 'При новом сообщении бот удалит его и применит бан.';
   }
@@ -882,13 +913,13 @@ function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics
     return 'База работает в режиме проверки: решение видно админу, без автоматического бана.';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT' || policy.adminExempt) {
-    return 'Пользователь в исключениях админов, поэтому бот не применяет автодействие.';
+    return 'Пользователь локально исключен из спам-базы для этого админского контура.';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
     return 'Пользователь исключен из базы вручную, автодействие не применяется.';
   }
   if (policy.registryStatus === 'MEDIUM_REVIEW') {
-    return 'Сигналов достаточно для проверки, но решение еще не подтверждено.';
+    return 'Сигналов достаточно для проверки, но для глобальной базы нужны массовость, повторы или ручное подтверждение.';
   }
   if (policy.registryStatus === 'EXPIRED') {
     return 'Запись была в базе, но срок действия уже закончился.';
@@ -1065,6 +1096,52 @@ function buildDiagnosticsFacts(
         'сигнала',
         'сигналов',
       )}`,
+    });
+  }
+  if (diagnostics.localAdminDecision) {
+    const decisionLabels: Record<string, string> = {
+      ALLOW: 'Не считать в моих чатах',
+      BLOCK: 'Блокировать в моих чатах',
+      REVIEW: 'Отправить на проверку',
+    };
+    facts.push({
+      label: 'Решение админа',
+      value:
+        decisionLabels[diagnostics.localAdminDecision.decision] ??
+        'Локальное решение для этого чата',
+    });
+  }
+  if (diagnostics.reputationSummary.naturalBanSignals > 0) {
+    const banSignals = diagnostics.reputationSummary.naturalBanSignals;
+    const strength =
+      banSignals >= 6
+        ? 'сильный'
+        : banSignals >= 4
+          ? 'средний'
+          : banSignals >= 2
+            ? 'заметный'
+            : 'слабый';
+    facts.push({
+      label: 'Другие чаты',
+      value: `Есть баны: ${strength} сигнал, сам по себе не банит`,
+    });
+  }
+  if (diagnostics.reputationSummary.localAllowSignals > 0) {
+    facts.push({
+      label: 'Исключения',
+      value: 'Есть локальное исключение от админа',
+    });
+  }
+  if (diagnostics.reputationSummary.localBlockSignals > 0) {
+    facts.push({
+      label: 'Админы',
+      value: 'Есть локальная блокировка: слабый сигнал риска',
+    });
+  }
+  if (diagnostics.reputationSummary.onlyReputationSignals) {
+    facts.push({
+      label: 'Глобальная база',
+      value: 'Нужны массовость, повторы или ручное подтверждение',
     });
   }
 
@@ -1304,20 +1381,20 @@ function SpammerDiagnosticsSheet({
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'SUPPRESS')}
-          aria-label="Исключить из базы спамеров"
+          aria-label="Не считать спамером в моих чатах"
         >
-          <span>{reviewingAction === 'SUPPRESS' ? 'Исключаем...' : 'Исключить'}</span>
-          <small>из базы спамеров</small>
+          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не считать'}</span>
+          <small>в моих чатах</small>
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--accent"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
-          aria-label="Внести в базу спамеров"
+          aria-label="Блокировать в моих чатах"
         >
-          <span>{reviewingAction === 'APPROVE' ? 'Вносим...' : 'Внести'}</span>
-          <small>в базу спамеров</small>
+          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Блокировать'}</span>
+          <small>в моих чатах</small>
         </button>
         <button
           type="button"
@@ -1366,7 +1443,7 @@ function SpammerDiagnosticsSheet({
             }
           >
             <div className="spammer-diagnostics__hero-top">
-              <span>Досье спам-базы</span>
+              <span>Проверка спам-базы</span>
               <strong>{resolveDiagnosticsAutoAction(diagnostics)}</strong>
             </div>
 
@@ -1403,9 +1480,9 @@ function SpammerDiagnosticsSheet({
             ))}
           </dl>
 
-          <section className="spammer-diagnostics__signals" aria-label="Почему попал в базу">
+          <section className="spammer-diagnostics__signals" aria-label="Сигналы и репутация">
             <div className="spammer-diagnostics__section-head">
-              <span>Почему попал в базу</span>
+              <span>Сигналы и репутация</span>
               <strong>
                 {signalCount > 0
                   ? `${signalCount} ${formatRussianCountLabel(

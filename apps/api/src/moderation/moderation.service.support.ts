@@ -96,9 +96,11 @@ export type PendingChatAdminSharedCacheBatch = {
 };
 export type PendingGlobalSpammerExemptionLookup = {
   userId: string;
-  resolve: (value: boolean) => void;
+  resolve: (value: LocalGlobalSpammerAdminDecision | null) => void;
   reject: (reason?: unknown) => void;
 };
+
+export type LocalGlobalSpammerAdminDecision = 'ALLOW' | 'BLOCK' | 'REVIEW';
 
 export type PendingGlobalSpammerExemptionLookupBatch = {
   scopeKey: string;
@@ -362,10 +364,13 @@ export const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 export const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
 export const GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS = GLOBAL_SPAMMER_REDIS_TTL_SEC * 1_000;
 export const GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS = 60_000;
-export const GLOBAL_SPAMMER_REPEAT_FANOUT_MIN_CHATS = 5;
 export const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 6;
-export const GLOBAL_SPAMMER_REPEAT_FANOUT_THRESHOLD = 2;
-export const GLOBAL_SPAMMER_REPEAT_FANOUT_COUNTER_TTL_SEC = 7 * 24 * 60 * 60;
+export const GLOBAL_SPAMMER_EPISODE_LOCK_TTL_SEC = 5 * 60;
+export const GLOBAL_SPAMMER_FANOUT_EPISODE_WINDOW_SEC = 7 * 24 * 60 * 60;
+export const GLOBAL_SPAMMER_MEDIUM_FANOUT_EPISODE_THRESHOLD = 2;
+export const GLOBAL_SPAMMER_STRONG_FANOUT_EPISODE_THRESHOLD = 3;
+export const GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD = 4;
+export const GLOBAL_SPAMMER_CRITICAL_FANOUT_MIN_CHATS = 16;
 export const GREETING_BURST_WINDOW_SEC = 60;
 export const GREETING_BURST_LIMIT = 3;
 export const GREETING_AUTO_DISABLE_SEC = 60 * 60;

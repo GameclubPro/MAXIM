@@ -2679,7 +2679,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('adds user to global spammer registry and kicks on sixth unique chat in 2 minutes when toggle is enabled', async () => {
+  it('records first 6-chat fanout as an observed signal without auto-kick when toggle is enabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -2755,7 +2755,8 @@ describe('ModerationService', () => {
         .mockResolvedValueOnce({ added: true, size: 3 })
         .mockResolvedValueOnce({ added: true, size: 4 })
         .mockResolvedValueOnce({ added: true, size: 5 })
-        .mockResolvedValueOnce({ added: true, size: 6 }),
+        .mockResolvedValueOnce({ added: true, size: 6 })
+        .mockResolvedValueOnce({ added: true, size: 1 }),
       incrementWithTtl: jest.fn().mockResolvedValue(1),
     };
 
@@ -2781,20 +2782,13 @@ describe('ModerationService', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-6', 'msg-6');
-    expectImmediateKickMember(maxClient.kickMember, 'chat-6', 'user-spam-1');
-    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-spam-1' },
-      create: expect.objectContaining({
-        userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-      update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
+      'global-spammer:fanout-episodes:v2:user-spam-1',
+      604800,
+    );
   });
 
   it('does not auto-kick on sixth unique chat when the sender is exempted by a chat admin', async () => {
@@ -2876,7 +2870,8 @@ describe('ModerationService', () => {
         .mockResolvedValueOnce({ added: true, size: 3 })
         .mockResolvedValueOnce({ added: true, size: 4 })
         .mockResolvedValueOnce({ added: true, size: 5 })
-        .mockResolvedValueOnce({ added: true, size: 6 }),
+        .mockResolvedValueOnce({ added: true, size: 6 })
+        .mockResolvedValueOnce({ added: true, size: 1 }),
       incrementWithTtl: jest.fn().mockResolvedValue(1),
     };
 
@@ -2903,18 +2898,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-spam-1' },
-      create: expect.objectContaining({
-        userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-      update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-    });
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
   });
 
   it('does not re-track global spammer state for repeated messages from the same user in the same chat window', async () => {
@@ -3012,7 +2996,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('adds user to global spammer registry on sixth unique chat without warning or kick when toggle is disabled', async () => {
+  it('keeps first 6-chat fanout out of the global registry when toggle is disabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -3088,7 +3072,8 @@ describe('ModerationService', () => {
         .mockResolvedValueOnce({ added: true, size: 3 })
         .mockResolvedValueOnce({ added: true, size: 4 })
         .mockResolvedValueOnce({ added: true, size: 5 })
-        .mockResolvedValueOnce({ added: true, size: 6 }),
+        .mockResolvedValueOnce({ added: true, size: 6 })
+        .mockResolvedValueOnce({ added: true, size: 1 }),
       incrementWithTtl: jest.fn().mockResolvedValue(1),
     };
 
@@ -3115,18 +3100,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-spam-1' },
-      create: expect.objectContaining({
-        userId: 'user-spam-1',
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-      update: expect.objectContaining({
-        lastReason: 'HIGH_FANOUT_6_CHATS_2M',
-        lastChatId: 'chat-6',
-      }),
-    });
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
   });
 
   it('does not send warning on fifth unique chat in 2 minutes when toggle is disabled', async () => {

@@ -12,6 +12,8 @@ function createPrismaMock() {
   const observations: any[] = [];
   const candidates = new Map<string, any>();
   const suppressions: any[] = [];
+  const localAdminDecisions: any[] = [];
+  const chatAdminAllowlistRows: any[] = [];
   const campaignClusters: any[] = [];
   const campaignMembers: any[] = [];
   const shadowScores: any[] = [];
@@ -138,8 +140,53 @@ function createPrismaMock() {
   const chat = {
     findUnique: jest.fn().mockResolvedValue(null),
   };
+  const chatAdminAllowlist = {
+    findMany: jest.fn(async ({ where }: any) =>
+      chatAdminAllowlistRows
+        .filter((row) => !where?.chatId || row.chatId === where.chatId)
+        .map((row) => ({ userId: row.userId })),
+    ),
+  };
   const adminGlobalSpammerExemption = {
-    findFirst: jest.fn().mockResolvedValue(null),
+    findFirst: jest.fn(async ({ where }: any) => {
+      const userId = where?.userId;
+      return localAdminDecisions.find((row) => row.userId === userId) ?? null;
+    }),
+    findMany: jest.fn(async ({ where, orderBy, take }: any) => {
+      let rows = localAdminDecisions.filter((row) => {
+        if (where?.adminUserId?.in && !where.adminUserId.in.includes(row.adminUserId)) {
+          return false;
+        }
+        if (where?.userId?.in && !where.userId.in.includes(row.userId)) {
+          return false;
+        }
+        return true;
+      });
+      if (orderBy?.updatedAt === 'desc') {
+        rows = rows.sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+      }
+      return typeof take === 'number' ? rows.slice(0, take) : rows;
+    }),
+    upsert: jest.fn(async ({ where, create, update }: any) => {
+      const key = where.adminUserId_userId;
+      const index = localAdminDecisions.findIndex(
+        (row) => row.adminUserId === key.adminUserId && row.userId === key.userId,
+      );
+      const now = new Date();
+      const next = {
+        ...(index >= 0 ? localAdminDecisions[index] : {}),
+        ...(index >= 0 ? update : create),
+        adminUserId: key.adminUserId,
+        userId: key.userId,
+        updatedAt: now,
+      };
+      if (index >= 0) {
+        localAdminDecisions[index] = next;
+      } else {
+        localAdminDecisions.push(next);
+      }
+      return next;
+    }),
   };
   const spammerObservation = {
     upsert: jest.fn(async ({ where, create, update }: any) => {
@@ -382,9 +429,12 @@ function createPrismaMock() {
     campaignMembers,
     shadowScores,
     reviewFeedback,
+    localAdminDecisions,
+    chatAdminAllowlistRows,
     spammerGraphSignalRows,
     prisma: {
       chat,
+      chatAdminAllowlist,
       adminGlobalSpammerExemption,
       spammerObservation,
       spammerGraphSignal,
@@ -438,9 +488,10 @@ describe('GlobalSpammerIntelligenceService', () => {
       userId: 'user-2',
       source: 'FANOUT_HIGH',
       score: 0.94,
-      reason: 'HIGH_FANOUT_6_CHATS_2M',
+      reason: 'FANOUT_EPISODE_CONFIRMED',
       chatId: 'chat-6',
       evidence: { uniqueChats: 6 },
+      forceRegistry: true,
     });
 
     expect(result.outcome).toBe('registry');
@@ -448,11 +499,36 @@ describe('GlobalSpammerIntelligenceService', () => {
       expect.objectContaining({
         create: expect.objectContaining({
           userId: 'user-2',
-          lastReason: 'HIGH_FANOUT_6_CHATS_2M',
+          lastReason: 'FANOUT_EPISODE_CONFIRMED',
           confidenceScore: expect.any(Number),
           sourceBreakdown: expect.objectContaining({
             FANOUT_HIGH: expect.any(Object),
           }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps first high-fanout bursts out of the registry until confirmed', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    const result = await service.recordObservation({
+      userId: 'user-first-fanout',
+      source: 'FANOUT_HIGH',
+      score: 0.94,
+      reason: 'HIGH_FANOUT_6_CHATS_2M',
+      chatId: 'chat-6',
+      evidence: { uniqueChats: 6 },
+    });
+
+    expect(result.outcome).toBe('candidate');
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerCandidate.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-first-fanout',
+          status: 'PENDING',
         }),
       }),
     );
@@ -530,7 +606,7 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
-  it('combines multiple medium sources into a high-confidence aggregate', () => {
+  it('combines behavior and reputation signals without over-promoting the aggregate', () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
     const now = new Date('2026-05-29T12:00:00.000Z');
@@ -580,8 +656,159 @@ describe('GlobalSpammerIntelligenceService', () => {
       now,
     );
 
-    expect(aggregate.confidenceLevel).toBe('HIGH');
-    expect(aggregate.score).toBeGreaterThanOrEqual(0.86);
+    expect(aggregate.confidenceLevel).toBe('MEDIUM');
+    expect(aggregate.score).toBeGreaterThanOrEqual(0.62);
+    expect(aggregate.score).toBeLessThan(0.7);
+    expect(aggregate.sourceBreakdown).toEqual(
+      expect.objectContaining({
+        SANCTION_BAN: expect.objectContaining({
+          effect: 'risk',
+          score: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it('caps reputation-only bans below global registry promotion', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    for (let index = 1; index <= 6; index += 1) {
+      await service.recordObservation({
+        userId: 'user-reputation-only',
+        source: 'MANUAL_BAN',
+        score: 1,
+        reason: 'MANUAL_BAN',
+        chatId: `chat-${index}`,
+        evidenceHash: `manual-ban-${index}`,
+        evidence: {
+          actorUserId: `admin-${index}`,
+        },
+      });
+    }
+
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerCandidate.upsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: 'AUTO_APPROVED',
+        }),
+      }),
+    );
+
+    const diagnostics = await service.getUserDiagnostics({
+      chatId: 'chat-1',
+      userId: 'user-reputation-only',
+      deleteSpammersEnabled: true,
+    });
+    expect(diagnostics.policy.registryStatus).not.toBe('ACTIVE_CONFIRMED');
+    expect(diagnostics.reputationSummary).toEqual(
+      expect.objectContaining({
+        naturalBanSignals: 6,
+        onlyReputationSignals: true,
+      }),
+    );
+  });
+
+  it('treats local admin allow as a mitigating local decision', async () => {
+    const { chatAdminAllowlistRows, localAdminDecisions, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    chatAdminAllowlistRows.push({ chatId: 'chat-local', userId: 'admin-allow' });
+    await service.recordLocalAdminDecision({
+      chatId: 'chat-local',
+      userId: 'user-local-allow',
+      reviewerUserId: 'admin-allow',
+      decision: 'ALLOW',
+      reason: 'MANUAL_UNBAN',
+    });
+
+    expect(localAdminDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          adminUserId: 'admin-allow',
+          userId: 'user-local-allow',
+          sourceChatId: 'chat-local',
+          decision: 'ALLOW',
+          reason: 'MANUAL_UNBAN',
+        }),
+      ]),
+    );
+
+    const diagnostics = await service.getUserDiagnostics({
+      chatId: 'chat-local',
+      userId: 'user-local-allow',
+      deleteSpammersEnabled: true,
+    });
+    expect(diagnostics.policy).toEqual(
+      expect.objectContaining({
+        registryStatus: 'ADMIN_EXEMPT',
+        action: 'NONE',
+        adminExempt: true,
+      }),
+    );
+    expect(diagnostics.localAdminDecision).toEqual(
+      expect.objectContaining({
+        decision: 'ALLOW',
+        decidedByUserIds: ['admin-allow'],
+      }),
+    );
+    expect(diagnostics.reputationSummary).toEqual(
+      expect.objectContaining({
+        localAllowSignals: 1,
+        onlyReputationSignals: true,
+      }),
+    );
+  });
+
+  it('treats local admin block as local enforcement instead of global registry promotion', async () => {
+    const { chatAdminAllowlistRows, localAdminDecisions, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    chatAdminAllowlistRows.push({ chatId: 'chat-local', userId: 'admin-block' });
+    await service.recordLocalAdminDecision({
+      chatId: 'chat-local',
+      userId: 'user-local-block',
+      reviewerUserId: 'admin-block',
+      decision: 'BLOCK',
+      reason: 'LOCAL_ADMIN_BLOCK',
+    });
+
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(localAdminDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          adminUserId: 'admin-block',
+          userId: 'user-local-block',
+          decision: 'BLOCK',
+        }),
+      ]),
+    );
+
+    const diagnostics = await service.getUserDiagnostics({
+      chatId: 'chat-local',
+      userId: 'user-local-block',
+      deleteSpammersEnabled: true,
+    });
+    expect(diagnostics.policy).toEqual(
+      expect.objectContaining({
+        registryStatus: 'LOCAL_BLOCKED',
+        action: 'DELETE_AND_KICK',
+        wouldEnforce: false,
+      }),
+    );
+    expect(diagnostics.localAdminDecision).toEqual(
+      expect.objectContaining({
+        decision: 'BLOCK',
+        decidedByUserIds: ['admin-block'],
+      }),
+    );
+    expect(diagnostics.reputationSummary).toEqual(
+      expect.objectContaining({
+        localBlockSignals: 1,
+        onlyReputationSignals: true,
+      }),
+    );
   });
 
   it('suppresses active observations after manual unban', async () => {
@@ -882,11 +1109,11 @@ describe('GlobalSpammerIntelligenceService', () => {
       now,
     );
 
-    expect(aggregate.score).toBe(0.74);
+    expect(aggregate.score).toBe(0.45);
     expect(aggregate.sourceBreakdown).toEqual(
       expect.objectContaining({
         COMMERCIAL_AD: expect.objectContaining({
-          reputationWeight: 0.74,
+          reputationWeight: 0.45,
           falsePositiveRate: 0,
         }),
       }),
@@ -1141,13 +1368,14 @@ describe('GlobalSpammerIntelligenceService', () => {
       userId: 'user-policy-context',
       source: 'FANOUT_HIGH',
       score: 0.94,
-      reason: 'HIGH_FANOUT_6_CHATS_2M',
+      reason: 'FANOUT_EPISODE_CONFIRMED',
       chatId: 'chat-policy',
       evidence: {
         uniqueChats: 6,
         windowSec: 120,
         excerpt: 'Одинаковая рассылка https://context.example/join сегодня',
       },
+      forceRegistry: true,
     });
 
     await expect(

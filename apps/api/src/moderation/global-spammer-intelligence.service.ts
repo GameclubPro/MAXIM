@@ -24,6 +24,8 @@ export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'GRAPH_FANOUT_PATTERN',
   'SANCTION_BAN',
   'MANUAL_BAN',
+  'LOCAL_ADMIN_BLOCK',
+  'LOCAL_ADMIN_ALLOW',
   'REVIEW_APPROVED',
 ] as const;
 
@@ -107,6 +109,7 @@ type AggregateSource = {
   count: number;
   latestAt: string;
   reasons: string[];
+  mitigating: boolean;
 };
 
 type AggregateResult = {
@@ -117,9 +120,11 @@ type AggregateResult = {
 };
 
 type CandidateReviewAction = 'APPROVE' | 'SUPPRESS';
+export type LocalAdminSpammerDecision = 'ALLOW' | 'BLOCK' | 'REVIEW';
 type GlobalSpammerRegistryStatus =
   | 'NONE'
   | 'ACTIVE_CONFIRMED'
+  | 'LOCAL_BLOCKED'
   | 'MEDIUM_REVIEW'
   | 'SUPPRESSED'
   | 'EXPIRED'
@@ -235,6 +240,20 @@ export type GlobalSpammerUserDiagnostics = {
     wouldSuppress: boolean;
     createdAt: string;
   } | null;
+  localAdminDecision: {
+    decision: LocalAdminSpammerDecision;
+    reason: string;
+    sourceChatId: string | null;
+    decidedByUserIds: string[];
+    updatedAt: string;
+  } | null;
+  reputationSummary: {
+    naturalBanSignals: number;
+    localBlockSignals: number;
+    localAllowSignals: number;
+    onlyReputationSignals: boolean;
+    note: string;
+  };
 };
 
 type SourceReputation = {
@@ -302,6 +321,23 @@ type PolicyDecisionRiskContext = {
   campaignBreakdown: Prisma.InputJsonValue | null;
 };
 
+type LocalAdminDecisionRow = {
+  adminUserId: string;
+  userId: string;
+  sourceChatId: string | null;
+  decision?: string | null;
+  reason: string;
+  updatedAt: Date;
+};
+
+type ResolvedLocalAdminDecision = {
+  decision: LocalAdminSpammerDecision;
+  reason: string;
+  sourceChatId: string | null;
+  decidedByUserIds: string[];
+  updatedAt: Date;
+} | null;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OBSERVATION_TTL_DAYS = 14;
 const DEFAULT_SUPPRESSION_TTL_DAYS = 30;
@@ -312,6 +348,9 @@ const HIGH_REVIEW_THRESHOLD = 0.74;
 const VERY_HIGH_CONFIDENCE_THRESHOLD = 0.92;
 const CONFIRMED_CONFIDENCE_THRESHOLD = 0.97;
 const RAW_EVIDENCE_RETENTION_DAYS = 14;
+const REPUTATION_POSITIVE_SCORE_CAP = 0.34;
+const REPUTATION_ONLY_SCORE_CAP = 0.72;
+const MITIGATING_SCORE_CAP = 0.18;
 
 const SOURCE_DEFAULT_TTL_DAYS: Partial<Record<GlobalSpammerObservationSource, number>> = {
   FANOUT_HIGH: 21,
@@ -327,23 +366,27 @@ const SOURCE_DEFAULT_TTL_DAYS: Partial<Record<GlobalSpammerObservationSource, nu
   GRAPH_FANOUT_PATTERN: 7,
   SANCTION_BAN: 21,
   MANUAL_BAN: 30,
+  LOCAL_ADMIN_BLOCK: 30,
+  LOCAL_ADMIN_ALLOW: 30,
   REVIEW_APPROVED: 90,
 };
 
 const SOURCE_BASE_REPUTATION_WEIGHTS: Record<GlobalSpammerObservationSource, number> = {
   FANOUT_HIGH: 1,
   FANOUT_REPEAT: 0.82,
-  COMMERCIAL_AD: 0.74,
-  COMMERCIAL_CAMPAIGN: 0.9,
-  REPEATED_LINK: 0.78,
-  REPEATED_PHONE: 0.82,
-  GRAPH_DOMAIN: 0.72,
-  GRAPH_PHONE: 0.78,
-  GRAPH_TEXT: 0.68,
-  GRAPH_CAMPAIGN: 0.86,
-  GRAPH_FANOUT_PATTERN: 0.65,
-  SANCTION_BAN: 0.84,
-  MANUAL_BAN: 0.88,
+  COMMERCIAL_AD: 0.45,
+  COMMERCIAL_CAMPAIGN: 0.58,
+  REPEATED_LINK: 0.62,
+  REPEATED_PHONE: 0.64,
+  GRAPH_DOMAIN: 0.48,
+  GRAPH_PHONE: 0.58,
+  GRAPH_TEXT: 0.44,
+  GRAPH_CAMPAIGN: 0.62,
+  GRAPH_FANOUT_PATTERN: 0.52,
+  SANCTION_BAN: 0.38,
+  MANUAL_BAN: 0.36,
+  LOCAL_ADMIN_BLOCK: 0.32,
+  LOCAL_ADMIN_ALLOW: 0.36,
   REVIEW_APPROVED: 1,
 };
 
@@ -351,6 +394,28 @@ const SOURCE_REPUTATION_WINDOW_DAYS = 30;
 const RECENT_SUPPRESSION_MEMORY_DAYS = 30;
 const GRAPH_SIGNAL_TTL_DAYS = 14;
 const GRAPH_OBSERVATION_TTL_DAYS = 14;
+const MITIGATING_OBSERVATION_SOURCES = new Set<GlobalSpammerObservationSource>([
+  'LOCAL_ADMIN_ALLOW',
+]);
+const REPUTATION_OBSERVATION_SOURCES = new Set<GlobalSpammerObservationSource>([
+  'SANCTION_BAN',
+  'MANUAL_BAN',
+  'LOCAL_ADMIN_BLOCK',
+  'LOCAL_ADMIN_ALLOW',
+]);
+const PROMOTION_FANOUT_REASONS = new Set([
+  'FANOUT_EPISODE_CONFIRMED',
+  'FANOUT_EPISODE_CRITICAL',
+]);
+const PROMOTION_BEHAVIOR_SOURCES = new Set<GlobalSpammerObservationSource>([
+  'FANOUT_HIGH',
+  'FANOUT_REPEAT',
+  'REPEATED_LINK',
+  'REPEATED_PHONE',
+  'GRAPH_CAMPAIGN',
+  'GRAPH_FANOUT_PATTERN',
+  'REVIEW_APPROVED',
+]);
 
 @Injectable()
 export class GlobalSpammerIntelligenceService {
@@ -489,6 +554,70 @@ export class GlobalSpammerIntelligenceService {
       },
       ttlDays: 30,
     });
+  }
+
+  async recordLocalAdminDecision(params: {
+    chatId: string;
+    userId: string;
+    reviewerUserId: string;
+    decision: LocalAdminSpammerDecision;
+    reason?: string | null;
+  }): Promise<{ ok: true; decision: LocalAdminSpammerDecision; userId: string }> {
+    const userId = this.normalizeUserId(params.userId);
+    const adminUserId = this.normalizeUserId(params.reviewerUserId);
+    if (!userId || !adminUserId) {
+      throw new Error('User ID and reviewer ID are required');
+    }
+
+    const decision = this.normalizeLocalAdminDecision(params.decision) ?? 'REVIEW';
+    const reason =
+      this.normalizeText(params.reason) ||
+      (decision === 'BLOCK'
+        ? 'LOCAL_ADMIN_BLOCK'
+        : decision === 'ALLOW'
+          ? 'LOCAL_ADMIN_ALLOW'
+          : 'LOCAL_ADMIN_REVIEW');
+
+    await this.prisma.adminGlobalSpammerExemption.upsert({
+      where: {
+        adminUserId_userId: {
+          adminUserId,
+          userId,
+        },
+      },
+      create: {
+        adminUserId,
+        userId,
+        sourceChatId: params.chatId,
+        decision,
+        reason,
+      },
+      update: {
+        sourceChatId: params.chatId,
+        decision,
+        reason,
+      },
+    });
+
+    if (decision === 'BLOCK' || decision === 'ALLOW') {
+      await this.recordObservation({
+        userId,
+        source: decision === 'BLOCK' ? 'LOCAL_ADMIN_BLOCK' : 'LOCAL_ADMIN_ALLOW',
+        score: 0.34,
+        reason,
+        chatId: params.chatId,
+        evidence: {
+          reviewerUserId: adminUserId,
+          sourceChatId: params.chatId,
+          localDecision: decision,
+        },
+        ttlDays: SOURCE_DEFAULT_TTL_DAYS[
+          decision === 'BLOCK' ? 'LOCAL_ADMIN_BLOCK' : 'LOCAL_ADMIN_ALLOW'
+        ],
+      });
+    }
+
+    return { ok: true, decision, userId };
   }
 
   async recordObservation(
@@ -631,7 +760,8 @@ export class GlobalSpammerIntelligenceService {
     const highConfidenceThreshold = HIGH_CONFIDENCE_THRESHOLD + thresholdAdjustment;
     const mediumConfidenceThreshold = MEDIUM_CONFIDENCE_THRESHOLD + thresholdAdjustment;
 
-    if (input.forceRegistry || aggregate.score >= highConfidenceThreshold) {
+    const canPromoteToRegistry = this.canPromoteToRegistry(input, aggregate);
+    if ((input.forceRegistry || aggregate.score >= highConfidenceThreshold) && canPromoteToRegistry) {
       await this.promoteToRegistry({
         userId,
         sourceChatId: input.chatId ?? null,
@@ -795,13 +925,24 @@ export class GlobalSpammerIntelligenceService {
     });
 
     if (params.action === 'SUPPRESS') {
-      await this.recordSuppression({
+      await this.recordLocalAdminDecision({
+        chatId: params.chatId,
         userId,
-        source: 'REVIEW_SUPPRESSION',
+        reviewerUserId: params.reviewerUserId,
+        decision: 'ALLOW',
         reason,
-        adminUserId: params.reviewerUserId,
-        sourceChatId: params.chatId,
-        falsePositive: true,
+      });
+      await this.prisma.globalSpammerCandidate.update({
+        where: {
+          userId,
+        },
+        data: {
+          status: 'SUPPRESSED',
+          reviewedAt: new Date(),
+          reviewedByUserId: params.reviewerUserId,
+          reviewReason: reason,
+          falsePositive: true,
+        },
       });
       await this.markShadowScoresReviewed({
         userId,
@@ -811,19 +952,12 @@ export class GlobalSpammerIntelligenceService {
       return { ok: true, status: 'SUPPRESSED', userId };
     }
 
-    const aggregate = await this.computeAggregateForUser(userId, new Date());
-    await this.recordObservation({
-      userId,
-      source: 'REVIEW_APPROVED',
-      score: 1,
-      reason,
+    await this.recordLocalAdminDecision({
       chatId: params.chatId,
-      evidence: {
-        reviewerUserId: params.reviewerUserId,
-        aggregateScoreBeforeReview: aggregate.score,
-      },
-      forceRegistry: true,
-      ttlDays: SOURCE_DEFAULT_TTL_DAYS.REVIEW_APPROVED,
+      reason,
+      userId,
+      reviewerUserId: params.reviewerUserId,
+      decision: 'BLOCK',
     });
     await this.prisma.globalSpammerCandidate.update({
       where: {
@@ -1480,10 +1614,11 @@ export class GlobalSpammerIntelligenceService {
     }
     const chatId = this.normalizeText(params.chatId ?? '') || null;
     const now = new Date();
-    const [resolvedDeleteSpammersEnabled, resolvedAdminExempt] = await Promise.all([
+    const [resolvedDeleteSpammersEnabled, localAdminDecision] = await Promise.all([
       params.deleteSpammersEnabled ?? this.resolveDeleteSpammersEnabled(chatId),
-      params.adminExempt ?? this.resolveAnyAdminExemption(userId, chatId),
+      this.resolveLocalAdminDecision(userId, chatId),
     ]);
+    const resolvedAdminExempt = params.adminExempt ?? localAdminDecision?.decision === 'ALLOW';
     const [
       registry,
       candidate,
@@ -1514,18 +1649,45 @@ export class GlobalSpammerIntelligenceService {
         this.listUserCampaignDiagnostics(userId),
         this.getLatestShadowScoreDiagnostics(userId),
       ]);
-    const policy = await this.evaluatePolicy({
+    const riskContext = this.buildPolicyRiskContextFromDiagnostics({
+      campaigns,
+      latestShadowScore,
+    });
+    const enforcementMode = params.enforcementMode ?? this.defaultEnforcementMode;
+    let policy = await this.evaluatePolicy({
       chatId,
       userId,
       trigger: 'diagnostics',
       deleteSpammersEnabled: resolvedDeleteSpammersEnabled,
       adminExempt: resolvedAdminExempt,
-      enforcementMode: params.enforcementMode ?? this.defaultEnforcementMode,
-      riskContext: this.buildPolicyRiskContextFromDiagnostics({
-        campaigns,
-        latestShadowScore,
-      }),
+      enforcementMode,
+      riskContext,
     });
+    if (localAdminDecision?.decision === 'BLOCK') {
+      const action = !resolvedDeleteSpammersEnabled
+        ? 'NONE'
+        : enforcementMode === 'shadow'
+          ? 'SHADOW_DELETE_AND_KICK'
+          : 'DELETE_AND_KICK';
+      policy = this.attachPolicyRiskContext(
+        this.buildPolicyDecision({
+          userId,
+          chatId,
+          trigger: 'diagnostics',
+          registryStatus: 'LOCAL_BLOCKED',
+          action,
+          enforcementMode,
+          deleteSpammersEnabled: resolvedDeleteSpammersEnabled,
+          adminExempt: false,
+          confidenceScore: policy.confidenceScore,
+          reason: localAdminDecision.reason || 'LOCAL_ADMIN_BLOCK',
+          expiresAt: null,
+          sourceBreakdown: policy.sourceBreakdown,
+          enforced: false,
+        }),
+        riskContext,
+      );
+    }
 
     return {
       userId,
@@ -1582,6 +1744,16 @@ export class GlobalSpammerIntelligenceService {
       sourceReputation: reputation,
       campaigns,
       latestShadowScore,
+      localAdminDecision: localAdminDecision
+        ? {
+            decision: localAdminDecision.decision,
+            reason: localAdminDecision.reason,
+            sourceChatId: localAdminDecision.sourceChatId,
+            decidedByUserIds: localAdminDecision.decidedByUserIds,
+            updatedAt: localAdminDecision.updatedAt.toISOString(),
+          }
+        : null,
+      reputationSummary: this.buildReputationSummary(observations, now),
     };
   }
 
@@ -1618,16 +1790,8 @@ export class GlobalSpammerIntelligenceService {
   }
 
   private async resolveAnyAdminExemption(userId: string, chatId: string | null): Promise<boolean> {
-    const row = await this.prisma.adminGlobalSpammerExemption.findFirst({
-      where: {
-        userId,
-        OR: [{ sourceChatId: null }, ...(chatId ? [{ sourceChatId: chatId }] : [])],
-      },
-      select: {
-        userId: true,
-      },
-    });
-    return Boolean(row);
+    const localDecision = await this.resolveLocalAdminDecision(userId, chatId);
+    return localDecision?.decision === 'ALLOW';
   }
 
   async getSourceReputation(now = new Date()): Promise<SourceReputation[]> {
@@ -3118,6 +3282,8 @@ export class GlobalSpammerIntelligenceService {
       const reputation = sourceReputation.get(row.source);
       const reputationWeight = reputation?.weight ?? this.resolveSourceBaseWeight(row.source);
       const falsePositiveRate = reputation?.falsePositiveRate ?? 0;
+      const source = row.source as GlobalSpammerObservationSource;
+      const mitigating = MITIGATING_OBSERVATION_SOURCES.has(source);
       const decayedScore = this.calculateDecayedScore(row.score, row.observedAt, now);
       const adjustedScore = this.clampScore(decayedScore * reputationWeight);
       const existing = sourceMap.get(row.source);
@@ -3136,17 +3302,37 @@ export class GlobalSpammerIntelligenceService {
         count: (existing?.count ?? 0) + 1,
         latestAt,
         reasons: [...reasons].slice(0, 5),
+        mitigating,
       });
     }
 
-    const sources = [...sourceMap.values()].sort((a, b) => b.score - a.score);
+    const sources = [...sourceMap.values()]
+      .map((source) => this.applyAggregateSourceCaps(source))
+      .sort((a, b) => b.score - a.score);
+    const positiveSources = sources.filter((source) => !source.mitigating);
+    const mitigatingSources = sources.filter((source) => source.mitigating);
     const sourceWeights = [1, 0.22, 0.12, 0.08, 0.05];
-    const weightedScore = sources.reduce(
+    const weightedPositiveScore = positiveSources.reduce(
       (sum, source, index) => sum + source.score * (sourceWeights[index] ?? 0.03),
       0,
     );
-    const multiSourceBonus = sources.length >= 3 ? 0.07 : sources.length >= 2 ? 0.04 : 0;
-    const score = this.clampScore(weightedScore + multiSourceBonus);
+    const weightedMitigatingScore = mitigatingSources.reduce(
+      (sum, source, index) => sum + source.score * (sourceWeights[index] ?? 0.03),
+      0,
+    );
+    const multiSourceBonus =
+      positiveSources.length >= 3 ? 0.07 : positiveSources.length >= 2 ? 0.04 : 0;
+    const onlyReputationSources =
+      positiveSources.length > 0 &&
+      positiveSources.every((source) =>
+        REPUTATION_OBSERVATION_SOURCES.has(source.source as GlobalSpammerObservationSource),
+      );
+    const positiveScore = onlyReputationSources
+      ? Math.min(REPUTATION_ONLY_SCORE_CAP, weightedPositiveScore + multiSourceBonus)
+      : weightedPositiveScore + multiSourceBonus;
+    const score = this.clampScore(
+      positiveScore - Math.min(MITIGATING_SCORE_CAP, weightedMitigatingScore),
+    );
     const sourceBreakdown: Record<string, Prisma.InputJsonValue> = {};
     for (const source of sources) {
       sourceBreakdown[source.source] = {
@@ -3157,6 +3343,8 @@ export class GlobalSpammerIntelligenceService {
         count: source.count,
         latestAt: source.latestAt,
         reasons: source.reasons,
+        effect: source.mitigating ? 'mitigating' : 'risk',
+        mitigating: source.mitigating,
       };
     }
 
@@ -3165,6 +3353,223 @@ export class GlobalSpammerIntelligenceService {
       confidenceLevel: this.resolveConfidenceLevel(score),
       sources,
       sourceBreakdown: sourceBreakdown as Prisma.InputJsonObject,
+    };
+  }
+
+  private applyAggregateSourceCaps(source: AggregateSource): AggregateSource {
+    const typedSource = source.source as GlobalSpammerObservationSource;
+    const repeatedSignalLift = Math.min(0.12, Math.max(0, source.count - 1) * 0.035);
+    let score = source.score + repeatedSignalLift;
+    if (source.mitigating) {
+      score = Math.min(MITIGATING_SCORE_CAP, score);
+    } else if (REPUTATION_OBSERVATION_SOURCES.has(typedSource)) {
+      score = Math.min(REPUTATION_POSITIVE_SCORE_CAP, score);
+    }
+    return {
+      ...source,
+      score: this.roundScore(score),
+    };
+  }
+
+  private canPromoteToRegistry(
+    input: GlobalSpammerObservationInput,
+    aggregate: AggregateResult,
+  ): boolean {
+    if (input.forceRegistry) {
+      return (
+        (input.source === 'FANOUT_HIGH' && PROMOTION_FANOUT_REASONS.has(input.reason)) ||
+        input.source === 'REVIEW_APPROVED'
+      );
+    }
+
+    const positiveSources = aggregate.sources.filter((source) => !source.mitigating);
+    if (
+      positiveSources.length === 0 ||
+      positiveSources.every((source) =>
+        REPUTATION_OBSERVATION_SOURCES.has(source.source as GlobalSpammerObservationSource),
+      )
+    ) {
+      return false;
+    }
+
+    if (
+      positiveSources.some(
+        (source) =>
+          source.source === 'REVIEW_APPROVED' ||
+          (source.source === 'FANOUT_HIGH' &&
+            source.reasons.some((reason) => PROMOTION_FANOUT_REASONS.has(reason))),
+      )
+    ) {
+      return true;
+    }
+
+    const independentBehaviorSources = positiveSources.filter((source) =>
+      PROMOTION_BEHAVIOR_SOURCES.has(source.source as GlobalSpammerObservationSource),
+    );
+    const hasFanoutOnlyBehavior = independentBehaviorSources.every(
+      (source) => source.source === 'FANOUT_HIGH' || source.source === 'FANOUT_REPEAT',
+    );
+    return independentBehaviorSources.length >= 2 && !hasFanoutOnlyBehavior;
+  }
+
+  private async resolveLocalAdminDecision(
+    userId: string,
+    chatId: string | null,
+  ): Promise<ResolvedLocalAdminDecision> {
+    const userVariants = [...this.buildUserIdVariants(userId)];
+    if (!chatId || userVariants.length === 0) {
+      return null;
+    }
+
+    const adminRows = await this.prisma.chatAdminAllowlist.findMany({
+      where: {
+        chatId,
+      },
+      select: {
+        userId: true,
+      },
+    });
+    const adminUserVariants = new Set<string>();
+    for (const row of adminRows) {
+      for (const variant of this.buildUserIdVariants(row.userId)) {
+        adminUserVariants.add(variant);
+      }
+    }
+    if (adminUserVariants.size === 0) {
+      return null;
+    }
+
+    const rows: LocalAdminDecisionRow[] = await this.prisma.adminGlobalSpammerExemption.findMany({
+      where: {
+        adminUserId: {
+          in: [...adminUserVariants],
+        },
+        userId: {
+          in: userVariants,
+        },
+      },
+      select: {
+        adminUserId: true,
+        userId: true,
+        sourceChatId: true,
+        decision: true,
+        reason: true,
+        updatedAt: true,
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+      take: 50,
+    });
+    if (rows.length === 0) {
+      return null;
+    }
+
+    let resolvedDecision: LocalAdminSpammerDecision | null = null;
+    let representativeRow: LocalAdminDecisionRow | null = null;
+    const decidedByUserIds = new Set<string>();
+    for (const row of rows) {
+      const decision = this.normalizeLocalAdminDecision(row.decision) ?? 'ALLOW';
+      decidedByUserIds.add(row.adminUserId);
+      const nextDecision = this.resolveLocalAdminDecisionPrecedence(
+        resolvedDecision ?? undefined,
+        decision,
+      );
+      if (nextDecision !== resolvedDecision) {
+        resolvedDecision = nextDecision;
+        representativeRow = row;
+      } else if (
+        decision === resolvedDecision &&
+        (!representativeRow || row.updatedAt > representativeRow.updatedAt)
+      ) {
+        representativeRow = row;
+      }
+    }
+
+    return resolvedDecision && representativeRow
+      ? {
+          decision: resolvedDecision,
+          reason: representativeRow.reason,
+          sourceChatId: representativeRow.sourceChatId,
+          updatedAt: representativeRow.updatedAt,
+          decidedByUserIds: [...decidedByUserIds],
+        }
+      : null;
+  }
+
+  private buildUserIdVariants(value: string | null | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set<string>();
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return new Set<string>();
+    }
+
+    const variants = new Set<string>([normalized]);
+    if (normalized.startsWith('id') && normalized.length > 2) {
+      variants.add(normalized.slice(2));
+    } else {
+      variants.add(`id${normalized}`);
+    }
+    return variants;
+  }
+
+  private normalizeLocalAdminDecision(
+    value: string | null | undefined,
+  ): LocalAdminSpammerDecision | null {
+    const normalized = value?.trim().toUpperCase();
+    if (normalized === 'ALLOW' || normalized === 'BLOCK' || normalized === 'REVIEW') {
+      return normalized;
+    }
+    return null;
+  }
+
+  private resolveLocalAdminDecisionPrecedence(
+    current: LocalAdminSpammerDecision | undefined,
+    next: LocalAdminSpammerDecision,
+  ): LocalAdminSpammerDecision {
+    if (!current || current === 'REVIEW') {
+      return next;
+    }
+    if (current === 'ALLOW' || next === 'ALLOW') {
+      return 'ALLOW';
+    }
+    return 'BLOCK';
+  }
+
+  private buildReputationSummary(
+    observations: ReadonlyArray<{ source: string; expiresAt: Date }>,
+    now: Date,
+  ): GlobalSpammerUserDiagnostics['reputationSummary'] {
+    const activeObservations = observations.filter((row) => row.expiresAt > now);
+    const naturalBanSignals = activeObservations.filter(
+      (row) => row.source === 'SANCTION_BAN' || row.source === 'MANUAL_BAN',
+    ).length;
+    const localBlockSignals = activeObservations.filter(
+      (row) => row.source === 'LOCAL_ADMIN_BLOCK',
+    ).length;
+    const localAllowSignals = activeObservations.filter(
+      (row) => row.source === 'LOCAL_ADMIN_ALLOW',
+    ).length;
+    const onlyReputationSignals =
+      activeObservations.length > 0 &&
+      activeObservations.every((row) =>
+        REPUTATION_OBSERVATION_SOURCES.has(row.source as GlobalSpammerObservationSource),
+      );
+    const note = onlyReputationSignals
+      ? 'Есть репутационные сигналы, но сами по себе они не отправляют пользователя в глобальную базу.'
+      : localAllowSignals > 0
+        ? 'Есть локальное исключение от админа, оно снижает риск и помогает от ложных срабатываний.'
+        : 'Репутационные сигналы учитываются как фон, а не как приговор.';
+
+    return {
+      naturalBanSignals,
+      localBlockSignals,
+      localAllowSignals,
+      onlyReputationSignals,
+      note,
     };
   }
 

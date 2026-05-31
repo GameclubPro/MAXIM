@@ -643,12 +643,14 @@ model AdminGlobalSpammerExemption {
   adminUserId  String   @map("admin_user_id")
   userId       String   @map("user_id")
   sourceChatId String?  @map("source_chat_id")
+  decision     String   @default("ALLOW")
   reason       String   @default("MANUAL_UNBAN") @map("reason")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@id([adminUserId, userId])
   @@index([userId], map: "admin_global_spammer_exemptions_user_id_idx")
+  @@index([decision, updatedAt(sort: Desc)], map: "admin_global_spammer_exemptions_decision_updated_idx")
   @@map("admin_global_spammer_exemptions")
 }
 

@@ -13229,20 +13229,22 @@ export class AdminService implements OnModuleDestroy {
         adminUserId: normalizedAdminUserId,
         userId: normalizedTargetUserId,
         sourceChatId,
+        decision: 'ALLOW',
+        reason: 'MANUAL_UNBAN',
       },
       update: {
         sourceChatId,
+        decision: 'ALLOW',
         reason: 'MANUAL_UNBAN',
       },
     });
 
-    await this.globalSpammerIntelligence?.recordSuppression({
+    await this.globalSpammerIntelligence?.recordLocalAdminDecision({
+      chatId: sourceChatId,
       userId: normalizedTargetUserId,
-      source: 'MANUAL_UNBAN',
+      reviewerUserId: normalizedAdminUserId,
+      decision: 'ALLOW',
       reason: 'MANUAL_UNBAN',
-      adminUserId: normalizedAdminUserId,
-      sourceChatId,
-      falsePositive: true,
     });
   }
 
@@ -14249,6 +14251,10 @@ export class AdminService implements OnModuleDestroy {
   private normalizeModerationViolationRuleCode(ruleCode: string, action: SanctionAction): string {
     if (ruleCode === 'MANUAL_KICK') {
       return 'MANUAL_BAN';
+    }
+
+    if (ruleCode === 'LOCAL_ADMIN_BLOCK') {
+      return ruleCode;
     }
 
     if (ruleCode === 'BAN_ACTIVE_DELETE') {

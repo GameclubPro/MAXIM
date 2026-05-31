@@ -408,19 +408,23 @@ describe('ModerationService chat admin access lookups', () => {
     expect(first).toEqual(new Set(['user-1']));
     expect(second).toEqual(new Set());
     expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledTimes(1);
-    expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledWith({
-      where: {
-        adminUserId: {
-          in: expect.arrayContaining(['admin-1', 'idadmin-1']),
+    expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          adminUserId: {
+            in: expect.arrayContaining(['admin-1', 'idadmin-1']),
+          },
+          userId: {
+            in: expect.arrayContaining(['user-1', 'iduser-1', 'user-2', 'iduser-2']),
+          },
         },
-        userId: {
-          in: expect.arrayContaining(['user-1', 'iduser-1', 'user-2', 'iduser-2']),
+        select: {
+          userId: true,
+          decision: true,
+          updatedAt: true,
         },
-      },
-      select: {
-        userId: true,
-      },
-    });
+      }),
+    );
   });
 
   it('patches cached chat context after persisting a remotely confirmed admin grant', async () => {
