@@ -16344,12 +16344,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
     });
     const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
-    const sent = await this.maxClient.sendMessageImmediateWithId(
-      settings.chatId,
-      messageText,
-      this.withMarkdownMessageOptions(messageOptions),
-      this.buildNightModeTransitionRequestOptions(botId),
-    );
+    let sent: { messageId: string | null };
+    try {
+      sent = await this.maxClient.sendMessageImmediateWithId(
+        settings.chatId,
+        messageText,
+        this.withMarkdownMessageOptions(messageOptions),
+        this.buildNightModeTransitionRequestOptions(botId),
+      );
+    } catch (error: unknown) {
+      if (this.isTerminalNightModeTransitionError(error)) {
+        this.logTerminalNightModeTransitionError({
+          chatId: settings.chatId,
+          operation: 'send-close-notice',
+          error,
+        });
+        return null;
+      }
+      throw error;
+    }
 
     await this.createNightModeTransitionEvent({
       chatId: settings.chatId,
@@ -16384,12 +16397,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings.botSpeechStyle,
     );
     const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
-    const sent = await this.maxClient.sendMessageImmediateWithId(
-      settings.chatId,
-      messageText,
-      this.withMarkdownMessageOptions(null),
-      this.buildNightModeTransitionRequestOptions(botId),
-    );
+    let sent: { messageId: string | null };
+    try {
+      sent = await this.maxClient.sendMessageImmediateWithId(
+        settings.chatId,
+        messageText,
+        this.withMarkdownMessageOptions(null),
+        this.buildNightModeTransitionRequestOptions(botId),
+      );
+    } catch (error: unknown) {
+      if (this.isTerminalNightModeTransitionError(error)) {
+        this.logTerminalNightModeTransitionError({
+          chatId: settings.chatId,
+          operation: 'send-open-notice',
+          error,
+        });
+        return;
+      }
+      throw error;
+    }
 
     await this.createNightModeTransitionEvent({
       chatId: settings.chatId,
@@ -16407,14 +16433,66 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string,
   ): Promise<void> {
     const botId = await this.resolveNightModeTransitionBotId(chatId);
-    await this.maxClient.deleteMessage(chatId, messageId, {
-      immediate: true,
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
-      ignoreFailureMetricStatuses: [403, 404],
-      ...(botId ? { botId } : {}),
-    });
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId, {
+        immediate: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+        ignoreFailureMetricStatuses: [403, 404],
+        ...(botId ? { botId } : {}),
+      });
+    } catch (error: unknown) {
+      if (this.isTerminalNightModeTransitionError(error)) {
+        this.logTerminalNightModeTransitionError({
+          chatId,
+          messageId,
+          operation: 'delete-close-notice',
+          error,
+        });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private isTerminalNightModeTransitionError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found') ||
+      message.includes('message not found')
+    );
+  }
+
+  private logTerminalNightModeTransitionError(params: {
+    chatId: string;
+    messageId?: string;
+    operation: 'send-close-notice' | 'send-open-notice' | 'delete-close-notice';
+    error: unknown;
+  }): void {
+    this.logger.debug(
+      {
+        chatId: params.chatId,
+        ...(params.messageId ? { messageId: params.messageId } : {}),
+        operation: params.operation,
+        status: this.extractStatusCode(params.error),
+        code: this.extractMaxErrorCode(params.error),
+        error: params.error instanceof Error ? params.error.message : String(params.error),
+      },
+      'Skipped terminal night mode transition action',
+    );
   }
 
   private buildNightModeClosedNoticeOptions(params: {
