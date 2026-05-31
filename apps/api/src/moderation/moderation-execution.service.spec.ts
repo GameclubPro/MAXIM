@@ -14,9 +14,10 @@ describe('ModerationExecutionService', () => {
   });
 
   it('executes night mode transition jobs through the legacy moderation boundary', async () => {
+    const processResult = { shouldEnqueueNext: false };
     const legacyModerationService = {
       processWebhookEvent: jest.fn().mockResolvedValue(undefined),
-      processNightModeTransitionJob: jest.fn().mockResolvedValue(undefined),
+      processNightModeTransitionJob: jest.fn().mockResolvedValue(processResult),
     };
     const service = new ModerationExecutionService(legacyModerationService);
     const job = {
@@ -26,7 +27,7 @@ describe('ModerationExecutionService', () => {
       sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
     };
 
-    await service.processNightModeTransitionJob(job);
+    await expect(service.processNightModeTransitionJob(job)).resolves.toBe(processResult);
 
     expect(legacyModerationService.processNightModeTransitionJob).toHaveBeenCalledWith(job);
   });

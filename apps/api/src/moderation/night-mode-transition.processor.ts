@@ -24,7 +24,9 @@ export class NightModeTransitionProcessor extends WorkerHost {
       return;
     }
 
-    await this.moderationExecutionService.processNightModeTransitionJob(job.data);
-    await this.scheduler.enqueueNextTransitionsForChat(job.data.chatId);
+    const result = await this.moderationExecutionService.processNightModeTransitionJob(job.data);
+    if (result.shouldEnqueueNext) {
+      await this.scheduler.enqueueNextTransitionsForChat(job.data.chatId);
+    }
   }
 }

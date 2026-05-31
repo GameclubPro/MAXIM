@@ -59,6 +59,12 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
+import {
+  ManagedEntityAccessLossService,
+  classifyMaxTerminalChatActionError,
+  type ManagedEntityAccessLossReason,
+  type MaxTerminalChatActionErrorClassification,
+} from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -304,11 +310,25 @@ import {
   type PrivateControlCommand,
   type ActiveBotSpeechProfile,
 } from './moderation.service.support';
-import type { NightModeTransitionJob } from './night-mode-transition.queue';
+import {
+  NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
+  NIGHT_MODE_TRANSITION_PROCESS_STOP,
+  type NightModeTransitionJob,
+  type NightModeTransitionProcessResult,
+} from './night-mode-transition.queue';
 import {
   resolveNightModeTransitionSnapshot as resolveNightModeTransitionSnapshotValue,
   type NightModeTransitionSnapshot,
 } from './night-mode-transition-time.util';
+
+type NightModeTransitionNoticeResult = NightModeTransitionProcessResult & {
+  messageId: string | null;
+};
+
+type NightModeTransitionOperation =
+  | 'send-close-notice'
+  | 'send-open-notice'
+  | 'delete-close-notice';
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -446,6 +466,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
     @Optional()
     private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
+    @Optional()
+    private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -16115,9 +16137,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async processNightModeTransitionJob(job: NightModeTransitionJob): Promise<void> {
+  async processNightModeTransitionJob(
+    job: NightModeTransitionJob,
+  ): Promise<NightModeTransitionProcessResult> {
     if (typeof this.prisma.chatSettings?.findUnique !== 'function') {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     const settings = await this.prisma.chatSettings.findUnique({
@@ -16136,12 +16160,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
     if (!settings?.nightModeEnabled) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     const scheduledFor = new Date(job.scheduledFor);
     if (Number.isNaN(scheduledFor.getTime())) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     const scheduledSnapshot = this.resolveNightModeTransitionSnapshot(settings, scheduledFor);
@@ -16152,14 +16176,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       scheduledSnapshot.startMinutes === scheduledSnapshot.endMinutes ||
       currentSnapshot.startMinutes === currentSnapshot.endMinutes
     ) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     if (
       scheduledSnapshot.sessionKey !== job.sessionKey ||
       currentSnapshot.sessionKey !== job.sessionKey
     ) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
     if (job.transition === 'close') {
       if (
@@ -16167,11 +16191,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         !scheduledSnapshot.isCloseBoundary ||
         currentSnapshot.status !== 'closed'
       ) {
-        return;
+        return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
       }
 
-      await this.processNightModeTransitionForChat(settings, currentSnapshot);
-      return;
+      return this.processNightModeTransitionForChat(settings, currentSnapshot);
     }
 
     if (
@@ -16179,10 +16202,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       !scheduledSnapshot.isOpenBoundary ||
       currentSnapshot.status !== 'open'
     ) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
-    await this.processNightModeTransitionForChat(settings, scheduledSnapshot);
+    return this.processNightModeTransitionForChat(settings, scheduledSnapshot);
   }
 
   private async processNightModeTransitionForChat(
@@ -16214,33 +16237,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       } | null;
     },
     providedSnapshot?: NightModeTransitionSnapshot,
-  ): Promise<void> {
+  ): Promise<NightModeTransitionProcessResult> {
     const snapshot = providedSnapshot ?? this.resolveNightModeTransitionSnapshot(settings);
     if (!snapshot) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     const lock = await this.acquireNightModeTransitionLock(settings.chatId);
     if (!lock) {
-      return;
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     }
 
     try {
       const currentState = await this.readNightModeTransitionState(settings.chatId);
       if (snapshot.status === 'closed') {
-        if (
-          currentState?.status === 'closed' &&
-          currentState.sessionKey === snapshot.sessionKey
-        ) {
-          return;
+        if (currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey) {
+          return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
         }
 
         let closeNoticeMessageId: string | null = null;
         if (snapshot.isCloseBoundary && settings.nightModeBotMessageEnabled) {
-          closeNoticeMessageId = await this.sendNightModeClosedTransitionNotice(
-            settings,
-            snapshot,
-          );
+          const noticeResult = await this.sendNightModeClosedTransitionNotice(settings, snapshot);
+          if (!noticeResult.shouldEnqueueNext) {
+            return noticeResult;
+          }
+          closeNoticeMessageId = noticeResult.messageId;
         }
 
         await this.writeNightModeTransitionState(settings.chatId, {
@@ -16249,7 +16270,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           closeNoticeMessageId,
           updatedAt: new Date().toISOString(),
         });
-        return;
+        return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
       }
 
       const previousCloseNoticeMessageId =
@@ -16258,10 +16279,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         currentState?.status === 'open' && currentState.sessionKey === snapshot.sessionKey;
 
       if (previousCloseNoticeMessageId) {
-        await this.deleteNightModeClosedTransitionNotice(
+        const deleteResult = await this.deleteNightModeClosedTransitionNotice(
           settings.chatId,
           previousCloseNoticeMessageId,
         );
+        if (!deleteResult.shouldEnqueueNext) {
+          return deleteResult;
+        }
       }
 
       if (
@@ -16269,7 +16293,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settings.nightModeOpenMessageEnabled &&
         !transitionAlreadyRecorded
       ) {
-        await this.sendNightModeOpenedTransitionNotice(settings, snapshot);
+        const noticeResult = await this.sendNightModeOpenedTransitionNotice(settings, snapshot);
+        if (!noticeResult.shouldEnqueueNext) {
+          return noticeResult;
+        }
       }
 
       await this.writeNightModeTransitionState(settings.chatId, {
@@ -16278,6 +16305,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         closeNoticeMessageId: null,
         updatedAt: new Date().toISOString(),
       });
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
     } finally {
       await this.releaseNightModeTransitionLock(lock);
     }
@@ -16323,7 +16351,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       timezone: string;
       sessionKey: string;
     },
-  ): Promise<string | null> {
+  ): Promise<NightModeTransitionNoticeResult> {
     const messageText = this.buildNightModeClosedNotice(
       snapshot.startMinutes,
       snapshot.endMinutes,
@@ -16353,13 +16381,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.buildNightModeTransitionRequestOptions(botId),
       );
     } catch (error: unknown) {
-      if (this.isTerminalNightModeTransitionError(error)) {
-        this.logTerminalNightModeTransitionError({
-          chatId: settings.chatId,
-          operation: 'send-close-notice',
-          error,
-        });
-        return null;
+      const terminalResult = await this.handleTerminalNightModeTransitionError({
+        chatId: settings.chatId,
+        botId,
+        operation: 'send-close-notice',
+        error,
+      });
+      if (terminalResult) {
+        return {
+          ...terminalResult,
+          messageId: null,
+        };
       }
       throw error;
     }
@@ -16374,21 +16406,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       endMinutes: snapshot.endMinutes,
     });
 
-    return sent.messageId;
+    return {
+      ...NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
+      messageId: sent.messageId,
+    };
   }
 
   private async sendNightModeOpenedTransitionNotice(
-    settings: Pick<
-      ChatSettings,
-      'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle'
-    >,
+    settings: Pick<ChatSettings, 'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle'>,
     snapshot: {
       startMinutes: number;
       endMinutes: number;
       timezone: string;
       sessionKey: string;
     },
-  ): Promise<void> {
+  ): Promise<NightModeTransitionProcessResult> {
     const messageText = this.buildNightModeOpenedNotice(
       snapshot.startMinutes,
       snapshot.endMinutes,
@@ -16406,13 +16438,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.buildNightModeTransitionRequestOptions(botId),
       );
     } catch (error: unknown) {
-      if (this.isTerminalNightModeTransitionError(error)) {
-        this.logTerminalNightModeTransitionError({
-          chatId: settings.chatId,
-          operation: 'send-open-notice',
-          error,
-        });
-        return;
+      const terminalResult = await this.handleTerminalNightModeTransitionError({
+        chatId: settings.chatId,
+        botId,
+        operation: 'send-open-notice',
+        error,
+      });
+      if (terminalResult) {
+        return terminalResult;
       }
       throw error;
     }
@@ -16426,12 +16459,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       startMinutes: snapshot.startMinutes,
       endMinutes: snapshot.endMinutes,
     });
+    return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
   }
 
   private async deleteNightModeClosedTransitionNotice(
     chatId: string,
     messageId: string,
-  ): Promise<void> {
+  ): Promise<NightModeTransitionProcessResult> {
     const botId = await this.resolveNightModeTransitionBotId(chatId);
     try {
       await this.maxClient.deleteMessage(chatId, messageId, {
@@ -16443,43 +16477,83 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ...(botId ? { botId } : {}),
       });
     } catch (error: unknown) {
-      if (this.isTerminalNightModeTransitionError(error)) {
-        this.logTerminalNightModeTransitionError({
-          chatId,
-          messageId,
-          operation: 'delete-close-notice',
-          error,
-        });
-        return;
+      const terminalResult = await this.handleTerminalNightModeTransitionError({
+        chatId,
+        botId,
+        messageId,
+        operation: 'delete-close-notice',
+        error,
+      });
+      if (terminalResult) {
+        return terminalResult;
       }
       throw error;
     }
+    return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
   }
 
-  private isTerminalNightModeTransitionError(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    if (status === 403 || status === 404) {
-      return true;
+  private async handleTerminalNightModeTransitionError(params: {
+    chatId: string;
+    botId: string | null;
+    messageId?: string;
+    operation: NightModeTransitionOperation;
+    error: unknown;
+  }): Promise<NightModeTransitionProcessResult | null> {
+    const classification = classifyMaxTerminalChatActionError(params.error);
+    if (!classification) {
+      return null;
     }
 
-    const code = this.extractMaxErrorCode(error);
-    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
-      return true;
-    }
-
-    const message = this.extractMaxErrorMessage(error);
-    return (
-      message.includes('bot is not a chat member') ||
-      message.includes('not accessible') ||
-      message.includes('chat not found') ||
-      message.includes('message not found')
+    this.logTerminalNightModeTransitionError(params);
+    const accessLossReason = this.resolveNightModeTransitionAccessLossReason(
+      params.operation,
+      classification,
     );
+    if (!accessLossReason) {
+      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+    }
+
+    await this.managedEntityAccessLossService?.recordManagedEntityAccessLost({
+      chatId: params.chatId,
+      botId: params.botId,
+      reason: accessLossReason,
+      source: `night_mode_transition:${params.operation}`,
+    });
+    return NIGHT_MODE_TRANSITION_PROCESS_STOP;
+  }
+
+  private resolveNightModeTransitionAccessLossReason(
+    operation: NightModeTransitionOperation,
+    classification: MaxTerminalChatActionErrorClassification,
+  ): ManagedEntityAccessLossReason | null {
+    if (classification.kind === 'managed_entity_access_lost') {
+      return classification.reason ?? 'chat_inaccessible';
+    }
+
+    if (classification.kind !== 'terminal_unknown') {
+      return null;
+    }
+
+    if (operation === 'send-close-notice' || operation === 'send-open-notice') {
+      if (classification.statusCode === 404) {
+        return 'chat_not_found';
+      }
+      if (classification.statusCode === 403) {
+        return 'chat_denied';
+      }
+    }
+
+    if (operation === 'delete-close-notice' && classification.statusCode === 403) {
+      return 'chat_denied';
+    }
+
+    return null;
   }
 
   private logTerminalNightModeTransitionError(params: {
     chatId: string;
     messageId?: string;
-    operation: 'send-close-notice' | 'send-open-notice' | 'delete-close-notice';
+    operation: NightModeTransitionOperation;
     error: unknown;
   }): void {
     this.logger.debug(
@@ -16558,18 +16632,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private withMarkdownMessageOptions(
-    options: MaxSendMessageOptions | null,
-  ): MaxSendMessageOptions {
+  private withMarkdownMessageOptions(options: MaxSendMessageOptions | null): MaxSendMessageOptions {
     return {
       ...(options ?? {}),
       textFormat: 'markdown',
     };
   }
 
-  private buildNightModeTransitionRequestOptions(
-    botId: string | null,
-  ): MaxActionDispatchOptions {
+  private buildNightModeTransitionRequestOptions(botId: string | null): MaxActionDispatchOptions {
     return {
       trafficClass: 'background',
       actionHealthLane: 'background',
@@ -16614,13 +16684,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveNightModeTransitionBotId(chatId: string): Promise<string | null> {
-    const route =
-      await this.resolveUnifiedBotRoute({
-        purpose: 'capability',
-        chatId,
-        capability: 'background_scans',
-        fallbackToPrimary: true,
-      });
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'capability',
+      chatId,
+      capability: 'background_scans',
+      fallbackToPrimary: true,
+    });
     const botId =
       route?.botId ??
       (await this.maxBotLinkService?.resolveBotIdForCapability?.({

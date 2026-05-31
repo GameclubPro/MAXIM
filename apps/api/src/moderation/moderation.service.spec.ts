@@ -6776,7 +6776,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('records the close transition when the close notice target is gone', async () => {
+  it('records access loss and stops scheduling when the close notice chat is gone', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:15.000Z'));
     try {
       const prisma = {
@@ -6787,12 +6787,16 @@ describe('ModerationService', () => {
       const maxClient = {
         sendMessageImmediateWithId: jest
           .fn()
-          .mockRejectedValue(
-            createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
-          ),
+          .mockRejectedValue(createMaxApiError(404, 'Request failed with status code 404')),
         deleteMessage: jest.fn(),
       };
       const redisCounter = createRedisCounterMock();
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({ botId: 'bot-1' }),
+      };
+      const managedEntityAccessLossService = {
+        recordManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+      };
       const service = new ModerationService(
         prisma as never,
         {} as never,
@@ -6802,9 +6806,20 @@ describe('ModerationService', () => {
         undefined,
         { get: jest.fn().mockReturnValue('bot-1') } as never,
         redisCounter as never,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntityAccessLossService as never,
       );
 
-      await (service as any).processNightModeTransitionForChat({
+      const result = await (service as any).processNightModeTransitionForChat({
         ...createSettings({
           nightModeEnabled: true,
           nightModeStartTimeMinutes: 23 * 60,
@@ -6820,16 +6835,14 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-        'night-mode-transition-state:v1:chat-1',
-        expect.stringContaining('"status":"closed"'),
-        expect.any(Number),
-      );
-      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-        'night-mode-transition-state:v1:chat-1',
-        expect.stringContaining('"closeNoticeMessageId":null'),
-        expect.any(Number),
-      );
+      expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+      expect(result).toEqual({ shouldEnqueueNext: false, messageId: null });
+      expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'chat_not_found',
+        source: 'night_mode_transition:send-close-notice',
+      });
     } finally {
       jest.useRealTimers();
     }
@@ -7050,7 +7063,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('records the open transition when the open notice target is gone', async () => {
+  it('records access loss and stops scheduling when the open notice chat is gone', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:00:10.000Z'));
     try {
       const prisma = {
@@ -7061,9 +7074,7 @@ describe('ModerationService', () => {
       const maxClient = {
         sendMessageImmediateWithId: jest
           .fn()
-          .mockRejectedValue(
-            createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
-          ),
+          .mockRejectedValue(createMaxApiError(403, 'Request failed with status code 403')),
         deleteMessage: jest.fn(),
       };
       const redisCounter = createRedisCounterMock();
@@ -7075,6 +7086,12 @@ describe('ModerationService', () => {
           closeNoticeMessageId: 'night-close-1',
         }),
       );
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({ botId: 'bot-1' }),
+      };
+      const managedEntityAccessLossService = {
+        recordManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
+      };
       const service = new ModerationService(
         prisma as never,
         {} as never,
@@ -7084,9 +7101,20 @@ describe('ModerationService', () => {
         undefined,
         { get: jest.fn().mockReturnValue('bot-1') } as never,
         redisCounter as never,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntityAccessLossService as never,
       );
 
-      await (service as any).processNightModeTransitionForChat({
+      const result = await (service as any).processNightModeTransitionForChat({
         ...createSettings({
           nightModeEnabled: true,
           nightModeStartTimeMinutes: 23 * 60,
@@ -7113,11 +7141,14 @@ describe('ModerationService', () => {
       );
       expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(redisCounter.setStringWithTtl).toHaveBeenLastCalledWith(
-        'night-mode-transition-state:v1:chat-1',
-        expect.stringContaining('"status":"open"'),
-        expect.any(Number),
-      );
+      expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+      expect(result).toEqual({ shouldEnqueueNext: false });
+      expect(managedEntityAccessLossService.recordManagedEntityAccessLost).toHaveBeenCalledWith({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        reason: 'chat_denied',
+        source: 'night_mode_transition:send-open-notice',
+      });
     } finally {
       jest.useRealTimers();
     }
@@ -15669,7 +15700,9 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
       expect(prisma.violation.count).toHaveBeenCalledTimes(1);
       expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
-        expect.stringContaining('moderation:violation-count:v1:chat-1:user-1:REQUIRED_SUBSCRIPTION'),
+        expect.stringContaining(
+          'moderation:violation-count:v1:chat-1:user-1:REQUIRED_SUBSCRIPTION',
+        ),
         24 * 60 * 60 + 60,
       );
       const secondNoticeText = maxClient.sendMessage.mock.calls[1]?.[1] ?? '';

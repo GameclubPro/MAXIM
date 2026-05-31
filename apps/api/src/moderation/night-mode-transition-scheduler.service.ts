@@ -1,19 +1,12 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
+import { ChatBotMembershipStatus } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
-import {
-  DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS,
-} from './moderation.service.support';
+import { DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS } from './moderation.service.support';
 import {
   buildNightModeTransitionJobId,
   buildNightModeTransitionJobIdPrefix,
@@ -89,6 +82,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         const settingsRows = await this.prisma.chatSettings.findMany({
           where: {
             nightModeEnabled: true,
+            chat: this.buildActiveOrLegacyBotMembershipFilter(),
           },
           select: {
             chatId: true,
@@ -134,16 +128,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
 
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId: normalizedChatIds[0]! },
-      select: {
-        chatId: true,
-        nightModeEnabled: true,
-        nightModeStartTimeMinutes: true,
-        nightModeEndTimeMinutes: true,
-        nightModeTimezone: true,
-      },
-    });
+    const settings = await this.findEnabledSettingsForChat(normalizedChatIds[0]!);
 
     await this.clearChatJobsForChatIds(normalizedChatIds);
     if (settings) {
@@ -157,16 +142,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
 
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId: normalizedChatIds[0]! },
-      select: {
-        chatId: true,
-        nightModeEnabled: true,
-        nightModeStartTimeMinutes: true,
-        nightModeEndTimeMinutes: true,
-        nightModeTimezone: true,
-      },
-    });
+    const settings = await this.findEnabledSettingsForChat(normalizedChatIds[0]!);
     if (settings) {
       await this.enqueueChatSettingsOccurrences(settings.chatId, settings);
     }
@@ -178,20 +154,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
 
-    const settingsRows = await this.prisma.chatSettings.findMany({
-      where: {
-        chatId: {
-          in: normalizedChatIds,
-        },
-      },
-      select: {
-        chatId: true,
-        nightModeEnabled: true,
-        nightModeStartTimeMinutes: true,
-        nightModeEndTimeMinutes: true,
-        nightModeTimezone: true,
-      },
-    });
+    const settingsRows = await this.findEnabledSettingsForChats(normalizedChatIds);
 
     await this.reconcileChatSettingsRows(settingsRows, normalizedChatIds);
   }
@@ -205,7 +168,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     }
 
     await this.clearChatJobsForChatIds([chatId]);
-    await this.enqueueChatSettingsOccurrences(chatId, settings);
+    if (await this.hasActiveBotMembership(chatId)) {
+      await this.enqueueChatSettingsOccurrences(chatId, settings);
+    }
+  }
+
+  async clearChatJobs(chatId: string): Promise<void> {
+    await this.clearChatJobsForChatIds([chatId]);
   }
 
   private async reconcileChatSettingsRows(
@@ -232,6 +201,110 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     for (const settings of settingsRows) {
       await this.enqueueChatSettingsOccurrences(settings.chatId, settings);
     }
+  }
+
+  private async findEnabledSettingsForChat(
+    chatId: string,
+  ): Promise<(NightModeTransitionScheduleSettings & { chatId: string }) | null> {
+    if (typeof this.prisma.chatSettings?.findFirst === 'function') {
+      return this.prisma.chatSettings.findFirst({
+        where: {
+          chatId,
+          nightModeEnabled: true,
+          chat: this.buildActiveOrLegacyBotMembershipFilter(),
+        },
+        select: {
+          chatId: true,
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: true,
+          nightModeEndTimeMinutes: true,
+          nightModeTimezone: true,
+        },
+      });
+    }
+
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId },
+      select: {
+        chatId: true,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: true,
+        nightModeEndTimeMinutes: true,
+        nightModeTimezone: true,
+      },
+    });
+    if (!settings?.nightModeEnabled || !(await this.hasActiveBotMembership(chatId))) {
+      return null;
+    }
+
+    return settings;
+  }
+
+  private async findEnabledSettingsForChats(
+    chatIds: readonly string[],
+  ): Promise<(NightModeTransitionScheduleSettings & { chatId: string })[]> {
+    if (typeof this.prisma.chatSettings?.findMany !== 'function') {
+      return [];
+    }
+
+    return this.prisma.chatSettings.findMany({
+      where: {
+        chatId: {
+          in: [...chatIds],
+        },
+        nightModeEnabled: true,
+        chat: this.buildActiveOrLegacyBotMembershipFilter(),
+      },
+      select: {
+        chatId: true,
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: true,
+        nightModeEndTimeMinutes: true,
+        nightModeTimezone: true,
+      },
+    });
+  }
+
+  private async hasActiveBotMembership(chatId: string): Promise<boolean> {
+    if (typeof this.prisma.chatBotMembership?.count !== 'function') {
+      return true;
+    }
+
+    const count = await this.prisma.chatBotMembership.count({
+      where: {
+        chatId,
+      },
+    });
+    if (count === 0) {
+      return true;
+    }
+
+    const activeCount = await this.prisma.chatBotMembership.count({
+      where: {
+        chatId,
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+    });
+    return activeCount > 0;
+  }
+
+  private buildActiveOrLegacyBotMembershipFilter() {
+    return {
+      OR: [
+        {
+          botMemberships: {
+            some: {
+              status: ChatBotMembershipStatus.ACTIVE,
+            },
+          },
+        },
+        {
+          botMemberships: {
+            none: {},
+          },
+        },
+      ],
+    };
   }
 
   private async enqueueChatSettingsOccurrences(
@@ -285,7 +358,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
       return;
     }
 
-    const prefixes = new Set(this.normalizeChatIds(chatIds).map(buildNightModeTransitionJobIdPrefix));
+    const prefixes = new Set(
+      this.normalizeChatIds(chatIds).map(buildNightModeTransitionJobIdPrefix),
+    );
     if (prefixes.size === 0) {
       return;
     }

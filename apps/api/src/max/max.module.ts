@@ -2,8 +2,10 @@ import { BullModule } from '@nestjs/bullmq';
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
 import { ChatContextModule } from '../chat-context/chat-context.module';
+import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
+import { ManagedEntityAccessLossService } from './managed-entity-access-loss.service';
 import { MaxActionDispatchService } from './max-action-dispatch.service';
 import { MaxActionProcessor } from './max-action.processor';
 import { MaxChatAdminRosterSyncProcessor } from './max-chat-admin-roster-sync.processor';
@@ -21,6 +23,7 @@ const maxProviders = [
   MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
   MaxWebhookSubscriptionReconcilerService,
+  ManagedEntityAccessLossService,
   ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
   ...(roleRunsAction(getAppRole()) ? [MaxChatAdminRosterSyncProcessor] : []),
 ];
@@ -33,6 +36,7 @@ const maxProviders = [
     }),
     SystemModule,
     ChatContextModule,
+    NightModeTransitionModule,
     BullModule.registerQueue({ name: 'moderation-actions' }),
     BullModule.registerQueue({ name: MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE }),
   ],
@@ -44,6 +48,7 @@ const maxProviders = [
     MaxBotExecutionPlannerService,
     MaxMembershipLookupService,
     MaxWebhookSubscriptionReconcilerService,
+    ManagedEntityAccessLossService,
   ],
 })
 export class MaxModule {}
