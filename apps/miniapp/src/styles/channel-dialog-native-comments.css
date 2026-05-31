@@ -28,10 +28,7 @@
   --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 50px), 30rem);
   --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 58px), 24rem);
   min-height: calc(100% + 2px);
-  padding: calc(
-      var(--comments-dialog-top-safe-space, 0px) + var(--comments-dialog-top-overscan, 0px)
-    )
-    var(--comments-native-x)
+  padding: var(--comments-dialog-top-overscan, 0px) var(--comments-native-x)
     max(0px, var(--safe-bottom, 0px));
   background: var(--comments-native-bg);
 }

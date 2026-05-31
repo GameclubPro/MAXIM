@@ -112,6 +112,8 @@ const COMMENT_REACTION_OPTIONS = [
 
 const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
 const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
+const COMMENT_NOTIFICATION_TOP_MARGIN_PX = 6;
+const COMMENT_NOTIFICATION_MAX_NUDGE_PX = 88;
 const COMMENT_COMPOSE_EMOJI_GROUPS = [
   {
     id: 'frequent',
@@ -1338,11 +1340,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
   );
+  const [commentsNotificationTopNudge, setCommentsNotificationTopNudge] = useState(0);
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const notificationToggleRef = useRef<HTMLButtonElement | null>(null);
+  const commentsNotificationTopNudgeRef = useRef(0);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
@@ -2036,6 +2041,56 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [isNotificationSettingsOpen]);
+
+  useLayoutEffect(() => {
+    if (dialogType !== 'comments' || typeof window === 'undefined') {
+      commentsNotificationTopNudgeRef.current = 0;
+      setCommentsNotificationTopNudge(0);
+      return undefined;
+    }
+
+    const button = notificationToggleRef.current;
+    if (!button) {
+      commentsNotificationTopNudgeRef.current = 0;
+      setCommentsNotificationTopNudge(0);
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const updateNudge = () => {
+      const currentNudge = commentsNotificationTopNudgeRef.current;
+      const baseTop = button.getBoundingClientRect().top - currentNudge;
+      const viewportTop = Math.max(0, Math.round(window.visualViewport?.offsetTop ?? 0));
+      const minTop = viewportTop + COMMENT_NOTIFICATION_TOP_MARGIN_PX;
+      const nextNudge = Math.min(
+        COMMENT_NOTIFICATION_MAX_NUDGE_PX,
+        Math.max(0, Math.ceil(minTop - baseTop)),
+      );
+
+      if (nextNudge !== currentNudge) {
+        commentsNotificationTopNudgeRef.current = nextNudge;
+        setCommentsNotificationTopNudge(nextNudge);
+      }
+    };
+
+    const requestUpdate = () => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(updateNudge);
+    };
+
+    updateNudge();
+    window.addEventListener('resize', requestUpdate, { passive: true });
+    window.visualViewport?.addEventListener('resize', requestUpdate);
+    window.visualViewport?.addEventListener('scroll', requestUpdate);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', requestUpdate);
+      window.visualViewport?.removeEventListener('resize', requestUpdate);
+      window.visualViewport?.removeEventListener('scroll', requestUpdate);
+    };
+  }, [dialogType]);
 
   useEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
@@ -3272,6 +3327,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     notificationMode === 'off'
       ? 'Уведомления выключены'
       : `Уведомления: ${getNotificationModeLabel(notificationMode)}`;
+  const commentsScreenStyle =
+    dialogType === 'comments' && commentsNotificationTopNudge > 0
+      ? ({
+          '--comments-dialog-notification-top-nudge': `${commentsNotificationTopNudge}px`,
+        } as CSSProperties)
+      : undefined;
 
   if (!chatId) {
     return (
@@ -3406,6 +3467,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     <div
       ref={screenRef}
       className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}
+      style={commentsScreenStyle}
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
@@ -3422,6 +3484,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
             <div className="channel-dialog-notifications">
               <button
+                ref={notificationToggleRef}
                 type="button"
                 className={cn(
                   'channel-dialog-notifications__toggle',
