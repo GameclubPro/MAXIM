@@ -3803,6 +3803,127 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not send greeting while night mode closes the chat', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 0,
+            nightModeEndTimeMinutes: 0,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'GREETING_MESSAGE',
+      }),
+    });
+  });
+
+  it('does not send greeting while manual group close is active', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'GREETING_MESSAGE',
+      }),
+    });
+  });
+
   it('builds greeting mentions from first and last name when display_name is absent', () => {
     const service = new ModerationService({} as never, {} as never, {} as never, {} as never);
 
@@ -6455,7 +6576,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deletes the first blocked night mode message before sending the notice', async () => {
+  it('deletes night mode messages silently even when bot notice is enabled', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
       hour: '2-digit',
@@ -6534,21 +6655,11 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.sendMessage.mock.invocationCallOrder[0],
-    );
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      expect.stringContaining('Ночной патруль на линии'),
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-      expect.objectContaining({
-        ignoreFailureMetricStatuses: [403, 404],
-      }),
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
         userId: 'user-1',
@@ -6557,214 +6668,6 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({
-        chatId: 'chat-1',
-        userId: 'system',
-        ruleCode: 'NIGHT_MODE_NOTICE',
-        action: SanctionAction.NONE,
-        metadata: expect.objectContaining({
-          reason: 'Night mode notice sent after blocked message deletion',
-          sourceMessageId: 'msg-1',
-        }),
-      }),
-    });
-  });
-
-  it('adds a comments button to the night mode notice when enabled for the chat', async () => {
-    const nowParts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Moscow',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(new Date());
-    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
-    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
-    const currentMinutes = currentHour * 60 + currentMinute;
-    const startMinutes = (currentMinutes + 23 * 60) % (24 * 60);
-    const endMinutes = (currentMinutes + 60) % (24 * 60);
-
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            nightModeEnabled: true,
-            nightModeStartTimeMinutes: startMinutes,
-            nightModeEndTimeMinutes: endMinutes,
-            nightModeTimezone: 'Europe/Moscow',
-            nightModeBotMessageEnabled: true,
-            nightModeBotMessageText: '',
-            commentsEnabled: true,
-            nightModeCommentsEnabled: true,
-          }),
-          domains: [],
-          admins: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn(),
-    };
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-      getChatMembersAccess: jest.fn().mockResolvedValue(
-        new Map([
-          [
-            'user-1',
-            {
-              userId: 'user-1',
-              isAdmin: false,
-              isOwner: false,
-              permissions: [],
-            },
-          ],
-        ]),
-      ),
-    };
-
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-    );
-
-    await service.handleUpdate(createUpdate());
-
-    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      expect.stringContaining('Ночной патруль на линии'),
-      expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              text: expect.stringContaining('💬 Комментарии'),
-            }),
-          ],
-        ],
-      }),
-    );
-  });
-
-  it('deduplicates concurrent night mode notice attempts across service instances', async () => {
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    const redisLocks = new Map<string, string>();
-    const prisma = {
-      moderationEvent: {
-        findFirst: jest.fn().mockImplementation(async () => {
-          await sleep(25);
-          return null;
-        }),
-        create: jest.fn().mockImplementation(async () => {
-          await sleep(25);
-          return undefined;
-        }),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const maxClient = {
-      sendMessage: jest.fn().mockImplementation(async () => {
-        await sleep(25);
-      }),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const redisCounter = {
-      getString: jest.fn().mockResolvedValue(null),
-      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
-      acquireLock: jest.fn().mockImplementation(async (key: string) => {
-        if (redisLocks.has(key)) {
-          return null;
-        }
-
-        const token = `lock-${redisLocks.size + 1}`;
-        redisLocks.set(key, token);
-        return token;
-      }),
-      releaseLock: jest.fn().mockImplementation(async (key: string, token: string) => {
-        if (redisLocks.get(key) === token) {
-          redisLocks.delete(key);
-        }
-      }),
-    };
-
-    const serviceA = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      redisCounter as never,
-    );
-    const serviceB = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      redisCounter as never,
-    );
-
-    const params = {
-      chatId: 'chat-1',
-      startMinutes: 23 * 60,
-      endMinutes: 8 * 60,
-      timezone: 'Europe/Moscow',
-      botSpeechStyle: null,
-      nightModeBotMessageText: '',
-      commentsEnabled: false,
-      nightModeCommentsEnabled: false,
-      nightModeBotButtonEnabled: false,
-      nightModeBotButtonUrl: '',
-      nightModeBotButtonText: 'Открыть',
-      reason: 'concurrent-race-check',
-    };
-
-    await Promise.all([
-      (
-        serviceA as unknown as {
-          sendNightModeClosedNoticeIfNeeded: (params: Record<string, unknown>) => Promise<void>;
-        }
-      ).sendNightModeClosedNoticeIfNeeded(params),
-      (
-        serviceB as unknown as {
-          sendNightModeClosedNoticeIfNeeded: (params: Record<string, unknown>) => Promise<void>;
-        }
-      ).sendNightModeClosedNoticeIfNeeded(params),
-    ]);
-
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
-    expect(redisCounter.acquireLock).toHaveBeenCalledTimes(2);
-    expect(redisCounter.releaseLock).toHaveBeenCalledTimes(1);
   });
 
   it('deletes messages during manual group close silently', async () => {

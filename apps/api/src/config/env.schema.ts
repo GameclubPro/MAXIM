@@ -236,7 +236,6 @@ const envSchema = z.object({
     .positive()
     .default(120_000),
   VK_PARSING_MEDIA_CONCURRENCY: z.coerce.number().int().min(1).max(5).default(3),
-  MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS: z.coerce.number().int().positive().default(120_000),
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE: z.coerce.number().int().positive().default(4),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE: z.coerce.number().min(0.5).max(1).default(0.75),

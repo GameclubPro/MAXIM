@@ -66,14 +66,6 @@ export type ChannelAutoPostScanState = {
   latestMessageIdsAtTimestamp: string[];
   idleStreak: number;
   nextScanAtMs: number;
-  terminalFailureClosedAtMs: number | null;
-  terminalFailureReason: string | null;
-};
-export type ManualGroupCloseListedMessage = {
-  messageId: string;
-  text: string | null;
-  timestampMs: number;
-  senderId: string | null;
 };
 export type ChannelAutoPostExecutionPlan = {
   batchSize: number;
@@ -243,7 +235,6 @@ export const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 export const RULES_BOT_BUTTON_TEXT = 'Правила';
 export const RULES_CALLBACK_PAYLOAD = 'rules:open';
 export const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
-export const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 export const LINK_ESCALATION_WINDOW_HOURS = 24;
 export const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 export const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
@@ -273,10 +264,6 @@ export const WEBHOOK_HOT_TIMEOUT_BACKOFF_SUPPRESSED_STAGES = new Set([
 export const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
 export const BOT_NOTICE_TOKEN_BUCKET_TTL_SEC = 60;
 export const DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT = 6;
-export const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
-export const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
-export const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
-export const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
 export const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 export const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 export const ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS = 10 * 60_000;
@@ -341,18 +328,6 @@ export const DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS = 10 * 60 * 1_000;
 export const CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR = 2;
 export const CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS = 500;
 export const CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN = 1;
-export const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS = 15_000;
-export const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS = 8;
-export const DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS = 150;
-export const DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS = 2 * 60 * 1_000;
-export const DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS = 5_000;
-export const DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN = 10;
-export const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS = 2 * 60 * 1_000;
-export const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
-export const MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC = Math.ceil(
-  MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS / 1_000,
-);
-export const MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS = 60_000;
 export const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 export const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
 export const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC = 5;

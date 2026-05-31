@@ -172,7 +172,6 @@ import {
   RULES_BOT_BUTTON_TEXT,
   RULES_CALLBACK_PAYLOAD,
   DEFAULT_NIGHT_MODE_TIMEZONE,
-  NIGHT_MODE_NOTICE_RULE_CODE,
   LINK_ESCALATION_WINDOW_HOURS,
   TEXT_FILTER_ESCALATION_WINDOW_HOURS,
   TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
@@ -199,10 +198,6 @@ import {
   REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC,
   BOT_NOTICE_TOKEN_BUCKET_TTL_SEC,
   DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
-  NIGHT_MODE_NOTICE_LOCK_TTL_MS,
-  NIGHT_MODE_NOTICE_MARKER_TTL_SEC,
-  NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC,
-  NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
   CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
   CHAT_ADMIN_CACHE_TTL_MS,
   ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
@@ -239,16 +234,6 @@ import {
   CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR,
   CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS,
   CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
-  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS,
-  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS,
-  DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS,
-  DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS,
-  DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS,
-  DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN,
-  DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS,
-  MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS,
-  MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC,
-  MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS,
   CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
   DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
@@ -297,7 +282,6 @@ import {
   type ManagedChannelContext,
   type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
-  type ManualGroupCloseListedMessage,
   type ChannelAutoPostExecutionPlan,
   type PendingChatAdminLookupBatch,
   type PendingChatAdminSharedCacheBatch,
@@ -390,8 +374,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private webhookHotChatSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
-  private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
-  private readonly nightModeDeliveryTerminalMemoryMarkers = new Map<string, number>();
   private readonly adminContactDisplayNameCache = new Map<
     string,
     { value: string | null; expiresAtMs: number }
@@ -399,19 +381,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
   private channelAutoPostStartupTimer: NodeJS.Timeout | null = null;
   private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
-  private manualGroupCloseScanTimer: NodeJS.Timeout | null = null;
-  private manualGroupCloseStartupTimer: NodeJS.Timeout | null = null;
-  private readonly manualGroupCloseScanState = new Map<string, ChannelAutoPostScanState>();
   private channelAutoPostInFlight = false;
-  private manualGroupCloseScanInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
-  private manualGroupCloseBackoffUntilMs = 0;
   private channelAutoPostThrottleStreak = 0;
-  private manualGroupCloseThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
-  private manualGroupClosePausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
-  private manualGroupCloseCursor = 0;
   private readonly appBaseUrl: string | null;
   private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
@@ -425,13 +399,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
   private readonly channelAutoPostRepairSweepMs: number;
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
-  private readonly manualGroupCloseScanIntervalMs: number;
-  private readonly manualGroupCloseScanMaxChats: number;
-  private readonly manualGroupCloseInterChatDelayMs: number;
-  private readonly manualGroupCloseIdleBackoffMaxMs: number;
-  private readonly manualGroupCloseStartupDelayMs: number;
-  private readonly manualGroupCloseMaxNewMessagesPerScan: number;
-  private readonly manualGroupCloseScanMaxMessageAgeMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly requiredSubscriptionHotPathChannelLimit: number;
   private readonly botNoticeTokenBucketLimit: number;
@@ -519,25 +486,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
       DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
-    );
-    this.manualGroupCloseScanIntervalMs = this.readPositiveConfigInt(
-      configService?.get<number>('MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS'),
-      DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS,
-      1_000,
-    );
-    this.manualGroupCloseScanMaxChats = DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS;
-    this.manualGroupCloseInterChatDelayMs = DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS;
-    this.manualGroupCloseIdleBackoffMaxMs = DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS;
-    this.manualGroupCloseStartupDelayMs = this.readNonNegativeConfigInt(
-      configService?.get<number>('MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS'),
-      DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS,
-    );
-    this.manualGroupCloseMaxNewMessagesPerScan =
-      DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN;
-    this.manualGroupCloseScanMaxMessageAgeMs = this.readPositiveConfigInt(
-      configService?.get<number>('MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS'),
-      DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS,
-      this.manualGroupCloseScanIntervalMs,
     );
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
@@ -637,9 +585,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         channelAutoPostStartupJitterMs: this.channelAutoPostStartupJitterMs,
         channelAutoPostMaxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
         channelAutoPostRepairSweepMs: this.channelAutoPostRepairSweepMs,
-        manualGroupCloseScanIntervalMs: this.manualGroupCloseScanIntervalMs,
-        manualGroupCloseScanMaxChats: this.manualGroupCloseScanMaxChats,
-        manualGroupCloseMaxNewMessagesPerScan: this.manualGroupCloseMaxNewMessagesPerScan,
       },
       'Moderation background polling is enabled',
     );
@@ -649,13 +594,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         void this.processChannelAutoPostButtons();
       }, this.channelAutoPostScanIntervalMs);
       this.scheduleChannelAutoPostStartupScan();
-    }
-
-    if (this.manualGroupCloseScanMaxChats > 0) {
-      this.manualGroupCloseScanTimer = setInterval(() => {
-        void this.processManualGroupCloseChats();
-      }, this.manualGroupCloseScanIntervalMs);
-      this.scheduleManualGroupCloseStartupScan();
     }
   }
 
@@ -667,14 +605,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.channelAutoPostStartupTimer) {
       clearTimeout(this.channelAutoPostStartupTimer);
       this.channelAutoPostStartupTimer = null;
-    }
-    if (this.manualGroupCloseScanTimer) {
-      clearInterval(this.manualGroupCloseScanTimer);
-      this.manualGroupCloseScanTimer = null;
-    }
-    if (this.manualGroupCloseStartupTimer) {
-      clearTimeout(this.manualGroupCloseStartupTimer);
-      this.manualGroupCloseStartupTimer = null;
     }
   }
 
@@ -1101,18 +1031,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeStartTimeMinutes: settings.nightModeStartTimeMinutes,
           nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
           nightModeTimezone: settings.nightModeTimezone,
-          botSpeechStyle: settings.botSpeechStyle,
-          nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
-          nightModeBotMessageText: settings.nightModeBotMessageText,
-          commentsEnabled: settings.commentsEnabled,
-          nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
-          nightModeBotButtons: settings.nightModeBotButtons,
-          nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
-          nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
-          nightModeBotButtonText: settings.nightModeBotButtonText,
-          nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
-          rulesPublishedUrl,
-          rulesPublishedMessageId,
         });
         return;
       }
@@ -6380,6 +6298,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings,
     });
 
+    if (this.isNightModeForceCloseActiveNow(settings) || this.isNightModeActiveNow(settings)) {
+      return;
+    }
+
     if (!settings.greetingEnabled) {
       return;
     }
@@ -7554,18 +7476,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeStartTimeMinutes: number;
     nightModeEndTimeMinutes: number;
     nightModeTimezone: string;
-    botSpeechStyle: BotSpeechStyle | null;
-    nightModeBotMessageEnabled: boolean;
-    nightModeBotMessageText: string;
-    commentsEnabled: boolean;
-    nightModeCommentsEnabled: boolean;
-    nightModeBotButtons: unknown;
-    nightModeBotButtonEnabled: boolean;
-    nightModeBotButtonUrl: string;
-    nightModeBotButtonText: string;
-    nightModeRulesButtonEnabled: boolean;
-    rulesPublishedUrl: string | null;
-    rulesPublishedMessageId: string | null;
   }) {
     const {
       chatId,
@@ -7576,62 +7486,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       nightModeStartTimeMinutes,
       nightModeEndTimeMinutes,
       nightModeTimezone,
-      botSpeechStyle,
-      nightModeBotMessageEnabled,
-      nightModeBotMessageText,
-      commentsEnabled,
-      nightModeCommentsEnabled,
-      nightModeBotButtons,
-      nightModeBotButtonEnabled,
-      nightModeBotButtonUrl,
-      nightModeBotButtonText,
-      nightModeRulesButtonEnabled,
-      rulesPublishedUrl,
-      rulesPublishedMessageId,
     } = params;
     const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
     const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-    const sendNightModeClosedNotice = async () => {
-      if (!nightModeBotMessageEnabled) {
-        return;
-      }
-
-      try {
-        await this.sendNightModeClosedNoticeIfNeeded({
-          chatId,
-          startMinutes,
-          endMinutes,
-          timezone,
-          botSpeechStyle,
-          nightModeBotMessageText,
-          commentsEnabled,
-          nightModeCommentsEnabled,
-          nightModeBotButtons,
-          nightModeBotButtonEnabled,
-          nightModeBotButtonUrl,
-          nightModeBotButtonText,
-          nightModeRulesButtonEnabled,
-          rulesPublishedUrl,
-          rulesPublishedMessageId,
-          sessionMoment: 'current',
-          reason: 'Night mode notice sent after blocked message deletion',
-          sourceMessageId: messageId,
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send night mode notice after deleting blocked message',
-        );
-      }
-    };
 
     if (canDeleteMessage) {
       try {
@@ -7683,14 +7543,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to persist night mode deletion event',
         );
       }
-
-      // Keep enforcement ahead of the optional background-rate-limited notice.
-      await sendNightModeClosedNotice();
     } else {
-      await sendNightModeClosedNotice();
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Сообщение от ${userId} попало в закрытие чата на ночь, но старше 24 часов и не может быть удалено`,
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          messageId,
+        },
+        'Skipped night mode deletion for message older than 24 hours',
       );
     }
   }
@@ -12653,30 +12513,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private buildNightModeSessionKey(
-    startMinutes: number,
-    endMinutes: number,
-    timezone: string,
-    moment: 'current' | 'start' | 'end' = 'current',
-  ): string {
-    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
-    const wrapsMidnight = startMinutes > endMinutes;
-    let referenceTime = new Date();
-
-    if (moment === 'end') {
-      referenceTime = wrapsMidnight ? new Date(Date.now() - 24 * 60 * 60 * 1000) : new Date();
-    } else if (moment === 'current') {
-      const inAfterMidnightSegment =
-        wrapsMidnight && currentMinutes !== null && currentMinutes < endMinutes;
-      referenceTime = inAfterMidnightSegment
-        ? new Date(Date.now() - 24 * 60 * 60 * 1000)
-        : new Date();
-    }
-
-    const dateKey = this.formatDateKeyInTimeZone(referenceTime, timezone);
-    return `${timezone}|${startMinutes}-${endMinutes}|${dateKey}`;
-  }
-
   private formatDateKeyInTimeZone(date: Date, timeZone: string): string {
     try {
       const parts = new Intl.DateTimeFormat('en-GB', {
@@ -12695,148 +12531,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return `${year}-${month}-${day}`;
     } catch {
       return date.toISOString().slice(0, 10);
-    }
-  }
-
-  private async wasNightModeNoticeProcessed(
-    chatId: string,
-    nightSessionKey: string,
-    ruleCode: string,
-  ): Promise<boolean> {
-    const markerKey = this.buildNightModeNoticeMarkerKey(chatId, nightSessionKey, ruleCode);
-    const cachedMarker = await this.readNightModeNoticeMarker(markerKey);
-    if (cachedMarker) {
-      return true;
-    }
-
-    const existingNotice = await this.prisma.moderationEvent.findFirst({
-      where: {
-        chatId,
-        ruleCode,
-        metadata: {
-          path: ['nightSessionKey'],
-          equals: nightSessionKey,
-        },
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (existingNotice) {
-      await this.writeNightModeNoticeMarker(markerKey);
-    }
-
-    return Boolean(existingNotice);
-  }
-
-  private async sendNightModeClosedNoticeIfNeeded(params: {
-    chatId: string;
-    startMinutes: number;
-    endMinutes: number;
-    timezone: string;
-    botSpeechStyle: BotSpeechStyle | null;
-    nightModeBotMessageText: string;
-    commentsEnabled: boolean;
-    nightModeCommentsEnabled: boolean;
-    nightModeBotButtons: unknown;
-    nightModeBotButtonEnabled: boolean;
-    nightModeBotButtonUrl: string;
-    nightModeBotButtonText: string;
-    nightModeRulesButtonEnabled?: boolean;
-    rulesPublishedUrl?: string | null;
-    rulesPublishedMessageId?: string | null;
-    sessionMoment?: 'current' | 'start';
-    reason: string;
-    sourceMessageId?: string;
-  }): Promise<void> {
-    const nightSessionKey = this.buildNightModeSessionKey(
-      params.startMinutes,
-      params.endMinutes,
-      params.timezone,
-      params.sessionMoment ?? 'current',
-    );
-    const noticeLockKey = this.buildNightModeNoticeLockKey(
-      params.chatId,
-      nightSessionKey,
-      NIGHT_MODE_NOTICE_RULE_CODE,
-    );
-    const noticeLock = await this.acquireNightModeNoticeLock(noticeLockKey);
-    if (!noticeLock) {
-      return;
-    }
-
-    try {
-      const noticeAlreadySent = await this.wasNightModeNoticeProcessed(
-        params.chatId,
-        nightSessionKey,
-        NIGHT_MODE_NOTICE_RULE_CODE,
-      );
-      if (noticeAlreadySent) {
-        return;
-      }
-
-      const scheduledBotId = await this.resolveScheduledChatBotId(params.chatId);
-      const messageText = this.buildNightModeClosedNotice(
-        params.startMinutes,
-        params.endMinutes,
-        params.timezone,
-        params.nightModeBotMessageText,
-        params.botSpeechStyle,
-      );
-      const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
-      let noticeMessageId: string | null = null;
-      try {
-        noticeMessageId = await this.sendScheduledBotMessage({
-          chatId: params.chatId,
-          text: messageText,
-          messageOptions: nightModeMessageOptions ?? undefined,
-          botId: scheduledBotId,
-        });
-      } catch (error: unknown) {
-        if (
-          await this.suppressNightModeDeliveryAfterTerminalError(
-            params.chatId,
-            error,
-            'night_mode_closed_notice',
-          )
-        ) {
-          return;
-        }
-        throw error;
-      }
-
-      await this.writeNightModeNoticeMarker(
-        this.buildNightModeNoticeMarkerKey(
-          params.chatId,
-          nightSessionKey,
-          NIGHT_MODE_NOTICE_RULE_CODE,
-        ),
-      );
-
-      await this.createBotModerationEvent({
-        data: {
-          chatId: params.chatId,
-          ...(scheduledBotId ? { botId: scheduledBotId } : {}),
-          userId: 'system',
-          eventType: EventType.SYSTEM,
-          ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
-          action: SanctionAction.NONE,
-          score: 0,
-          operator: Operator.BOT,
-          metadata: {
-            reason: params.reason,
-            nightSessionKey,
-            nightModeTimezone: params.timezone,
-            nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
-            nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
-            ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
-            ...(noticeMessageId ? { noticeMessageId } : {}),
-          },
-        },
-      });
-    } finally {
-      await this.releaseNightModeNoticeLock(noticeLock);
     }
   }
 
@@ -12877,286 +12571,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         night_status: nightStatus,
       },
     });
-  }
-
-  private buildNightModeNoticeLockKey(
-    chatId: string,
-    nightSessionKey: string,
-    ruleCode: string,
-  ): string {
-    return `night-notice-lock:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
-  }
-
-  private buildNightModeNoticeMarkerKey(
-    chatId: string,
-    nightSessionKey: string,
-    ruleCode: string,
-  ): string {
-    return `night-notice-sent:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
-  }
-
-  private buildNightModeDeliveryTerminalKey(chatId: string): string {
-    return `night-notice-terminal:v1:${chatId}`;
-  }
-
-  private async readNightModeDeliveryTerminalMarker(chatId: string): Promise<boolean> {
-    const key = this.buildNightModeDeliveryTerminalKey(chatId);
-    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
-    if (getString && this.redisCounter) {
-      try {
-        if ((await getString.call(this.redisCounter, key)) === '1') {
-          return true;
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            key,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to read night mode delivery suppression marker from redis',
-        );
-      }
-    }
-
-    const expiresAt = this.nightModeDeliveryTerminalMemoryMarkers.get(key);
-    if (!expiresAt) {
-      return false;
-    }
-    if (expiresAt <= Date.now()) {
-      this.nightModeDeliveryTerminalMemoryMarkers.delete(key);
-      return false;
-    }
-
-    return true;
-  }
-
-  private async writeNightModeDeliveryTerminalMarker(chatId: string): Promise<void> {
-    const key = this.buildNightModeDeliveryTerminalKey(chatId);
-    const expiresAt = Date.now() + NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC * 1_000;
-    this.nightModeDeliveryTerminalMemoryMarkers.set(key, expiresAt);
-
-    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.setStringWithTtl;
-    if (!setStringWithTtl || !this.redisCounter) {
-      return;
-    }
-
-    try {
-      await setStringWithTtl.call(
-        this.redisCounter,
-        key,
-        '1',
-        NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC,
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to write night mode delivery suppression marker to redis',
-      );
-    }
-  }
-
-  private async readNightModeNoticeMarker(key: string): Promise<boolean> {
-    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
-    if (!getString || !this.redisCounter) {
-      return false;
-    }
-
-    try {
-      return (await getString.call(this.redisCounter, key)) === '1';
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to read night mode notice marker from redis',
-      );
-      return false;
-    }
-  }
-
-  private async writeNightModeNoticeMarker(key: string): Promise<void> {
-    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.setStringWithTtl;
-    if (!setStringWithTtl || !this.redisCounter) {
-      return;
-    }
-
-    try {
-      await setStringWithTtl.call(this.redisCounter, key, '1', NIGHT_MODE_NOTICE_MARKER_TTL_SEC);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to write night mode notice marker to redis',
-      );
-    }
-  }
-
-  private async acquireNightModeNoticeLock(
-    key: string,
-  ): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
-    const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.acquireLock;
-
-    if (acquireLock && this.redisCounter) {
-      try {
-        const token = await acquireLock.call(this.redisCounter, key, NIGHT_MODE_NOTICE_LOCK_TTL_MS);
-        if (!token) {
-          return null;
-        }
-
-        return {
-          key,
-          token,
-          mode: 'redis',
-        };
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            key,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to acquire redis night mode notice lock; falling back to memory lock',
-        );
-      }
-    }
-
-    if (this.nightModeNoticeMemoryLocks.has(key)) {
-      return null;
-    }
-
-    const token = randomUUID();
-    this.nightModeNoticeMemoryLocks.set(key, token);
-    return {
-      key,
-      token,
-      mode: 'memory',
-    };
-  }
-
-  private async releaseNightModeNoticeLock(lock: {
-    key: string;
-    token: string;
-    mode: 'redis' | 'memory';
-  }): Promise<void> {
-    if (lock.mode === 'memory') {
-      if (this.nightModeNoticeMemoryLocks.get(lock.key) === lock.token) {
-        this.nightModeNoticeMemoryLocks.delete(lock.key);
-      }
-      return;
-    }
-
-    const releaseLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.releaseLock;
-    if (!releaseLock || !this.redisCounter) {
-      return;
-    }
-
-    try {
-      await releaseLock.call(this.redisCounter, lock.key, lock.token);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key: lock.key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to release redis night mode notice lock',
-      );
-    }
-  }
-
-  private async suppressNightModeDeliveryAfterTerminalError(
-    chatId: string,
-    error: unknown,
-    operation: string,
-    isTerminal = this.isNightModeTerminalDeliveryError(error),
-  ): Promise<boolean> {
-    if (!isTerminal) {
-      return false;
-    }
-
-    await this.writeNightModeDeliveryTerminalMarker(chatId);
-    this.logger.log(
-      {
-        chatId,
-        operation,
-        status: this.extractStatusCode(error),
-        error: error instanceof Error ? error.message : 'Unknown error',
-      },
-      'Suppressing repeated night mode notice delivery after terminal MAX API error',
-    );
-    return true;
-  }
-
-  private buildNightModeClosedNoticeOptions(params: {
-    chatId: string;
-    commentsEnabled: boolean;
-    nightModeCommentsEnabled: boolean;
-    nightModeBotButtons: unknown;
-    nightModeBotButtonEnabled: boolean;
-    nightModeBotButtonUrl: string;
-    nightModeBotButtonText: string;
-    nightModeRulesButtonEnabled?: boolean;
-    rulesPublishedUrl?: string | null;
-    rulesPublishedMessageId?: string | null;
-  }): MaxSendMessageOptions | null {
-    const baseOptions = this.buildBotMessageOptions(
-      params.chatId,
-      params.nightModeBotButtons,
-      params.nightModeBotButtonEnabled,
-      params.nightModeBotButtonUrl,
-      params.nightModeBotButtonText,
-      params.nightModeRulesButtonEnabled ?? false,
-      params.rulesPublishedUrl ?? null,
-      params.rulesPublishedMessageId ?? null,
-    );
-    const commentsButton = this.buildNightModeCommentsButton(
-      params.chatId,
-      params.commentsEnabled,
-      params.nightModeCommentsEnabled,
-    );
-
-    if (!commentsButton) {
-      return baseOptions;
-    }
-
-    const buttons: MaxMessageButton[][] = [[commentsButton]];
-    if (baseOptions?.buttons?.length) {
-      buttons.push(...baseOptions.buttons);
-    } else if (baseOptions?.button) {
-      buttons.push([baseOptions.button]);
-    }
-
-    return {
-      buttons,
-      ...(baseOptions?.messageLink ? { messageLink: baseOptions.messageLink } : {}),
-      ...(baseOptions?.textFormat ? { textFormat: baseOptions.textFormat } : {}),
-      ...(baseOptions?.debugContext ? { debugContext: baseOptions.debugContext } : {}),
-    };
-  }
-
-  private buildNightModeCommentsButton(
-    chatId: string,
-    commentsEnabled: boolean,
-    nightModeCommentsEnabled: boolean,
-  ): MaxMessageButton | null {
-    if (!commentsEnabled || !nightModeCommentsEnabled) {
-      return null;
-    }
-
-    return this.buildChatDialogButton(
-      chatId,
-      'comments',
-      randomUUID(),
-      formatCommentsButtonText('💬 Комментарии', 0),
-    );
   }
 
   private buildNightModeOpenedNotice(
@@ -13831,431 +13245,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
-  }
-
-  private async processManualGroupCloseChats(): Promise<void> {
-    if (this.manualGroupCloseScanInFlight || !this.backgroundTasksEnabled) {
-      return;
-    }
-    if (this.manualGroupCloseScanMaxChats === 0) {
-      return;
-    }
-    if (this.manualGroupCloseBackoffUntilMs > Date.now()) {
-      return;
-    }
-    if (await this.shouldPauseBackgroundWork('manual-group-close-scan')) {
-      return;
-    }
-
-    this.manualGroupCloseScanInFlight = true;
-    try {
-      let encounteredTransientThrottle = false;
-      const chats = await this.prisma.chatSettings.findMany({
-        where: {
-          nightModeForceCloseEnabled: true,
-          chat: {
-            entityType: ChatEntityType.CHAT,
-          },
-        },
-        include: {
-          chat: {
-            select: {
-              admins: {
-                select: {
-                  userId: true,
-                },
-              },
-            },
-          },
-        },
-        orderBy: {
-          updatedAt: 'desc',
-        },
-      });
-      const activeChats = chats.filter((settings) =>
-        this.isNightModeForceCloseActiveNow({
-          nightModeForceCloseEnabled: settings.nightModeForceCloseEnabled,
-          nightModeForceCloseForever: settings.nightModeForceCloseForever,
-          nightModeForceCloseUntil: settings.nightModeForceCloseUntil,
-        }),
-      );
-      const scanBatch = this.selectManualGroupCloseScanBatch(
-        activeChats,
-        this.manualGroupCloseScanMaxChats,
-      );
-      if (scanBatch.length === 0) {
-        this.manualGroupCloseThrottleStreak = 0;
-        return;
-      }
-
-      for (const [index, settings] of scanBatch.entries()) {
-        if (index > 0) {
-          await this.sleep(this.manualGroupCloseInterChatDelayMs);
-        }
-
-        try {
-          await this.processManagedManualGroupCloseChat({
-            chatId: settings.chatId,
-            closedAtMs: settings.updatedAt.getTime(),
-            nightModeForceCloseForever: settings.nightModeForceCloseForever,
-            nightModeForceCloseUntil: settings.nightModeForceCloseUntil,
-            adminUserIds: settings.chat.admins.map((item) => item.userId),
-          });
-        } catch (error: unknown) {
-          if (this.isTransientMaxApiLookupError(error)) {
-            encounteredTransientThrottle = true;
-            this.manualGroupCloseThrottleStreak += 1;
-            const backoffMs = this.resolveManualGroupCloseThrottleBackoffMs();
-            const now = Date.now();
-            this.manualGroupCloseBackoffUntilMs = Math.max(
-              this.manualGroupCloseBackoffUntilMs,
-              now + backoffMs,
-            );
-            this.deferManualGroupCloseScan(settings.chatId, backoffMs);
-            if (now - this.manualGroupClosePausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
-              this.manualGroupClosePausedLogAtMs = now;
-              this.logger.log(
-                {
-                  task: 'manual-group-close-scan',
-                  action: 'pause',
-                  chatId: settings.chatId,
-                  reason: this.extractMaxErrorMessage(error),
-                  retryAfterMs: backoffMs,
-                },
-                'Paused manual group close chat scan after transient MAX API pressure',
-              );
-            }
-            break;
-          }
-          this.logger.warn(
-            {
-              chatId: settings.chatId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed manual group close chat scan',
-          );
-        }
-      }
-      if (!encounteredTransientThrottle) {
-        this.manualGroupCloseThrottleStreak = 0;
-      }
-    } finally {
-      this.manualGroupCloseScanInFlight = false;
-    }
-  }
-
-  private async processManagedManualGroupCloseChat(params: {
-    chatId: string;
-    closedAtMs: number;
-    nightModeForceCloseForever: boolean;
-    nightModeForceCloseUntil: string;
-    adminUserIds: string[];
-  }): Promise<void> {
-    const { chatId } = params;
-    const existingScanState = this.manualGroupCloseScanState.get(chatId) ?? null;
-    if (!this.isManualGroupCloseScanDue(chatId, params.closedAtMs)) {
-      return;
-    }
-    const sharedTerminalFailureReason = await this.readManualGroupCloseTerminalMarker(
-      chatId,
-      params.closedAtMs,
-    );
-    if (sharedTerminalFailureReason) {
-      this.manualGroupCloseScanState.set(
-        chatId,
-        this.createManualGroupCloseTerminalBackoffState(
-          existingScanState,
-          params.closedAtMs,
-          sharedTerminalFailureReason,
-        ),
-      );
-      return;
-    }
-
-    const scanBotId =
-      (
-        await this.resolveUnifiedBotRoute({
-          purpose: 'capability',
-          chatId,
-          capability: 'background_scans',
-          fallbackToPrimary: true,
-        })
-      )?.botId ??
-      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
-        chatId,
-        capability: 'background_scans',
-      })) ??
-      undefined;
-    let messages: Record<string, unknown>[];
-    try {
-      messages = await this.maxClient.listMessages(chatId, {
-        count: 20,
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN,
-        ...(scanBotId ? { botId: scanBotId } : {}),
-      });
-    } catch (error: unknown) {
-      if (this.isTerminalManualGroupCloseScanError(error)) {
-        const terminalFailureReason = this.extractMaxErrorMessage(error);
-        const nextState = this.createManualGroupCloseTerminalBackoffState(
-          existingScanState,
-          params.closedAtMs,
-          terminalFailureReason,
-        );
-        this.manualGroupCloseScanState.set(chatId, nextState);
-        await this.writeManualGroupCloseTerminalMarker(
-          chatId,
-          params.closedAtMs,
-          terminalFailureReason,
-        );
-        if (this.isManualGroupCloseStaleChatError(error)) {
-          await this.disableStaleManualGroupClose(chatId, terminalFailureReason);
-          return;
-        }
-        this.logger.warn(
-          {
-            chatId,
-            nextRetryAt: new Date(nextState.nextScanAtMs).toISOString(),
-            reason: nextState.terminalFailureReason,
-          },
-          'Paused manual group close chat scan after a terminal MAX access error',
-        );
-        return;
-      }
-      throw error;
-    }
-    const normalizedMessages = messages
-      .map((message) => this.parseManualGroupCloseListedMessage(message))
-      .filter((item): item is ManualGroupCloseListedMessage => item !== null)
-      .sort(
-        (left, right) =>
-          left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
-      );
-    let scanState = existingScanState;
-    const scanNowMs = Date.now();
-    const protectedSenderIds = await this.resolveManualGroupCloseProtectedSenderIds({
-      chatId,
-      adminUserIds: params.adminUserIds,
-      messages: normalizedMessages,
-      scanState,
-      closedAtMs: params.closedAtMs,
-      scanNowMs,
-    });
-    let sawNewMessages = false;
-    let handledMessages = 0;
-
-    for (const normalized of normalizedMessages) {
-      if (!this.isManualGroupCloseScanMessageNew(scanState, normalized)) {
-        continue;
-      }
-      sawNewMessages = true;
-
-      if (
-        !this.isManualGroupCloseScanMessageEligibleForDeletion(
-          normalized,
-          params.closedAtMs,
-          scanNowMs,
-        )
-      ) {
-        scanState = this.advanceManualGroupCloseScanState(scanState, normalized);
-        this.manualGroupCloseScanState.set(chatId, scanState);
-        continue;
-      }
-      if (
-        !normalized.senderId ||
-        this.isManualGroupCloseProtectedSender(protectedSenderIds, normalized.senderId)
-      ) {
-        scanState = this.advanceManualGroupCloseScanState(scanState, normalized);
-        this.manualGroupCloseScanState.set(chatId, scanState);
-        continue;
-      }
-      if (handledMessages >= this.manualGroupCloseMaxNewMessagesPerScan) {
-        break;
-      }
-
-      await this.handleNightModeForceCloseMessage({
-        chatId,
-        userId: normalized.senderId,
-        messageId: normalized.messageId,
-        text: normalized.text ?? '',
-        createdAt: new Date(normalized.timestampMs).toISOString(),
-        nightModeForceCloseForever: params.nightModeForceCloseForever,
-        nightModeForceCloseUntil: params.nightModeForceCloseUntil,
-      });
-      handledMessages += 1;
-      scanState = this.advanceManualGroupCloseScanState(scanState, normalized);
-      this.manualGroupCloseScanState.set(chatId, scanState);
-    }
-
-    this.manualGroupCloseScanState.set(
-      chatId,
-      this.scheduleManualGroupCloseScanState(scanState, sawNewMessages),
-    );
-  }
-
-  private async resolveManualGroupCloseProtectedSenderIds(params: {
-    chatId: string;
-    adminUserIds: readonly string[];
-    messages: readonly ManualGroupCloseListedMessage[];
-    scanState: ChannelAutoPostScanState | null;
-    closedAtMs: number;
-    scanNowMs: number;
-  }): Promise<Set<string>> {
-    const protectedSenderIds = new Set<string>();
-    for (const adminUserId of params.adminUserIds) {
-      this.addManualGroupCloseProtectedSender(protectedSenderIds, adminUserId);
-    }
-
-    const candidateSenderIds = Array.from(
-      new Set(
-        params.messages
-          .filter(
-            (message) =>
-              message.senderId &&
-              this.isManualGroupCloseScanMessageEligibleForDeletion(
-                message,
-                params.closedAtMs,
-                params.scanNowMs,
-              ) &&
-              this.isManualGroupCloseScanMessageNew(params.scanState, message) &&
-              !this.isManualGroupCloseProtectedSender(protectedSenderIds, message.senderId),
-          )
-          .map((message) => message.senderId)
-          .filter((senderId): senderId is string => Boolean(senderId)),
-      ),
-    );
-    if (candidateSenderIds.length === 0) {
-      return protectedSenderIds;
-    }
-
-    const sharedStates = await this.loadSharedChatAdminAccessBatch(
-      params.chatId,
-      candidateSenderIds,
-    );
-    const remoteLookupSenderIds: string[] = [];
-    for (const senderId of candidateSenderIds) {
-      const sharedState = sharedStates.get(senderId) ?? null;
-      if (sharedState === 'granted') {
-        this.addManualGroupCloseProtectedSender(protectedSenderIds, senderId);
-        continue;
-      }
-      if (sharedState === 'user_denied') {
-        continue;
-      }
-      remoteLookupSenderIds.push(senderId);
-    }
-
-    if (remoteLookupSenderIds.length === 0) {
-      return protectedSenderIds;
-    }
-
-    const remoteStates = await this.loadRemoteChatAdminAccessBatch(
-      params.chatId,
-      remoteLookupSenderIds,
-      {
-        trafficClass: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN,
-      },
-    );
-    await Promise.all(
-      remoteLookupSenderIds.map(async (senderId) => {
-        const state = remoteStates.get(senderId) ?? null;
-        if (!state) {
-          return;
-        }
-
-        await this.writeChatAdminAccessToSharedCache(params.chatId, senderId, state);
-        if (state === 'granted') {
-          this.addManualGroupCloseProtectedSender(protectedSenderIds, senderId);
-          await this.persistRemoteAdminGrant(params.chatId, senderId);
-        }
-      }),
-    );
-
-    return protectedSenderIds;
-  }
-
-  private isManualGroupCloseScanMessageEligibleForDeletion(
-    message: {
-      timestampMs: number;
-    },
-    closedAtMs: number,
-    nowMs: number,
-  ): boolean {
-    if (message.timestampMs < closedAtMs) {
-      return false;
-    }
-
-    return nowMs - message.timestampMs <= this.manualGroupCloseScanMaxMessageAgeMs;
-  }
-
-  private addManualGroupCloseProtectedSender(target: Set<string>, userId: string): void {
-    for (const variant of this.buildUserIdVariants(userId)) {
-      target.add(variant);
-    }
-  }
-
-  private isManualGroupCloseProtectedSender(
-    protectedSenderIds: ReadonlySet<string>,
-    userId: string,
-  ): boolean {
-    for (const variant of this.buildUserIdVariants(userId)) {
-      if (protectedSenderIds.has(variant)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private parseManualGroupCloseListedMessage(
-    message: Record<string, unknown>,
-  ): ManualGroupCloseListedMessage | null {
-    const body = this.asRecord(message.body);
-    const messageIdCandidate =
-      body?.mid ??
-      body?.seq ??
-      message.message_id ??
-      message.messageId ??
-      message.mid ??
-      message.seq ??
-      message.id;
-    const timestampCandidate = message.timestamp ?? message.created_at ?? message.createdAt;
-    if (
-      (typeof messageIdCandidate !== 'string' && typeof messageIdCandidate !== 'number') ||
-      (typeof timestampCandidate !== 'number' && typeof timestampCandidate !== 'string')
-    ) {
-      return null;
-    }
-
-    const timestampMs =
-      typeof timestampCandidate === 'number' ? timestampCandidate : Number(timestampCandidate);
-    if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
-      return null;
-    }
-
-    const senderRecord = this.asRecord(message.sender);
-    const senderIdCandidate = senderRecord?.user_id ?? message.sender_id;
-    const senderId =
-      typeof senderIdCandidate === 'string'
-        ? senderIdCandidate.trim()
-        : typeof senderIdCandidate === 'number' && Number.isFinite(senderIdCandidate)
-          ? String(Math.trunc(senderIdCandidate))
-          : '';
-
-    return {
-      messageId: String(messageIdCandidate),
-      text: (() => {
-        const candidates = [body?.text, message.text, message.caption];
-        for (const candidate of candidates) {
-          if (typeof candidate === 'string' && candidate.trim()) {
-            return candidate.trim();
-          }
-        }
-        return null;
-      })(),
-      timestampMs,
-      senderId: senderId.length > 0 ? senderId : null,
-    };
   }
 
   private parseChannelListedMessage(message: Record<string, unknown>): {
@@ -15803,10 +14792,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
   }
 
-  private isNightModeTerminalDeliveryError(error: unknown): boolean {
-    return this.isTerminalWebhookProcessingError(error);
-  }
-
   private isTerminalPrivateDialogDeliveryError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 403 || status === 404) {
@@ -16450,34 +15435,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return message.includes('bot is not a chat member') || message.includes('not accessible');
   }
 
-  private isTerminalManualGroupCloseScanError(error: unknown): boolean {
-    const status = this.extractStatusCode(error);
-    if (status === 403 || status === 404) {
-      return true;
-    }
-
-    const code = this.extractMaxErrorCode(error);
-    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
-      return true;
-    }
-
-    const message = this.extractMaxErrorMessage(error);
-    return (
-      message.includes('bot is not a chat member') ||
-      message.includes('not accessible') ||
-      message.includes('chat not found')
-    );
-  }
-
-  private isManualGroupCloseStaleChatError(error: unknown): boolean {
-    const code = this.extractMaxErrorCode(error);
-    if (code === 'chat.not.found') {
-      return true;
-    }
-
-    return this.extractMaxErrorMessage(error).includes('chat not found');
-  }
-
   private isMaxApiThrottleError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 429) {
@@ -17000,79 +15957,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async sendScheduledBotMessage(params: {
-    chatId: string;
-    text: string;
-    messageOptions?: MaxSendMessageOptions;
-    botId?: string | null;
-  }): Promise<string | null> {
-    const options = {
-      ...(params.messageOptions ?? {}),
-      textFormat: 'markdown' as const,
-    };
-    const requestOptions = {
-      trafficClass: 'background' as const,
-      ...(params.botId ? { botId: params.botId } : {}),
-      ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-    };
-
-    if (typeof this.maxClient.sendMessageImmediateWithId === 'function') {
-      const sent = await this.maxClient.sendMessageImmediateWithId(
-        params.chatId,
-        params.text,
-        options,
-        requestOptions,
-      );
-
-      return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
-        ? sent.messageId.trim()
-        : null;
-    }
-
-    if (typeof this.maxClient.sendMessageImmediateWithResolvedLink === 'function') {
-      const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
-        params.chatId,
-        params.text,
-        options,
-        requestOptions,
-      );
-
-      return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
-        ? sent.messageId.trim()
-        : null;
-    }
-
-    await this.maxClient.sendMessage(params.chatId, params.text, options, {
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      ...(params.botId ? { botId: params.botId } : {}),
-      ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-    });
-    return null;
-  }
-
-  private async resolveScheduledChatBotId(chatId: string): Promise<string | null> {
-    const route = await this.resolveUnifiedBotRoute({
-      purpose: 'member_access',
-      chatId,
-    });
-    if (typeof route?.botId === 'string' && route.botId.trim().length > 0) {
-      return route.botId.trim();
-    }
-
-    if (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function') {
-      const resolvedBotId = await this.maxBotLinkService.resolveBotIdForMemberAccess({ chatId });
-      if (typeof resolvedBotId === 'string' && resolvedBotId.trim().length > 0) {
-        return resolvedBotId.trim();
-      }
-    }
-
-    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
-    return typeof activeBotId === 'string' && activeBotId.trim().length > 0
-      ? activeBotId.trim()
-      : null;
-  }
-
   private selectChannelAutoPostScanBatch<T extends { chatId: string }>(
     channels: T[],
     maxChannels = this.channelAutoPostScanMaxChannels,
@@ -17186,8 +16070,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestMessageIdsAtTimestamp: [],
       idleStreak: 0,
       nextScanAtMs: 0,
-      terminalFailureClosedAtMs: null,
-      terminalFailureReason: null,
     };
   }
 
@@ -17218,26 +16100,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private resolveManualGroupCloseThrottleBackoffMs(): number {
-    return Math.min(
-      this.manualGroupCloseIdleBackoffMaxMs,
-      MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS *
-        2 ** Math.min(Math.max(0, this.manualGroupCloseThrottleStreak - 1), 2),
-    );
-  }
-
-  private deferManualGroupCloseScan(chatId: string, backoffMs: number): void {
-    const current =
-      this.manualGroupCloseScanState.get(chatId) ?? this.createManualGroupCloseScanState();
-    this.manualGroupCloseScanState.set(chatId, {
-      ...current,
-      idleStreak: Math.min(current.idleStreak + 1, 8),
-      nextScanAtMs: Math.max(current.nextScanAtMs, Date.now() + backoffMs),
-      terminalFailureClosedAtMs: null,
-      terminalFailureReason: null,
-    });
-  }
-
   private scheduleChannelAutoPostStartupScan() {
     const startupDelayMs =
       this.channelAutoPostStartupDelayMs +
@@ -17249,258 +16111,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       void this.processChannelAutoPostButtons();
     }, startupDelayMs);
     this.channelAutoPostStartupTimer.unref();
-  }
-
-  private selectManualGroupCloseScanBatch<T extends { chatId: string; updatedAt: Date }>(
-    chats: T[],
-    maxChats = this.manualGroupCloseScanMaxChats,
-  ): T[] {
-    const normalizedMaxChats = Math.max(1, Math.min(maxChats, this.manualGroupCloseScanMaxChats));
-    const dueChats = chats.filter((chat) =>
-      this.isManualGroupCloseScanDue(chat.chatId, chat.updatedAt.getTime()),
-    );
-    if (dueChats.length === 0) {
-      return [];
-    }
-    if (dueChats.length <= normalizedMaxChats) {
-      this.manualGroupCloseCursor = 0;
-      return dueChats;
-    }
-
-    const startIndex = this.manualGroupCloseCursor % dueChats.length;
-    const batch: T[] = [];
-    for (let index = 0; index < normalizedMaxChats; index += 1) {
-      batch.push(dueChats[(startIndex + index) % dueChats.length]!);
-    }
-
-    this.manualGroupCloseCursor = (startIndex + batch.length) % dueChats.length;
-    return batch;
-  }
-
-  private isManualGroupCloseScanDue(chatId: string, closedAtMs: number): boolean {
-    const current = this.manualGroupCloseScanState.get(chatId) ?? null;
-    if (!current) {
-      return true;
-    }
-    if (
-      current.terminalFailureClosedAtMs !== null &&
-      current.terminalFailureClosedAtMs !== closedAtMs
-    ) {
-      return true;
-    }
-
-    return Date.now() >= current.nextScanAtMs;
-  }
-
-  private isManualGroupCloseScanMessageNew(
-    scanState: ChannelAutoPostScanState | null,
-    message: {
-      messageId: string;
-      timestampMs: number;
-    },
-  ): boolean {
-    if (!scanState || scanState.latestTimestampMs <= 0) {
-      return true;
-    }
-    if (message.timestampMs > scanState.latestTimestampMs) {
-      return true;
-    }
-    if (message.timestampMs < scanState.latestTimestampMs) {
-      return false;
-    }
-
-    return !scanState.latestMessageIdsAtTimestamp.includes(message.messageId);
-  }
-
-  private advanceManualGroupCloseScanState(
-    scanState: ChannelAutoPostScanState | null,
-    message: {
-      messageId: string;
-      timestampMs: number;
-    },
-  ): ChannelAutoPostScanState {
-    const current = scanState ?? this.createManualGroupCloseScanState();
-    if (message.timestampMs > current.latestTimestampMs) {
-      return {
-        ...current,
-        latestTimestampMs: message.timestampMs,
-        latestMessageIdsAtTimestamp: [message.messageId],
-      };
-    }
-    if (message.timestampMs < current.latestTimestampMs) {
-      return current;
-    }
-    if (current.latestMessageIdsAtTimestamp.includes(message.messageId)) {
-      return current;
-    }
-
-    return {
-      ...current,
-      latestMessageIdsAtTimestamp: [
-        ...current.latestMessageIdsAtTimestamp,
-        message.messageId,
-      ].slice(-10),
-    };
-  }
-
-  private scheduleManualGroupCloseScanState(
-    scanState: ChannelAutoPostScanState | null,
-    sawNewMessages: boolean,
-  ): ChannelAutoPostScanState {
-    const current = scanState ?? this.createManualGroupCloseScanState();
-    const idleStreak = sawNewMessages ? 0 : current.idleStreak + 1;
-    const nextDelayMs = sawNewMessages
-      ? this.manualGroupCloseScanIntervalMs
-      : Math.max(
-          this.manualGroupCloseScanIntervalMs,
-          Math.min(
-            this.manualGroupCloseIdleBackoffMaxMs,
-            this.manualGroupCloseScanIntervalMs * 2 ** Math.min(idleStreak, 8),
-          ),
-        );
-
-    return {
-      ...current,
-      idleStreak,
-      nextScanAtMs: Date.now() + nextDelayMs,
-      terminalFailureClosedAtMs: null,
-      terminalFailureReason: null,
-    };
-  }
-
-  private createManualGroupCloseScanState(): ChannelAutoPostScanState {
-    return {
-      latestTimestampMs: 0,
-      latestMessageIdsAtTimestamp: [],
-      idleStreak: 0,
-      nextScanAtMs: 0,
-      terminalFailureClosedAtMs: null,
-      terminalFailureReason: null,
-    };
-  }
-
-  private buildManualGroupCloseTerminalMarkerKey(chatId: string, closedAtMs: number): string {
-    return `manual-group-close-terminal:v1:${chatId}:${closedAtMs}`;
-  }
-
-  private async readManualGroupCloseTerminalMarker(
-    chatId: string,
-    closedAtMs: number,
-  ): Promise<string | null> {
-    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
-    if (!getString || !this.redisCounter) {
-      return null;
-    }
-
-    const key = this.buildManualGroupCloseTerminalMarkerKey(chatId, closedAtMs);
-    try {
-      const marker = await getString.call(this.redisCounter, key);
-      return typeof marker === 'string' && marker.trim().length > 0 ? marker.trim() : null;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to read manual group close terminal marker from redis',
-      );
-      return null;
-    }
-  }
-
-  private async writeManualGroupCloseTerminalMarker(
-    chatId: string,
-    closedAtMs: number,
-    reason: string,
-  ): Promise<void> {
-    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.setStringWithTtl;
-    if (!setStringWithTtl || !this.redisCounter) {
-      return;
-    }
-
-    const key = this.buildManualGroupCloseTerminalMarkerKey(chatId, closedAtMs);
-    const markerValue =
-      typeof reason === 'string' && reason.trim().length > 0
-        ? reason.trim().slice(0, 256)
-        : 'terminal max access error';
-    try {
-      await setStringWithTtl.call(
-        this.redisCounter,
-        key,
-        markerValue,
-        MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC,
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          key,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to write manual group close terminal marker to redis',
-      );
-    }
-  }
-
-  private createManualGroupCloseTerminalBackoffState(
-    scanState: ChannelAutoPostScanState | null,
-    closedAtMs: number,
-    reason: string,
-  ): ChannelAutoPostScanState {
-    const current = scanState ?? this.createManualGroupCloseScanState();
-    return {
-      ...current,
-      idleStreak: 0,
-      nextScanAtMs: Date.now() + MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS,
-      terminalFailureClosedAtMs: closedAtMs,
-      terminalFailureReason: reason,
-    };
-  }
-
-  private async disableStaleManualGroupClose(chatId: string, reason: string): Promise<void> {
-    const updateMany = (this.prisma.chatSettings as Partial<typeof this.prisma.chatSettings>)
-      ?.updateMany;
-    if (typeof updateMany !== 'function') {
-      return;
-    }
-
-    try {
-      const result = await updateMany.call(this.prisma.chatSettings, {
-        where: {
-          chatId,
-          nightModeForceCloseEnabled: true,
-        },
-        data: {
-          nightModeForceCloseEnabled: false,
-        },
-      });
-      if (typeof result?.count === 'number' && result.count > 0) {
-        this.logger.warn(
-          {
-            chatId,
-            reason,
-          },
-          'Disabled stale manual group close after terminal MAX chat-not-found error',
-        );
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          reason,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to auto-disable stale manual group close after terminal MAX chat-not-found error',
-      );
-    }
-  }
-
-  private scheduleManualGroupCloseStartupScan(): void {
-    this.manualGroupCloseStartupTimer = setTimeout(() => {
-      this.manualGroupCloseStartupTimer = null;
-      void this.processManualGroupCloseChats();
-    }, this.manualGroupCloseStartupDelayMs);
-    this.manualGroupCloseStartupTimer.unref();
   }
 
   private readPositiveConfigInt(value: unknown, fallback: number, min = 1): number {
@@ -17856,92 +16466,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         criticalRate: 0,
       },
     };
-  }
-
-  private async shouldPauseBackgroundWork(
-    task: 'channel-auto-post-buttons' | 'manual-group-close-scan',
-  ): Promise<boolean> {
-    const sourceTag =
-      task === 'manual-group-close-scan'
-        ? MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN
-        : MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST;
-
-    if (this.backgroundRuntimeGovernorService) {
-      const decision = await this.backgroundRuntimeGovernorService.decide({
-        component: 'moderation',
-        sourceTag,
-        ...(task === 'channel-auto-post-buttons'
-          ? { allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec }
-          : {}),
-      });
-      if (decision.action === 'run') {
-        return false;
-      }
-
-      const now = Date.now();
-      if (
-        now - this.getBackgroundTaskPausedLogAtMs(task) >=
-        BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS
-      ) {
-        this.setBackgroundTaskPausedLogAtMs(task, now);
-        this.logger.log(
-          {
-            task,
-            action: decision.action,
-            reason: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
-          },
-          'Paused moderation background work because the runtime governor detected pressure',
-        );
-      }
-      return true;
-    }
-
-    const mode = await this.resolveSystemModeSnapshot();
-    let pauseReason: string | null = null;
-    if (mode.mode !== 'degrade' || isSystemModeRecoveryWindow(mode)) {
-      pauseReason = await this.resolveBackgroundPressurePauseReason();
-      if (!pauseReason) {
-        return false;
-      }
-    } else {
-      pauseReason = mode.reason;
-    }
-
-    const now = Date.now();
-    if (now - this.getBackgroundTaskPausedLogAtMs(task) >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
-      this.setBackgroundTaskPausedLogAtMs(task, now);
-      this.logger.log(
-        {
-          task,
-          mode: mode.mode,
-          source: mode.source,
-          reason: pauseReason,
-        },
-        'Paused moderation background work because the system is under pressure',
-      );
-    }
-    return true;
-  }
-
-  private getBackgroundTaskPausedLogAtMs(
-    task: 'channel-auto-post-buttons' | 'manual-group-close-scan',
-  ): number {
-    return task === 'manual-group-close-scan'
-      ? this.manualGroupClosePausedLogAtMs
-      : this.channelAutoPostPausedLogAtMs;
-  }
-
-  private setBackgroundTaskPausedLogAtMs(
-    task: 'channel-auto-post-buttons' | 'manual-group-close-scan',
-    value: number,
-  ): void {
-    if (task === 'manual-group-close-scan') {
-      this.manualGroupClosePausedLogAtMs = value;
-      return;
-    }
-
-    this.channelAutoPostPausedLogAtMs = value;
   }
 
   private async resolveBackgroundPressurePauseReason(): Promise<string | null> {

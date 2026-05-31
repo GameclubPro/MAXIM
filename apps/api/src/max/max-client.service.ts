@@ -291,7 +291,6 @@ export const MAX_API_SOURCE_TAGS = {
   CHANNEL_AUTO_POST: 'channel_auto_post',
   COMMENT_NOTIFICATION: 'comment_notification',
   VK_PARSING: 'vk_parsing',
-  MANUAL_GROUP_CLOSE_SCAN: 'manual_group_close_scan',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
   REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',
