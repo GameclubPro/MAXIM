@@ -220,6 +220,7 @@ import {
   LazySettingsHandoffState,
   LazyManagedPollCard,
   LazyManagedGiveawayCard,
+  preloadBotSpeechMessageEditorSheet,
   AUTO_SAVE_DELAY_MS,
   AUTO_MUTE_DURATION_MIN_HOURS,
   AUTO_MUTE_DURATION_MAX_HOURS,
@@ -805,6 +806,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     rulesDraftRef.current = rulesDraft;
   }, [rulesDraft]);
+
+  useEffect(() => {
+    preloadBotSpeechMessageEditorSheet();
+  }, []);
+
   const managedBroadcastsQuery = {
     data: settingsScreenQuery.data?.managedBroadcasts,
     isLoading: settingsScreenQuery.isLoading,

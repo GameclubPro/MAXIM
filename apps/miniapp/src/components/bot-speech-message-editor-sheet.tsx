@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
@@ -16,6 +16,18 @@ type BotSpeechMessageEditorSheetProps = {
 };
 
 const BOT_MESSAGE_EDITOR_MAX_LENGTH = 1000;
+
+function resolveBotMessageEditorPortalTarget(): Element | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  return (
+    document.querySelector('.design-preview__device-screen') ??
+    document.querySelector('.app-shell') ??
+    document.body
+  );
+}
 
 function BotMessageEditorCloseIcon() {
   return (
@@ -53,36 +65,25 @@ export function BotSpeechMessageEditorSheet({
   onReset,
   onClose,
 }: BotSpeechMessageEditorSheetProps) {
-  const anchorRef = useRef<HTMLSpanElement | null>(null);
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const portalTarget = resolveBotMessageEditorPortalTarget();
   const isDefaultTemplate = value.trim().length === 0;
   const editorValue = isDefaultTemplate ? defaultValue : value;
   const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const body = document.body;
     const documentElement = document.documentElement;
     const previousBodyOverflow = body.style.overflow;
     const previousDocumentOverflow = documentElement.style.overflow;
-    const target =
-      anchorRef.current?.closest<HTMLElement>('.design-preview__device-screen') ??
-      anchorRef.current?.closest<HTMLElement>('.app-shell') ??
-      body;
 
-    setPortalTarget(target);
     body.classList.add('bot-message-editor-open');
     body.style.overflow = 'hidden';
     documentElement.style.overflow = 'hidden';
 
-    const focusTimeout = window.setTimeout(() => {
-      editorRef.current?.focus();
-    }, 80);
-
     return () => {
-      window.clearTimeout(focusTimeout);
       body.classList.remove('bot-message-editor-open');
       body.style.overflow = previousBodyOverflow;
       documentElement.style.overflow = previousDocumentOverflow;
@@ -204,12 +205,7 @@ export function BotSpeechMessageEditorSheet({
     </div>
   );
 
-  return (
-    <>
-      <span ref={anchorRef} className="bot-message-editor-sheet__anchor" aria-hidden />
-      {portalTarget ? createPortal(sheet, portalTarget) : null}
-    </>
-  );
+  return portalTarget ? createPortal(sheet, portalTarget) : sheet;
 }
 
 export default BotSpeechMessageEditorSheet;

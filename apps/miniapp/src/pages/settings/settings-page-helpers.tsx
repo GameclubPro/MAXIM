@@ -172,11 +172,14 @@ export const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
-const LazyBotSpeechMessageEditorSheet = lazy(() =>
+const loadBotSpeechMessageEditorSheet = () =>
   import('../../components/bot-speech-message-editor-sheet').then((module) => ({
     default: module.BotSpeechMessageEditorSheet,
-  })),
-);
+  }));
+const LazyBotSpeechMessageEditorSheet = lazy(loadBotSpeechMessageEditorSheet);
+export function preloadBotSpeechMessageEditorSheet() {
+  void loadBotSpeechMessageEditorSheet();
+}
 export const LazyBroadcastContentComposer = lazy(
   () => import('../../components/broadcast-content-composer'),
 );
@@ -2040,14 +2043,16 @@ export function BotMessageEditor(props: BotMessageEditorProps) {
     BOT_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
     props.botSpeechPreviewContext,
   );
+  const title = BOT_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey];
+  const ariaLabel = 'Редактор текста сообщения';
 
   return (
     <Suspense fallback={null}>
       <LazyBotSpeechMessageEditorSheet
-        title={BOT_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
+        title={title}
         value={props.value}
         defaultValue={defaultValue}
-        ariaLabel="Редактор текста сообщения"
+        ariaLabel={ariaLabel}
         onChange={props.onChange}
         onReset={props.onReset}
         onClose={props.onClose}
@@ -2095,14 +2100,16 @@ export function WarnMessageEditor(props: WarnMessageEditorProps) {
     WARN_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
     props.botSpeechPreviewContext,
   );
+  const title = WARN_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey];
+  const ariaLabel = 'Редактор текста предупреждения';
 
   return (
     <Suspense fallback={null}>
       <LazyBotSpeechMessageEditorSheet
-        title={WARN_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey]}
+        title={title}
         value={props.value}
         defaultValue={defaultValue}
-        ariaLabel="Редактор текста предупреждения"
+        ariaLabel={ariaLabel}
         onChange={props.onChange}
         onReset={props.onReset}
         onClose={props.onClose}
