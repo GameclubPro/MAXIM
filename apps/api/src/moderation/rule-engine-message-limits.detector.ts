@@ -114,10 +114,17 @@ export class RuleEngineMessageLimitsDetector {
     };
   }
 
-  detectBlockedDomainLimit(params: { text: string; settings: ChatSettings }): RuleViolation | null {
+  detectBlockedDomainLimit(params: {
+    text: string;
+    settings: ChatSettings;
+    isLinkAllowlisted?: (link: string) => boolean;
+  }): RuleViolation | null {
     const blockedDomain = this.blockedDomainDetector.detect(
       params.text,
       params.settings.messageLimitsBlockedDomains,
+      {
+        isLinkAllowlisted: params.isLinkAllowlisted,
+      },
     );
     if (!blockedDomain) {
       return null;

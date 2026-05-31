@@ -9,7 +9,11 @@ import { RedisCounterService } from './redis-counter.service';
 import { createRuleDetectionContext } from './rule-engine-detection-context';
 import { RuleEngineDuplicateDetector } from './rule-engine-duplicate-detector';
 import type { DetectionResult, RuleViolation } from './rule-engine.contract';
-import { detectBlockedLink, extractUrlsFromText } from './rule-engine-link-detector';
+import {
+  createAllowlistLinkMatcher,
+  detectBlockedLink,
+  extractUrlsFromText,
+} from './rule-engine-link-detector';
 import {
   extractDetectedPhoneNumbers,
   RuleEngineMessageLimitsDetector,
@@ -759,7 +763,14 @@ export class RuleEngineService {
     }
     markRuleEngineDetectStage(profile, 'topic-filter');
 
-    const linkViolation = detectBlockedLink(text, settings.linkPolicy, domainAllowlist);
+    const allowlistLinkMatcher =
+      domainAllowlist.length > 0 ? createAllowlistLinkMatcher(domainAllowlist) : undefined;
+    const linkViolation = detectBlockedLink(
+      text,
+      settings.linkPolicy,
+      domainAllowlist,
+      allowlistLinkMatcher,
+    );
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
@@ -810,6 +821,7 @@ export class RuleEngineService {
     const blockedDomainViolation = this.messageLimitsDetector.detectBlockedDomainLimit({
       text,
       settings,
+      isLinkAllowlisted: allowlistLinkMatcher,
     });
     if (blockedDomainViolation) {
       violations.push(blockedDomainViolation);

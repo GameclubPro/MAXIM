@@ -11,6 +11,8 @@ type AllowlistMatchers = {
   domains: Set<string>;
 };
 
+export type AllowlistLinkMatcher = (value: string) => boolean;
+
 type ResolvedLink = {
   raw: string;
   match: {
@@ -25,6 +27,7 @@ export function detectBlockedLink(
   text: string,
   policy: LinkPolicy,
   allowlist: readonly string[],
+  allowlistMatcher?: AllowlistLinkMatcher,
 ): string | null {
   if (policy === LinkPolicy.ALERT_ONLY) {
     return null;
@@ -40,8 +43,10 @@ export function detectBlockedLink(
     return 'Links are not allowed by policy';
   }
 
-  const matchers = buildAllowlistMatchers(allowlist);
-  const resolvedLinks = resolveDetectedLinks(links, matchers);
+  const resolvedLinks = resolveDetectedLinks(
+    links,
+    allowlistMatcher ?? createAllowlistLinkMatcher(allowlist),
+  );
   const allowlistedExplicitDomains = new Set(
     resolvedLinks
       .filter((link) => link.allowlisted && link.explicit && link.match.normalizedDomain)
@@ -81,6 +86,14 @@ export function extractUrlsFromText(value: string): string[] {
   return extractTextUrls(value);
 }
 
+export function createAllowlistLinkMatcher(allowlist: readonly string[]): AllowlistLinkMatcher {
+  const matchers = buildAllowlistMatchers(allowlist);
+  return (value: string) => {
+    const match = resolveAllowlistMatch(value);
+    return match ? isAllowlistedLink(matchers, match) : false;
+  };
+}
+
 function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers {
   const exactLinks = new Set<string>();
   const domains = new Set<string>();
@@ -104,7 +117,7 @@ function buildAllowlistMatchers(allowlist: readonly string[]): AllowlistMatchers
 
 function resolveDetectedLinks(
   links: readonly string[],
-  matchers: AllowlistMatchers,
+  allowlistMatcher: AllowlistLinkMatcher,
 ): ResolvedLink[] {
   const resolved: ResolvedLink[] = [];
 
@@ -117,7 +130,7 @@ function resolveDetectedLinks(
     resolved.push({
       raw,
       match,
-      allowlisted: isAllowlistedLink(matchers, match),
+      allowlisted: allowlistMatcher(raw),
       explicit: isExplicitLink(raw),
     });
   }

@@ -647,6 +647,30 @@ describe('WebhookParser', () => {
     });
   });
 
+  it('builds normalized user_added message from member payloads', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-added-member-1',
+      update_type: 'user_added',
+      chat_id: -123456789,
+      member: {
+        id: 889,
+        first_name: 'Анна',
+        last_name: 'Петрова',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.type).toBe('user_added');
+    expect(parsed.message?.messageId).toBe('user_added:upd-user-added-member-1');
+    expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.senderId).toBe('889');
+    expect(parsed.message?.senderName).toBe('Анна Петрова');
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['889'],
+    });
+  });
+
   it('builds normalized message for user_removed update without message payload', () => {
     const parsed = parser.parse({
       update_id: 'upd-user-removed-1',

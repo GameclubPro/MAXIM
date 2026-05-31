@@ -5332,7 +5332,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('temporarily disables greeting messages for one hour after more than three joins in one minute', async () => {
+  it('keeps sending greeting messages during join bursts', async () => {
     const redisCounter = {
       getString: jest.fn().mockResolvedValue(null),
       incrementByWithTtl: jest
@@ -5399,21 +5399,13 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUserAddedUpdateWithSuffix(3));
     await service.handleUpdate(createUserAddedUpdateWithSuffix(4));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(3);
-    expect(redisCounter.incrementByWithTtl).toHaveBeenNthCalledWith(
-      4,
-      'greeting-burst:v1:chat-1',
-      1,
-      60,
-    );
-    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
-      'greeting-disabled:v1:chat-1',
-      expect.any(String),
-      60 * 60,
-    );
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(4);
+    expect(redisCounter.getString).not.toHaveBeenCalled();
+    expect(redisCounter.incrementByWithTtl).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
   });
 
-  it('skips greeting messages while hidden auto-disable window is active', async () => {
+  it('ignores stale hidden greeting auto-disable state', async () => {
     const redisCounter = {
       getString: jest.fn().mockResolvedValue('2026-03-18T10:00:00.000Z'),
       incrementByWithTtl: jest.fn(),
@@ -5472,10 +5464,18 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUserAddedUpdateWithSuffix('blocked'));
 
-    expect(redisCounter.getString).toHaveBeenCalledWith('greeting-disabled:v1:chat-1');
+    expect(redisCounter.getString).not.toHaveBeenCalled();
     expect(redisCounter.incrementByWithTtl).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-added-blocked',
+        messageId: 'user_added:upd-user-added-blocked',
+        ruleCode: 'GREETING_MESSAGE',
+        action: SanctionAction.NONE,
+      }),
+    });
   });
 
   it('kicks and deletes message from globally blacklisted sender when toggle is enabled', async () => {

@@ -271,9 +271,6 @@ import {
   GLOBAL_SPAMMER_STRONG_FANOUT_EPISODE_THRESHOLD,
   GLOBAL_SPAMMER_CONFIRMED_FANOUT_EPISODE_THRESHOLD,
   GLOBAL_SPAMMER_CRITICAL_FANOUT_MIN_CHATS,
-  GREETING_BURST_WINDOW_SEC,
-  GREETING_BURST_LIMIT,
-  GREETING_AUTO_DISABLE_SEC,
   CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS,
   NON_SANCTION_RULE_CODES,
   MESSAGE_LIMITS_RULE_CODES,
@@ -6224,14 +6221,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const skipGreetingDueToBurst = await this.shouldSkipGreetingForJoinBurst({
-      chatId,
-      joinedMembersCount: joinedMembers.length,
-    });
-    if (skipGreetingDueToBurst) {
-      return;
-    }
-
     const greetingMessageOptions = this.buildBotMessageOptions(
       chatId,
       greetingBotButtons,
@@ -6398,85 +6387,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return [...members.values()];
-  }
-
-  private async shouldSkipGreetingForJoinBurst(params: {
-    chatId: string;
-    joinedMembersCount: number;
-  }): Promise<boolean> {
-    const { chatId, joinedMembersCount } = params;
-    if (joinedMembersCount <= 0) {
-      return false;
-    }
-
-    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
-    const incrementByWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.incrementByWithTtl;
-    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
-      ?.setStringWithTtl;
-    if (
-      typeof getString !== 'function' ||
-      typeof incrementByWithTtl !== 'function' ||
-      typeof setStringWithTtl !== 'function'
-    ) {
-      return false;
-    }
-
-    const autoDisabledKey = this.buildGreetingAutoDisabledRedisKey(chatId);
-    try {
-      const autoDisabledUntil = await getString.call(this.redisCounter, autoDisabledKey);
-      if (typeof autoDisabledUntil === 'string' && autoDisabledUntil.trim().length > 0) {
-        return true;
-      }
-
-      const joinedMembersTotal = await incrementByWithTtl.call(
-        this.redisCounter,
-        this.buildGreetingJoinBurstRedisKey(chatId),
-        joinedMembersCount,
-        GREETING_BURST_WINDOW_SEC,
-      );
-      if (joinedMembersTotal <= GREETING_BURST_LIMIT) {
-        return false;
-      }
-
-      const disabledUntil = new Date(Date.now() + GREETING_AUTO_DISABLE_SEC * 1_000).toISOString();
-      try {
-        await setStringWithTtl.call(
-          this.redisCounter,
-          autoDisabledKey,
-          disabledUntil,
-          GREETING_AUTO_DISABLE_SEC,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to persist greeting auto-disable state',
-        );
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          joinedMembersCount,
-          joinedMembersTotal,
-          disabledUntil,
-        },
-        'Temporarily disabled greeting messages due to join burst',
-      );
-      return true;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to evaluate greeting join burst state',
-      );
-      return false;
-    }
   }
 
   private readDisplayNameFromEntity(node: Record<string, unknown>): string | null {
@@ -7179,14 +7089,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.buildLocalGlobalSpammerChatObservationKey(chatId, userId),
       Date.now() + GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
     );
-  }
-
-  private buildGreetingJoinBurstRedisKey(chatId: string): string {
-    return `greeting-burst:v1:${chatId}`;
-  }
-
-  private buildGreetingAutoDisabledRedisKey(chatId: string): string {
-    return `greeting-disabled:v1:${chatId}`;
   }
 
   private async resolveGlobalSpammerExemptUserIds(

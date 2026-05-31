@@ -370,7 +370,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [rulesButtonsSheetOpen, setRulesButtonsSheetOpen] = useState(false);
   const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
   const [domainInput, setDomainInput] = useState('');
-  const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
+  const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('DOMAIN');
   const [domainInputError, setDomainInputError] = useState('');
   const [stopWordsMode, setStopWordsMode] = useState<StopWordsMode>('words');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
@@ -5372,8 +5372,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       label="Пояснение по разрешенным ссылкам и доменам"
                                     >
                                       Выберите точную ссылку или весь домен. Доменные правила
-                                      разрешают все пути только этого хоста, без wildcard по
-                                      поддоменам.
+                                      разрешают все пути этого хоста и его поддоменов.
                                     </SettingsHintAnchor>
                                   </div>
                                 </div>

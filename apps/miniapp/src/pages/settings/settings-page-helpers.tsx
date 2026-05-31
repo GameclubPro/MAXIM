@@ -1351,8 +1351,8 @@ export function formatAllowlistMetaLabel(
 }
 
 export const ALLOWLIST_MATCH_OPTIONS: Array<{ value: AllowlistMatchType; label: string }> = [
-  { value: 'EXACT', label: 'Точная ссылка' },
   { value: 'DOMAIN', label: 'Весь домен' },
+  { value: 'EXACT', label: 'Точная ссылка' },
 ];
 
 export function formatCompactBroadcastDateTime(

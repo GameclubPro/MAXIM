@@ -206,7 +206,21 @@ export class WebhookParser {
     }
 
     const user = this.asRecord(node.user);
-    const candidates = [node.user_id, node.userId, user?.id, user?.user_id, user?.userId];
+    const member = this.asRecord(node.member);
+    const candidates = [
+      node.user_id,
+      node.userId,
+      node.member_id,
+      node.memberId,
+      user?.id,
+      user?.user_id,
+      user?.userId,
+      member?.id,
+      member?.user_id,
+      member?.userId,
+      member?.member_id,
+      member?.memberId,
+    ];
 
     for (const value of candidates) {
       if (typeof value === 'string' || typeof value === 'number') {
@@ -222,7 +236,7 @@ export class WebhookParser {
       return undefined;
     }
 
-    const user = this.asRecord(node.user);
+    const user = this.asRecord(node.user) ?? this.asRecord(node.member);
     if (!user) {
       return undefined;
     }

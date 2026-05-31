@@ -13660,10 +13660,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const matchType =
-      parsed.data.matchType ??
-      (source === 'private_bot' ? inferAllowlistMatchType(parsed.data.domain) : null) ??
-      'EXACT';
+    const matchType = parsed.data.matchType ?? inferAllowlistMatchType(parsed.data.domain) ?? 'EXACT';
     const normalized = normalizeStoredAllowlistEntry(parsed.data.domain, matchType);
     if (!normalized) {
       throw new BadRequestException('Invalid allowlist link');

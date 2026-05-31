@@ -19174,6 +19174,54 @@ describe('AdminService allowlist normalization', () => {
     });
   });
 
+  it('infers a host-only allowlist input as a domain rule when match type is omitted', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain: 'docs.max.ru',
+      },
+    );
+
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'domain:docs.max.ru',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'domain:docs.max.ru',
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+  });
+
   it('treats legacy encoded trailing-text rows as the same allowlist link', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValueOnce([

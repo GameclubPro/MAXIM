@@ -15,7 +15,11 @@ const BLOCKED_DOMAIN_LIST_CACHE_MAX_ENTRIES = 512;
 export class MessageLimitsBlockedDomainDetector {
   private readonly blockedDomainListCache = new Map<string, ResolvedBlockedDomainIndex>();
 
-  detect(text: string, blockedDomains: readonly string[]): BlockedDomainDetection | null {
+  detect(
+    text: string,
+    blockedDomains: readonly string[],
+    options: { isLinkAllowlisted?: (link: string) => boolean } = {},
+  ): BlockedDomainDetection | null {
     if (!text || !Array.isArray(blockedDomains) || blockedDomains.length === 0) {
       return null;
     }
@@ -41,6 +45,10 @@ export class MessageLimitsBlockedDomainDetector {
         blockedDomainIndex.domains,
       );
       if (blockedDomain) {
+        if (options.isLinkAllowlisted?.(link)) {
+          continue;
+        }
+
         return {
           blockedDomain,
           matchedDomain,
