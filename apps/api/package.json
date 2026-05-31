@@ -28,6 +28,7 @@
     "moderation:validate-commercial-corpus": "tsx src/scripts/validate-commercial-corpus.ts",
     "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
     "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts",
+    "night-mode:repair-close-notices": "sh -c 'if [ -f dist/apps/api/src/scripts/repair-missed-night-mode-close-notices.js ]; then exec node dist/apps/api/src/scripts/repair-missed-night-mode-close-notices.js \"$@\"; else exec tsx src/scripts/repair-missed-night-mode-close-notices.ts \"$@\"; fi' --",
     "spammers:archive-expired": "tsx src/scripts/archive-expired-global-spammers.ts",
     "vk-parsing:diagnose": "sh -c 'if [ -f dist/apps/api/src/scripts/diagnose-vk-parsing.js ]; then exec node dist/apps/api/src/scripts/diagnose-vk-parsing.js \"$@\"; else exec tsx src/scripts/diagnose-vk-parsing.ts \"$@\"; fi' --"
   },

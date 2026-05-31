@@ -16522,12 +16522,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       const currentState = await this.readNightModeTransitionState(settings.chatId);
       if (snapshot.status === 'closed') {
-        if (currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey) {
+        const alreadyClosedForSession =
+          currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey;
+        if (
+          alreadyClosedForSession &&
+          (!snapshot.isCloseBoundary ||
+            !settings.nightModeBotMessageEnabled ||
+            currentState.closeNoticeMessageId)
+        ) {
           return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
         }
 
-        let closeNoticeMessageId: string | null = null;
-        if (snapshot.isCloseBoundary && settings.nightModeBotMessageEnabled) {
+        let closeNoticeMessageId = alreadyClosedForSession
+          ? (currentState.closeNoticeMessageId ?? null)
+          : null;
+        if (
+          snapshot.isCloseBoundary &&
+          settings.nightModeBotMessageEnabled &&
+          !closeNoticeMessageId
+        ) {
           const noticeResult = await this.sendNightModeClosedTransitionNotice(settings, snapshot);
           if (!noticeResult.shouldEnqueueNext) {
             return noticeResult;
