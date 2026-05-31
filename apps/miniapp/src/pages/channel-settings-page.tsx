@@ -42,7 +42,6 @@ import {
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
-import { ManagedEntityAccessDiagnosticsBanner } from '../components/managed-entity-access-diagnostics';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -250,6 +249,11 @@ const LazyBroadcastPublishReviewSheet = lazy(
 );
 const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
+);
+const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
+  import('../components/managed-entity-access-diagnostics').then((module) => ({
+    default: module.ManagedEntityAccessDiagnosticsBanner,
+  })),
 );
 
 function formatDateTimeInTimeZone(
@@ -2702,12 +2706,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         }
       />
 
-      <ManagedEntityAccessDiagnosticsBanner
-        diagnostics={channelHeader?.accessDiagnostics}
-        entityLabel="канал"
-        isRechecking={recheckAccessMutation.isPending}
-        onRecheck={() => recheckAccessMutation.mutate()}
-      />
+      {channelHeader?.accessDiagnostics?.state === 'bot_access_lost' ? (
+        <Suspense fallback={null}>
+          <LazyManagedEntityAccessDiagnosticsBanner
+            diagnostics={channelHeader.accessDiagnostics}
+            entityLabel="канал"
+            isRechecking={recheckAccessMutation.isPending}
+            onRecheck={() => recheckAccessMutation.mutate()}
+          />
+        </Suspense>
+      ) : null}
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

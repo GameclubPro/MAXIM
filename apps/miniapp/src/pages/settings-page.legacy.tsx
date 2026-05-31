@@ -68,7 +68,6 @@ import {
   filterManagedBroadcastsByHistoryFilter,
   type BroadcastHistoryFilter,
 } from '../components/broadcast-studio-workspace';
-import { ManagedEntityAccessDiagnosticsBanner } from '../components/managed-entity-access-diagnostics';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -346,6 +345,11 @@ import {
 
 const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
+);
+const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
+  import('../components/managed-entity-access-diagnostics').then((module) => ({
+    default: module.ManagedEntityAccessDiagnosticsBanner,
+  })),
 );
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
@@ -5115,12 +5119,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             }
           />
 
-          <ManagedEntityAccessDiagnosticsBanner
-            diagnostics={settingsScreenQuery.data?.header.accessDiagnostics}
-            entityLabel="чат"
-            isRechecking={recheckAccessMutation.isPending}
-            onRecheck={() => recheckAccessMutation.mutate()}
-          />
+          {settingsScreenQuery.data?.header.accessDiagnostics?.state === 'bot_access_lost' ? (
+            <Suspense fallback={null}>
+              <LazyManagedEntityAccessDiagnosticsBanner
+                diagnostics={settingsScreenQuery.data.header.accessDiagnostics}
+                entityLabel="чат"
+                isRechecking={recheckAccessMutation.isPending}
+                onRecheck={() => recheckAccessMutation.mutate()}
+              />
+            </Suspense>
+          ) : null}
 
           {headerBotLoadItems.length > 0 ? (
             <div className="settings-bot-load-strip stagger-in" aria-label="Состояние ботов">
