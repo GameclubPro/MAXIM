@@ -84,7 +84,8 @@
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
 - For MAX mini app top safe-area fixes, do not apply `safeTop`/CSS safe-area values as a blanket content offset; some MAX WebViews already account for system UI. Prefer `visualViewport` plus actual element measurements for guards around floating top controls.
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
-- For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and optionally `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
+- `npm run screenshots:miniapp` defaults to the production app URL; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
+- For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 - Keep home-card statistics prefetch imports lazy. Static importing events/stats API clients into `chats-page.tsx` counts against the startup JS budget.
 - Keep mini app chat/channel statistics routes off heavy shared chunks: stats API clients should import `@maxim/contracts` types only, and stats pages should use focused route CSS instead of `lazy-pages.css`.
