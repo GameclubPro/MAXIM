@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from 'nestjs-pino';
+import type { INestApplicationContext } from '@nestjs/common';
 import { AppModule } from '../app.module';
 import { ModerationExecutionService } from '../moderation/moderation-execution.service';
 import { Prisma } from '../prisma/prisma-client';
@@ -8,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 const DEFAULT_CONCURRENCY = 2;
 const DEFAULT_MIN_REMAINING_MINUTES = 15;
 const DEFAULT_SAMPLE_LIMIT = 30;
+const APP_CLOSE_TIMEOUT_MS = 5_000;
 
 type CliOptions = {
   dryRun: boolean;
@@ -256,6 +258,30 @@ function printResult(result: unknown, json: boolean): void {
   console.log(result);
 }
 
+async function closeApplicationContext(app: INestApplicationContext): Promise<void> {
+  let timedOut = false;
+  let timeout: NodeJS.Timeout | undefined;
+  await Promise.race([
+    app.close(),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, APP_CLOSE_TIMEOUT_MS);
+      timeout.unref();
+    }),
+  ]);
+
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+  if (timedOut) {
+    console.error(
+      `Timed out closing Nest application context after ${APP_CLOSE_TIMEOUT_MS}ms; exiting CLI process.`,
+    );
+  }
+}
+
 async function main() {
   const options = readCliOptions(process.argv.slice(2));
   const app = await NestFactory.createApplicationContext(AppModule, {
@@ -350,11 +376,15 @@ async function main() {
       options.json,
     );
   } finally {
-    await app.close();
+    await closeApplicationContext(app);
   }
 }
 
-void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exitCode = 1;
-});
+void main()
+  .then(() => {
+    process.exit(process.exitCode ?? 0);
+  })
+  .catch((error: unknown) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  });
