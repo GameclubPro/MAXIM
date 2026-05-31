@@ -107,6 +107,13 @@ export type PendingGlobalSpammerExemptionLookupBatch = {
   scheduled: boolean;
 };
 
+export type NightModeTransitionState = {
+  status: 'open' | 'closed';
+  sessionKey: string;
+  closeNoticeMessageId?: string | null;
+  updatedAt?: string;
+};
+
 export type WebhookHotPathProfile = {
   startedAtMs: number;
   lastMarkedAtMs: number;
@@ -330,6 +337,10 @@ export const CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS = 500;
 export const CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN = 1;
 export const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 export const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
+export const DEFAULT_NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS = 10_000;
+export const DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS = 5_000;
+export const NIGHT_MODE_TRANSITION_LOCK_TTL_MS = 20_000;
+export const NIGHT_MODE_TRANSITION_STATE_TTL_SEC = 3 * 24 * 60 * 60;
 export const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC = 5;
 export const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE = 0.75;
 export const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE = 4;

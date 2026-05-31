@@ -236,6 +236,10 @@ import {
   CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
   CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
   DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
+  DEFAULT_NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS,
+  DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS,
+  NIGHT_MODE_TRANSITION_LOCK_TTL_MS,
+  NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE,
@@ -286,6 +290,7 @@ import {
   type PendingChatAdminLookupBatch,
   type PendingChatAdminSharedCacheBatch,
   type PendingGlobalSpammerExemptionLookupBatch,
+  type NightModeTransitionState,
   type WebhookHotPathProfile,
   type RulesButtonReference,
   type RequiredSubscriptionMembershipLookupOptions,
@@ -386,6 +391,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
+  private nightModeTransitionTimer: NodeJS.Timeout | null = null;
+  private nightModeTransitionStartupTimer: NodeJS.Timeout | null = null;
+  private nightModeTransitionInFlight = false;
+  private readonly nightModeTransitionMemoryState = new Map<string, NightModeTransitionState>();
+  private readonly nightModeTransitionMemoryLocks = new Set<string>();
   private readonly appBaseUrl: string | null;
   private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
@@ -399,6 +409,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
   private readonly channelAutoPostRepairSweepMs: number;
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
+  private readonly nightModeTransitionScanIntervalMs: number;
+  private readonly nightModeTransitionStartupDelayMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly requiredSubscriptionHotPathChannelLimit: number;
   private readonly botNoticeTokenBucketLimit: number;
@@ -486,6 +498,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
       DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
+    );
+    this.nightModeTransitionScanIntervalMs = this.readPositiveConfigInt(
+      configService?.get<number>('NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS'),
+      DEFAULT_NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS,
+      1_000,
+    );
+    this.nightModeTransitionStartupDelayMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS'),
+      DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS,
     );
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
@@ -585,14 +606,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         channelAutoPostStartupJitterMs: this.channelAutoPostStartupJitterMs,
         channelAutoPostMaxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
         channelAutoPostRepairSweepMs: this.channelAutoPostRepairSweepMs,
+        nightModeTransitionScanIntervalMs: this.nightModeTransitionScanIntervalMs,
+        nightModeTransitionStartupDelayMs: this.nightModeTransitionStartupDelayMs,
       },
       'Moderation background polling is enabled',
     );
+
+    this.nightModeTransitionTimer = setInterval(() => {
+      void this.processNightModeTransitions();
+    }, this.nightModeTransitionScanIntervalMs);
+    this.nightModeTransitionTimer.unref();
+    this.scheduleNightModeTransitionStartupScan();
 
     if (this.channelAutoPostScanMaxChannels > 0) {
       this.channelAutoPostTimer = setInterval(() => {
         void this.processChannelAutoPostButtons();
       }, this.channelAutoPostScanIntervalMs);
+      this.channelAutoPostTimer.unref();
       this.scheduleChannelAutoPostStartupScan();
     }
   }
@@ -605,6 +635,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.channelAutoPostStartupTimer) {
       clearTimeout(this.channelAutoPostStartupTimer);
       this.channelAutoPostStartupTimer = null;
+    }
+    if (this.nightModeTransitionTimer) {
+      clearInterval(this.nightModeTransitionTimer);
+      this.nightModeTransitionTimer = null;
+    }
+    if (this.nightModeTransitionStartupTimer) {
+      clearTimeout(this.nightModeTransitionStartupTimer);
+      this.nightModeTransitionStartupTimer = null;
     }
   }
 
@@ -7604,9 +7642,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
       }
     } else {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Сообщение от ${userId} попало в ручное закрытие группы, но старше 24 часов и не может быть удалено`,
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          messageId,
+        },
+        'Skipped manual group close deletion for message older than 24 hours',
       );
     }
   }
@@ -12491,14 +12533,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return rows.length > 0;
   }
 
-  private getCurrentMinutesInTimeZone(timeZone: string): number | null {
+  private getCurrentMinutesInTimeZone(timeZone: string, date = new Date()): number | null {
     try {
       const parts = new Intl.DateTimeFormat('en-GB', {
         timeZone,
         hour: '2-digit',
         minute: '2-digit',
         hourCycle: 'h23',
-      }).formatToParts(new Date());
+      }).formatToParts(date);
 
       const hour = Number(parts.find((item) => item.type === 'hour')?.value ?? '');
       const minute = Number(parts.find((item) => item.type === 'minute')?.value ?? '');
@@ -16098,6 +16140,646 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       idleStreak: Math.min(current.idleStreak + 1, 8),
       nextScanAtMs: Math.max(current.nextScanAtMs, Date.now() + backoffMs),
     });
+  }
+
+  private async processNightModeTransitions(): Promise<void> {
+    if (this.nightModeTransitionInFlight || !this.backgroundTasksEnabled) {
+      return;
+    }
+    if (typeof this.prisma.chatSettings?.findMany !== 'function') {
+      return;
+    }
+
+    this.nightModeTransitionInFlight = true;
+    try {
+      const settingsRows = await this.prisma.chatSettings.findMany({
+        where: {
+          nightModeEnabled: true,
+        },
+        include: {
+          chat: {
+            select: {
+              rules: {
+                select: {
+                  publishedUrl: true,
+                  publishedMessageId: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: {
+          updatedAt: 'desc',
+        },
+      });
+
+      for (const settings of settingsRows) {
+        try {
+          await this.processNightModeTransitionForChat(settings);
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: settings.chatId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to process night mode transition',
+          );
+        }
+      }
+    } finally {
+      this.nightModeTransitionInFlight = false;
+    }
+  }
+
+  private async processNightModeTransitionForChat(
+    settings: Pick<
+      ChatSettings,
+      | 'chatId'
+      | 'nightModeEnabled'
+      | 'nightModeStartTimeMinutes'
+      | 'nightModeEndTimeMinutes'
+      | 'nightModeTimezone'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotMessageText'
+      | 'nightModeCommentsEnabled'
+      | 'nightModeOpenMessageEnabled'
+      | 'nightModeOpenMessageText'
+      | 'nightModeBotButtons'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeBotButtonUrl'
+      | 'nightModeBotButtonText'
+      | 'nightModeRulesButtonEnabled'
+      | 'commentsEnabled'
+      | 'botSpeechStyle'
+    > & {
+      chat?: {
+        rules?: {
+          publishedUrl: string | null;
+          publishedMessageId: string | null;
+        } | null;
+      } | null;
+    },
+  ): Promise<void> {
+    const snapshot = this.resolveNightModeTransitionSnapshot(settings);
+    if (!snapshot) {
+      return;
+    }
+
+    const lock = await this.acquireNightModeTransitionLock(settings.chatId);
+    if (!lock) {
+      return;
+    }
+
+    try {
+      const currentState = await this.readNightModeTransitionState(settings.chatId);
+      if (snapshot.status === 'closed') {
+        if (
+          currentState?.status === 'closed' &&
+          currentState.sessionKey === snapshot.sessionKey
+        ) {
+          return;
+        }
+
+        let closeNoticeMessageId: string | null = null;
+        if (snapshot.isCloseBoundary && settings.nightModeBotMessageEnabled) {
+          closeNoticeMessageId = await this.sendNightModeClosedTransitionNotice(
+            settings,
+            snapshot,
+          );
+        }
+
+        await this.writeNightModeTransitionState(settings.chatId, {
+          status: 'closed',
+          sessionKey: snapshot.sessionKey,
+          closeNoticeMessageId,
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      const previousCloseNoticeMessageId =
+        currentState?.status === 'closed' ? currentState.closeNoticeMessageId : null;
+      const transitionAlreadyRecorded =
+        currentState?.status === 'open' && currentState.sessionKey === snapshot.sessionKey;
+
+      if (previousCloseNoticeMessageId) {
+        await this.deleteNightModeClosedTransitionNotice(
+          settings.chatId,
+          previousCloseNoticeMessageId,
+        );
+      }
+
+      if (
+        snapshot.isOpenBoundary &&
+        settings.nightModeOpenMessageEnabled &&
+        !transitionAlreadyRecorded
+      ) {
+        await this.sendNightModeOpenedTransitionNotice(settings, snapshot);
+      }
+
+      await this.writeNightModeTransitionState(settings.chatId, {
+        status: 'open',
+        sessionKey: snapshot.sessionKey,
+        closeNoticeMessageId: null,
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      await this.releaseNightModeTransitionLock(lock);
+    }
+  }
+
+  private resolveNightModeTransitionSnapshot(
+    settings: Pick<
+      ChatSettings,
+      | 'nightModeEnabled'
+      | 'nightModeStartTimeMinutes'
+      | 'nightModeEndTimeMinutes'
+      | 'nightModeTimezone'
+    >,
+    now = new Date(),
+  ): {
+    status: 'open' | 'closed';
+    sessionKey: string;
+    startMinutes: number;
+    endMinutes: number;
+    timezone: string;
+    isCloseBoundary: boolean;
+    isOpenBoundary: boolean;
+  } | null {
+    if (!settings.nightModeEnabled) {
+      return null;
+    }
+
+    const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
+    const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
+    const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
+    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone, now);
+    if (currentMinutes === null) {
+      return null;
+    }
+
+    const currentDateKey = this.formatDateKeyInTimeZone(now, timezone);
+    const previousDateKey = this.formatDateKeyInTimeZone(
+      new Date(now.getTime() - 24 * 60 * 60 * 1_000),
+      timezone,
+    );
+
+    if (startMinutes === endMinutes) {
+      return {
+        status: 'closed',
+        sessionKey: this.buildNightModeTransitionSessionKey({
+          timezone,
+          startMinutes,
+          endMinutes,
+          sessionDateKey: currentDateKey,
+        }),
+        startMinutes,
+        endMinutes,
+        timezone,
+        isCloseBoundary: false,
+        isOpenBoundary: false,
+      };
+    }
+
+    const isClosed =
+      startMinutes < endMinutes
+        ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+        : currentMinutes >= startMinutes || currentMinutes < endMinutes;
+    const status = isClosed ? 'closed' : 'open';
+    const sessionDateKey = this.resolveNightModeTransitionSessionDateKey({
+      currentDateKey,
+      previousDateKey,
+      currentMinutes,
+      startMinutes,
+      endMinutes,
+      status,
+    });
+
+    return {
+      status,
+      sessionKey: this.buildNightModeTransitionSessionKey({
+        timezone,
+        startMinutes,
+        endMinutes,
+        sessionDateKey,
+      }),
+      startMinutes,
+      endMinutes,
+      timezone,
+      isCloseBoundary: currentMinutes === startMinutes,
+      isOpenBoundary: currentMinutes === endMinutes,
+    };
+  }
+
+  private resolveNightModeTransitionSessionDateKey(params: {
+    currentDateKey: string;
+    previousDateKey: string;
+    currentMinutes: number;
+    startMinutes: number;
+    endMinutes: number;
+    status: 'open' | 'closed';
+  }): string {
+    if (params.startMinutes < params.endMinutes) {
+      if (params.status === 'closed') {
+        return params.currentDateKey;
+      }
+      return params.currentMinutes < params.startMinutes
+        ? params.previousDateKey
+        : params.currentDateKey;
+    }
+
+    if (params.status === 'closed') {
+      return params.currentMinutes < params.endMinutes
+        ? params.previousDateKey
+        : params.currentDateKey;
+    }
+
+    return params.previousDateKey;
+  }
+
+  private buildNightModeTransitionSessionKey(params: {
+    timezone: string;
+    startMinutes: number;
+    endMinutes: number;
+    sessionDateKey: string;
+  }): string {
+    return [
+      'v1',
+      params.timezone,
+      this.formatMinutesAsTime(params.startMinutes),
+      this.formatMinutesAsTime(params.endMinutes),
+      params.sessionDateKey,
+    ].join(':');
+  }
+
+  private async sendNightModeClosedTransitionNotice(
+    settings: Pick<
+      ChatSettings,
+      | 'chatId'
+      | 'nightModeBotMessageText'
+      | 'nightModeCommentsEnabled'
+      | 'nightModeBotButtons'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeBotButtonUrl'
+      | 'nightModeBotButtonText'
+      | 'nightModeRulesButtonEnabled'
+      | 'commentsEnabled'
+      | 'botSpeechStyle'
+    > & {
+      chat?: {
+        rules?: {
+          publishedUrl: string | null;
+          publishedMessageId: string | null;
+        } | null;
+      } | null;
+    },
+    snapshot: {
+      startMinutes: number;
+      endMinutes: number;
+      timezone: string;
+      sessionKey: string;
+    },
+  ): Promise<string | null> {
+    const messageText = this.buildNightModeClosedNotice(
+      snapshot.startMinutes,
+      snapshot.endMinutes,
+      snapshot.timezone,
+      settings.nightModeBotMessageText,
+      settings.botSpeechStyle,
+    );
+    const messageOptions = this.buildNightModeClosedNoticeOptions({
+      chatId: settings.chatId,
+      commentsEnabled: settings.commentsEnabled,
+      nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
+      nightModeBotButtons: settings.nightModeBotButtons,
+      nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
+      nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
+      nightModeBotButtonText: settings.nightModeBotButtonText,
+      nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
+      rulesPublishedUrl: settings.chat?.rules?.publishedUrl ?? null,
+      rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
+    });
+    const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
+    const sent = await this.maxClient.sendMessageImmediateWithId(
+      settings.chatId,
+      messageText,
+      this.withMarkdownMessageOptions(messageOptions),
+      this.buildNightModeTransitionRequestOptions(botId),
+    );
+
+    await this.createNightModeTransitionEvent({
+      chatId: settings.chatId,
+      messageId: sent.messageId,
+      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+      sessionKey: snapshot.sessionKey,
+      timezone: snapshot.timezone,
+      startMinutes: snapshot.startMinutes,
+      endMinutes: snapshot.endMinutes,
+    });
+
+    return sent.messageId;
+  }
+
+  private async sendNightModeOpenedTransitionNotice(
+    settings: Pick<
+      ChatSettings,
+      'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle'
+    >,
+    snapshot: {
+      startMinutes: number;
+      endMinutes: number;
+      timezone: string;
+      sessionKey: string;
+    },
+  ): Promise<void> {
+    const messageText = this.buildNightModeOpenedNotice(
+      snapshot.startMinutes,
+      snapshot.endMinutes,
+      snapshot.timezone,
+      settings.nightModeOpenMessageText,
+      settings.botSpeechStyle,
+    );
+    const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
+    const sent = await this.maxClient.sendMessageImmediateWithId(
+      settings.chatId,
+      messageText,
+      this.withMarkdownMessageOptions(null),
+      this.buildNightModeTransitionRequestOptions(botId),
+    );
+
+    await this.createNightModeTransitionEvent({
+      chatId: settings.chatId,
+      messageId: sent.messageId,
+      ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+      sessionKey: snapshot.sessionKey,
+      timezone: snapshot.timezone,
+      startMinutes: snapshot.startMinutes,
+      endMinutes: snapshot.endMinutes,
+    });
+  }
+
+  private async deleteNightModeClosedTransitionNotice(
+    chatId: string,
+    messageId: string,
+  ): Promise<void> {
+    const botId = await this.resolveNightModeTransitionBotId(chatId);
+    await this.maxClient.deleteMessage(chatId, messageId, {
+      immediate: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+      ignoreFailureMetricStatuses: [403, 404],
+      ...(botId ? { botId } : {}),
+    });
+  }
+
+  private buildNightModeClosedNoticeOptions(params: {
+    chatId: string;
+    commentsEnabled: boolean;
+    nightModeCommentsEnabled: boolean;
+    nightModeBotButtons: unknown;
+    nightModeBotButtonEnabled: boolean;
+    nightModeBotButtonUrl: string;
+    nightModeBotButtonText: string;
+    nightModeRulesButtonEnabled?: boolean;
+    rulesPublishedUrl?: string | null;
+    rulesPublishedMessageId?: string | null;
+  }): MaxSendMessageOptions | null {
+    const baseOptions = this.buildBotMessageOptions(
+      params.chatId,
+      params.nightModeBotButtons,
+      params.nightModeBotButtonEnabled,
+      params.nightModeBotButtonUrl,
+      params.nightModeBotButtonText,
+      params.nightModeRulesButtonEnabled ?? false,
+      params.rulesPublishedUrl ?? null,
+      params.rulesPublishedMessageId ?? null,
+    );
+    const commentsButton = this.buildNightModeCommentsButton(
+      params.chatId,
+      params.commentsEnabled,
+      params.nightModeCommentsEnabled,
+    );
+
+    if (!commentsButton) {
+      return baseOptions;
+    }
+
+    const buttons: MaxMessageButton[][] = [[commentsButton]];
+    if (baseOptions?.buttons?.length) {
+      buttons.push(...baseOptions.buttons);
+    } else if (baseOptions?.button) {
+      buttons.push([baseOptions.button]);
+    }
+
+    return {
+      buttons,
+      ...(baseOptions?.messageLink ? { messageLink: baseOptions.messageLink } : {}),
+      ...(baseOptions?.debugContext ? { debugContext: baseOptions.debugContext } : {}),
+    };
+  }
+
+  private buildNightModeCommentsButton(
+    chatId: string,
+    commentsEnabled: boolean,
+    nightModeCommentsEnabled: boolean,
+  ): MaxMessageButton | null {
+    if (!commentsEnabled || !nightModeCommentsEnabled) {
+      return null;
+    }
+
+    return this.buildChatDialogButton(
+      chatId,
+      'comments',
+      randomUUID(),
+      formatCommentsButtonText('💬 Комментарии', 0),
+    );
+  }
+
+  private withMarkdownMessageOptions(
+    options: MaxSendMessageOptions | null,
+  ): MaxSendMessageOptions {
+    return {
+      ...(options ?? {}),
+      textFormat: 'markdown',
+    };
+  }
+
+  private buildNightModeTransitionRequestOptions(
+    botId: string | null,
+  ): MaxActionDispatchOptions {
+    return {
+      trafficClass: 'background',
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
+      ignoreFailureMetricStatuses: [403, 404],
+      ...(botId ? { botId } : {}),
+    };
+  }
+
+  private async createNightModeTransitionEvent(params: {
+    chatId: string;
+    messageId: string | null;
+    ruleCode: 'NIGHT_MODE_CLOSE_NOTICE' | 'NIGHT_MODE_OPEN_NOTICE';
+    sessionKey: string;
+    timezone: string;
+    startMinutes: number;
+    endMinutes: number;
+  }): Promise<void> {
+    await this.createBotModerationEvent({
+      data: {
+        chatId: params.chatId,
+        userId: this.ownBotUserId ?? 'bot',
+        messageId: params.messageId,
+        eventType: EventType.SYSTEM,
+        ruleCode: params.ruleCode,
+        action: SanctionAction.NONE,
+        maskedExcerpt: null,
+        score: 0.1,
+        operator: Operator.BOT,
+        metadata: {
+          reason:
+            params.ruleCode === 'NIGHT_MODE_CLOSE_NOTICE'
+              ? 'Night mode close notice sent by schedule'
+              : 'Night mode open notice sent by schedule',
+          sessionKey: params.sessionKey,
+          nightModeTimezone: params.timezone,
+          nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
+          nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
+        },
+      },
+    });
+  }
+
+  private async resolveNightModeTransitionBotId(chatId: string): Promise<string | null> {
+    const route =
+      await this.resolveUnifiedBotRoute({
+        purpose: 'capability',
+        chatId,
+        capability: 'background_scans',
+        fallbackToPrimary: true,
+      });
+    const botId =
+      route?.botId ??
+      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
+        chatId,
+        capability: 'background_scans',
+      })) ??
+      (await this.resolveChatReadBotId(chatId));
+
+    return typeof botId === 'string' && botId.trim().length > 0 ? botId.trim() : null;
+  }
+
+  private buildNightModeTransitionStateKey(chatId: string): string {
+    return `night-mode-transition-state:v1:${chatId}`;
+  }
+
+  private buildNightModeTransitionLockKey(chatId: string): string {
+    return `night-mode-transition-lock:v1:${chatId}`;
+  }
+
+  private async readNightModeTransitionState(
+    chatId: string,
+  ): Promise<NightModeTransitionState | null> {
+    const key = this.buildNightModeTransitionStateKey(chatId);
+    const raw = this.redisCounter
+      ? await this.redisCounter.getString(key)
+      : JSON.stringify(this.nightModeTransitionMemoryState.get(key) ?? null);
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.parseNightModeTransitionState(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeNightModeTransitionState(
+    chatId: string,
+    state: NightModeTransitionState,
+  ): Promise<void> {
+    const key = this.buildNightModeTransitionStateKey(chatId);
+    if (this.redisCounter) {
+      await this.redisCounter.setStringWithTtl(
+        key,
+        JSON.stringify(state),
+        NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
+      );
+      return;
+    }
+
+    this.nightModeTransitionMemoryState.set(key, state);
+  }
+
+  private parseNightModeTransitionState(value: unknown): NightModeTransitionState | null {
+    const record = this.asRecord(value);
+    if (!record) {
+      return null;
+    }
+
+    const status = record.status;
+    const sessionKey = record.sessionKey;
+    if ((status !== 'open' && status !== 'closed') || typeof sessionKey !== 'string') {
+      return null;
+    }
+
+    const closeNoticeMessageId =
+      typeof record.closeNoticeMessageId === 'string' && record.closeNoticeMessageId.trim()
+        ? record.closeNoticeMessageId.trim()
+        : null;
+    const updatedAt =
+      typeof record.updatedAt === 'string' && record.updatedAt.trim()
+        ? record.updatedAt.trim()
+        : undefined;
+
+    return {
+      status,
+      sessionKey,
+      closeNoticeMessageId,
+      ...(updatedAt ? { updatedAt } : {}),
+    };
+  }
+
+  private async acquireNightModeTransitionLock(
+    chatId: string,
+  ): Promise<{ key: string; token: string; redis: boolean } | null> {
+    const key = this.buildNightModeTransitionLockKey(chatId);
+    if (this.redisCounter) {
+      const token = await this.redisCounter.acquireLock(key, NIGHT_MODE_TRANSITION_LOCK_TTL_MS);
+      return token ? { key, token, redis: true } : null;
+    }
+
+    if (this.nightModeTransitionMemoryLocks.has(key)) {
+      return null;
+    }
+
+    const token = randomUUID();
+    this.nightModeTransitionMemoryLocks.add(key);
+    return { key, token, redis: false };
+  }
+
+  private async releaseNightModeTransitionLock(lock: {
+    key: string;
+    token: string;
+    redis: boolean;
+  }): Promise<void> {
+    if (lock.redis) {
+      await this.redisCounter?.releaseLock(lock.key, lock.token);
+      return;
+    }
+
+    this.nightModeTransitionMemoryLocks.delete(lock.key);
+  }
+
+  private scheduleNightModeTransitionStartupScan() {
+    this.nightModeTransitionStartupTimer = setTimeout(() => {
+      this.nightModeTransitionStartupTimer = null;
+      void this.processNightModeTransitions();
+    }, this.nightModeTransitionStartupDelayMs);
+    this.nightModeTransitionStartupTimer.unref();
   }
 
   private scheduleChannelAutoPostStartupScan() {

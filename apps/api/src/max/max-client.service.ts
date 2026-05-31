@@ -284,6 +284,7 @@ export const MAX_API_SOURCE_TAGS = {
   MODERATION_DELETE: 'moderation_delete',
   MODERATION_SANCTION: 'moderation_sanction',
   MODERATION_NOTICE: 'moderation_notice',
+  NIGHT_MODE_TRANSITION: 'night_mode_transition',
   PARTICIPANT_SEARCH: 'participant_search',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
