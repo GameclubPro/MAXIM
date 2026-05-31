@@ -1992,7 +1992,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastTestReady = broadcastContentReady && broadcastButtonDraftValid;
   const broadcastSendDisabled = isBroadcastBusy;
   const broadcastPublishIssueLabels = [
-    !broadcastHasPublishableContent ? 'Нет текста' : null,
+    !broadcastHasPublishableContent ? 'Нет сообщения' : null,
     broadcastHasPublishableContent && !broadcastMediaReady ? 'Фото' : null,
     !broadcastScheduleReady || !broadcastHasFutureSlots ? 'Нет времени' : null,
     !broadcastButtonDraftValid ? 'Кнопки' : null,
@@ -2002,7 +2002,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setBroadcastWorkspaceView('compose');
 
-      if (label === 'Нет текста') {
+      if (label === 'Нет сообщения') {
         setBroadcastTextError('Добавьте текст или фото.');
         return;
       }
@@ -2117,12 +2117,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'В план';
+      : 'Запланировать';
   const broadcastFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastTimingMode === 'now'
       ? 'Опубликовать'
-      : 'В план';
+      : 'Запланировать';
   const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView

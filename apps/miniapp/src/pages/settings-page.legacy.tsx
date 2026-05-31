@@ -4694,7 +4694,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingTestReady = mailingContentReady && mailingButtonDraftValid;
   const mailingSendDisabled = isMailingBusy;
   const mailingPublishIssueLabels = [
-    !mailingHasPublishableContent ? 'Нет текста' : null,
+    !mailingHasPublishableContent ? 'Нет сообщения' : null,
     mailingHasPublishableContent && !mailingMediaReady ? 'Фото' : null,
     !mailingAudienceReady ? 'Нет адресата' : null,
     !mailingScheduleReady || !mailingHasFutureSlots ? 'Нет времени' : null,
@@ -4705,7 +4705,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onClick: () => {
       setMailingWorkspaceView('compose');
 
-      if (label === 'Нет текста') {
+      if (label === 'Нет сообщения') {
         setMailingTextError('Добавьте текст или фото.');
         return;
       }
@@ -4739,12 +4739,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'В план';
+      : 'Запланировать';
   const mailingFooterPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : mailingTimingMode === 'now'
       ? 'Опубликовать'
-      : 'В план';
+      : 'Запланировать';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'

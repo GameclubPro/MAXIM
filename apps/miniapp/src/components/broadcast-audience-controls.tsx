@@ -165,6 +165,27 @@ export function BroadcastAudienceControls({
       : targetMode === 'selected'
         ? selectedAudiencePresentation.compactLabel
         : currentAudiencePresentation.compactLabel;
+  const audienceTriggerContent = (
+    <>
+      <span className="broadcast-audience-card__trigger-copy">
+        <strong>
+          {targetMode === 'all' ? 'Все чаты' : targetMode === 'selected' ? 'Чаты' : 'Получатель'}
+        </strong>
+        <small>
+          {remoteError || loading
+            ? triggerLabel
+            : audienceSummary || audienceSummaryMeta || selectedAudienceLabel}
+        </small>
+      </span>
+      <span className="broadcast-audience-card__trigger-badge">
+        {targetMode === 'all'
+          ? choices.length
+          : targetMode === 'selected'
+            ? targetChatIds.length
+            : 1}
+      </span>
+    </>
+  );
 
   function handleTargetModeChange(nextMode: BroadcastTargetMode) {
     if (disabled) {
@@ -262,7 +283,7 @@ export function BroadcastAudienceControls({
                 onClick={() => setAllConfirmOpen(false)}
                 disabled={disabled}
               >
-                Назад
+                Отмена
               </button>
               <button
                 type="button"
@@ -273,51 +294,36 @@ export function BroadcastAudienceControls({
                 }}
                 disabled={disabled}
               >
-                {allLabel} {choices.length > 0 ? choices.length : ''}
+                Отправить во все
               </button>
             </span>
           </div>
         ) : null}
 
-        {targetMode ? (
+        {targetMode && selectedModeActive ? (
           <button
             type="button"
-            className={cn(
-              'broadcast-audience-card__trigger',
-              !selectedModeActive && 'is-static',
-              remoteError && 'is-warning',
-            )}
+            className={cn('broadcast-audience-card__trigger', remoteError && 'is-warning')}
             onClick={() => {
-              if (!selectedModeActive) {
-                return;
-              }
               onClearValidationError();
               setSheetOpen(true);
             }}
-            disabled={disabled || !selectedModeActive}
+            disabled={disabled}
           >
-            <span className="broadcast-audience-card__trigger-copy">
-              <strong>
-                {targetMode === 'all'
-                  ? 'Все чаты'
-                  : targetMode === 'selected'
-                    ? 'Чаты'
-                    : 'Получатель'}
-              </strong>
-              <small>
-                {remoteError || loading
-                  ? triggerLabel
-                  : audienceSummary || audienceSummaryMeta || selectedAudienceLabel}
-              </small>
-            </span>
-            <span className="broadcast-audience-card__trigger-badge">
-              {targetMode === 'all'
-                ? choices.length
-                : targetMode === 'selected'
-                  ? targetChatIds.length
-                  : 1}
-            </span>
+            {audienceTriggerContent}
           </button>
+        ) : null}
+
+        {targetMode && !selectedModeActive ? (
+          <div
+            className={cn(
+              'broadcast-audience-card__trigger',
+              'is-static',
+              remoteError && 'is-warning',
+            )}
+          >
+            {audienceTriggerContent}
+          </div>
         ) : null}
 
         {validationError ? <small className="field__hint">{validationError}</small> : null}

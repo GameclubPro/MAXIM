@@ -723,7 +723,7 @@ export function BroadcastSchedulePlanner({
   const cycleStartInputValue = formatLocalDateTimeInputValue(normalizedCycle.startAt);
   const cycleStartMinValue = formatLocalDateTimeInputValue(new Date(liveNowMs + 30_000));
   const compactScheduleModeLabel =
-    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Цикл' : 'План';
+    timingMode === 'now' ? 'Сейчас' : timingMode === 'cycle' ? 'Повтор' : 'Расписание';
   const compactScheduleMeta =
     timingMode === 'now'
       ? 'сразу'
@@ -737,7 +737,11 @@ export function BroadcastSchedulePlanner({
           : 'без слотов';
   const compactScheduleSummary = `${compactScheduleModeLabel} · ${compactScheduleMeta}`;
   const compactScheduleAction =
-    timingMode === 'scheduled' ? (futureSlotCount > 0 ? 'Изменить' : 'Выбрать') : 'В план';
+    timingMode === 'scheduled'
+      ? futureSlotCount > 0
+        ? 'Изменить'
+        : 'Выбрать время'
+      : 'Настроить время';
 
   return (
     <>
@@ -781,7 +785,7 @@ export function BroadcastSchedulePlanner({
                     disabled={disabled}
                     aria-pressed={timingMode === 'scheduled'}
                   >
-                    <strong>План</strong>
+                    <strong>Расписание</strong>
                     <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
                   </button>
                   <button
@@ -794,10 +798,10 @@ export function BroadcastSchedulePlanner({
                     onClick={() => selectTimingMode('cycle')}
                     disabled={disabled}
                     aria-pressed={timingMode === 'cycle'}
-                    aria-label="Цикл: повторяет этот автопостинг с выбранным интервалом"
-                    title="Цикл повторяет этот автопостинг с выбранным интервалом."
+                    aria-label="Повторять автопостинг с выбранным интервалом"
+                    title="Повторяет этот автопостинг с выбранным интервалом."
                   >
-                    <strong>Цикл</strong>
+                    <strong>Повторять</strong>
                     <span className="broadcast-planner__info-mark" aria-hidden>
                       i
                     </span>
@@ -807,10 +811,7 @@ export function BroadcastSchedulePlanner({
 
                 <button
                   type="button"
-                  className={cn(
-                    'broadcast-planner__compact-summary',
-                    scheduleReady && 'is-ready',
-                  )}
+                  className={cn('broadcast-planner__compact-summary', scheduleReady && 'is-ready')}
                   onClick={openScheduleSummary}
                   disabled={disabled}
                   title={`Когда: ${compactScheduleSummary}`}
@@ -819,9 +820,7 @@ export function BroadcastSchedulePlanner({
                     <small>Когда</small>
                     <strong>{compactScheduleSummary}</strong>
                   </span>
-                  <span className="broadcast-planner__compact-action">
-                    {compactScheduleAction}
-                  </span>
+                  <span className="broadcast-planner__compact-action">{compactScheduleAction}</span>
                 </button>
               </div>
             </>
@@ -1549,7 +1548,7 @@ export function BroadcastSchedulePlanner({
 
                       {suggestedMinutes.length === 0 && !hasAnyAvailableTimeSlot ? (
                         <div className="broadcast-planner__time-empty" role="status">
-                          <strong>Нет слотов</strong>
+                          <strong>Нет доступного времени</strong>
                           {nextAvailableDayKey ? (
                             <button
                               type="button"
@@ -1587,7 +1586,7 @@ export function BroadcastSchedulePlanner({
                           onClick={revealFullTimeGrid}
                           disabled={disabled}
                         >
-                          Все время
+                          Показать весь день
                         </button>
                       ) : null}
 
@@ -1645,7 +1644,7 @@ export function BroadcastSchedulePlanner({
                           onClick={clearTargetDays}
                           disabled={disabled}
                         >
-                          Очистить
+                          Сбросить время
                         </button>
                         <button
                           type="button"
