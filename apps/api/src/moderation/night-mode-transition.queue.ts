@@ -27,10 +27,10 @@ export function buildNightModeTransitionJobId(
   const occurrenceDigest = createHash('sha1')
     .update(`${chatId}:${transition}:${scheduledFor}:${sessionKey}`)
     .digest('hex');
-  return `${buildNightModeTransitionJobIdPrefix(chatId)}${transition}:${occurrenceDigest}`;
+  return `${buildNightModeTransitionJobIdPrefix(chatId)}${transition}__${occurrenceDigest}`;
 }
 
 export function buildNightModeTransitionJobIdPrefix(chatId: string): string {
   const chatDigest = createHash('sha1').update(chatId).digest('hex');
-  return `night-mode-transition:${chatDigest}:`;
+  return `night-mode-transition__${chatDigest}__`;
 }
