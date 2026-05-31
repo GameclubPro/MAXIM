@@ -187,7 +187,6 @@ import {
   REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
   REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
   REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS,
-  DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT,
   REQUIRED_SUBSCRIPTION_RULE_CODE,
   INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
   INVITATION_ACCESS_NOTICE_COOLDOWN_SEC,
@@ -333,6 +332,11 @@ type NightModeTransitionOperation =
   | 'send-open-notice'
   | 'delete-close-notice';
 
+type RequiredSubscriptionMembershipResolution = {
+  membership: boolean | null;
+  fresh: boolean;
+};
+
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
@@ -363,6 +367,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     string,
     {
       expiresAt: number;
+      fresh: boolean;
       isMember: boolean;
     }
   >();
@@ -436,7 +441,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostRepairSweepMs: number;
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
-  private readonly requiredSubscriptionHotPathChannelLimit: number;
   private readonly botNoticeTokenBucketLimit: number;
   private readonly chatAdminLookupTimeoutMs: number;
   private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
@@ -528,11 +532,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
       2,
-    );
-    this.requiredSubscriptionHotPathChannelLimit = this.readPositiveConfigInt(
-      configService?.get<number>('REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT'),
-      DEFAULT_REQUIRED_SUBSCRIPTION_HOT_PATH_CHANNEL_LIMIT,
-      1,
     );
     this.botNoticeTokenBucketLimit = this.readPositiveConfigInt(
       configService?.get<number>('BOT_NOTICE_TOKEN_BUCKET_LIMIT'),
@@ -7873,16 +7872,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (requiredMembershipChannelIds.length === 0) {
       return false;
     }
-    const membershipChannelIdsToCheck = requiredMembershipChannelIds.slice(
-      0,
-      this.requiredSubscriptionHotPathChannelLimit,
-    );
-    if (membershipChannelIdsToCheck.length < requiredMembershipChannelIds.length) {
-      this.recordOptionalWebhookStageSkip({
-        stage: 'required-subscription.membership-cap',
-        reason: `required subscription hot path capped at ${membershipChannelIdsToCheck.length}/${requiredMembershipChannelIds.length} channels`,
-      });
-    }
 
     const resolvedRequiredChannelsById = new Map(
       resolvedRequiredChannels.map((channel) => [channel.id, channel] as const),
@@ -7891,7 +7880,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const membership = await this.resolveRequiredSubscriptionMembership(
       params.chatId,
       params.userId,
-      membershipChannelIdsToCheck,
+      requiredMembershipChannelIds,
     );
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.membership');
     if (membership.missingChannelIds.length === 0) {
@@ -8836,18 +8825,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.requiredSubscriptionLookupConcurrency,
       async (channelId) => ({
         channelId,
-        membership: await this.getRequiredSubscriptionMembership(channelId, userId),
+        resolution: await this.getRequiredSubscriptionMembershipResolution(channelId, userId),
       }),
     );
     const membershipsByChannelId = new Map(
-      membershipChecks.map((item) => [item.channelId, item.membership] as const),
+      membershipChecks.map((item) => [item.channelId, item.resolution.membership] as const),
     );
-    const failedChannelIds = membershipChecks
-      .filter((item) => item.membership === null)
+    const unconfirmedChannelIds = membershipChecks
+      .filter((item) => item.resolution.membership !== true && !item.resolution.fresh)
       .map((item) => item.channelId);
-    if (failedChannelIds.length > 0) {
+    if (unconfirmedChannelIds.length > 0) {
       const retriedChecks = await this.mapWithConcurrency(
-        failedChannelIds,
+        unconfirmedChannelIds,
         this.requiredSubscriptionLookupConcurrency,
         async (channelId) => ({
           channelId,
@@ -8937,9 +8926,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options: RequiredSubscriptionMembershipLookupOptions = {},
   ): Promise<boolean | null> {
+    const resolution = await this.getRequiredSubscriptionMembershipResolution(
+      channelId,
+      userId,
+      options,
+    );
+    return resolution.membership;
+  }
+
+  private async getRequiredSubscriptionMembershipResolution(
+    channelId: string,
+    userId: string,
+    options: RequiredSubscriptionMembershipLookupOptions = {},
+  ): Promise<RequiredSubscriptionMembershipResolution> {
     if (this.membershipLookupService) {
+      let membership: boolean | null;
       if (options.forceFresh || options.allowStaleOnError !== undefined) {
-        return this.membershipLookupService.getMembership(
+        membership = await this.membershipLookupService.getMembership(
           channelId,
           userId,
           'moderation_required_subscription',
@@ -8950,12 +8953,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               : {}),
           },
         );
+      } else {
+        membership = await this.membershipLookupService.getMembership(
+          channelId,
+          userId,
+          'moderation_required_subscription',
+        );
       }
-      return this.membershipLookupService.getMembership(
-        channelId,
-        userId,
-        'moderation_required_subscription',
-      );
+      return {
+        membership,
+        fresh: options.forceFresh === true && membership !== null,
+      };
     }
 
     const allowStaleOnError = options.allowStaleOnError === true;
@@ -8963,39 +8971,61 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const memoryCached = this.requiredSubscriptionMembershipCache.get(cacheKey);
     if (options.forceFresh) {
-      return this.performRequiredSubscriptionMembershipLookup(channelId, userId, {
+      const membership = await this.performRequiredSubscriptionMembershipLookup(channelId, userId, {
         allowStaleOnError,
         cachedMembership: memoryCached?.isMember ?? null,
       });
+      return {
+        membership,
+        fresh: membership !== null,
+      };
     }
     if (memoryCached && memoryCached.expiresAt > now) {
-      return memoryCached.isMember;
+      return {
+        membership: memoryCached.isMember,
+        fresh: memoryCached.fresh,
+      };
     }
 
     const cached = await this.redisCounter?.getString(cacheKey);
     if (cached === '1') {
       this.requiredSubscriptionMembershipCache.set(cacheKey, {
         isMember: true,
+        fresh: false,
         expiresAt: now + REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC * 1_000,
       });
-      return true;
+      return {
+        membership: true,
+        fresh: false,
+      };
     }
     if (cached === '0') {
       this.requiredSubscriptionMembershipCache.set(cacheKey, {
         isMember: false,
+        fresh: false,
         expiresAt: now + REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC * 1_000,
       });
-      return false;
+      return {
+        membership: false,
+        fresh: false,
+      };
     }
 
     const backoffUntilMs = this.requiredSubscriptionMembershipBackoffUntilMs.get(cacheKey) ?? 0;
     if (backoffUntilMs > now) {
-      return allowStaleOnError ? (memoryCached?.isMember ?? null) : null;
+      return {
+        membership: allowStaleOnError ? (memoryCached?.isMember ?? null) : null,
+        fresh: false,
+      };
     }
 
     const inFlight = this.requiredSubscriptionMembershipInFlight.get(cacheKey);
     if (inFlight) {
-      return inFlight;
+      const membership = await inFlight;
+      return {
+        membership,
+        fresh: membership !== null,
+      };
     }
 
     const lookupPromise = (async () => {
@@ -9010,6 +9040,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC;
         this.requiredSubscriptionMembershipCache.set(cacheKey, {
           isMember,
+          fresh: true,
           expiresAt: Date.now() + ttlSec * 1_000,
         });
         this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);
@@ -9042,7 +9073,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.requiredSubscriptionMembershipInFlight.set(cacheKey, trackedLookupPromise);
-    return trackedLookupPromise;
+    const membership = await trackedLookupPromise;
+    return {
+      membership,
+      fresh: membership !== null,
+    };
   }
 
   private async performRequiredSubscriptionMembershipLookup(
@@ -9094,6 +9129,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC;
       this.requiredSubscriptionMembershipCache.set(cacheKey, {
         isMember,
+        fresh: true,
         expiresAt: Date.now() + ttlSec * 1_000,
       });
       this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);

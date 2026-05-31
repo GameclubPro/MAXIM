@@ -14579,6 +14579,117 @@ describe('ModerationService', () => {
       await expect(lookupPromise).resolves.toEqual({ missingChannelIds: [] });
     });
 
+    it('checks every configured required subscription chat or channel before passing the message', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1', 'channel-2', 'channel-3', 'channel-4'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockImplementation(async (channelId: string) => {
+          return channelId !== 'channel-4';
+        }),
+        getChatSnapshot: jest.fn().mockImplementation(async (channelId: string) => ({
+          title: channelId === 'channel-4' ? 'Нужный канал 4' : `Нужный канал ${channelId}`,
+          link: `https://max.ru/channels/${channelId}`,
+          participantsCount: 100,
+          entityType: 'channel',
+        })),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.hasChatMember.mock.calls.map((call) => call[0])).toEqual([
+        'channel-1',
+        'channel-2',
+        'channel-3',
+        'channel-4',
+      ]);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Нужный канал 4');
+      expect(noticeText).not.toContain('Нужный канал channel-1');
+      expect(noticeOptions).toEqual(
+        expect.objectContaining({
+          buttons: [
+            [
+              {
+                text: 'Нужный канал 4',
+                url: 'https://max.ru/channels/channel-4',
+              },
+            ],
+          ],
+        }),
+      );
+    });
+
+    it('confirms stale missing required subscription cache with a fresh lookup before deleting', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      redisCounter.stringCache.set('required-subscription:member:v1:channel-1:user-1', '0');
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(true),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    });
+
     it('does not force the active bot for required subscription membership lookups', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const membershipLookupService = {
