@@ -16465,7 +16465,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
       }
 
-      return this.processNightModeTransitionForChat(settings, currentSnapshot);
+      return this.processNightModeTransitionForChat(settings, scheduledSnapshot);
     }
 
     if (

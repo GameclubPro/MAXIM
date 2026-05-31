@@ -6933,6 +6933,94 @@ describe('ModerationService', () => {
     }
   });
 
+  it('sends the close notice when the close job runs after the boundary minute', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            ...createSettings({
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+              nightModeBotMessageEnabled: true,
+              nightModeBotMessageText: '',
+              nightModeOpenMessageEnabled: true,
+            }),
+            chat: {
+              rules: null,
+            },
+          }),
+        },
+        moderationEvent: {
+          create: jest.fn(),
+        },
+      };
+      const maxClient = {
+        sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+          messageId: 'night-close-late-1',
+          url: null,
+        }),
+        deleteMessage: jest.fn(),
+      };
+      const redisCounter = createRedisCounterMock();
+      const maxBotLinkService = {
+        resolveBotRoute: jest.fn().mockResolvedValue({ botId: 'bot-1' }),
+      };
+      const service = new ModerationService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        { get: jest.fn().mockReturnValue('bot-1') } as never,
+        redisCounter as never,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+
+      await service.processNightModeTransitionJob({
+        chatId: 'chat-1',
+        transition: 'close',
+        scheduledFor: '2026-05-30T20:00:00.000Z',
+        sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+      });
+
+      expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+        'chat-1',
+        nightModeNotice('23:00-08:00', 'Москва'),
+        expect.objectContaining({
+          textFormat: 'markdown',
+        }),
+        expect.objectContaining({
+          trafficClass: 'background',
+          actionHealthLane: 'background',
+          sourceTag: 'night_mode_transition',
+          botId: 'bot-1',
+        }),
+      );
+      expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          messageId: 'night-close-late-1',
+          ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
+          action: SanctionAction.NONE,
+        }),
+      });
+      expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+        'night-mode-transition-state:v1:chat-1',
+        expect.stringContaining('"closeNoticeMessageId":"night-close-late-1"'),
+        expect.any(Number),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('deletes the close notice and sends the open notice when the open job runs late', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-31T05:12:10.000Z'));
     try {
