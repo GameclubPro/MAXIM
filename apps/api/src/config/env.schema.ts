@@ -213,7 +213,6 @@ const envSchema = z.object({
   CHANNEL_AUTO_POST_STARTUP_JITTER_MS: z.coerce.number().int().min(0).default(15_000),
   CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN: z.coerce.number().int().positive().default(3),
   CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(300_000),
-  NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS: z.coerce.number().int().positive().default(10_000),
   NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS: z.coerce.number().int().min(0).default(5_000),
   VK_SERVICE_TOKEN: z.string().min(10).optional(),
   VK_API_BASE_URL: z.string().url().default('https://api.vk.ru'),

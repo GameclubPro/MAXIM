@@ -6,6 +6,7 @@ export type QueueRetryPolicyName =
   | 'managed-entities-refresh'
   | 'suggestion-delivery'
   | 'chat-admin-roster-sync'
+  | 'night-mode-transition'
   | 'vk-parsing-sync'
   | 'vk-parsing-publish';
 

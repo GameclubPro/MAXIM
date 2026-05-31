@@ -236,8 +236,6 @@ import {
   CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
   CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
   DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
-  DEFAULT_NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS,
-  DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS,
   NIGHT_MODE_TRANSITION_LOCK_TTL_MS,
   NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
@@ -306,6 +304,11 @@ import {
   type PrivateControlCommand,
   type ActiveBotSpeechProfile,
 } from './moderation.service.support';
+import type { NightModeTransitionJob } from './night-mode-transition.queue';
+import {
+  resolveNightModeTransitionSnapshot as resolveNightModeTransitionSnapshotValue,
+  type NightModeTransitionSnapshot,
+} from './night-mode-transition-time.util';
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -391,9 +394,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
-  private nightModeTransitionTimer: NodeJS.Timeout | null = null;
-  private nightModeTransitionStartupTimer: NodeJS.Timeout | null = null;
-  private nightModeTransitionInFlight = false;
   private readonly nightModeTransitionMemoryState = new Map<string, NightModeTransitionState>();
   private readonly nightModeTransitionMemoryLocks = new Set<string>();
   private readonly appBaseUrl: string | null;
@@ -409,8 +409,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
   private readonly channelAutoPostRepairSweepMs: number;
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
-  private readonly nightModeTransitionScanIntervalMs: number;
-  private readonly nightModeTransitionStartupDelayMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly requiredSubscriptionHotPathChannelLimit: number;
   private readonly botNoticeTokenBucketLimit: number;
@@ -498,15 +496,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
       DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
-    );
-    this.nightModeTransitionScanIntervalMs = this.readPositiveConfigInt(
-      configService?.get<number>('NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS'),
-      DEFAULT_NIGHT_MODE_TRANSITION_SCAN_INTERVAL_MS,
-      1_000,
-    );
-    this.nightModeTransitionStartupDelayMs = this.readNonNegativeConfigInt(
-      configService?.get<number>('NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS'),
-      DEFAULT_NIGHT_MODE_TRANSITION_STARTUP_DELAY_MS,
     );
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
@@ -606,17 +595,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         channelAutoPostStartupJitterMs: this.channelAutoPostStartupJitterMs,
         channelAutoPostMaxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
         channelAutoPostRepairSweepMs: this.channelAutoPostRepairSweepMs,
-        nightModeTransitionScanIntervalMs: this.nightModeTransitionScanIntervalMs,
-        nightModeTransitionStartupDelayMs: this.nightModeTransitionStartupDelayMs,
       },
       'Moderation background polling is enabled',
     );
-
-    this.nightModeTransitionTimer = setInterval(() => {
-      void this.processNightModeTransitions();
-    }, this.nightModeTransitionScanIntervalMs);
-    this.nightModeTransitionTimer.unref();
-    this.scheduleNightModeTransitionStartupScan();
 
     if (this.channelAutoPostScanMaxChannels > 0) {
       this.channelAutoPostTimer = setInterval(() => {
@@ -635,14 +616,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.channelAutoPostStartupTimer) {
       clearTimeout(this.channelAutoPostStartupTimer);
       this.channelAutoPostStartupTimer = null;
-    }
-    if (this.nightModeTransitionTimer) {
-      clearInterval(this.nightModeTransitionTimer);
-      this.nightModeTransitionTimer = null;
-    }
-    if (this.nightModeTransitionStartupTimer) {
-      clearTimeout(this.nightModeTransitionStartupTimer);
-      this.nightModeTransitionStartupTimer = null;
     }
   }
 
@@ -16142,53 +16115,74 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async processNightModeTransitions(): Promise<void> {
-    if (this.nightModeTransitionInFlight || !this.backgroundTasksEnabled) {
-      return;
-    }
-    if (typeof this.prisma.chatSettings?.findMany !== 'function') {
+  async processNightModeTransitionJob(job: NightModeTransitionJob): Promise<void> {
+    if (typeof this.prisma.chatSettings?.findUnique !== 'function') {
       return;
     }
 
-    this.nightModeTransitionInFlight = true;
-    try {
-      const settingsRows = await this.prisma.chatSettings.findMany({
-        where: {
-          nightModeEnabled: true,
-        },
-        include: {
-          chat: {
-            select: {
-              rules: {
-                select: {
-                  publishedUrl: true,
-                  publishedMessageId: true,
-                },
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId: job.chatId },
+      include: {
+        chat: {
+          select: {
+            rules: {
+              select: {
+                publishedUrl: true,
+                publishedMessageId: true,
               },
             },
           },
         },
-        orderBy: {
-          updatedAt: 'desc',
-        },
-      });
-
-      for (const settings of settingsRows) {
-        try {
-          await this.processNightModeTransitionForChat(settings);
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId: settings.chatId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to process night mode transition',
-          );
-        }
-      }
-    } finally {
-      this.nightModeTransitionInFlight = false;
+      },
+    });
+    if (!settings?.nightModeEnabled) {
+      return;
     }
+
+    const scheduledFor = new Date(job.scheduledFor);
+    if (Number.isNaN(scheduledFor.getTime())) {
+      return;
+    }
+
+    const scheduledSnapshot = this.resolveNightModeTransitionSnapshot(settings, scheduledFor);
+    const currentSnapshot = this.resolveNightModeTransitionSnapshot(settings);
+    if (
+      !scheduledSnapshot ||
+      !currentSnapshot ||
+      scheduledSnapshot.startMinutes === scheduledSnapshot.endMinutes ||
+      currentSnapshot.startMinutes === currentSnapshot.endMinutes
+    ) {
+      return;
+    }
+
+    if (
+      scheduledSnapshot.sessionKey !== job.sessionKey ||
+      currentSnapshot.sessionKey !== job.sessionKey
+    ) {
+      return;
+    }
+    if (job.transition === 'close') {
+      if (
+        scheduledSnapshot.status !== 'closed' ||
+        !scheduledSnapshot.isCloseBoundary ||
+        currentSnapshot.status !== 'closed'
+      ) {
+        return;
+      }
+
+      await this.processNightModeTransitionForChat(settings, currentSnapshot);
+      return;
+    }
+
+    if (
+      scheduledSnapshot.status !== 'open' ||
+      !scheduledSnapshot.isOpenBoundary ||
+      currentSnapshot.status !== 'open'
+    ) {
+      return;
+    }
+
+    await this.processNightModeTransitionForChat(settings, scheduledSnapshot);
   }
 
   private async processNightModeTransitionForChat(
@@ -16219,8 +16213,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         } | null;
       } | null;
     },
+    providedSnapshot?: NightModeTransitionSnapshot,
   ): Promise<void> {
-    const snapshot = this.resolveNightModeTransitionSnapshot(settings);
+    const snapshot = providedSnapshot ?? this.resolveNightModeTransitionSnapshot(settings);
     if (!snapshot) {
       return;
     }
@@ -16297,119 +16292,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'nightModeTimezone'
     >,
     now = new Date(),
-  ): {
-    status: 'open' | 'closed';
-    sessionKey: string;
-    startMinutes: number;
-    endMinutes: number;
-    timezone: string;
-    isCloseBoundary: boolean;
-    isOpenBoundary: boolean;
-  } | null {
-    if (!settings.nightModeEnabled) {
-      return null;
-    }
-
-    const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
-    const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
-    const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
-    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone, now);
-    if (currentMinutes === null) {
-      return null;
-    }
-
-    const currentDateKey = this.formatDateKeyInTimeZone(now, timezone);
-    const previousDateKey = this.formatDateKeyInTimeZone(
-      new Date(now.getTime() - 24 * 60 * 60 * 1_000),
-      timezone,
-    );
-
-    if (startMinutes === endMinutes) {
-      return {
-        status: 'closed',
-        sessionKey: this.buildNightModeTransitionSessionKey({
-          timezone,
-          startMinutes,
-          endMinutes,
-          sessionDateKey: currentDateKey,
-        }),
-        startMinutes,
-        endMinutes,
-        timezone,
-        isCloseBoundary: false,
-        isOpenBoundary: false,
-      };
-    }
-
-    const isClosed =
-      startMinutes < endMinutes
-        ? currentMinutes >= startMinutes && currentMinutes < endMinutes
-        : currentMinutes >= startMinutes || currentMinutes < endMinutes;
-    const status = isClosed ? 'closed' : 'open';
-    const sessionDateKey = this.resolveNightModeTransitionSessionDateKey({
-      currentDateKey,
-      previousDateKey,
-      currentMinutes,
-      startMinutes,
-      endMinutes,
-      status,
-    });
-
-    return {
-      status,
-      sessionKey: this.buildNightModeTransitionSessionKey({
-        timezone,
-        startMinutes,
-        endMinutes,
-        sessionDateKey,
-      }),
-      startMinutes,
-      endMinutes,
-      timezone,
-      isCloseBoundary: currentMinutes === startMinutes,
-      isOpenBoundary: currentMinutes === endMinutes,
-    };
-  }
-
-  private resolveNightModeTransitionSessionDateKey(params: {
-    currentDateKey: string;
-    previousDateKey: string;
-    currentMinutes: number;
-    startMinutes: number;
-    endMinutes: number;
-    status: 'open' | 'closed';
-  }): string {
-    if (params.startMinutes < params.endMinutes) {
-      if (params.status === 'closed') {
-        return params.currentDateKey;
-      }
-      return params.currentMinutes < params.startMinutes
-        ? params.previousDateKey
-        : params.currentDateKey;
-    }
-
-    if (params.status === 'closed') {
-      return params.currentMinutes < params.endMinutes
-        ? params.previousDateKey
-        : params.currentDateKey;
-    }
-
-    return params.previousDateKey;
-  }
-
-  private buildNightModeTransitionSessionKey(params: {
-    timezone: string;
-    startMinutes: number;
-    endMinutes: number;
-    sessionDateKey: string;
-  }): string {
-    return [
-      'v1',
-      params.timezone,
-      this.formatMinutesAsTime(params.startMinutes),
-      this.formatMinutesAsTime(params.endMinutes),
-      params.sessionDateKey,
-    ].join(':');
+  ): NightModeTransitionSnapshot | null {
+    return resolveNightModeTransitionSnapshotValue(settings, now);
   }
 
   private async sendNightModeClosedTransitionNotice(
@@ -16772,14 +16656,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.nightModeTransitionMemoryLocks.delete(lock.key);
-  }
-
-  private scheduleNightModeTransitionStartupScan() {
-    this.nightModeTransitionStartupTimer = setTimeout(() => {
-      this.nightModeTransitionStartupTimer = null;
-      void this.processNightModeTransitions();
-    }, this.nightModeTransitionStartupDelayMs);
-    this.nightModeTransitionStartupTimer.unref();
   }
 
   private scheduleChannelAutoPostStartupScan() {

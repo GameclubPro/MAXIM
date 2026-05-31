@@ -5,6 +5,7 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
+import { NightModeTransitionModule } from '../moderation/night-mode-transition.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { AdminManagedEntitiesRefreshProcessor } from './admin-managed-entities-refresh.processor';
@@ -57,6 +58,7 @@ import { VkSyncService } from './vk-sync.service';
     MaxModule,
     ChatContextModule,
     SystemModule,
+    NightModeTransitionModule,
   ],
   controllers: [
     AdminManagedEntitiesController,

@@ -165,6 +165,7 @@ function createService(
     requiredSubscriptionChannels?: Array<Record<string, unknown>>;
     resolvedRequiredSubscriptionChannel?: Record<string, unknown>;
     resolvedRulesUrl?: string | null;
+    nightModeTransitionScheduler?: { reconcileChats: jest.Mock };
   } = {},
 ) {
   const legacyAdminService = {
@@ -348,6 +349,9 @@ function createService(
       .fn()
       .mockResolvedValue(options.managedBroadcasts ?? []),
   };
+  const nightModeTransitionScheduler = options.nightModeTransitionScheduler ?? {
+    reconcileChats: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new AdminSettingsService(
     legacyAdminService as never,
     prisma as never,
@@ -356,6 +360,7 @@ function createService(
     managedEntitiesService as never,
     manualModerationService as never,
     managedBroadcastService as never,
+    nightModeTransitionScheduler as never,
   );
 
   return {
@@ -365,6 +370,7 @@ function createService(
     managedEntitiesService,
     manualModerationService,
     maxClient,
+    nightModeTransitionScheduler,
     prisma,
     service,
   };
@@ -486,7 +492,13 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('updates chat settings without routing through legacy updateSettings', async () => {
-    const { chatContextCache, legacyAdminService, prisma, service } = createService({
+    const {
+      chatContextCache,
+      legacyAdminService,
+      nightModeTransitionScheduler,
+      prisma,
+      service,
+    } = createService({
       botAssignmentData: {
         botId: 'bot-1',
         primaryBotId: 'bot-1',
@@ -554,6 +566,20 @@ describe('AdminSettingsService chat rules', () => {
       'chat-1',
       expect.objectContaining({ antiSpamEnabled: false }),
     );
+    expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('reconciles night mode transition jobs when schedule settings change', async () => {
+    const { nightModeTransitionScheduler, service } = createService();
+
+    await service.updateSettings('chat-1', user as never, {
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 22 * 60,
+      nightModeEndTimeMinutes: 7 * 60,
+      nightModeTimezone: 'Europe/Moscow',
+    });
+
+    expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1']);
   });
 
   it('builds channel settings screen without routing through legacy getChannelSettingsScreen', async () => {
@@ -810,7 +836,13 @@ describe('AdminSettingsService chat rules', () => {
   });
 
   it('applies settings to target chats without routing through legacy applySettingsToAllChats', async () => {
-    const { chatContextCache, legacyAdminService, prisma, service } = createService({
+    const {
+      chatContextCache,
+      legacyAdminService,
+      nightModeTransitionScheduler,
+      prisma,
+      service,
+    } = createService({
       botAssignmentData: {
         botId: 'bot-1',
         primaryBotId: 'bot-1',
@@ -913,10 +945,14 @@ describe('AdminSettingsService chat rules', () => {
       shouldRefreshRequiredSubscription: false,
       requiredSubscriptionChannelIds: [],
     });
+    expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith([
+      'chat-1',
+      'chat-2',
+    ]);
   });
 
   it('applies settings sections without routing through legacy section endpoint', async () => {
-    const { legacyAdminService, prisma, service } = createService({
+    const { legacyAdminService, nightModeTransitionScheduler, prisma, service } = createService({
       applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],
       persistedSettings: createPersistedChatSettings({
         linkPolicy: 'BLOCKLIST_ONLY',
@@ -978,6 +1014,7 @@ describe('AdminSettingsService chat rules', () => {
       'chat-1',
       ['chat-2'],
     );
+    expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
   });
 
   it('previews apply-settings target without routing through legacy preview endpoint', async () => {

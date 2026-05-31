@@ -16,11 +16,12 @@ import {
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
 import {
   publishChatRules,
   readChatRules,
@@ -54,6 +55,13 @@ import { ManagedBroadcastService } from './managed-broadcast.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManualModerationService } from './manual-moderation.service';
 
+const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
+  'nightModeEnabled',
+  'nightModeStartTimeMinutes',
+  'nightModeEndTimeMinutes',
+  'nightModeTimezone',
+]);
+
 @Injectable()
 export class AdminSettingsService {
   private readonly logger = new Logger(AdminSettingsService.name);
@@ -66,6 +74,8 @@ export class AdminSettingsService {
     private readonly managedEntitiesService: ManagedEntitiesService,
     private readonly manualModerationService: ManualModerationService,
     private readonly managedBroadcastService: ManagedBroadcastService,
+    @Optional()
+    private readonly nightModeTransitionScheduler?: NightModeTransitionSchedulerService,
   ) {}
 
   async getSettings(
@@ -155,7 +165,9 @@ export class AdminSettingsService {
     source: AdminActionSource = 'miniapp',
   ): Promise<ChatSettings> {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
-    return saveChatSettings({
+    const shouldReconcileNightModeTransitions =
+      this.shouldReconcileNightModeTransitionsAfterUpdate(body);
+    const settings = await saveChatSettings({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       chatId,
@@ -169,6 +181,10 @@ export class AdminSettingsService {
       refreshExecutionReadiness: (settings) =>
         this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings),
     });
+    if (shouldReconcileNightModeTransitions) {
+      await this.reconcileNightModeTransitions([chatId]);
+    }
+    return settings;
   }
 
   async getRules(
@@ -492,7 +508,9 @@ export class AdminSettingsService {
       user.userId,
       'chat',
     );
-    return applySettingsToAllChatsValue({
+    const shouldReconcileNightModeTransitions =
+      this.shouldReconcileNightModeTransitionsAfterApply(targetOrSettingKeys, settingKeys);
+    const result = await applySettingsToAllChatsValue({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
       sourceChatId,
@@ -518,6 +536,10 @@ export class AdminSettingsService {
       scheduleReadinessRefresh: (params) =>
         this.legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
     });
+    if (shouldReconcileNightModeTransitions) {
+      await this.reconcileNightModeTransitions(result.appliedChatIds);
+    }
+    return result;
   }
 
   async applySettingsSectionToAllChats(
@@ -561,5 +583,43 @@ export class AdminSettingsService {
           target,
         ),
     });
+  }
+
+  private shouldReconcileNightModeTransitionsAfterApply(
+    targetOrSettingKeys: ApplySettingsTarget | readonly (keyof ChatSettings)[],
+    settingKeys?: readonly (keyof ChatSettings)[],
+  ): boolean {
+    const effectiveSettingKeys = Array.isArray(targetOrSettingKeys)
+      ? targetOrSettingKeys
+      : settingKeys;
+    if (!Array.isArray(effectiveSettingKeys) || effectiveSettingKeys.length === 0) {
+      return true;
+    }
+
+    return effectiveSettingKeys.some((key) => NIGHT_MODE_TRANSITION_SETTING_KEYS.has(key));
+  }
+
+  private shouldReconcileNightModeTransitionsAfterUpdate(body: unknown): boolean {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return false;
+    }
+
+    return Object.keys(body).some((key) =>
+      NIGHT_MODE_TRANSITION_SETTING_KEYS.has(key as keyof ChatSettings),
+    );
+  }
+
+  private async reconcileNightModeTransitions(chatIds: readonly string[]): Promise<void> {
+    try {
+      await this.nightModeTransitionScheduler?.reconcileChats(chatIds);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatIds,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to reconcile night mode transition jobs after settings update',
+      );
+    }
   }
 }

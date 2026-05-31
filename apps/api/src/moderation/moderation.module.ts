@@ -12,6 +12,8 @@ import {
   MODERATION_EXECUTION_LEGACY,
   ModerationExecutionService,
 } from './moderation-execution.service';
+import { NightModeTransitionModule } from './night-mode-transition.module';
+import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
@@ -71,6 +73,9 @@ const moderationProviders = [
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
           ? [BackgroundWebhookProcessor]
           : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND) && roleRunsModeration(getAppRole())
+          ? [NightModeTransitionProcessor]
+          : []),
       ]
     : []),
 ];
@@ -82,6 +87,7 @@ const moderationProviders = [
     SystemModule,
     ChatContextModule,
     AdminModule,
+    NightModeTransitionModule,
   ],
   controllers: [PrivateControlController],
   providers: moderationProviders,
