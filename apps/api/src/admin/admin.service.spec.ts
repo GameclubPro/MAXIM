@@ -23223,6 +23223,124 @@ describe('AdminService.sendBroadcast', () => {
     });
   });
 
+  it('uses a deterministic channel post link when MAX cannot resolve edited auto-attach links', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Еуг',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'channel-comment-parent-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-edited-post',
+        text: 'Первый комментарий',
+        authorDisplayName: 'Марина',
+      },
+      createdAt: new Date('2026-03-06T10:00:00.000Z'),
+    });
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-reply-1',
+      actorUserId: 'user-2',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-edited-post',
+        text: 'Ответ',
+        authorDisplayName: 'Иван',
+      },
+      createdAt: new Date('2026-03-06T10:05:00.000Z'),
+    });
+    prisma.dialogNotificationSubscription.findMany.mockResolvedValue([
+      {
+        userId: 'user-1',
+        mode: 'REPLIES',
+      },
+    ]);
+    prisma.auditLog.findMany.mockImplementation(async (args: any) => {
+      if (args?.take === 5) {
+        return [
+          {
+            action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+            payload: {
+              threadId: 'channel-thread-edited-post',
+              messageId: 'mid.ffffbcd63f2177f9019e85148a7a738f',
+              deliveryMode: 'edit_message',
+              includeCommentsButton: true,
+              includeSuggestButton: true,
+            },
+          },
+        ];
+      }
+
+      return [];
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+      getMessageTextAsMarkdown: jest.fn().mockResolvedValue(null),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'private-notification-1',
+        url: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-edited-post',
+    ) as string;
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-2',
+        username: 'ivan',
+        displayName: 'Иван',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Ответ',
+        replyToMessageId: 'channel-comment-parent-1',
+      },
+    );
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    const fallbackUrl =
+      'https://max.ru/chats/channel-1/message/mid.ffffbcd63f2177f9019e85148a7a738f';
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith(
+      'mid.ffffbcd63f2177f9019e85148a7a738f',
+      expect.objectContaining({
+        sourceTag: 'comment_notification',
+      }),
+    );
+    const [, notificationText, notificationOptions] =
+      maxClient.sendMessageImmediateToUser.mock.calls[0] ?? [];
+    expect(notificationText).toContain(`Пост: <a href="${fallbackUrl}">Открыть пост</a>`);
+    expect(notificationOptions.buttons[1][0]).toMatchObject({
+      text: 'Открыть пост',
+      url: fallbackUrl,
+    });
+  });
+
   it('renders linked channel titles in private comment notifications', () => {
     const service = new AdminService(
       createPrismaMock() as never,

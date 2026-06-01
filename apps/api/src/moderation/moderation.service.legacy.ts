@@ -14285,7 +14285,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'edit_message';
     let replacementMessageId: string | null = null;
     let replyMessageId: string | null = null;
-    let publishedUrl: string | null = null;
+    let publishedUrl: string | null =
+      linkType === 'forward' ? null : this.buildMaxMessageFallbackUrl(chatId, messageId);
     let originalDeleted = false;
 
     try {
@@ -14308,7 +14309,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           mutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
-        publishedUrl = sent.url ?? null;
+        publishedUrl = sent.url ?? this.buildMaxMessageFallbackUrl(chatId, sent.messageId);
         deliveryMode = 'replace_with_bot_message';
 
         try {
@@ -14422,12 +14423,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           replacementMessageId,
           ...(publishedUrl ? { publishedUrl } : {}),
           ...(replyMessageId ? { replyMessageId } : {}),
+          ...(text?.trim() ? { text } : {}),
           originalDeleted,
           source,
           ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
         },
       },
     });
+  }
+
+  private buildMaxMessageFallbackUrl(chatId: string, messageId: string | null): string | null {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId?.trim() ?? '';
+    if (!normalizedChatId || !normalizedMessageId) {
+      return null;
+    }
+
+    return `https://max.ru/chats/${encodeURIComponent(normalizedChatId)}/message/${encodeURIComponent(
+      normalizedMessageId,
+    )}`;
   }
 
   private async recordChannelAutoPostTerminalSkip(params: {

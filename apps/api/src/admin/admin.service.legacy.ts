@@ -18656,10 +18656,23 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
+    let fallbackPostContext: {
+      action: string;
+      payload: Record<string, unknown>;
+      url: string;
+    } | null = null;
     for (const row of rows) {
       const payload = this.readObjectPayload(row.payload);
       const messageIds = this.resolveDialogNotificationPostMessageIds(row.action, payload);
       for (const messageId of messageIds) {
+        const fallbackUrl = this.buildMaxMessageFallbackUrl(params.chatId, messageId);
+        if (!fallbackPostContext && fallbackUrl) {
+          fallbackPostContext = {
+            action: row.action,
+            payload,
+            url: fallbackUrl,
+          };
+        }
         const resolvedUrl = await this.resolveDialogNotificationMessageUrl(messageId, params.botId);
         if (resolvedUrl) {
           if (!preview) {
@@ -18679,7 +18692,32 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
+    if (fallbackPostContext) {
+      if (!preview) {
+        const previewMessageId = this.resolveDialogNotificationPostPreviewMessageId(
+          fallbackPostContext.action,
+          fallbackPostContext.payload,
+        );
+        preview = previewMessageId
+          ? await this.resolveDialogNotificationPostMessagePreview(previewMessageId, params.botId)
+          : null;
+      }
+      return { url: fallbackPostContext.url, preview };
+    }
+
     return { url: null, preview };
+  }
+
+  private buildMaxMessageFallbackUrl(chatId: string, messageId: string | null): string | null {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId?.trim() ?? '';
+    if (!normalizedChatId || !normalizedMessageId) {
+      return null;
+    }
+
+    return `https://max.ru/chats/${encodeURIComponent(normalizedChatId)}/message/${encodeURIComponent(
+      normalizedMessageId,
+    )}`;
   }
 
   private resolveDialogNotificationPostMessageIds(
@@ -19032,11 +19070,16 @@ export class AdminService implements OnModuleDestroy {
       : entityTitle;
     const title =
       params.kind === 'reply' ? 'Вам ответили в комментариях' : 'Новый комментарий в обсуждении';
+    const postLine = params.postPreview
+      ? `Пост: ${escapeHtml(params.postPreview)}`
+      : params.postUrl
+        ? `Пост: <a href="${escapeHtmlAttribute(params.postUrl)}">Открыть пост</a>`
+        : null;
 
     return [
       `<strong>${escapeHtml(title)}</strong>`,
       `${entityLabel}: ${entityTarget}`,
-      ...(params.postPreview ? [`Пост: ${escapeHtml(params.postPreview)}`] : []),
+      ...(postLine ? [postLine] : []),
       `${params.kind === 'reply' ? 'Ответил' : 'Автор'}: ${authorLink}`,
       `Комментарий: ${escapeHtml(params.preview)}`,
     ].join('\n');

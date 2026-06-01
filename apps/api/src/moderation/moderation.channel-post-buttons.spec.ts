@@ -254,6 +254,11 @@ describe('ModerationService channel auto post buttons', () => {
           chatId: 'channel-1',
           actorUserId: 'admin-1',
           action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+          payload: expect.objectContaining({
+            messageId: 'mid-channel-1',
+            publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-1',
+            text: 'Новый пост в канале',
+          }),
         }),
       }),
     );
