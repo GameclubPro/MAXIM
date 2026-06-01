@@ -3264,7 +3264,18 @@ describe('PrivateControlService', () => {
       'publish',
     );
     expect(getLastEditedText(maxClient)).toContain('Предложка опубликована');
-    expect(getLastEditedText(maxClient)).toContain('https://max.ru/chats/channel-1/message/999');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Пост: [Открыть пост](https://max.ru/chats/channel-1/message/999)',
+    );
+    expect(getLastEditedButtons(maxClient)).toEqual([
+      [
+        {
+          text: 'Открыть пост',
+          type: 'link',
+          url: 'https://max.ru/chats/channel-1/message/999',
+        },
+      ],
+    ]);
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {

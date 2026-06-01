@@ -2813,24 +2813,44 @@ export class PrivateControlService {
       context.actor,
       action,
     );
-    const viewText =
+    const publishedUrl = result.publishedUrl?.trim() ?? '';
+    const view: PrivateView =
       result.reviewStatus === 'published'
-        ? [
-            this.markdownTitle('✅ Предложка опубликована'),
-            '',
-            ...(result.publishedUrl ? [result.publishedUrl, ''] : []),
-            'Карточки в личке админов обновлены.',
-          ].join('\n')
-        : [
-            this.markdownTitle('✖️ Предложка отклонена'),
-            '',
-            'Карточки в личке админов обновлены.',
-          ].join('\n');
+        ? {
+            text: [
+              this.markdownTitle('✅ Предложка опубликована'),
+              '',
+              ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`, ''] : []),
+              'Карточки в личке админов обновлены.',
+            ].join('\n'),
+            ...(publishedUrl
+              ? {
+                  options: {
+                    buttons: [
+                      [
+                        {
+                          type: 'link',
+                          text: 'Открыть пост',
+                          url: publishedUrl,
+                        },
+                      ],
+                    ],
+                  },
+                }
+              : {}),
+          }
+        : {
+            text: [
+              this.markdownTitle('✖️ Предложка отклонена'),
+              '',
+              'Карточки в личке админов обновлены.',
+            ].join('\n'),
+          };
 
     await this.respond(
       context,
       session,
-      { text: viewText },
+      view,
       {
         callbackId: context.callbackId,
         notification:

@@ -20018,6 +20018,25 @@ export class AdminService implements OnModuleDestroy {
     ];
   }
 
+  private buildChannelSuggestionAdminReviewedButtons(
+    publishedUrl: string | null,
+  ): MaxMessageButton[][] {
+    const normalizedUrl = this.normalizeMaxEntityLink(publishedUrl);
+    if (!normalizedUrl) {
+      return [];
+    }
+
+    return [
+      [
+        {
+          type: 'link',
+          text: 'Открыть пост',
+          url: normalizedUrl,
+        },
+      ],
+    ];
+  }
+
   private buildPrivateControlCallbackPayload(action: string, ...args: string[]): string {
     const normalizedArgs = args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
     return [PRIVATE_CONTROL_CALLBACK_PREFIX, action, ...normalizedArgs].join('|');
@@ -20048,6 +20067,7 @@ export class AdminService implements OnModuleDestroy {
     const richTextHtml = hasMeaningfulText
       ? this.renderChannelSuggestionTextHtml(params.text, params.textMarkup, params.textFormat)
       : null;
+    const publishedUrl = this.normalizeMaxEntityLink(params.publishedUrl);
 
     if (richTextHtml) {
       const senderLine = normalizedActorUserId
@@ -20066,12 +20086,8 @@ export class AdminService implements OnModuleDestroy {
             ? [`MAX ID: <code>${escapeHtml(normalizedActorUserId)}</code>`]
             : []),
           ...(params.reviewedBy ? [`Решение принял: ${escapeHtml(params.reviewedBy)}`] : []),
-          ...(params.publishedUrl
-            ? [
-                `<a href="${escapeHtmlAttribute(params.publishedUrl)}">${escapeHtml(
-                  params.publishedUrl,
-                )}</a>`,
-              ]
+          ...(publishedUrl
+            ? [`Пост: <a href="${escapeHtmlAttribute(publishedUrl)}">Открыть пост</a>`]
             : []),
           '',
           '━━━━━━━━━━━━',
@@ -20096,7 +20112,7 @@ export class AdminService implements OnModuleDestroy {
           ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
           : []),
         ...(params.reviewedBy ? [`Решение принял: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
-        ...(params.publishedUrl ? [params.publishedUrl] : []),
+        ...(publishedUrl ? [`Пост: [Открыть пост](${publishedUrl})`] : []),
         '',
         '━━━━━━━━━━━━',
         this.markdownTitle('Контент публикации'),
@@ -20320,6 +20336,11 @@ export class AdminService implements OnModuleDestroy {
     const reviewedBy = this.readTrimmedString(payload.reviewedByDisplayName);
     const reviewStatus =
       this.readLowerString(payload.reviewStatus) === 'published' ? 'published' : 'cancelled';
+    const publishedUrl = this.readTrimmedString(payload.publishedUrl);
+    const buttons =
+      reviewStatus === 'published'
+        ? this.buildChannelSuggestionAdminReviewedButtons(publishedUrl)
+        : [];
     const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
     const messagePayload = this.buildChannelSuggestionAdminMessagePayload({
       status: reviewStatus,
@@ -20332,7 +20353,7 @@ export class AdminService implements OnModuleDestroy {
       ),
       textMarkup,
       reviewedBy,
-      publishedUrl: this.readTrimmedString(payload.publishedUrl),
+      publishedUrl,
     });
 
     for (const delivery of deliveries) {
@@ -20344,7 +20365,7 @@ export class AdminService implements OnModuleDestroy {
             delivery.messageId,
             messagePayload.text,
             {
-              buttons: [],
+              buttons,
               textFormat: messagePayload.textFormat,
             },
             { botId: deliveryBotId },
@@ -20355,7 +20376,7 @@ export class AdminService implements OnModuleDestroy {
             delivery.messageId,
             messagePayload.text,
             {
-              buttons: [],
+              buttons,
               textFormat: messagePayload.textFormat,
             },
           );

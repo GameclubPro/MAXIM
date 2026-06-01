@@ -176,6 +176,7 @@ import {
   type MaxChatMemberRole,
   type MaxChatRosterMember,
   type MaxMessageButton,
+  type MaxPublishedMessage,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import {
@@ -1902,9 +1903,9 @@ export class AdminManagedBroadcastRuntime {
             media,
             resolvedBotId,
           );
-          let sentMessageId: string | null = null;
+          let sentMessage: MaxPublishedMessage | null = null;
           if (occurrenceDelayMs === 0 && message.commentDialogReference) {
-            sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
+            sentMessage = await this.sendManagedBroadcastMessageImmediateWithId(
               chatId,
               message.messageText,
               message.messageOptions,
@@ -1943,7 +1944,9 @@ export class AdminManagedBroadcastRuntime {
           await this.recordManagedBroadcastCommentDialogReference({
             chatId,
             actorUserId: user.userId,
-            messageId: sentMessageId,
+            messageId: sentMessage?.messageId ?? null,
+            publishedUrl: sentMessage?.url ?? null,
+            text: request.normalizedSourceText,
             reference: message.commentDialogReference,
             source,
           });
@@ -2440,7 +2443,7 @@ export class AdminManagedBroadcastRuntime {
           continue;
         }
 
-        let sentMessageId: string;
+        let sentMessage: MaxPublishedMessage;
         let resolvedBotId: string | undefined;
         let commentDialogReference: ManagedBroadcastCommentDialogReference | null = null;
         try {
@@ -2455,7 +2458,7 @@ export class AdminManagedBroadcastRuntime {
             resolvedBotId,
           );
           commentDialogReference = message.commentDialogReference;
-          sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
+          sentMessage = await this.sendManagedBroadcastMessageImmediateWithId(
             delivery.targetChatId,
             message.messageText,
             message.messageOptions,
@@ -2605,7 +2608,7 @@ export class AdminManagedBroadcastRuntime {
             },
             data: {
               sentAt,
-              remoteMessageId: sentMessageId,
+              remoteMessageId: sentMessage.messageId,
               lastError: null,
             },
           });
@@ -2617,7 +2620,9 @@ export class AdminManagedBroadcastRuntime {
           await this.recordManagedBroadcastCommentDialogReference({
             chatId: delivery.targetChatId,
             actorUserId: row.actorUserId,
-            messageId: sentMessageId,
+            messageId: sentMessage.messageId,
+            publishedUrl: sentMessage.url ?? null,
+            text: request.normalizedSourceText,
             reference: commentDialogReference,
             source: reason,
             broadcastId: row.id,
@@ -2646,7 +2651,7 @@ export class AdminManagedBroadcastRuntime {
               targetChatId: delivery.targetChatId,
               actorUserId: row.actorUserId,
               occurrenceIndex: currentOccurrence,
-              messageId: sentMessageId,
+              messageId: sentMessage.messageId,
               err: error instanceof Error ? error.message : String(error),
             },
             'Managed broadcast delivery state sync failed after successful send',
@@ -2658,7 +2663,7 @@ export class AdminManagedBroadcastRuntime {
             },
             data: {
               sentAt,
-              remoteMessageId: sentMessageId,
+              remoteMessageId: sentMessage.messageId,
               lastError: null,
             },
           });
@@ -2784,6 +2789,8 @@ export class AdminManagedBroadcastRuntime {
     chatId: string;
     actorUserId: string;
     messageId: string | null;
+    publishedUrl?: string | null;
+    text?: string | null;
     reference: ManagedBroadcastCommentDialogReference | null;
     source: string;
     broadcastId?: string;
@@ -2793,12 +2800,20 @@ export class AdminManagedBroadcastRuntime {
     if (!messageId || !reference?.includeCommentsButton) {
       return;
     }
+    const postPreviewText =
+      typeof params.text === 'string' && params.text.trim().length > 0 ? params.text : null;
+    const publishedUrl =
+      typeof params.publishedUrl === 'string' && params.publishedUrl.trim().length > 0
+        ? params.publishedUrl.trim()
+        : null;
 
     const commonPayload = {
       messageId,
       threadId: reference.threadId,
       source: 'managed_broadcast',
       managedBroadcastSource: params.source,
+      ...(postPreviewText ? { text: postPreviewText } : {}),
+      ...(publishedUrl ? { publishedUrl } : {}),
       ...(params.broadcastId ? { broadcastId: params.broadcastId } : {}),
       ...(params.occurrenceIndex ? { occurrenceIndex: params.occurrenceIndex } : {}),
       ...(reference.botId ? { botId: reference.botId } : {}),
@@ -4924,7 +4939,7 @@ export class AdminManagedBroadcastRuntime {
       | undefined,
     botId?: string,
     maxApiOptions?: ManagedBroadcastMaxApiOptions,
-  ): Promise<string> {
+  ): Promise<MaxPublishedMessage> {
     let lastError: unknown = null;
     const attempts =
       Math.max(
@@ -4946,7 +4961,7 @@ export class AdminManagedBroadcastRuntime {
               options,
               this.buildManagedBroadcastMaxApiRequestOptions(maxApiOptions),
             );
-        return published.messageId;
+        return published;
       } catch (error: unknown) {
         lastError = error;
         const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(error, attempt, options);

@@ -20218,7 +20218,10 @@ describe('AdminService.sendBroadcast', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithId: jest
         .fn()
-        .mockResolvedValue({ messageId: 'mid-chat-comments-1', url: null }),
+        .mockResolvedValue({
+          messageId: 'mid-chat-comments-1',
+          url: 'https://max.ru/chats/chat-1/message/mid-chat-comments-1',
+        }),
     };
 
     const service = new AdminService(
@@ -20279,6 +20282,8 @@ describe('AdminService.sendBroadcast', () => {
           threadId: expect.any(String),
           source: 'managed_broadcast',
           managedBroadcastSource: 'immediate',
+          text: 'Объявление с обсуждением',
+          publishedUrl: 'https://max.ru/chats/chat-1/message/mid-chat-comments-1',
           broadcastId: 'broadcast-1',
           occurrenceIndex: 1,
         }),
@@ -23449,7 +23454,10 @@ describe('AdminService.sendChannelBroadcast', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithId: jest
         .fn()
-        .mockResolvedValue({ messageId: 'mid-channel-comments-1', url: null }),
+        .mockResolvedValue({
+          messageId: 'mid-channel-comments-1',
+          url: 'https://max.ru/chats/channel-1/message/mid-channel-comments-1',
+        }),
     };
 
     const service = new AdminService(
@@ -23516,6 +23524,8 @@ describe('AdminService.sendChannelBroadcast', () => {
           suggestButtonText: 'Предложить пост',
           source: 'managed_broadcast',
           managedBroadcastSource: 'miniapp',
+          text: 'Пост с обсуждением',
+          publishedUrl: 'https://max.ru/chats/channel-1/message/mid-channel-comments-1',
         }),
       }),
     });
@@ -29016,8 +29026,22 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       '555001',
       'mid-admin-review-1',
       expect.stringContaining('**Контент публикации**'),
-      { buttons: [], textFormat: 'markdown' },
+      {
+        buttons: [
+          [
+            {
+              text: 'Открыть пост',
+              type: 'link',
+              url: 'https://max.ru/chats/channel-1/message/100',
+            },
+          ],
+        ],
+        textFormat: 'markdown',
+      },
       { botId: 'private-bot-2' },
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
+      'Пост: [Открыть пост](https://max.ru/chats/channel-1/message/100)',
     );
   });
 
@@ -29134,8 +29158,22 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       '555001',
       'mid-admin-review-rich-1',
       expect.stringContaining(expectedHtml),
-      { buttons: [], textFormat: 'html' },
+      {
+        buttons: [
+          [
+            {
+              text: 'Открыть пост',
+              type: 'link',
+              url: 'https://max.ru/chats/channel-1/message/1001',
+            },
+          ],
+        ],
+        textFormat: 'html',
+      },
       { botId: 'private-bot-2' },
+    );
+    expect(maxClient.editMessageInlineKeyboard.mock.calls[0]?.[2]).toContain(
+      'Пост: <a href="https://max.ru/chats/channel-1/message/1001">Открыть пост</a>',
     );
   });
 
@@ -29547,7 +29585,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       '555001',
       'mid-admin-review-video-1',
       expect.stringContaining('**Контент публикации**'),
-      { buttons: [], textFormat: 'markdown' },
+      {
+        buttons: [
+          [
+            {
+              text: 'Открыть пост',
+              type: 'link',
+              url: 'https://max.ru/chats/channel-1/message/102',
+            },
+          ],
+        ],
+        textFormat: 'markdown',
+      },
       { botId: '777000_bot' },
     );
   });
