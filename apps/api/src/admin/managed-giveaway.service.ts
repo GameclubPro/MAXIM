@@ -1867,20 +1867,14 @@ export class ManagedGiveawayService {
     let publicationBotId: string | undefined;
     try {
       publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
-      const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
-        this.buildGiveawayPublicationText(giveaway),
-      );
       if (status === ManagedGiveawayStatus.CANCELED) {
         const button = await this.buildGiveawayOpenButton(giveaway);
-        const options = this.mergeMessageOptionsWithTextFormat(
-          button ? { buttons: [[button]] } : undefined,
-          publicationTextPayload.textFormat,
-        );
+        const options = button ? { buttons: [[button]] } : undefined;
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
             messageId,
-            publicationTextPayload.text,
+            null,
             options,
             { botId: publicationBotId },
           );
@@ -1888,7 +1882,7 @@ export class ManagedGiveawayService {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
             messageId,
-            publicationTextPayload.text,
+            null,
             options,
           );
         }
@@ -1897,15 +1891,12 @@ export class ManagedGiveawayService {
 
       if (status === ManagedGiveawayStatus.ACTIVE) {
         const button = await this.buildGiveawayEntryButton(giveaway);
-        const options = this.mergeMessageOptionsWithTextFormat(
-          button ? { buttons: [[button]] } : undefined,
-          publicationTextPayload.textFormat,
-        );
+        const options = button ? { buttons: [[button]] } : undefined;
         if (publicationBotId) {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
             messageId,
-            publicationTextPayload.text,
+            null,
             options,
             { botId: publicationBotId },
           );
@@ -1913,7 +1904,7 @@ export class ManagedGiveawayService {
           await this.maxClient.editMessageInlineKeyboard(
             giveaway.sourceChatId,
             messageId,
-            publicationTextPayload.text,
+            null,
             options,
           );
         }
@@ -1921,15 +1912,12 @@ export class ManagedGiveawayService {
       }
 
       const button = await this.buildGiveawayOpenButton(giveaway);
-      const options = this.mergeMessageOptionsWithTextFormat(
-        button ? { buttons: [[button]] } : undefined,
-        publicationTextPayload.textFormat,
-      );
+      const options = button ? { buttons: [[button]] } : undefined;
       if (publicationBotId) {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          publicationTextPayload.text,
+          null,
           options,
           { botId: publicationBotId },
         );
@@ -1937,7 +1925,7 @@ export class ManagedGiveawayService {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          publicationTextPayload.text,
+          null,
           options,
         );
       }
@@ -2116,12 +2104,16 @@ export class ManagedGiveawayService {
     const additionalRequiredChannels = this.readRequiredChannelIds(
       giveaway.requiredChannelIds,
     ).filter((channelId) => channelId !== giveaway.sourceChatId);
+    const mandatoryChannelIds = [giveaway.sourceChatId, ...additionalRequiredChannels];
+    const lookupBotIdByChannelId =
+      await this.resolveGiveawayMembershipLookupBotIds(mandatoryChannelIds);
     const missingChannelIds: string[] = [];
 
     if (this.membershipLookupService) {
       const lookupPolicy = this.resolveGiveawayLookupPolicy(options);
 
-      for (const channelId of [giveaway.sourceChatId, ...additionalRequiredChannels]) {
+      for (const channelId of mandatoryChannelIds) {
+        const botId = lookupBotIdByChannelId.get(channelId) ?? null;
         const membership = await this.membershipLookupService.getMembership(
           channelId,
           userId,
@@ -2129,6 +2121,7 @@ export class ManagedGiveawayService {
           {
             forceRefresh: options.forceFreshMembership,
             allowStaleOnError: options.allowStaleMembershipOnError,
+            ...(botId ? { botId } : {}),
           },
         );
         if (membership === null) {
@@ -2146,13 +2139,19 @@ export class ManagedGiveawayService {
     }
 
     try {
-      const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId);
+      const sourceBotId = lookupBotIdByChannelId.get(giveaway.sourceChatId) ?? null;
+      const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId, {
+        ...(sourceBotId ? { botId: sourceBotId } : {}),
+      });
       if (!isMember) {
         missingChannelIds.push(giveaway.sourceChatId);
       }
 
       for (const channelId of additionalRequiredChannels) {
-        const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId);
+        const botId = lookupBotIdByChannelId.get(channelId) ?? null;
+        const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId, {
+          ...(botId ? { botId } : {}),
+        });
         if (!hasAdditionalSubscription) {
           missingChannelIds.push(channelId);
         }
@@ -2209,7 +2208,7 @@ export class ManagedGiveawayService {
         state: GiveawayEligibilityState.REJECTED,
         reason:
           missingChannelIds.length > 1
-            ? 'Подписка на источник и обязательные каналы не подтверждена.'
+            ? 'Подписка на источник и обязательные чаты/каналы не подтверждена.'
             : 'Подписка на источник не подтверждена.',
         missingChannelIds,
       };
@@ -2219,8 +2218,8 @@ export class ManagedGiveawayService {
       state: GiveawayEligibilityState.REJECTED,
       reason:
         missingChannelIds.length > 1
-          ? 'Подписка на обязательные каналы не подтверждена.'
-          : 'Подписка на обязательный канал не подтверждена.',
+          ? 'Подписка на обязательные чаты/каналы не подтверждена.'
+          : 'Подписка на обязательный чат/канал не подтверждена.',
       missingChannelIds,
     };
   }
@@ -2383,13 +2382,17 @@ export class ManagedGiveawayService {
       source === 'runner' ? 'giveaway_draw_background' : 'giveaway_draw_interactive';
     const membershipByChannelId = new Map<string, Map<string, boolean | null>>();
     const allowStaleOnError = source === 'runner';
+    const lookupBotIdByChannelId =
+      await this.resolveGiveawayMembershipLookupBotIds(mandatoryChannelIds);
 
     for (const channelId of mandatoryChannelIds) {
+      const botId = lookupBotIdByChannelId.get(channelId) ?? null;
       membershipByChannelId.set(
         channelId,
         await this.membershipLookupService.getMemberships(channelId, userIds, lookupPolicy, {
           forceRefresh: true,
           allowStaleOnError,
+          ...(botId ? { botId } : {}),
         }),
       );
     }
@@ -3318,6 +3321,72 @@ export class ManagedGiveawayService {
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
       undefined
     );
+  }
+
+  private async resolveGiveawayMembershipLookupBotIds(
+    chatIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    const normalizedChatIds = Array.from(
+      new Set(
+        chatIds
+          .map((chatId) => this.normalizeNonEmptyString(chatId))
+          .filter((chatId): chatId is string => Boolean(chatId)),
+      ),
+    );
+    const botIdByChatId = new Map<string, string>();
+
+    await Promise.all(
+      normalizedChatIds.map(async (chatId) => {
+        const botId = await this.resolveGiveawayMembershipLookupBotId(chatId);
+        if (botId) {
+          botIdByChatId.set(chatId, botId);
+        }
+      }),
+    );
+
+    return botIdByChatId;
+  }
+
+  private async resolveGiveawayMembershipLookupBotId(chatId: string): Promise<string | null> {
+    try {
+      const assignedBotId = await this.resolveReadBotAssignment(chatId);
+      if (assignedBotId?.trim()) {
+        return assignedBotId.trim();
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve giveaway membership lookup bot route',
+      );
+    }
+
+    let persisted: { primaryBotId?: string | null; botId?: string | null } | null = null;
+    try {
+      persisted = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { primaryBotId: true, botId: true },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve giveaway membership lookup bot from persisted chat',
+      );
+      return null;
+    }
+    const primaryBotId =
+      typeof persisted?.primaryBotId === 'string' ? persisted.primaryBotId.trim() : '';
+    if (primaryBotId) {
+      return primaryBotId;
+    }
+
+    const botId = typeof persisted?.botId === 'string' ? persisted.botId.trim() : '';
+    return botId || null;
   }
 
   private async resolveGiveawayButtonBotId(sourceChatId: string): Promise<string | null> {

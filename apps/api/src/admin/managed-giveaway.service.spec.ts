@@ -239,7 +239,7 @@ function createEntry(overrides: Record<string, unknown> = {}) {
     displayName: 'Тестер',
     joinedAt: new Date('2026-03-21T10:00:00.000Z'),
     eligibilityState: GiveawayEligibilityState.REJECTED,
-    eligibilityReason: 'Подписка на обязательный канал не подтверждена.',
+    eligibilityReason: 'Подписка на обязательный чат/канал не подтверждена.',
     missingChannelIds: ['extra-1'],
     checkedAt: new Date('2026-03-21T10:00:00.000Z'),
     drawRank: null,
@@ -428,6 +428,74 @@ describe('ManagedGiveawayService', () => {
     expect(result.missingChannelIds).toEqual([]);
   });
 
+  it('uses the persisted bot assignment when checking giveaway required chat membership', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:11:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const membershipLookup = {
+      getMembership: jest.fn().mockResolvedValue(true),
+      getLookupIssue: jest.fn(),
+    };
+    prisma.chat.findUnique.mockImplementation(async (args: { where?: { id?: string } }) => {
+      if (args.where?.id === 'source-1') {
+        return { primaryBotId: 'bot-source', botId: null };
+      }
+      if (args.where?.id === 'extra-chat-1') {
+        return { primaryBotId: 'bot-extra-chat', botId: null };
+      }
+
+      return { title: 'Основной канал' };
+    });
+
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      membershipLookup as never,
+    );
+
+    const refreshed = createGiveaway({
+      requiredChannelIds: ['extra-chat-1'],
+    });
+    const savedEntry = createEntry({
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const latest = createGiveaway({
+      requiredChannelIds: ['extra-chat-1'],
+      entries: [savedEntry],
+    });
+
+    prisma.managedGiveaway.findUnique
+      .mockResolvedValueOnce(refreshed)
+      .mockResolvedValueOnce(refreshed)
+      .mockResolvedValueOnce(latest);
+    prisma.managedGiveawayEntry.upsert.mockResolvedValue(savedEntry);
+
+    const result = await service.enterGiveaway('giveaway-1', user);
+
+    expect(result.eligibilityState).toBe('VERIFIED');
+    expect(membershipLookup.getMembership).toHaveBeenNthCalledWith(
+      1,
+      'source-1',
+      'user-1',
+      'giveaway_interactive',
+      expect.objectContaining({ botId: 'bot-source' }),
+    );
+    expect(membershipLookup.getMembership).toHaveBeenNthCalledWith(
+      2,
+      'extra-chat-1',
+      'user-1',
+      'giveaway_interactive',
+      expect.objectContaining({ botId: 'bot-extra-chat' }),
+    );
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('writes a recheck audit entry when eligibility changes after retry', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:11:00.000Z'));
 
@@ -552,7 +620,7 @@ describe('ManagedGiveawayService', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'source-1',
       'publication-1',
-      'Текст публикации',
+      null,
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
       }),
@@ -599,14 +667,14 @@ describe('ManagedGiveawayService', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'source-1',
       'publication-1',
-      'Текст публикации',
+      null,
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
     );
   });
 
-  it('preserves markdown formatting when refreshing the published giveaway post', async () => {
+  it('does not resend publication text when refreshing the published giveaway post', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:13:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -647,9 +715,16 @@ describe('ManagedGiveawayService', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'source-1',
       'publication-1',
-      '<p><strong>Жирный заголовок</strong></p><p>Текст с <strong>акцентом</strong>.</p>',
+      null,
+      expect.not.objectContaining({
+        textFormat: expect.any(String),
+      }),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'publication-1',
+      null,
       expect.objectContaining({
-        textFormat: 'html',
         buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
       }),
     );
@@ -750,7 +825,7 @@ describe('ManagedGiveawayService', () => {
       entries: [
         createEntry({
           missingChannelIds: [],
-          eligibilityReason: 'Подписка на обязательные каналы не подтверждена.',
+          eligibilityReason: 'Подписка на обязательные чаты/каналы не подтверждена.',
         }),
       ],
     });

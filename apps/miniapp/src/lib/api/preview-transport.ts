@@ -2174,7 +2174,7 @@ function buildPreviewGiveawayParticipantState(
       joined: true,
       entryId: 'preview-entry-blocked',
       eligibilityState: 'REJECTED',
-      eligibilityReason: 'Подписка на обязательный канал не подтверждена.',
+      eligibilityReason: 'Подписка на обязательный чат/канал не подтверждена.',
       missingChannelIds: ['preview-channel-2'],
       joinedAt: addHours(now, -0.2).toISOString(),
       isWinner: false,

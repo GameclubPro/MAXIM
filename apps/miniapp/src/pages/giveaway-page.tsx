@@ -242,7 +242,7 @@ function buildGiveawayChannels(giveaway: ManagedGiveawayPublic): GiveawayChannel
     },
     ...giveaway.requiredChannels.map((channel, index) => ({
       id: channel.id,
-      eyebrow: `Канал ${index + 1}`,
+      eyebrow: `Условие ${index + 1}`,
       title: channel.title,
       link: channel.link,
     })),
@@ -851,8 +851,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                       awaitingSubscriptionReturn || subscriptionRecheckPending
                         ? 'Проверяем подписку…'
                         : missingChannelCards.length > 1
-                          ? 'Открыть следующий канал'
-                          : 'Открыть канал',
+                          ? 'Открыть следующее условие'
+                          : 'Открыть условие',
                     disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
                     onClick: () => {
                       openMissingChannel(nextMissingChannel.link ?? '');
