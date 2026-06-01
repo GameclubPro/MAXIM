@@ -1340,7 +1340,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.sendMessageReplyWithInlineKeyboard('chat-1', 'mid-source-1', 'Действия к посту', {
+    await service.sendMessageReplyWithInlineKeyboard('chat-1', 'mid-source-1', 'Открыть действия', {
       button: {
         text: 'Открыть',
         url: 'https://maxim.play-team.ru/app/',
@@ -1355,7 +1355,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           chat_id: 'chat-1',
         },
         data: {
-          text: 'Действия к посту',
+          text: 'Открыть действия',
           link: {
             type: 'reply',
             mid: 'mid-source-1',

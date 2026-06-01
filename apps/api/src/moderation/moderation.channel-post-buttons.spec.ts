@@ -731,7 +731,7 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
-  it('stores reply message id when forwarded channel post falls back to reply button delivery', async () => {
+  it('skips forwarded channel post buttons when bot copy delivery is terminally rejected', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -767,10 +767,7 @@ describe('ModerationService channel auto post buttons', () => {
         },
         message: 'cannot replace forwarded message',
       }),
-      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue({
-        messageId: 'mid-forward-reply-1',
-        url: 'https://max.ru/chats/channel-1/message/forward-reply-1',
-      }),
+      sendMessageReplyWithInlineKeyboard: jest.fn(),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
@@ -794,29 +791,129 @@ describe('ModerationService channel auto post buttons', () => {
 
     await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
 
-    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-channel-forward-no-sender-1',
-      'Действия к посту',
-      expect.objectContaining({
-        debugContext: {
-          screen: 'channel-auto-post',
-          action: 'attach-buttons-reply-fallback',
-        },
-      }),
-      undefined,
-    );
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
           payload: expect.objectContaining({
-            deliveryMode: 'reply_message',
-            replyMessageId: 'mid-forward-reply-1',
+            deliveryMode: 'replace_with_bot_message',
             linkType: 'forward',
+            reason: 'terminal_delivery_failure',
+            status: 400,
           }),
         }),
       }),
     );
+  });
+
+  it('does not publish a forwarded-post reply fallback with the resolved scan bot in multi-bot mode', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockRejectedValue({
+        response: {
+          status: 400,
+        },
+        message: 'cannot replace forwarded message',
+      }),
+      sendMessageReplyWithInlineKeyboard: jest.fn(),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) => `https://max.ru/entry-bot?startapp=${startParam}`,
+        ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-forward-multi-1',
+      text: 'Пересланный пост',
+      textFormat: null,
+      linkType: 'forward',
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsEntryMode: 'MINIAPP',
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      capability: 'background_scans',
+    });
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-multi-1',
+      'Пересланный пост',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
+            }),
+          ],
+        ],
+        debugContext: {
+          screen: 'channel-auto-post',
+          action: 'scan-replace-forward-with-bot-copy',
+        },
+      }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
+        botId: 'scan-bot-2',
+      },
+    );
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'system',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-forward-multi-1',
+          reason: 'terminal_delivery_failure',
+          linkType: 'forward',
+          source: 'poll',
+          deliveryMode: 'replace_with_bot_message',
+          botId: 'scan-bot-2',
+          status: 400,
+        }),
+      }),
+    });
   });
 
   it('does not auto-attach when the channel mode is off and comments are disabled', async () => {

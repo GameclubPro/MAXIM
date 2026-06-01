@@ -266,7 +266,6 @@ import {
   CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
   CHAT_DIALOG_AUTO_ATTACH_ACTION,
   CHAT_COMMENTS_REPLY_TEXT,
-  CHANNEL_FORWARD_REPLY_TEXT,
   GLOBAL_SPAMMER_WINDOW_SEC,
   GLOBAL_SPAMMER_REDIS_TTL_SEC,
   GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
@@ -14365,7 +14364,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             error: error instanceof Error ? error.message : 'Unknown error',
           },
           linkType === 'forward'
-            ? 'Failed to replace forwarded channel post with bot copy; falling back to reply'
+            ? 'Failed to replace forwarded channel post with bot copy; skipping reply fallback'
             : 'Failed to auto-attach channel post buttons; skipping retry',
         );
         if (linkType !== 'forward') {
@@ -14373,6 +14372,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId,
             messageId,
             senderId,
+            botId: autoAttachBotId,
             linkType,
             source,
             deliveryMode: 'edit_message',
@@ -14382,63 +14382,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        try {
-          const sent = await this.maxClient.sendMessageReplyWithInlineKeyboard(
-            chatId,
-            messageId,
-            CHANNEL_FORWARD_REPLY_TEXT,
-            {
-              buttons,
-              debugContext: {
-                screen: 'channel-auto-post',
-                action:
-                  source === 'poll'
-                    ? 'scan-attach-buttons-reply-fallback'
-                    : 'attach-buttons-reply-fallback',
-              },
-            },
-            mutationRequestOptions,
-          );
-          deliveryMode = 'reply_message';
-          replyMessageId = sent?.messageId ?? null;
-        } catch (fallbackError: unknown) {
-          const fallbackStatus = this.extractStatusCode(fallbackError);
-          if (
-            source === 'poll' &&
-            (await this.recordChannelAutoPostAccessLossIfTerminal({
-              chatId,
-              botId: autoAttachBotId,
-              source: 'channel_auto_post:poll_attach_fallback',
-              operation: 'send',
-              error: fallbackError,
-            }))
-          ) {
-            return;
-          }
-          if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
-            this.logger.warn(
-              {
-                chatId,
-                messageId,
-                status: fallbackStatus,
-                error: fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
-              },
-              'Failed to publish fallback reply for channel post buttons; skipping retry',
-            );
-            await this.recordChannelAutoPostTerminalSkip({
-              chatId,
-              messageId,
-              senderId,
-              linkType,
-              source,
-              deliveryMode: 'reply_message',
-              status: fallbackStatus,
-              error: fallbackError,
-            });
-            return;
-          }
-          throw fallbackError;
-        }
+        await this.recordChannelAutoPostTerminalSkip({
+          chatId,
+          messageId,
+          senderId,
+          botId: autoAttachBotId,
+          linkType,
+          source,
+          deliveryMode: 'replace_with_bot_message',
+          status,
+          error,
+        });
+        return;
       } else {
         throw error;
       }
@@ -14475,6 +14430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     messageId: string;
     senderId: string | null;
+    botId: string | null;
     linkType: string | null;
     source: 'webhook' | 'poll';
     deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message';
@@ -14500,6 +14456,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             linkType: params.linkType,
             source: params.source,
             deliveryMode: params.deliveryMode,
+            ...(params.botId ? { botId: params.botId } : {}),
             status: params.status,
             error: errorMessage,
           },
