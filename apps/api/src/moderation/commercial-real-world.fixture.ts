@@ -1652,6 +1652,39 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 82,
     },
   },
+  {
+    label: 'remote internet shop manager recruitment from post-deploy audit miss',
+    text: `Ищу сотрудников для работы удаленно, Россия. Управляющий/админ для сопровождения интернет магазина. Работа с рекламой, обработка входящих откликов. Подробнее пишите в Телеграмм или МАХ +7 900 000 01 05. #вакансия #работаонлайн Прямая ссылка на МАХ https://max.ru/join/remote-work`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: ['recruitment:ваканси', 'recruitment:отклик', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'remote base manager recruitment with roughly wording from post-deploy audit miss',
+    text: `Открыта вакансия удаленной работы. Нужен менеджер по работе с холодной/теплой базой. Без звонков, работа в партнёрском кабинете. Зп 17000 в месяц. Примерно час работы в день. Можно совмещать с основной работой. Пишите на мой личный +7 900 000 01 06 Мах или вотсап.`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: ['recruitment:ваканси', 'recruitment:remote-network-work', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'hotel tour booking with examples wording from post-deploy audit miss',
+    text: `Обзор сетей отелей Voyage в Турции. Voyage - это сеть премиальных отелей Турции. SPA, хамам, массаж. Примеры туров на двоих с вылетом из Сочи - по ссылкам в MAX и Telegram. Подберу под ваши даты и город вылета. Забронировать: +7 900 000 01 07 @travelmax https://max.ru/join/tour`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:tour-agency', 'contact:phone', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [

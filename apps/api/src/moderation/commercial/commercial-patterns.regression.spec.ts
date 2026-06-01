@@ -140,6 +140,24 @@ describe('commercial pattern regressions', () => {
       subtype: 'GOODS_RETAIL',
       signals: ['goods-retail:home-goods-low-price-order', 'contact:phone'],
     },
+    {
+      label: 'remote manager recruitment is not moderation discussion',
+      text: 'Ищу сотрудников для работы удаленно. Управляющий/админ для сопровождения интернет магазина. Работа с рекламой, обработка входящих откликов. Подробнее пишите в Телеграмм или МАХ +7 900 000 01 05. #вакансия #работаонлайн https://max.ru/join/remote-work',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:ваканси', 'recruitment:отклик', 'contact:phone'],
+    },
+    {
+      label: 'remote recruitment with roughly wording is not quoted-ad discussion',
+      text: 'Открыта вакансия удаленной работы. Нужен менеджер по работе с холодной/теплой базой. Зп 17000 в месяц. Примерно час работы в день. Пишите на мой личный +7 900 000 01 06 Мах или вотсап.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:ваканси', 'recruitment:remote-network-work', 'contact:phone'],
+    },
+    {
+      label: 'hotel tour booking with examples wording',
+      text: 'Обзор сетей отелей Voyage в Турции. Примеры туров на двоих с вылетом из Сочи - по ссылкам в MAX и Telegram. Подберу под ваши даты и город вылета. Забронировать: +7 900 000 01 07 @travelmax https://max.ru/join/tour',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:tour-agency', 'contact:phone', 'deal-channel:link'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
