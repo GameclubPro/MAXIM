@@ -791,6 +791,7 @@ export class RuleEngineService {
           chatId,
           userId,
           settings,
+          hasPhotoAttachment,
         });
     if (antiSpamViolation) {
       violations.push(antiSpamViolation);

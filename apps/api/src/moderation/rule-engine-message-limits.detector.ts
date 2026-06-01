@@ -22,9 +22,10 @@ export class RuleEngineMessageLimitsDetector {
     chatId: string;
     userId: string;
     settings: ChatSettings;
+    hasPhotoAttachment?: boolean;
   }): Promise<RuleViolation | null> {
-    const { chatId, userId, settings } = params;
-    if (!settings.antiSpamEnabled) {
+    const { chatId, userId, settings, hasPhotoAttachment } = params;
+    if (!settings.antiSpamEnabled || hasPhotoAttachment) {
       return null;
     }
 

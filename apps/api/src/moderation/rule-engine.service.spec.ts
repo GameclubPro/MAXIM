@@ -3823,6 +3823,31 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('does not trigger built-in anti-spam burst for photo batches', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    let result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ antiSpamEnabled: true }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: '',
+        settings: buildSettings({ antiSpamEnabled: true }),
+        domainAllowlist: [],
+        hasPhotoAttachment: true,
+      });
+    }
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(false);
+  });
+
   it('allows one duplicate, then escalates to WARN/MUTE/BAN in sequence', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
 

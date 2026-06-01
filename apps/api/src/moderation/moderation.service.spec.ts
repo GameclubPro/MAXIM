@@ -8,6 +8,7 @@ import {
   buildDeveloperForcedGlobalSpammerWarmMarkerKey,
 } from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
+import { RuleEngineService } from './rule-engine.service.impl';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -192,6 +193,7 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
 
 function createRedisCounterMock() {
   const stringCache = new Map<string, string>();
+  const counters = new Map<string, number>();
   const locks = new Set<string>();
 
   return {
@@ -210,6 +212,11 @@ function createRedisCounterMock() {
     }),
     releaseLock: jest.fn(async (key: string) => {
       locks.delete(key);
+    }),
+    incrementWithTtl: jest.fn(async (key: string) => {
+      const count = (counters.get(key) ?? 0) + 1;
+      counters.set(key, count);
+      return count;
     }),
   };
 }
@@ -380,6 +387,33 @@ function createUpdate(): MaxUpdate {
       createdAt: new Date().toISOString(),
     },
     raw: {},
+  };
+}
+
+function createPhotoAttachmentUpdate(suffix: number): MaxUpdate {
+  return {
+    updateId: `upd-photo-${suffix}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-photo-${suffix}`,
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              url: `https://cdn.example/photo-${suffix}.jpg`,
+            },
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -13366,6 +13400,64 @@ describe('ModerationService', () => {
         action: SanctionAction.BAN,
       }),
     });
+  });
+
+  it('does not hard-ban rapid photo batches through the real rule engine', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            antiSpamEnabled: true,
+            antiDuplicateEnabled: false,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const redisCounter = createRedisCounterMock();
+    const ruleEngine = new RuleEngineService(redisCounter as never);
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    for (let index = 1; index <= 6; index += 1) {
+      await service.handleUpdate(createPhotoAttachmentUpdate(index));
+    }
+
+    expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+      expect.stringContaining('message:anti-spam-burst'),
+      expect.any(Number),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('includes blocked word in MESSAGE_BLOCKED_WORD bot explanation', async () => {
