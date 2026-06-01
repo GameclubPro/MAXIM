@@ -111,6 +111,7 @@
 - GitHub Actions `Deploy` is manual-only (`workflow_dispatch`) and runs `infra/scripts/vps-pull-build-up.sh` on the VPS with optional branch/services inputs. Pushes to `main` should be validated by `CI`; use the local `vps-connect.sh deploy` wrapper for normal deployments unless GitHub-hosted runner SSH access is known to be allowed.
 - If plain SSH stalls before the banner or times out, treat that as a Yandex Cloud access issue first. Prefer `yc compute ssh` as the recovery path and verify that the VM security group allows `22/tcp` from the current public IP.
 - Keep Yandex Cloud service-account keys only in local ignored files or configured `yc` profiles, never in git.
+- `maxim.play-team.ru` enters through the Yandex edge VM `maxim-site-edge-1` (`84.201.186.244`, `maxim-vps-edge`), where HAProxy TCP-proxies `80/443` to the backend VM private IP `10.130.0.29`; deploy and runtime rollback still run on the backend host (`maxim-vps`), not on edge. The edge public IP uses Yandex DDoS Protection/Qrator, so keep edge `eth0` MTU at `1450` (TCP MSS 1410 expectation) when touching network config.
 - Use `docker compose` only.
 - Main prod stack: `infra/docker-compose.yml`
 - Split/load-testing stack: `infra/docker-compose.scale.yml`
