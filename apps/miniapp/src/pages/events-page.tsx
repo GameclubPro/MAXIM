@@ -807,7 +807,7 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
     return 'На проверке';
   }
   if (status === 'SUPPRESSED' || status === 'ADMIN_EXEMPT') {
-    return 'Исключён';
+    return 'Не учитывается в базе';
   }
   if (status === 'EXPIRED') {
     return 'Нет активной записи';
@@ -885,7 +885,7 @@ function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics
     return 'Пользователь похож на спамера: есть массовые повторы, жалобы или баны в других чатах. Автобан пока не включён без подтверждения админа.';
   }
   if (policy.registryStatus === 'ADMIN_EXEMPT' || policy.adminExempt) {
-    return 'Пользователь исключён из спам-базы для этого админского контура. Автобан не применяется.';
+    return 'Пользователь не учитывается в спам-базе для этого админского контура. Автобан не применяется.';
   }
   if (policy.registryStatus === 'SUPPRESSED') {
     return 'Пользователь отмечен как не спамер. Автобан не применяется.';
@@ -1001,7 +1001,10 @@ function resolveSpammerSignalCategory(
 type DiagnosticsSignalGroup = {
   key: DiagnosticsSignalCategoryKey;
   label: string;
-  count: number;
+  userSignalCount: number;
+  campaignUserSignalCount: number;
+  campaignObservationCount: number | null;
+  campaignCount: number;
   maxScore: number;
 };
 
@@ -1017,49 +1020,94 @@ function buildDiagnosticsSignalGroups(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): DiagnosticsSignalGroup[] {
   const groups = new Map<DiagnosticsSignalCategoryKey, DiagnosticsSignalGroup>();
-  const addSignal = (category: DiagnosticsSignalCategoryKey, score: number, count = 1) => {
+  const ensureGroup = (category: DiagnosticsSignalCategoryKey, score: number) => {
     const meta = DIAGNOSTICS_SIGNAL_CATEGORIES[category];
-    const normalizedCount = Math.max(1, Math.trunc(count));
     const current = groups.get(category);
     if (current) {
-      current.count += normalizedCount;
       current.maxScore = Math.max(current.maxScore, score);
-      return;
+      return current;
     }
-    groups.set(category, {
+    const group: DiagnosticsSignalGroup = {
       key: category,
       label: meta.label,
-      count: normalizedCount,
+      userSignalCount: 0,
+      campaignUserSignalCount: 0,
+      campaignObservationCount: null,
+      campaignCount: 0,
       maxScore: score,
-    });
+    };
+    groups.set(category, group);
+    return group;
+  };
+  const addUserSignal = (category: DiagnosticsSignalCategoryKey, score: number, count = 1) => {
+    const group = ensureGroup(category, score);
+    group.userSignalCount += Math.max(1, Math.trunc(count));
   };
 
   diagnostics.observations.forEach((item) => {
-    addSignal(resolveSpammerSignalCategory(item.source), item.score);
+    addUserSignal(resolveSpammerSignalCategory(item.source), item.score);
   });
   diagnostics.graphSignals.forEach((item) => {
-    addSignal(resolveSpammerSignalCategory(item.source), item.score);
+    addUserSignal(resolveSpammerSignalCategory(item.source), item.score);
   });
   diagnostics.campaigns.forEach((item) => {
-    addSignal(
-      resolveSpammerSignalCategory(item.signalType, 'fanout'),
-      item.confidenceScore,
-      item.observationsCount,
-    );
+    const category = resolveSpammerSignalCategory(item.signalType, 'fanout');
+    const userObservationsCount = item.userObservationsCount;
+    const hasUserCampaignSignals =
+      typeof userObservationsCount === 'number' && userObservationsCount > 0;
+    const group = hasUserCampaignSignals
+      ? ensureGroup(category, item.confidenceScore)
+      : groups.get(category);
+    if (group) {
+      group.maxScore = Math.max(group.maxScore, item.confidenceScore);
+      group.campaignCount += 1;
+      if (hasUserCampaignSignals) {
+        group.campaignUserSignalCount += Math.trunc(userObservationsCount);
+      }
+      if (item.observationsCount > 0) {
+        group.campaignObservationCount =
+          (group.campaignObservationCount ?? 0) + Math.trunc(item.observationsCount);
+      }
+    }
   });
 
   if (diagnostics.reputationSummary.naturalBanSignals > 0 && !groups.has('bans')) {
-    addSignal('bans', 0.34, diagnostics.reputationSummary.naturalBanSignals);
+    addUserSignal('bans', 0.34, diagnostics.reputationSummary.naturalBanSignals);
   }
 
-  return [...groups.values()]
-    .sort((left, right) => right.maxScore - left.maxScore || right.count - left.count)
+  const signalGroups = [...groups.values()];
+  signalGroups.forEach((group) => {
+    if (group.campaignUserSignalCount > 0) {
+      group.userSignalCount = Math.max(group.userSignalCount, group.campaignUserSignalCount);
+    }
+  });
+
+  return signalGroups
+    .filter((group) => group.userSignalCount > 0)
+    .sort(
+      (left, right) =>
+        right.maxScore - left.maxScore || right.userSignalCount - left.userSignalCount,
+    )
     .slice(0, 5);
 }
 
-function formatDiagnosticsObservationCount(count: number): string {
+function formatDiagnosticsUserSignalCount(count: number): string {
   return `${count} ${formatRussianCountLabel(
     count,
+    'сигнал',
+    'сигнала',
+    'сигналов',
+  )} по пользователю`;
+}
+
+function formatDiagnosticsCampaignObservationCount(group: DiagnosticsSignalGroup): string | null {
+  if (!group.campaignObservationCount || group.campaignObservationCount <= 0) {
+    return null;
+  }
+
+  const scope = group.campaignCount > 1 ? 'в похожих рассылках всего' : 'в рассылке всего';
+  return `${scope}: ${group.campaignObservationCount} ${formatRussianCountLabel(
+    group.campaignObservationCount,
     'наблюдение',
     'наблюдения',
     'наблюдений',
@@ -1090,7 +1138,7 @@ function buildDiagnosticsFacts(
     facts.push({
       label:
         diagnostics.policy.registryStatus === 'SUPPRESSED' || diagnostics.activeSuppression
-          ? 'Исключение до'
+          ? 'Не учитывать в спам-базе до'
           : 'Действует до',
       value: activeUntil,
     });
@@ -1098,11 +1146,11 @@ function buildDiagnosticsFacts(
   if (diagnostics.localAdminDecision) {
     const decisionLabels: Record<string, string> = {
       ALLOW: 'Не спамер',
-      BLOCK: 'Подтверждён как спамер',
+      BLOCK: 'Подтверждён в спам-базе',
       REVIEW: 'Отправить на проверку',
     };
     facts.push({
-      label: 'Решение админа',
+      label: 'Решение по спам-базе',
       value:
         decisionLabels[diagnostics.localAdminDecision.decision] ??
         'Локальное решение для этого чата',
@@ -1319,7 +1367,11 @@ function SpammerDiagnosticsSheet({
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
-  const signalCount = signalGroups.reduce((sum, group) => sum + group.count, 0);
+  const signalCount = signalGroups.reduce((sum, group) => sum + group.userSignalCount, 0);
+  const hasCampaignScale = signalGroups.some(
+    (group) =>
+      typeof group.campaignObservationCount === 'number' && group.campaignObservationCount > 0,
+  );
   const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
   const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
   const profileAvatarUrl = resolveSpammerDiagnosticsAvatarUrl(target, diagnostics);
@@ -1340,30 +1392,30 @@ function SpammerDiagnosticsSheet({
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'SUPPRESS')}
-          aria-label="Не спамер"
+          aria-label="Не учитывать пользователя в спам-базе, из чата не исключать"
         >
           <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не спамер'}</span>
-          {reviewingAction === 'SUPPRESS' ? null : <small>исключить</small>}
+          {reviewingAction === 'SUPPRESS' ? null : <small>не учитывать в базе</small>}
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--accent"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
-          aria-label="Подтвердить как спамера"
+          aria-label="Подтвердить пользователя как спамера в спам-базе"
         >
-          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Подтвердить'}</span>
-          {reviewingAction === 'APPROVE' ? null : <small>как спамера</small>}
+          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Спамер'}</span>
+          {reviewingAction === 'APPROVE' ? null : <small>подтвердить в базе</small>}
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--danger"
           disabled={isActionBusy}
           onClick={() => onBan(diagnostics.userId)}
-          aria-label="Забанить в чате"
+          aria-label="Забанить пользователя в текущем чате сейчас"
         >
-          <span>{isBanning ? 'Баним...' : 'Забанить'}</span>
-          {isBanning ? null : <small>в чате сейчас</small>}
+          <span>{isBanning ? 'Баним...' : 'Бан в чате'}</span>
+          {isBanning ? null : <small>применить сейчас</small>}
         </button>
       </div>
     </div>
@@ -1454,8 +1506,8 @@ function SpammerDiagnosticsSheet({
 
             <div className="spammer-diagnostics__hero-main">
               <div className="spammer-diagnostics__confidence-orb" aria-hidden="true">
-                <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет'}</strong>
-                <span>{confidencePercent !== null ? 'риск' : 'оценки'}</span>
+                <strong>{confidencePercent !== null ? `${confidencePercent}/100` : 'нет'}</strong>
+                <span>{confidencePercent !== null ? 'балл риска' : 'оценки'}</span>
               </div>
 
               <div className="spammer-diagnostics__verdict-copy">
@@ -1476,31 +1528,34 @@ function SpammerDiagnosticsSheet({
             </dl>
           ) : null}
 
-          <section className="spammer-diagnostics__signals" aria-label="Почему система так решила">
+          <section className="spammer-diagnostics__signals" aria-label="Сигналы по пользователю">
             <div className="spammer-diagnostics__section-head">
-              <span>Почему система так решила</span>
+              <span>Сигналы по пользователю</span>
               <strong>
-                {signalCount > 0
-                  ? formatDiagnosticsObservationCount(signalCount)
-                  : 'Сигналов нет'}
+                {signalCount > 0 ? formatDiagnosticsUserSignalCount(signalCount) : 'Сигналов нет'}
               </strong>
             </div>
             {signalGroups.length > 0 ? (
               <p className="spammer-diagnostics__section-note">
-                Наблюдения - найденные совпадения. Сила риска - вес самого сильного сигнала,
-                а не доля сообщений.
+                {hasCampaignScale
+                  ? 'Сигналы по пользователю считаются отдельно. Охват рассылки показывает масштаб похожей кампании. Балл риска - вес признака, а не процент сообщений.'
+                  : 'Счётчик показывает сигналы, найденные именно у этого пользователя. Балл риска - вес признака, а не процент сообщений.'}
               </p>
             ) : null}
             {signalGroups.length > 0 ? (
               <div className="spammer-diagnostics__signal-list">
                 {signalGroups.map((group) => {
                   const percent = scoreToPercent(group.maxScore) ?? 0;
+                  const campaignObservationLabel = formatDiagnosticsCampaignObservationCount(group);
                   return (
                     <article key={group.key} className="spammer-diagnostics__signal-card">
                       <div className="spammer-diagnostics__signal-copy">
                         <strong>{group.label}</strong>
-                        <span>{formatDiagnosticsObservationCount(group.count)}</span>
-                        <small>Сила риска {percent}%</small>
+                        <span>{formatDiagnosticsUserSignalCount(group.userSignalCount)}</span>
+                        {campaignObservationLabel ? (
+                          <small>{campaignObservationLabel}</small>
+                        ) : null}
+                        <small>Балл риска {percent}/100</small>
                       </div>
                     </article>
                   );
@@ -2239,7 +2294,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'success',
-        title: result.status === 'SUPPRESSED' ? 'Исключено' : 'Подтверждено',
+        title:
+          result.status === 'SUPPRESSED' ? 'Не учитывается в спам-базе' : 'Подтверждён в спам-базе',
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.globalSpammerReviewQueue(chatId),

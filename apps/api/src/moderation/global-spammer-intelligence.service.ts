@@ -228,6 +228,7 @@ export type GlobalSpammerUserDiagnostics = {
     distinctUsersCount: number;
     distinctChatsCount: number;
     observationsCount: number;
+    userObservationsCount: number | null;
     lastSeenAt: string;
     preview: string | null;
   }>;
@@ -2318,6 +2319,7 @@ export class GlobalSpammerIntelligenceService {
         lastReason: params.signal.reason,
         lastScore: this.roundScore(params.score),
         memberScore: this.roundScore(params.signal.score),
+        observationsCount: 1,
       },
       update: {
         chatId: params.input.chatId ?? null,
@@ -2681,6 +2683,7 @@ export class GlobalSpammerIntelligenceService {
       distinctUsersCount: number;
       distinctChatsCount: number;
       observationsCount: number;
+      userObservationsCount: number | null;
       lastSeenAt: string;
       preview: string | null;
     }>
@@ -2711,6 +2714,7 @@ export class GlobalSpammerIntelligenceService {
       distinctUsersCount: row.distinctUsersCount,
       distinctChatsCount: row.distinctChatsCount,
       observationsCount: row.observationsCount,
+      userObservationsCount: null,
       lastSeenAt: row.lastSeenAt.toISOString(),
       preview: row.signalValuePreview,
     }));
@@ -2725,6 +2729,7 @@ export class GlobalSpammerIntelligenceService {
       distinctUsersCount: number;
       distinctChatsCount: number;
       observationsCount: number;
+      userObservationsCount: number | null;
       lastSeenAt: string;
       preview: string | null;
     }>
@@ -2749,6 +2754,7 @@ export class GlobalSpammerIntelligenceService {
       distinctUsersCount: row.cluster.distinctUsersCount,
       distinctChatsCount: row.cluster.distinctChatsCount,
       observationsCount: row.cluster.observationsCount,
+      userObservationsCount: Math.max(1, row.observationsCount ?? 1),
       lastSeenAt: row.cluster.lastSeenAt.toISOString(),
       preview: row.cluster.signalValuePreview,
     }));

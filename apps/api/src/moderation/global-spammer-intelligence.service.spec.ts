@@ -1260,6 +1260,8 @@ describe('GlobalSpammerIntelligenceService', () => {
         campaigns: expect.arrayContaining([
           expect.objectContaining({
             distinctUsersCount: 2,
+            observationsCount: 2,
+            userObservationsCount: 1,
           }),
         ]),
         latestShadowScore: expect.objectContaining({

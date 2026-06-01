@@ -1784,6 +1784,7 @@ export const globalSpammerCampaignSummarySchema = z.object({
   distinctUsersCount: z.number().int().min(0),
   distinctChatsCount: z.number().int().min(0),
   observationsCount: z.number().int().min(0),
+  userObservationsCount: z.number().int().min(0).nullable().default(null),
   lastSeenAt: z.string().datetime(),
   preview: z.string().nullable(),
 });

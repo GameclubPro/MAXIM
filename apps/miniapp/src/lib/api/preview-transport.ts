@@ -4298,7 +4298,7 @@ function buildPreviewSpammerReviewMetrics(candidates: readonly GlobalSpammerRevi
   });
 }
 
-function createPreviewSpammerCampaigns(now: Date) {
+function createPreviewSpammerCampaigns(now: Date, options: { userScoped?: boolean } = {}) {
   return [
     {
       clusterId: 'preview-campaign-domain',
@@ -4308,6 +4308,7 @@ function createPreviewSpammerCampaigns(now: Date) {
       distinctUsersCount: 7,
       distinctChatsCount: 5,
       observationsCount: 18,
+      userObservationsCount: options.userScoped ? 3 : null,
       lastSeenAt: addHours(now, -0.8).toISOString(),
       preview: 'promo-bad.example',
     },
@@ -4319,6 +4320,7 @@ function createPreviewSpammerCampaigns(now: Date) {
       distinctUsersCount: 4,
       distinctChatsCount: 3,
       observationsCount: 9,
+      userObservationsCount: options.userScoped ? 2 : null,
       lastSeenAt: addHours(now, -2.4).toISOString(),
       preview: null,
     },
@@ -4459,7 +4461,7 @@ function buildPreviewSpammerDiagnostics(
           suppressed: 2,
         },
       ],
-      campaigns: createPreviewSpammerCampaigns(now),
+      campaigns: createPreviewSpammerCampaigns(now, { userScoped: true }),
       localAdminDecision: null,
       reputationSummary: {
         naturalBanSignals: 0,
@@ -4623,7 +4625,9 @@ function buildPreviewSpammerDiagnostics(
         suppressed: 2,
       },
     ],
-    campaigns: candidate ? createPreviewSpammerCampaigns(now).slice(0, 1) : [],
+    campaigns: candidate
+      ? createPreviewSpammerCampaigns(now, { userScoped: true }).slice(0, 1)
+      : [],
     localAdminDecision,
     reputationSummary: {
       naturalBanSignals,

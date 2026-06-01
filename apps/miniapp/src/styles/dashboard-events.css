@@ -1217,6 +1217,13 @@
   min-width: 0;
 }
 
+.spammer-diagnostics__section-head {
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
 .spammer-diagnostics__hero-top span,
 .spammer-diagnostics__confidence-head span,
 .spammer-diagnostics__section-head span,
@@ -1352,6 +1359,11 @@
   font-weight: 900;
   line-height: 1.1;
   white-space: nowrap;
+}
+
+.spammer-diagnostics__section-head strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .spammer-diagnostics__confidence small {
@@ -1547,7 +1559,7 @@
 
 .spammer-diagnostics__actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
 }
@@ -1606,6 +1618,7 @@
 }
 
 .spammer-diagnostics__action--danger {
+  grid-column: 1 / -1;
   color: #ffffff;
   border-color: rgba(228, 83, 99, 0.22);
   background: linear-gradient(145deg, #f06b79, #d83d50);
