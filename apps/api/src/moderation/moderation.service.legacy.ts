@@ -1308,6 +1308,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasVideoAttachment: mediaFlags.hasVideoAttachment,
         hasFileAttachment: mediaFlags.hasFileAttachment,
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
+        hasMediaBatch: mediaFlags.hasMediaBatch,
         skipDuplicateState: Boolean(duplicateStateSkipReason),
         skipStatefulMessageLimits: updateType === 'message_edited',
         commercialCampaignContext,

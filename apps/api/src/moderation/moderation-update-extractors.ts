@@ -8,6 +8,7 @@ export type ModerationMediaFlags = {
   hasVideoAttachment: boolean;
   hasFileAttachment: boolean;
   hasVoiceAttachment: boolean;
+  hasMediaBatch: boolean;
 };
 
 export function calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -198,7 +199,8 @@ function collectMediaFlags(
       flags.hasStickerAttachment &&
       flags.hasVideoAttachment &&
       flags.hasFileAttachment &&
-      flags.hasVoiceAttachment)
+      flags.hasVoiceAttachment &&
+      flags.hasMediaBatch)
   ) {
     return;
   }
@@ -224,7 +226,7 @@ function collectMediaFlags(
     row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
       ? (row.payload as Record<string, unknown>)
       : null;
-  const type = readLowerString(row.type);
+  const type = readLowerString(row.type ?? payload?.type);
   const mimeType = readLowerString(
     row.mime_type ?? row.mimeType ?? payload?.mime_type ?? payload?.mimeType,
   );
@@ -237,7 +239,9 @@ function collectMediaFlags(
       payload?.filename ??
       payload?.url,
   );
-  const mediaType = readLowerString(row.media_type ?? row.mediaType);
+  const mediaType = readLowerString(
+    row.media_type ?? row.mediaType ?? payload?.media_type ?? payload?.mediaType,
+  );
   const stickerContext = inStickerContext || type === 'sticker' || mediaType === 'sticker';
   const imageLike =
     !stickerContext &&
@@ -293,10 +297,15 @@ function collectMediaFlags(
 
   for (const [key, value] of Object.entries(row)) {
     const keyLower = key.toLowerCase();
+    if (isMediaBatchKey(keyLower)) {
+      flags.hasMediaBatch = true;
+    }
+
     if (
       !stickerContext &&
       !fileContext &&
       (keyLower === 'photo' ||
+        keyLower === 'photos' ||
         keyLower === 'image' ||
         keyLower === 'picture' ||
         keyLower === 'images')
@@ -346,11 +355,31 @@ function createEmptyMediaFlags(): ModerationMediaFlags {
     hasVideoAttachment: false,
     hasFileAttachment: false,
     hasVoiceAttachment: false,
+    hasMediaBatch: false,
   };
 }
 
+function isMediaBatchKey(value: string): boolean {
+  return (
+    value === 'album' ||
+    value === 'albumid' ||
+    value === 'album_id' ||
+    value === 'mediagroup' ||
+    value === 'mediagroupid' ||
+    value === 'media_group' ||
+    value === 'media_group_id'
+  );
+}
+
 function isReplyReferenceType(value: string | null): boolean {
-  return value === 'reply' || value === 'reply_message' || value === 'replymessage';
+  return (
+    value === 'reply' ||
+    value === 'reply_message' ||
+    value === 'replymessage' ||
+    value === 'quoted' ||
+    value === 'quoted_message' ||
+    value === 'quotedmessage'
+  );
 }
 
 function isReplyReferenceKey(value: string): boolean {

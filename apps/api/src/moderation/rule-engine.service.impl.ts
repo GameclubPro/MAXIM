@@ -663,6 +663,7 @@ export class RuleEngineService {
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
+    hasMediaBatch?: boolean;
     skipDuplicateState?: boolean;
     skipStatefulMessageLimits?: boolean;
     commercialCampaignContext?: CommercialCampaignContext | null;
@@ -679,10 +680,19 @@ export class RuleEngineService {
       hasVideoAttachment,
       hasFileAttachment,
       hasVoiceAttachment,
+      hasMediaBatch,
       skipDuplicateState,
       skipStatefulMessageLimits,
       commercialCampaignContext,
     } = params;
+    const hasMediaAttachment = Boolean(
+      hasPhotoAttachment ||
+      hasStickerAttachment ||
+      hasVideoAttachment ||
+      hasFileAttachment ||
+      hasVoiceAttachment ||
+      hasMediaBatch,
+    );
     const profile = createRuleEngineDetectProfile();
     const violations: RuleViolation[] = [];
     const detectionContext = createRuleDetectionContext({
@@ -791,7 +801,7 @@ export class RuleEngineService {
           chatId,
           userId,
           settings,
-          hasPhotoAttachment,
+          hasMediaAttachment,
         });
     if (antiSpamViolation) {
       violations.push(antiSpamViolation);

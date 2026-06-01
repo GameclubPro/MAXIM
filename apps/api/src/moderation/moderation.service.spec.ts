@@ -1226,12 +1226,12 @@ function createForwardedUpdate(forwardedText: string): MaxUpdate {
   };
 }
 
-function createVideoAttachmentUpdate(): MaxUpdate {
+function createVideoAttachmentUpdate(suffix = 1): MaxUpdate {
   return {
-    updateId: 'upd-video-1',
+    updateId: `upd-video-${suffix}`,
     type: 'message_created',
     message: {
-      messageId: 'msg-video-1',
+      messageId: `msg-video-${suffix}`,
       chatId: 'chat-1',
       senderId: 'user-1',
       senderName: 'Алексей',
@@ -1244,7 +1244,7 @@ function createVideoAttachmentUpdate(): MaxUpdate {
           {
             type: 'video',
             payload: {
-              url: 'https://cdn.example/video.mp4',
+              url: `https://cdn.example/video-${suffix}.mp4`,
             },
           },
         ],
@@ -1253,12 +1253,12 @@ function createVideoAttachmentUpdate(): MaxUpdate {
   };
 }
 
-function createStickerAttachmentUpdate(): MaxUpdate {
+function createStickerAttachmentUpdate(suffix = 1): MaxUpdate {
   return {
-    updateId: 'upd-sticker-1',
+    updateId: `upd-sticker-${suffix}`,
     type: 'message_created',
     message: {
-      messageId: 'msg-sticker-1',
+      messageId: `msg-sticker-${suffix}`,
       chatId: 'chat-1',
       senderId: 'user-1',
       senderName: 'Алексей',
@@ -1272,7 +1272,7 @@ function createStickerAttachmentUpdate(): MaxUpdate {
             type: 'sticker',
             payload: {
               mime_type: 'image/webp',
-              url: 'https://cdn.example/sticker.webp',
+              url: `https://cdn.example/sticker-${suffix}.webp`,
             },
           },
         ],
@@ -1281,12 +1281,12 @@ function createStickerAttachmentUpdate(): MaxUpdate {
   };
 }
 
-function createVoiceAttachmentUpdate(): MaxUpdate {
+function createVoiceAttachmentUpdate(suffix = 1): MaxUpdate {
   return {
-    updateId: 'upd-voice-1',
+    updateId: `upd-voice-${suffix}`,
     type: 'message_created',
     message: {
-      messageId: 'msg-voice-1',
+      messageId: `msg-voice-${suffix}`,
       chatId: 'chat-1',
       senderId: 'user-1',
       senderName: 'Алексей',
@@ -1299,10 +1299,60 @@ function createVoiceAttachmentUpdate(): MaxUpdate {
           {
             type: 'voice',
             payload: {
-              url: 'https://cdn.example/voice.ogg',
+              url: `https://cdn.example/voice-${suffix}.ogg`,
             },
           },
         ],
+      },
+    },
+  };
+}
+
+function createFileAttachmentUpdate(suffix = 1): MaxUpdate {
+  return {
+    updateId: `upd-file-${suffix}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-file-${suffix}`,
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        attachments: [
+          {
+            type: 'file',
+            payload: {
+              file_name: `document-${suffix}.pdf`,
+              url: `https://cdn.example/document-${suffix}.pdf`,
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+function createMediaGroupMarkerUpdate(suffix = 1): MaxUpdate {
+  return {
+    updateId: `upd-media-group-${suffix}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-media-group-${suffix}`,
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          media_group_id: `group-${suffix}`,
+        },
       },
     },
   };
@@ -5595,17 +5645,19 @@ describe('ModerationService', () => {
         }),
       },
       globalSpammer: {
-        findMany: jest.fn().mockResolvedValue([{
-          userId: 'user-1',
-          expiresAt,
-          sourceBreakdown: {
-            DEVELOPER_FORCED: {
-              score: 1,
-              count: 1,
-              reasons: ['По решению разработчика бота за нарушение правил'],
+        findMany: jest.fn().mockResolvedValue([
+          {
+            userId: 'user-1',
+            expiresAt,
+            sourceBreakdown: {
+              DEVELOPER_FORCED: {
+                score: 1,
+                count: 1,
+                reasons: ['По решению разработчика бота за нарушение правил'],
+              },
             },
           },
-        }]),
+        ]),
       },
       violation: {
         create: jest.fn(),
@@ -13402,63 +13454,73 @@ describe('ModerationService', () => {
     });
   });
 
-  it('does not hard-ban rapid photo batches through the real rule engine', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            antiSpamEnabled: true,
-            antiDuplicateEnabled: false,
+  it.each([
+    ['photo', createPhotoAttachmentUpdate],
+    ['sticker', createStickerAttachmentUpdate],
+    ['video', createVideoAttachmentUpdate],
+    ['file', createFileAttachmentUpdate],
+    ['voice', createVoiceAttachmentUpdate],
+    ['media-group marker', createMediaGroupMarkerUpdate],
+  ])(
+    'does not hard-ban rapid %s attachment batches through the real rule engine',
+    async (_kind, createMediaUpdate) => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({
+              antiSpamEnabled: true,
+              antiDuplicateEnabled: false,
+            }),
+            domains: [],
           }),
-          domains: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const redisCounter = createRedisCounterMock();
-    const ruleEngine = new RuleEngineService(redisCounter as never);
-    const sanctionService = {
-      resolveAction: jest.fn(),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const redisCounter = createRedisCounterMock();
+      const ruleEngine = new RuleEngineService(redisCounter as never);
+      const sanctionService = {
+        resolveAction: jest.fn(),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-    );
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        sanctionService as never,
+        maxClient as never,
+      );
 
-    for (let index = 1; index <= 6; index += 1) {
-      await service.handleUpdate(createPhotoAttachmentUpdate(index));
-    }
+      for (let index = 1; index <= 6; index += 1) {
+        await service.handleUpdate(createMediaUpdate(index));
+      }
 
-    expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
-      expect.stringContaining('message:anti-spam-burst'),
-      expect.any(Number),
-    );
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-  });
+      expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+        expect.stringContaining('message:anti-spam-burst'),
+        expect.any(Number),
+      );
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    },
+  );
 
   it('includes blocked word in MESSAGE_BLOCKED_WORD bot explanation', async () => {
     const prisma = {

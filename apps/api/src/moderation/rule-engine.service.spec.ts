@@ -2596,10 +2596,7 @@ describe('RuleEngineService', () => {
     );
     expect(gridConnection).toBeDefined();
     expect(gridConnection?.metadata?.matchedSignals).toEqual(
-      expect.arrayContaining([
-        'intent:помогу-с-оформлением',
-        'service-specialty:техприсоединение',
-      ]),
+      expect.arrayContaining(['intent:помогу-с-оформлением', 'service-specialty:техприсоединение']),
     );
   });
 
@@ -2641,10 +2638,7 @@ describe('RuleEngineService', () => {
     );
     expect(appDirectory).toBeDefined();
     expect(appDirectory?.metadata?.matchedSignals).toEqual(
-      expect.arrayContaining([
-        'risk:app-store-directory-promo',
-        'risk:app-store-directory-link',
-      ]),
+      expect.arrayContaining(['risk:app-store-directory-promo', 'risk:app-store-directory-link']),
     );
     expect(invite).toBeDefined();
     expect(invite?.metadata?.matchedSignals).toEqual(
@@ -3823,30 +3817,40 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('does not trigger built-in anti-spam burst for photo batches', async () => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    let result = await service.detect({
-      chatId: 'chat-1',
-      userId: 'u-1',
-      text: '',
-      settings: buildSettings({ antiSpamEnabled: true }),
-      domainAllowlist: [],
-      hasPhotoAttachment: true,
-    });
-
-    for (let index = 0; index < 5; index += 1) {
-      result = await service.detect({
+  it.each([
+    ['photo', { hasPhotoAttachment: true }],
+    ['sticker', { hasStickerAttachment: true }],
+    ['video', { hasVideoAttachment: true }],
+    ['file', { hasFileAttachment: true }],
+    ['voice', { hasVoiceAttachment: true }],
+    ['media batch marker', { hasMediaBatch: true }],
+  ])(
+    'does not trigger built-in anti-spam burst for %s attachments or batches',
+    async (_kind, flags) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      let result = await service.detect({
         chatId: 'chat-1',
         userId: 'u-1',
         text: '',
         settings: buildSettings({ antiSpamEnabled: true }),
         domainAllowlist: [],
-        hasPhotoAttachment: true,
+        ...flags,
       });
-    }
 
-    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(false);
-  });
+      for (let index = 0; index < 5; index += 1) {
+        result = await service.detect({
+          chatId: 'chat-1',
+          userId: 'u-1',
+          text: '',
+          settings: buildSettings({ antiSpamEnabled: true }),
+          domainAllowlist: [],
+          ...flags,
+        });
+      }
+
+      expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(false);
+    },
+  );
 
   it('allows one duplicate, then escalates to WARN/MUTE/BAN in sequence', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);

@@ -218,7 +218,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
     expect(redisCounter.calls).toEqual([]);
   });
 
-  it('skips the built-in anti-spam burst window for photo batches', async () => {
+  it('skips the built-in anti-spam burst window for media attachments and batches', async () => {
     const redisCounter = new MockRedisCounterService();
     const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
     const settings = buildSettings({ antiSpamEnabled: true });
@@ -229,7 +229,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
           chatId: 'chat-1',
           userId: 'user-1',
           settings,
-          hasPhotoAttachment: true,
+          hasMediaAttachment: true,
         }),
       ).resolves.toBeNull();
     }
