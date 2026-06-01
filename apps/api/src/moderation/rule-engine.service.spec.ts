@@ -89,6 +89,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
+    messageLimitsWarnMessageText: '',
     messageLimitsBanEnabled: false,
     messageLimitsMuteEnabled: false,
     messageLimitsMuteDurationHours: 6,

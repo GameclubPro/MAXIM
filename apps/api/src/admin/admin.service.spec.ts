@@ -7898,7 +7898,9 @@ describe('AdminService.applyManualSystemBan', () => {
         action === 'delete_message' ? 'delete-bot' : 'moderate-bot',
       );
     jest.spyOn(service as any, 'assertBotCanManageMembers').mockRejectedValue(new Error('no ban'));
-    jest.spyOn(service as any, 'assertBotCanDeleteMessages').mockRejectedValue(new Error('no delete'));
+    jest
+      .spyOn(service as any, 'assertBotCanDeleteMessages')
+      .mockRejectedValue(new Error('no delete'));
 
     await service.processDeveloperSuperBanJob({
       kind: 'developer_super_ban',
@@ -16932,7 +16934,12 @@ describe('AdminService settings screen endpoints', () => {
       settings,
       'miniapp',
       { mode: 'all', favoriteTypes: [], chatIds: [] },
-      ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
+      [
+        'messageLimitsBlockedWords',
+        'messageLimitsBlockedDomains',
+        'messageLimitsBotMessageText',
+        'messageLimitsWarnMessageText',
+      ],
     );
     expect(stopWordsResult.section).toBe('stopWords');
   });

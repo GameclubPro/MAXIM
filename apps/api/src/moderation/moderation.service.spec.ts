@@ -83,6 +83,7 @@ function majorExplanation(
   if (
     reason.includes('стоп-слово') ||
     reason.includes('слово из стоп-листа') ||
+    reason.includes('такие сообщения запрещены') ||
     reason.includes('слишком длинное сообщение') ||
     reason.includes('видео в этом чате отключены') ||
     reason.includes('файлы в этом чате отключены') ||
@@ -272,6 +273,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
+    messageLimitsWarnMessageText: '',
     messageLimitsBanEnabled: false,
     messageLimitsMuteEnabled: false,
     messageLimitsBotButtonEnabled: false,
@@ -13522,7 +13524,7 @@ describe('ModerationService', () => {
     },
   );
 
-  it('includes blocked word in MESSAGE_BLOCKED_WORD bot explanation', async () => {
+  it('uses a generic public reason in MESSAGE_BLOCKED_WORD bot explanation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -13581,7 +13583,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'стоп-слово: казино'),
+      majorExplanation('Алексей', 'снято с линии', 'такие сообщения запрещены в чате'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -13743,7 +13745,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues WARN on second MESSAGE_BLOCKED_WORD violation with matched word reason', async () => {
+  it('uses editable warning text for second MESSAGE_BLOCKED_WORD violation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -13753,6 +13755,8 @@ describe('ModerationService', () => {
             messageLimitsBlockedWords: ['казино'],
             messageLimitsBotMessageEnabled: true,
             messageLimitsWarnEnabled: true,
+            messageLimitsWarnMessageText:
+              '{user}, предупреждение: такие сообщения запрещены в чате.',
           }),
           domains: [],
         }),
@@ -13804,7 +13808,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsWarnNotice('Алексей', 'стоп-слово: казино'),
+      `${userMention('Алексей')}, предупреждение: такие сообщения запрещены в чате.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({

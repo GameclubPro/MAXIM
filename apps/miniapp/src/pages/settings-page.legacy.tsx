@@ -9232,6 +9232,78 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         )}
                       </div>
+
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Сообщения бота для стоп-слов"
+                      >
+                        <span>Сообщения бота</span>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">1. Объяснение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст объяснения о стоп-словах"
+                                onClick={() => toggleBotMessageEditor('stopWords')}
+                                isOpen={openBotEditorKey === 'stopWords'}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {openBotEditorKey === 'stopWords' ? (
+                          <BotMessageEditor
+                            editorKey="stopWords"
+                            botSpeechStyle={draft.botSpeechStyle}
+                            botSpeechPreviewContext={botSpeechPreviewContext}
+                            value={draft.messageLimitsBotMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'messageLimitsBotMessageText',
+                                nextValue as ChatSettings['messageLimitsBotMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('messageLimitsBotMessageText', '')}
+                            onClose={() => setOpenBotEditorKey(null)}
+                          />
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">2. Предупреждение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст предупреждения о стоп-словах"
+                                onClick={() => toggleWarnMessageEditor('stopWordsWarn')}
+                                isOpen={openWarnEditorKey === 'stopWordsWarn'}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {openWarnEditorKey === 'stopWordsWarn' ? (
+                          <WarnMessageEditor
+                            editorKey="stopWordsWarn"
+                            botSpeechStyle={draft.botSpeechStyle}
+                            botSpeechPreviewContext={botSpeechPreviewContext}
+                            value={draft.messageLimitsWarnMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'messageLimitsWarnMessageText',
+                                nextValue as ChatSettings['messageLimitsWarnMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('messageLimitsWarnMessageText', '')}
+                            onClose={() => setOpenWarnEditorKey(null)}
+                          />
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                 </div>

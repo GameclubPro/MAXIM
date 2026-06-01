@@ -574,6 +574,7 @@ export type BotMessageEditorKey =
   | 'textFilters'
   | 'duplicate'
   | 'messageLimits'
+  | 'stopWords'
   | 'phoneNumbers'
   | 'night'
   | 'nightOpen';
@@ -581,7 +582,8 @@ export type WarnMessageEditorKey =
   | 'linkWarn'
   | 'requiredSubscriptionWarn'
   | 'invitationAccessWarn'
-  | 'textFiltersWarn';
+  | 'textFiltersWarn'
+  | 'stopWordsWarn';
 export type SettingsSectionKey =
   | ApplySectionKey
   | 'rules'
@@ -825,6 +827,7 @@ export const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeec
     textFilters: 'textFiltersBotMessageText',
     duplicate: 'duplicateBotMessageText',
     messageLimits: 'messageLimitsBotMessageText',
+    stopWords: 'messageLimitsBotMessageText',
     phoneNumbers: 'phoneNumbersBotMessageText',
     night: 'nightModeBotMessageText',
     nightOpen: 'nightModeOpenMessageText',
@@ -838,6 +841,7 @@ export const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<
   requiredSubscriptionWarn: 'requiredSubscriptionWarnMessageText',
   invitationAccessWarn: 'invitationAccessWarnMessageText',
   textFiltersWarn: 'textFiltersWarnMessageText',
+  stopWordsWarn: 'messageLimitsWarnMessageText',
 };
 
 const BOT_MESSAGE_EDITOR_SHEET_TITLES: Record<BotMessageEditorKey, string> = {
@@ -848,6 +852,7 @@ const BOT_MESSAGE_EDITOR_SHEET_TITLES: Record<BotMessageEditorKey, string> = {
   textFilters: 'Объяснение о тексте',
   duplicate: 'Объяснение о дублях',
   messageLimits: 'Объяснение об ограничениях',
+  stopWords: 'Объяснение о стоп-словах',
   phoneNumbers: 'Объяснение о телефонах',
   night: 'Ночной режим',
   nightOpen: 'Открытие чата',
@@ -858,6 +863,7 @@ const WARN_MESSAGE_EDITOR_SHEET_TITLES: Record<WarnMessageEditorKey, string> = {
   requiredSubscriptionWarn: 'Предупреждение о подписке',
   invitationAccessWarn: 'Предупреждение о приглашениях',
   textFiltersWarn: 'Предупреждение о тексте',
+  stopWordsWarn: 'Предупреждение о стоп-словах',
 };
 
 export const BOT_SPEECH_SYNC_SETTING_KEYS = [

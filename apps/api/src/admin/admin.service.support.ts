@@ -670,6 +670,7 @@ export const SETTINGS_SECTION_KEYS = {
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
+    'messageLimitsWarnMessageText',
     'messageLimitsBanEnabled',
     'messageLimitsMuteEnabled',
     'messageLimitsMuteDurationHours',
@@ -681,7 +682,12 @@ export const SETTINGS_SECTION_KEYS = {
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
-  stopWords: ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
+  stopWords: [
+    'messageLimitsBlockedWords',
+    'messageLimitsBlockedDomains',
+    'messageLimitsBotMessageText',
+    'messageLimitsWarnMessageText',
+  ],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',

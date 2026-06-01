@@ -24,6 +24,7 @@ function createBotSpeechSettings(
     textFiltersWarnMessageText: '',
     duplicateBotMessageText: '',
     messageLimitsBotMessageText: '',
+    messageLimitsWarnMessageText: '',
     phoneNumbersBotMessageText: '',
     nightModeBotMessageText: '',
     nightModeOpenMessageText: '',

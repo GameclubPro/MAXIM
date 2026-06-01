@@ -655,6 +655,7 @@ export const chatSettingsSchema = z
       messageLimitsBotMessageEnabled: z.boolean().default(false),
       messageLimitsBotMessageText: botMessageTextSchema,
       messageLimitsWarnEnabled: z.boolean().default(false),
+      messageLimitsWarnMessageText: botMessageTextSchema,
       messageLimitsBanEnabled: z.boolean().default(false),
       messageLimitsMuteEnabled: z.boolean().default(false),
       messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,

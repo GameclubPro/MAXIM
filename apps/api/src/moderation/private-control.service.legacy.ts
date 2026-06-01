@@ -910,6 +910,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
+    { key: 'messageLimitsWarnMessageText', label: 'Текст предупреждения', type: 'text' },
     { key: 'messageLimitsMuteEnabled', label: 'Штраф: мут', type: 'boolean' },
     {
       key: 'messageLimitsMuteDurationHours',
@@ -1112,6 +1113,7 @@ const SECTION_CARD_FIELDS: Record<
       'messageLimitsBotMessageEnabled',
       'messageLimitsBotMessageText',
       'messageLimitsWarnEnabled',
+      'messageLimitsWarnMessageText',
       'messageLimitsMuteEnabled',
       'messageLimitsMuteDurationHours',
       'messageLimitsBanEnabled',

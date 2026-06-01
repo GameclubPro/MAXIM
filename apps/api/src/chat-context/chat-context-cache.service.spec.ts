@@ -217,6 +217,7 @@ function buildSettings(chatId: string): ChatSettings {
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
+    messageLimitsWarnMessageText: '',
     messageLimitsBanEnabled: false,
     messageLimitsMuteEnabled: false,
     messageLimitsMuteDurationHours: 6,

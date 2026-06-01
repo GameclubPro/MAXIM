@@ -158,6 +158,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
+    'messageLimitsWarnMessageText',
     'messageLimitsBanEnabled',
     'messageLimitsMuteEnabled',
     'messageLimitsMuteDurationHours',
@@ -169,7 +170,12 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'messageLimitsAdminContactButtonUrl',
     'phoneNumbersEnabled',
   ],
-  stopWords: ['messageLimitsBlockedWords', 'messageLimitsBlockedDomains'],
+  stopWords: [
+    'messageLimitsBlockedWords',
+    'messageLimitsBlockedDomains',
+    'messageLimitsBotMessageText',
+    'messageLimitsWarnMessageText',
+  ],
   phones: [
     'phoneNumbersEnabled',
     'phoneNumbersBotMessageEnabled',

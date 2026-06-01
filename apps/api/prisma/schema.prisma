@@ -344,6 +344,7 @@ model ChatSettings {
   messageLimitsBotMessageEnabled                Boolean                  @default(false) @map("message_limits_bot_message_enabled")
   messageLimitsBotMessageText                   String                   @default("") @map("message_limits_bot_message_text")
   messageLimitsWarnEnabled                      Boolean                  @default(false) @map("message_limits_warn_enabled")
+  messageLimitsWarnMessageText                  String                   @default("") @map("message_limits_warn_message_text")
   messageLimitsBanEnabled                       Boolean                  @default(false) @map("message_limits_ban_enabled")
   messageLimitsMuteEnabled                      Boolean                  @default(false) @map("message_limits_mute_enabled")
   messageLimitsMuteDurationHours                Int                      @default(6) @map("message_limits_mute_duration_hours")

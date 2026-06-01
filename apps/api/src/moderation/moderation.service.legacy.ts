@@ -1923,6 +1923,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                     topViolation.ruleCode,
                     messageLimitsBlockedWord,
                     settings.botSpeechStyle,
+                    settings.messageLimitsWarnMessageText,
                   ),
                   settings.messageLimitsAdminContactButtonEnabled,
                   settings.messageLimitsAdminContactButtonUrl,
@@ -4300,10 +4301,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string,
     blockedWord: string | null | undefined,
     botSpeechStyle: BotSpeechStyle | null,
+    templateText = '',
   ): string {
-    return this.renderSystemBotSpeechTemplate({
+    return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: 'messageLimitsWarn',
+      fieldKey: 'messageLimitsWarnMessageText',
+      overrideText: templateText,
       replacements: {
         user: userLabel,
         reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
