@@ -801,7 +801,7 @@ function resolveDiagnosticsHeadline(diagnostics: GlobalSpammerUserDiagnostics): 
     return 'В базе спама';
   }
   if (status === 'LOCAL_BLOCKED') {
-    return 'Локально заблокирован';
+    return 'Отмечен спамером';
   }
   if (status === 'MEDIUM_REVIEW') {
     return 'На проверке';
@@ -821,7 +821,7 @@ function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics)
     return 'Автобан выключен';
   }
   if (policy.registryStatus === 'LOCAL_BLOCKED') {
-    return policy.action === 'NONE' ? 'Блокировка сохранена' : 'Забанит в чате';
+    return policy.action === 'NONE' ? 'Отметка сохранена' : 'Автобан при сообщении';
   }
   if (policy.action === 'DELETE_AND_KICK') {
     return 'Забанит в чате';
@@ -1057,8 +1057,13 @@ function buildDiagnosticsSignalGroups(
     .slice(0, 5);
 }
 
-function formatDiagnosticsSignalCount(group: DiagnosticsSignalGroup): string {
-  return `${group.count} ${formatRussianCountLabel(group.count, 'сигнал', 'сигнала', 'сигналов')}`;
+function formatDiagnosticsObservationCount(count: number): string {
+  return `${count} ${formatRussianCountLabel(
+    count,
+    'наблюдение',
+    'наблюдения',
+    'наблюдений',
+  )}`;
 }
 
 function scoreToPercent(value: number | null): number | null {
@@ -1093,7 +1098,7 @@ function buildDiagnosticsFacts(
   if (diagnostics.localAdminDecision) {
     const decisionLabels: Record<string, string> = {
       ALLOW: 'Не спамер',
-      BLOCK: 'Блокировать',
+      BLOCK: 'Подтверждён как спамер',
       REVIEW: 'Отправить на проверку',
     };
     facts.push({
@@ -1329,7 +1334,7 @@ function SpammerDiagnosticsSheet({
   const isActionBusy = isReviewing || isBanning;
   const footer = diagnostics ? (
     <div className="spammer-diagnostics__footer">
-      <div className="spammer-diagnostics__actions" aria-label="Действия модератора">
+      <div className="spammer-diagnostics__actions" aria-label="Решения по спам-базе и бану">
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
@@ -1338,15 +1343,17 @@ function SpammerDiagnosticsSheet({
           aria-label="Не спамер"
         >
           <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не спамер'}</span>
+          {reviewingAction === 'SUPPRESS' ? null : <small>исключить</small>}
         </button>
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--accent"
           disabled={isActionBusy}
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
-          aria-label="Блокировать"
+          aria-label="Подтвердить как спамера"
         >
-          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Блокировать'}</span>
+          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Подтвердить'}</span>
+          {reviewingAction === 'APPROVE' ? null : <small>как спамера</small>}
         </button>
         <button
           type="button"
@@ -1355,7 +1362,8 @@ function SpammerDiagnosticsSheet({
           onClick={() => onBan(diagnostics.userId)}
           aria-label="Забанить в чате"
         >
-          <span>{isBanning ? 'Баним...' : 'Забанить в чате'}</span>
+          <span>{isBanning ? 'Баним...' : 'Забанить'}</span>
+          {isBanning ? null : <small>в чате сейчас</small>}
         </button>
       </div>
     </div>
@@ -1447,7 +1455,7 @@ function SpammerDiagnosticsSheet({
             <div className="spammer-diagnostics__hero-main">
               <div className="spammer-diagnostics__confidence-orb" aria-hidden="true">
                 <strong>{confidencePercent !== null ? `${confidencePercent}%` : 'нет'}</strong>
-                <span>{confidencePercent !== null ? 'уверенность' : 'оценки'}</span>
+                <span>{confidencePercent !== null ? 'риск' : 'оценки'}</span>
               </div>
 
               <div className="spammer-diagnostics__verdict-copy">
@@ -1473,15 +1481,16 @@ function SpammerDiagnosticsSheet({
               <span>Почему система так решила</span>
               <strong>
                 {signalCount > 0
-                  ? `${signalCount} ${formatRussianCountLabel(
-                      signalCount,
-                      'сигнал',
-                      'сигнала',
-                      'сигналов',
-                    )}`
+                  ? formatDiagnosticsObservationCount(signalCount)
                   : 'Сигналов нет'}
               </strong>
             </div>
+            {signalGroups.length > 0 ? (
+              <p className="spammer-diagnostics__section-note">
+                Наблюдения - найденные совпадения. Сила риска - вес самого сильного сигнала,
+                а не доля сообщений.
+              </p>
+            ) : null}
             {signalGroups.length > 0 ? (
               <div className="spammer-diagnostics__signal-list">
                 {signalGroups.map((group) => {
@@ -1490,9 +1499,8 @@ function SpammerDiagnosticsSheet({
                     <article key={group.key} className="spammer-diagnostics__signal-card">
                       <div className="spammer-diagnostics__signal-copy">
                         <strong>{group.label}</strong>
-                        <span>
-                          {formatDiagnosticsSignalCount(group)} · {percent}%
-                        </span>
+                        <span>{formatDiagnosticsObservationCount(group.count)}</span>
+                        <small>Сила риска {percent}%</small>
                       </div>
                     </article>
                   );

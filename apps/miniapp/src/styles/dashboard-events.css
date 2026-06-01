@@ -1455,6 +1455,16 @@
   min-width: 0;
 }
 
+.spammer-diagnostics__section-note {
+  min-width: 0;
+  margin: -2px 0 0;
+  color: #60778c;
+  font-size: 0.66rem;
+  font-weight: 740;
+  line-height: 1.28;
+  overflow-wrap: anywhere;
+}
+
 .spammer-diagnostics__signal-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1486,6 +1496,7 @@
 }
 
 .spammer-diagnostics__signal-copy span,
+.spammer-diagnostics__signal-copy small,
 .spammer-diagnostics__empty span,
 .spammer-diagnostics__campaign span,
 .spammer-diagnostics__campaign small {
