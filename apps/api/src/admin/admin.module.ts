@@ -14,6 +14,8 @@ import { AdminManualFanoutProcessor } from './admin-manual-fanout.processor';
 import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
+import { AdminSuperBanProcessor } from './admin-super-ban.processor';
+import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
@@ -51,6 +53,7 @@ import { VkSyncService } from './vk-sync.service';
   imports: [
     BullModule.registerQueue({ name: ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_MANUAL_FANOUT_QUEUE }),
+    BullModule.registerQueue({ name: ADMIN_SUPER_BAN_QUEUE }),
     BullModule.registerQueue({ name: ADMIN_SUGGESTION_DELIVERY_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_SYNC_QUEUE }),
     BullModule.registerQueue({ name: VK_PARSING_PUBLISH_QUEUE }),
@@ -98,6 +101,7 @@ import { VkSyncService } from './vk-sync.service';
     ...(roleRunsAction(getAppRole()) ? [VkParsingPublishProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManagedEntitiesRefreshProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
+    ...(roleRunsAction(getAppRole()) ? [AdminSuperBanProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
   ],
   exports: [

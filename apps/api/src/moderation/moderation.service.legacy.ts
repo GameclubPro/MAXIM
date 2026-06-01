@@ -98,6 +98,7 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from './moderation-state.util';
+import { buildDeveloperForcedGlobalSpammerCacheKey } from './developer-forced-global-spammer-cache';
 import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
 import {
   buildMessageLimitsBlockedReason,
@@ -957,6 +958,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings,
           });
         }
+        return;
+      }
+
+      if (
+        messageId &&
+        typeof this.adminService?.isSuperBanDeveloperUserId === 'function' &&
+        this.adminService.isSuperBanDeveloperUserId(senderId) &&
+        (await this.handleAdminForwardedModerationCommand({
+          update,
+          chatId,
+          senderId,
+          messageId,
+          settings,
+          superBanOnly: true,
+          ...(chatTitle !== undefined ? { chatTitle } : {}),
+          ...(senderName !== undefined ? { senderName } : {}),
+        }))
+      ) {
+        return;
+      }
+
+      this.markWebhookHotPathStage(hotPathProfile, 'developer-forced-global-spammer');
+      if (await this.isDeveloperForcedGlobalSpammerCached(senderId)) {
+        await this.deleteAndKickDetectedGlobalSpammer({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+          reason: 'Developer-forced global blacklist',
+        });
         return;
       }
 
@@ -5135,8 +5166,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderName?: string;
     messageId: string;
     settings: ChatSettings;
+    superBanOnly?: boolean;
   }): Promise<boolean> {
-    const { update, chatId, chatTitle, senderId, senderName, messageId, settings } = params;
+    const { update, chatId, chatTitle, senderId, senderName, messageId, settings, superBanOnly } =
+      params;
     const directText = this.extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
     try {
@@ -5150,6 +5183,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
     if (!command) {
+      return false;
+    }
+    if (superBanOnly === true && command.action !== 'SUPER_BAN') {
       return false;
     }
 
@@ -5170,6 +5206,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Admin forwarded command ignored: AdminService is unavailable',
       );
       return false;
+    }
+
+    if (
+      command.action === 'SUPER_BAN' &&
+      !this.adminService.isSuperBanDeveloperUserId(senderId)
+    ) {
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: 'Команда `супер бан` доступна только разработчику бота.',
+      });
+      return true;
     }
 
     if (command.action === 'RULES') {
@@ -5240,11 +5288,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const targets = this.extractForwardedModerationTargets(update, chatId);
+    const commandHelpText =
+      command.action === 'SUPER_BAN' ? '`супер бан`' : '`бан` или `мут`';
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: 'Ответьте на сообщение из этого чата или перешлите его и добавьте слово `бан` или `мут`.',
+        text: `Ответьте на сообщение из этого чата или перешлите его и добавьте команду ${commandHelpText}.`,
       });
       return true;
     }
@@ -5254,7 +5304,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: 'Перешлите или ответьте на одно сообщение из этого чата и добавьте слово `бан` или `мут`.',
+        text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${commandHelpText}.`,
       });
       return true;
     }
@@ -5264,29 +5314,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: 'Команда `бан` или `мут` работает только для сообщений из этого чата.',
+        text: `Команда ${commandHelpText} работает только для сообщений из этого чата.`,
       });
       return true;
     }
 
     try {
-      const queued = await this.adminService.enqueueManualGroupModerationCommand({
-        sourceChatId: chatId,
-        commandBotId: this.readExecutionOwnerBotId(update),
-        targetUserId: target.userId,
-        targetSenderName: target.senderName ?? null,
-        targetMessageId: target.messageId ?? null,
-        commandMessageId: messageId,
-        actor,
-        action: command.action,
-        ...(command.action === 'MUTE'
-          ? command.mutePermanent
-            ? { mutePermanent: true }
-            : { muteDurationHours: command.muteDurationHours }
-          : {}),
-        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-      });
+      const commandBotId = this.readExecutionOwnerBotId(update);
+      const queued =
+        command.action === 'SUPER_BAN'
+          ? await this.adminService.enqueueDeveloperSuperBanCommand({
+              sourceChatId: chatId,
+              commandBotId,
+              targetUserId: target.userId,
+              targetSenderName: target.senderName ?? null,
+              targetMessageId: target.messageId ?? null,
+              commandMessageId: messageId,
+              actor,
+              deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+              deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+            })
+          : await this.adminService.enqueueManualGroupModerationCommand({
+              sourceChatId: chatId,
+              commandBotId,
+              targetUserId: target.userId,
+              targetSenderName: target.senderName ?? null,
+              targetMessageId: target.messageId ?? null,
+              commandMessageId: messageId,
+              actor,
+              action: command.action,
+              ...(command.action === 'MUTE'
+                ? command.mutePermanent
+                  ? { mutePermanent: true }
+                  : { muteDurationHours: command.muteDurationHours }
+                : {}),
+              deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+              deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+            });
       if (!queued) {
         this.logger.warn(
           {
@@ -5297,6 +5361,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to enqueue forwarded admin moderation command',
         );
+        if (command.action === 'SUPER_BAN') {
+          await this.sendGroupAdminCommandNotice({
+            chatId,
+            settings,
+            text: 'Не удалось запустить супер бан. Повторите команду через несколько секунд.',
+          });
+        }
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -5308,6 +5379,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to enqueue forwarded admin moderation command',
       );
+
+      if (command.action === 'SUPER_BAN') {
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: `Не удалось запустить супер бан: ${this.escapeMaxMarkdownText(
+            this.extractGroupAdminCommandErrorMessage(error),
+          )}`,
+        });
+      }
 
       return true;
     }
@@ -5321,6 +5402,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const normalized = this.readLowerString(text);
     if (!normalized) {
       return null;
+    }
+
+    if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalized)) {
+      return {
+        action: 'SUPER_BAN',
+      };
     }
 
     if (
@@ -7535,6 +7622,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return row.expiresAt instanceof Date && row.expiresAt.getTime() > now.getTime();
     }
     return true;
+  }
+
+  private async isDeveloperForcedGlobalSpammerCached(userId: string): Promise<boolean> {
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (typeof getString !== 'function') {
+      return false;
+    }
+
+    try {
+      return (await getString.call(
+        this.redisCounter,
+        buildDeveloperForcedGlobalSpammerCacheKey(userId),
+      )) === '1';
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read developer-forced global spammer cache',
+      );
+      return false;
+    }
   }
 
   private async upsertGlobalSpammerEntry(params: {

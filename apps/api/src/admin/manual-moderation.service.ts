@@ -263,4 +263,10 @@ export class ManualModerationService {
   ): ReturnType<AdminService['processManualModerationFanoutJob']> {
     return this.legacyAdminService.processManualModerationFanoutJob(...args);
   }
+
+  processDeveloperSuperBanJob(
+    ...args: Parameters<AdminService['processDeveloperSuperBanJob']>
+  ): ReturnType<AdminService['processDeveloperSuperBanJob']> {
+    return this.legacyAdminService.processDeveloperSuperBanJob(...args);
+  }
 }

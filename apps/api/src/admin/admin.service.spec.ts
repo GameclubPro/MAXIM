@@ -7657,6 +7657,84 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('queues developer super ban commands with the highest group-command priority', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const adminSuperBanQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminSuperBanQueue as never,
+    );
+
+    const queued = await service.enqueueDeveloperSuperBanCommand({
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: '98315271',
+        username: null,
+        displayName: 'Разработчик',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(queued).toBe(true);
+    expect(adminSuperBanQueue.add).toHaveBeenCalledWith(
+      'execute-admin-super-ban',
+      expect.objectContaining({
+        kind: 'developer_super_ban',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-2',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-target-1',
+        commandMessageId: 'mid-command-1',
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: '98315271',
+          chatId: 'chat-1',
+        }),
+      }),
+      expect.objectContaining({
+        priority: 1,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('processes queued primary group ban commands outside the webhook hot path', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

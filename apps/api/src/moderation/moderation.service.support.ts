@@ -188,6 +188,9 @@ export type AdminForwardedModerationCommand =
       action: 'BAN';
     }
   | {
+      action: 'SUPER_BAN';
+    }
+  | {
       action: 'MUTE';
       muteDurationHours?: number;
       mutePermanent?: true;

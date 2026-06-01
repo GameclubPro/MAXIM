@@ -480,6 +480,7 @@ export class WebhookService {
     }
 
     return (
+      /^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(text) ||
       /^(?:бан|ban)(?:\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?)?[.!]?$/u.test(
         text,
       ) ||

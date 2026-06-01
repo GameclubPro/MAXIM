@@ -25,6 +25,7 @@ export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'GRAPH_FANOUT_PATTERN',
   'SANCTION_BAN',
   'MANUAL_BAN',
+  'DEVELOPER_FORCED',
   'LOCAL_ADMIN_BLOCK',
   'LOCAL_ADMIN_ALLOW',
   'REVIEW_APPROVED',
@@ -46,6 +47,7 @@ export type GlobalSpammerObservationInput = {
   evidenceHash?: string | null;
   observedAt?: Date;
   ttlDays?: number;
+  registryTtlDays?: number | null;
   forceRegistry?: boolean;
 };
 
@@ -343,6 +345,7 @@ type ResolvedLocalAdminDecision = {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OBSERVATION_TTL_DAYS = 14;
 const DEFAULT_SUPPRESSION_TTL_DAYS = 30;
+const DEVELOPER_FORCED_REGISTRY_TTL_DAYS = 3650;
 const OBSERVATION_HALF_LIFE_DAYS = 7;
 const MEDIUM_CONFIDENCE_THRESHOLD = 0.55;
 const HIGH_CONFIDENCE_THRESHOLD = 0.86;
@@ -368,6 +371,7 @@ const SOURCE_DEFAULT_TTL_DAYS: Partial<Record<GlobalSpammerObservationSource, nu
   GRAPH_FANOUT_PATTERN: 7,
   SANCTION_BAN: 21,
   MANUAL_BAN: 30,
+  DEVELOPER_FORCED: DEVELOPER_FORCED_REGISTRY_TTL_DAYS,
   LOCAL_ADMIN_BLOCK: 30,
   LOCAL_ADMIN_ALLOW: 30,
   REVIEW_APPROVED: 90,
@@ -387,6 +391,7 @@ const SOURCE_BASE_REPUTATION_WEIGHTS: Record<GlobalSpammerObservationSource, num
   GRAPH_FANOUT_PATTERN: 0.52,
   SANCTION_BAN: 0.38,
   MANUAL_BAN: 0.36,
+  DEVELOPER_FORCED: 1,
   LOCAL_ADMIN_BLOCK: 0.32,
   LOCAL_ADMIN_ALLOW: 0.36,
   REVIEW_APPROVED: 1,
@@ -556,6 +561,53 @@ export class GlobalSpammerIntelligenceService {
     });
   }
 
+  async recordDeveloperForcedGlobalBlacklist(params: {
+    userId: string;
+    actorUserId: string;
+    chatId?: string | null;
+    messageId?: string | null;
+    userLabel?: string | null;
+    reason?: string | null;
+    ttlDays?: number | null;
+  }): Promise<GlobalSpammerObservationDecision> {
+    const userId = this.normalizeUserId(params.userId);
+    const actorUserId = this.normalizeUserId(params.actorUserId);
+    if (!userId || !actorUserId) {
+      return this.emptyDecision('ignored', userId);
+    }
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return this.emptyDecision('ignored', userId);
+    }
+
+    const reason =
+      this.normalizeText(params.reason) ||
+      'По решению разработчика бота за нарушение правил';
+    const ttlDays = Math.max(
+      1,
+      Math.trunc(params.ttlDays ?? DEVELOPER_FORCED_REGISTRY_TTL_DAYS),
+    );
+
+    return this.recordObservation({
+      userId,
+      source: 'DEVELOPER_FORCED',
+      score: 1,
+      reason,
+      chatId: params.chatId ?? null,
+      messageId: params.messageId ?? null,
+      userLabel: params.userLabel ?? null,
+      evidenceHash: `developer-forced:${userId}`,
+      evidence: {
+        actorUserId,
+        sourceChatId: params.chatId ?? null,
+        messageId: params.messageId ?? null,
+        reason,
+      },
+      ttlDays,
+      registryTtlDays: ttlDays,
+      forceRegistry: true,
+    });
+  }
+
   async recordLocalAdminDecision(params: {
     chatId: string;
     userId: string;
@@ -647,7 +699,10 @@ export class GlobalSpammerIntelligenceService {
         messageId: input.messageId ?? null,
         evidence: input.evidence ?? Prisma.JsonNull,
       });
-    const activeSuppression = await this.findActiveSuppression(userId, now);
+    const allowActiveSuppression = input.source !== 'DEVELOPER_FORCED';
+    const activeSuppression = allowActiveSuppression
+      ? await this.findActiveSuppression(userId, now)
+      : null;
     const confidenceLevel = this.resolveConfidenceLevel(score);
     const ledgerMetadata = this.buildObservationLedgerMetadata({
       input,
@@ -779,6 +834,7 @@ export class GlobalSpammerIntelligenceService {
         status: input.source === 'REVIEW_APPROVED' ? 'APPROVED' : 'AUTO_APPROVED',
         reviewedByUserId: null,
         reviewReason: null,
+        registryTtlDays: input.registryTtlDays ?? null,
       });
       return {
         outcome: 'registry',
@@ -1508,7 +1564,36 @@ export class GlobalSpammerIntelligenceService {
 
     const activeSuppression = await this.findActiveSuppression(userId, now);
     let decision: GlobalSpammerPolicyDecision;
-    if (adminExempt) {
+    const registry = await this.prisma.globalSpammer.findUnique({
+      where: {
+        userId,
+      },
+    });
+    const developerForcedRegistryActive =
+      Boolean(registry?.expiresAt && registry.expiresAt > now) &&
+      this.hasDeveloperForcedSource(registry?.sourceBreakdown);
+
+    if (developerForcedRegistryActive && registry) {
+      const action =
+        enforcementMode === 'shadow' ? 'SHADOW_DELETE_AND_KICK' : 'DELETE_AND_KICK';
+      decision = this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action,
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: registry.confidenceScore,
+        reason: registry.lastReason,
+        expiresAt: registry.expiresAt?.toISOString() ?? null,
+        sourceBreakdown: registry.sourceBreakdown,
+        enforced: Boolean(
+          (params.enforced ?? params.recordDecision) && action === 'DELETE_AND_KICK',
+        ),
+      });
+    } else if (adminExempt) {
       decision = this.buildPolicyDecision({
         userId,
         chatId,
@@ -1541,11 +1626,6 @@ export class GlobalSpammerIntelligenceService {
         enforced: false,
       });
     } else {
-      const registry = await this.prisma.globalSpammer.findUnique({
-        where: {
-          userId,
-        },
-      });
       if (registry?.expiresAt && registry.expiresAt > now) {
         const action = !params.deleteSpammersEnabled
           ? 'NONE'
@@ -3411,6 +3491,7 @@ export class GlobalSpammerIntelligenceService {
   ): boolean {
     if (input.forceRegistry) {
       return (
+        input.source === 'DEVELOPER_FORCED' ||
         (input.source === 'FANOUT_HIGH' && PROMOTION_FANOUT_REASONS.has(input.reason)) ||
         input.source === 'REVIEW_APPROVED'
       );
@@ -3444,6 +3525,11 @@ export class GlobalSpammerIntelligenceService {
       (source) => source.source === 'FANOUT_HIGH' || source.source === 'FANOUT_REPEAT',
     );
     return independentBehaviorSources.length >= 2 && !hasFanoutOnlyBehavior;
+  }
+
+  private hasDeveloperForcedSource(sourceBreakdown: Prisma.JsonValue | null | undefined): boolean {
+    const source = this.asRecord(sourceBreakdown);
+    return Boolean(source?.DEVELOPER_FORCED);
   }
 
   private async resolveLocalAdminDecision(
@@ -3622,9 +3708,11 @@ export class GlobalSpammerIntelligenceService {
     status: GlobalSpammerCandidateStatus;
     reviewedByUserId: string | null;
     reviewReason: string | null;
+    registryTtlDays?: number | null;
   }): Promise<void> {
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 30 * DAY_MS);
+    const ttlDays = Math.max(1, Math.trunc(params.registryTtlDays ?? 30));
+    const expiresAt = new Date(now.getTime() + ttlDays * DAY_MS);
     await this.prisma.$transaction([
       this.prisma.globalSpammer.upsert({
         where: {

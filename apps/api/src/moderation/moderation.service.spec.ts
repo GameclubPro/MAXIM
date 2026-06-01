@@ -8239,6 +8239,166 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('lets the bot developer queue a super ban reply command without chat-admin rights', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      isSuperBanDeveloperUserId: jest.fn((userId: string) => userId === '98315271'),
+      enqueueDeveloperSuperBanCommand: jest.fn().mockResolvedValue(true),
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    const update = createAdminReplyModerationUpdate('супер бан');
+    update.message!.senderId = '98315271';
+    update.message!.senderName = 'Разработчик';
+    const rawMessage = (update.raw as { message: Record<string, unknown> }).message;
+    (rawMessage.sender as Record<string, unknown>).user_id = '98315271';
+    (rawMessage.sender as Record<string, unknown>).display_name = 'Разработчик';
+
+    await service.handleUpdate(update);
+
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(adminService.enqueueDeveloperSuperBanCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-reply-target-1',
+        commandMessageId: 'msg-admin-reply-moderation-1',
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: '98315271',
+          chatId: 'chat-1',
+        }),
+      }),
+    );
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('rejects super ban commands from non-developers before enqueueing', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      isSuperBanDeveloperUserId: jest.fn().mockReturnValue(false),
+      enqueueDeveloperSuperBanCommand: jest.fn().mockResolvedValue(true),
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminReplyModerationUpdate('super ban'));
+
+    expect(adminService.enqueueDeveloperSuperBanCommand).not.toHaveBeenCalled();
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Команда `супер бан` доступна только разработчику бота.',
+      { textFormat: 'markdown' },
+      expect.objectContaining({ immediate: true }),
+    );
+  });
+
   it('keeps reply moderation command enqueue failures silent in chat', async () => {
     const prisma = {
       chat: {

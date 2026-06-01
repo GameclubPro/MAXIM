@@ -183,6 +183,10 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
+import {
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC,
+  buildDeveloperForcedGlobalSpammerCacheKey,
+} from '../moderation/developer-forced-global-spammer-cache';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import {
   SystemModeService,
@@ -201,6 +205,7 @@ import {
   type AdminManualGroupModerationCommandJob,
   type AdminManualMuteFanoutJob,
 } from './admin-manual-fanout.queue';
+import { ADMIN_SUPER_BAN_QUEUE, type AdminSuperBanJob } from './admin-super-ban.queue';
 import {
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
   type AdminSuggestionDeliveryJob,
@@ -364,6 +369,8 @@ import {
   ADMIN_ACTION_HEALTH_LANE,
   ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY,
   ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY,
+  ADMIN_SUPER_BAN_QUEUE_PRIORITY,
+  DEFAULT_SUPER_BAN_DEVELOPER_USER_IDS,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
   APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS,
   APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
@@ -499,6 +506,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly dialogLinkHelper: AdminDialogLinkHelper;
   private readonly manualFanoutLookupSpacingMs: number;
   private readonly manualFanoutActionSpacingMs: number;
+  private readonly superBanDeveloperUserIds: ReadonlySet<string>;
   private readonly managedEntitiesPublishedSnapshotReadEnabled: boolean;
   private readonly managedEntitiesPublishedSnapshotWriteEnabled: boolean;
   private readonly managedEntitiesPublishedDiffReadEnabled: boolean;
@@ -595,6 +603,9 @@ export class AdminService implements OnModuleDestroy {
     private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    @InjectQueue(ADMIN_SUPER_BAN_QUEUE)
+    private readonly adminSuperBanQueue?: Queue<AdminSuperBanJob>,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -608,6 +619,9 @@ export class AdminService implements OnModuleDestroy {
       this.maxBotLinkService?.getValidationTokens?.() ??
       (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
     this.appBaseUrl = normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
+    this.superBanDeveloperUserIds = this.parseSuperBanDeveloperUserIds(
+      configService.get<string>('SUPER_BAN_DEVELOPER_USER_IDS'),
+    );
     this.explicitBotContactId = normalizeBotContactId(
       configService.get<string>('MAX_BOT_CONTACT_ID'),
     );
@@ -11519,6 +11533,142 @@ export class AdminService implements OnModuleDestroy {
     return this.enqueueManualModerationFanout(job);
   }
 
+  isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
+    const normalized = this.readTrimmedString(userId);
+    return Boolean(normalized && this.superBanDeveloperUserIds.has(normalized));
+  }
+
+  private parseSuperBanDeveloperUserIds(raw: string | null | undefined): ReadonlySet<string> {
+    const values = new Set<string>(
+      DEFAULT_SUPER_BAN_DEVELOPER_USER_IDS.map((value) => value.trim()).filter(Boolean),
+    );
+    const configured = this.readTrimmedString(raw);
+    if (!configured) {
+      return values;
+    }
+
+    for (const value of configured.split(/[,\s;]+/u)) {
+      const normalized = value.trim();
+      if (normalized) {
+        values.add(normalized);
+      }
+    }
+
+    return values;
+  }
+
+  async enqueueDeveloperSuperBanCommand(params: {
+    sourceChatId: string;
+    commandBotId?: string | null;
+    targetUserId: string;
+    targetSenderName?: string | null;
+    targetMessageId?: string | null;
+    commandMessageId: string;
+    actor: AuthUser;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): Promise<boolean> {
+    if (!this.isSuperBanDeveloperUserId(params.actor.userId)) {
+      throw new ForbiddenException('Команда `супер бан` доступна только разработчику бота.');
+    }
+
+    if (this.isKnownRuntimeBotUserId(params.targetUserId)) {
+      throw new BadRequestException('Нельзя применять супер бан к настроенному боту MAX.');
+    }
+
+    const job = this.buildDeveloperSuperBanCommandJob(params);
+    if (!this.adminSuperBanQueue) {
+      void this.processDeveloperSuperBanJob(job).catch((error: unknown) => {
+        this.logger.warn(
+          {
+            jobId: job.jobId,
+            sourceChatId: job.sourceChatId,
+            targetUserId: job.targetUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to process developer super ban without queue',
+        );
+      });
+      return true;
+    }
+
+    try {
+      await this.adminSuperBanQueue.add('execute-admin-super-ban', job, {
+        jobId: job.jobId,
+        priority: ADMIN_SUPER_BAN_QUEUE_PRIORITY,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1_000,
+        },
+      });
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          sourceChatId: job.sourceChatId,
+          targetUserId: job.targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue developer super ban command',
+      );
+      return false;
+    }
+  }
+
+  private buildDeveloperSuperBanCommandJob(params: {
+    sourceChatId: string;
+    commandBotId?: string | null;
+    targetUserId: string;
+    targetSenderName?: string | null;
+    targetMessageId?: string | null;
+    commandMessageId: string;
+    actor: AuthUser;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): AdminSuperBanJob {
+    return {
+      kind: 'developer_super_ban',
+      jobId: this.buildDeveloperSuperBanCommandJobId(
+        params.sourceChatId,
+        params.commandMessageId,
+        params.targetUserId,
+      ),
+      sourceChatId: params.sourceChatId,
+      commandBotId: this.readTrimmedString(params.commandBotId),
+      targetUserId: params.targetUserId,
+      targetSenderName: params.targetSenderName ?? null,
+      targetMessageId: params.targetMessageId ?? null,
+      commandMessageId: params.commandMessageId,
+      actor: {
+        userId: params.actor.userId,
+        username: params.actor.username ?? null,
+        displayName: params.actor.displayName ?? null,
+        chatId: params.actor.chatId ?? null,
+        chatTitle: params.actor.chatTitle ?? null,
+      },
+      deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
+      retryPolicyName: 'manual-fanout',
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private buildDeveloperSuperBanCommandJobId(
+    sourceChatId: string,
+    commandMessageId: string,
+    targetUserId: string,
+  ): string {
+    const digest = createHash('sha256')
+      .update(`${sourceChatId}\n${commandMessageId}\n${targetUserId}\ndeveloper_super_ban`)
+      .digest('hex')
+      .slice(0, 32);
+    return `developer_super_ban__${digest}`;
+  }
+
   private async sendManualBanChatNotice(params: {
     chatId: string;
     targetUserId: string;
@@ -11562,6 +11712,470 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to send manual ban notice message',
       );
+    }
+  }
+
+  async processDeveloperSuperBanJob(job: AdminSuperBanJob): Promise<void> {
+    if (job.kind !== 'developer_super_ban') {
+      return;
+    }
+
+    if (!this.isSuperBanDeveloperUserId(job.actor.userId)) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          sourceChatId: job.sourceChatId,
+          actorUserId: job.actor.userId,
+          targetUserId: job.targetUserId,
+        },
+        'Skipped developer super ban job from non-developer actor',
+      );
+      return;
+    }
+
+    if (this.isKnownRuntimeBotUserId(job.targetUserId)) {
+      await this.sendManualGroupCommandNotice({
+        chatId: job.sourceChatId,
+        botId: job.commandBotId ?? undefined,
+        text: 'Супер бан не применяется к настроенным ботам MAX.',
+        deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
+      });
+      return;
+    }
+
+    const actor = this.buildManualFanoutActor(job.actor);
+    const targetDisplayName =
+      this.readTrimmedString(job.targetSenderName) ??
+      (await this.resolveManualModerationTargetDisplayName(job.sourceChatId, job.targetUserId, {
+        botId: job.commandBotId ?? undefined,
+        allowRemoteLookup: false,
+      }));
+
+    await this.recordDeveloperForcedGlobalBlacklistForJob(job, targetDisplayName);
+    await this.rememberDeveloperForcedGlobalSpammer(job.targetUserId);
+
+    const affectedChatIds = new Set<string>();
+    const sourceResult = await this.applyDeveloperSuperBanSourceChat({
+      job,
+      actor,
+      targetDisplayName,
+    });
+    if (sourceResult.affected) {
+      affectedChatIds.add(job.sourceChatId);
+    }
+
+    await this.deleteManualGroupCommandTargetMessage(job);
+    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
+      botId: job.commandBotId ?? undefined,
+    });
+
+    const fanoutChatIds = await this.resolveDeveloperSuperBanFanoutChatIds(actor, job.sourceChatId);
+    for (const [index, chatId] of fanoutChatIds.entries()) {
+      if (index > 0) {
+        await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
+      }
+
+      const result = await this.applyDeveloperSuperBanManagedChat({
+        chatId,
+        sourceChatId: job.sourceChatId,
+        targetUserId: job.targetUserId,
+        targetDisplayName,
+        actor,
+      });
+      if (result.affected) {
+        affectedChatIds.add(chatId);
+      }
+    }
+
+    const targetLabel = this.formatManualGroupCommandUserLabel(
+      job.targetSenderName,
+      job.targetUserId,
+    );
+    await this.sendManualGroupCommandNotice({
+      chatId: job.sourceChatId,
+      botId: job.commandBotId ?? undefined,
+      text: `Пользователь ${targetLabel} заблокирован в ${affectedChatIds.size} чатах по решению разработчика бота за нарушение правил.`,
+      deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
+    });
+  }
+
+  private async recordDeveloperForcedGlobalBlacklistForJob(
+    job: AdminSuperBanJob,
+    targetDisplayName: string | null,
+  ): Promise<void> {
+    const reason = 'По решению разработчика бота за нарушение правил';
+    if (this.globalSpammerIntelligence) {
+      await this.globalSpammerIntelligence.recordDeveloperForcedGlobalBlacklist({
+        userId: job.targetUserId,
+        actorUserId: job.actor.userId,
+        chatId: job.sourceChatId,
+        messageId: job.targetMessageId ?? job.commandMessageId,
+        userLabel: targetDisplayName,
+        reason,
+      });
+      return;
+    }
+
+    const expiresAt = new Date(
+      Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC * 1_000,
+    );
+    await this.prisma.globalSpammer.upsert({
+      where: {
+        userId: job.targetUserId,
+      },
+      create: {
+        userId: job.targetUserId,
+        lastReason: reason,
+        lastChatId: job.sourceChatId,
+        lastEvidence: {
+          actorUserId: job.actor.userId,
+          sourceChatId: job.sourceChatId,
+          messageId: job.targetMessageId ?? job.commandMessageId,
+          reason,
+        } as Prisma.InputJsonObject,
+        confidenceScore: 1,
+        expiresAt,
+        sourceBreakdown: {
+          DEVELOPER_FORCED: {
+            score: 1,
+            count: 1,
+            reasons: [reason],
+          },
+        } as Prisma.InputJsonObject,
+      },
+      update: {
+        detectionsCount: {
+          increment: 1,
+        },
+        lastReason: reason,
+        lastChatId: job.sourceChatId,
+        lastEvidence: {
+          actorUserId: job.actor.userId,
+          sourceChatId: job.sourceChatId,
+          messageId: job.targetMessageId ?? job.commandMessageId,
+          reason,
+        } as Prisma.InputJsonObject,
+        confidenceScore: 1,
+        expiresAt,
+        sourceBreakdown: {
+          DEVELOPER_FORCED: {
+            score: 1,
+            count: 1,
+            reasons: [reason],
+          },
+        } as Prisma.InputJsonObject,
+      },
+    });
+  }
+
+  private async rememberDeveloperForcedGlobalSpammer(targetUserId: string): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        buildDeveloperForcedGlobalSpammerCacheKey(targetUserId),
+        '1',
+        DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to cache developer-forced global spammer state',
+      );
+    }
+  }
+
+  private async applyDeveloperSuperBanSourceChat(params: {
+    job: AdminSuperBanJob;
+    actor: AuthUser;
+    targetDisplayName: string | null;
+  }): Promise<{ affected: boolean; mode: 'removed' | 'muted' | 'skipped' | 'failed' }> {
+    const { job, actor, targetDisplayName } = params;
+    const commandOptions: ManualModerationExecutionOptions = {
+      actorAlreadyVerified: true,
+      preferredBotId: job.commandBotId ?? null,
+      targetDisplayNameHint: targetDisplayName,
+      allowTargetDisplayNameRemoteLookup: false,
+    };
+
+    try {
+      await this.applyManualModerationAction(
+        job.sourceChatId,
+        job.targetUserId,
+        actor,
+        { action: 'BAN' },
+        'group_command',
+        commandOptions,
+      );
+      return { affected: true, mode: 'removed' };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          chatId: job.sourceChatId,
+          actorUserId: actor.userId,
+          targetUserId: job.targetUserId,
+          err: this.extractManualGroupCommandErrorMessage(error),
+        },
+        'Developer super ban source chat system ban failed; trying permanent mute fallback',
+      );
+    }
+
+    return this.applyDeveloperSuperBanPermanentMuteFallback({
+      chatId: job.sourceChatId,
+      sourceChatId: job.sourceChatId,
+      targetUserId: job.targetUserId,
+      targetDisplayName,
+      actor,
+      preferredBotId: job.commandBotId ?? null,
+      fallbackReason: 'SOURCE_SYSTEM_BAN_FAILED',
+    });
+  }
+
+  private async resolveDeveloperSuperBanFanoutChatIds(
+    actor: AuthUser,
+    sourceChatId: string,
+  ): Promise<string[]> {
+    const chatIds = new Set<string>();
+    try {
+      const snapshot = await this.loadManagedBotChatCatalogSnapshot(null);
+      for (const chat of snapshot) {
+        if (chat.entityType !== 'chat') {
+          continue;
+        }
+        const chatId = this.readTrimmedString(chat.chatId);
+        if (chatId && chatId !== sourceChatId) {
+          chatIds.add(chatId);
+        }
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          sourceChatId,
+          actorUserId: actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read managed chat catalog for developer super ban fanout',
+      );
+    }
+
+    if (chatIds.size === 0) {
+      try {
+        const fallbackChats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
+        for (const chat of fallbackChats) {
+          const chatId = this.readTrimmedString(chat.id);
+          if (chatId && chatId !== sourceChatId) {
+            chatIds.add(chatId);
+          }
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            sourceChatId,
+            actorUserId: actor.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve fallback chat list for developer super ban fanout',
+        );
+      }
+    }
+
+    return [...chatIds];
+  }
+
+  private async applyDeveloperSuperBanManagedChat(params: {
+    chatId: string;
+    sourceChatId: string;
+    targetUserId: string;
+    targetDisplayName: string | null;
+    actor: AuthUser;
+  }): Promise<{ affected: boolean; mode: 'removed' | 'muted' | 'skipped' | 'failed' }> {
+    const { chatId, sourceChatId, targetUserId, targetDisplayName, actor } = params;
+    let resolvedBotId: string | undefined;
+    try {
+      resolvedBotId = await this.resolveManualModerationActionBotAssignment(
+        chatId,
+        'moderate_member',
+      );
+      await this.assertBotCanManageMembers(chatId, 'BAN', resolvedBotId);
+      const targetState = await this.resolveManualFanoutTargetState(chatId, targetUserId, {
+        trafficClass: 'critical',
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+      });
+      if (targetState !== 'present') {
+        return { affected: false, mode: 'skipped' };
+      }
+
+      try {
+        if (resolvedBotId) {
+          await this.maxClient.cancelScheduledUnban(chatId, targetUserId, {
+            botId: resolvedBotId,
+          });
+        } else {
+          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            targetUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to cancel scheduled auto-unban before developer super ban fanout',
+        );
+      }
+
+      await sleepIfNeeded(this.manualFanoutActionSpacingMs);
+      const executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
+      if (executionMode === 'MAX_REMOVE_ONLY') {
+        await this.maxClient.kickMember(chatId, targetUserId, {
+          immediate: true,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
+      } else {
+        await this.maxClient.banMember(chatId, targetUserId, {
+          immediate: true,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
+      }
+
+      await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, {
+        spacingMs: this.manualFanoutActionSpacingMs,
+        botId: resolvedBotId,
+      });
+      return { affected: true, mode: 'removed' };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          sourceChatId,
+          actorUserId: actor.userId,
+          targetUserId,
+          err:
+            this.extractMaxApiErrorMessage(error) ||
+            this.extractHttpErrorMessage(error) ||
+            String(error),
+        },
+        'Developer super ban fanout system ban failed; trying permanent mute fallback',
+      );
+    }
+
+    return this.applyDeveloperSuperBanPermanentMuteFallback({
+      chatId,
+      sourceChatId,
+      targetUserId,
+      targetDisplayName,
+      actor,
+      fallbackReason: 'FANOUT_SYSTEM_BAN_FAILED',
+    });
+  }
+
+  private async applyDeveloperSuperBanPermanentMuteFallback(params: {
+    chatId: string;
+    sourceChatId: string;
+    targetUserId: string;
+    targetDisplayName: string | null;
+    actor: AuthUser;
+    preferredBotId?: string | null;
+    fallbackReason: string;
+  }): Promise<{ affected: boolean; mode: 'muted' | 'skipped' | 'failed' }> {
+    const { chatId, sourceChatId, targetUserId, targetDisplayName, actor, fallbackReason } = params;
+    let deleteBotId: string | undefined;
+    try {
+      deleteBotId = await this.resolveManualModerationActionBotAssignment(
+        chatId,
+        'delete_message',
+        {
+          preferredBotId: params.preferredBotId,
+        },
+      );
+      await this.assertBotCanDeleteMessages(chatId, deleteBotId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          sourceChatId,
+          actorUserId: actor.userId,
+          targetUserId,
+          err: this.extractHttpErrorMessage(error) || String(error),
+        },
+        'Developer super ban fallback skipped because the bot cannot delete messages',
+      );
+      return { affected: false, mode: 'failed' };
+    }
+
+    const targetState = await this.resolveManualFanoutTargetState(chatId, targetUserId, {
+      trafficClass: 'critical',
+      ...(deleteBotId ? { botId: deleteBotId } : {}),
+    });
+    if (targetState !== 'present') {
+      return { affected: false, mode: 'skipped' };
+    }
+
+    try {
+      await this.recordManualModerationAction({
+        chatId,
+        targetUserId,
+        targetDisplayName,
+        actorUserId: actor.userId,
+        ruleCode: 'MANUAL_MUTE',
+        sanctionAction: SanctionAction.MUTE,
+        auditAction: 'MANUAL_MUTE_MEMBER',
+        metadata: {
+          source: 'group_command',
+          initiatedByUserId: actor.userId,
+          reason: 'Супер бан: постоянное удаление сообщений по решению разработчика бота',
+          ...this.buildManualMuteMetadataFields({
+            muteDurationHours: null,
+            muteExpiresAt: null,
+            mutePermanent: true,
+          }),
+          sourceChatId,
+          fanout: chatId !== sourceChatId,
+          superBan: true,
+          fallbackReason,
+        },
+        auditPayload: {
+          userId: targetUserId,
+          source: 'group_command',
+          ...this.buildManualMuteMetadataFields({
+            muteDurationHours: null,
+            muteExpiresAt: null,
+            mutePermanent: true,
+          }),
+          sourceChatId,
+          fanout: chatId !== sourceChatId,
+          superBan: true,
+          fallbackReason,
+        },
+      });
+      await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, {
+        spacingMs: this.manualFanoutActionSpacingMs,
+        botId: deleteBotId,
+      });
+      return { affected: true, mode: 'muted' };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          sourceChatId,
+          actorUserId: actor.userId,
+          targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to apply developer super ban permanent mute fallback',
+      );
+      return { affected: false, mode: 'failed' };
     }
   }
 
@@ -11755,9 +12369,12 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async deleteManualGroupCommandTargetMessage(
-    job: AdminManualGroupModerationCommandJob,
-  ): Promise<void> {
+  private async deleteManualGroupCommandTargetMessage(job: {
+    sourceChatId: string;
+    commandBotId?: string | null;
+    targetUserId: string;
+    targetMessageId?: string | null;
+  }): Promise<void> {
     if (!job.targetMessageId) {
       return;
     }

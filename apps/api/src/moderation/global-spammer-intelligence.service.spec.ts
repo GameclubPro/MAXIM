@@ -503,6 +503,53 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('promotes developer-forced blacklist entries and overrides local allow settings', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    const result = await service.recordDeveloperForcedGlobalBlacklist({
+      userId: 'user-super-ban',
+      actorUserId: '98315271',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      userLabel: 'Нарушитель',
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: 'registry',
+        userId: 'user-super-ban',
+      }),
+    );
+    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-super-ban',
+          sourceBreakdown: expect.objectContaining({
+            DEVELOPER_FORCED: expect.any(Object),
+          }),
+        }),
+      }),
+    );
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-1',
+        userId: 'user-super-ban',
+        trigger: 'message',
+        deleteSpammersEnabled: false,
+        adminExempt: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+        adminExempt: true,
+        deleteSpammersEnabled: false,
+      }),
+    );
+  });
+
   it('keeps medium-confidence fanout in review instead of the registry', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
