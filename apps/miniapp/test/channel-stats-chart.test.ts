@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  resolveChannelStatsDisplayViews,
+  resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  shouldUseChannelStatsPeriodViews,
 } from '../src/lib/channel-stats-chart';
 
 test('selects the latest informative audience bucket instead of a trailing zero bucket', () => {
@@ -54,4 +57,36 @@ test('selects the latest non-zero views bucket before the current empty bucket',
     ]),
     1,
   );
+});
+
+test('uses post totals when observed view deltas are not available for the period', () => {
+  const stats = {
+    official: {
+      content: {
+        views: 0,
+        viewsTotal: 12_400,
+        viewsMode: 'observedDelta' as const,
+      },
+    },
+  };
+
+  assert.equal(resolveChannelStatsDisplayViews(stats), 12_400);
+  assert.equal(shouldUseChannelStatsPeriodViews(stats), false);
+  assert.equal(resolveChannelStatsViewsModeLabel(stats), 'всего у постов');
+});
+
+test('keeps period views primary when observed deltas exist', () => {
+  const stats = {
+    official: {
+      content: {
+        views: 3_200,
+        viewsTotal: 15_000,
+        viewsMode: 'observedDelta' as const,
+      },
+    },
+  };
+
+  assert.equal(resolveChannelStatsDisplayViews(stats), 3_200);
+  assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
+  assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
 });

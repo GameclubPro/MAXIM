@@ -42,8 +42,11 @@ import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
+  resolveChannelStatsDisplayViews,
+  resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  shouldUseChannelStatsPeriodViews,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
@@ -96,6 +99,14 @@ type ViewChartPoint = {
 
 type PreviousViewChartPoint = ViewChartPoint;
 
+type ViewChartAggregateBar = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  views: number;
+};
+
 type ChartPostPin = {
   messageId: string;
   label: string;
@@ -122,8 +133,8 @@ const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
 ];
 
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
-const CHART_VIEWBOX_WIDTH = 320;
-const CHART_VIEWBOX_HEIGHT = 276;
+const CHART_VIEWBOX_WIDTH = 390;
+const CHART_VIEWBOX_HEIGHT = 210;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -456,23 +467,31 @@ function resolveChartIndexFromClientX(
   clientX: number,
   rect: DOMRect,
   pointsLength: number,
+  leftPad = 0,
+  rightPad = 0,
 ): number {
   if (pointsLength <= 1) {
     return 0;
   }
 
-  const ratio = clamp((clientX - rect.left) / Math.max(rect.width, 1), 0, 1);
+  const plotLeft = rect.left + (rect.width * leftPad) / CHART_VIEWBOX_WIDTH;
+  const plotRight = rect.left + (rect.width * (CHART_VIEWBOX_WIDTH - rightPad)) / CHART_VIEWBOX_WIDTH;
+  const ratio = clamp((clientX - plotLeft) / Math.max(plotRight - plotLeft, 1), 0, 1);
   return Math.round(ratio * (pointsLength - 1));
 }
 
 function readChartIndexFromPointer(
   event: PointerEvent<HTMLDivElement>,
   pointsLength: number,
+  leftPad = 0,
+  rightPad = 0,
 ): number {
   return resolveChartIndexFromClientX(
     event.clientX,
     event.currentTarget.getBoundingClientRect(),
     pointsLength,
+    leftPad,
+    rightPad,
   );
 }
 
@@ -525,6 +544,7 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
 function resolvePostPinPositions(
   posts: ChannelStatsResponse['official']['content']['topPosts'],
   anchors: Array<{ at: string; x: number }>,
+  usePeriodViews: boolean,
 ): ChartPostPin[] {
   if (anchors.length === 0 || posts.length === 0) {
     return [];
@@ -548,7 +568,7 @@ function resolvePostPinPositions(
       }
     }
 
-    const views = post.viewsDelta || post.views;
+    const views = usePeriodViews ? post.viewsDelta : post.views;
     return {
       messageId: post.messageId,
       label: `#${index + 1}`,
@@ -674,27 +694,27 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       guideYs: [],
       dividerY: 156,
       barsBaseline: 220,
-      eventRailY: 252,
+      eventRailY: 188,
       zeroY: 132,
       height: CHART_VIEWBOX_HEIGHT,
-      leftPad: 44,
-      rightPad: 16,
+      leftPad: 20,
+      rightPad: 8,
       axisLabels: [],
     };
   }
 
   const width = CHART_VIEWBOX_WIDTH;
   const height = CHART_VIEWBOX_HEIGHT;
-  const leftPad = 44;
-  const rightPad = 16;
-  const lineTop = 30;
-  const lineBottom = 132;
-  const lineFloor = 148;
-  const dividerY = 158;
-  const barsBaseline = 220;
-  const eventRailY = 252;
-  const joinedPeakHeight = 48;
-  const leftPeakHeight = 28;
+  const leftPad = 20;
+  const rightPad = 8;
+  const lineTop = 20;
+  const lineBottom = 92;
+  const lineFloor = 108;
+  const dividerY = 116;
+  const barsBaseline = 160;
+  const eventRailY = 188;
+  const joinedPeakHeight = 36;
+  const leftPeakHeight = 20;
   const plotWidth = width - leftPad - rightPad;
   const maxJoined = Math.max(
     ...membershipSeries.map((item) => item.joined),
@@ -834,6 +854,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 function buildViewsChart(stats: ChannelStatsResponse): {
   bars: ViewChartPoint[];
   previousBars: PreviousViewChartPoint[];
+  aggregateBar: ViewChartAggregateBar | null;
   maxViews: number;
   cumulativeMax: number;
   cumulativeLinePath: string;
@@ -852,44 +873,52 @@ function buildViewsChart(stats: ChannelStatsResponse): {
     return {
       bars: [],
       previousBars: [],
+      aggregateBar: null,
       maxViews: 0,
       cumulativeMax: 0,
       cumulativeLinePath: '',
       cumulativeAreaPath: '',
       previousCumulativeLinePath: '',
       guideYs: [],
-      leftPad: 22,
-      rightPad: 16,
-      baselineY: 224,
-      eventRailY: 252,
+      leftPad: 10,
+      rightPad: 8,
+      baselineY: 176,
+      eventRailY: 196,
       height: CHART_VIEWBOX_HEIGHT,
     };
   }
 
   const width = CHART_VIEWBOX_WIDTH;
   const height = CHART_VIEWBOX_HEIGHT;
-  const leftPad = 22;
-  const rightPad = 16;
-  const topPad = 28;
-  const bottomPad = 52;
+  const leftPad = 10;
+  const rightPad = 8;
+  const topPad = 16;
+  const bottomPad = 34;
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
   const baselineY = height - bottomPad;
-  const maxViews = Math.max(
-    ...series.map((item) => item.views),
-    ...previousSeries.map((item) => item.views),
+  const displayViews = resolveChannelStatsDisplayViews(stats);
+  const topPostMaxViews = Math.max(
+    ...stats.official.content.topPosts.map((post) =>
+      shouldUseChannelStatsPeriodViews(stats) ? post.viewsDelta : post.views || post.viewsDelta,
+    ),
     0,
   );
+  const currentMaxViews = Math.max(...series.map((item) => item.views), 0);
+  const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
+  const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
+  const aggregateViews = Math.max(displayViews, topPostMaxViews);
+  const maxViews = currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
   const cumulativeMax = Math.max(
     ...series.map((item) => item.cumulativeViews),
-    ...previousSeries.map((item) => item.cumulativeViews),
+    maxBucketViews > 0 ? 0 : aggregateViews,
     0,
   );
   const scale = maxViews > 0 ? usableHeight / maxViews : 0;
   const cumulativeRange = Math.max(1, cumulativeMax);
   const resolveCumulativeY = (value: number) =>
     cumulativeMax > 0
-      ? topPad + ((cumulativeMax - value) / cumulativeRange) * usableHeight
+      ? topPad + ((cumulativeMax - clamp(value, 0, cumulativeMax)) / cumulativeRange) * usableHeight
       : baselineY;
 
   const bars = series.map((item, index) => {
@@ -897,7 +926,7 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       series.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-    const barHeight = item.views * scale;
+    const barHeight = Math.min(item.views * scale, usableHeight);
     return {
       at: item.at,
       views: item.views,
@@ -913,7 +942,7 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       previousSeries.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
-    const barHeight = item.views * scale;
+    const barHeight = Math.min(item.views * scale, usableHeight);
     return {
       at: item.at,
       views: item.views,
@@ -928,10 +957,21 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const cumulativeLinePath = buildAudiencePath(cumulativePoints);
   const previousCumulativePoints = previousBars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
   const previousCumulativeLinePath = buildAudiencePath(previousCumulativePoints);
+  const aggregateBar =
+    maxBucketViews === 0 && aggregateViews > 0
+      ? {
+          x: leftPad,
+          y: baselineY - usableHeight * 0.72,
+          width: plotWidth,
+          height: usableHeight * 0.72,
+          views: aggregateViews,
+        }
+      : null;
 
   return {
     bars,
     previousBars,
+    aggregateBar,
     maxViews,
     cumulativeMax,
     cumulativeLinePath,
@@ -941,7 +981,7 @@ function buildViewsChart(stats: ChannelStatsResponse): {
     leftPad,
     rightPad,
     baselineY,
-    eventRailY: 194,
+    eventRailY: 196,
     height,
   };
 }
@@ -1013,6 +1053,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const postPins = resolvePostPinPositions(
     stats.official.content.topPosts,
     chart.points.map((point) => ({ at: point.at, x: point.x })),
+    shouldUseChannelStatsPeriodViews(stats),
   );
   const activePostPin = resolveActivePostPin(postPins, activePoint?.x ?? null, slotWidth);
   const activeGuideLabel = activePoint
@@ -1079,7 +1120,14 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             onPointerDown={(event) => {
               captureChartPointer(event);
               setIsTooltipVisible(true);
-              setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
+              setActiveIndex(
+                readChartIndexFromPointer(
+                  event,
+                  chart.points.length,
+                  chart.leftPad,
+                  chart.rightPad,
+                ),
+              );
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) {
@@ -1087,7 +1135,14 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               }
 
               setIsTooltipVisible(true);
-              setActiveIndex(readChartIndexFromPointer(event, chart.points.length));
+              setActiveIndex(
+                readChartIndexFromPointer(
+                  event,
+                  chart.points.length,
+                  chart.leftPad,
+                  chart.rightPad,
+                ),
+              );
             }}
             onPointerUp={() => setIsTooltipVisible(false)}
             onPointerCancel={() => setIsTooltipVisible(false)}
@@ -1416,8 +1471,16 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   );
   const activePreviousBar = chart.previousBars[previousIndex] ?? null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
-  const totalViews = labels.reduce((sum, item) => sum + item.views, 0);
-  const averageViews = labels.length > 0 ? Math.round(totalViews / labels.length) : 0;
+  const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
+  const displayViews = resolveChannelStatsDisplayViews(stats);
+  const displayViewsCompactLabel = formatCompactCount(displayViews);
+  const periodViews = stats.official.content.views;
+  const totalPostViews = stats.official.content.viewsTotal;
+  const averageViewsPerPost =
+    stats.comparison.deltas.averageViewsPerPost.current ||
+    (stats.official.content.posts > 0
+      ? Math.round(displayViews / stats.official.content.posts)
+      : 0);
   const graphMarkers = resolveGraphMarkerPositions(
     stats.signals.markers,
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
@@ -1426,6 +1489,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const postPins = resolvePostPinPositions(
     stats.official.content.topPosts,
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
+    shouldUseChannelStatsPeriodViews(stats),
   );
   const slotWidth =
     chart.bars.length > 1
@@ -1435,24 +1499,21 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const previousBarWidth = clamp(slotWidth * 0.54, 4, 15);
   const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
   const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
-  const activeViewsLabel = formatCount(activeBar?.views ?? null);
   const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
   const activeCumulativeCompactLabel = formatCompactCount(
     activeBar?.cumulativeViews ?? chart.cumulativeMax,
   );
-  const viewsModeLabel =
-    stats.official.content.viewsMode === 'observedDelta' ? 'за период' : 'всего у постов';
-  const viewsCumulativeLabel =
-    stats.official.content.viewsMode === 'observedDelta' ? 'Накоплено' : 'Сумма';
-  const viewsCumulativeChipLabel =
-    stats.official.content.viewsMode === 'observedDelta' ? 'Итог' : 'Сумма';
+  const viewsModeLabel = resolveChannelStatsViewsModeLabel(stats);
+  const viewsCumulativeLabel = shouldUseChannelStatsPeriodViews(stats) ? 'Накоплено' : 'Сумма';
+  const viewsCumulativeChipLabel = shouldUseChannelStatsPeriodViews(stats) ? 'Итог' : 'Сумма';
+  const chartPeriodLabel = stats.period.range === '24h' ? '24 часа' : stats.period.range;
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
         activeBar.views,
-      )} просмотров ${viewsModeLabel}, ${formatCount(activeBar.cumulativeViews)} накопительно`
+      )} просмотров в точке, ${formatCount(displayViews)} просмотров ${viewsModeLabel}`
     : 'Данные по просмотрам недоступны';
   return (
     <div className="channel-stats-graph">
@@ -1462,10 +1523,10 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <>
           <header className="channel-stats-graph__summary">
             <small className="channel-stats-graph__summary-date">
-              {activeBar ? formatChartDetailDate(activeBar.at, stats.period.bucket) : 'Нет данных'}
+              Просмотры {viewsModeLabel} · {chartPeriodLabel}
             </small>
             <strong className="channel-stats-graph__summary-value">
-              {activeViewsLabel} {viewsModeLabel}
+              {displayViewsCompactLabel} просмотров
             </strong>
 
             <div className="channel-stats-graph__summary-chips">
@@ -1473,11 +1534,28 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 Пик {formatCompactCount(chart.maxViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                Ср. {formatCompactCount(averageViews)}
+                Ср./пост {formatCompactCount(averageViewsPerPost)}
               </span>
-              <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                {viewsCumulativeChipLabel} {activeCumulativeCompactLabel}
-              </span>
+              {shouldUseChannelStatsPeriodViews(stats) && totalPostViews > displayViews ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--total">
+                  Всего {formatCompactCount(totalPostViews)}
+                </span>
+              ) : null}
+              {!shouldUseChannelStatsPeriodViews(stats) && periodViews > 0 ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
+                  Период {formatCompactCount(periodViews)}
+                </span>
+              ) : null}
+              {hasBucketViews ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--cumulative">
+                  {viewsCumulativeChipLabel} {activeCumulativeCompactLabel}
+                </span>
+              ) : null}
+              {activeBar ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--point">
+                  Точка {activeViewsCompactLabel}
+                </span>
+              ) : null}
               {activePreviousBar ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
                   Пред. {formatCompactCount(activePreviousBar.views)}
@@ -1498,7 +1576,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             onPointerDown={(event) => {
               captureChartPointer(event);
               setIsTooltipVisible(true);
-              setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
+              setActiveIndex(
+                readChartIndexFromPointer(event, chart.bars.length, chart.leftPad, chart.rightPad),
+              );
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) {
@@ -1506,7 +1586,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               }
 
               setIsTooltipVisible(true);
-              setActiveIndex(readChartIndexFromPointer(event, chart.bars.length));
+              setActiveIndex(
+                readChartIndexFromPointer(event, chart.bars.length, chart.leftPad, chart.rightPad),
+              );
             }}
             onPointerUp={() => setIsTooltipVisible(false)}
             onPointerCancel={() => setIsTooltipVisible(false)}
@@ -1572,7 +1654,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   <stop offset="1" stopColor="#9f7aea" stopOpacity="0" />
                 </linearGradient>
               </defs>
-              {activeBar ? (
+              {activeBar && hasBucketViews ? (
                 <rect
                   x={activeBar.x - activeBandWidth / 2}
                   y={chart.guideYs[0]! - 10}
@@ -1599,25 +1681,25 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.baselineY}
                 className="channel-stats-graph__baseline"
               />
-              {chart.cumulativeAreaPath ? (
+              {hasBucketViews && chart.cumulativeAreaPath ? (
                 <path
                   d={chart.cumulativeAreaPath}
                   className="channel-stats-graph__area channel-stats-graph__area--views-cumulative"
                 />
               ) : null}
-              {chart.previousCumulativeLinePath ? (
+              {hasBucketViews && chart.previousCumulativeLinePath ? (
                 <path
                   d={chart.previousCumulativeLinePath}
                   className="channel-stats-graph__line channel-stats-graph__line--previous"
                 />
               ) : null}
-              {chart.cumulativeLinePath ? (
+              {hasBucketViews && chart.cumulativeLinePath ? (
                 <path
                   d={chart.cumulativeLinePath}
                   className="channel-stats-graph__line-glow channel-stats-graph__line-glow--views"
                 />
               ) : null}
-              {activeBar ? (
+              {activeBar && hasBucketViews ? (
                 <line
                   x1={activeBar.x}
                   y1={chart.guideYs[0]!}
@@ -1625,6 +1707,32 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   y2={chart.baselineY}
                   className="channel-stats-graph__active-guide channel-stats-graph__active-guide--views"
                 />
+              ) : null}
+              {chart.aggregateBar ? (
+                <g className="channel-stats-graph__aggregate">
+                  <rect
+                    x={chart.aggregateBar.x}
+                    y={chart.aggregateBar.y}
+                    width={chart.aggregateBar.width}
+                    height={chart.aggregateBar.height}
+                    rx="16"
+                    className="channel-stats-graph__aggregate-bar"
+                  />
+                  <text
+                    x={chart.aggregateBar.x + 14}
+                    y={chart.aggregateBar.y + 27}
+                    className="channel-stats-graph__aggregate-text"
+                  >
+                    {displayViewsCompactLabel} просмотров
+                  </text>
+                  <text
+                    x={chart.aggregateBar.x + 14}
+                    y={chart.aggregateBar.y + 45}
+                    className="channel-stats-graph__aggregate-caption"
+                  >
+                    {viewsModeLabel}
+                  </text>
+                </g>
               ) : null}
               {chart.previousBars.map((bar, index) => (
                 <rect
@@ -1650,13 +1758,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   }`}
                 />
               ))}
-              {chart.cumulativeLinePath ? (
+              {hasBucketViews && chart.cumulativeLinePath ? (
                 <path
                   d={chart.cumulativeLinePath}
                   className="channel-stats-graph__line channel-stats-graph__line--views-cumulative"
                 />
               ) : null}
-              {activeBar ? (
+              {activeBar && hasBucketViews ? (
                 <circle
                   cx={activeBar.x}
                   cy={activeBar.cumulativeY}
@@ -1664,7 +1772,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__dot-pulse channel-stats-graph__dot-pulse--views"
                 />
               ) : null}
-              {activeBar ? (
+              {activeBar && hasBucketViews ? (
                 <circle
                   cx={activeBar.x}
                   cy={activeBar.cumulativeY}
@@ -1735,7 +1843,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
 function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const posts = stats.official.content.topPosts;
-  const isPeriodViews = stats.official.content.viewsMode === 'observedDelta';
+  const isPeriodViews = shouldUseChannelStatsPeriodViews(stats);
   const resolvePostViews = (
     post: ChannelStatsResponse['official']['content']['topPosts'][number],
   ) => (isPeriodViews ? post.viewsDelta : post.views);
@@ -1844,16 +1952,15 @@ function ChannelStatsOverview({
   const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
   const netTone = audienceNet > 0 ? 'success' : audienceNet < 0 ? 'danger' : 'neutral';
   const engagementRate =
-    stats.meta.viewsAvailable && stats.official.content.views > 0
-      ? (stats.official.content.reactions / stats.official.content.views) * 100
+    stats.meta.viewsAvailable && resolveChannelStatsDisplayViews(stats) > 0
+      ? (stats.official.content.reactions / resolveChannelStatsDisplayViews(stats)) * 100
       : null;
   const viewsPerPost =
     stats.meta.viewsAvailable && stats.official.content.posts > 0
-      ? Math.round(stats.official.content.views / stats.official.content.posts)
+      ? Math.round(resolveChannelStatsDisplayViews(stats) / stats.official.content.posts)
       : null;
-  const viewsMetricSuffix =
-    stats.official.content.viewsMode === 'observedDelta' ? 'за период' : 'у постов';
-  const chartTitle = 'Динамика';
+  const viewsMetricSuffix = resolveChannelStatsViewsModeLabel(stats);
+  const chartTitle = 'Аналитика';
 
   return (
     <section
@@ -1934,7 +2041,7 @@ function ChannelStatsOverview({
               <>
                 <DeltaBadge metric={stats.comparison.deltas.averageViewsPerPost} />
                 <b>
-                  {formatCompactCount(stats.official.content.views)} {viewsMetricSuffix}
+                  {formatCompactCount(resolveChannelStatsDisplayViews(stats))} {viewsMetricSuffix}
                 </b>
               </>
             ) : (

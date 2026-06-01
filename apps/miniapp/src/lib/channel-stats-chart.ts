@@ -1,3 +1,5 @@
+import type { ChannelStatsViewMode } from '@maxim/contracts/channel-stats';
+
 export type AudienceChartActivePoint = {
   participantsCount: number | null;
   joined: number;
@@ -9,6 +11,33 @@ export type ViewsChartActivePoint = {
   views: number;
   cumulativeViews: number;
 };
+
+export type ViewsDisplayStats = {
+  official: {
+    content: {
+      views: number;
+      viewsTotal: number;
+      viewsMode: ChannelStatsViewMode;
+    };
+  };
+};
+
+export function resolveChannelStatsDisplayViews(stats: ViewsDisplayStats): number {
+  const periodViews = stats.official.content.views;
+  if (periodViews > 0) {
+    return periodViews;
+  }
+
+  return stats.official.content.viewsTotal;
+}
+
+export function shouldUseChannelStatsPeriodViews(stats: ViewsDisplayStats): boolean {
+  return stats.official.content.viewsMode === 'observedDelta' && stats.official.content.views > 0;
+}
+
+export function resolveChannelStatsViewsModeLabel(stats: ViewsDisplayStats): string {
+  return shouldUseChannelStatsPeriodViews(stats) ? 'за период' : 'всего у постов';
+}
 
 export function resolveInitialAudienceChartIndex(
   points: readonly AudienceChartActivePoint[],
