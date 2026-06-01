@@ -1597,6 +1597,61 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'balanced speech therapy launch from twelve hour audit miss',
+    text: `Запуск речи у неговорящих или малоговорящих детей. Ваш ребёнок заговорит уверенно с помощью профессионального логопеда! Индивидуальные занятия помогут развить речь быстро и эффективно. Получите современные методики, поддержку и удобный график. Сделайте первый шаг к успешному общению своего малыша - запишитесь сегодня в Максе по номеру +7 900 000 01 00 или звоните по телефону +7 900 000 01 01. Действуют скидки на летние занятия!`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:speech-therapy-lessons', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'crane beam installation from twelve hour audit miss',
+    text: `Производство и монтаж кран балок под ключ. +7 900 000 01 02`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['intent:crane-beam-under-key', 'service-specialty:crane-beam-installation'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'pvc window and door maintenance from twelve hour audit miss',
+    text: `Ремонт и обслуживание окон и дверей из ПВХ, ремонт и обслуживание деревянных евроокон. Телефон +7 900 000 01 03.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['intent:window-door-maintenance', 'service-specialty:pvc-window-door-repair'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'custom portrait on canvas from twelve hour audit miss',
+    text: `Портрет на холсте - это подарок, который притягивает взгляд и хранит воспоминания. Для заказа пишите именно на этот номер: +7 900 000 01 04 WA, Max.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['intent:custom-art-order', 'service-specialty:custom-art-order'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
+  {
+    label: 'home goods low price order with emoji phone from twelve hour audit miss',
+    text: `Переходите по ссылке в нашу группу в Макс, где вы найдете огромный выбор качественной посуды, техники и текстиля по самым низким ценам. По поводу заказа пишите по номеру 8️⃣9️⃣8️⃣9️⃣8️⃣8️⃣8️⃣2️⃣0️⃣8️⃣9️⃣ Иннара.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    expectedSignals: ['goods-retail:home-goods-low-price-order', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 60,
+      commercialAdsDeleteThreshold: 82,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -1702,6 +1757,42 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'short low quantity plant lamp listing from production audit',
     text: `Фитолампа для комнатных растений, в наличии 2 шт, по 500 р каждая. +7 900 000 00 22`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'short low quantity plant giveaway from twelve hour false-positive guard',
+    text: `Отдам денежное дерево по 50 руб за шт, в наличии 3 шт, есть с корнями, район Комета`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'quoted commercial message discussion from twelve hour false-positive guard',
+    text: `Сосед прислал рекламу: "Скидка на курс, пишите в личку, цена 3000 руб". Такое удаляем?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'channel metrics report not selling placements from twelve hour false-positive guard',
+    text: `Отчет по каналу: ER24 12%, рекламный пост стоил 500р у конкурента, размещение не продаём.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'admin moderation discussion about ad spam from twelve hour false-positive guard',
+    text: `Админы, спамер кидает рекламу, бот удаляет такие сообщения или нужно настроить фильтр?`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

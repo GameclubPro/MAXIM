@@ -110,6 +110,36 @@ describe('commercial pattern regressions', () => {
       subtype: 'BUYOUT',
       signals: ['buyout:livestock-procurement', 'contact:phone'],
     },
+    {
+      label: 'speech therapy launch from twelve hour audit miss',
+      text: 'Запуск речи у неговорящих или малоговорящих детей. Ваш ребёнок заговорит уверенно с помощью профессионального логопеда! Индивидуальные занятия помогут развить речь быстро и эффективно. Запишитесь сегодня по номеру +7 900 000 01 00, действуют скидки.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:speech-therapy-lessons', 'contact:phone'],
+    },
+    {
+      label: 'crane beam installation from twelve hour audit miss',
+      text: 'Производство и монтаж кран балок под ключ. +7 900 000 01 02',
+      subtype: 'SERVICES',
+      signals: ['intent:crane-beam-under-key', 'service-specialty:crane-beam-installation'],
+    },
+    {
+      label: 'pvc window and door maintenance from twelve hour audit miss',
+      text: 'Ремонт и обслуживание окон и дверей из ПВХ, ремонт и обслуживание деревянных евроокон. Телефон +7 900 000 01 03.',
+      subtype: 'SERVICES',
+      signals: ['intent:window-door-maintenance', 'service-specialty:pvc-window-door-repair'],
+    },
+    {
+      label: 'custom portrait order from twelve hour audit miss',
+      text: 'Портрет на холсте - это подарок, который хранит воспоминания. Для заказа пишите именно на этот номер: +7 900 000 01 04 WA, Max.',
+      subtype: 'SERVICES',
+      signals: ['intent:custom-art-order', 'service-specialty:custom-art-order'],
+    },
+    {
+      label: 'home goods order with emoji phone from twelve hour audit miss',
+      text: 'Переходите в нашу группу, где вы найдете посуду, технику и текстиль по самым низким ценам. По поводу заказа пишите по номеру 8️⃣9️⃣8️⃣9️⃣8️⃣8️⃣8️⃣2️⃣0️⃣8️⃣9️⃣',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:home-goods-low-price-order', 'contact:phone'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -238,6 +268,22 @@ describe('commercial pattern regressions', () => {
     [
       'animal adoption relocation mention is not logistics advertising',
       'Кошка ищет дом, отдают в добрые руки при переезде, пишите в личку.',
+    ],
+    [
+      'quoted commercial text is discussion, not own ad',
+      'Сосед прислал рекламу: "Скидка на курс, пишите в личку, цена 3000 руб". Такое удаляем?',
+    ],
+    [
+      'channel metrics report with explicit not selling placement',
+      'Отчет по каналу: ER24 12%, рекламный пост стоил 500р у конкурента, размещение не продаём.',
+    ],
+    [
+      'admin moderation discussion about ad spam',
+      'Админы, спамер кидает рекламу, бот удаляет такие сообщения или нужно настроить фильтр?',
+    ],
+    [
+      'low quantity plant giveaway stays private',
+      'Отдам денежное дерево по 50 руб за шт, в наличии 3 шт, есть с корнями, район Комета',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();

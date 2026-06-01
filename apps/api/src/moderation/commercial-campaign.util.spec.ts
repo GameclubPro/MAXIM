@@ -18,6 +18,14 @@ describe('commercial-campaign util', () => {
     expect(first.phones).toEqual(['79001234567']);
   });
 
+  it('extracts emoji keycap formatted phones for campaign evidence', () => {
+    const fingerprint = buildCommercialCampaignFingerprint(
+      'По поводу заказа пишите по номеру 8️⃣9️⃣8️⃣9️⃣8️⃣8️⃣8️⃣2️⃣0️⃣8️⃣9️⃣ Иннара',
+    );
+
+    expect(fingerprint.phones).toEqual(['79898882089']);
+  });
+
   it('tracks repeated sender, text, and phone across chats', () => {
     const tracker = new InMemoryCommercialCampaignTracker(60 * 60);
 

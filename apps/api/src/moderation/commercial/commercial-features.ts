@@ -30,6 +30,7 @@ import {
   ADS_CHANNEL_PLACEMENT_PATTERNS,
   ADS_CONTACT_MARKERS,
   ADS_NEGATIVE_MARKERS,
+  ADS_COMMERCIAL_DISCUSSION_NEGATIVE_PATTERNS,
   ADS_PRIVATE_CONTEXT_MARKERS,
   ADS_QUESTION_CONTEXT_MARKERS,
   ADS_SEARCH_REQUEST_MARKERS,
@@ -921,6 +922,15 @@ export function collectCommercialSignals(params: {
     }
 
     addNegative(`negative:${marker}`, weights.negativeMarker, true);
+  }
+
+  for (const { label, pattern } of ADS_COMMERCIAL_DISCUSSION_NEGATIVE_PATTERNS) {
+    if (!(pattern.test(normalizedText) || pattern.test(rawLoweredText))) {
+      continue;
+    }
+
+    addNegative(`context:${label}`, weights.negativeMarker, true);
+    hasSearchRequestContext = true;
   }
 
   for (const marker of ADS_QUESTION_CONTEXT_MARKERS) {

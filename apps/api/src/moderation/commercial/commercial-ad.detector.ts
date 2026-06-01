@@ -109,10 +109,17 @@ export class CommercialAdDetector {
       'intent:language-lessons',
       'intent:строительная-бригада',
       'intent:все-виды-работ',
+      'intent:crane-beam-under-key',
+      'intent:window-door-maintenance',
+      'intent:custom-art-order',
       'intent:construction-multi-service',
       'intent:занимаюсь-услугами',
       'service-specialty:appliance-repair',
       'service-specialty:custom-handmade-order',
+      'service-specialty:custom-art-order',
+      'service-specialty:crane-beam-installation',
+      'service-specialty:pvc-window-door-repair',
+      'service-specialty:speech-therapy-lessons',
       'service-specialty:tree-yard-repair-service',
       'service-specialty:yard-cleanup-service',
       'service-specialty:paving-landscaping-service',
@@ -216,6 +223,10 @@ export class CommercialAdDetector {
       return null;
     }
 
+    if (hasCommercialDiscussionHardNegative(state.negativeSignals)) {
+      return null;
+    }
+
     if (
       appliedThresholds.strictness < 0.35 &&
       !(hasStructuredCommercialContext && hasStrongCommercialEvidence)
@@ -316,6 +327,15 @@ export class CommercialAdDetector {
       classifierReasons: secondStage?.classifierReasons ?? [],
     };
   }
+}
+
+function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[]): boolean {
+  return negativeSignals.some(
+    (signal) =>
+      signal === 'context:quoted-ad-example' ||
+      signal === 'context:moderation-ad-discussion' ||
+      signal === 'context:channel-metrics-not-selling',
+  );
 }
 
 function isLikelyDeliveryDiscussionNoise(

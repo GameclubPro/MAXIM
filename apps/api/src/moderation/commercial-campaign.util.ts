@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { extractUrlsFromText, stripUrlsFromText } from '../common/url-text.util';
 
 const COMMERCIAL_CAMPAIGN_KEY_PREFIX = 'commercial-campaign:v1';
-const COMMERCIAL_CAMPAIGN_PHONE_PATTERN = /(?:\+?\d[\d\s()-]{8,}\d)/gu;
+const COMMERCIAL_CAMPAIGN_PHONE_PATTERN =
+  /(?:\+?\d(?:\uFE0F?\u20E3)?(?:[\d\s().‐‑‒–—―•·|/:+-]|\uFE0F|\u20E3){8,}\d(?:\uFE0F?\u20E3)?)/gu;
 const COMMERCIAL_CAMPAIGN_HANDLE_PATTERN =
   /(?:^|[^\p{L}\p{N}_])@([a-z0-9_]{4,32})(?=$|[^\p{L}\p{N}_])/giu;
 const COMMERCIAL_CAMPAIGN_TEXT_MIN_LENGTH = 18;
