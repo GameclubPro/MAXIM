@@ -3,9 +3,6 @@ server {
   server_name _;
 
   root /usr/share/nginx/html;
-  types {
-    application/manifest+json webmanifest;
-  }
   gzip on;
   gzip_vary on;
   gzip_proxied any;
@@ -27,6 +24,12 @@ server {
     expires -1;
     add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
     add_header Pragma "no-cache" always;
+  }
+
+  location = __MINIAPP_BASE_PATH__site.webmanifest {
+    try_files $uri =404;
+    default_type application/manifest+json;
+    add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
   }
 
   location ~ ^__MINIAPP_BASE_PATH__assets/.+\.js$ {
