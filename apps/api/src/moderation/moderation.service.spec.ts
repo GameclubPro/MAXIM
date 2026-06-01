@@ -2068,7 +2068,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('does not auto-delete messages from another configured bot when that bot is a chat admin', async () => {
+  it('does not auto-delete messages from another configured bot', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -2149,11 +2149,7 @@ describe('ModerationService', () => {
     });
 
     expect(maxBotLinkService.isKnownBotUserId).toHaveBeenCalledWith('bot-1');
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
-      'chat-1',
-      ['bot-1'],
-      expect.objectContaining({ trafficClass: 'interactive' }),
-    );
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -13610,6 +13606,76 @@ describe('ModerationService', () => {
         sourceTag: 'moderation_delete',
       }),
     );
+  });
+
+  it('skips rule moderation for configured runtime bot senders', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ videoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'VIDEO_BLOCKED', score: 0.88, reason: 'Video disabled' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const maxBotLinkService = {
+      isKnownBotUserId: jest.fn((userId: string | null | undefined) => userId === '613002203036_5'),
+      resolveContactIdSync: jest.fn(),
+    };
+    const update = createVideoAttachmentUpdate();
+    update.message!.senderId = '613002203036_5';
+    update.message!.senderName = 'Рэкс';
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.handleUpdate(update);
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
   it('skips delete moderation cleanly when no bot has delete permission in the chat', async () => {

@@ -21,12 +21,7 @@ function createPrismaMock() {
   const applyData = (row: any, data: any) => {
     const next = { ...row };
     for (const [key, value] of Object.entries(data ?? {})) {
-      if (
-        value &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        'increment' in value
-      ) {
+      if (value && typeof value === 'object' && !Array.isArray(value) && 'increment' in value) {
         next[key] = (next[key] ?? 0) + Number((value as { increment: number }).increment);
       } else {
         next[key] = value;
@@ -309,8 +304,7 @@ function createPrismaMock() {
         }
         if (where?.members?.some?.chatId) {
           return campaignMembers.some(
-            (member) =>
-              member.clusterId === row.id && member.chatId === where.members.some.chatId,
+            (member) => member.clusterId === row.id && member.chatId === where.members.some.chatId,
           );
         }
         return true;
@@ -382,18 +376,20 @@ function createPrismaMock() {
       shadowScores.push(row);
       return row;
     }),
-    count: jest.fn(async ({ where }: any) =>
-      shadowScores.filter(
-        (row) =>
-          (!where.createdAt?.gte || row.createdAt >= where.createdAt.gte) &&
-          (!('wouldPromote' in where) || row.wouldPromote === where.wouldPromote) &&
-          (!where.chatId || row.chatId === where.chatId),
-      ).length,
+    count: jest.fn(
+      async ({ where }: any) =>
+        shadowScores.filter(
+          (row) =>
+            (!where.createdAt?.gte || row.createdAt >= where.createdAt.gte) &&
+            (!('wouldPromote' in where) || row.wouldPromote === where.wouldPromote) &&
+            (!where.chatId || row.chatId === where.chatId),
+        ).length,
     ),
-    findFirst: jest.fn(async ({ where }: any) =>
-      [...shadowScores]
-        .filter((row) => row.userId === where.userId)
-        .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null,
+    findFirst: jest.fn(
+      async ({ where }: any) =>
+        [...shadowScores]
+          .filter((row) => row.userId === where.userId)
+          .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null,
     ),
     updateMany: jest.fn(async ({ where, data }: any) => {
       let count = 0;
@@ -454,6 +450,59 @@ function createPrismaMock() {
 }
 
 describe('GlobalSpammerIntelligenceService', () => {
+  it('ignores spammer observations and enforcement for configured bot users', async () => {
+    const { prisma } = createPrismaMock();
+    const maxBotRegistry = {
+      isKnownBotUserId: jest.fn((userId: string | null | undefined) => userId === '613002203036_5'),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const result = await service.recordObservation({
+      userId: '613002203036_5',
+      source: 'FANOUT_HIGH',
+      score: 0.99,
+      reason: 'FANOUT_EPISODE_CONFIRMED',
+      chatId: 'chat-1',
+      evidence: { uniqueChats: 10 },
+      forceRegistry: true,
+    });
+
+    expect(result.outcome).toBe('ignored');
+    expect(prisma.spammerObservation.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+
+    await prisma.globalSpammer.upsert({
+      where: { userId: '613002203036_5' },
+      create: {
+        userId: '613002203036_5',
+        confidenceScore: 1,
+        lastReason: 'legacy-row',
+        sourceBreakdown: {},
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      update: {},
+    });
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-1',
+        userId: '613002203036_5',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        action: 'NONE',
+        reason: 'KNOWN_RUNTIME_BOT',
+      }),
+    );
+  });
+
   it('keeps medium-confidence fanout in review instead of the registry', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
@@ -936,9 +985,7 @@ describe('GlobalSpammerIntelligenceService', () => {
     prisma.globalSpammer.deleteMany.mockResolvedValueOnce({ count: 1 });
     prisma.globalSpammer.count.mockResolvedValueOnce(0);
 
-    await expect(
-      service.archiveExpiredRegistryEntries({ now, limit: 25 }),
-    ).resolves.toEqual(
+    await expect(service.archiveExpiredRegistryEntries({ now, limit: 25 })).resolves.toEqual(
       expect.objectContaining({
         dryRun: false,
         scanned: 1,

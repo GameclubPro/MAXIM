@@ -5474,6 +5474,17 @@ describe('AdminService.applyManualModerationAction', () => {
     jest.useRealTimers();
   });
 
+  it('refuses to manually moderate configured runtime bots', async () => {
+    const service = Object.create(AdminService.prototype) as any;
+    service.maxBotRegistry = {
+      isKnownBotUserId: jest.fn().mockReturnValue(true),
+    };
+
+    await expect(
+      service.assertTargetUserCanBeModerated('chat-1', '613002203036_5', 'BAN'),
+    ).rejects.toThrow(BadRequestException);
+  });
+
   it('records manual mute without removing the participant from chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -22739,9 +22750,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(replyText).not.toContain('>Открыть комментарии</a>');
     expect(replyText).not.toContain('>Открыть пост</a>');
     expect(replyOptions.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
-    expect(replyOptions.buttons[1][0].url).toBe(
-      'https://max.ru/chats/chat-1/message/bot-copy-1',
-    );
+    expect(replyOptions.buttons[1][0].url).toBe('https://max.ru/chats/chat-1/message/bot-copy-1');
     expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalledWith(
       'user-2',
       expect.anything(),
@@ -22803,11 +22812,13 @@ describe('AdminService.sendBroadcast', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      resolveMessageLink: jest.fn().mockImplementation(async (messageId: string) =>
-        messageId === 'mid-fallback-reply'
-          ? 'https://max.ru/chats/chat-1/message/fallback-reply'
-          : null,
-      ),
+      resolveMessageLink: jest
+        .fn()
+        .mockImplementation(async (messageId: string) =>
+          messageId === 'mid-fallback-reply'
+            ? 'https://max.ru/chats/chat-1/message/fallback-reply'
+            : null,
+        ),
       getMessageTextAsMarkdown: jest.fn().mockResolvedValue('Исходный пост\nВторая строка'),
       sendMessageImmediateToUser: jest.fn().mockResolvedValue({
         messageId: 'private-notification-1',

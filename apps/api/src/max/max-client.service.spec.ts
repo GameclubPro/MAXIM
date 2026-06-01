@@ -225,6 +225,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
         maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
       })),
+      isKnownBotUserId: jest.fn().mockReturnValue(false),
     };
     const botContext = {
       getActiveBotId: jest.fn().mockReturnValue(null),
@@ -240,6 +241,50 @@ describe('MaxClientService inline keyboard guardrails', () => {
       actionQueue as never,
     );
   }
+
+  it('refuses to kick or ban configured bot users', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    (service as any).botRegistry.isKnownBotUserId.mockImplementation(
+      (userId: string | null | undefined) => userId === '613002203036_5',
+    );
+
+    await expect(
+      service.kickMember('chat-1', '613002203036_5', { immediate: true }),
+    ).rejects.toThrow('Refusing to kick configured MAX bot user');
+    await expect(
+      service.banMember('chat-1', '613002203036_5', { immediate: true }),
+    ).rejects.toThrow('Refusing to ban configured MAX bot user');
+    expect(httpService.request).not.toHaveBeenCalled();
+  });
+
+  it('skips stale queued kick or ban jobs for configured bot users', async () => {
+    const httpService = { request: jest.fn() };
+    const service = createService(httpService);
+    (service as any).botRegistry.isKnownBotUserId.mockImplementation(
+      (userId: string | null | undefined) => userId === '613002203036_5',
+    );
+
+    await service.executeActionJob({
+      actionType: 'BAN_MEMBER',
+      chatId: 'chat-1',
+      userId: '613002203036_5',
+      attempt: 1,
+      idempotencyKey: 'ban-bot',
+      createdAt: new Date().toISOString(),
+    });
+
+    await service.executeActionJob({
+      actionType: 'KICK_MEMBER',
+      chatId: 'chat-1',
+      userId: '613002203036_5',
+      attempt: 1,
+      idempotencyKey: 'kick-bot',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(httpService.request).not.toHaveBeenCalled();
+  });
 
   it('trims inline keyboard buttons to 210 and logs warning', async () => {
     const service = createService();

@@ -842,7 +842,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.markWebhookHotPathStage(hotPathProfile, 'chat-context');
         const updateType = this.readLowerString(update.type);
         const senderIsOwnBotInMessage =
-          updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
+          updateType === 'message_created' && senderId
+            ? this.isCurrentBotSender(senderId, update)
+            : false;
         if (senderIsOwnBotInMessage) {
           await this.handleOwnBotMessageAutoDelete({
             chatId,
@@ -905,8 +907,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const senderIsOwnBot = this.isOwnBotSender(senderId);
       const senderIsCurrentBot = this.isCurrentBotSender(senderId, update);
+      if (this.isKnownRuntimeBotUserId(senderId) && !senderIsCurrentBot) {
+        this.logger.debug(
+          {
+            chatId,
+            senderId,
+            updateId: update.updateId,
+          },
+          'Skipped moderation for configured MAX bot user',
+        );
+        return;
+      }
+
+      const senderIsOwnBot = this.isOwnBotSender(senderId);
       const senderIsBot = senderIsOwnBot || senderIsCurrentBot || this.isBotAuthoredMessage(update);
       if (senderIsBot) {
         const senderUsesOwnBotCleanup = senderIsOwnBot || senderIsCurrentBot;
@@ -3398,6 +3412,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       trackAsGlobalSpammer = true,
     } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          action,
+        },
+        'Skipped sanction for configured MAX bot user',
+      );
+      return;
+    }
+
     if (action === SanctionAction.MUTE) {
       await this.rememberActiveMuteState(chatId, userId, {
         eventId: `runtime:${chatId}:${userId}:${Date.now()}`,
@@ -3499,6 +3526,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+        },
+        'Skipped kick for configured MAX bot user',
+      );
+      return false;
+    }
+
     return this.executeModerationActionWithFallback({
       chatId,
       action: 'moderate_member',
@@ -3522,6 +3560,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+        },
+        'Skipped ban for configured MAX bot user',
+      );
+      return false;
+    }
+
     return this.executeModerationActionWithFallback({
       chatId,
       action: 'moderate_member',
@@ -5941,6 +5990,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
   }) {
     const { chatId, userId, messageId, text } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          messageId,
+        },
+        'Skipped bot-account moderation for configured MAX bot user',
+      );
+      return;
+    }
 
     try {
       await this.deleteMessageImmediately(chatId, messageId);
@@ -6132,6 +6192,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const kickedUserIds = new Set<string>();
 
     for (const userId of botUserIds) {
+      if (this.isKnownRuntimeBotUserId(userId)) {
+        continue;
+      }
+
       try {
         if (await this.kickMemberImmediately(chatId, userId)) {
           kickedUserIds.add(userId);
@@ -6447,6 +6511,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
     const isKnownSpammer = await this.isUserKnownGlobalSpammer(userId, {
       chatId,
       messageId,
@@ -6487,6 +6555,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
     try {
       await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
@@ -6533,6 +6605,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const kickedUserIds: string[] = [];
     for (const userId of serviceMemberUserIds) {
+      if (this.isKnownRuntimeBotUserId(userId)) {
+        continue;
+      }
       if (localAdminDecisions.get(userId) !== 'BLOCK') {
         continue;
       }
@@ -6567,6 +6642,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     for (const row of rows) {
+      if (this.isKnownRuntimeBotUserId(row.userId)) {
+        continue;
+      }
       if (kickedUserIds.includes(row.userId)) {
         continue;
       }
@@ -6612,6 +6690,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode?: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text, reason, ruleCode = 'GLOBAL_SPAMMER_KICK' } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
     try {
       if (await this.kickMemberImmediately(chatId, userId)) {
         await this.createBotModerationEvent({
@@ -6664,6 +6746,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const { chatId, userId, messageId, text, deleteSpammersEnabled, exemptFromEnforcement } =
       params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return baseResult;
+    }
+
     if (this.hasRecentLocalGlobalSpammerChatObservation(chatId, userId)) {
       return baseResult;
     }
@@ -6714,8 +6800,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
         });
         const shouldCheckKnownSpammer =
-          fanoutReason === 'FANOUT_EPISODE_CONFIRMED' ||
-          fanoutReason === 'FANOUT_EPISODE_CRITICAL';
+          fanoutReason === 'FANOUT_EPISODE_CONFIRMED' || fanoutReason === 'FANOUT_EPISODE_CRITICAL';
         if (
           deleteSpammersEnabled &&
           !exemptFromEnforcement &&
@@ -6786,6 +6871,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     reason: string;
   }): Promise<void> {
     const { chatId, userId, messageId, text, reason } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return;
+    }
+
     try {
       await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
@@ -7396,6 +7485,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     context?: { chatId?: string; messageId?: string; trigger?: string },
   ): Promise<boolean> {
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
     if (this.globalSpammerIntelligence) {
       const decision = await this.globalSpammerIntelligence.evaluatePolicy({
         chatId: context?.chatId,
@@ -7451,6 +7544,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     evidence?: Prisma.InputJsonValue;
   }) {
     const { userId, sourceChatId, reason, evidence } = params;
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return;
+    }
 
     try {
       if (this.globalSpammerIntelligence) {
@@ -10796,15 +10892,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     error: unknown;
   }): Promise<boolean> {
     try {
-      const result =
-        await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
-          chatId: params.chatId,
-          botId: params.botId,
-          entityType: ChatEntityType.CHANNEL,
-          source: params.source,
-          operation: params.operation,
-          error: params.error,
-        });
+      const result = await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+        chatId: params.chatId,
+        botId: params.botId,
+        entityType: ChatEntityType.CHANNEL,
+        source: params.source,
+        operation: params.operation,
+        error: params.error,
+      });
       if (!result?.recorded) {
         return false;
       }
@@ -10825,8 +10920,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         {
           chatId: params.chatId,
           source: params.source,
-          err:
-            accessLossError instanceof Error ? accessLossError.message : String(accessLossError),
+          err: accessLossError instanceof Error ? accessLossError.message : String(accessLossError),
         },
         'Failed to record channel auto-post MAX access loss',
       );
@@ -15739,6 +15833,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isOwnBotSender(userId: string): boolean {
+    if (this.maxBotLinkService?.isKnownBotUserId?.(userId)) {
+      return true;
+    }
+
+    if (this.ownBotUserIdVariants.size === 0) {
+      return false;
+    }
+
+    for (const variant of this.buildBotIdVariants(userId)) {
+      if (this.ownBotUserIdVariants.has(variant)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private isKnownRuntimeBotUserId(userId: string | null | undefined): boolean {
+    if (typeof userId !== 'string' || userId.trim().length === 0) {
+      return false;
+    }
+
     if (this.maxBotLinkService?.isKnownBotUserId?.(userId)) {
       return true;
     }

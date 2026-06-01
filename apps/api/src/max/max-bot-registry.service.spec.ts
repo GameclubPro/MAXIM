@@ -87,6 +87,23 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.isKnownBotUserId('613002203036_5')).toBe(true);
   });
 
+  it('treats explicit bot contact ids as protected bot user ids', () => {
+    const service = createService({
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'custom-secondary-bot',
+          contactId: '700000000001',
+          token: 'token-secondary-123456',
+          webhookSecretPath: 'secondary-secret',
+          webhookHeaderSecret: 'secondary-header',
+          state: 'active',
+        },
+      ]),
+    });
+
+    expect(service.isKnownBotUserId('700000000001')).toBe(true);
+  });
+
   it('keeps registry webhook requirements aligned with the shared subscription constants', () => {
     const service = createService();
 

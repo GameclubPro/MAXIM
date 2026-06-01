@@ -58,7 +58,10 @@ export class MaxBotRegistryService {
     this.defaultBot = this.bots[0]!;
     this.entryBot = this.resolveEntryBot(configService.get<string>('MAX_ENTRY_BOT_ID'));
     this.knownBotUserIdVariants = new Set(
-      this.bots.flatMap((bot) => [...buildBotIdVariants(bot.id)]),
+      this.bots.flatMap((bot) => [
+        ...buildBotIdVariants(bot.id),
+        ...buildBotIdVariants(bot.contactId),
+      ]),
     );
   }
 

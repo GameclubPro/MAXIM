@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -9,6 +9,7 @@ import { Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { type RuleViolation } from './rule-engine.contract';
 import { maskText } from './text-mask.util';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 
 export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'FANOUT_HIGH',
@@ -403,10 +404,7 @@ const REPUTATION_OBSERVATION_SOURCES = new Set<GlobalSpammerObservationSource>([
   'LOCAL_ADMIN_BLOCK',
   'LOCAL_ADMIN_ALLOW',
 ]);
-const PROMOTION_FANOUT_REASONS = new Set([
-  'FANOUT_EPISODE_CONFIRMED',
-  'FANOUT_EPISODE_CRITICAL',
-]);
+const PROMOTION_FANOUT_REASONS = new Set(['FANOUT_EPISODE_CONFIRMED', 'FANOUT_EPISODE_CRITICAL']);
 const PROMOTION_BEHAVIOR_SOURCES = new Set<GlobalSpammerObservationSource>([
   'FANOUT_HIGH',
   'FANOUT_REPEAT',
@@ -425,6 +423,7 @@ export class GlobalSpammerIntelligenceService {
   constructor(
     private readonly prisma: PrismaService,
     @Optional() configService?: ConfigService,
+    @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
   ) {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
   }
@@ -570,6 +569,9 @@ export class GlobalSpammerIntelligenceService {
     }
 
     const decision = this.normalizeLocalAdminDecision(params.decision) ?? 'REVIEW';
+    if (decision !== 'ALLOW' && this.isKnownRuntimeBotUserId(userId)) {
+      throw new BadRequestException('Configured MAX bots cannot be marked as spammers.');
+    }
     const reason =
       this.normalizeText(params.reason) ||
       (decision === 'BLOCK'
@@ -611,9 +613,8 @@ export class GlobalSpammerIntelligenceService {
           sourceChatId: params.chatId,
           localDecision: decision,
         },
-        ttlDays: SOURCE_DEFAULT_TTL_DAYS[
-          decision === 'BLOCK' ? 'LOCAL_ADMIN_BLOCK' : 'LOCAL_ADMIN_ALLOW'
-        ],
+        ttlDays:
+          SOURCE_DEFAULT_TTL_DAYS[decision === 'BLOCK' ? 'LOCAL_ADMIN_BLOCK' : 'LOCAL_ADMIN_ALLOW'],
       });
     }
 
@@ -626,6 +627,9 @@ export class GlobalSpammerIntelligenceService {
     const userId = this.normalizeUserId(input.userId);
     if (!userId) {
       return this.emptyDecision('ignored', '');
+    }
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return this.emptyDecision('ignored', userId);
     }
 
     const now = input.observedAt ?? new Date();
@@ -761,7 +765,10 @@ export class GlobalSpammerIntelligenceService {
     const mediumConfidenceThreshold = MEDIUM_CONFIDENCE_THRESHOLD + thresholdAdjustment;
 
     const canPromoteToRegistry = this.canPromoteToRegistry(input, aggregate);
-    if ((input.forceRegistry || aggregate.score >= highConfidenceThreshold) && canPromoteToRegistry) {
+    if (
+      (input.forceRegistry || aggregate.score >= highConfidenceThreshold) &&
+      canPromoteToRegistry
+    ) {
       await this.promoteToRegistry({
         userId,
         sourceChatId: input.chatId ?? null,
@@ -1460,12 +1467,10 @@ export class GlobalSpammerIntelligenceService {
     const chatId = this.normalizeText(params.chatId ?? '') || null;
     const now = new Date();
     const enforcementMode = params.enforcementMode ?? this.defaultEnforcementMode;
-    const activeSuppression = userId ? await this.findActiveSuppression(userId, now) : null;
     const adminExempt = Boolean(params.adminExempt);
 
-    let decision: GlobalSpammerPolicyDecision;
     if (!userId) {
-      decision = this.buildPolicyDecision({
+      return this.buildPolicyDecision({
         userId,
         chatId,
         trigger: params.trigger,
@@ -1480,7 +1485,29 @@ export class GlobalSpammerIntelligenceService {
         sourceBreakdown: null,
         enforced: false,
       });
-    } else if (adminExempt) {
+    }
+
+    if (this.isKnownRuntimeBotUserId(userId)) {
+      return this.buildPolicyDecision({
+        userId,
+        chatId,
+        trigger: params.trigger,
+        registryStatus: 'NONE',
+        action: 'NONE',
+        enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt,
+        confidenceScore: null,
+        reason: 'KNOWN_RUNTIME_BOT',
+        expiresAt: null,
+        sourceBreakdown: null,
+        enforced: false,
+      });
+    }
+
+    const activeSuppression = await this.findActiveSuppression(userId, now);
+    let decision: GlobalSpammerPolicyDecision;
+    if (adminExempt) {
       decision = this.buildPolicyDecision({
         userId,
         chatId,
@@ -1629,26 +1656,26 @@ export class GlobalSpammerIntelligenceService {
       campaigns,
       latestShadowScore,
     ] = await Promise.all([
-        this.prisma.globalSpammer.findUnique({ where: { userId } }),
-        this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
-        this.findActiveSuppression(userId, now),
-        this.prisma.spammerObservation.findMany({
-          where: { userId },
-          orderBy: { observedAt: 'desc' },
-          take: 20,
-        }),
-        this.prisma.spammerGraphSignal.findMany({
-          where: {
-            userId,
-            expiresAt: { gt: now },
-          },
-          orderBy: { observedAt: 'desc' },
-          take: 20,
-        }),
-        this.getSourceReputation(now),
-        this.listUserCampaignDiagnostics(userId),
-        this.getLatestShadowScoreDiagnostics(userId),
-      ]);
+      this.prisma.globalSpammer.findUnique({ where: { userId } }),
+      this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+      this.findActiveSuppression(userId, now),
+      this.prisma.spammerObservation.findMany({
+        where: { userId },
+        orderBy: { observedAt: 'desc' },
+        take: 20,
+      }),
+      this.prisma.spammerGraphSignal.findMany({
+        where: {
+          userId,
+          expiresAt: { gt: now },
+        },
+        orderBy: { observedAt: 'desc' },
+        take: 20,
+      }),
+      this.getSourceReputation(now),
+      this.listUserCampaignDiagnostics(userId),
+      this.getLatestShadowScoreDiagnostics(userId),
+    ]);
     const riskContext = this.buildPolicyRiskContextFromDiagnostics({
       campaigns,
       latestShadowScore,
@@ -1953,9 +1980,7 @@ export class GlobalSpammerIntelligenceService {
     };
   }
 
-  private async buildPolicyDecisionRiskContext(
-    userId: string,
-  ): Promise<PolicyDecisionRiskContext> {
+  private async buildPolicyDecisionRiskContext(userId: string): Promise<PolicyDecisionRiskContext> {
     const latestShadowScore = await this.prisma.globalSpammerShadowScore.findFirst({
       where: {
         userId,
@@ -2382,7 +2407,10 @@ export class GlobalSpammerIntelligenceService {
     distinctUsers: number,
     distinctChats: number,
   ): string {
-    if (confidenceScore >= HIGH_CONFIDENCE_THRESHOLD && (distinctUsers >= 3 || distinctChats >= 3)) {
+    if (
+      confidenceScore >= HIGH_CONFIDENCE_THRESHOLD &&
+      (distinctUsers >= 3 || distinctChats >= 3)
+    ) {
       return 'CONFIRMED';
     }
     if (distinctUsers >= 2 || distinctChats >= 2 || confidenceScore >= HIGH_REVIEW_THRESHOLD) {
@@ -2726,9 +2754,9 @@ export class GlobalSpammerIntelligenceService {
     }));
   }
 
-  private async getLatestShadowScoreDiagnostics(userId: string): Promise<
-    GlobalSpammerUserDiagnostics['latestShadowScore']
-  > {
+  private async getLatestShadowScoreDiagnostics(
+    userId: string,
+  ): Promise<GlobalSpammerUserDiagnostics['latestShadowScore']> {
     const row = await this.prisma.globalSpammerShadowScore.findFirst({
       where: {
         userId,
@@ -3832,6 +3860,10 @@ export class GlobalSpammerIntelligenceService {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
   }
 
+  private isKnownRuntimeBotUserId(userId: string | null | undefined): boolean {
+    return this.maxBotRegistry?.isKnownBotUserId(userId) === true;
+  }
+
   private normalizeText(value: string | null | undefined): string {
     return typeof value === 'string' ? value.trim() : '';
   }
@@ -3860,7 +3892,12 @@ export class GlobalSpammerIntelligenceService {
   }
 
   private toInputJsonValue(value: unknown): Prisma.InputJsonValue | null {
-    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
       return value;
     }
     if (value instanceof Date) {

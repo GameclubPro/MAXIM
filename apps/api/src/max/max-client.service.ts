@@ -1240,6 +1240,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
+    this.assertMemberActionTargetIsNotRuntimeBot('KICK_MEMBER', chatId, userId);
     await this.dispatchAction(
       {
         actionType: 'KICK_MEMBER',
@@ -1251,6 +1252,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async banMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
+    this.assertMemberActionTargetIsNotRuntimeBot('BAN_MEMBER', chatId, userId);
     await this.dispatchAction(
       {
         actionType: 'BAN_MEMBER',
@@ -1413,6 +1415,15 @@ export class MaxClientService implements OnModuleDestroy {
           if (!action.userId) {
             throw new Error('userId is required for KICK_MEMBER');
           }
+          if (
+            this.skipQueuedMemberActionForRuntimeBot(
+              action.actionType,
+              action.chatId,
+              action.userId,
+            )
+          ) {
+            return;
+          }
           await this.executeMutation(
             action.chatId,
             async () => {
@@ -1429,6 +1440,15 @@ export class MaxClientService implements OnModuleDestroy {
         case 'BAN_MEMBER':
           if (!action.userId) {
             throw new Error('userId is required for BAN_MEMBER');
+          }
+          if (
+            this.skipQueuedMemberActionForRuntimeBot(
+              action.actionType,
+              action.chatId,
+              action.userId,
+            )
+          ) {
+            return;
           }
           await this.executeMutation(
             action.chatId,
@@ -2733,6 +2753,17 @@ export class MaxClientService implements OnModuleDestroy {
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
     options?: MaxActionDispatchOptions,
   ) {
+    if (
+      (payload.actionType === 'KICK_MEMBER' || payload.actionType === 'BAN_MEMBER') &&
+      payload.userId
+    ) {
+      this.assertMemberActionTargetIsNotRuntimeBot(
+        payload.actionType,
+        payload.chatId,
+        payload.userId,
+      );
+    }
+
     const bot = this.resolveBot(options?.botId ?? payload.botId);
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const delayMs = this.normalizeDelayMs(options?.delayMs);
@@ -4467,6 +4498,47 @@ export class MaxClientService implements OnModuleDestroy {
 
   private getCurrentBot(): MaxBotDefinition {
     return this.resolveBot(this.botContext.getActiveBotId());
+  }
+
+  private assertMemberActionTargetIsNotRuntimeBot(
+    actionType: Extract<MaxActionType, 'KICK_MEMBER' | 'BAN_MEMBER'>,
+    chatId: string,
+    userId: string,
+  ): void {
+    if (!this.isKnownRuntimeBotUserId(userId)) {
+      return;
+    }
+
+    throw new Error(
+      `Refusing to ${actionType === 'BAN_MEMBER' ? 'ban' : 'kick'} configured MAX bot user ${userId} in chat ${chatId}`,
+    );
+  }
+
+  private skipQueuedMemberActionForRuntimeBot(
+    actionType: Extract<MaxActionType, 'KICK_MEMBER' | 'BAN_MEMBER'>,
+    chatId: string,
+    userId: string,
+  ): boolean {
+    if (!this.isKnownRuntimeBotUserId(userId)) {
+      return false;
+    }
+
+    this.logger.warn(
+      {
+        chatId,
+        userId,
+        actionType,
+      },
+      'Skipped queued member moderation action for configured MAX bot user',
+    );
+    return true;
+  }
+
+  private isKnownRuntimeBotUserId(userId: string | null | undefined): boolean {
+    const botRegistry = this.botRegistry as MaxBotRegistryService & {
+      isKnownBotUserId?: (value: string | null | undefined) => boolean;
+    };
+    return botRegistry.isKnownBotUserId?.(userId) === true;
   }
 
   private extractStatusCode(error: unknown): number | null {

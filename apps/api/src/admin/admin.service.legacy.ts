@@ -10210,9 +10210,7 @@ export class AdminService implements OnModuleDestroy {
     },
     botId?: string,
   ): Promise<MaxMessageButton[][]> {
-    return (
-      await this.resolveBroadcastButtonContext(chatId, entityType, options, botId)
-    ).buttons;
+    return (await this.resolveBroadcastButtonContext(chatId, entityType, options, botId)).buttons;
   }
 
   private async resolveBroadcastButtonContext(
@@ -11568,6 +11566,19 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async processManualModerationFanoutJob(job: AdminManualFanoutJob): Promise<void> {
+    if (this.isKnownRuntimeBotUserId(job.targetUserId)) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          kind: job.kind,
+          sourceChatId: job.sourceChatId,
+          targetUserId: job.targetUserId,
+        },
+        'Skipped queued manual moderation job for configured MAX bot user',
+      );
+      return;
+    }
+
     if (job.kind === 'manual_group_moderation_command') {
       await this.processManualGroupModerationCommandJob(job);
       return;
@@ -12331,6 +12342,22 @@ export class AdminService implements OnModuleDestroy {
       mutePermanent,
       source,
     } = params;
+    if (this.isKnownRuntimeBotUserId(targetUserId)) {
+      this.logger.warn(
+        {
+          sourceChatId,
+          targetUserId,
+          actorUserId: actor.userId,
+        },
+        'Skipped manual mute fanout for configured MAX bot user',
+      );
+      return {
+        mutedChatIds: [],
+        skippedChatIds: [],
+        failedChatIds: [],
+      };
+    }
+
     const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
       sourceChatId,
       targetUserId,
@@ -12442,6 +12469,24 @@ export class AdminService implements OnModuleDestroy {
     failedMessageDeleteCount: number;
   }> {
     const { sourceChatId, targetUserId, actor } = params;
+    if (this.isKnownRuntimeBotUserId(targetUserId)) {
+      this.logger.warn(
+        {
+          sourceChatId,
+          targetUserId,
+          actorUserId: actor.userId,
+        },
+        'Skipped manual ban fanout for configured MAX bot user',
+      );
+      return {
+        removedChatIds: [],
+        skippedChatIds: [],
+        failedChatIds: [],
+        deletedMessageCount: 0,
+        failedMessageDeleteCount: 0,
+      };
+    }
+
     const result = {
       removedChatIds: [] as string[],
       skippedChatIds: [] as string[],
@@ -12913,6 +12958,10 @@ export class AdminService implements OnModuleDestroy {
     action: ManualMemberModerationAction,
     botId?: string,
   ): Promise<void> {
+    if (this.isKnownRuntimeBotUserId(targetUserId)) {
+      throw new BadRequestException('Нельзя модерировать настроенных MAX-ботов проекта.');
+    }
+
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
     };
@@ -12936,6 +12985,28 @@ export class AdminService implements OnModuleDestroy {
           : 'Через бота нельзя замьютить владельца или администратора чата.',
       );
     }
+  }
+
+  private isKnownRuntimeBotUserId(userId: string | null | undefined): boolean {
+    if (typeof userId !== 'string' || userId.trim().length === 0) {
+      return false;
+    }
+
+    const maxBotRegistry = this.maxBotRegistry as
+      | (MaxBotRegistryService & {
+          isKnownBotUserId?: (value: string | null | undefined) => boolean;
+        })
+      | undefined;
+    if (maxBotRegistry?.isKnownBotUserId?.(userId)) {
+      return true;
+    }
+
+    if (this.maxBotLinkService?.isKnownBotUserId?.(userId)) {
+      return true;
+    }
+
+    const normalized = userId.trim();
+    return normalized === this.ownBotUserId || normalized === this.explicitBotContactId;
   }
 
   private async assertTargetUserCanReceiveParticipantImmunity(
@@ -13660,7 +13731,8 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const matchType = parsed.data.matchType ?? inferAllowlistMatchType(parsed.data.domain) ?? 'EXACT';
+    const matchType =
+      parsed.data.matchType ?? inferAllowlistMatchType(parsed.data.domain) ?? 'EXACT';
     const normalized = normalizeStoredAllowlistEntry(parsed.data.domain, matchType);
     if (!normalized) {
       throw new BadRequestException('Invalid allowlist link');
@@ -17897,13 +17969,12 @@ export class AdminService implements OnModuleDestroy {
 
     for (const row of rows) {
       const payload = this.readObjectPayload(row.payload);
-      const persistedUrl = this.normalizeMaxEntityLink(this.readTrimmedString(payload.publishedUrl));
+      const persistedUrl = this.normalizeMaxEntityLink(
+        this.readTrimmedString(payload.publishedUrl),
+      );
       if (persistedUrl) {
         if (!preview) {
-          const messageId = this.resolveDialogNotificationPostPreviewMessageId(
-            row.action,
-            payload,
-          );
+          const messageId = this.resolveDialogNotificationPostPreviewMessageId(row.action, payload);
           preview = messageId
             ? await this.resolveDialogNotificationPostMessagePreview(messageId, params.botId)
             : null;
