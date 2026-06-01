@@ -79,12 +79,18 @@ export class ManualModerationService {
         ? Number(queryRecord.limit)
         : NaN;
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.trunc(rawLimit))) : 50;
+    const includeProfiles = this.parseBooleanQuery(queryRecord.includeProfiles, true);
+    const includeObservations = this.parseBooleanQuery(queryRecord.includeObservations, true);
     const response = await this.globalSpammerIntelligence.listReviewQueue({
       chatId,
       status,
       limit,
+      includeObservations,
     });
     const parsedResponse = globalSpammerReviewQueueSchema.parse(response);
+    if (!includeProfiles) {
+      return parsedResponse;
+    }
     const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(chatId, parsedResponse);
     return globalSpammerReviewQueueSchema.parse(enrichedResponse);
   }
@@ -152,6 +158,23 @@ export class ManualModerationService {
       return normalized as GlobalSpammerCandidateStatus;
     }
     return undefined;
+  }
+
+  private parseBooleanQuery(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+      return false;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    return fallback;
   }
 
   private async attachGlobalSpammerReviewProfiles(

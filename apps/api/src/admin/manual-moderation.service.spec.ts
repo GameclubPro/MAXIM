@@ -136,4 +136,35 @@ describe('ManualModerationService spammer profiles', () => {
       { allowRemoteLookup: true },
     );
   });
+
+  it('skips profile enrichment and observations for lightweight spammer review lists', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const queue = await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      status: 'PENDING',
+      limit: '20',
+      includeProfiles: 'false',
+      includeObservations: 'false',
+    });
+
+    expect(globalSpammerIntelligence.listReviewQueue).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      limit: 20,
+      includeObservations: false,
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(queue.items[0]).toEqual(
+      expect.objectContaining({
+        displayName: null,
+        avatarUrl: null,
+        lastUserLabel: 'Старое имя',
+      }),
+    );
+  });
 });

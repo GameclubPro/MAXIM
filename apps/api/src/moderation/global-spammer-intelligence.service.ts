@@ -1048,9 +1048,11 @@ export class GlobalSpammerIntelligenceService {
     chatId: string;
     status?: GlobalSpammerCandidateStatus | 'ALL';
     limit?: number;
+    includeObservations?: boolean;
   }) {
     const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
     const status = params.status && params.status !== 'ALL' ? params.status : undefined;
+    const includeObservations = params.includeObservations ?? true;
     const candidates = await this.prisma.globalSpammerCandidate.findMany({
       where: {
         ...(status ? { status } : {}),
@@ -1078,7 +1080,7 @@ export class GlobalSpammerIntelligenceService {
     });
     const userIds = candidates.map((candidate) => candidate.userId);
     const observations =
-      userIds.length === 0
+      !includeObservations || userIds.length === 0
         ? []
         : await this.prisma.spammerObservation.findMany({
             where: {

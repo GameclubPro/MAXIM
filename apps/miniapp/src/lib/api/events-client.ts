@@ -272,7 +272,12 @@ export async function applyManualModerationAction(
 export async function getGlobalSpammerReviewQueue(
   api: ApiTransport,
   chatId: string,
-  query: Partial<{ status: GlobalSpammerCandidateStatus | 'ALL'; limit: number }> = {},
+  query: Partial<{
+    status: GlobalSpammerCandidateStatus | 'ALL';
+    limit: number;
+    includeProfiles: boolean;
+    includeObservations: boolean;
+  }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<GlobalSpammerReviewQueue> {
   const status = query.status ?? 'PENDING';
@@ -285,6 +290,12 @@ export async function getGlobalSpammerReviewQueue(
     status,
     limit: String(limit),
   });
+  if (query.includeProfiles === false) {
+    params.set('includeProfiles', 'false');
+  }
+  if (query.includeObservations === false) {
+    params.set('includeObservations', 'false');
+  }
   const response = await api.request(
     `/chats/${chatId}/spammer-review?${params.toString()}`,
     request,

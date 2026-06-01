@@ -7,7 +7,6 @@ import type {
   ChatParticipantItem,
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
-  GlobalSpammerReviewMetrics,
   GlobalSpammerUserDiagnostics,
   ModerationFeedFilter,
   MembershipActivityItem,
@@ -17,7 +16,6 @@ import '../styles/settings-drilldown-core.css';
 import '../styles/dashboard-events.css';
 import {
   startTransition,
-  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   useDeferredValue,
@@ -45,7 +43,6 @@ import {
   getChatModerationDashboard,
   getChatParticipantsPage,
   getChatModerationFeed,
-  getGlobalSpammerReviewMetrics,
   getGlobalSpammerReviewQueue,
   getGlobalSpammerUserDiagnostics,
   getLogsDashboard,
@@ -870,69 +867,6 @@ function resolveDiagnosticsVerdictTone(
   return 'neutral';
 }
 
-function resolveDiagnosticsExplanation(diagnostics: GlobalSpammerUserDiagnostics): string {
-  const { policy } = diagnostics;
-  if (policy.registryStatus === 'ACTIVE_CONFIRMED' && !policy.deleteSpammersEnabled) {
-    return 'Пользователь в базе спама, но автобан в этом чате выключен. Админ может решить вручную.';
-  }
-  if (policy.registryStatus === 'LOCAL_BLOCKED') {
-    return 'Админ уже отметил пользователя как спамера для своих чатов. Глобальный автобан без подтверждения не включается.';
-  }
-  if (policy.action === 'DELETE_AND_KICK') {
-    return 'Пользователь в базе спама: при новом сообщении бот удалит сообщение и забанит в чате.';
-  }
-  if (policy.action === 'SHADOW_DELETE_AND_KICK' || policy.shadow) {
-    return 'Пользователь похож на спамера: есть массовые повторы, жалобы или баны в других чатах. Автобан пока не включён без подтверждения админа.';
-  }
-  if (policy.registryStatus === 'ADMIN_EXEMPT' || policy.adminExempt) {
-    return 'Пользователь не учитывается в спам-базе для этого админского контура. Автобан не применяется.';
-  }
-  if (policy.registryStatus === 'SUPPRESSED') {
-    return 'Пользователь отмечен как не спамер. Автобан не применяется.';
-  }
-  if (policy.registryStatus === 'MEDIUM_REVIEW') {
-    return 'Пользователь похож на спамера: есть массовые повторы, жалобы или баны в других чатах. Автобан пока не включён без подтверждения админа.';
-  }
-  if (policy.registryStatus === 'EXPIRED') {
-    return 'Запись больше не активна. Система ничего не сделает без новых сигналов.';
-  }
-  return 'Активной записи нет. Система ничего не сделает без новых сигналов.';
-}
-
-function resolveDiagnosticsConfidenceScore(
-  diagnostics: GlobalSpammerUserDiagnostics,
-): number | null {
-  const direct =
-    diagnostics.policy.confidenceScore ??
-    diagnostics.registry.confidenceScore ??
-    diagnostics.candidate?.confidenceScore ??
-    null;
-  if (typeof direct === 'number') {
-    return direct;
-  }
-
-  const signalScores = [
-    ...diagnostics.observations.map((item) => item.score),
-    ...diagnostics.graphSignals.map((item) => item.score),
-  ].filter((value) => Number.isFinite(value));
-  return signalScores.length > 0 ? Math.max(...signalScores) : null;
-}
-
-function formatDiagnosticsConfidenceLevel(value: number | null): string | null {
-  if (typeof value !== 'number') {
-    return null;
-  }
-
-  const normalized = Math.max(0, Math.min(1, value));
-  if (normalized >= 0.86) {
-    return 'высокая';
-  }
-  if (normalized >= 0.68) {
-    return 'средняя';
-  }
-  return 'низкая';
-}
-
 type DiagnosticsSignalCategoryKey = 'fanout' | 'bans' | 'ads' | 'system';
 
 const DIAGNOSTICS_SIGNAL_CATEGORIES: Record<
@@ -1003,8 +937,6 @@ type DiagnosticsSignalGroup = {
   label: string;
   userSignalCount: number;
   campaignUserSignalCount: number;
-  campaignObservationCount: number | null;
-  campaignCount: number;
   maxScore: number;
 };
 
@@ -1032,8 +964,6 @@ function buildDiagnosticsSignalGroups(
       label: meta.label,
       userSignalCount: 0,
       campaignUserSignalCount: 0,
-      campaignObservationCount: null,
-      campaignCount: 0,
       maxScore: score,
     };
     groups.set(category, group);
@@ -1060,13 +990,8 @@ function buildDiagnosticsSignalGroups(
       : groups.get(category);
     if (group) {
       group.maxScore = Math.max(group.maxScore, item.confidenceScore);
-      group.campaignCount += 1;
       if (hasUserCampaignSignals) {
         group.campaignUserSignalCount += Math.trunc(userObservationsCount);
-      }
-      if (item.observationsCount > 0) {
-        group.campaignObservationCount =
-          (group.campaignObservationCount ?? 0) + Math.trunc(item.observationsCount);
       }
     }
   });
@@ -1091,34 +1016,13 @@ function buildDiagnosticsSignalGroups(
     .slice(0, 5);
 }
 
-function formatDiagnosticsUserSignalCount(count: number): string {
+function formatDiagnosticsSignalCount(count: number): string {
   return `${count} ${formatRussianCountLabel(
     count,
     'сигнал',
     'сигнала',
     'сигналов',
-  )} по пользователю`;
-}
-
-function formatDiagnosticsCampaignObservationCount(group: DiagnosticsSignalGroup): string | null {
-  if (!group.campaignObservationCount || group.campaignObservationCount <= 0) {
-    return null;
-  }
-
-  const scope = group.campaignCount > 1 ? 'в похожих рассылках всего' : 'в рассылке всего';
-  return `${scope}: ${group.campaignObservationCount} ${formatRussianCountLabel(
-    group.campaignObservationCount,
-    'наблюдение',
-    'наблюдения',
-    'наблюдений',
   )}`;
-}
-
-function scoreToPercent(value: number | null): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-  return Math.round(Math.max(0, Math.min(1, value)) * 100);
 }
 
 function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
@@ -1161,30 +1065,27 @@ function buildDiagnosticsFacts(
 }
 
 function GlobalSpammerReviewPanel({
-  metrics,
   candidates,
   isLoading,
   error,
   onOpen,
 }: {
-  metrics: GlobalSpammerReviewMetrics | null;
   candidates: GlobalSpammerReviewCandidate[];
   isLoading: boolean;
   error: unknown;
   onOpen: () => void;
 }) {
-  const pending = metrics?.pending ?? candidates.length;
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const visibleCandidates = candidates.slice(0, 3);
-  const hiddenCandidateCount = Math.max(0, pending - visibleCandidates.length);
-  const pendingLabel = `${pending} ${formatRussianCountLabel(
-    pending,
+  const hiddenCandidateCount = Math.max(0, candidates.length - visibleCandidates.length);
+  const pendingLabel = `${candidates.length} ${formatRussianCountLabel(
+    candidates.length,
     'кандидат',
     'кандидата',
     'кандидатов',
   )} на проверке`;
   const statusLabel = errorMessage ? 'Ошибка загрузки' : isLoading ? 'Обновляем' : pendingLabel;
-  const shouldHide = !isLoading && !errorMessage && candidates.length === 0 && pending === 0;
+  const shouldHide = !isLoading && !errorMessage && candidates.length === 0;
   if (shouldHide) {
     return null;
   }
@@ -1228,7 +1129,6 @@ function GlobalSpammerReviewPanel({
 
 function SpammerReviewSheet({
   open,
-  metrics,
   candidates,
   isLoading,
   error,
@@ -1237,7 +1137,6 @@ function SpammerReviewSheet({
   onOpenDiagnostics,
 }: {
   open: boolean;
-  metrics: GlobalSpammerReviewMetrics | null;
   candidates: GlobalSpammerReviewCandidate[];
   isLoading: boolean;
   error: unknown;
@@ -1245,12 +1144,11 @@ function SpammerReviewSheet({
   onRetry: () => void;
   onOpenDiagnostics: (candidate: GlobalSpammerReviewCandidate) => void;
 }) {
-  const pending = metrics?.pending ?? candidates.length;
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const summary =
-    pending > 0
-      ? `${pending} ${formatRussianCountLabel(
-          pending,
+    candidates.length > 0
+      ? `${candidates.length} ${formatRussianCountLabel(
+          candidates.length,
           'кандидат',
           'кандидата',
           'кандидатов',
@@ -1292,7 +1190,6 @@ function SpammerReviewSheet({
               chatsCount > 0
                 ? `${chatsCount} ${formatRussianCountLabel(chatsCount, 'чат', 'чата', 'чатов')}`
                 : null;
-            const confidence = formatDiagnosticsConfidenceLevel(candidate.confidenceScore);
 
             return (
               <button
@@ -1311,15 +1208,6 @@ function SpammerReviewSheet({
                   <strong>{label}</strong>
                   <span>{[reason, chatsLabel].filter(Boolean).join(' · ')}</span>
                 </span>
-
-                {confidence ? (
-                  <span
-                    className="spammer-review-sheet__confidence"
-                    aria-label={`уверенность ${confidence}`}
-                  >
-                    {confidence}
-                  </span>
-                ) : null}
 
                 <span className="spammer-review-sheet__chevron" aria-hidden="true">
                   ›
@@ -1368,10 +1256,6 @@ function SpammerDiagnosticsSheet({
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
   const signalCount = signalGroups.reduce((sum, group) => sum + group.userSignalCount, 0);
-  const hasCampaignScale = signalGroups.some(
-    (group) =>
-      typeof group.campaignObservationCount === 'number' && group.campaignObservationCount > 0,
-  );
   const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
   const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
   const profileAvatarUrl = resolveSpammerDiagnosticsAvatarUrl(target, diagnostics);
@@ -1379,14 +1263,15 @@ function SpammerDiagnosticsSheet({
   const profileHandoffUrl = resolveSpammerDiagnosticsProfileHandoffUrl(target, diagnostics);
   const profileHref = profileHandoffUrl || profileUrl || '#';
   const canOpenProfile = profileUserId.length > 0;
-  const confidenceScore = diagnostics ? resolveDiagnosticsConfidenceScore(diagnostics) : null;
-  const confidencePercent = scoreToPercent(confidenceScore);
   const verdictTone = diagnostics ? resolveDiagnosticsVerdictTone(diagnostics) : 'neutral';
   const isReviewing = Boolean(reviewingAction);
   const isActionBusy = isReviewing || isBanning;
   const footer = diagnostics ? (
     <div className="spammer-diagnostics__footer">
-      <div className="spammer-diagnostics__actions" aria-label="Решения по спам-базе и бану">
+      <div
+        className="spammer-diagnostics__actions spammer-diagnostics__actions--registry"
+        aria-label="Решение по базе спама"
+      >
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--muted"
@@ -1394,8 +1279,8 @@ function SpammerDiagnosticsSheet({
           onClick={() => onReview(diagnostics.userId, 'SUPPRESS')}
           aria-label="Не учитывать пользователя в спам-базе, из чата не исключать"
         >
-          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не спамер'}</span>
-          {reviewingAction === 'SUPPRESS' ? null : <small>не учитывать в базе</small>}
+          <span>{reviewingAction === 'SUPPRESS' ? 'Сохраняем...' : 'Не добавлять в базу'}</span>
+          {reviewingAction === 'SUPPRESS' ? null : <small>без действий в чате</small>}
         </button>
         <button
           type="button"
@@ -1404,9 +1289,14 @@ function SpammerDiagnosticsSheet({
           onClick={() => onReview(diagnostics.userId, 'APPROVE')}
           aria-label="Подтвердить пользователя как спамера в спам-базе"
         >
-          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Спамер'}</span>
-          {reviewingAction === 'APPROVE' ? null : <small>подтвердить в базе</small>}
+          <span>{reviewingAction === 'APPROVE' ? 'Сохраняем...' : 'Подтвердить в базе'}</span>
+          {reviewingAction === 'APPROVE' ? null : <small>без бана сейчас</small>}
         </button>
+      </div>
+      <div
+        className="spammer-diagnostics__actions spammer-diagnostics__actions--chat"
+        aria-label="Действие в текущем чате"
+      >
         <button
           type="button"
           className="spammer-diagnostics__action spammer-diagnostics__action--danger"
@@ -1414,7 +1304,7 @@ function SpammerDiagnosticsSheet({
           onClick={() => onBan(diagnostics.userId)}
           aria-label="Забанить пользователя в текущем чате сейчас"
         >
-          <span>{isBanning ? 'Баним...' : 'Бан в чате'}</span>
+          <span>{isBanning ? 'Баним...' : 'Забанить в этом чате'}</span>
           {isBanning ? null : <small>применить сейчас</small>}
         </button>
       </div>
@@ -1495,9 +1385,6 @@ function SpammerDiagnosticsSheet({
 
           <article
             className={`spammer-diagnostics__hero spammer-diagnostics__hero--${verdictTone}`}
-            style={
-              { '--spammer-confidence-percent': `${confidencePercent ?? 0}%` } as CSSProperties
-            }
           >
             <div className="spammer-diagnostics__hero-top">
               <span>Статус</span>
@@ -1505,14 +1392,8 @@ function SpammerDiagnosticsSheet({
             </div>
 
             <div className="spammer-diagnostics__hero-main">
-              <div className="spammer-diagnostics__confidence-orb" aria-hidden="true">
-                <strong>{confidencePercent !== null ? `${confidencePercent}/100` : 'нет'}</strong>
-                <span>{confidencePercent !== null ? 'балл риска' : 'оценки'}</span>
-              </div>
-
               <div className="spammer-diagnostics__verdict-copy">
                 <h4>{resolveDiagnosticsAutoAction(diagnostics)}</h4>
-                <p>{resolveDiagnosticsExplanation(diagnostics)}</p>
               </div>
             </div>
           </article>
@@ -1530,32 +1411,20 @@ function SpammerDiagnosticsSheet({
 
           <section className="spammer-diagnostics__signals" aria-label="Сигналы по пользователю">
             <div className="spammer-diagnostics__section-head">
-              <span>Сигналы по пользователю</span>
+              <span>Сигналы</span>
               <strong>
-                {signalCount > 0 ? formatDiagnosticsUserSignalCount(signalCount) : 'Сигналов нет'}
+                {signalCount > 0 ? formatDiagnosticsSignalCount(signalCount) : 'Сигналов нет'}
               </strong>
             </div>
             {signalGroups.length > 0 ? (
-              <p className="spammer-diagnostics__section-note">
-                {hasCampaignScale
-                  ? 'Сигналы по пользователю считаются отдельно. Охват рассылки показывает масштаб похожей кампании. Балл риска - вес признака, а не процент сообщений.'
-                  : 'Счётчик показывает сигналы, найденные именно у этого пользователя. Балл риска - вес признака, а не процент сообщений.'}
-              </p>
-            ) : null}
-            {signalGroups.length > 0 ? (
               <div className="spammer-diagnostics__signal-list">
                 {signalGroups.map((group) => {
-                  const percent = scoreToPercent(group.maxScore) ?? 0;
-                  const campaignObservationLabel = formatDiagnosticsCampaignObservationCount(group);
                   return (
                     <article key={group.key} className="spammer-diagnostics__signal-card">
                       <div className="spammer-diagnostics__signal-copy">
-                        <strong>{group.label}</strong>
-                        <span>{formatDiagnosticsUserSignalCount(group.userSignalCount)}</span>
-                        {campaignObservationLabel ? (
-                          <small>{campaignObservationLabel}</small>
-                        ) : null}
-                        <small>Балл риска {percent}/100</small>
+                        <strong>
+                          {group.label}: {formatDiagnosticsSignalCount(group.userSignalCount)}
+                        </strong>
                       </div>
                     </article>
                   );
@@ -2099,34 +1968,31 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
-    enabled: Boolean(chatId) && section === 'moderation',
+    enabled:
+      Boolean(chatId) &&
+      section === 'moderation' &&
+      (!includeModerationPreview || Boolean(dashboard) || hasBlockingDashboardError),
     range,
     filter: eventsFilter,
     initialPage: includeModerationPreview ? (dashboard?.moderationFeed ?? null) : null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
   const spammerReviewQueueQuery = useQuery({
-    queryKey: queryKeys.globalSpammerReviewQueue(chatId, 'PENDING', 6),
+    queryKey: queryKeys.globalSpammerReviewQueue(chatId, 'PENDING', 20, 'stored-profile'),
     queryFn: ({ signal }) =>
       getGlobalSpammerReviewQueue(
         api,
         chatId ?? '',
         {
           status: 'PENDING',
-          limit: 6,
+          limit: 20,
+          includeProfiles: false,
+          includeObservations: false,
         },
         { signal },
       ),
     enabled: Boolean(chatId) && section === 'moderation',
-    staleTime: 30_000,
-    placeholderData: (previousData) => previousData,
-    refetchOnWindowFocus: false,
-  });
-  const spammerReviewMetricsQuery = useQuery({
-    queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
-    queryFn: ({ signal }) => getGlobalSpammerReviewMetrics(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId) && section === 'moderation',
-    staleTime: 30_000,
+    staleTime: 60_000,
     placeholderData: (previousData) => previousData,
     refetchOnWindowFocus: false,
   });
@@ -2301,9 +2167,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         queryKey: queryKeys.globalSpammerReviewQueue(chatId),
       });
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
-      });
-      void queryClient.invalidateQueries({
         queryKey: queryKeys.globalSpammerUserDiagnostics(chatId, result.userId),
       });
     },
@@ -2426,7 +2289,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   };
   const handleSpammerReviewRetry = () => {
     void spammerReviewQueueQuery.refetch();
-    void spammerReviewMetricsQuery.refetch();
   };
   const openSpammerDiagnostics = (target: SpammerDiagnosticsTarget) => {
     if (!target.userId.trim()) {
@@ -2824,13 +2686,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       {section === 'moderation' ? (
         <>
           <GlobalSpammerReviewPanel
-            metrics={spammerReviewMetricsQuery.data ?? null}
             candidates={spammerReviewQueueQuery.data?.items ?? []}
-            isLoading={
-              (spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data) ||
-              (spammerReviewMetricsQuery.isLoading && !spammerReviewMetricsQuery.data)
-            }
-            error={spammerReviewQueueQuery.error ?? spammerReviewMetricsQuery.error}
+            isLoading={spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data}
+            error={spammerReviewQueueQuery.error}
             onOpen={() => setSpammerReviewOpen(true)}
           />
 
@@ -3063,13 +2921,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
       <SpammerReviewSheet
         open={spammerReviewOpen}
-        metrics={spammerReviewMetricsQuery.data ?? null}
         candidates={spammerReviewQueueQuery.data?.items ?? []}
-        isLoading={
-          (spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data) ||
-          (spammerReviewMetricsQuery.isLoading && !spammerReviewMetricsQuery.data)
-        }
-        error={spammerReviewQueueQuery.error ?? spammerReviewMetricsQuery.error}
+        isLoading={spammerReviewQueueQuery.isLoading && !spammerReviewQueueQuery.data}
+        error={spammerReviewQueueQuery.error}
         onClose={() => setSpammerReviewOpen(false)}
         onRetry={handleSpammerReviewRetry}
         onOpenDiagnostics={handleSpammerCandidateDiagnostics}
