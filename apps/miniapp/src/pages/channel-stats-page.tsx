@@ -70,10 +70,8 @@ type AudienceChartPoint = {
   cumulativeNet: number;
   x: number;
   y: number;
-  joinedTop: number;
-  joinedHeight: number;
-  leftTop: number;
-  leftHeight: number;
+  joinedFlowY: number;
+  leftFlowY: number;
 };
 
 type PreviousAudienceChartPoint = {
@@ -664,12 +662,18 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   previousPoints: PreviousAudienceChartPoint[];
   linePath: string;
   areaPath: string;
+  joinedFlowPath: string;
+  joinedFlowLinePath: string;
+  leftFlowPath: string;
+  leftFlowLinePath: string;
   previousLinePath: string;
   hasLine: boolean;
   hasPreviousLine: boolean;
+  hasJoinedFlow: boolean;
+  hasLeftFlow: boolean;
   guideYs: number[];
   dividerY: number;
-  barsBaseline: number;
+  activityRailY: number;
   eventRailY: number;
   zeroY: number;
   height: number;
@@ -688,13 +692,19 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       previousPoints: [],
       linePath: '',
       areaPath: '',
+      joinedFlowPath: '',
+      joinedFlowLinePath: '',
+      leftFlowPath: '',
+      leftFlowLinePath: '',
       previousLinePath: '',
       hasLine: false,
       hasPreviousLine: false,
+      hasJoinedFlow: false,
+      hasLeftFlow: false,
       guideYs: [],
-      dividerY: 156,
-      barsBaseline: 220,
-      eventRailY: 188,
+      dividerY: 112,
+      activityRailY: 132,
+      eventRailY: 158,
       zeroY: 132,
       height: CHART_VIEWBOX_HEIGHT,
       leftPad: 20,
@@ -711,10 +721,10 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   const lineBottom = 92;
   const lineFloor = 108;
   const dividerY = 116;
-  const barsBaseline = 160;
-  const eventRailY = 188;
-  const joinedPeakHeight = 36;
-  const leftPeakHeight = 20;
+  const activityRailY = 132;
+  const eventRailY = 158;
+  const joinedPeakHeight = 20;
+  const leftPeakHeight = 11;
   const plotWidth = width - leftPad - rightPad;
   const maxJoined = Math.max(
     ...membershipSeries.map((item) => item.joined),
@@ -726,8 +736,11 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     ...previousMembershipSeries.map((item) => item.left ?? 0),
     0,
   );
-  const joinedScale = maxJoined > 0 ? joinedPeakHeight / maxJoined : 0;
-  const leftScale = maxLeft > 0 ? leftPeakHeight / maxLeft : 0;
+  const activityMax = Math.max(maxJoined, maxLeft, 0);
+  const joinedScale = activityMax > 0 ? joinedPeakHeight / activityMax : 0;
+  const leftScale = activityMax > 0 ? leftPeakHeight / activityMax : 0;
+  const resolveFlowHeight = (value: number, scale: number, peak: number) =>
+    value > 0 ? clamp(value * scale, 2.4, peak) : 0;
 
   let cumulativeNet = 0;
   const rawPoints = Array.from({ length: pointCount }, (_, index) => {
@@ -740,8 +753,8 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     cumulativeNet += net;
     const x =
       pointCount === 1 ? width / 2 : leftPad + (plotWidth * index) / Math.max(1, pointCount - 1);
-    const joinedHeight = joined * joinedScale;
-    const leftHeight = typeof left === 'number' && left > 0 ? left * leftScale : 0;
+    const joinedHeight = resolveFlowHeight(joined, joinedScale, joinedPeakHeight);
+    const leftHeight = resolveFlowHeight(left, leftScale, leftPeakHeight);
 
     return {
       at,
@@ -752,10 +765,8 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       cumulativeNet,
       x,
       y: lineBottom,
-      joinedTop: barsBaseline - joinedHeight,
-      joinedHeight,
-      leftTop: barsBaseline,
-      leftHeight,
+      joinedFlowY: activityRailY - joinedHeight,
+      leftFlowY: activityRailY + leftHeight,
     };
   });
 
@@ -816,6 +827,12 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   const previousLinePath = buildAudiencePath(
     previousPoints.map((point) => ({ x: point.x, y: point.y })),
   );
+  const joinedFlowLinePath = buildAudiencePath(
+    points.map((point) => ({ x: point.x, y: point.joinedFlowY })),
+  );
+  const leftFlowLinePath = buildAudiencePath(
+    points.map((point) => ({ x: point.x, y: point.leftFlowY })),
+  );
   const zeroY = resolveNetY(0);
   const axisLabels = [
     { y: resolveNetY(rawMaxNet) + 4, label: formatSignedCount(Math.round(rawMaxNet)) },
@@ -836,12 +853,26 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       points.map((point) => ({ x: point.x, y: point.y })),
       lineFloor,
     ),
+    joinedFlowPath: buildAudienceAreaPath(
+      joinedFlowLinePath,
+      points.map((point) => ({ x: point.x, y: point.joinedFlowY })),
+      activityRailY,
+    ),
+    joinedFlowLinePath,
+    leftFlowPath: buildAudienceAreaPath(
+      leftFlowLinePath,
+      points.map((point) => ({ x: point.x, y: point.leftFlowY })),
+      activityRailY,
+    ),
+    leftFlowLinePath,
     previousLinePath,
     hasLine: points.length > 0,
     hasPreviousLine: previousPoints.length > 0,
+    hasJoinedFlow: maxJoined > 0,
+    hasLeftFlow: maxLeft > 0,
     guideYs: [lineTop, Math.round((lineTop + lineBottom) / 2), lineBottom],
     dividerY,
-    barsBaseline,
+    activityRailY,
     eventRailY,
     zeroY,
     height,
@@ -1014,7 +1045,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     chart.points.length,
   );
   const activePreviousPoint = chart.previousPoints[previousIndex] ?? null;
-  const hasLeftBars = chart.points.some((point) => point.left > 0);
+  const hasLeftFlow = chart.hasLeftFlow;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const slotWidth =
     chart.points.length > 1
@@ -1022,8 +1053,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         Math.max(1, chart.points.length - 1)
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.72, 26, 40);
-  const membershipBarWidth = clamp(slotWidth * 0.48, 5, 10);
-  const activeMembershipBarWidth = clamp(slotWidth * 0.62, 7, 14);
+  const activeFlowLensWidth = clamp(slotWidth * 0.58, 18, 28);
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
   const activeParticipantsCompactLabel = formatCompactCount(activePoint?.participantsCount ?? null);
   const hasActiveParticipantsCount =
@@ -1090,7 +1120,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               <span className="channel-stats-graph__chip channel-stats-graph__chip--joined">
                 Вошли {formatCompactCount(activePoint?.joined ?? 0)}
               </span>
-              {hasLeftBars ? (
+              {hasLeftFlow ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--left">
                   Вышли {formatCompactCount(activePoint?.left ?? 0)}
                 </span>
@@ -1205,14 +1235,70 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   <stop offset="0.72" stopColor="#35c59f" stopOpacity="0.07" />
                   <stop offset="1" stopColor="#35c59f" stopOpacity="0" />
                 </linearGradient>
-                <linearGradient id="channel-joined-bar" x1="0" x2="0" y1="106" y2="138">
-                  <stop offset="0" stopColor="#5ee2a8" />
-                  <stop offset="1" stopColor="#1fa97e" />
+                <linearGradient
+                  id="channel-audience-flow-in"
+                  x1="0"
+                  x2="0"
+                  y1="112"
+                  y2="132"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0" stopColor="#2dd4ff" stopOpacity="0.22" />
+                  <stop offset="0.55" stopColor="#24c8cf" stopOpacity="0.12" />
+                  <stop offset="1" stopColor="#22c7d8" stopOpacity="0.02" />
                 </linearGradient>
-                <linearGradient id="channel-left-bar" x1="0" x2="0" y1="138" y2="154">
-                  <stop offset="0" stopColor="#ff9aa9" />
-                  <stop offset="1" stopColor="#e45363" />
+                <linearGradient
+                  id="channel-audience-flow-out"
+                  x1="0"
+                  x2="0"
+                  y1="132"
+                  y2="143"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0" stopColor="#8fa2b6" stopOpacity="0.02" />
+                  <stop offset="0.62" stopColor="#9aa8b7" stopOpacity="0.1" />
+                  <stop offset="1" stopColor="#b7a6b4" stopOpacity="0.15" />
                 </linearGradient>
+                <linearGradient
+                  id="channel-audience-flow-edge-in"
+                  x1="20"
+                  x2="382"
+                  y1="112"
+                  y2="132"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0" stopColor="#5f9dff" />
+                  <stop offset="0.52" stopColor="#1eb6d8" />
+                  <stop offset="1" stopColor="#1fc7ab" />
+                </linearGradient>
+                <linearGradient
+                  id="channel-audience-flow-edge-out"
+                  x1="20"
+                  x2="382"
+                  y1="132"
+                  y2="143"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0" stopColor="#8a9aad" />
+                  <stop offset="1" stopColor="#b7a6b4" />
+                </linearGradient>
+                <linearGradient
+                  id="channel-audience-flow-bed"
+                  x1="20"
+                  x2="382"
+                  y1="106"
+                  y2="154"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0" stopColor="#e8f5ff" stopOpacity="0.36" />
+                  <stop offset="0.5" stopColor="#effaf7" stopOpacity="0.24" />
+                  <stop offset="1" stopColor="#f8f5fb" stopOpacity="0.3" />
+                </linearGradient>
+                <radialGradient id="channel-audience-flow-lens" cx="50%" cy="50%" r="50%">
+                  <stop offset="0" stopColor="#ffffff" stopOpacity="0.72" />
+                  <stop offset="0.72" stopColor="#ffffff" stopOpacity="0.24" />
+                  <stop offset="1" stopColor="#0b84ff" stopOpacity="0" />
+                </radialGradient>
               </defs>
               {activePoint ? (
                 <rect
@@ -1258,12 +1344,22 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.dividerY}
                 className="channel-stats-graph__divider"
               />
+              {(chart.hasJoinedFlow || chart.hasLeftFlow) ? (
+                <rect
+                  x={chart.leftPad}
+                  y={chart.activityRailY - 24}
+                  width={CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad}
+                  height="48"
+                  rx="17"
+                  className="channel-stats-graph__flow-bed"
+                />
+              ) : null}
               <line
                 x1={chart.leftPad}
-                y1={chart.barsBaseline}
+                y1={chart.activityRailY}
                 x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
-                y2={chart.barsBaseline}
-                className="channel-stats-graph__baseline"
+                y2={chart.activityRailY}
+                className="channel-stats-graph__baseline channel-stats-graph__flow-baseline"
               />
               {chart.hasLine ? (
                 <path
@@ -1277,55 +1373,66 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__line-glow channel-stats-graph__line-glow--audience"
                 />
               ) : null}
+              {chart.hasJoinedFlow ? (
+                <path
+                  d={chart.joinedFlowPath}
+                  className="channel-stats-graph__flow channel-stats-graph__flow--joined"
+                />
+              ) : null}
+              {chart.hasLeftFlow ? (
+                <path
+                  d={chart.leftFlowPath}
+                  className="channel-stats-graph__flow channel-stats-graph__flow--left"
+                />
+              ) : null}
+              {chart.hasJoinedFlow ? (
+                <path
+                  d={chart.joinedFlowLinePath}
+                  className="channel-stats-graph__flow-edge channel-stats-graph__flow-edge--joined"
+                />
+              ) : null}
+              {chart.hasLeftFlow ? (
+                <path
+                  d={chart.leftFlowLinePath}
+                  className="channel-stats-graph__flow-edge channel-stats-graph__flow-edge--left"
+                />
+              ) : null}
+              {activePoint ? (
+                <g className="channel-stats-graph__flow-focus">
+                  <ellipse
+                    cx={activePoint.x}
+                    cy={chart.activityRailY}
+                    rx={activeFlowLensWidth / 2}
+                    ry="19"
+                    className="channel-stats-graph__flow-lens"
+                  />
+                  {activePoint.joined > 0 ? (
+                    <circle
+                      cx={activePoint.x}
+                      cy={activePoint.joinedFlowY}
+                      r="3.7"
+                      className="channel-stats-graph__flow-knot channel-stats-graph__flow-knot--joined"
+                    />
+                  ) : null}
+                  {activePoint.left > 0 ? (
+                    <circle
+                      cx={activePoint.x}
+                      cy={activePoint.leftFlowY}
+                      r="3.3"
+                      className="channel-stats-graph__flow-knot channel-stats-graph__flow-knot--left"
+                    />
+                  ) : null}
+                </g>
+              ) : null}
               {activePoint ? (
                 <line
                   x1={activePoint.x}
                   y1={chart.guideYs[0]}
                   x2={activePoint.x}
-                  y2={chart.barsBaseline}
+                  y2={chart.eventRailY}
                   className="channel-stats-graph__active-guide"
                 />
               ) : null}
-              {chart.points.map((point, index) => (
-                <g key={labels[index]?.at ?? index}>
-                  <rect
-                    x={
-                      point.x -
-                      (safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth) /
-                        2
-                    }
-                    y={point.joinedTop}
-                    width={
-                      safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth
-                    }
-                    height={point.joinedHeight}
-                    rx="4.5"
-                    className={`channel-stats-graph__bar channel-stats-graph__bar--joined ${
-                      safeActiveIndex === index ? 'is-active' : ''
-                    }`}
-                  />
-                  {point.leftHeight > 0 ? (
-                    <rect
-                      x={
-                        point.x -
-                        (safeActiveIndex === index
-                          ? activeMembershipBarWidth
-                          : membershipBarWidth) /
-                          2
-                      }
-                      y={point.leftTop}
-                      width={
-                        safeActiveIndex === index ? activeMembershipBarWidth : membershipBarWidth
-                      }
-                      height={point.leftHeight}
-                      rx="4.5"
-                      className={`channel-stats-graph__bar channel-stats-graph__bar--left ${
-                        safeActiveIndex === index ? 'is-active' : ''
-                      }`}
-                    />
-                  ) : null}
-                </g>
-              ))}
               <line
                 x1={chart.leftPad}
                 y1={chart.eventRailY}
