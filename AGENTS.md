@@ -173,6 +173,7 @@
 - Keep primary-bot access scoring centralized in `apps/api/src/max/max-bot-access-policy.util.ts`; routing and ownership repair should share it instead of duplicating permissions-snapshot scoring.
 - Multi-bot UI, diagnostics, and tests should stay list-oriented. Avoid copy, caps, or assumptions that only one extra/standby bot exists.
 - Multi-bot lifecycle policy lives in `apps/api/src/max/max-bot-state.util.ts`: `active` bots may execute actions, assist, and primary promotion; `draining` bots stay usable for webhooks/read/discovery only; `dormant`/`disabled` bots should not be selected for routes.
+- Configured runtime bots are moderation-immune: do not kick/ban/mute/delete their messages, do not add them to global spammer observations/registry, and use `MaxBotRegistryService.isKnownBotUserId` / existing wrappers for bot-user checks instead of ad hoc ID comparisons.
 - Managed entities are aggregated per unique chat or channel. Do not duplicate cards per bot.
 - The public mini app should not expose internal primary, standby, or execution-owner details.
 - Home readiness is user-scoped. Keep user-visible completion separate from long-running global discovery completion.
