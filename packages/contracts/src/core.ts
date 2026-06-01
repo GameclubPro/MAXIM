@@ -1800,9 +1800,7 @@ export const globalSpammerShadowScoreSummarySchema = z.object({
   wouldSuppress: z.boolean(),
   createdAt: z.string().datetime(),
 });
-export type GlobalSpammerShadowScoreSummary = z.infer<
-  typeof globalSpammerShadowScoreSummarySchema
->;
+export type GlobalSpammerShadowScoreSummary = z.infer<typeof globalSpammerShadowScoreSummarySchema>;
 
 export const globalSpammerReviewMetricsSchema = z.object({
   pending: z.number().int().min(0),
@@ -1878,9 +1876,7 @@ export const globalSpammerPolicyDecisionSchema = z.object({
   registryStatus: globalSpammerRegistryStatusSchema,
   action: globalSpammerPolicyActionSchema,
   enforcementMode: z.enum(['enforce', 'shadow']),
-  policyBand: z
-    .enum(['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH', 'CONFIRMED'])
-    .default('LOW'),
+  policyBand: z.enum(['LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH', 'CONFIRMED']).default('LOW'),
   deleteSpammersEnabled: z.boolean(),
   adminExempt: z.boolean(),
   shadow: z.boolean(),

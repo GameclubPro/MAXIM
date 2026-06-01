@@ -17092,6 +17092,32 @@ describe('AdminService admin access validation', () => {
     expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
   });
 
+  it('treats a concurrent persisted admin allowlist insert as idempotent', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.upsert.mockRejectedValueOnce({ code: 'P2002' });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId: {
+            chatId: 'chat-1',
+            userId: 'admin-1',
+          },
+        },
+      }),
+    );
+  });
+
   it('rechecks stale bot_denied cache before rejecting admin access', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({

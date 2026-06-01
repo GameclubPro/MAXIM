@@ -271,6 +271,7 @@ import {
   buildModerationFeedPageCacheKey,
   buildResolvedUserProfileCacheKey,
   fromPrismaEntityType,
+  ignorePrismaUniqueConflict,
   isBotAdminLookupDeniedError,
   isFallbackTitle,
   isMaxApiThrottleError,
@@ -11818,9 +11819,7 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    const expiresAt = new Date(
-      Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC * 1_000,
-    );
+    const expiresAt = new Date(Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC * 1_000);
     await this.prisma.globalSpammer.upsert({
       where: {
         userId: job.targetUserId,
@@ -23929,19 +23928,21 @@ export class AdminService implements OnModuleDestroy {
       },
     });
 
-    await this.prisma.chatAdminAllowlist.upsert({
-      where: {
-        chatId_userId: {
+    await this.prisma.chatAdminAllowlist
+      .upsert({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId,
+          },
+        },
+        create: {
           chatId,
           userId,
         },
-      },
-      create: {
-        chatId,
-        userId,
-      },
-      update: {},
-    });
+        update: {},
+      })
+      .catch(ignorePrismaUniqueConflict);
     this.invalidateManagedEntitiesAllowlistCache(userId);
 
     if (typeof this.maxBotLinkService?.bindDiscoveredChatBots === 'function') {

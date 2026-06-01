@@ -115,6 +115,12 @@ export function isPrismaKnownError(error: unknown, code: string): boolean {
   return (error as { code?: string } | null)?.code === code;
 }
 
+export function ignorePrismaUniqueConflict(error: unknown): void {
+  if (!isPrismaKnownError(error, 'P2002')) {
+    throw error;
+  }
+}
+
 export function extractMaxErrorStatus(error: unknown): number | null {
   const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
   return typeof maybeStatus === 'number' ? maybeStatus : null;
