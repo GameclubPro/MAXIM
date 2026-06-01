@@ -3,6 +3,9 @@ server {
   server_name _;
 
   root /usr/share/nginx/html;
+  types {
+    application/manifest+json webmanifest;
+  }
   gzip on;
   gzip_vary on;
   gzip_proxied any;
