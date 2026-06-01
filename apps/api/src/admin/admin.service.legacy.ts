@@ -12101,16 +12101,26 @@ export class AdminService implements OnModuleDestroy {
       );
       await this.assertBotCanDeleteMessages(chatId, deleteBotId);
     } catch (error: unknown) {
+      const errorMessage = this.extractHttpErrorMessage(error) || String(error);
       this.logger.warn(
         {
           chatId,
           sourceChatId,
           actorUserId: actor.userId,
           targetUserId,
-          err: this.extractHttpErrorMessage(error) || String(error),
+          err: errorMessage,
         },
         'Developer super ban fallback skipped because the bot cannot delete messages',
       );
+      await this.recordDeveloperSuperBanNoRightsChat({
+        chatId,
+        sourceChatId,
+        targetUserId,
+        targetDisplayName,
+        actor,
+        fallbackReason,
+        errorMessage,
+      });
       return { affected: false, mode: 'failed' };
     }
 
@@ -12176,6 +12186,53 @@ export class AdminService implements OnModuleDestroy {
         'Failed to apply developer super ban permanent mute fallback',
       );
       return { affected: false, mode: 'failed' };
+    }
+  }
+
+  private async recordDeveloperSuperBanNoRightsChat(params: {
+    chatId: string;
+    sourceChatId: string;
+    targetUserId: string;
+    targetDisplayName: string | null;
+    actor: AuthUser;
+    fallbackReason: string;
+    errorMessage: string;
+  }): Promise<void> {
+    const targetDisplayName = this.readTrimmedString(params.targetDisplayName);
+    try {
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId: params.chatId,
+          userId: params.targetUserId,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode: 'SUPER_BAN_NO_RIGHTS',
+          action: SanctionAction.NONE,
+          operator: Operator.ADMIN,
+          metadata: {
+            source: 'group_command',
+            initiatedByUserId: params.actor.userId,
+            reason: 'Супер бан: у бота нет прав исключать участника или удалять его сообщения',
+            sourceChatId: params.sourceChatId,
+            fanout: params.chatId !== params.sourceChatId,
+            superBan: true,
+            noRights: true,
+            fallbackReason: params.fallbackReason,
+            errorMessage: params.errorMessage,
+            ...(targetDisplayName ? { targetDisplayName } : {}),
+          } as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          sourceChatId: params.sourceChatId,
+          actorUserId: params.actor.userId,
+          targetUserId: params.targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record developer super ban no-rights chat',
+      );
     }
   }
 

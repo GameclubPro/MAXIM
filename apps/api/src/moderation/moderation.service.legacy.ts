@@ -98,7 +98,13 @@ import {
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from './moderation-state.util';
-import { buildDeveloperForcedGlobalSpammerCacheKey } from './developer-forced-global-spammer-cache';
+import {
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC,
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS,
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
+  buildDeveloperForcedGlobalSpammerCacheKey,
+  buildDeveloperForcedGlobalSpammerWarmMarkerKey,
+} from './developer-forced-global-spammer-cache';
 import { buildModerationEscalationCounterKey } from './moderation-escalation-state.util';
 import {
   buildMessageLimitsBlockedReason,
@@ -391,6 +397,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
+  private readonly developerForcedGlobalSpammerMemoryCache = new Map<string, number>();
+  private developerForcedGlobalSpammerWarmUntilMs = 0;
+  private developerForcedGlobalSpammerWarmInFlight: Promise<void> | null = null;
   private readonly globalSpammerRegistryTtlMs = 30 * 24 * 60 * 60 * 1000;
   private readonly globalSpammerExemptionCache = new Map<
     string,
@@ -5208,10 +5217,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    if (
-      command.action === 'SUPER_BAN' &&
-      !this.adminService.isSuperBanDeveloperUserId(senderId)
-    ) {
+    if (command.action === 'SUPER_BAN' && !this.adminService.isSuperBanDeveloperUserId(senderId)) {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
@@ -5288,8 +5294,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const targets = this.extractForwardedModerationTargets(update, chatId);
-    const commandHelpText =
-      command.action === 'SUPER_BAN' ? '`супер бан`' : '`бан` или `мут`';
+    const commandHelpText = command.action === 'SUPER_BAN' ? '`супер бан`' : '`бан` или `мут`';
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -7628,27 +7633,239 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.isKnownRuntimeBotUserId(userId)) {
       return false;
     }
-
-    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
-    if (typeof getString !== 'function') {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
       return false;
     }
 
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (typeof getString === 'function') {
+      try {
+        if (
+          (await getString.call(
+            this.redisCounter,
+            buildDeveloperForcedGlobalSpammerCacheKey(normalizedUserId),
+          )) === '1'
+        ) {
+          return true;
+        }
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            userId: normalizedUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to read developer-forced global spammer cache',
+        );
+      }
+    }
+
+    if (this.hasDeveloperForcedGlobalSpammerMemoryCache(normalizedUserId)) {
+      return true;
+    }
+
+    if (this.developerForcedGlobalSpammerWarmUntilMs > Date.now()) {
+      return false;
+    }
+
+    if (typeof getString === 'function') {
+      try {
+        if (
+          (await getString.call(
+            this.redisCounter,
+            buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+          )) === '1'
+        ) {
+          this.developerForcedGlobalSpammerWarmUntilMs =
+            Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS;
+          return false;
+        }
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            userId: normalizedUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to read developer-forced global spammer warm marker',
+        );
+      }
+    }
+
+    await this.warmDeveloperForcedGlobalSpammerCache();
+    return this.hasDeveloperForcedGlobalSpammerMemoryCache(normalizedUserId);
+  }
+
+  private hasDeveloperForcedGlobalSpammerMemoryCache(userId: string): boolean {
+    const expiresAtMs = this.developerForcedGlobalSpammerMemoryCache.get(userId);
+    if (!expiresAtMs) {
+      return false;
+    }
+    if (expiresAtMs <= Date.now()) {
+      this.developerForcedGlobalSpammerMemoryCache.delete(userId);
+      return false;
+    }
+    return true;
+  }
+
+  private async warmDeveloperForcedGlobalSpammerCache(): Promise<void> {
+    if (this.developerForcedGlobalSpammerWarmUntilMs > Date.now()) {
+      return;
+    }
+    if (this.developerForcedGlobalSpammerWarmInFlight) {
+      await this.developerForcedGlobalSpammerWarmInFlight;
+      return;
+    }
+
+    const warm = this.loadDeveloperForcedGlobalSpammerCacheFromRegistry();
+    this.developerForcedGlobalSpammerWarmInFlight = warm;
     try {
-      return (await getString.call(
+      await warm;
+    } finally {
+      this.developerForcedGlobalSpammerWarmInFlight = null;
+    }
+  }
+
+  private async loadDeveloperForcedGlobalSpammerCacheFromRegistry(): Promise<void> {
+    const globalSpammerModel = this.prisma.globalSpammer as unknown as {
+      findMany?: (args: unknown) => Promise<
+        Array<{
+          userId: string;
+          expiresAt?: Date | null;
+          sourceBreakdown?: Prisma.JsonValue | null;
+        }>
+      >;
+    } | null;
+    const now = new Date();
+    if (typeof globalSpammerModel?.findMany !== 'function') {
+      this.developerForcedGlobalSpammerWarmUntilMs =
+        Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS;
+      return;
+    }
+
+    try {
+      const rows = await globalSpammerModel.findMany({
+        where: {
+          expiresAt: {
+            gt: now,
+          },
+          sourceBreakdown: {
+            path: ['DEVELOPER_FORCED'],
+            not: Prisma.JsonNull,
+          },
+        },
+        select: {
+          userId: true,
+          expiresAt: true,
+          sourceBreakdown: true,
+        },
+      });
+
+      const restoreTasks: Array<Promise<void>> = [];
+      for (const row of rows) {
+        const normalizedUserId = row.userId.trim();
+        if (
+          !normalizedUserId ||
+          this.isKnownRuntimeBotUserId(normalizedUserId) ||
+          !(row.expiresAt instanceof Date) ||
+          row.expiresAt.getTime() <= now.getTime() ||
+          !this.hasDeveloperForcedGlobalSpammerSource(row.sourceBreakdown)
+        ) {
+          continue;
+        }
+
+        this.developerForcedGlobalSpammerMemoryCache.set(
+          normalizedUserId,
+          Math.min(
+            row.expiresAt.getTime(),
+            Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS,
+          ),
+        );
+        restoreTasks.push(
+          this.rememberDeveloperForcedGlobalSpammer(normalizedUserId, row.expiresAt),
+        );
+      }
+
+      restoreTasks.push(this.rememberDeveloperForcedGlobalSpammerWarmMarker());
+      await Promise.all(restoreTasks);
+      this.developerForcedGlobalSpammerWarmUntilMs =
+        Date.now() + DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to warm developer-forced global spammer cache',
+      );
+      this.developerForcedGlobalSpammerWarmUntilMs =
+        Date.now() + Math.min(30_000, DEVELOPER_FORCED_GLOBAL_SPAMMER_MEMORY_CACHE_TTL_MS);
+    }
+  }
+
+  private async rememberDeveloperForcedGlobalSpammer(
+    userId: string,
+    expiresAt?: Date | null,
+  ): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    const ttlSec =
+      expiresAt instanceof Date
+        ? Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1_000))
+        : DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC;
+    try {
+      await setStringWithTtl.call(
         this.redisCounter,
         buildDeveloperForcedGlobalSpammerCacheKey(userId),
-      )) === '1';
+        '1',
+        Math.min(DEVELOPER_FORCED_GLOBAL_SPAMMER_CACHE_TTL_SEC, ttlSec),
+      );
     } catch (error: unknown) {
       this.logger.debug(
         {
           userId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to read developer-forced global spammer cache',
+        'Failed to restore developer-forced global spammer cache',
       );
-      return false;
     }
+  }
+
+  private async rememberDeveloperForcedGlobalSpammerWarmMarker(): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+        '1',
+        DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to write developer-forced global spammer warm marker',
+      );
+    }
+  }
+
+  private hasDeveloperForcedGlobalSpammerSource(
+    sourceBreakdown: Prisma.JsonValue | null | undefined,
+  ): boolean {
+    return (
+      typeof sourceBreakdown === 'object' &&
+      sourceBreakdown !== null &&
+      !Array.isArray(sourceBreakdown) &&
+      Boolean((sourceBreakdown as Prisma.JsonObject).DEVELOPER_FORCED)
+    );
   }
 
   private async upsertGlobalSpammerEntry(params: {
@@ -11155,6 +11372,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               params.action,
               candidateBotId,
             );
+            await this.recordModerationActionAccessLossIfTerminal({
+              chatId: params.chatId,
+              action: params.action,
+              botId: candidateBotId,
+              error,
+            });
             await this.persistModerationActionBotAccessSnapshot(
               params.chatId,
               candidateBotId,
@@ -11184,6 +11407,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return skippedDueToBackoff ? { status: 'backoff_blocked' } : { status: 'no_candidates' };
+  }
+
+  private async recordModerationActionAccessLossIfTerminal(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    botId: string;
+    error: unknown;
+  }): Promise<void> {
+    try {
+      await this.managedEntityAccessLossService?.recordIfManagedEntityAccessLost?.({
+        chatId: params.chatId,
+        botId: params.botId,
+        entityType: null,
+        source: `moderation_action:${params.action}`,
+        operation: params.action === 'delete_message' ? 'delete' : 'lookup',
+        error: params.error,
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          botId: params.botId,
+          action: params.action,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record moderation action MAX access loss',
+      );
+    }
   }
 
   private async resolveModerationActionBotIds(params: {

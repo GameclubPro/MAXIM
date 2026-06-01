@@ -2,6 +2,11 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { USER_AGREEMENT_SHORT_NOTICE } from '../common/user-agreement-notice';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { buildActiveMuteStateKey } from './moderation-state.util';
+import {
+  DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
+  buildDeveloperForcedGlobalSpammerCacheKey,
+  buildDeveloperForcedGlobalSpammerWarmMarkerKey,
+} from './developer-forced-global-spammer-cache';
 import { ModerationService } from './moderation.service';
 
 declare global {
@@ -5541,6 +5546,200 @@ describe('ModerationService', () => {
         action: SanctionAction.KICK,
       }),
     });
+  });
+
+  it('restores developer-forced blacklist cache from registry and enforces when spammer deletion is disabled', async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: false }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([{
+          userId: 'user-1',
+          expiresAt,
+          sourceBreakdown: {
+            DEVELOPER_FORCED: {
+              score: 1,
+              count: 1,
+              reasons: ['По решению разработчика бота за нарушение правил'],
+            },
+          },
+        }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(redisCounter.getString).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+    );
+    expect(redisCounter.getString).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+    );
+    expect(prisma.globalSpammer.findMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        expiresAt: {
+          gt: expect.any(Date),
+        },
+        sourceBreakdown: expect.objectContaining({
+          path: ['DEVELOPER_FORCED'],
+        }),
+      }),
+      select: {
+        userId: true,
+        expiresAt: true,
+        sourceBreakdown: true,
+      },
+    });
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+      '1',
+      expect.any(Number),
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+      '1',
+      DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-1');
+  });
+
+  it('negative-caches developer-forced registry misses after checking Redis', async () => {
+    const createMessageUpdate = (messageId: string): MaxUpdate => ({
+      ...createUpdate(),
+      updateId: `upd-${messageId}`,
+      message: {
+        ...createUpdate().message!,
+        messageId,
+      },
+    });
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: false }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+      addToSetWithTtl: jest.fn().mockResolvedValue({ added: true, size: 1 }),
+      incrementWithTtl: jest.fn().mockResolvedValue(1),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createMessageUpdate('msg-1'));
+    await service.handleUpdate(createMessageUpdate('msg-2'));
+
+    expect(redisCounter.getString).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+    );
+    expect(redisCounter.getString).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+    );
+    expect(prisma.globalSpammer.findMany).toHaveBeenCalledTimes(1);
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(2);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+      '1',
+      DEVELOPER_FORCED_GLOBAL_SPAMMER_WARM_MARKER_TTL_SEC,
+    );
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+      expect.any(String),
+      expect.any(Number),
+    );
   });
 
   it('ignores legacy global spammer rows without an active expiry window', async () => {
@@ -14659,9 +14858,29 @@ describe('ModerationService', () => {
         const maxChatAdminRosterSyncService = {
           scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
         };
+        const managedEntityAccessLossService = {
+          recordIfManagedEntityAccessLost: jest.fn().mockResolvedValue({
+            classification: {
+              kind: 'managed_entity_access_lost',
+              reason: 'bot_denied',
+              statusCode: 403,
+              code: 'chat.denied',
+              message: 'request failed with status code 403',
+            },
+            reason: 'bot_denied',
+            recorded: {
+              chatId: 'chat-1',
+            },
+          }),
+        };
+        const terminalError = createMaxApiError(
+          403,
+          'Request failed with status code 403',
+          'chat.denied',
+        );
         const operation = jest.fn().mockImplementation(async (botId?: string) => {
           if (botId === 'id613002203036_bot') {
-            throw createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
+            throw terminalError;
           }
         });
         const service = new ModerationService(
@@ -14682,6 +14901,8 @@ describe('ModerationService', () => {
           undefined,
           undefined,
           maxChatAdminRosterSyncService as never,
+          undefined,
+          managedEntityAccessLossService as never,
         );
 
         await expect(
@@ -14695,6 +14916,16 @@ describe('ModerationService', () => {
 
         expect(operation.mock.calls).toEqual([['id613002203036_bot']]);
         expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+        expect(managedEntityAccessLossService.recordIfManagedEntityAccessLost).toHaveBeenCalledWith(
+          {
+            chatId: 'chat-1',
+            botId: 'id613002203036_bot',
+            entityType: null,
+            source: 'moderation_action:moderate_member',
+            operation: 'lookup',
+            error: terminalError,
+          },
+        );
         expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
           chatId: 'chat-1',
           botIds: [],
