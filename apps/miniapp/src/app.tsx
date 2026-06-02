@@ -16,6 +16,7 @@ import { ToastProvider } from './components/ui/toast';
 import commentsSpaceDarkWallpaperUrl from './assets/wallpapers/comments-space-dark.webp';
 import commentsSpaceLightWallpaperUrl from './assets/wallpapers/comments-space-light.webp';
 import { createApiTransport } from './lib/api/transport';
+import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData, waitForInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
@@ -259,6 +260,7 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
 
   useEffect(() => {
     const targetRoute = resolveLaunchRoute(launchInitData);
+    traceMiniappLaunchRoute(targetRoute, 'router-sync');
     if (!targetRoute || appliedRouteRef.current === targetRoute) {
       return;
     }
@@ -288,6 +290,10 @@ function AppRoutes({
   apiClient: ReturnType<typeof createApiTransport>;
   launchInitData: string | null;
 }) {
+  useEffect(() => {
+    traceMiniappBoot('first_render', undefined, { once: true });
+  }, []);
+
   return (
     <>
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
@@ -352,9 +358,11 @@ export function App() {
 
   useEffect(() => {
     if (initData) {
+      traceMiniappBoot('init_data_found', undefined, { once: true });
       return;
     }
 
+    traceMiniappBoot('init_data_waiting', undefined, { once: true });
     return waitForInitData(setInitData);
   }, [initData]);
 
@@ -363,6 +371,15 @@ export function App() {
       previewDevice: preview.enabled ? preview.device : null,
     });
     readyMaxMiniApp();
+    traceMiniappBoot(
+      'bridge_ready',
+      {
+        preview: preview.enabled,
+        platform: document.documentElement.dataset.maxPlatform ?? null,
+        client: document.documentElement.dataset.maxClient ?? null,
+      },
+      { once: true },
+    );
     return cleanup;
   }, [preview.device, preview.enabled]);
 
@@ -420,6 +437,7 @@ export function App() {
 
   if (!preview.enabled && initData) {
     const launchRoute = resolveLaunchRoute(initData);
+    traceMiniappLaunchRoute(launchRoute, 'initial');
     if (launchRoute && preparedLaunchRouteRef.current !== launchRoute) {
       preloadLaunchRouteModule(launchRoute);
       applyInitialLaunchRoute(launchRoute);

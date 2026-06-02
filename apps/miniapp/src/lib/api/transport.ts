@@ -1,4 +1,5 @@
 import { buildApiErrorMessage } from '../api-error';
+import { traceFirstMiniappApiResult } from '../boot-trace';
 import { API_BASE } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
@@ -89,10 +90,21 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
 
       if (!response.ok) {
         const payload = await response.text();
+        traceFirstMiniappApiResult({
+          ok: false,
+          path,
+          status: response.status,
+        });
         throw new Error(
           buildApiErrorMessage(response.status, payload, response.headers.get('content-type')),
         );
       }
+
+      traceFirstMiniappApiResult({
+        ok: true,
+        path,
+        status: response.status,
+      });
 
       if (response.status === 204 || response.status === 205) {
         return null;
