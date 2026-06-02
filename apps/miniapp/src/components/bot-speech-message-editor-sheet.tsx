@@ -1,8 +1,11 @@
-import { useCallback, useLayoutEffect, useRef } from 'react';
+import type { BotSpeechMediaImage } from '@maxim/contracts/settings';
+import { Camera as IconoirCamera } from 'iconoir-react';
+import { type ChangeEvent, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
+import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { useNativeBackHandler } from '../lib/native-back';
 
 type BotSpeechMessageEditorSheetProps = {
@@ -10,12 +13,15 @@ type BotSpeechMessageEditorSheetProps = {
   ariaLabel: string;
   value: string;
   defaultValue: string;
+  image?: BotSpeechMediaImage | null;
   onChange: (value: string) => void;
+  onImageChange?: (image: BotSpeechMediaImage | null) => void;
   onReset: () => void;
   onClose: () => void;
 };
 
 const BOT_MESSAGE_EDITOR_MAX_LENGTH = 1000;
+const BOT_MESSAGE_EDITOR_IMAGE_MAX_BYTES = 4_000_000;
 
 function resolveBotMessageEditorPortalTarget(): Element | null {
   if (typeof document === 'undefined') {
@@ -61,17 +67,29 @@ export function BotSpeechMessageEditorSheet({
   ariaLabel,
   value,
   defaultValue,
+  image = null,
   onChange,
+  onImageChange,
   onReset,
   onClose,
 }: BotSpeechMessageEditorSheetProps) {
   const editorRef = useRef<MaxRichTextEditorHandle | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const [imageError, setImageError] = useState('');
+  const [isPreparingImage, setIsPreparingImage] = useState(false);
   const portalTarget = resolveBotMessageEditorPortalTarget();
   const isDefaultTemplate = value.trim().length === 0;
   const editorValue = isDefaultTemplate ? defaultValue : value;
+  const hasImage = Boolean(image?.base64 && image.mimeType);
+  const imagePreviewUrl = hasImage ? `data:${image?.mimeType};base64,${image?.base64}` : '';
+  const canReset = !isDefaultTemplate || hasImage;
   const remainingLength = BOT_MESSAGE_EDITOR_MAX_LENGTH - editorValue.length;
   const isNearLimit =
     remainingLength >= 0 && remainingLength <= Math.min(100, BOT_MESSAGE_EDITOR_MAX_LENGTH * 0.08);
+  const useNativeTapFileInput =
+    resolveFileInputActivationMode(
+      typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
+    ) === 'native-tap';
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -101,6 +119,34 @@ export function BotSpeechMessageEditorSheet({
   const applyTextModifier = useCallback((tool: MaxMarkdownTool) => {
     editorRef.current?.applyTool(tool);
   }, []);
+
+  async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file || !onImageChange) {
+      return;
+    }
+
+    setIsPreparingImage(true);
+    setImageError('');
+    try {
+      const { prepareBroadcastImage } = await import('../lib/broadcast-image');
+      const prepared = await prepareBroadcastImage(file, {
+        maxBytes: BOT_MESSAGE_EDITOR_IMAGE_MAX_BYTES,
+      });
+      onImageChange({
+        base64: prepared.base64,
+        mimeType: prepared.mimeType,
+        fileName: prepared.fileName,
+      });
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : 'Не удалось подготовить фото.');
+    } finally {
+      setIsPreparingImage(false);
+      if (imageInputRef.current) {
+        imageInputRef.current.value = '';
+      }
+    }
+  }
 
   const sheet = (
     <div
@@ -160,6 +206,94 @@ export function BotSpeechMessageEditorSheet({
             ariaLabel={title}
             className="bot-message-editor-sheet__rich-editor"
           />
+
+          {onImageChange ? (
+            <div className="bot-message-editor-sheet__media">
+              {hasImage ? (
+                <div className="bot-message-editor-sheet__media-preview">
+                  <img src={imagePreviewUrl} alt="" />
+                  <button
+                    type="button"
+                    className="bot-message-editor-sheet__media-remove"
+                    aria-label="Убрать фото"
+                    onClick={() => {
+                      setImageError('');
+                      onImageChange(null);
+                    }}
+                    disabled={isPreparingImage}
+                  >
+                    <BotMessageEditorCloseIcon />
+                  </button>
+                </div>
+              ) : null}
+              {useNativeTapFileInput ? (
+                <label
+                  className={cn(
+                    'bot-message-editor-sheet__media-button',
+                    hasImage && 'is-active',
+                    isPreparingImage && 'is-loading',
+                    isPreparingImage && 'is-disabled',
+                  )}
+                  aria-disabled={isPreparingImage}
+                >
+                  <IconoirCamera aria-hidden focusable="false" />
+                  <span>
+                    {isPreparingImage
+                      ? 'Готовим фото'
+                      : hasImage
+                        ? 'Заменить фото'
+                        : 'Добавить фото'}
+                  </span>
+                  <input
+                    ref={imageInputRef}
+                    className="bot-message-editor-sheet__file-input"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    disabled={isPreparingImage}
+                    aria-label="Выбрать фото для сообщения"
+                  />
+                </label>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={cn(
+                      'bot-message-editor-sheet__media-button',
+                      hasImage && 'is-active',
+                      isPreparingImage && 'is-loading',
+                    )}
+                    onClick={() => {
+                      setImageError('');
+                      openFileInputPicker(imageInputRef.current);
+                    }}
+                    disabled={isPreparingImage}
+                  >
+                    <IconoirCamera aria-hidden focusable="false" />
+                    <span>
+                      {isPreparingImage
+                        ? 'Готовим фото'
+                        : hasImage
+                          ? 'Заменить фото'
+                          : 'Добавить фото'}
+                    </span>
+                  </button>
+                  <input
+                    ref={imageInputRef}
+                    className="bot-message-editor-sheet__file-input"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    disabled={isPreparingImage}
+                    aria-label="Выбрать фото для сообщения"
+                  />
+                </>
+              )}
+              {imageError ? (
+                <small className="bot-message-editor-sheet__media-error">{imageError}</small>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="bot-message-editor-sheet__tools" role="toolbar" aria-label="Форматирование">
@@ -188,8 +322,14 @@ export function BotSpeechMessageEditorSheet({
           <button
             type="button"
             className="button button--ghost bot-message-editor-sheet__reset"
-            onClick={onReset}
-            disabled={isDefaultTemplate}
+            onClick={() => {
+              setImageError('');
+              if (hasImage) {
+                onImageChange?.(null);
+              }
+              onReset();
+            }}
+            disabled={!canReset}
           >
             Сбросить
           </button>

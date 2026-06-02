@@ -1,4 +1,5 @@
 import type { ChatSettings } from '@maxim/contracts';
+import type { BotSpeechMediaFieldKey } from '@maxim/contracts/bot-speech';
 
 export type ApplySectionKey =
   | 'links'
@@ -227,6 +228,49 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   ],
 };
 
+export function mergeBotSpeechMediaForKeys(
+  targetMedia: ChatSettings['botSpeechMedia'],
+  sourceMedia: ChatSettings['botSpeechMedia'],
+  settingKeys: readonly (keyof ChatSettings)[],
+): ChatSettings['botSpeechMedia'] {
+  const nextMedia = { ...targetMedia };
+  for (const key of settingKeys) {
+    const mediaKey = key as BotSpeechMediaFieldKey;
+    const sourceImage = sourceMedia[mediaKey];
+    if (sourceImage?.base64) {
+      nextMedia[mediaKey] = sourceImage;
+    } else {
+      delete nextMedia[mediaKey];
+    }
+  }
+  return nextMedia;
+}
+
+function areBotSpeechMediaImagesEqual(
+  left: ChatSettings['botSpeechMedia'][BotSpeechMediaFieldKey] | undefined,
+  right: ChatSettings['botSpeechMedia'][BotSpeechMediaFieldKey] | undefined,
+): boolean {
+  return (
+    (left?.base64 ?? '') === (right?.base64 ?? '') &&
+    (left?.mimeType ?? '') === (right?.mimeType ?? '') &&
+    (left?.fileName ?? '') === (right?.fileName ?? '')
+  );
+}
+
+export function hasSectionBotSpeechMediaChanges(
+  draft: ChatSettings,
+  saved: ChatSettings,
+  section: ApplySectionKey,
+): boolean {
+  return SECTION_SETTING_KEYS[section].some((key) => {
+    const mediaKey = key as BotSpeechMediaFieldKey;
+    return !areBotSpeechMediaImagesEqual(
+      draft.botSpeechMedia[mediaKey],
+      saved.botSpeechMedia[mediaKey],
+    );
+  });
+}
+
 export const COMMENTS_SETTING_KEYS = [
   'commentsEnabled',
   'commentsAdminsEnabled',
@@ -286,6 +330,11 @@ export function mergeNightSectionSettings(
   for (const key of NIGHT_SECTION_SETTING_KEYS) {
     nextRecord[key] = sourceRecord[key];
   }
+  nextSettings.botSpeechMedia = mergeBotSpeechMediaForKeys(
+    targetSettings.botSpeechMedia,
+    sourceSettings.botSpeechMedia,
+    NIGHT_SECTION_SETTING_KEYS,
+  );
 
   return nextSettings;
 }
@@ -306,6 +355,11 @@ export function mergeSectionSettings(
   for (const key of SECTION_SETTING_KEYS[section]) {
     nextRecord[key] = sourceRecord[key];
   }
+  nextSettings.botSpeechMedia = mergeBotSpeechMediaForKeys(
+    targetSettings.botSpeechMedia,
+    sourceSettings.botSpeechMedia,
+    SECTION_SETTING_KEYS[section],
+  );
 
   return nextSettings;
 }

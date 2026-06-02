@@ -6,6 +6,7 @@ import {
   NIGHT_SECTION_SETTING_KEYS,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
+  hasSectionBotSpeechMediaChanges,
   mergeNightSectionSettings,
   mergeSectionSettings,
 } from '../src/pages/settings-page-state';
@@ -215,4 +216,74 @@ test('mergeSectionSettings syncs stop words without copying limit sanctions', ()
   assert.deepEqual(merged.messageLimitsBlockedDomains, ['casino.example']);
   assert.equal(merged.messageLimitsBotMessageEnabled, false);
   assert.equal(merged.antiSpamEnabled, true);
+});
+
+test('mergeSectionSettings scopes bot speech media to the saved section', () => {
+  const current = createSettings({
+    botSpeechMedia: {
+      linkBotMessageText: {
+        base64: 'old-link',
+        mimeType: 'image/jpeg',
+        fileName: 'old-link.jpg',
+      },
+      greetingBotMessageText: {
+        base64: 'current-greeting',
+        mimeType: 'image/png',
+        fileName: 'current-greeting.png',
+      },
+    },
+  });
+  const saved = createSettings({
+    botSpeechMedia: {
+      linkBotMessageText: {
+        base64: 'new-link',
+        mimeType: 'image/jpeg',
+        fileName: 'new-link.jpg',
+      },
+      greetingBotMessageText: {
+        base64: 'saved-greeting',
+        mimeType: 'image/png',
+        fileName: 'saved-greeting.png',
+      },
+    },
+  });
+
+  const merged = mergeSectionSettings(current, saved, 'links');
+  assert.deepEqual(merged.botSpeechMedia.linkBotMessageText, saved.botSpeechMedia.linkBotMessageText);
+  assert.deepEqual(
+    merged.botSpeechMedia.greetingBotMessageText,
+    current.botSpeechMedia.greetingBotMessageText,
+  );
+});
+
+test('mergeSectionSettings removes bot speech media for a saved section when cleared', () => {
+  const current = createSettings({
+    botSpeechMedia: {
+      linkWarnMessageText: {
+        base64: 'old-warning',
+        mimeType: 'image/jpeg',
+        fileName: 'old-warning.jpg',
+      },
+    },
+  });
+  const saved = createSettings({ botSpeechMedia: {} });
+
+  const merged = mergeSectionSettings(current, saved, 'links');
+  assert.equal(merged.botSpeechMedia.linkWarnMessageText, undefined);
+});
+
+test('hasSectionBotSpeechMediaChanges detects scoped media changes', () => {
+  const saved = createSettings();
+  const draft = createSettings({
+    botSpeechMedia: {
+      requiredSubscriptionWarnMessageText: {
+        base64: 'subscription-warning',
+        mimeType: 'image/jpeg',
+        fileName: 'subscription-warning.jpg',
+      },
+    },
+  });
+
+  assert.equal(hasSectionBotSpeechMediaChanges(draft, saved, 'requiredSubscription'), true);
+  assert.equal(hasSectionBotSpeechMediaChanges(draft, saved, 'links'), false);
 });

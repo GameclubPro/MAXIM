@@ -103,6 +103,40 @@ describe('chatSettingsSchema duplicate flow validation', () => {
 
     expect(genericButtonResult.success).toBe(false);
   });
+
+  it('keeps bot speech media as a per-message image map', () => {
+    const result = chatSettingsSchema.parse({
+      botSpeechMedia: {
+        messageLimitsBotMessageText: {
+          base64: ' YQ== ',
+          mimeType: ' image/png ',
+          fileName: ' warning.png ',
+        },
+      },
+    });
+
+    expect(result.botSpeechMedia).toEqual({
+      messageLimitsBotMessageText: {
+        base64: 'YQ==',
+        mimeType: 'image/png',
+        fileName: 'warning.png',
+      },
+    });
+  });
+
+  it('rejects bot speech media with non-image mime type', () => {
+    const result = chatSettingsSchema.safeParse({
+      botSpeechMedia: {
+        messageLimitsWarnMessageText: {
+          base64: 'YQ==',
+          mimeType: 'application/pdf',
+          fileName: 'notice.pdf',
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('updateChatRulesRequestSchema button normalization', () => {

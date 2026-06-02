@@ -270,6 +270,7 @@ model ChatSettings {
   linkMuteMaxCount                              Int                      @default(3) @map("link_mute_max_count")
   linkBanMaxCount                               Int                      @default(4) @map("link_ban_max_count")
   botSpeechStyle                                BotSpeechStyle?          @default(FRIENDLY) @map("bot_speech_style")
+  botSpeechMedia                                Json                     @default("{}") @map("bot_speech_media")
   greetingEnabled                               Boolean                  @default(false) @map("greeting_enabled")
   greetingBotMessageEnabled                     Boolean                  @default(false) @map("greeting_bot_message_enabled")
   greetingDeleteBotMessageEnabled               Boolean                  @default(false) @map("greeting_delete_bot_message_enabled")

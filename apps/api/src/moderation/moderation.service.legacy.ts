@@ -21,6 +21,7 @@ import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   type BotSpeechEditableFieldKey,
+  type BotSpeechMediaFieldKey,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
 } from '@maxim/contracts/bot-speech';
@@ -338,6 +339,20 @@ type NightModeTransitionOperation =
 type RequiredSubscriptionMembershipResolution = {
   membership: boolean | null;
   fresh: boolean;
+};
+
+type BotSpeechResolvedMedia = {
+  base64: string;
+  mimeType: string;
+  fileName: string;
+  fieldKey: BotSpeechMediaFieldKey;
+};
+
+type BotSpeechMediaUploadOptions = {
+  trafficClass?: 'interactive' | 'background';
+  actionHealthLane?: 'interactive' | 'background';
+  sourceTag?: string;
+  botId?: string | null;
 };
 
 @Injectable()
@@ -1345,6 +1360,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userLabel,
           muteDurationHours: settings.duplicateMuteDurationHours,
           botSpeechStyle: settings.botSpeechStyle,
+          botSpeechMedia: settings.botSpeechMedia,
           duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
           duplicateBotMessageText: settings.duplicateBotMessageText,
           duplicateBotButtons: settings.duplicateBotButtons,
@@ -1377,6 +1393,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           hit: detection.duplicateHit,
           userLabel,
           botSpeechStyle: settings.botSpeechStyle,
+          botSpeechMedia: settings.botSpeechMedia,
           duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
           duplicateBotMessageText: settings.duplicateBotMessageText,
           duplicateBotButtons: settings.duplicateBotButtons,
@@ -1677,10 +1694,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const sendChatBotMessage = async (
           textValue: string,
           messageOptions?: MaxSendMessageOptions,
+          mediaFieldKey?: BotSpeechMediaFieldKey,
         ) =>
           this.sendBotMessageWithOptionalAutoDelete({
             chatId,
             text: textValue,
+            media: this.resolveBotSpeechMedia(settings, mediaFieldKey),
             messageOptions,
             deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
             deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
@@ -1768,6 +1787,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   settings.linkAdminContactButtonUrl,
                 ),
                 linkMessageOptions ?? undefined,
+                'linkBotMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1795,6 +1815,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   settings.linkAdminContactButtonUrl,
                 ),
                 linkMessageOptions ?? undefined,
+                'linkWarnMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1830,6 +1851,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   settings.phoneNumbersAdminContactButtonUrl,
                 ),
                 phoneNumbersMessageOptions ?? undefined,
+                'phoneNumbersBotMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1900,6 +1922,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   settings.messageLimitsAdminContactButtonUrl,
                 ),
                 limitsMessageOptions ?? undefined,
+                'messageLimitsBotMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1929,6 +1952,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   settings.messageLimitsAdminContactButtonUrl,
                 ),
                 limitsMessageOptions ?? undefined,
+                'messageLimitsWarnMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1965,6 +1989,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   textFilterEscalationSettings.adminContactButtonUrl,
                 ),
                 textFilterMessageOptions ?? undefined,
+                'textFiltersBotMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -1994,6 +2019,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   textFilterEscalationSettings?.adminContactButtonUrl ?? '',
                 ),
                 textFilterMessageOptions ?? undefined,
+                'textFiltersWarnMessageText',
               );
             } catch (error: unknown) {
               this.logger.warn(
@@ -2317,6 +2343,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string;
     muteDurationHours: number;
     botSpeechStyle: BotSpeechStyle | null;
+    botSpeechMedia: ChatSettings['botSpeechMedia'];
     duplicateBotMessageEnabled: boolean;
     duplicateBotMessageText: string;
     duplicateBotButtons: unknown;
@@ -2342,6 +2369,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       muteDurationHours,
       botSpeechStyle,
+      botSpeechMedia,
       duplicateBotMessageEnabled,
       duplicateBotMessageText,
       duplicateBotButtons,
@@ -2436,6 +2464,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 )
               : explanationText,
           messageOptions: duplicateMessageOptions ?? undefined,
+          media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
           deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes,
         });
@@ -2496,6 +2525,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     hit: DuplicateHit;
     userLabel: string;
     botSpeechStyle: BotSpeechStyle | null;
+    botSpeechMedia: ChatSettings['botSpeechMedia'];
     duplicateBotMessageEnabled: boolean;
     duplicateBotMessageText: string;
     duplicateBotButtons: unknown;
@@ -2520,6 +2550,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       hit,
       userLabel,
       botSpeechStyle,
+      botSpeechMedia,
       duplicateBotMessageEnabled,
       duplicateBotMessageText,
       duplicateBotButtons,
@@ -2607,6 +2638,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             duplicateAdminContactButtonUrl,
           ),
           messageOptions: duplicateMessageOptions ?? undefined,
+          media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'duplicateBotMessageText'),
           deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes,
         });
@@ -6337,6 +6369,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingDeleteBotMessageDelayMinutes: number;
     greetingBotMessageText: string;
     botSpeechStyle: BotSpeechStyle | null;
+    botSpeechMedia: ChatSettings['botSpeechMedia'];
     greetingBotButtons: unknown;
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
@@ -6357,6 +6390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingDeleteBotMessageDelayMinutes,
       greetingBotMessageText,
       botSpeechStyle,
+      botSpeechMedia,
       greetingBotButtons,
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
@@ -6407,6 +6441,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           text: greetingMessage,
           messageOptions: greetingMessageOptions ?? undefined,
+          media: this.resolveBotSpeechMedia({ botSpeechMedia }, 'greetingBotMessageText'),
           deleteBotMessagesEnabled: shouldDeleteGreetingMessage,
           deleteBotMessagesDelayMinutes: greetingDeleteDelayMinutes,
         });
@@ -6513,6 +6548,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingDeleteBotMessageDelayMinutes: settings.greetingDeleteBotMessageDelayMinutes,
       greetingBotMessageText: settings.greetingBotMessageText,
       botSpeechStyle: settings.botSpeechStyle,
+      botSpeechMedia: settings.botSpeechMedia,
       greetingBotButtons: settings.greetingBotButtons,
       greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
       greetingBotButtonUrl: settings.greetingBotButtonUrl,
@@ -8173,6 +8209,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'requiredSubscriptionMuteEnabled'
       | 'requiredSubscriptionMuteDurationHours'
       | 'botSpeechStyle'
+      | 'botSpeechMedia'
       | 'rulesAttachViolationsEnabled'
       | 'deleteBotMessagesEnabled'
       | 'deleteBotMessagesDelayMinutes'
@@ -8318,12 +8355,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ) ?? undefined;
       };
 
-      const sendRequiredSubscriptionBotMessage = async (textValue: string) => {
+      const sendRequiredSubscriptionBotMessage = async (
+        textValue: string,
+        mediaFieldKey?: BotSpeechMediaFieldKey,
+      ) => {
         await prepareRequiredSubscriptionNoticeContext();
         return this.sendBotMessageWithOptionalAutoDelete({
           chatId: params.chatId,
           text: textValue,
           messageOptions: requiredSubscriptionMessageOptions,
+          media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
           bypassNoticeBucket: true,
@@ -8369,6 +8410,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   params.settings.requiredSubscriptionAdminContactButtonEnabled,
                   params.settings.requiredSubscriptionAdminContactButtonUrl,
                 ),
+                'requiredSubscriptionBotMessageText',
               );
               if (noticeSent) {
                 await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
@@ -8400,6 +8442,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               params.settings.requiredSubscriptionAdminContactButtonEnabled,
               params.settings.requiredSubscriptionAdminContactButtonUrl,
             ),
+            'requiredSubscriptionWarnMessageText',
           );
         } catch (error: unknown) {
           this.logger.warn(
@@ -8593,6 +8636,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'invitationAccessMuteEnabled'
       | 'invitationAccessMuteDurationHours'
       | 'botSpeechStyle'
+      | 'botSpeechMedia'
       | 'rulesAttachViolationsEnabled'
       | 'deleteBotMessagesEnabled'
       | 'deleteBotMessagesDelayMinutes'
@@ -8687,11 +8731,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.rulesPublishedMessageId,
       ) ?? undefined;
 
-    const sendInvitationAccessBotMessage = async (textValue: string) =>
+    const sendInvitationAccessBotMessage = async (
+      textValue: string,
+      mediaFieldKey?: BotSpeechMediaFieldKey,
+    ) =>
       this.sendBotMessageWithOptionalAutoDelete({
         chatId: params.chatId,
         text: textValue,
         messageOptions: invitationAccessMessageOptions,
+        media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
       });
@@ -8722,7 +8770,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
         if (!noticeOnCooldown) {
           try {
-            await sendInvitationAccessBotMessage(
+            const sent = await sendInvitationAccessBotMessage(
               await this.appendAdminContactMarkdownLink(
                 params.chatId,
                 this.buildInvitationAccessExplanation(
@@ -8736,8 +8784,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 params.settings.invitationAccessAdminContactButtonEnabled,
                 params.settings.invitationAccessAdminContactButtonUrl,
               ),
+              'invitationAccessBotMessageText',
             );
-            await this.markInvitationAccessNoticeSent(params.chatId, params.userId);
+            if (sent) {
+              await this.markInvitationAccessNoticeSent(params.chatId, params.userId);
+            }
           } catch (error: unknown) {
             this.logger.warn(
               {
@@ -8766,6 +8817,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             params.settings.invitationAccessAdminContactButtonEnabled,
             params.settings.invitationAccessAdminContactButtonUrl,
           ),
+          'invitationAccessWarnMessageText',
         );
       } catch (error: unknown) {
         this.logger.warn(
@@ -16584,6 +16636,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     text: string;
     messageOptions?: MaxSendMessageOptions;
+    media?: BotSpeechResolvedMedia | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
@@ -16593,6 +16646,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       text,
       messageOptions,
+      media,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       immediate,
@@ -16607,11 +16661,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const resolvedMessageOptions = await this.withBotSpeechMediaOptions(messageOptions, media);
     await this.maxClient.sendMessage(
       chatId,
       text,
       {
-        ...(messageOptions ?? {}),
+        ...(resolvedMessageOptions ?? {}),
         textFormat: 'markdown',
       },
       this.buildBotMessageDispatchOptions({
@@ -16621,6 +16676,72 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     return true;
+  }
+
+  private resolveBotSpeechMedia(
+    settings: { botSpeechMedia?: unknown },
+    fieldKey?: BotSpeechMediaFieldKey,
+  ): BotSpeechResolvedMedia | null {
+    if (!fieldKey) {
+      return null;
+    }
+
+    const media = this.asRecord(settings.botSpeechMedia);
+    const image = media ? this.asRecord(media[fieldKey]) : null;
+    const base64 = this.readString(image?.base64);
+    const mimeType = this.readString(image?.mimeType);
+    if (!base64 || !mimeType?.toLowerCase().startsWith('image/')) {
+      return null;
+    }
+
+    return {
+      base64,
+      mimeType,
+      fileName: this.readString(image?.fileName) ?? 'bot-message-image.jpg',
+      fieldKey,
+    };
+  }
+
+  private async withBotSpeechMediaOptions(
+    options: MaxSendMessageOptions | undefined,
+    media?: BotSpeechResolvedMedia | null,
+    uploadOptions: BotSpeechMediaUploadOptions = {},
+  ): Promise<MaxSendMessageOptions | undefined> {
+    if (!media) {
+      return options;
+    }
+
+    let imagePayload: Record<string, unknown>;
+    try {
+      imagePayload = await this.uploadBotSpeechImage(media, uploadOptions);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          fieldKey: media.fieldKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to upload bot speech image; sending text-only notice',
+      );
+      return options;
+    }
+
+    return {
+      ...(options ?? {}),
+      imagePayload,
+    };
+  }
+
+  private async uploadBotSpeechImage(
+    media: BotSpeechResolvedMedia,
+    options: BotSpeechMediaUploadOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const imageBuffer = Buffer.from(media.base64, 'base64');
+    return this.maxClient.uploadImage(imageBuffer, media.fileName, media.mimeType, {
+      trafficClass: options.trafficClass ?? 'background',
+      actionHealthLane: options.actionHealthLane ?? 'background',
+      sourceTag: options.sourceTag ?? MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+      ...(options.botId ? { botId: options.botId } : {}),
+    });
   }
 
   private async shouldSendBotNotice(chatId: string): Promise<boolean> {
@@ -16893,6 +17014,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'nightModeRulesButtonEnabled'
       | 'commentsEnabled'
       | 'botSpeechStyle'
+      | 'botSpeechMedia'
     > & {
       chat?: {
         rules?: {
@@ -17015,6 +17137,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'nightModeRulesButtonEnabled'
       | 'commentsEnabled'
       | 'botSpeechStyle'
+      | 'botSpeechMedia'
     > & {
       chat?: {
         rules?: {
@@ -17050,12 +17173,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
     });
     const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
+    const messageOptionsWithMedia = await this.withBotSpeechMediaOptions(
+      messageOptions ?? undefined,
+      this.resolveBotSpeechMedia(settings, 'nightModeBotMessageText'),
+      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
+    );
     let sent: { messageId: string | null };
     try {
       sent = await this.maxClient.sendMessageImmediateWithId(
         settings.chatId,
         messageText,
-        this.withMarkdownMessageOptions(messageOptions),
+        this.withMarkdownMessageOptions(messageOptionsWithMedia ?? null),
         this.buildNightModeTransitionRequestOptions(botId),
       );
     } catch (error: unknown) {
@@ -17091,7 +17219,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendNightModeOpenedTransitionNotice(
-    settings: Pick<ChatSettings, 'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle'>,
+    settings: Pick<
+      ChatSettings,
+      'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle' | 'botSpeechMedia'
+    >,
     snapshot: {
       startMinutes: number;
       endMinutes: number;
@@ -17107,12 +17238,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings.botSpeechStyle,
     );
     const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
+    const messageOptions = await this.withBotSpeechMediaOptions(
+      undefined,
+      this.resolveBotSpeechMedia(settings, 'nightModeOpenMessageText'),
+      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
+    );
     let sent: { messageId: string | null };
     try {
       sent = await this.maxClient.sendMessageImmediateWithId(
         settings.chatId,
         messageText,
-        this.withMarkdownMessageOptions(null),
+        this.withMarkdownMessageOptions(messageOptions ?? null),
         this.buildNightModeTransitionRequestOptions(botId),
       );
     } catch (error: unknown) {

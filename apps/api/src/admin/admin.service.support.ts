@@ -1,4 +1,5 @@
 import {
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
   chatSettingsSchema,
   channelSettingsSchema,
   MAX_BROADCAST_IMAGE_BASE64_LENGTH,
@@ -6,6 +7,7 @@ import {
   type BroadcastMediaType,
   type BroadcastScheduleMode,
   type BroadcastTextFormat,
+  type BotSpeechMediaFieldKey,
   type ChannelSettings,
   type ChannelStatsResponse,
   type ChatSettings,
@@ -759,6 +761,25 @@ export const SETTINGS_SECTION_KEYS = {
     'removeBotsFromGroupEnabled',
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
+export const SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS = {
+  links: ['linkBotMessageText', 'linkWarnMessageText'],
+  greeting: ['greetingBotMessageText'],
+  profanityFilter: [],
+  commercialFilter: ['textFiltersBotMessageText', 'textFiltersWarnMessageText'],
+  thematicFilters: [],
+  duplicates: ['duplicateBotMessageText'],
+  limits: ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
+  stopWords: ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
+  phones: ['phoneNumbersBotMessageText'],
+  night: ['nightModeBotMessageText', 'nightModeOpenMessageText'],
+  requiredSubscription: [
+    'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionWarnMessageText',
+  ],
+  invitationAccess: ['invitationAccessBotMessageText', 'invitationAccessWarnMessageText'],
+  extra: [],
+} as const satisfies Record<keyof typeof SETTINGS_SECTION_KEYS, readonly BotSpeechMediaFieldKey[]>;
+export const BOT_SPEECH_MEDIA_SETTING_KEYS = BOT_SPEECH_EDITABLE_FIELD_KEYS;
 export const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
 export const MANAGED_ENTITY_FAVORITE_TYPE_ORDER: ManagedEntityFavoriteType[] = [
   'important',

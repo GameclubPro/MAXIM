@@ -29,6 +29,8 @@ export type BotSpeechSettingsSubset = {
   botSpeechStyle: BotSpeechStyle | null;
 } & Record<BotSpeechEditableFieldKey, string>;
 
+export type BotSpeechMediaFieldKey = BotSpeechEditableFieldKey;
+
 export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
   'linkMute',
   'requiredSubscriptionMute',

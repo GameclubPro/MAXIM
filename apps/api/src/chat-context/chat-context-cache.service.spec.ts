@@ -170,6 +170,7 @@ function buildSettings(chatId: string): ChatSettings {
     linkMuteMaxCount: 3,
     linkBanMaxCount: 4,
     botSpeechStyle: null,
+    botSpeechMedia: {},
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingDeleteBotMessageEnabled: false,

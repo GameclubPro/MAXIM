@@ -20,6 +20,7 @@ import {
   APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT,
   APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
   DEFAULT_CHAT_SETTINGS,
+  SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS,
   REQUIRED_SUBSCRIPTION_SETTING_KEYS,
   SETTINGS_SECTION_KEYS,
   type AdminActionSource,
@@ -31,6 +32,27 @@ type SettingsApplyReadinessRefresh = {
   shouldRefreshRequiredSubscription: boolean;
   requiredSubscriptionChannelIds: readonly string[];
 };
+
+function mergeBotSpeechMediaForKeys(
+  current: ChatSettings['botSpeechMedia'] | undefined,
+  source: ChatSettings['botSpeechMedia'],
+  keys: readonly string[],
+): ChatSettings['botSpeechMedia'] {
+  if (keys.length === 0) {
+    return current ?? {};
+  }
+
+  const next = { ...(current ?? {}) };
+  for (const key of keys) {
+    const sourceImage = source[key as keyof typeof source];
+    if (sourceImage && sourceImage.base64.trim()) {
+      next[key as keyof typeof next] = sourceImage;
+    } else {
+      delete next[key as keyof typeof next];
+    }
+  }
+  return next;
+}
 
 export async function previewApplySettingsSectionTarget(params: {
   sourceChatId: string;
@@ -72,6 +94,7 @@ export async function applySettingsToAllChats(params: {
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
+  botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
   const parsed = chatSettingsSchema.safeParse(params.body);
   if (!parsed.success) {
@@ -101,6 +124,12 @@ export async function applySettingsToAllChats(params: {
         (key): key is keyof ChatSettings => typeof key === 'string' && key in normalizedSettings,
       )
     : [];
+  const shouldApplyBotSpeechMedia =
+    filteredSettingKeys.length === 0 || filteredSettingKeys.includes('botSpeechMedia');
+  const botSpeechMediaKeys =
+    shouldApplyBotSpeechMedia && Array.isArray(params.botSpeechMediaKeys)
+      ? params.botSpeechMediaKeys
+      : [];
   const settingsUpdatePayload: Partial<ChatSettings> =
     filteredSettingKeys.length > 0
       ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
@@ -132,6 +161,29 @@ export async function applySettingsToAllChats(params: {
     APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
     async (chatId) => {
       const botAssignmentData = await params.resolveBotAssignmentData(chatId);
+      const currentTargetSettings =
+        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? await params.prisma.chatSettings.findUnique({
+              where: { chatId },
+              select: { botSpeechMedia: true },
+            })
+          : null;
+      const scopedBotSpeechMedia =
+        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? mergeBotSpeechMediaForKeys(
+              currentTargetSettings?.botSpeechMedia as ChatSettings['botSpeechMedia'] | undefined,
+              normalizedSettings.botSpeechMedia,
+              botSpeechMediaKeys,
+            )
+          : normalizedSettings.botSpeechMedia;
+      const updatePayloadForChat =
+        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? { ...settingsUpdatePayload, botSpeechMedia: scopedBotSpeechMedia }
+          : settingsUpdatePayload;
+      const createPayloadForChat =
+        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
+          ? { ...settingsCreatePayload, botSpeechMedia: scopedBotSpeechMedia }
+          : settingsCreatePayload;
       await params.prisma.$transaction([
         params.prisma.chat.upsert({
           where: { id: chatId },
@@ -142,7 +194,7 @@ export async function applySettingsToAllChats(params: {
             ...botAssignmentData,
             settings: {
               create: {
-                ...settingsCreatePayload,
+                ...createPayloadForChat,
               },
             },
           },
@@ -151,10 +203,10 @@ export async function applySettingsToAllChats(params: {
             settings: {
               upsert: {
                 update: {
-                  ...settingsUpdatePayload,
+                  ...updatePayloadForChat,
                 },
                 create: {
-                  ...settingsCreatePayload,
+                  ...createPayloadForChat,
                 },
               },
             },
@@ -218,6 +270,7 @@ export async function applySettingsSectionToAllChats(params: {
     settings: ChatSettings,
     target: ApplySettingsTarget,
     settingKeys: readonly (keyof ChatSettings)[],
+    botSpeechMediaKeys?: readonly string[],
   ) => Promise<ApplySettingsToAllChatsResult>;
   syncDomainAllowlistToChats: (targetChatIds: readonly string[]) => Promise<void>;
 }): Promise<ApplySectionToAllResponse> {
@@ -230,7 +283,13 @@ export async function applySettingsSectionToAllChats(params: {
   const result = await params.applySettings(
     sourceSettings,
     parsed.data.target,
-    SETTINGS_SECTION_KEYS[parsed.data.section],
+    [
+      ...SETTINGS_SECTION_KEYS[parsed.data.section],
+      ...(SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[parsed.data.section].length > 0
+        ? ['botSpeechMedia' as const]
+        : []),
+    ],
+    SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS[parsed.data.section],
   );
 
   if (parsed.data.section === 'links') {

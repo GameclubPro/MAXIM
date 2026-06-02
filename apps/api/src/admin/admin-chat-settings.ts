@@ -1,4 +1,5 @@
 import {
+  botSpeechMediaSchema,
   chatSettingsSchema,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -8,6 +9,7 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   type BroadcastLinkButton,
+  type BotSpeechMedia,
   type ChatSettings,
 } from '@maxim/contracts';
 import { BadRequestException, type Logger } from '@nestjs/common';
@@ -139,7 +141,10 @@ function resolveRequiredSubscriptionExpiresAt(
     resetRequiredSubscriptionExpiration?: boolean;
   },
 ): string {
-  if (!settings.requiredSubscriptionEnabled || settings.requiredSubscriptionChannelIds.length === 0) {
+  if (
+    !settings.requiredSubscriptionEnabled ||
+    settings.requiredSubscriptionChannelIds.length === 0
+  ) {
     return '';
   }
 
@@ -266,6 +271,21 @@ function normalizeMessageLimitsBlockedLists(settings: ChatSettings): ChatSetting
     messageLimitsBlockedWords,
     messageLimitsBlockedDomains,
   };
+}
+
+function areBotSpeechMediaEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function normalizeBotSpeechMedia(settings: ChatSettings): ChatSettings {
+  const parsed = botSpeechMediaSchema.safeParse(settings.botSpeechMedia);
+  const botSpeechMedia: BotSpeechMedia = parsed.success ? parsed.data : {};
+  return areBotSpeechMediaEqual(settings.botSpeechMedia, botSpeechMedia)
+    ? settings
+    : {
+        ...settings,
+        botSpeechMedia,
+      };
 }
 
 function isFutureIsoTimestamp(value: string): boolean {
@@ -410,9 +430,11 @@ export function normalizeChatSettings(
   },
 ): ChatSettings {
   const normalized = normalizeNightModeSettings(
-    normalizeInvitationAccessSettings(
-      normalizeMessageLimitsBlockedLists(
-        normalizeRequiredSubscriptionSettings(settings, currentState, options),
+    normalizeBotSpeechMedia(
+      normalizeInvitationAccessSettings(
+        normalizeMessageLimitsBlockedLists(
+          normalizeRequiredSubscriptionSettings(settings, currentState, options),
+        ),
       ),
     ),
     currentState,
@@ -497,6 +519,9 @@ export function getChatSettingsNormalizationChanges(
   if (current.nightModeForceCloseUntil !== normalized.nightModeForceCloseUntil) {
     changes.nightModeForceCloseUntil = normalized.nightModeForceCloseUntil;
   }
+  if (!areBotSpeechMediaEqual(current.botSpeechMedia, normalized.botSpeechMedia)) {
+    changes.botSpeechMedia = normalized.botSpeechMedia;
+  }
 
   return changes;
 }
@@ -511,6 +536,9 @@ export function getStoredChatSettingsSanitizationChanges(
 
   const currentSettings = current as Record<string, unknown>;
   const changes: Partial<ChatSettings> = {};
+  if (!areBotSpeechMediaEqual(currentSettings.botSpeechMedia, sanitized.botSpeechMedia)) {
+    changes.botSpeechMedia = sanitized.botSpeechMedia;
+  }
 
   for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
     if (!areBroadcastButtonsEqual(sanitized[group.buttons], currentSettings[group.buttons])) {

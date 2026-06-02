@@ -6,6 +6,7 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   type AllowlistMatchType,
   type ApplySettingsTarget,
+  type BotSpeechMediaImage,
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
@@ -17,11 +18,11 @@ import {
   type ManagedEntityHeader,
 } from '@maxim/contracts/managed-entities';
 import {
-  BOT_SPEECH_EDITABLE_FIELD_KEYS,
   BOT_SPEECH_STYLE_OPTIONS,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   type BotSpeechEditableFieldKey,
+  type BotSpeechMediaFieldKey,
   type BotSpeechPersona,
   type BotSpeechStyle,
 } from '@maxim/contracts/bot-speech';
@@ -43,6 +44,7 @@ import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state'
 import type { ApplySectionKey } from '../settings-page-state';
 
 export type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
+export type { BotSpeechMediaFieldKey, BotSpeechMediaImage };
 export type ManagedBroadcastListItem = ChatSettingsScreenResponse['managedBroadcasts'][number];
 export type BroadcastCountdownPresentation = {
   label: string;
@@ -172,13 +174,33 @@ export const LazyBroadcastSchedulePlanner = lazy(() =>
     default: module.BroadcastSchedulePlanner,
   })),
 );
-const loadBotSpeechMessageEditorSheet = () =>
-  import('../../components/bot-speech-message-editor-sheet').then((module) => ({
-    default: module.BotSpeechMessageEditorSheet,
-  }));
-const LazyBotSpeechMessageEditorSheet = lazy(loadBotSpeechMessageEditorSheet);
+const loadBotSpeechMessageEditorSheet = () => import('../../components/bot-speech-message-editor');
 export function preloadBotSpeechMessageEditorSheet() {
   void loadBotSpeechMessageEditorSheet();
+}
+const LazyBotMessageEditorModule = lazy(() =>
+  loadBotSpeechMessageEditorSheet().then((module) => ({
+    default: module.BotMessageEditor,
+  })),
+);
+const LazyWarnMessageEditorModule = lazy(() =>
+  loadBotSpeechMessageEditorSheet().then((module) => ({
+    default: module.WarnMessageEditor,
+  })),
+);
+export function LazyBotMessageEditor(props: BotMessageEditorProps) {
+  return (
+    <Suspense fallback={null}>
+      <LazyBotMessageEditorModule {...props} />
+    </Suspense>
+  );
+}
+export function LazyWarnMessageEditor(props: WarnMessageEditorProps) {
+  return (
+    <Suspense fallback={null}>
+      <LazyWarnMessageEditorModule {...props} />
+    </Suspense>
+  );
 }
 export const LazyBroadcastContentComposer = lazy(
   () => import('../../components/broadcast-content-composer'),
@@ -818,57 +840,24 @@ export const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
 ] as const;
 
-export const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditableFieldKey> =
-  {
-    link: 'linkBotMessageText',
-    greeting: 'greetingBotMessageText',
-    requiredSubscription: 'requiredSubscriptionBotMessageText',
-    invitationAccess: 'invitationAccessBotMessageText',
-    textFilters: 'textFiltersBotMessageText',
-    duplicate: 'duplicateBotMessageText',
-    messageLimits: 'messageLimitsBotMessageText',
-    stopWords: 'messageLimitsBotMessageText',
-    phoneNumbers: 'phoneNumbersBotMessageText',
-    night: 'nightModeBotMessageText',
-    nightOpen: 'nightModeOpenMessageText',
-  };
-
-export const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<
-  WarnMessageEditorKey,
-  BotSpeechEditableFieldKey
-> = {
-  linkWarn: 'linkWarnMessageText',
-  requiredSubscriptionWarn: 'requiredSubscriptionWarnMessageText',
-  invitationAccessWarn: 'invitationAccessWarnMessageText',
-  textFiltersWarn: 'textFiltersWarnMessageText',
-  stopWordsWarn: 'messageLimitsWarnMessageText',
-};
-
-const BOT_MESSAGE_EDITOR_SHEET_TITLES: Record<BotMessageEditorKey, string> = {
-  link: 'Объяснение о ссылках',
-  greeting: 'Приветствие',
-  requiredSubscription: 'Объяснение о подписке',
-  invitationAccess: 'Объяснение о приглашениях',
-  textFilters: 'Объяснение о тексте',
-  duplicate: 'Объяснение о дублях',
-  messageLimits: 'Объяснение об ограничениях',
-  stopWords: 'Объяснение о стоп-словах',
-  phoneNumbers: 'Объяснение о телефонах',
-  night: 'Ночной режим',
-  nightOpen: 'Открытие чата',
-};
-
-const WARN_MESSAGE_EDITOR_SHEET_TITLES: Record<WarnMessageEditorKey, string> = {
-  linkWarn: 'Предупреждение о ссылках',
-  requiredSubscriptionWarn: 'Предупреждение о подписке',
-  invitationAccessWarn: 'Предупреждение о приглашениях',
-  textFiltersWarn: 'Предупреждение о тексте',
-  stopWordsWarn: 'Предупреждение о стоп-словах',
-};
-
 export const BOT_SPEECH_SYNC_SETTING_KEYS = [
   'botSpeechStyle',
-  ...BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  'botSpeechMedia',
+  'greetingBotMessageText',
+  'linkBotMessageText',
+  'linkWarnMessageText',
+  'requiredSubscriptionBotMessageText',
+  'requiredSubscriptionWarnMessageText',
+  'invitationAccessBotMessageText',
+  'invitationAccessWarnMessageText',
+  'textFiltersBotMessageText',
+  'textFiltersWarnMessageText',
+  'duplicateBotMessageText',
+  'messageLimitsBotMessageText',
+  'messageLimitsWarnMessageText',
+  'phoneNumbersBotMessageText',
+  'nightModeBotMessageText',
+  'nightModeOpenMessageText',
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 export const BOT_SPEECH_STYLE_ICON_ASSETS = {
@@ -2033,48 +2022,22 @@ export function SettingsHintAnchor({
   );
 }
 
-export type BotMessageEditorProps = {
-  editorKey: BotMessageEditorKey;
-  botSpeechStyle: ChatSettings['botSpeechStyle'];
+export type BotSpeechMessageEditorProps = {
+  settings: Pick<ChatSettings, 'botSpeechStyle' | 'botSpeechMedia'>;
   botSpeechPreviewContext: BotSpeechPreviewContext;
   value: string;
   onChange: (value: string) => void;
+  onImageChange?: (fieldKey: BotSpeechMediaFieldKey, image: BotSpeechMediaImage | null) => void;
   onReset: () => void;
   onClose: () => void;
 };
 
-export function BotMessageEditor(props: BotMessageEditorProps) {
-  const defaultValue = getSpeechTemplateFallback(
-    props.botSpeechStyle,
-    BOT_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
-    props.botSpeechPreviewContext,
-  );
-  const title = BOT_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey];
-  const ariaLabel = 'Редактор текста сообщения';
+export type BotMessageEditorProps = BotSpeechMessageEditorProps & {
+  editorKey: BotMessageEditorKey;
+};
 
-  return (
-    <Suspense fallback={null}>
-      <LazyBotSpeechMessageEditorSheet
-        title={title}
-        value={props.value}
-        defaultValue={defaultValue}
-        ariaLabel={ariaLabel}
-        onChange={props.onChange}
-        onReset={props.onReset}
-        onClose={props.onClose}
-      />
-    </Suspense>
-  );
-}
-
-export type WarnMessageEditorProps = {
+export type WarnMessageEditorProps = BotSpeechMessageEditorProps & {
   editorKey: WarnMessageEditorKey;
-  botSpeechStyle: ChatSettings['botSpeechStyle'];
-  botSpeechPreviewContext: BotSpeechPreviewContext;
-  value: string;
-  onChange: (value: string) => void;
-  onReset: () => void;
-  onClose: () => void;
 };
 
 export const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
@@ -2097,29 +2060,5 @@ export function areBroadcastPlannerStatesEqual(
     left.futureSlotCount === right.futureSlotCount &&
     left.isDaySheetOpen === right.isDaySheetOpen &&
     left.isConfirmed === right.isConfirmed
-  );
-}
-
-export function WarnMessageEditor(props: WarnMessageEditorProps) {
-  const defaultValue = getSpeechTemplateFallback(
-    props.botSpeechStyle,
-    WARN_MESSAGE_EDITOR_FIELD_KEYS[props.editorKey],
-    props.botSpeechPreviewContext,
-  );
-  const title = WARN_MESSAGE_EDITOR_SHEET_TITLES[props.editorKey];
-  const ariaLabel = 'Редактор текста предупреждения';
-
-  return (
-    <Suspense fallback={null}>
-      <LazyBotSpeechMessageEditorSheet
-        title={title}
-        value={props.value}
-        defaultValue={defaultValue}
-        ariaLabel={ariaLabel}
-        onChange={props.onChange}
-        onReset={props.onReset}
-        onClose={props.onClose}
-      />
-    </Suspense>
   );
 }

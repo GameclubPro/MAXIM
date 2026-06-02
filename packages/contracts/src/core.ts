@@ -8,6 +8,7 @@ export * from './managed-entities.js';
 export { logsDashboardRangeSchema, type LogsDashboardRange } from './dashboard-common.js';
 export * from './membership-activity.js';
 import { botSpeechStyleSchema } from './bot-speech.js';
+import { BOT_SPEECH_EDITABLE_FIELD_KEYS } from './bot-speech.js';
 import { broadcastTextFormatSchema } from './broadcast-common.js';
 import { booleanQueryFlagSchema, logsDashboardRangeSchema } from './dashboard-common.js';
 import {
@@ -96,6 +97,7 @@ export const MAX_BROADCAST_IMAGES_TOTAL_BASE64 = 24_000_000;
 export const VK_PARSING_MAX_PHOTOS = 10;
 export const VK_PARSING_MAX_LINKS = 20;
 export const VK_PARSING_MAX_PUBLISH_TEXT_LENGTH = 4_000;
+export const BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH = MAX_BROADCAST_IMAGE_BASE64_LENGTH;
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const escalationWindowHoursSchema = z.number().int().min(1).max(168);
@@ -127,6 +129,45 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const botSpeechMediaFieldKeySchema = z.enum(BOT_SPEECH_EDITABLE_FIELD_KEYS);
+const botSpeechMediaImageSchema = z
+  .object({
+    base64: z.string().trim().max(BOT_SPEECH_MEDIA_IMAGE_BASE64_MAX_LENGTH).default(''),
+    mimeType: z.string().trim().max(128).default(''),
+    fileName: z.string().trim().max(128).default(''),
+  })
+  .superRefine((value, ctx) => {
+    const hasImage = value.base64.trim().length > 0;
+    if (!hasImage) {
+      return;
+    }
+
+    if (!value.mimeType.trim().toLowerCase().startsWith('image/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mimeType'],
+        message: 'Неверный формат фото.',
+      });
+    }
+  })
+  .transform((value) =>
+    value.base64.trim()
+      ? {
+          base64: value.base64.trim(),
+          mimeType: value.mimeType.trim(),
+          fileName: value.fileName.trim(),
+        }
+      : {
+          base64: '',
+          mimeType: '',
+          fileName: '',
+        },
+  );
+export const botSpeechMediaSchema = z
+  .partialRecord(botSpeechMediaFieldKeySchema, botSpeechMediaImageSchema)
+  .default({});
+export type BotSpeechMedia = z.infer<typeof botSpeechMediaSchema>;
+export type BotSpeechMediaImage = z.infer<typeof botSpeechMediaImageSchema>;
 export const broadcastLinkButtonSchema = z
   .object({
     text: botButtonTextSchema,
@@ -578,6 +619,7 @@ export const chatSettingsSchema = z
       linkMuteMaxCount: escalationMaxCountSchema.default(3),
       linkBanMaxCount: escalationMaxCountSchema.default(4),
       botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
+      botSpeechMedia: botSpeechMediaSchema,
       greetingEnabled: z.boolean().default(false),
       greetingBotMessageEnabled: z.boolean().default(false),
       greetingDeleteBotMessageEnabled: z.boolean().default(false),

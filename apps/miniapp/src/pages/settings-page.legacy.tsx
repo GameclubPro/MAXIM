@@ -186,6 +186,7 @@ import {
   type ApplySectionKey,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
+  hasSectionBotSpeechMediaChanges,
   mergeCommentsSettings,
   mergeSectionSettings,
 } from './settings-page-state';
@@ -272,6 +273,8 @@ import {
   AutoMuteDurationKey,
   AutoMuteEnabledKey,
   HintKey,
+  BotSpeechMediaFieldKey,
+  BotSpeechMediaImage,
   BotMessageEditorKey,
   WarnMessageEditorKey,
   SettingsSectionKey,
@@ -338,10 +341,10 @@ import {
   StyleSelectedIcon,
   EditToggleButton,
   SettingsHintAnchor,
-  BotMessageEditor,
+  LazyBotMessageEditor,
   EMPTY_BROADCAST_PLANNER_STATE,
   areBroadcastPlannerStatesEqual,
-  WarnMessageEditor,
+  LazyWarnMessageEditor,
 } from './settings/settings-page-helpers';
 
 const LazyVkParsingCard = lazy(() =>
@@ -1318,6 +1321,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const pendingSpeechStyleSamples = pendingSpeechStyle
     ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
     : null;
+  const botSpeechEditorProps = draft
+    ? {
+        settings: draft,
+        onImageChange: setBotSpeechMediaImage,
+      }
+    : undefined;
 
   const publishRulesMutation = useMutation({
     mutationFn: () => publishRules(api, chatId ?? ''),
@@ -1868,6 +1877,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function setFieldValue<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
     clearFieldError(key);
+  }
+
+  function setBotSpeechMediaImage(key: BotSpeechMediaFieldKey, image: BotSpeechMediaImage | null) {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const nextMedia = { ...current.botSpeechMedia };
+      if (image?.base64) {
+        nextMedia[key] = image;
+      } else {
+        delete nextMedia[key];
+      }
+      return { ...current, botSpeechMedia: nextMedia };
+    });
+    clearFieldError('botSpeechMedia');
   }
 
   function clearButtonGroupErrors(group: ChatSettingsButtonGroup) {
@@ -4856,7 +4882,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const savedSettings = settingsQuery.data;
-    return SECTION_SETTING_KEYS[section].some((key) => draft[key] !== savedSettings[key]);
+    return (
+      SECTION_SETTING_KEYS[section].some((key) => draft[key] !== savedSettings[key]) ||
+      hasSectionBotSpeechMediaChanges(draft, savedSettings, section)
+    );
   }
 
   function isCommentsDirty() {
@@ -5722,9 +5751,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               {draft.linkBotMessageEnabled && openBotEditorKey === 'link' ? (
-                                <BotMessageEditor
+                                <LazyBotMessageEditor
                                   editorKey="link"
-                                  botSpeechStyle={draft.botSpeechStyle}
+                                  {...botSpeechEditorProps!}
                                   botSpeechPreviewContext={botSpeechPreviewContext}
                                   value={draft.linkBotMessageText}
                                   onChange={(nextValue) =>
@@ -5776,9 +5805,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               {openWarnEditorKey === 'linkWarn' ? (
-                                <WarnMessageEditor
+                                <LazyWarnMessageEditor
                                   editorKey="linkWarn"
-                                  botSpeechStyle={draft.botSpeechStyle}
+                                  {...botSpeechEditorProps!}
                                   botSpeechPreviewContext={botSpeechPreviewContext}
                                   value={draft.linkWarnMessageText}
                                   onChange={(nextValue) =>
@@ -6418,9 +6447,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             ) : null}
 
                             {draft.greetingBotMessageEnabled && openBotEditorKey === 'greeting' ? (
-                              <BotMessageEditor
+                              <LazyBotMessageEditor
                                 editorKey="greeting"
-                                botSpeechStyle={draft.botSpeechStyle}
+                                {...botSpeechEditorProps!}
                                 botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.greetingBotMessageText}
                                 onChange={(nextValue) =>
@@ -7026,9 +7055,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             {draft.textFiltersBotMessageEnabled &&
                             openBotEditorKey === 'textFilters' ? (
-                              <BotMessageEditor
+                              <LazyBotMessageEditor
                                 editorKey="textFilters"
-                                botSpeechStyle={draft.botSpeechStyle}
+                                {...botSpeechEditorProps!}
                                 botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.textFiltersBotMessageText}
                                 onChange={(nextValue) =>
@@ -7103,9 +7132,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             ) : null}
 
                             {openWarnEditorKey === 'textFiltersWarn' ? (
-                              <WarnMessageEditor
+                              <LazyWarnMessageEditor
                                 editorKey="textFiltersWarn"
-                                botSpeechStyle={draft.botSpeechStyle}
+                                {...botSpeechEditorProps!}
                                 botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.textFiltersWarnMessageText}
                                 onChange={(nextValue) =>
@@ -7764,9 +7793,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
 
                           {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
-                            <BotMessageEditor
+                            <LazyBotMessageEditor
                               editorKey="duplicate"
-                              botSpeechStyle={draft.botSpeechStyle}
+                              {...botSpeechEditorProps!}
                               botSpeechPreviewContext={botSpeechPreviewContext}
                               value={draft.duplicateBotMessageText}
                               onChange={(nextValue) =>
@@ -8804,9 +8833,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {draft.messageLimitsBotMessageEnabled &&
                         openBotEditorKey === 'messageLimits' ? (
-                          <BotMessageEditor
+                          <LazyBotMessageEditor
                             editorKey="messageLimits"
-                            botSpeechStyle={draft.botSpeechStyle}
+                            {...botSpeechEditorProps!}
                             botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.messageLimitsBotMessageText}
                             onChange={(nextValue) =>
@@ -9247,9 +9276,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
 
                         {openBotEditorKey === 'stopWords' ? (
-                          <BotMessageEditor
+                          <LazyBotMessageEditor
                             editorKey="stopWords"
-                            botSpeechStyle={draft.botSpeechStyle}
+                            {...botSpeechEditorProps!}
                             botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.messageLimitsBotMessageText}
                             onChange={(nextValue) =>
@@ -9279,9 +9308,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
 
                         {openWarnEditorKey === 'stopWordsWarn' ? (
-                          <WarnMessageEditor
+                          <LazyWarnMessageEditor
                             editorKey="stopWordsWarn"
-                            botSpeechStyle={draft.botSpeechStyle}
+                            {...botSpeechEditorProps!}
                             botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.messageLimitsWarnMessageText}
                             onChange={(nextValue) =>
@@ -9537,9 +9566,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             ) : null}
 
                             {draft.nightModeBotMessageEnabled && openBotEditorKey === 'night' ? (
-                              <BotMessageEditor
+                              <LazyBotMessageEditor
                                 editorKey="night"
-                                botSpeechStyle={draft.botSpeechStyle}
+                                {...botSpeechEditorProps!}
                                 botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.nightModeBotMessageText}
                                 onChange={(nextValue) =>
@@ -9615,9 +9644,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             {draft.nightModeOpenMessageEnabled &&
                             openBotEditorKey === 'nightOpen' ? (
-                              <BotMessageEditor
+                              <LazyBotMessageEditor
                                 editorKey="nightOpen"
-                                botSpeechStyle={draft.botSpeechStyle}
+                                {...botSpeechEditorProps!}
                                 botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.nightModeOpenMessageText}
                                 onChange={(nextValue) =>
@@ -11107,9 +11136,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {draft.requiredSubscriptionBotMessageEnabled &&
                         openBotEditorKey === 'requiredSubscription' ? (
-                          <BotMessageEditor
+                          <LazyBotMessageEditor
                             editorKey="requiredSubscription"
-                            botSpeechStyle={draft.botSpeechStyle}
+                            {...botSpeechEditorProps!}
                             botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.requiredSubscriptionBotMessageText}
                             onChange={(nextValue) =>
@@ -11189,9 +11218,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
-                          <WarnMessageEditor
+                          <LazyWarnMessageEditor
                             editorKey="requiredSubscriptionWarn"
-                            botSpeechStyle={draft.botSpeechStyle}
+                            {...botSpeechEditorProps!}
                             botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.requiredSubscriptionWarnMessageText}
                             onChange={(nextValue) =>

@@ -16878,6 +16878,7 @@ describe('AdminService settings screen endpoints', () => {
       'miniapp',
       { mode: 'all', favoriteTypes: [], chatIds: [] },
       expect.arrayContaining(['linkPolicy', 'linkBotMessageEnabled', 'linkBotButtonText']),
+      ['linkBotMessageText', 'linkWarnMessageText'],
     );
     expect(result).toEqual({
       section: 'links',
@@ -16910,6 +16911,7 @@ describe('AdminService settings screen endpoints', () => {
         'messageLimitsBotMessageEnabled',
         'phoneNumbersEnabled',
       ]),
+      ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
     );
     const limitsSettingKeys = applySpy.mock.calls.at(-1)?.[5] as string[];
     expect(limitsSettingKeys).not.toContain('phoneNumbersEscalationWindowHours');
@@ -16939,7 +16941,9 @@ describe('AdminService settings screen endpoints', () => {
         'messageLimitsBlockedDomains',
         'messageLimitsBotMessageText',
         'messageLimitsWarnMessageText',
+        'botSpeechMedia',
       ],
+      ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
     );
     expect(stopWordsResult.section).toBe('stopWords');
   });

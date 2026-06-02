@@ -28,9 +28,7 @@ import {
   resetPublishedChatRules,
   saveChatRulesDraft,
 } from './admin-chat-rules';
-import {
-  publishChannelEngagementMessage as publishChannelEngagementMessageValue,
-} from './admin-channel-engagement';
+import { publishChannelEngagementMessage as publishChannelEngagementMessageValue } from './admin-channel-engagement';
 import { readChannelSettings, saveChannelSettings } from './admin-channel-settings';
 import { readChatSettings, saveChatSettings } from './admin-chat-settings';
 import {
@@ -244,11 +242,7 @@ export class AdminSettingsService {
       buildAutofilledText: () =>
         this.legacyAdminService.buildAutofilledChatRulesTextFromCurrentSettings(chatId, user),
       buildFormattedText: (sourceText, options) =>
-        this.legacyAdminService.buildFormattedChatRulesPublicationText(
-          chatId,
-          sourceText,
-          options,
-        ),
+        this.legacyAdminService.buildFormattedChatRulesPublicationText(chatId, sourceText, options),
       sendPrivateConfirmation: (publishedUrl) =>
         this.legacyAdminService.sendPublishedChatRulesPrivateConfirmation(user, publishedUrl),
     });
@@ -511,14 +505,13 @@ export class AdminSettingsService {
       chatIds: [],
     },
     settingKeys?: readonly (keyof ChatSettings)[],
+    botSpeechMediaKeys?: readonly string[],
   ): Promise<ApplySettingsToAllChatsResult> {
-    await this.legacyAdminService.assertManagedEntityAdminAccess(
-      sourceChatId,
-      user.userId,
-      'chat',
+    await this.legacyAdminService.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
+    const shouldReconcileNightModeTransitions = this.shouldReconcileNightModeTransitionsAfterApply(
+      targetOrSettingKeys,
+      settingKeys,
     );
-    const shouldReconcileNightModeTransitions =
-      this.shouldReconcileNightModeTransitionsAfterApply(targetOrSettingKeys, settingKeys);
     const result = await applySettingsToAllChatsValue({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
@@ -528,6 +521,7 @@ export class AdminSettingsService {
       source,
       targetOrSettingKeys,
       settingKeys,
+      botSpeechMediaKeys,
       normalizeSettings: (settings) =>
         this.legacyAdminService.normalizeChatSettingsForApply(sourceChatId, settings),
       resolveTargetChats: (target) =>
@@ -562,13 +556,18 @@ export class AdminSettingsService {
       body,
       source,
       getSourceSettings: () => this.getSettings(sourceChatId, user),
-      applySettings: (settings, target, settingKeys) =>
-        this.applySettingsToAllChats(sourceChatId, user, settings, source, target, settingKeys),
-      syncDomainAllowlistToChats: (targetChatIds) =>
-        this.legacyAdminService.syncDomainAllowlistToChatsForSettings(
+      applySettings: (settings, target, settingKeys, botSpeechMediaKeys) =>
+        this.applySettingsToAllChats(
           sourceChatId,
-          targetChatIds,
+          user,
+          settings,
+          source,
+          target,
+          settingKeys,
+          botSpeechMediaKeys,
         ),
+      syncDomainAllowlistToChats: (targetChatIds) =>
+        this.legacyAdminService.syncDomainAllowlistToChatsForSettings(sourceChatId, targetChatIds),
     });
   }
 
@@ -577,11 +576,7 @@ export class AdminSettingsService {
     user: AuthUser,
     body: unknown,
   ): Promise<ApplySectionTargetPreviewResponse> {
-    await this.legacyAdminService.assertManagedEntityAdminAccess(
-      sourceChatId,
-      user.userId,
-      'chat',
-    );
+    await this.legacyAdminService.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
     return previewApplySettingsSectionTargetValue({
       sourceChatId,
       body,

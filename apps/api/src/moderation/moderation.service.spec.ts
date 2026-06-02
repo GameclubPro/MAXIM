@@ -239,6 +239,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     linkPolicy: 'ALLOWLIST_ONLY',
     linkEscalationWindowHours: 24,
     botSpeechStyle: null,
+    botSpeechMedia: {},
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingDeleteBotMessageEnabled: false,
@@ -4322,6 +4323,56 @@ describe('ModerationService', () => {
       outcome: 'skip',
       failOpen: false,
     });
+  });
+
+  it('uploads bot speech media and attaches it to bot notices', async () => {
+    const maxClient = {
+      sendMessage: jest.fn(),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'bot-speech-image-1' }),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+    );
+
+    await (service as any).sendBotMessageWithOptionalAutoDelete({
+      chatId: 'chat-1',
+      text: 'notice with image',
+      media: {
+        base64: Buffer.from('image-bytes').toString('base64'),
+        mimeType: 'image/png',
+        fileName: 'notice.png',
+        fieldKey: 'messageLimitsBotMessageText',
+      },
+      deleteBotMessagesEnabled: false,
+      deleteBotMessagesDelayMinutes: 2,
+    });
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from('image-bytes'),
+      'notice.png',
+      'image/png',
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'notice with image',
+      expect.objectContaining({
+        imagePayload: { token: 'bot-speech-image-1' },
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+      }),
+    );
   });
 
   it('sends greeting message for service join event wrapped in data.message envelope', async () => {
@@ -13382,6 +13433,100 @@ describe('ModerationService', () => {
       ),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+  });
+
+  it('uploads configured bot-speech image with MESSAGE_COUNT_LIMIT explanation', async () => {
+    const imageBytes = Buffer.from('bot-speech-image');
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            messageCountLimitEnabled: true,
+            messageCountLimitMessages: 2,
+            messageCountLimitWindowHours: 6,
+            messageLimitsBotMessageEnabled: true,
+            botSpeechMedia: {
+              messageLimitsBotMessageText: {
+                base64: imageBytes.toString('base64'),
+                mimeType: 'image/png',
+                fileName: 'limit-notice.png',
+              },
+            },
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'MESSAGE_COUNT_LIMIT',
+            score: 0.87,
+            reason: 'Message count limit hit',
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'bot-speech-image-1' }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      imageBytes,
+      'limit-notice.png',
+      'image/png',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        sourceTag: 'moderation_notice',
+        trafficClass: 'background',
+      }),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'слишком частая отправка сообщений: не более 2 за 6ч',
+      ),
+      expect.objectContaining({
+        imagePayload: { token: 'bot-speech-image-1' },
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        sourceTag: 'moderation_notice',
+      }),
+    );
   });
 
   it('hard-bans built-in MESSAGE_RATE_LIMIT as system flood protection', async () => {

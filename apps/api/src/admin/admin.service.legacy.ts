@@ -8476,6 +8476,7 @@ export class AdminService implements OnModuleDestroy {
       chatIds: [],
     },
     settingKeys?: readonly (keyof ChatSettings)[],
+    botSpeechMediaKeys?: readonly string[],
   ): Promise<ApplySettingsToAllChatsResult> {
     await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, 'chat');
     return applySettingsToAllChatsValue({
@@ -8487,6 +8488,7 @@ export class AdminService implements OnModuleDestroy {
       source,
       targetOrSettingKeys,
       settingKeys,
+      botSpeechMediaKeys,
       normalizeSettings: (settings) => this.normalizeChatSettingsForApply(sourceChatId, settings),
       resolveTargetChats: (target) =>
         this.resolveSettingsApplyTargetChatsForSettings(sourceChatId, user, target),
@@ -8511,8 +8513,16 @@ export class AdminService implements OnModuleDestroy {
       body,
       source,
       getSourceSettings: () => this.getSettings(sourceChatId, user),
-      applySettings: (settings, target, settingKeys) =>
-        this.applySettingsToAllChats(sourceChatId, user, settings, source, target, settingKeys),
+      applySettings: (settings, target, settingKeys, botSpeechMediaKeys) =>
+        this.applySettingsToAllChats(
+          sourceChatId,
+          user,
+          settings,
+          source,
+          target,
+          settingKeys,
+          botSpeechMediaKeys,
+        ),
       syncDomainAllowlistToChats: (targetChatIds) =>
         this.syncDomainAllowlistToChatsForSettings(sourceChatId, targetChatIds),
     });
