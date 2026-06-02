@@ -1240,6 +1240,7 @@
 }
 
 .bot-message-editor-sheet__media-button {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1282,6 +1283,16 @@
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+.bot-message-editor-sheet__file-input--native {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  clip: auto;
+  clip-path: none;
+  white-space: normal;
 }
 
 .bot-message-editor-sheet__media-error {

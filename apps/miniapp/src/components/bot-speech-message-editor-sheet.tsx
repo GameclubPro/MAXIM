@@ -246,7 +246,7 @@ export function BotSpeechMessageEditorSheet({
                   </span>
                   <input
                     ref={imageInputRef}
-                    className="bot-message-editor-sheet__file-input"
+                    className="bot-message-editor-sheet__file-input bot-message-editor-sheet__file-input--native"
                     type="file"
                     accept="image/*"
                     onChange={handleImageChange}
