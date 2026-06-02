@@ -18,6 +18,7 @@ describe('parseMiniappBootTracePayload', () => {
           authorization: 'Bearer secret',
           safe: 'ok',
           callbackUrl: '/next?access_token=secret&x=1',
+          freeTextAuth: 'Authorization: InitData hash=secret&user=123',
         },
       },
     });
@@ -37,6 +38,7 @@ describe('parseMiniappBootTracePayload', () => {
           authorization: '[redacted]',
           safe: 'ok',
           callbackUrl: '/next?access_token=[redacted]&x=1',
+          freeTextAuth: 'Authorization: InitData [redacted]',
         },
       },
     });

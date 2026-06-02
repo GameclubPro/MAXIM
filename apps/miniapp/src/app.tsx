@@ -25,7 +25,7 @@ import {
   readyMaxMiniApp,
   syncMaxNativeEnvironment,
 } from './lib/max-bridge';
-import { PUBLIC_BASE_PATH, PUBLIC_ROUTER_BASENAME } from './lib/public-config';
+import { PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
   LazyChannelDialogPage,
   LazyChannelSettingsPage,
@@ -456,24 +456,15 @@ export function App() {
           <h1>Панель ботов</h1>
           <StatusState
             tone="warning"
-            title="Init Data не найден"
-            description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
+            title="Не удалось открыть приложение"
+            description="Запустите панель через кнопку в боте MAX. При открытии по прямой ссылке вход недоступен."
           />
           <div className="init-missing-help">
             <p>Проверьте:</p>
             <ul>
-              <li>Запуск идет из MAX, а не по прямой ссылке.</li>
-              <li>
-                В URL сохраняется `WebAppData` во фрагменте `#...` или bridge
-                `window.WebApp.initData`.
-              </li>
-              <li>
-                Редирект на <code>{PUBLIC_BASE_PATH}</code> не теряет hash-фрагмент и параметры
-                запуска MAX.
-              </li>
-              <li>
-                Для дизайн-preview можно открыть <code>{PUBLIC_BASE_PATH}?preview=1</code>.
-              </li>
+              <li>Откройте приложение из MAX, а не по прямой ссылке в браузере.</li>
+              <li>Если кнопка в боте не открывает панель, закройте приложение и попробуйте еще раз.</li>
+              <li>При сохранении проблемы напишите администратору бота.</li>
             </ul>
           </div>
         </GlassCard>

@@ -13,6 +13,7 @@ type MiniappBootTracePhase =
 type MiniappBootTraceDetails = Record<string, unknown>;
 
 const SESSION_STORAGE_KEY = 'maxim:miniappBootTraceSession';
+const TRACE_OVERRIDE_STORAGE_KEY = 'maxim:miniappBootTraceOverride';
 const MAX_DETAIL_STRING_LENGTH = 240;
 const MAX_DETAILS_JSON_LENGTH = 1_500;
 const MAX_ROUTE_LENGTH = 320;
@@ -52,6 +53,34 @@ function getSessionId(): string {
 
 const sessionId = getSessionId();
 
+function getManualTraceOverride(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const enabledFromUrl = params.get('bootTrace') === '1';
+    if (params.has('bootTrace')) {
+      params.delete('bootTrace');
+      const search = params.toString();
+      const nextUrl = `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`;
+      window.history.replaceState(window.history.state, '', nextUrl);
+    }
+
+    if (enabledFromUrl) {
+      window.sessionStorage.setItem(TRACE_OVERRIDE_STORAGE_KEY, '1');
+      return true;
+    }
+
+    return window.sessionStorage.getItem(TRACE_OVERRIDE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+const manualTraceOverride = getManualTraceOverride();
+
 function getBridgePlatform(): string | null {
   if (typeof window === 'undefined') {
     return null;
@@ -79,7 +108,7 @@ function isTraceEnabled(): boolean {
     return false;
   }
 
-  return new URLSearchParams(window.location.search).get('bootTrace') === '1';
+  return manualTraceOverride;
 }
 
 function sanitizeRoute(value: string | null | undefined): string | null {

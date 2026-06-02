@@ -187,7 +187,7 @@ function redactSensitiveFragments(value: string): string {
   );
 
   return redactedQueryValues.replace(
-    /\b(authorization\s*[:=]\s*)(bearer\s+)?[^\s,;]+/gi,
+    /\b(authorization\s*[:=]\s*)((?:bearer|initdata)\s+)?[^\r\n,;]+/gi,
     (_match: string, prefix: string, scheme = '') => `${prefix}${scheme}${REDACTED}`,
   );
 }
