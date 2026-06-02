@@ -118,9 +118,12 @@ export async function getChannelSettings(
 export async function getChannelSettingsScreen(
   api: ApiTransport,
   chatId: string,
-  request: Pick<RequestInit, 'signal'> = {},
+  request: Pick<RequestInit, 'signal'> & { prefetch?: boolean } = {},
 ): Promise<ChannelSettingsScreenResponse> {
-  const response = await api.request(`/channels/${chatId}/settings-screen`, request);
+  const query = request.prefetch === true ? '?prefetch=1' : '';
+  const response = await api.request(`/channels/${chatId}/settings-screen${query}`, {
+    signal: request.signal,
+  });
   return channelSettingsScreenResponseSchema.parse(response);
 }
 

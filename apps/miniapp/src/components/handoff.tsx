@@ -23,7 +23,7 @@ export default function SettingsHandoffState({
   const fallbackBackTo = entityType === 'channel' ? '/?view=channel' : '/?view=chat';
   const isError = mode === 'error';
   const statusText = isError
-    ? 'Права ещё не подтвердились.'
+    ? 'MAX ещё подтверждает доступ.'
     : retryCount > 0
       ? 'MAX применяет права. Пробуем снова...'
       : 'Обычно это занимает несколько секунд.';
@@ -48,7 +48,7 @@ export default function SettingsHandoffState({
           </h3>
           <p>
             {isError
-              ? 'Проверьте, что бот назначен администратором, и повторите.'
+              ? 'Вернитесь к списку и попробуйте открыть экран ещё раз через несколько секунд.'
               : 'Проверяем права бота и загружаем экран управления.'}
           </p>
         </div>

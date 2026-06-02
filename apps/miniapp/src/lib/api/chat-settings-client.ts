@@ -121,9 +121,12 @@ export async function getSettings(api: ApiTransport, chatId: string): Promise<Ch
 export async function getSettingsScreen(
   api: ApiTransport,
   chatId: string,
-  request: Pick<RequestInit, 'signal'> = {},
+  request: Pick<RequestInit, 'signal'> & { prefetch?: boolean } = {},
 ): Promise<ChatSettingsScreenResponse> {
-  const response = await api.request(`/chats/${chatId}/settings-screen`, request);
+  const query = request.prefetch === true ? '?prefetch=1' : '';
+  const response = await api.request(`/chats/${chatId}/settings-screen${query}`, {
+    signal: request.signal,
+  });
   return chatSettingsScreenResponseSchema.parse(response);
 }
 

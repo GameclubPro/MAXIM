@@ -940,7 +940,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const settingsScreenQuery = useQuery({
     queryKey: queryKeys.channelSettingsScreen(chatId),
-    queryFn: ({ signal }) => getChannelSettingsScreen(api, chatId, { signal }),
+    queryFn: ({ signal }) =>
+      getChannelSettingsScreen(api, chatId, { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
     ...(handoffRequested

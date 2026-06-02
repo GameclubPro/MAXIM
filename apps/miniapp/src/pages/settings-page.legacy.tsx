@@ -663,7 +663,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const settingsScreenQuery = useQuery({
     queryKey: ['settings-screen', chatId],
-    queryFn: ({ signal }) => getSettingsScreen(api, chatId ?? '', { signal }),
+    queryFn: ({ signal }) =>
+      getSettingsScreen(api, chatId ?? '', { signal, prefetch: handoffRequested }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
     ...(handoffRequested
@@ -700,7 +701,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const spammerReviewMetricsQuery = useQuery({
     queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
     queryFn: ({ signal }) => getGlobalSpammerReviewMetrics(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId),
+    enabled: Boolean(chatId) && Boolean(settingsScreenQuery.data),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });

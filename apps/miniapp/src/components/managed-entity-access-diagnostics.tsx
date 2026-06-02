@@ -11,6 +11,8 @@ const REASON_LABELS: Record<ManagedEntityAccessLossReason, string> = {
   chat_inaccessible: 'чат недоступен',
 };
 
+const FALLBACK_BOT_LABEL = 'Бот модерации';
+
 export function ManagedEntityAccessDiagnosticsBanner({
   diagnostics,
   entityLabel,
@@ -27,12 +29,7 @@ export function ManagedEntityAccessDiagnosticsBanner({
   }
 
   const latest = diagnostics.lostBots[0];
-  const botLabel = latest.botLabel?.trim() || latest.botId;
-  const lastMaxParts = [
-    latest.lastMaxStatusCode ? String(latest.lastMaxStatusCode) : null,
-    latest.lastMaxErrorCode,
-    latest.lastMaxErrorMessage,
-  ].filter((part): part is string => Boolean(part?.trim()));
+  const botLabel = latest.botLabel?.trim() || FALLBACK_BOT_LABEL;
 
   return (
     <section className="managed-access-alert" aria-live="polite">
@@ -43,9 +40,6 @@ export function ManagedEntityAccessDiagnosticsBanner({
           {entityLabel} недоступен · {REASON_LABELS[latest.reason]}
         </span>
         <span>{formatDateTime(latest.detectedAt)}</span>
-        {lastMaxParts.length > 0 ? (
-          <span className="managed-access-alert__error">MAX: {lastMaxParts.join(' · ')}</span>
-        ) : null}
       </div>
       <button
         type="button"

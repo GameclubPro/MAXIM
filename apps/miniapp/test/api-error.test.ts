@@ -13,6 +13,16 @@ test('maps 401 responses to the user-facing session-expired message', () => {
   assert.equal(isSessionExpiredApiMessage(message), true);
 });
 
+test('keeps backend access details out of 403 messages', () => {
+  const message = buildApiErrorMessage(
+    403,
+    JSON.stringify({ message: 'Пользователь не является администратором чата.' }),
+    'application/json',
+  );
+
+  assert.equal(message, 'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.');
+});
+
 test('detects raw init-data auth failures as session-expired states', () => {
   assert.equal(isSessionExpiredApiMessage('Init data has expired'), true);
   assert.equal(isSessionExpiredApiMessage('Missing InitData authorization header'), true);

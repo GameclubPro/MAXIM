@@ -114,13 +114,13 @@ export function buildApiErrorMessage(
   contentType: string | null = null,
 ): string {
   const trimmedPayload = payload.trim();
+  if (status === 401 || status === 403) {
+    return formatStatusFallback(status);
+  }
+
   const apiMessage = extractApiMessageFromJsonPayload(trimmedPayload);
   if (apiMessage) {
     return apiMessage;
-  }
-
-  if (status === 401 || status === 403) {
-    return formatStatusFallback(status);
   }
 
   if (!trimmedPayload) {
