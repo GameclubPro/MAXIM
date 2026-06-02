@@ -3,6 +3,7 @@ import type { ManagedEntityType } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import {
+  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedBroadcastDeliveryStatus,
   ManagedBroadcastStatus,
@@ -13,11 +14,14 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import { normalizeMembershipAccessSnapshot } from './max-bot-access-policy.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
 } from './max-chat-admin-roster-sync.queue';
 import { MaxBotLinkService } from './max-bot-link.service';
+
+const MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export type ManagedEntityAccessLossReason =
   | 'chat_not_found'
@@ -170,11 +174,17 @@ export class ManagedEntityAccessLossService {
           lastMaxStatusCode: params.lastMaxStatusCode,
         })
       : 0;
-    const cleanup = await this.cleanupRuntimeWork({
-      chatId,
-      reason: params.reason,
-      source: params.source,
-    });
+    const cleanup =
+      botId &&
+      nextOwnerBotId &&
+      nextOwnerBotId !== botId &&
+      (await this.hasConfirmedReplacementBotAccess(chatId, nextOwnerBotId))
+        ? this.createEmptyCleanupResult()
+        : await this.cleanupRuntimeWork({
+            chatId,
+            reason: params.reason,
+            source: params.source,
+          });
 
     await Promise.all([
       this.chatContextCache.invalidate(chatId),
@@ -230,6 +240,81 @@ export class ManagedEntityAccessLossService {
     ]);
 
     return cleanup;
+  }
+
+  private createEmptyCleanupResult(): ManagedEntityAccessLossCleanupResult {
+    return {
+      nightModeJobsCleared: false,
+      canceledBroadcasts: null,
+      canceledBroadcastDeliveries: null,
+      canceledBroadcastOccurrences: null,
+      clearedVkPublishPosts: null,
+      pausedVkSources: null,
+      removedRosterSyncJobs: null,
+    };
+  }
+
+  private async hasConfirmedReplacementBotAccess(chatId: string, botId: string): Promise<boolean> {
+    try {
+      const now = new Date();
+      const [membership, grantedEdge] = await Promise.all([
+        typeof this.prisma.chatBotMembership?.findUnique === 'function'
+          ? this.prisma.chatBotMembership.findUnique({
+              where: {
+                chatId_botId: {
+                  chatId,
+                  botId,
+                },
+              },
+              select: {
+                status: true,
+                permissionsSnapshot: true,
+              },
+            })
+          : Promise.resolve(null),
+        typeof this.prisma.managedEntityAccessEdge?.findFirst === 'function'
+          ? this.prisma.managedEntityAccessEdge.findFirst({
+              where: {
+                chatId,
+                botId,
+                state: ManagedEntityAccessState.GRANTED,
+                OR: [
+                  { expiresAt: { gt: now } },
+                  {
+                    expiresAt: null,
+                    checkedAt: {
+                      gt: new Date(now.getTime() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+                    },
+                  },
+                ],
+              },
+              select: {
+                botId: true,
+              },
+            })
+          : Promise.resolve(null),
+      ]);
+
+      if (grantedEdge) {
+        return true;
+      }
+      if (membership?.status !== ChatBotMembershipStatus.ACTIVE) {
+        return false;
+      }
+
+      const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to verify replacement bot access after managed entity access loss',
+      );
+      return false;
+    }
   }
 
   private async clearNightModeJobs(

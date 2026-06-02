@@ -725,7 +725,7 @@ export class ManagedEntitiesService {
   private async getManagedEntityAccessDiagnostics(
     chatId: string,
   ): Promise<ManagedEntityAccessDiagnostics> {
-    const [membershipRows, accessEdgeRows, activeAccessBotIds] = await Promise.all([
+    const [membershipRows, accessEdgeRows, grantedAccessEdgeRows] = await Promise.all([
       this.prisma.chatBotMembership.findMany({
         where: {
           chatId,
@@ -755,8 +755,27 @@ export class ManagedEntitiesService {
           lastMaxStatusCode: true,
         },
       }),
-      this.getActiveManagedEntityBotIds(chatId),
+      this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          chatId,
+          state: ManagedEntityAccessState.GRANTED,
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          botId: true,
+        },
+      }),
     ]);
+    const activeAccessBotIds = this.resolveActiveManagedEntityBotIds(
+      membershipRows,
+      grantedAccessEdgeRows,
+    );
 
     const diagnosticsByBotId = new Map<string, ManagedEntityAccessLossDiagnosticItem>();
     for (const row of membershipRows) {
@@ -814,40 +833,19 @@ export class ManagedEntitiesService {
     };
   }
 
-  private async getActiveManagedEntityBotIds(chatId: string): Promise<Set<string>> {
-    const [membershipRows, accessEdgeRows] = await Promise.all([
-      this.prisma.chatBotMembership.findMany({
-        where: {
-          chatId,
-          status: ChatBotMembershipStatus.ACTIVE,
-        },
-        select: {
-          botId: true,
-          permissionsSnapshot: true,
-          updatedAt: true,
-        },
-      }),
-      this.prisma.managedEntityAccessEdge.findMany({
-        where: {
-          chatId,
-          state: ManagedEntityAccessState.GRANTED,
-          OR: [
-            { expiresAt: { gt: new Date() } },
-            {
-              expiresAt: null,
-              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
-            },
-          ],
-        },
-        select: {
-          botId: true,
-          checkedAt: true,
-        },
-      }),
-    ]);
-
+  private resolveActiveManagedEntityBotIds(
+    membershipRows: Array<{
+      botId: string;
+      status: ChatBotMembershipStatus;
+      permissionsSnapshot: unknown;
+    }>,
+    grantedAccessEdgeRows: Array<{ botId: string }>,
+  ): Set<string> {
     const activeAccessBotIds = new Set<string>();
     for (const row of membershipRows) {
+      if (row.status !== ChatBotMembershipStatus.ACTIVE) {
+        continue;
+      }
       if (!this.isRuntimeBotId(row.botId)) {
         continue;
       }
@@ -858,7 +856,7 @@ export class ManagedEntitiesService {
       activeAccessBotIds.add(row.botId);
     }
 
-    for (const row of accessEdgeRows) {
+    for (const row of grantedAccessEdgeRows) {
       if (!this.isRuntimeBotId(row.botId)) {
         continue;
       }
