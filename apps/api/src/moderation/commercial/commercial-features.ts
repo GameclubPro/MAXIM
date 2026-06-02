@@ -155,9 +155,6 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   const hasGroupPromotionIntent =
     ADS_GROUP_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
     ADS_GROUP_SELF_REFERENCE_MARKERS.some((marker) => hasMarker(marker));
-  const hasGroupTradeContext =
-    ADS_GROUP_TRADE_MARKERS.some((marker) => hasMarker(marker)) ||
-    ADS_COMMERCIAL_AUDIENCE_MARKERS.some((marker) => hasMarker(marker));
   const hasCommercialAudienceContext = ADS_COMMERCIAL_AUDIENCE_MARKERS.some((marker) =>
     hasMarker(marker),
   );

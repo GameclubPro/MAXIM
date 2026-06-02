@@ -30,6 +30,8 @@ Commands:
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
   health                      Check local-on-VPS and public health endpoints
+  monitor-readonly [duration-sec] [interval-sec]
+                              Sample health, ps, restarts, public app, and error logs
   ps [services...]            Show main production docker compose status
   logs <service> [tail]       Show main production service logs, default tail=200
   yc-shell                    Open a Yandex Cloud CLI SSH shell, if configured
@@ -233,6 +235,9 @@ case "$command" in
     ;;
   health)
     health
+    ;;
+  monitor-readonly)
+    "$ROOT_DIR/infra/scripts/vps-monitor-readonly.sh" "$@"
     ;;
   ps)
     remote_exec "$(shell_quote_args docker compose -p infra -f infra/docker-compose.yml ps "$@")"

@@ -107,6 +107,7 @@
   - copy `infra/env/vps.env.example` to root `.env.vps` and keep it out of git
   - verify with `./infra/scripts/vps-connect.sh doctor`
   - use `./infra/scripts/vps-connect.sh shell|health|ps|logs <service>|deploy main [services...]`
+  - use `./infra/scripts/vps-connect.sh monitor-readonly [duration-sec] [interval-sec]` for read-only production observation; it samples health, compose status, restart counts, public `/app/`, and filtered API role logs without reconciling webhooks or sending bot messages
   - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper
 - GitHub Actions `Deploy` is manual-only (`workflow_dispatch`) and runs `infra/scripts/vps-pull-build-up.sh` on the VPS with optional branch/services inputs. Pushes to `main` should be validated by `CI`; use the local `vps-connect.sh deploy` wrapper for normal deployments unless GitHub-hosted runner SSH access is known to be allowed.
 - If plain SSH stalls before the banner or times out, treat that as a Yandex Cloud access issue first. Prefer `yc compute ssh` as the recovery path and verify that the VM security group allows `22/tcp` from the current public IP.

@@ -736,16 +736,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
   });
-  const channelsQuery = {
-    data: channelsList.data,
-    isLoading: channelsList.isLoading,
-    error: channelsList.error,
-    isSuccess: channelsList.data !== null && channelsList.error === null,
-    isSyncComplete: channelsList.isSyncComplete,
-    isBackoffActive: channelsList.isBackoffActive,
-    isSyncing: channelsList.isRefreshing,
-    phase: channelsList.phase,
-  };
   const requiredSubscriptionEntitiesLoading =
     shouldLoadRequiredSubscriptionChannels && (channelsList.isLoading || chatsList.isLoading);
   const requiredSubscriptionEntitiesSyncing =

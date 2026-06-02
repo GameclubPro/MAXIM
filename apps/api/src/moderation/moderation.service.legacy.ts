@@ -14284,7 +14284,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
       'edit_message';
     let replacementMessageId: string | null = null;
-    let replyMessageId: string | null = null;
+    const replyMessageId: string | null = null;
     let publishedUrl: string | null =
       linkType === 'forward' ? null : this.buildMaxMessageFallbackUrl(chatId, messageId);
     let originalDeleted = false;

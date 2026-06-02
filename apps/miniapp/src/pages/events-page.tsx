@@ -666,12 +666,6 @@ function normalizeLoadErrorMessage(error: unknown): string {
   return normalizeRaw(error.message);
 }
 
-function readJsonRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function formatRussianCountLabel(count: number, one: string, few: string, many: string): string {
   const abs = Math.abs(Math.trunc(count));
   const mod10 = abs % 10;
