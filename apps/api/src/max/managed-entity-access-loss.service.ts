@@ -159,15 +159,17 @@ export class ManagedEntityAccessLossService {
           lastMaxStatusCode: params.lastMaxStatusCode,
         })
       : null;
-    const updatedAccessEdges = await this.markAccessEdgesBotDenied({
-      chatId,
-      botId,
-      reason: params.reason,
-      source: params.source,
-      lastMaxErrorCode: params.lastMaxErrorCode,
-      lastMaxErrorMessage: params.lastMaxErrorMessage,
-      lastMaxStatusCode: params.lastMaxStatusCode,
-    });
+    const updatedAccessEdges = botId
+      ? await this.markAccessEdgesBotDenied({
+          chatId,
+          botId,
+          reason: params.reason,
+          source: params.source,
+          lastMaxErrorCode: params.lastMaxErrorCode,
+          lastMaxErrorMessage: params.lastMaxErrorMessage,
+          lastMaxStatusCode: params.lastMaxStatusCode,
+        })
+      : 0;
     const cleanup = await this.cleanupRuntimeWork({
       chatId,
       reason: params.reason,

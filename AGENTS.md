@@ -168,6 +168,7 @@
 - For `GET /chats/{chatId}/members`, send multiple `user_ids` as one comma-separated query value. Repeated `user_ids` parameters can be treated by MAX as only the first user.
 - Managed-entity roster/admin sync should skip private direct dialogs (positive numeric chat IDs) unless the update is explicitly channel-typed; those IDs are not managed chat/channel roster targets.
 - Terminal MAX access loss for managed chats/channels must route through `ManagedEntityAccessLossService`: treat `chat.denied`, `chat.not.found`, and bare `403/404` on send/read/lookup as lost access, keep `message.not.found` on old message deletes harmless, and stop/re-arm background work there instead of adding feature-local retry loops.
+- In multi-bot access-loss handling, keep `BOT_DENIED` bot-scoped: do not mass-mark all access edges when the lost bot cannot be resolved, and do not surface entity-wide lost-access diagnostics or block background work while another runtime bot has fresh confirmed admin/owner access.
 - After changing webhook host or domain, re-read `GET /subscriptions` and recreate the target subscription instead of assuming MAX updated its bound secret automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned when the intended canonical prod host is `https://maxim.play-team.ru`.
 

@@ -42,6 +42,7 @@ import {
   ManagedEntityAccessState,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import {
   canUserAccessSystem,
   readSystemAccessConfig,
@@ -70,6 +71,7 @@ import {
 import {
   ADMIN_ACTION_HEALTH_LANE,
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
+  MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
   MANAGED_ENTITY_FAVORITE_TYPE_ORDER,
   PRISMA_FAVORITE_TYPE_BY_CONTRACT,
   type AdminReadBypassOptions,
@@ -723,14 +725,17 @@ export class ManagedEntitiesService {
   private async getManagedEntityAccessDiagnostics(
     chatId: string,
   ): Promise<ManagedEntityAccessDiagnostics> {
-    const [membershipRows, accessEdgeRows] = await Promise.all([
+    const [membershipRows, accessEdgeRows, activeAccessBotIds] = await Promise.all([
       this.prisma.chatBotMembership.findMany({
         where: {
           chatId,
-          status: ChatBotMembershipStatus.REMOVED,
+          status: {
+            in: [ChatBotMembershipStatus.ACTIVE, ChatBotMembershipStatus.REMOVED],
+          },
         },
         select: {
           botId: true,
+          status: true,
           permissionsSnapshot: true,
           updatedAt: true,
         },
@@ -750,10 +755,17 @@ export class ManagedEntitiesService {
           lastMaxStatusCode: true,
         },
       }),
+      this.getActiveManagedEntityBotIds(chatId),
     ]);
 
     const diagnosticsByBotId = new Map<string, ManagedEntityAccessLossDiagnosticItem>();
     for (const row of membershipRows) {
+      if (row.status !== ChatBotMembershipStatus.REMOVED) {
+        continue;
+      }
+      if (activeAccessBotIds.size > 0) {
+        continue;
+      }
       const snapshot = this.readAccessLossSnapshot(row.permissionsSnapshot);
       if (!snapshot) {
         continue;
@@ -771,6 +783,9 @@ export class ManagedEntitiesService {
     }
 
     for (const row of accessEdgeRows) {
+      if (activeAccessBotIds.size > 0) {
+        continue;
+      }
       const reason = this.readAccessLossReason(row.deniedReason);
       if (!reason || !this.hasTerminalAccessLossEvidence(row)) {
         continue;
@@ -797,6 +812,60 @@ export class ManagedEntitiesService {
       lastDetectedAt: lostBots[0]?.detectedAt ?? null,
       lostBots,
     };
+  }
+
+  private async getActiveManagedEntityBotIds(chatId: string): Promise<Set<string>> {
+    const [membershipRows, accessEdgeRows] = await Promise.all([
+      this.prisma.chatBotMembership.findMany({
+        where: {
+          chatId,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          botId: true,
+          permissionsSnapshot: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          chatId,
+          state: ManagedEntityAccessState.GRANTED,
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          botId: true,
+          checkedAt: true,
+        },
+      }),
+    ]);
+
+    const activeAccessBotIds = new Set<string>();
+    for (const row of membershipRows) {
+      if (!this.isRuntimeBotId(row.botId)) {
+        continue;
+      }
+      const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
+      if (!snapshot || (!snapshot.isAdmin && !snapshot.isOwner)) {
+        continue;
+      }
+      activeAccessBotIds.add(row.botId);
+    }
+
+    for (const row of accessEdgeRows) {
+      if (!this.isRuntimeBotId(row.botId)) {
+        continue;
+      }
+      activeAccessBotIds.add(row.botId);
+    }
+
+    return activeAccessBotIds;
   }
 
   private upsertAccessLossDiagnostic(
@@ -858,6 +927,14 @@ export class ManagedEntitiesService {
       MANAGED_ENTITY_ACCESS_LOSS_REASONS.has(normalized as ManagedEntityAccessLossReason)
       ? (normalized as ManagedEntityAccessLossReason)
       : null;
+  }
+
+  private isRuntimeBotId(botId: string | null | undefined): boolean {
+    const normalizedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? readTrimmedString(botId);
+    if (!normalizedBotId) {
+      return false;
+    }
+    return this.maxBotRegistry ? this.maxBotRegistry.getBotById(normalizedBotId) !== null : true;
   }
 
   private async hasPersistedManagedEntityAccess(

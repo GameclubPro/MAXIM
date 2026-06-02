@@ -73,9 +73,11 @@ import {
   type MaxBotRoute,
   type MaxBotRouteRequest,
 } from '../max/max-bot-link.service';
+import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
+import { MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS } from './admin.service.support';
 
 type GiveawayActionSource = 'miniapp' | 'private_bot' | 'runner' | 'private_claim';
 
@@ -914,14 +916,14 @@ export class ManagedGiveawayService {
       return new Set();
     }
 
-    const [deniedRows, removedMembershipRows] = await Promise.all([
+    const [deniedRows, membershipRows, grantedRows] = await Promise.all([
       typeof this.prisma.managedEntityAccessEdge?.findMany === 'function'
         ? this.prisma.managedEntityAccessEdge.findMany({
             where: {
               chatId: { in: normalizedSourceChatIds },
               state: ManagedEntityAccessState.BOT_DENIED,
             },
-            select: { chatId: true },
+            select: { chatId: true, botId: true },
           })
         : Promise.resolve([]),
       typeof this.prisma.chatBotMembership?.findMany === 'function'
@@ -932,23 +934,64 @@ export class ManagedGiveawayService {
                 in: [ChatBotMembershipStatus.ACTIVE, ChatBotMembershipStatus.REMOVED],
               },
             },
-            select: { chatId: true, status: true },
+            select: {
+              chatId: true,
+              botId: true,
+              status: true,
+              permissionsSnapshot: true,
+            },
+          })
+        : Promise.resolve([]),
+      typeof this.prisma.managedEntityAccessEdge?.findMany === 'function'
+        ? this.prisma.managedEntityAccessEdge.findMany({
+            where: {
+              chatId: { in: normalizedSourceChatIds },
+              state: ManagedEntityAccessState.GRANTED,
+              OR: [
+                { expiresAt: { gt: new Date() } },
+                {
+                  expiresAt: null,
+                  checkedAt: {
+                    gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS),
+                  },
+                },
+              ],
+            },
+            select: { chatId: true },
           })
         : Promise.resolve([]),
     ]);
     const activeMembershipChatIds = new Set(
-      removedMembershipRows
-        .filter((row) => row.status === ChatBotMembershipStatus.ACTIVE)
+      membershipRows
+        .filter((row) => {
+          if (row.status !== ChatBotMembershipStatus.ACTIVE) {
+            return false;
+          }
+          const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
+          return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+        })
         .map((row) => this.normalizeNonEmptyString(row.chatId))
         .filter((chatId): chatId is string => Boolean(chatId)),
     );
-    const removedOnlyMembershipRows = removedMembershipRows.filter(
+    for (const row of grantedRows) {
+      const chatId = this.normalizeNonEmptyString(row.chatId);
+      if (chatId) {
+        activeMembershipChatIds.add(chatId);
+      }
+    }
+
+    const removedOnlyMembershipRows = membershipRows.filter(
       (row) =>
         row.status === ChatBotMembershipStatus.REMOVED &&
         !activeMembershipChatIds.has(this.normalizeNonEmptyString(row.chatId) ?? ''),
     );
     return new Set(
-      [...deniedRows, ...removedOnlyMembershipRows]
+      [
+        ...deniedRows.filter(
+          (row) => !activeMembershipChatIds.has(this.normalizeNonEmptyString(row.chatId) ?? ''),
+        ),
+        ...removedOnlyMembershipRows,
+      ]
         .map((row) => this.normalizeNonEmptyString(row.chatId))
         .filter((chatId): chatId is string => Boolean(chatId)),
     );
