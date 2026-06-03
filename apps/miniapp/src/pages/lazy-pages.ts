@@ -59,32 +59,13 @@ function reloadAfterLazyPageLoadFailure(exportName: string, cause: unknown): boo
 
 function LazyPageLoadFailure() {
   return createElement(
-    'div',
-    { className: 'page-stack page-enter' },
-    createElement(
-      'section',
-      { className: 'status-state status-state--danger' },
-      createElement('div', { className: 'status-state__icon', 'aria-hidden': true }, 'x'),
-      createElement(
-        'div',
-        { className: 'status-state__content' },
-        createElement('h3', null, 'Ошибка загрузки'),
-        createElement('p', null, 'Обновите экран или откройте приложение заново.'),
-      ),
-      createElement(
-        'div',
-        { className: 'status-state__action' },
-        createElement(
-          'button',
-          {
-            type: 'button',
-            className: 'button button--danger',
-            onClick: () => window.location.reload(),
-          },
-          'Обновить',
-        ),
-      ),
-    ),
+    'button',
+    {
+      type: 'button',
+      className: 'button button--danger',
+      onClick: () => window.location.reload(),
+    },
+    'Обновить',
   );
 }
 
