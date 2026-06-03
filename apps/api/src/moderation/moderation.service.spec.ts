@@ -8641,6 +8641,7 @@ describe('ModerationService', () => {
     const update = createAdminReplyModerationUpdate('супер бан');
     update.message!.senderId = '98315271';
     update.message!.senderName = 'Разработчик';
+    (update as MaxUpdate & { executionOwnerBotId: string }).executionOwnerBotId = 'bot-2';
     const rawMessage = (update.raw as { message: Record<string, unknown> }).message;
     (rawMessage.sender as Record<string, unknown>).user_id = '98315271';
     (rawMessage.sender as Record<string, unknown>).display_name = 'Разработчик';
@@ -8651,6 +8652,7 @@ describe('ModerationService', () => {
     expect(adminService.enqueueDeveloperSuperBanCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceChatId: 'chat-1',
+        commandBotId: 'bot-2',
         targetUserId: 'user-2',
         targetSenderName: 'Нарушитель',
         targetMessageId: 'mid-reply-target-1',
@@ -8665,6 +8667,19 @@ describe('ModerationService', () => {
     );
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Супер бан принят: добавляю пользователя в глобальный список и обрабатываю этот чат.',
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'moderation_notice',
+        autoDeleteDelayMs: 3 * 60 * 1000,
+        botId: 'bot-2',
+      }),
+    );
   });
 
   it('rejects super ban commands from non-developers before enqueueing', async () => {

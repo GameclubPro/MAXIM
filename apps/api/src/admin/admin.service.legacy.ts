@@ -493,6 +493,19 @@ export type {
   ChannelPublicationEngagementContext,
 } from './admin.service.support';
 
+const DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES = [
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+] as const;
+
 @Injectable()
 export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
@@ -11766,47 +11779,33 @@ export class AdminService implements OnModuleDestroy {
     await this.recordDeveloperForcedGlobalBlacklistForJob(job, targetDisplayName);
     await this.rememberDeveloperForcedGlobalSpammer(job.targetUserId);
 
-    const affectedChatIds = new Set<string>();
-    const sourceResult = await this.applyDeveloperSuperBanSourceChat({
+    await this.applyDeveloperSuperBanSourceChat({
       job,
       actor,
       targetDisplayName,
     });
-    if (sourceResult.affected) {
-      affectedChatIds.add(job.sourceChatId);
-    }
 
     await this.deleteManualGroupCommandTargetMessage(job);
     await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
       botId: job.commandBotId ?? undefined,
     });
 
-    const fanoutChatIds = await this.resolveDeveloperSuperBanFanoutChatIds(actor, job.sourceChatId);
-    for (const [index, chatId] of fanoutChatIds.entries()) {
-      if (index > 0) {
-        await sleepIfNeeded(this.manualFanoutLookupSpacingMs);
-      }
-
-      const result = await this.applyDeveloperSuperBanManagedChat({
-        chatId,
-        sourceChatId: job.sourceChatId,
-        targetUserId: job.targetUserId,
-        targetDisplayName,
-        actor,
-      });
-      if (result.affected) {
-        affectedChatIds.add(chatId);
-      }
-    }
-
+    const estimatedManagedChatCount = await this.estimateDeveloperSuperBanManagedChatCount({
+      sourceChatId: job.sourceChatId,
+      actorUserId: actor.userId,
+    });
     const targetLabel = this.formatManualGroupCommandUserLabel(
       job.targetSenderName,
       job.targetUserId,
     );
+    const estimateText =
+      estimatedManagedChatCount === null
+        ? 'Охват по базе: все управляемые чаты.'
+        : `Охват по базе: ${Math.max(1, estimatedManagedChatCount)} управляемых чатов.`;
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
       botId: job.commandBotId ?? undefined,
-      text: `Пользователь ${targetLabel} заблокирован в ${affectedChatIds.size} чатах по решению разработчика бота за нарушение правил.`,
+      text: `Пользователь ${targetLabel} заблокирован в этом чате и добавлен в глобальный список разработчика. ${estimateText}`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
@@ -11904,6 +11903,77 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async estimateDeveloperSuperBanManagedChatCount(params: {
+    sourceChatId: string;
+    actorUserId: string;
+  }): Promise<number | null> {
+    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
+    const activeMembershipWhere: Prisma.ChatBotMembershipWhereInput = {
+      status: ChatBotMembershipStatus.ACTIVE,
+    };
+    if (runtimeBotIds.length > 0) {
+      activeMembershipWhere.botId = { in: runtimeBotIds };
+    }
+
+    const runtimeScopeFilters: Prisma.ChatWhereInput[] = [
+      {
+        botMemberships: {
+          some: activeMembershipWhere,
+        },
+      },
+    ];
+
+    if (runtimeBotIds.length > 0) {
+      const inRuntimeScope = { in: runtimeBotIds };
+      runtimeScopeFilters.push({
+        botMemberships: {
+          none: {},
+        },
+        OR: [
+          { primaryBotId: inRuntimeScope },
+          { botId: inRuntimeScope },
+          { primaryBotId: null, botId: null },
+        ],
+      });
+    } else {
+      runtimeScopeFilters.push({
+        botMemberships: {
+          none: {},
+        },
+      });
+    }
+
+    try {
+      return await this.prisma.chat.count({
+        where: {
+          entityType: ChatEntityType.CHAT,
+          AND: [
+            {
+              OR: runtimeScopeFilters,
+            },
+            {
+              NOT: DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
+                id: {
+                  startsWith: prefix,
+                },
+              })),
+            },
+          ],
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          sourceChatId: params.sourceChatId,
+          actorUserId: params.actorUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to estimate managed chat count for developer super ban notice',
+      );
+      return null;
+    }
+  }
+
   private async applyDeveloperSuperBanSourceChat(params: {
     job: AdminSuperBanJob;
     actor: AuthUser;
@@ -11948,144 +12018,6 @@ export class AdminService implements OnModuleDestroy {
       actor,
       preferredBotId: job.commandBotId ?? null,
       fallbackReason: 'SOURCE_SYSTEM_BAN_FAILED',
-    });
-  }
-
-  private async resolveDeveloperSuperBanFanoutChatIds(
-    actor: AuthUser,
-    sourceChatId: string,
-  ): Promise<string[]> {
-    const chatIds = new Set<string>();
-    try {
-      const snapshot = await this.loadManagedBotChatCatalogSnapshot(null);
-      for (const chat of snapshot) {
-        if (chat.entityType !== 'chat') {
-          continue;
-        }
-        const chatId = this.readTrimmedString(chat.chatId);
-        if (chatId && chatId !== sourceChatId) {
-          chatIds.add(chatId);
-        }
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          sourceChatId,
-          actorUserId: actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to read managed chat catalog for developer super ban fanout',
-      );
-    }
-
-    if (chatIds.size === 0) {
-      try {
-        const fallbackChats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
-        for (const chat of fallbackChats) {
-          const chatId = this.readTrimmedString(chat.id);
-          if (chatId && chatId !== sourceChatId) {
-            chatIds.add(chatId);
-          }
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            sourceChatId,
-            actorUserId: actor.userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to resolve fallback chat list for developer super ban fanout',
-        );
-      }
-    }
-
-    return [...chatIds];
-  }
-
-  private async applyDeveloperSuperBanManagedChat(params: {
-    chatId: string;
-    sourceChatId: string;
-    targetUserId: string;
-    targetDisplayName: string | null;
-    actor: AuthUser;
-  }): Promise<{ affected: boolean; mode: 'removed' | 'muted' | 'skipped' | 'failed' }> {
-    const { chatId, sourceChatId, targetUserId, targetDisplayName, actor } = params;
-    let resolvedBotId: string | undefined;
-    try {
-      resolvedBotId = await this.resolveManualModerationActionBotAssignment(
-        chatId,
-        'moderate_member',
-      );
-      await this.assertBotCanManageMembers(chatId, 'BAN', resolvedBotId);
-      const targetState = await this.resolveManualFanoutTargetState(chatId, targetUserId, {
-        trafficClass: 'critical',
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-      });
-      if (targetState !== 'present') {
-        return { affected: false, mode: 'skipped' };
-      }
-
-      try {
-        if (resolvedBotId) {
-          await this.maxClient.cancelScheduledUnban(chatId, targetUserId, {
-            botId: resolvedBotId,
-          });
-        } else {
-          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
-        }
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            targetUserId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to cancel scheduled auto-unban before developer super ban fanout',
-        );
-      }
-
-      await sleepIfNeeded(this.manualFanoutActionSpacingMs);
-      const executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
-      if (executionMode === 'MAX_REMOVE_ONLY') {
-        await this.maxClient.kickMember(chatId, targetUserId, {
-          immediate: true,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        });
-      } else {
-        await this.maxClient.banMember(chatId, targetUserId, {
-          immediate: true,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        });
-      }
-
-      await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, {
-        spacingMs: this.manualFanoutActionSpacingMs,
-        botId: resolvedBotId,
-      });
-      return { affected: true, mode: 'removed' };
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          sourceChatId,
-          actorUserId: actor.userId,
-          targetUserId,
-          err:
-            this.extractMaxApiErrorMessage(error) ||
-            this.extractHttpErrorMessage(error) ||
-            String(error),
-        },
-        'Developer super ban fanout system ban failed; trying permanent mute fallback',
-      );
-    }
-
-    return this.applyDeveloperSuperBanPermanentMuteFallback({
-      chatId,
-      sourceChatId,
-      targetUserId,
-      targetDisplayName,
-      actor,
-      fallbackReason: 'FANOUT_SYSTEM_BAN_FAILED',
     });
   }
 
@@ -13289,7 +13221,12 @@ export class AdminService implements OnModuleDestroy {
         typeof maxClientWithChatListing.listBotChats === 'function'
           ? await this.listChatsForMassBroadcast(actor)
           : await this.listChatsFromAllowlist(actor.userId, 'chat');
-      return chats.filter((chat) => chat.entityType === 'chat' && chat.id !== sourceChatId);
+      return chats.filter(
+        (chat) =>
+          chat.entityType === 'chat' &&
+          chat.id !== sourceChatId &&
+          !isUnsupportedManagedChat(chat.id, chat.entityType),
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -13300,7 +13237,12 @@ export class AdminService implements OnModuleDestroy {
         'Failed to resolve manual command fanout chats; falling back to allowlist cache',
       );
       const cached = await this.listChatsFromAllowlist(actor.userId, 'chat');
-      return cached.filter((chat) => chat.id !== sourceChatId);
+      return cached.filter(
+        (chat) =>
+          chat.entityType === 'chat' &&
+          chat.id !== sourceChatId &&
+          !isUnsupportedManagedChat(chat.id, chat.entityType),
+      );
     }
   }
 

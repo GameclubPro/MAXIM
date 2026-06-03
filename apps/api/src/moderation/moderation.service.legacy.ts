@@ -5359,8 +5359,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
+    let commandBotId: string | null = null;
     try {
-      const commandBotId = this.readExecutionOwnerBotId(update);
+      commandBotId = this.readExecutionOwnerBotId(update);
       const queued =
         command.action === 'SUPER_BAN'
           ? await this.adminService.enqueueDeveloperSuperBanCommand({
@@ -5404,10 +5405,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (command.action === 'SUPER_BAN') {
           await this.sendGroupAdminCommandNotice({
             chatId,
+            botId: commandBotId,
             settings,
             text: 'Не удалось запустить супер бан. Повторите команду через несколько секунд.',
           });
         }
+      } else if (command.action === 'SUPER_BAN') {
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          botId: commandBotId,
+          settings,
+          text: 'Супер бан принят: добавляю пользователя в глобальный список и обрабатываю этот чат.',
+        });
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -5423,6 +5432,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (command.action === 'SUPER_BAN') {
         await this.sendGroupAdminCommandNotice({
           chatId,
+          botId: commandBotId,
           settings,
           text: `Не удалось запустить супер бан: ${this.escapeMaxMarkdownText(
             this.extractGroupAdminCommandErrorMessage(error),
@@ -6009,12 +6019,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async sendGroupAdminCommandNotice(params: {
     chatId: string;
+    botId?: string | null;
     settings: ChatSettings;
     text: string;
   }): Promise<void> {
     try {
       await this.sendBotMessageWithOptionalAutoDelete({
         chatId: params.chatId,
+        botId: params.botId ?? undefined,
         text: params.text,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
@@ -16614,12 +16626,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     immediate?: boolean;
+    botId?: string;
   }): MaxActionDispatchOptions | undefined {
     const dispatchOptions: MaxActionDispatchOptions = {
       trafficClass: params.immediate === true ? 'interactive' : 'background',
       actionHealthLane: params.immediate === true ? 'interactive' : 'background',
       sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
     };
+    if (params.botId) {
+      dispatchOptions.botId = params.botId;
+    }
     if (params.immediate === true) {
       dispatchOptions.immediate = true;
     }
@@ -16634,6 +16650,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async sendBotMessageWithOptionalAutoDelete(params: {
     chatId: string;
+    botId?: string;
     text: string;
     messageOptions?: MaxSendMessageOptions;
     media?: BotSpeechResolvedMedia | null;
@@ -16644,6 +16661,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<boolean> {
     const {
       chatId,
+      botId,
       text,
       messageOptions,
       media,
@@ -16673,6 +16691,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,
         immediate,
+        botId,
       }),
     );
     return true;
