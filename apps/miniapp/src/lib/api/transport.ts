@@ -3,6 +3,7 @@ import { traceFirstMiniappApiResult } from '../boot-trace';
 import { API_BASE } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
+const API_REQUEST_TIMEOUT_MS = 25_000;
 
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
@@ -69,22 +70,67 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
 
     return headers;
   };
+  const fetchWithTimeout = async (
+    path: string,
+    authInitData: string,
+    init: RequestInit = {},
+  ): Promise<Response> => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abortFromCaller = () => controller.abort();
+    const timeoutId = globalThis.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, API_REQUEST_TIMEOUT_MS);
+    if (init.signal) {
+      if (init.signal.aborted) {
+        abortFromCaller();
+      } else {
+        init.signal.addEventListener('abort', abortFromCaller, { once: true });
+      }
+    }
+
+    try {
+      return await fetch(`${API_BASE}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: buildHeaders(authInitData, init),
+      });
+    } catch (error: unknown) {
+      if (timedOut) {
+        traceFirstMiniappApiResult({
+          ok: false,
+          path,
+          error: 'timeout',
+          timeoutMs: API_REQUEST_TIMEOUT_MS,
+        });
+        throw new Error('Сервис долго не отвечает. Проверьте соединение и повторите.');
+      }
+
+      if (init.signal?.aborted) {
+        throw error;
+      }
+
+      traceFirstMiniappApiResult({
+        ok: false,
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new Error('Не удалось подключиться к сервису. Проверьте соединение и повторите.');
+    } finally {
+      globalThis.clearTimeout(timeoutId);
+      init.signal?.removeEventListener('abort', abortFromCaller);
+    }
+  };
 
   return {
     async request(path: string, init: RequestInit = {}) {
-      const requestUrl = `${API_BASE}${path}`;
       const authInitData = readInitData();
-      let response = await fetch(requestUrl, {
-        ...init,
-        headers: buildHeaders(authInitData, init),
-      });
+      let response = await fetchWithTimeout(path, authInitData, init);
       if (response.status === 401 && typeof initData === 'function') {
         const refreshedInitData = await waitForUpdatedInitData(readInitData, authInitData);
         if (refreshedInitData && refreshedInitData !== authInitData) {
-          response = await fetch(requestUrl, {
-            ...init,
-            headers: buildHeaders(refreshedInitData, init),
-          });
+          response = await fetchWithTimeout(path, refreshedInitData, init);
         }
       }
 

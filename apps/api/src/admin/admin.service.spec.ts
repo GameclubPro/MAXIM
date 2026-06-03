@@ -21013,6 +21013,132 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('processes pending managed broadcast deliveries before finalizing mixed failed occurrences', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'Не удалось отправить в 1 чат(ов).',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'FAILED',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        },
+      ],
+    });
+    deliveries[0].status = 'FAILED';
+    deliveries[0].attemptCount = 1;
+    deliveries[0].lastError = 'MAX send failed';
+    deliveries[0].updatedAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-2',
+        url: null,
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-2',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'PARTIAL',
+        sentChatIds: ['chat-2'],
+        failedChatIds: ['chat-1'],
+        pendingChatIds: [],
+        canRetry: true,
+      }),
+    );
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetChatId: 'chat-1',
+          status: 'FAILED',
+          lastError: 'MAX send failed',
+        }),
+        expect.objectContaining({
+          targetChatId: 'chat-2',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-2',
+        }),
+      ]),
+    );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'PARTIAL',
+        sentCount: 0,
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+  });
+
   it('drops permanently unavailable targets from future managed broadcast deliveries', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
 

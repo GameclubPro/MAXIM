@@ -139,6 +139,36 @@ test('waits briefly for bridge-refreshed init data before surfacing a 401', asyn
   );
 });
 
+test('aborts hanging requests after the configured timeout', async () => {
+  const calls: FetchCall[] = [];
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    await new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  }) as typeof fetch;
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+    originalSetTimeout(handler, Math.min(Number(timeout) || 0, 5), ...args)) as typeof setTimeout;
+
+  try {
+    const api = createApiTransport('auth_date=1&hash=first');
+
+    await assert.rejects(
+      () => api.request('/me'),
+      /Сервис долго не отвечает\. Проверьте соединение и повторите\./u,
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init?.signal instanceof AbortSignal, true);
+    assert.equal(calls[0].init?.signal?.aborted, true);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test.afterEach(() => {
   delete (globalThis as { fetch?: typeof fetch }).fetch;
 });

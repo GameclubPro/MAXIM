@@ -1,4 +1,4 @@
-import { lazy, type ComponentType } from 'react';
+import { createElement, lazy, type ComponentType } from 'react';
 import type { ApiTransport } from '../lib/api/transport';
 import {
   preloadChannelDialogPage,
@@ -27,7 +27,6 @@ type RoutedPageProps = {
 
 const LAZY_PAGE_RELOAD_MARKER_PREFIX = 'maxim:lazy-page-reload:v1:';
 const ASSET_URL_PATTERN = /(?:https?:\/\/[^\s"'()]+)?\/assets\/[^\s"'()]+\.js/iu;
-
 export function buildLazyPageReloadMarkerKey(exportName: string, cause: unknown): string {
   const message =
     cause instanceof Error
@@ -58,6 +57,37 @@ function reloadAfterLazyPageLoadFailure(exportName: string, cause: unknown): boo
   return true;
 }
 
+function LazyPageLoadFailure() {
+  return createElement(
+    'div',
+    { className: 'page-stack page-enter' },
+    createElement(
+      'section',
+      { className: 'status-state status-state--danger' },
+      createElement('div', { className: 'status-state__icon', 'aria-hidden': true }, 'x'),
+      createElement(
+        'div',
+        { className: 'status-state__content' },
+        createElement('h3', null, 'Ошибка загрузки'),
+        createElement('p', null, 'Обновите экран или откройте приложение заново.'),
+      ),
+      createElement(
+        'div',
+        { className: 'status-state__action' },
+        createElement(
+          'button',
+          {
+            type: 'button',
+            className: 'button button--danger',
+            onClick: () => window.location.reload(),
+          },
+          'Обновить',
+        ),
+      ),
+    ),
+  );
+}
+
 function lazyPage<TProps>(loader: () => Promise<Record<string, unknown>>, exportName: string) {
   return lazy(async () => {
     try {
@@ -65,12 +95,10 @@ function lazyPage<TProps>(loader: () => Promise<Record<string, unknown>>, export
       return { default: module[exportName] as ComponentType<TProps> };
     } catch (cause) {
       if (reloadAfterLazyPageLoadFailure(exportName, cause)) {
-        return new Promise<never>(() => {
-          // Keep the Suspense fallback visible while the browser reloads.
-        });
+        await new Promise((resolve) => setTimeout(resolve, 4_000));
       }
 
-      throw cause;
+      return { default: LazyPageLoadFailure as ComponentType<TProps> };
     }
   });
 }

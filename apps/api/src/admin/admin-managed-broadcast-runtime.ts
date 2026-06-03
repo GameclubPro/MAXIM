@@ -2386,11 +2386,15 @@ export class AdminManagedBroadcastRuntime {
         };
       }
 
-      if (
-        initialDeliveries.some(
-          (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
-        )
-      ) {
+      const hasFailedInitialDelivery = initialDeliveries.some(
+        (delivery: any) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
+      );
+      const hasUnfinishedInitialDelivery = initialDeliveries.some(
+        (delivery: any) =>
+          delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
+          delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
+      );
+      if (hasFailedInitialDelivery && !hasUnfinishedInitialDelivery) {
         return this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null);
       }
 
@@ -4507,6 +4511,55 @@ export class AdminManagedBroadcastRuntime {
     );
     const canRetry = failedChats.length > 0;
 
+    if (pendingChats.length > 0) {
+      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        lastError: null,
+        lockedAt: null,
+      });
+      if (!updated) {
+        return this.readManagedBroadcastOccurrenceResult(
+          row.id,
+          sentChatIds.length > 0
+            ? sentChatIds
+            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+          failedChatIds.length > 0
+            ? failedChatIds
+            : failedChats.map((delivery: any) => delivery.targetChatId),
+          pendingChats.map((delivery: any) => delivery.targetChatId),
+          firstSendError,
+        );
+      }
+      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+        await this.prisma.managedBroadcastOccurrence.updateMany({
+          where: {
+            broadcastId: row.id,
+            occurrenceIndex: currentOccurrence,
+          },
+          data: {
+            status: PrismaManagedBroadcastStatus.ACTIVE,
+          },
+        });
+      }
+
+      return {
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        currentOccurrence,
+        sentChatIds:
+          sentChatIds.length > 0
+            ? sentChatIds
+            : deliveredChats.map((delivery: any) => delivery.targetChatId),
+        failedChatIds:
+          failedChatIds.length > 0
+            ? failedChatIds
+            : failedChats.map((delivery: any) => delivery.targetChatId),
+        pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
+        canRetry: false,
+        firstSendError,
+        nextSendAt: row.nextSendAt,
+      };
+    }
+
     if (failedChats.length > 0) {
       const status =
         deliveredChats.length > 0
@@ -4559,49 +4612,6 @@ export class AdminManagedBroadcastRuntime {
             : failedChats.map((delivery: any) => delivery.targetChatId),
         pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
         canRetry,
-        firstSendError,
-        nextSendAt: row.nextSendAt,
-      };
-    }
-
-    if (pendingChats.length > 0) {
-      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        lastError: null,
-        lockedAt: null,
-      });
-      if (!updated) {
-        return this.readManagedBroadcastOccurrenceResult(
-          row.id,
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
-          [],
-          pendingChats.map((delivery: any) => delivery.targetChatId),
-          firstSendError,
-        );
-      }
-      if (normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
-        await this.prisma.managedBroadcastOccurrence.updateMany({
-          where: {
-            broadcastId: row.id,
-            occurrenceIndex: currentOccurrence,
-          },
-          data: {
-            status: PrismaManagedBroadcastStatus.ACTIVE,
-          },
-        });
-      }
-      return {
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        currentOccurrence,
-        sentChatIds:
-          sentChatIds.length > 0
-            ? sentChatIds
-            : deliveredChats.map((delivery: any) => delivery.targetChatId),
-        failedChatIds: [],
-        pendingChatIds: pendingChats.map((delivery: any) => delivery.targetChatId),
-        canRetry: false,
         firstSendError,
         nextSendAt: row.nextSendAt,
       };
