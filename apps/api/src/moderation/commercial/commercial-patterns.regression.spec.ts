@@ -158,6 +158,110 @@ describe('commercial pattern regressions', () => {
       subtype: 'SERVICES',
       signals: ['service-specialty:tour-agency', 'contact:phone', 'deal-channel:link'],
     },
+    {
+      label: 'fish processing crew recruitment from sixteen hour audit miss',
+      text: 'Требуются люди на добычу и переработку горбуши. Пишите, звоните по телефону +7 900 000 01 11.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:people-work-conditions', 'contact:phone'],
+    },
+    {
+      label: 'no investment remote work from sixteen hour audit miss',
+      text: 'ИЩУ ЛЮДЕЙ ДЛЯ РАБОТЫ БЕЗ ВЛОЖЕНИЙ. Выплаты ежедневно от 5000. https://max.ru/join/work',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:people-work-conditions', 'recruitment:remote-network-work'],
+    },
+    {
+      label: 'bank project staff recruitment from sixteen hour audit miss',
+      text: 'В банковский проект набираются сотрудники. Зп от 15-35 тыс. Телефон +7 900 000 01 12.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:people-work-conditions', 'contact:phone'],
+    },
+    {
+      label: 'online lottery bonus from sixteen hour audit miss',
+      text: 'Выигрыш до 10 000 ₽ в онлайн-лотерее. Стартовый баланс, играете и выигрываете. https://max.ru/join/game',
+      subtype: 'GOODS',
+      signals: ['risk:online-lottery-bonus', 'deal-channel:link'],
+    },
+    {
+      label: 'clairvoyant paid service from sixteen hour audit miss',
+      text: 'Опытная ясновидящая, делаю диагностику ситуации, предсказываю. Связаться Max WhatsApp Telegram.',
+      subtype: 'GOODS',
+      signals: ['risk:paid-esoteric-service', 'contact:whatsapp', 'contact:telegram'],
+    },
+    {
+      label: 'photo restoration digital service from sixteen hour audit miss',
+      text: 'Восстановление старых ч/б фото в цвете онлайн. 150 р. за 1 фото. +7 900 000 01 13.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:digital-service', 'contact:phone'],
+    },
+    {
+      label: 'mosquito net installation from sixteen hour audit miss',
+      text: 'МОСКИТНЫЕ СЕТКИ. Замеры, Изготовление, Установка. Пишите в ЛС.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:mosquito-net-service', 'contact:пишите в лс'],
+    },
+    {
+      label: 'fence and gate installation from sixteen hour audit miss',
+      text: 'Установим забор и ворота, монтаж откатных ворот. Бесплатно проконсультирую. +7 900 000 01 14.',
+      subtype: 'SERVICES',
+      signals: ['intent:fence-gate-installation', 'contact:phone'],
+    },
+    {
+      label: 'clothing repair service from sixteen hour audit miss',
+      text: 'Ремонт одежды. тел. +7 900 000 01 15.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:clothing-repair-service', 'contact:phone'],
+    },
+    {
+      label: 'custom address signs from sixteen hour audit miss',
+      text: 'Принимаем заявки на адресные таблички. Магазин Три кота.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:custom-sign-order', 'transaction:keywords'],
+    },
+    {
+      label: 'realtor commission rental from sixteen hour audit miss',
+      text: 'Сдам однокомнатную квартиру. Риэлторская комиссия оплачивается по факту заселения. +7 900 000 01 16.',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:риэлторская-комиссия', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
+    },
+    {
+      label: 'rental commission percent from sixteen hour audit miss',
+      text: 'Аренда дома. Цена:35000 Без залога Комиссия 60% Тел +7 900 000 01 17.',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:комиссия-процент', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
+    },
+    {
+      label: 'strawberry order from sixteen hour audit miss',
+      text: 'Принимаю заказ на клубничку. Цена 250 руб килограмм. Бесплатная доставочка. +7 900 000 01 18.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:wholesale-produce', 'contact:phone'],
+    },
+    {
+      label: 'laying hens retail from sixteen hour audit miss',
+      text: 'В продаже куры несушки. Цена 500р. от 10шт бесплатная доставка. +7 900 000 01 19.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:farm-livestock-retail', 'contact:phone'],
+    },
+    {
+      label: 'fresh trout delivery from sixteen hour audit miss',
+      text: 'Свежий привоз. Форель Турция. Цена 1450 -1 кг. писать в личку или по телефону +7 900 000 01 20.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:wholesale-produce', 'goods-retail:home-food-order'],
+    },
+    {
+      label: 'stewed beef jar delivery from sixteen hour audit miss',
+      text: 'Тушёная говядина 320 баночка от пяти баночек доставкой бесплатно.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:home-food-order', 'transaction:keywords'],
+    },
+    {
+      label: 'peony shipping retail from sixteen hour audit miss',
+      text: 'ПИОНЫ. СНАЧАЛА ОПЛАТА ПОТОМ ОТПРАВКА. по 950р. доставка. +7 900 000 01 21.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:plant-nursery-stock', 'goods-retail:plant-nursery-shipping'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -302,6 +406,46 @@ describe('commercial pattern regressions', () => {
     [
       'low quantity plant giveaway stays private',
       'Отдам денежное дерево по 50 руб за шт, в наличии 3 шт, есть с корнями, район Комета',
+    ],
+    [
+      'local news subscribe footer from sixteen hour audit false positive',
+      'Возле села Еловка на дорогу внезапно выбежал лось. Водители, будьте внимательны. Томск Сейчас | Подписаться https://example.com',
+    ],
+    [
+      'road repair news subscribe footer from sixteen hour audit false positive',
+      'В Томске завершается ремонт дороги после жалоб местных жителей. Томск Сейчас | Подписаться https://example.com',
+    ],
+    [
+      'public city improvement voting from sixteen hour audit false positive',
+      'Уважаемые жители города Азова! Идет голосование за объекты благоустройства, поддержите проект по ссылке https://example.com',
+    ],
+    [
+      'contest voting from sixteen hour audit false positive',
+      'Началось онлайн-голосование участников конкурса, каждый голос это шаг к победе. https://example.com',
+    ],
+    [
+      'delivery request please from sixteen hour audit false positive',
+      'Здравствуйте. Можно доставку пожалуйста! Если можно то в ЛС',
+    ],
+    [
+      'job seeking typo from sixteen hour audit false positive',
+      'Ищю подработку/любой калым писать в ЛС или обращаться по номеру +7 900 000 01 22',
+    ],
+    [
+      'rideshare free seats from sixteen hour audit false positive',
+      'Водитель завтра 03.06 Абакан Таштып Абаза, 3 места, +7 900 000 01 23',
+    ],
+    [
+      'volunteer pet adoption delivery from sixteen hour audit false positive',
+      'Есть примета, кто готов? Девочка ласковая, доставка за счет группы Помощь хвостикам +7 900 000 01 24',
+    ],
+    [
+      'private manicure table resale from sixteen hour audit false positive',
+      'Продам маникюрный стол со всем, что на фото, 5000 рублей. +7 900 000 01 25',
+    ],
+    [
+      'private Toyota Vitz resale with ex wording from sixteen hour audit false positive',
+      'Продам Toyota Vitz 2010 года, экс владелец, пробег 120000, цена 600000, +7 900 000 01 26',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
