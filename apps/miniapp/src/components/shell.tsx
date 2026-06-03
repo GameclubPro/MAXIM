@@ -298,10 +298,12 @@ export function Shell() {
   const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
+  const isSystemRoute = location.pathname === '/system';
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const hasTopbar =
     !isChatsRoute &&
+    !isSystemRoute &&
     !isSettingsRoute &&
     !isEventsRoute &&
     !isDialogRoute &&

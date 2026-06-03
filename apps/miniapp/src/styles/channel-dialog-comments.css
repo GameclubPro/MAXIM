@@ -1076,6 +1076,8 @@
 @media (max-width: 360px) {
   .channel-suggest-composer__modifier-row {
     gap: 4px;
+    padding-right: 10px;
+    mask-image: linear-gradient(90deg, #000 0 calc(100% - 14px), transparent 100%);
   }
 
   .channel-suggest-composer__modifier {
@@ -5225,6 +5227,7 @@ button.channel-dialog-message__avatar {
 }
 
 .channel-suggest-composer__tools {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -5254,6 +5257,7 @@ button.channel-dialog-message__avatar {
 }
 
 .channel-suggest-composer__modifier-row {
+  min-width: 0;
   gap: 5px;
   padding: 0;
   overflow-x: auto;
@@ -5398,6 +5402,10 @@ button.channel-dialog-message__avatar {
     gap: 5px;
   }
 
+  .channel-suggest-composer__modifier-row {
+    gap: 4px;
+  }
+
   .channel-suggest-composer__tool,
   .channel-suggest-composer__modifier {
     width: 33px;
@@ -5412,6 +5420,15 @@ button.channel-dialog-message__avatar {
     min-height: 38px;
     padding: 0;
   }
+
+  .channel-suggest-composer__submit span:not(.channel-dialog-submit__loader) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 360px) {
@@ -5422,6 +5439,11 @@ button.channel-dialog-message__avatar {
   .channel-suggest-composer__bar {
     gap: 4px;
     padding: 4px;
+  }
+
+  .channel-suggest-composer__modifier-row {
+    gap: 3px;
+    padding-right: 12px;
   }
 
   .channel-suggest-composer__phone {

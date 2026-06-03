@@ -17,7 +17,7 @@
 .legal-hero {
   display: grid;
   gap: var(--space-3);
-  padding: 22px 0 6px;
+  padding: 16px 0 4px;
 }
 
 .legal-hero__eyebrow {
@@ -33,15 +33,17 @@
 }
 
 .legal-hero h1 {
-  max-width: 11ch;
-  font-size: 2.25rem;
-  line-height: 0.96;
+  max-width: 100%;
+  font-size: clamp(1.28rem, 1.08rem + 3vw, 1.72rem);
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }
 
 .legal-hero p {
   max-width: 58ch;
-  font-size: 1rem;
-  line-height: 1.58;
+  font-size: 0.94rem;
+  line-height: 1.48;
 }
 
 .legal-hero__nav {

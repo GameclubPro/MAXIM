@@ -254,6 +254,16 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-dialog-comments',
+    path: '/channel/preview-channel/dialog/comments',
+    searchParams: {
+      token: 'preview-comments-token-0001',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'channel-dialog-suggest',
     path: '/channel/preview-channel/dialog/suggest',
     searchParams: {
@@ -484,6 +494,34 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
     searchParams: {
       section: 'events',
+    },
+  },
+  {
+    name: 'system',
+    path: '/system',
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'legal-agreement',
+    path: '/legal/agreement',
+    beforeShot: async (page) => {
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'legal-privacy',
+    path: '/legal/privacy',
+    beforeShot: async (page) => {
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'giveaway-default',
+    path: '/giveaways/preview-giveaway',
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
     },
   },
   {
