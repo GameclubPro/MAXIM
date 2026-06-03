@@ -135,6 +135,12 @@ describe('commercial pattern regressions', () => {
       signals: ['intent:custom-art-order', 'service-specialty:custom-art-order'],
     },
     {
+      label: 'custom wood portrait service from post deploy sixteen hour audit miss',
+      text: 'Портрет на дереве. Ваши фото на дереве, заготовки, подарите близким. Заказывают по телефону +7 900 000 02 06.',
+      subtype: 'SERVICES',
+      signals: ['intent:custom-art-order', 'service-specialty:custom-art-order', 'contact:phone'],
+    },
+    {
       label: 'home goods order with emoji phone from twelve hour audit miss',
       text: 'Переходите в нашу группу, где вы найдете посуду, технику и текстиль по самым низким ценам. По поводу заказа пишите по номеру 8️⃣9️⃣8️⃣9️⃣8️⃣8️⃣8️⃣2️⃣0️⃣8️⃣9️⃣',
       subtype: 'GOODS_RETAIL',
@@ -273,6 +279,12 @@ describe('commercial pattern regressions', () => {
       text: 'С Б О Р Щ И К упаковка листовок. Оплата 1️⃣0️⃣ 0️⃣0️⃣0️⃣ руб, график свободный, телефон +7 900 000 02 01',
       subtype: 'RECRUITMENT',
       signals: ['recruitment:leaflet-assembly-work', 'transaction:price', 'contact:phone'],
+    },
+    {
+      label: 'short daily leaflet side job from post deploy sixteen hour audit miss',
+      text: 'ПОДРАБОТКА каждый день — раздача листовок',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:leaflet-daily-side-job', 'contact:implicit-vacancy-offer'],
     },
     {
       label: 'wb helper vacancy from sixteen hour audit miss',
@@ -555,6 +567,10 @@ describe('commercial pattern regressions', () => {
       'private avito resale stays private',
       'Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.',
     ],
+    [
+      'private auto exchange with starter is not auto-parts retail',
+      'Обмен. Мото не предлагать Ока. стартер новый, генератор, документы.',
+    ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
   });
@@ -577,6 +593,16 @@ describe('commercial pattern regressions', () => {
 
     expect(result?.matchedSignals).toContain('contact:email');
     expect(result?.matchedSignals).not.toContain('deal-channel:generic-domain');
+  });
+
+  it('classifies wood portrait orders as services instead of property agent exclusives', () => {
+    const result = detect(
+      'Эксклюзивный портрет на дереве. Ваши фото на дереве, заготовки, подарите близким. Заказывают по телефону +7 900 000 02 06.',
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain('intent:custom-art-order');
+    expect(result?.matchedSignals).not.toContain('property-agent:эксклюзив');
   });
 
   it('keeps repeated private clothing resale out of commercial actions even with campaign context', () => {

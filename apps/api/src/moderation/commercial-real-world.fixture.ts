@@ -1706,6 +1706,18 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'short daily leaflet side job from post deploy sixteen hour audit',
+    text: `ПОДРАБОТКА каждый день — раздача листовок`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:leaflet-daily-side-job', 'contact:implicit-vacancy-offer'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'wb helper vacancy from sixteen hour audit',
     text: `Срочно требуется помощник для работы с WB. В день от 4500 р, без опыта, подробности https://example.com/wb-job`,
     expectedSubtype: 'RECRUITMENT',
@@ -1753,6 +1765,22 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSignals: [
       'goods-retail:collectible-flower-retail',
       'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'custom wood portrait service from post deploy sixteen hour audit',
+    text: `Эксклюзивный портрет на дереве. Ваши фото на дереве, заготовки, подарите близким. Заказывают по телефону +7 900 000 02 06.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:custom-art-order',
+      'service-specialty:custom-art-order',
       'contact:phone',
     ],
     overrides: {
@@ -2408,6 +2436,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private avito resale from blind spot false-positive guard',
     text: `Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private auto exchange with starter from post deploy sixteen hour audit guard',
+    text: `Обмен. Мото не предлагать Ока. стартер новый, генератор, документы.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

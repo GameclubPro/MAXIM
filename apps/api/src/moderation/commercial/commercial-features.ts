@@ -623,6 +623,11 @@ export function collectCommercialSignals(params: {
     hasContact = true;
     hasDealSignal = true;
   }
+  if (recruitmentHits.includes('leaflet-daily-side-job')) {
+    addPositive('contact:implicit-vacancy-offer', weights.contactMarker);
+    hasContact = true;
+    hasDealSignal = true;
+  }
 
   const infoProductHits = ADS_INFO_PRODUCT_MARKERS.filter((marker) => hasMarker(marker));
   for (const marker of infoProductHits.slice(0, 2)) {
