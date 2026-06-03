@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta
+      name="description"
+      content="Майор Максимов - бот-модератор для чатов MAX. Помогает администраторам настраивать правила, фильтры, разрешенные домены и журнал событий."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Майор Максимов" />
+    <meta
+      property="og:description"
+      content="Бот-модератор для чатов MAX: антиспам, фильтрация ссылок, правила чата и журнал событий для администраторов."
+    />
+    <meta property="og:url" content="https://major-maksimov.ru/" />
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>Майор Максимов</title>
+    <style>
+      :root {
+        --page: #f7f8fa;
+        --surface: #ffffff;
+        --surface-muted: #eef3f5;
+        --text: #182026;
+        --muted: #5f6f78;
+        --line: #d8e1e5;
+        --brand: #0f8f94;
+        --brand-dark: #0a5e67;
+        --accent: #b78433;
+        --shadow: 0 18px 45px rgba(24, 32, 38, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font-family:
+          Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial,
+          sans-serif;
+        line-height: 1.55;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        min-height: 100vh;
+      }
+
+      .topbar {
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      .topbar__inner,
+      .section {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .topbar__inner {
+        min-height: 70px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+        min-width: 0;
+      }
+
+      .brand__mark {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        flex: 0 0 auto;
+      }
+
+      .brand__mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .brand__text {
+        display: grid;
+        gap: 1px;
+      }
+
+      .brand__name {
+        font-weight: 780;
+        font-size: 17px;
+      }
+
+      .brand__meta {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .nav a {
+        text-decoration: none;
+      }
+
+      .nav a:hover {
+        color: var(--brand-dark);
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 42px;
+        padding: 0 17px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+
+      .button--primary {
+        background: var(--brand-dark);
+        color: #ffffff;
+      }
+
+      .button--secondary {
+        background: var(--surface);
+        border-color: var(--line);
+        color: var(--text);
+      }
+
+      .hero {
+        padding: 74px 0 50px;
+      }
+
+      .hero__grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+        gap: 44px;
+        align-items: center;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 18px;
+        color: var(--brand-dark);
+        font-weight: 750;
+        font-size: 14px;
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        background: var(--accent);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        margin-bottom: 18px;
+        font-size: 64px;
+        line-height: 1.03;
+        letter-spacing: 0;
+      }
+
+      .lead {
+        max-width: 700px;
+        margin-bottom: 28px;
+        color: var(--muted);
+        font-size: 19px;
+      }
+
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .summary {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        padding: 28px;
+      }
+
+      .summary h2 {
+        margin-bottom: 18px;
+        font-size: 22px;
+      }
+
+      .summary dl {
+        margin: 0;
+        display: grid;
+        gap: 16px;
+      }
+
+      .summary dt {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .summary dd {
+        margin: 3px 0 0;
+        font-weight: 720;
+      }
+
+      .band {
+        background: var(--surface);
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section {
+        padding: 58px 0;
+      }
+
+      .section__head {
+        max-width: 720px;
+        margin-bottom: 26px;
+      }
+
+      .section h2 {
+        margin-bottom: 10px;
+        font-size: 30px;
+        line-height: 1.18;
+      }
+
+      .section__head p,
+      .plain p,
+      .doc-links p {
+        color: var(--muted);
+      }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .feature {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 20px;
+        min-height: 145px;
+      }
+
+      .band .feature {
+        background: var(--surface-muted);
+      }
+
+      .feature h3 {
+        margin-bottom: 8px;
+        font-size: 17px;
+      }
+
+      .feature p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .plain {
+        display: grid;
+        grid-template-columns: 0.8fr 1.2fr;
+        gap: 34px;
+        align-items: start;
+      }
+
+      .plain h2 {
+        margin-bottom: 0;
+      }
+
+      .steps {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 12px;
+      }
+
+      .steps li {
+        display: grid;
+        grid-template-columns: 34px 1fr;
+        gap: 12px;
+        align-items: start;
+        color: var(--muted);
+      }
+
+      .steps span {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: var(--surface-muted);
+        color: var(--brand-dark);
+        font-weight: 800;
+      }
+
+      .doc-links {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .doc-link {
+        display: block;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        text-decoration: none;
+      }
+
+      .doc-link strong {
+        display: block;
+        margin-bottom: 7px;
+      }
+
+      .doc-link span {
+        color: var(--muted);
+      }
+
+      .footer {
+        border-top: 1px solid var(--line);
+        padding: 28px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .footer__inner {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+
+      @media (max-width: 840px) {
+        .topbar__inner,
+        .section,
+        .footer__inner {
+          width: min(100% - 28px, 680px);
+        }
+
+        .topbar__inner {
+          min-height: auto;
+          padding: 14px 0;
+          align-items: flex-start;
+        }
+
+        .nav {
+          display: none;
+        }
+
+        .hero {
+          padding: 44px 0 38px;
+        }
+
+        .hero__grid,
+        .plain {
+          grid-template-columns: 1fr;
+        }
+
+        .features,
+        .doc-links {
+          grid-template-columns: 1fr;
+        }
+
+        .lead {
+          font-size: 17px;
+        }
+
+        h1 {
+          font-size: 46px;
+        }
+
+        .section {
+          padding: 42px 0;
+        }
+      }
+
+      @media (max-width: 460px) {
+        .brand__meta {
+          display: none;
+        }
+
+        .actions {
+          align-items: stretch;
+        }
+
+        .button {
+          width: 100%;
+        }
+
+        h1 {
+          font-size: 40px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="topbar__inner">
+          <a class="brand" href="/" aria-label="Майор Максимов">
+            <span class="brand__mark">
+              <img src="/app/favicon.png" alt="" />
+            </span>
+            <span class="brand__text">
+              <span class="brand__name">Майор Максимов</span>
+              <span class="brand__meta">Бот-модератор для чатов MAX</span>
+            </span>
+          </a>
+          <nav class="nav" aria-label="Основная навигация">
+            <a href="#features">Возможности</a>
+            <a href="#workflow">Как работает</a>
+            <a href="#documents">Документы</a>
+            <a class="button button--primary" href="/app/">Открыть приложение</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="section hero__grid">
+            <div>
+              <p class="eyebrow">Инструмент администрирования в MAX</p>
+              <h1>Майор Максимов</h1>
+              <p class="lead">
+                Бот-модератор для чатов MAX. Помогает администраторам
+                поддерживать порядок: настраивать правила, фильтры, списки
+                разрешенных доменов и просматривать журнал событий.
+              </p>
+              <div class="actions">
+                <a class="button button--primary" href="/app/">Открыть приложение</a>
+                <a class="button button--secondary" href="#documents">Документы</a>
+              </div>
+            </div>
+
+            <aside class="summary" aria-label="Сведения о проекте">
+              <h2>Сведения о проекте</h2>
+              <dl>
+                <div>
+                  <dt>Назначение</dt>
+                  <dd>Модерация и безопасность чатов MAX</dd>
+                </div>
+                <div>
+                  <dt>Оператор проекта</dt>
+                  <dd>ИП Будченко Александр Владимирович</dd>
+                </div>
+                <div>
+                  <dt>ИНН</dt>
+                  <dd>613002203036</dd>
+                </div>
+                <div>
+                  <dt>Поддержка</dt>
+                  <dd><a href="mailto:73budchenko@mail.ru">73budchenko@mail.ru</a></dd>
+                </div>
+              </dl>
+            </aside>
+          </div>
+        </section>
+
+        <section id="features" class="band">
+          <div class="section">
+            <div class="section__head">
+              <h2>Возможности</h2>
+              <p>
+                Основные функции помогают администраторам управлять правилами
+                чата и быстро реагировать на нарушения.
+              </p>
+            </div>
+
+            <div class="features">
+              <article class="feature">
+                <h3>Антиспам и ссылки</h3>
+                <p>
+                  Фильтрация подозрительных сообщений, ссылок и повторов по
+                  настройкам администратора.
+                </p>
+              </article>
+              <article class="feature">
+                <h3>Правила чата</h3>
+                <p>
+                  Управление параметрами модерации, списками разрешенных
+                  доменов и текстами правил.
+                </p>
+              </article>
+              <article class="feature">
+                <h3>Журнал событий</h3>
+                <p>
+                  Просмотр срабатываний, действий бота и ручных решений
+                  администратора в одном интерфейсе.
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="workflow">
+          <div class="section plain">
+            <h2>Как работает</h2>
+            <ol class="steps">
+              <li>
+                <span>1</span>
+                <p>
+                  Администратор добавляет бота в чат MAX и открывает приложение.
+                </p>
+              </li>
+              <li>
+                <span>2</span>
+                <p>
+                  В приложении администратор настраивает правила, фильтры и
+                  разрешенные домены для своего чата.
+                </p>
+              </li>
+              <li>
+                <span>3</span>
+                <p>
+                  Доступ к настройкам предоставляется только администраторам
+                  управляемых чатов.
+                </p>
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section id="documents" class="band">
+          <div class="section">
+            <div class="section__head">
+              <h2>Документы и контакты</h2>
+              <p>
+                Публичные документы доступны без входа в приложение. По
+                вопросам работы проекта можно обратиться на почту поддержки.
+              </p>
+            </div>
+
+            <div class="doc-links">
+              <a class="doc-link" href="/app/legal/agreement">
+                <strong>Пользовательское соглашение</strong>
+                <span>Условия использования бота и приложения в MAX.</span>
+              </a>
+              <a class="doc-link" href="/app/legal/privacy">
+                <strong>Политика обработки данных</strong>
+                <span>Описание обработки данных пользователей и администраторов.</span>
+              </a>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer__inner">
+          <span>Майор Максимов, 2026</span>
+          <span>Сайт проекта: major-maksimov.ru</span>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

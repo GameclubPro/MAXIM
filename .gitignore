@@ -16,6 +16,7 @@ apps/api/src/generated/prisma/
 .env
 .env.*
 !.env.example
+vk
 
 # Logs
 *.log
