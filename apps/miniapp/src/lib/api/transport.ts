@@ -102,9 +102,8 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
           ok: false,
           path,
           error: 'timeout',
-          timeoutMs: API_REQUEST_TIMEOUT_MS,
         });
-        throw new Error('Сервис долго не отвечает. Проверьте соединение и повторите.');
+        throw new Error('Сервис не отвечает. Повторите.');
       }
 
       if (init.signal?.aborted) {
@@ -116,7 +115,7 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
         path,
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new Error('Не удалось подключиться к сервису. Проверьте соединение и повторите.');
+      throw new Error('Нет связи с сервисом. Повторите.');
     } finally {
       globalThis.clearTimeout(timeoutId);
       init.signal?.removeEventListener('abort', abortFromCaller);

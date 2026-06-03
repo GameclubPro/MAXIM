@@ -159,7 +159,7 @@ test('aborts hanging requests after the configured timeout', async () => {
 
     await assert.rejects(
       () => api.request('/me'),
-      /Сервис долго не отвечает\. Проверьте соединение и повторите\./u,
+      /Сервис не отвечает\. Повторите\./u,
     );
     assert.equal(calls.length, 1);
     assert.equal(calls[0].init?.signal instanceof AbortSignal, true);

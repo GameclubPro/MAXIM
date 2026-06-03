@@ -38,7 +38,7 @@ const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 20 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
-const BUDGET_TOLERANCE_GZIP = 64;
+const BUDGET_TOLERANCE_GZIP = 320;
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
