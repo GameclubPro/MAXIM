@@ -1,5 +1,10 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { detectMediaFlags } from './moderation-update-extractors';
+import {
+  collectForwardedTextSnippets,
+  detectMediaFlags,
+  hasForwardedMessage,
+  shouldSkipAntiSpamBurstForForward,
+} from './moderation-update-extractors';
 
 const EMPTY_FLAGS = {
   hasPhotoAttachment: false,
@@ -178,5 +183,62 @@ describe('moderation update media flag extraction', () => {
         }),
       ),
     ).toEqual(EMPTY_FLAGS);
+  });
+
+  it('detects MAX linked forward messages without treating replies as forwards', () => {
+    const forwarded = createUpdate({
+      message: {
+        body: null,
+        link: {
+          type: 'forward',
+          message: {
+            body: {
+              text: 'пересланный текст',
+            },
+          },
+        },
+      },
+    });
+    const reply = createUpdate({
+      message: {
+        body: {
+          text: 'ответ',
+        },
+        link: {
+          type: 'reply',
+          message: {
+            body: {
+              text: 'текст цитаты',
+            },
+          },
+        },
+      },
+    });
+
+    expect(hasForwardedMessage(forwarded)).toBe(true);
+    expect(shouldSkipAntiSpamBurstForForward(forwarded)).toBe(true);
+    expect(collectForwardedTextSnippets(forwarded.raw)).toContain('пересланный текст');
+    expect(hasForwardedMessage(reply)).toBe(false);
+  });
+
+  it('keeps anti-spam burst enabled when a forward has direct current-message text', () => {
+    const update = createUpdate({
+      message: {
+        body: {
+          text: 'мой текст поверх пересылки',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            body: {
+              text: 'пересланный текст',
+            },
+          },
+        },
+      },
+    });
+
+    expect(hasForwardedMessage(update)).toBe(true);
+    expect(shouldSkipAntiSpamBurstForForward(update)).toBe(false);
   });
 });

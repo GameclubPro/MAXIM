@@ -244,7 +244,7 @@ function resolveFallbackReason(ruleCode: string): string {
     PROFANITY: 'Грубая лексика запрещена правилами чата.',
     COMMERCIAL_AD: 'Коммерческая реклама запрещена в этом чате.',
     MESSAGE_TOO_LONG: 'Сообщение длиннее разрешенного лимита.',
-    MESSAGE_RATE_LIMIT: 'Слишком частая отправка сообщений или стикеров.',
+    MESSAGE_RATE_LIMIT: 'Слишком частая отправка сообщений.',
     MESSAGE_COUNT_LIMIT: 'Превышен лимит сообщений за выбранный период.',
     PHOTO_BLOCKED: 'Фото в этом чате отключены.',
     VIDEO_BLOCKED: 'Видео в этом чате отключены.',

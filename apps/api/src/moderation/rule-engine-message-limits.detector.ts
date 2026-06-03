@@ -23,9 +23,10 @@ export class RuleEngineMessageLimitsDetector {
     userId: string;
     settings: ChatSettings;
     hasMediaAttachment?: boolean;
+    skipAntiSpamBurstLimit?: boolean;
   }): Promise<RuleViolation | null> {
-    const { chatId, userId, settings, hasMediaAttachment } = params;
-    if (!settings.antiSpamEnabled || hasMediaAttachment) {
+    const { chatId, userId, settings, hasMediaAttachment, skipAntiSpamBurstLimit } = params;
+    if (!settings.antiSpamEnabled || hasMediaAttachment || skipAntiSpamBurstLimit) {
       return null;
     }
 

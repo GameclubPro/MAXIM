@@ -58,6 +58,26 @@ export function collectForwardedTextSnippets(raw: unknown): string[] {
   return [...snippets];
 }
 
+export function hasForwardedMessage(update: MaxUpdate): boolean {
+  const rawRecord = asRecord(update.raw);
+  if (!rawRecord) {
+    return false;
+  }
+
+  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
+  return collectForwardedNodes(messageNode).length > 0;
+}
+
+export function shouldSkipAntiSpamBurstForForward(update: MaxUpdate): boolean {
+  const rawRecord = asRecord(update.raw);
+  if (!rawRecord) {
+    return false;
+  }
+
+  const messageNode = extractRawMessageNode(rawRecord) ?? rawRecord;
+  return collectForwardedNodes(messageNode).length > 0 && !hasDirectCurrentMessageText(messageNode);
+}
+
 export function extractRawMessageNode(
   raw: Record<string, unknown>,
 ): Record<string, unknown> | null {
@@ -112,6 +132,10 @@ export function collectForwardedNodes(node: unknown, depth = 0, acc: unknown[] =
   }
 
   const row = node as Record<string, unknown>;
+  if (isForwardLinkedMessage(row)) {
+    acc.push(readForwardLinkedMessagePayload(row) ?? row);
+  }
+
   for (const [key, value] of Object.entries(row)) {
     if (/forward/i.test(key)) {
       acc.push(value);
@@ -182,6 +206,34 @@ function collectTextSnippets(node: unknown, acc: Set<string>, depth = 0): void {
       collectTextSnippets(value, acc, depth + 1);
     }
   }
+}
+
+function hasDirectCurrentMessageText(messageNode: Record<string, unknown>): boolean {
+  const body = asRecord(messageNode.body);
+  const content = asRecord(messageNode.content);
+  const payload = asRecord(messageNode.payload);
+  const nestedMessage = asRecord(messageNode.message);
+  const candidates = [
+    messageNode.text,
+    messageNode.caption,
+    messageNode.plain,
+    messageNode.message_text,
+    messageNode.messageText,
+    body?.text,
+    body?.caption,
+    body?.plain,
+    content?.text,
+    content?.caption,
+    content?.plain,
+    payload?.text,
+    payload?.caption,
+    payload?.plain,
+    nestedMessage?.text,
+    nestedMessage?.caption,
+    nestedMessage?.plain,
+  ];
+
+  return candidates.some((candidate) => typeof candidate === 'string' && candidate.trim());
 }
 
 function collectMediaFlags(
@@ -369,6 +421,14 @@ function isMediaBatchKey(value: string): boolean {
     value === 'media_group' ||
     value === 'media_group_id'
   );
+}
+
+function isForwardLinkedMessage(row: Record<string, unknown>): boolean {
+  return readLowerString(row.type ?? row.link_type ?? row.linkType) === 'forward';
+}
+
+function readForwardLinkedMessagePayload(row: Record<string, unknown>): unknown {
+  return row.message ?? row.body ?? row.content ?? row.payload ?? null;
 }
 
 function isReplyReferenceType(value: string | null): boolean {

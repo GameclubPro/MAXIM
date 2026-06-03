@@ -218,6 +218,25 @@ describe('RuleEngineMessageLimitsDetector', () => {
     expect(redisCounter.calls).toEqual([]);
   });
 
+  it('skips the built-in anti-spam burst window for forwarded messages', async () => {
+    const redisCounter = new MockRedisCounterService();
+    const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
+    const settings = buildSettings({ antiSpamEnabled: true });
+
+    for (let index = 0; index < 6; index += 1) {
+      await expect(
+        detector.detectAntiSpamBurstLimit({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          settings,
+          skipAntiSpamBurstLimit: true,
+        }),
+      ).resolves.toBeNull();
+    }
+
+    expect(redisCounter.calls).toEqual([]);
+  });
+
   it('skips the built-in anti-spam burst window for media attachments and batches', async () => {
     const redisCounter = new MockRedisCounterService();
     const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);

@@ -664,6 +664,7 @@ export class RuleEngineService {
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
     hasMediaBatch?: boolean;
+    skipAntiSpamBurstLimit?: boolean;
     skipDuplicateState?: boolean;
     skipStatefulMessageLimits?: boolean;
     commercialCampaignContext?: CommercialCampaignContext | null;
@@ -681,6 +682,7 @@ export class RuleEngineService {
       hasFileAttachment,
       hasVoiceAttachment,
       hasMediaBatch,
+      skipAntiSpamBurstLimit,
       skipDuplicateState,
       skipStatefulMessageLimits,
       commercialCampaignContext,
@@ -802,6 +804,7 @@ export class RuleEngineService {
           userId,
           settings,
           hasMediaAttachment,
+          skipAntiSpamBurstLimit,
         });
     if (antiSpamViolation) {
       violations.push(antiSpamViolation);
