@@ -2451,4 +2451,13 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'private auto engine exchange with repair wording from final sixteen hour audit guard',
+    text: `Обмен. Мото не предлагать. ДВС после капремонта, ставился новый венец, не сошёлся со стартером, нужно поменять. Двигатель обкатку не прошёл. Остальное в ЛС, в комплект отдам поршни, клапаны, вкладыши, кольца новые.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];

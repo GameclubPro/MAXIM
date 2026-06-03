@@ -571,6 +571,10 @@ describe('commercial pattern regressions', () => {
       'private auto exchange with starter is not auto-parts retail',
       'Обмен. Мото не предлагать Ока. стартер новый, генератор, документы.',
     ],
+    [
+      'private auto engine exchange with repair wording is not a service offer',
+      'Обмен. Мото не предлагать. ДВС после капремонта, ставился новый венец, не сошёлся со стартером, нужно поменять. Двигатель обкатку не прошёл. Остальное в ЛС, в комплект отдам поршни, клапаны, вкладыши, кольца новые.',
+    ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
   });
