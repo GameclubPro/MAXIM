@@ -8667,19 +8667,7 @@ describe('ModerationService', () => {
     );
     expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'Супер бан принят: добавляю пользователя в глобальный список и обрабатываю этот чат.',
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        trafficClass: 'interactive',
-        actionHealthLane: 'interactive',
-        sourceTag: 'moderation_notice',
-        autoDeleteDelayMs: 3 * 60 * 1000,
-        botId: 'bot-2',
-      }),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('rejects super ban commands from non-developers before enqueueing', async () => {

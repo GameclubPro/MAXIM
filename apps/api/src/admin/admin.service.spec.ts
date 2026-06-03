@@ -7740,6 +7740,7 @@ describe('AdminService.applyManualSystemBan', () => {
   it('records developer super ban blacklist and skips managed-chat fanout', async () => {
     const prisma = createPrismaMock();
     prisma.chat.count.mockResolvedValue(14123);
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-2' }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -7843,6 +7844,10 @@ describe('AdminService.applyManualSystemBan', () => {
       trafficClass: 'interactive',
       botId: 'command-bot',
     });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-2', {
+      immediate: true,
+      botId: 'command-bot',
+    });
     expect(prisma.chat.count).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -7859,7 +7864,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Охват по базе: 14123 управляемых чатов'),
+      expect.stringContaining('заблокирован в 14123 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -7969,9 +7974,10 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(assertBotCanManageMembers).not.toHaveBeenCalled();
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Охват по базе: 3 управляемых чатов'),
+      expect.stringContaining('заблокирован в 3 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,

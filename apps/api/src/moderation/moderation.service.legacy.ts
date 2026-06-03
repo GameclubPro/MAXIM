@@ -5410,13 +5410,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             text: 'Не удалось запустить супер бан. Повторите команду через несколько секунд.',
           });
         }
-      } else if (command.action === 'SUPER_BAN') {
-        await this.sendGroupAdminCommandNotice({
-          chatId,
-          botId: commandBotId,
-          settings,
-          text: 'Супер бан принят: добавляю пользователя в глобальный список и обрабатываю этот чат.',
-        });
       }
     } catch (error: unknown) {
       this.logger.warn(

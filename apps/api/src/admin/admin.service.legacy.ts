@@ -11779,11 +11779,17 @@ export class AdminService implements OnModuleDestroy {
     await this.recordDeveloperForcedGlobalBlacklistForJob(job, targetDisplayName);
     await this.rememberDeveloperForcedGlobalSpammer(job.targetUserId);
 
-    await this.applyDeveloperSuperBanSourceChat({
+    const sourceResult = await this.applyDeveloperSuperBanSourceChat({
       job,
       actor,
       targetDisplayName,
     });
+    if (sourceResult.mode === 'removed') {
+      await this.runManualBanSourceCleanup(job.sourceChatId, job.targetUserId, actor.userId, {
+        logMessage: 'Failed to clean source chat messages after developer super ban',
+        botId: job.commandBotId ?? undefined,
+      });
+    }
 
     await this.deleteManualGroupCommandTargetMessage(job);
     await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId, {
@@ -11798,14 +11804,13 @@ export class AdminService implements OnModuleDestroy {
       job.targetSenderName,
       job.targetUserId,
     );
-    const estimateText =
-      estimatedManagedChatCount === null
-        ? 'Охват по базе: все управляемые чаты.'
-        : `Охват по базе: ${Math.max(1, estimatedManagedChatCount)} управляемых чатов.`;
+    const estimatedChatCount = Math.max(1, estimatedManagedChatCount ?? 1);
+    const estimatedChatCountText =
+      estimatedChatCount === 1 ? `${estimatedChatCount} чате` : `${estimatedChatCount} чатах`;
     await this.sendManualGroupCommandNotice({
       chatId: job.sourceChatId,
       botId: job.commandBotId ?? undefined,
-      text: `Пользователь ${targetLabel} заблокирован в этом чате и добавлен в глобальный список разработчика. ${estimateText}`,
+      text: `Пользователь ${targetLabel} заблокирован в ${estimatedChatCountText} по решению разработчика бота.`,
       deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
     });
