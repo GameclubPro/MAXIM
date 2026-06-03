@@ -17,6 +17,7 @@ import type {
   VkParsingSource,
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
+import { TimeField } from '../ui/time-field';
 
 type SourceDashboardProps = {
   sourceUrl: string;
@@ -575,32 +576,36 @@ export function SourceDashboard({
                     <section className="vk-source-control-group">
                       <h4>Пауза</h4>
                       <div className="vk-source-controls">
-                        <label>
+                        <div className="vk-time-field">
                           <span>С</span>
-                          <input
-                            type="time"
+                          <TimeField
+                            label="С"
                             value={source.quietHoursStart ?? ''}
+                            variant="compact"
+                            allowEmpty
                             disabled={isSavingSource}
-                            onChange={(event) =>
+                            onChange={(nextValue) =>
                               onUpdateSource(source.id, {
-                                quietHoursStart: event.target.value || null,
+                                quietHoursStart: nextValue || null,
                               })
                             }
                           />
-                        </label>
-                        <label>
+                        </div>
+                        <div className="vk-time-field">
                           <span>До</span>
-                          <input
-                            type="time"
+                          <TimeField
+                            label="До"
                             value={source.quietHoursEnd ?? ''}
+                            variant="compact"
+                            allowEmpty
                             disabled={isSavingSource}
-                            onChange={(event) =>
+                            onChange={(nextValue) =>
                               onUpdateSource(source.id, {
-                                quietHoursEnd: event.target.value || null,
+                                quietHoursEnd: nextValue || null,
                               })
                             }
                           />
-                        </label>
+                        </div>
                       </div>
                     </section>
 

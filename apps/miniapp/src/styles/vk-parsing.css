@@ -432,6 +432,7 @@
 .vk-scheduler-grid label,
 .vk-scheduler-protection label,
 .vk-source-controls label,
+.vk-time-field,
 .vk-source-field {
   min-width: 0;
   display: grid;
@@ -442,6 +443,7 @@
 .vk-scheduler-grid label > span,
 .vk-scheduler-protection label > span,
 .vk-source-controls label > span,
+.vk-time-field > span,
 .vk-source-field > span {
   min-width: 0;
   overflow: hidden;
@@ -451,6 +453,10 @@
   line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vk-time-field .time-field {
+  min-width: 0;
 }
 
 .vk-parsing-source-input input,

@@ -7,6 +7,7 @@ import type {
   VkParsingSource,
 } from '@maxim/contracts';
 import { cn } from '../../lib/cn';
+import { TimeField } from '../ui/time-field';
 
 type SchedulerPanelProps = {
   settings: VkParsingSettings;
@@ -284,46 +285,48 @@ export function SchedulerPanel({
           <section id="vk-parsing-work-time" className="vk-advanced-group">
             <h3>Время</h3>
             <div className="vk-scheduler-grid vk-scheduler-grid--time">
-              <label>
+              <div className="vk-time-field">
                 <span>Работает с</span>
-                <input
-                  type="time"
+                <TimeField
+                  label="Работает с"
                   value={settings.workHoursStart}
+                  variant="compact"
                   disabled={isSaving}
-                  onChange={(event) => onUpdateSetting({ workHoursStart: event.target.value })}
+                  onChange={(nextValue) => onUpdateSetting({ workHoursStart: nextValue })}
                 />
-              </label>
-              <label>
+              </div>
+              <div className="vk-time-field">
                 <span>Работает до</span>
-                <input
-                  type="time"
+                <TimeField
+                  label="Работает до"
                   value={settings.workHoursEnd}
+                  variant="compact"
                   disabled={isSaving}
-                  onChange={(event) => onUpdateSetting({ workHoursEnd: event.target.value })}
+                  onChange={(nextValue) => onUpdateSetting({ workHoursEnd: nextValue })}
                 />
-              </label>
-              <label>
+              </div>
+              <div className="vk-time-field">
                 <span>Тишина с</span>
-                <input
-                  type="time"
+                <TimeField
+                  label="Тишина с"
                   value={settings.quietHoursStart ?? ''}
+                  variant="compact"
+                  allowEmpty
                   disabled={isSaving}
-                  onChange={(event) =>
-                    onUpdateSetting({ quietHoursStart: event.target.value || null })
-                  }
+                  onChange={(nextValue) => onUpdateSetting({ quietHoursStart: nextValue || null })}
                 />
-              </label>
-              <label>
+              </div>
+              <div className="vk-time-field">
                 <span>Тишина до</span>
-                <input
-                  type="time"
+                <TimeField
+                  label="Тишина до"
                   value={settings.quietHoursEnd ?? ''}
+                  variant="compact"
+                  allowEmpty
                   disabled={isSaving}
-                  onChange={(event) =>
-                    onUpdateSetting({ quietHoursEnd: event.target.value || null })
-                  }
+                  onChange={(nextValue) => onUpdateSetting({ quietHoursEnd: nextValue || null })}
                 />
-              </label>
+              </div>
             </div>
           </section>
 

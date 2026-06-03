@@ -39,6 +39,7 @@ import {
 } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
+import { TimeField } from './ui/time-field';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -2307,15 +2308,15 @@ export function ManagedGiveawayCard({
                         disabled={isBusy}
                       />
                     </label>
-                    <label className="field">
-                      <span>Время</span>
-                      <input
-                        type="time"
+                    <div className="field">
+                      <TimeField
+                        label="Время"
                         value={readTimeInputPart(draft.startsAtLocal, '12:00')}
-                        onChange={(event) => updateStartTime(event.target.value)}
+                        variant="embedded"
+                        onChange={updateStartTime}
                         disabled={isBusy}
                       />
-                    </label>
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -2365,15 +2366,15 @@ export function ManagedGiveawayCard({
                       disabled={isBusy}
                     />
                   </label>
-                  <label className="field">
-                    <span>Время</span>
-                    <input
-                      type="time"
+                  <div className="field">
+                    <TimeField
+                      label="Время"
                       value={readTimeInputPart(draft.endsAtLocal, '21:00')}
-                      onChange={(event) => updateEndTime(event.target.value)}
+                      variant="embedded"
+                      onChange={updateEndTime}
                       disabled={isBusy}
                     />
-                  </label>
+                  </div>
                 </div>
               </div>
             </div>

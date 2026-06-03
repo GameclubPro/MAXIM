@@ -1,0 +1,392 @@
+@layer components {
+  .time-field {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .time-field__button {
+    width: 100%;
+    min-height: 58px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px 10px 14px;
+    border: 1px solid rgba(190, 205, 220, 0.86);
+    border-radius: 8px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 250, 253, 0.92)),
+      #ffffff;
+    box-shadow: 0 10px 22px rgba(38, 72, 104, 0.08);
+    color: #20384f;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color 0.18s ease,
+      box-shadow 0.18s ease,
+      transform 0.18s ease;
+  }
+
+  .time-field--compact .time-field__button {
+    min-height: 36px;
+    gap: 8px;
+    padding: 5px 7px 5px 9px;
+    border-color: var(--vk-line, rgba(190, 205, 220, 0.86));
+    border-radius: var(--vk-radius, 8px);
+    box-shadow: none;
+  }
+
+  .time-field--embedded .time-field__button {
+    min-height: 52px;
+    border-radius: 20px;
+    border-color: rgba(190, 206, 220, 0.9);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 254, 0.94)),
+      rgba(255, 255, 255, 0.97);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+
+  .time-field--embedded .time-field__label {
+    color: #5f7a92;
+  }
+
+  .time-field__button:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
+  .time-field__button:focus-visible {
+    outline: 3px solid rgba(45, 125, 210, 0.22);
+    outline-offset: 2px;
+    border-color: rgba(45, 125, 210, 0.56);
+  }
+
+  .time-field.has-error .time-field__button {
+    border-color: rgba(215, 72, 88, 0.58);
+    box-shadow: 0 10px 22px rgba(184, 50, 64, 0.12);
+  }
+
+  .time-field.is-disabled .time-field__button {
+    cursor: not-allowed;
+    opacity: 0.62;
+    box-shadow: none;
+  }
+
+  .time-field__copy {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .time-field__label,
+  .time-field__error {
+    font-size: 0.76rem;
+    line-height: 1.25;
+  }
+
+  .time-field__label {
+    color: #678197;
+    font-weight: 700;
+  }
+
+  .time-field--compact .time-field__label {
+    display: none;
+  }
+
+  .time-field__value {
+    color: #162f47;
+    font-size: 1.14rem;
+    font-weight: 800;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .time-field.is-empty .time-field__value {
+    color: #758399;
+    font-size: 0.9rem;
+    font-weight: 700;
+  }
+
+  .time-field--compact .time-field__value {
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.1;
+  }
+
+  .time-field__icon {
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: rgba(230, 241, 251, 0.92);
+    color: #1f6faf;
+  }
+
+  .time-field--compact .time-field__icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+  }
+
+  .time-field--compact .time-field__icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .time-field__icon svg {
+    display: block;
+  }
+
+  .time-field__error {
+    color: #b73544;
+    font-weight: 700;
+  }
+
+  .time-field-sheet {
+    position: fixed;
+    inset: 0;
+    box-sizing: border-box;
+    z-index: 1400;
+    display: grid;
+    align-items: end;
+  }
+
+  .design-preview__device-screen .time-field-sheet {
+    position: absolute;
+  }
+
+  .time-field-sheet__backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: rgba(17, 31, 45, 0.38);
+    animation: time-field-fade-in 180ms ease-out both;
+  }
+
+  .time-field-sheet__panel {
+    position: relative;
+    width: min(100%, 540px);
+    max-height: min(78vh, 620px);
+    justify-self: center;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 14px;
+    padding: 8px 14px calc(14px + env(safe-area-inset-bottom));
+    border: 1px solid rgba(222, 231, 239, 0.94);
+    border-radius: 20px 20px 0 0;
+    background: rgba(250, 252, 254, 0.98);
+    box-shadow: 0 -24px 54px rgba(20, 43, 64, 0.2);
+    animation: time-field-slide-up 220ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+  }
+
+  .time-field-sheet__panel:focus {
+    outline: none;
+  }
+
+  .time-field-sheet__grabber {
+    width: 44px;
+    height: 4px;
+    justify-self: center;
+    border-radius: 999px;
+    background: rgba(139, 160, 179, 0.48);
+  }
+
+  .time-field-sheet__head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 0 2px;
+    color: #1b334a;
+  }
+
+  .time-field-sheet__head > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .time-field-sheet__head strong {
+    font-size: 1rem;
+    line-height: 1.2;
+  }
+
+  .time-field-sheet__head small {
+    color: #1f6faf;
+    font-size: 1.35rem;
+    font-weight: 850;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .time-field-sheet__head svg {
+    color: #1f6faf;
+  }
+
+  .time-field-sheet__wheels {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 9px;
+  }
+
+  .time-field-sheet__column {
+    min-width: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .time-field-sheet__column-label {
+    color: #637f96;
+    font-size: 0.75rem;
+    font-weight: 800;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .time-field-sheet__options {
+    min-height: 0;
+    max-height: 330px;
+    overflow: auto;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-content: start;
+    gap: 7px;
+    padding: 2px 1px 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .time-field-sheet__option {
+    min-height: 42px;
+    border: 1px solid rgba(197, 213, 228, 0.82);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.9);
+    color: #294a67;
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition:
+      border-color 0.16s ease,
+      background 0.16s ease,
+      color 0.16s ease,
+      transform 0.16s ease;
+  }
+
+  .time-field-sheet__option:active {
+    transform: translateY(1px);
+  }
+
+  .time-field-sheet__option:focus-visible {
+    outline: 3px solid rgba(45, 125, 210, 0.22);
+    outline-offset: 1px;
+  }
+
+  .time-field-sheet__option.is-active {
+    border-color: rgba(31, 111, 175, 0.48);
+    background: #1f6faf;
+    color: #ffffff;
+    box-shadow: 0 9px 16px rgba(31, 111, 175, 0.22);
+  }
+
+  .time-field-sheet__divider {
+    align-self: center;
+    color: #86a0b6;
+    font-size: 1.4rem;
+    font-weight: 900;
+    line-height: 1;
+    transform: translateY(8px);
+  }
+
+  .time-field-sheet__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .time-field-sheet__actions--with-clear {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .time-field-sheet__button {
+    min-height: 46px;
+    border: 1px solid rgba(197, 213, 228, 0.86);
+    border-radius: 8px;
+    font: inherit;
+    font-weight: 850;
+    cursor: pointer;
+  }
+
+  .time-field-sheet__button:focus-visible {
+    outline: 3px solid rgba(45, 125, 210, 0.22);
+    outline-offset: 2px;
+  }
+
+  .time-field-sheet__button--ghost {
+    background: rgba(255, 255, 255, 0.92);
+    color: #31536f;
+  }
+
+  .time-field-sheet__button--clear {
+    background: rgba(239, 244, 248, 0.92);
+    color: #526b82;
+  }
+
+  .time-field-sheet__button--apply {
+    border-color: #1f6faf;
+    background: #1f6faf;
+    color: #ffffff;
+    box-shadow: 0 10px 18px rgba(31, 111, 175, 0.22);
+  }
+
+  @media (max-width: 380px) {
+    .time-field-sheet__panel {
+      padding-inline: 10px;
+    }
+
+    .time-field-sheet__wheels {
+      gap: 6px;
+    }
+
+    .time-field-sheet__options {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .time-field-sheet__actions,
+    .time-field-sheet__actions--with-clear {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .time-field-sheet__backdrop,
+    .time-field-sheet__panel {
+      animation: none;
+    }
+  }
+
+  @keyframes time-field-fade-in {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes time-field-slide-up {
+    from {
+      transform: translateY(18px);
+    }
+
+    to {
+      transform: translateY(0);
+    }
+  }
+}

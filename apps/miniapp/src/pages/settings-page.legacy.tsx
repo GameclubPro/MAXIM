@@ -350,6 +350,7 @@ import {
 const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
+const LazySettingsTimeFields = lazy(() => import('./settings/night-mode-time-fields'));
 const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
   import('../components/managed-entity-access-diagnostics').then((module) => ({
     default: module.ManagedEntityAccessDiagnosticsBanner,
@@ -5624,23 +5625,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                         }}
                                                       />
                                                     </label>
-                                                    <label
+                                                    <div
                                                       className="field allowlist-item__schedule-field"
-                                                      htmlFor={`domain-schedule-time-${entryIdSuffix}`}
                                                     >
-                                                      <span className="field__label">
-                                                        Время удаления
-                                                      </span>
-                                                      <input
-                                                        id={`domain-schedule-time-${entryIdSuffix}`}
-                                                        type="time"
-                                                        value={scheduleTime}
-                                                        onChange={(event) => {
-                                                          setScheduleTime(event.target.value);
-                                                          setScheduleError('');
-                                                        }}
-                                                      />
-                                                    </label>
+                                                      <Suspense fallback={null}>
+                                                        <LazySettingsTimeFields
+                                                          kind="schedule"
+                                                          value={scheduleTime}
+                                                          onChange={(nextValue) => {
+                                                            setScheduleTime(nextValue);
+                                                            setScheduleError('');
+                                                          }}
+                                                        />
+                                                      </Suspense>
+                                                    </div>
                                                   </div>
 
                                                   {scheduleError ? (
@@ -9426,41 +9424,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
                         >
                           <div className="night-window-grid">
-                            <label className="field night-window-grid__field">
-                              <span className="field__label">Закрывать с</span>
-                              <input
-                                type="time"
-                                step={60}
-                                value={minutesToTimeInput(draft.nightModeStartTimeMinutes)}
-                                onChange={(event) =>
-                                  setFieldValue(
-                                    'nightModeStartTimeMinutes',
-                                    timeInputToMinutes(
-                                      event.target.value,
-                                      normalizeDayMinutes(draft.nightModeStartTimeMinutes, 23 * 60),
-                                    ),
-                                  )
+                            <Suspense fallback={null}>
+                              <LazySettingsTimeFields
+                                kind="night"
+                                startMinutes={draft.nightModeStartTimeMinutes}
+                                endMinutes={draft.nightModeEndTimeMinutes}
+                                onChange={(key, nextValue) =>
+                                  setFieldValue(key, nextValue as ChatSettings[typeof key])
                                 }
                               />
-                            </label>
-
-                            <label className="field night-window-grid__field">
-                              <span className="field__label">Открывать в</span>
-                              <input
-                                type="time"
-                                step={60}
-                                value={minutesToTimeInput(draft.nightModeEndTimeMinutes)}
-                                onChange={(event) =>
-                                  setFieldValue(
-                                    'nightModeEndTimeMinutes',
-                                    timeInputToMinutes(
-                                      event.target.value,
-                                      normalizeDayMinutes(draft.nightModeEndTimeMinutes, 8 * 60),
-                                    ),
-                                  )
-                                }
-                              />
-                            </label>
+                            </Suspense>
                           </div>
 
                           <label className={cn('field', nightTimezoneError && 'field--error')}>
