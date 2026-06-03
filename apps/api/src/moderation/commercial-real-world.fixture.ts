@@ -628,11 +628,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `КИЗЛЯРСКИЕ НОЖИ - легенда ручной ковки. Что предлагаем: охотничьи ножи, кинжалы, шашки, шашлычные наборы. Где купить: в МАХ https://max.ru/join/kizlyar, Telegram https://t.me/kizlyar, WhatsApp заказ https://wa.me/79000000098. Телефон +7 900 000 00 98.`,
     expectedSubtype: 'GOODS_RETAIL',
     reviewRecommended: true,
-    expectedSignals: [
-      'goods-retail:knife-retail-catalog',
-      'deal-channel:link',
-      'contact:phone',
-    ],
+    expectedSignals: ['goods-retail:knife-retail-catalog', 'deal-channel:link', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',
       commercialAdsWarnThreshold: 45,
@@ -1685,6 +1681,165 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'paid group mailing with emoji keycap prices from sixteen hour audit',
+    text: `3️⃣ дня рассылка 8️⃣6️⃣0️⃣Р. 5️⃣0️⃣0️⃣ групп MAX, база групп, фото/видео отчет. Пишите в личку https://example.com/max-mailing`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['risk:paid-group-mailing', 'transaction:price', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'leaflet assembly work with spaced role from sixteen hour audit',
+    text: `С Б О Р Щ И К упаковка листовок. Оплата 1️⃣0️⃣ 0️⃣0️⃣0️⃣ руб, график свободный, телефон +7 900 000 02 01`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:leaflet-assembly-work', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'wb helper vacancy from sixteen hour audit',
+    text: `Срочно требуется помощник для работы с WB. В день от 4500 р, без опыта, подробности https://example.com/wb-job`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: ['recruitment:требуется', 'transaction:price', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'legal document services from sixteen hour audit',
+    text: `Юридические услуги: подготовка исковых заявлений, претензий и жалоб, представительство в суде. Телефон +7 900 000 02 02`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:legal-document-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'balanced balcony glazing service from sixteen hour audit',
+    text: `Остекление и утепление балконов и лоджий, отделка пространства под ключ. Бесплатный замер и расчет стоимости, телефон +7 900 000 02 03`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'service-specialty:balcony-glazing-service',
+      'transaction:implied-price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 55,
+      commercialAdsDeleteThreshold: 76,
+    },
+  },
+  {
+    label: 'collectible flower retail from sixteen hour audit',
+    text: `Коллекционные фиалки, детки и стартеры, список сортов. Минимальный заказ, упаковка, отправка СДЭК и почтой. 150 руб, ватсап +7 900 000 02 04`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'goods-retail:collectible-flower-retail',
+      'transaction:price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'developer house with implied million price from sixteen hour audit',
+    text: `Дом от застройщика в новом поселке. Подходит под семейную ипотеку, стоимость 8.5 млн, отделка, телефон +7 900 000 02 05`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    reviewRecommended: false,
+    expectedSignals: [
+      'property-agent:дом-от-застройщика',
+      'transaction:implied-price',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'generic bare domain service promo from blind spot sweep',
+    text: `Новый сервис доставки еды, скидка по промокоду START. Переходите example-food.ru/menu, заказ онлайн`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: true,
+    expectedSignals: ['promo:промокод', 'deal-channel:generic-domain'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'service marketplace link from blind spot sweep',
+    text: `Ремонт холодильников на дому, диагностика бесплатно, гарантия. Запись тут avito.ru/services/remont-holodilnikov`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'service-specialty:appliance-repair',
+      'deal-channel:marketplace-service-link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'email contact accounting service from blind spot sweep',
+    text: `Бухгалтерское сопровождение ИП и ООО, отчетность и декларации. Заявки на почту buh-office@example.com`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: ['service-specialty:accounting-service', 'contact:email'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'soft response cta beauty service from blind spot sweep',
+    text: `Ресницы, брови, ламинирование. Свободные окошки завтра, кто хочет - ставьте плюс`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: ['service-specialty:ресниц', 'contact:soft-response-cta'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'government benefit phishing from blind spot sweep',
+    text: `Получите выплату 10000 через госуслуги, заполните анкету по ссылке clck.ru/abc123`,
+    expectedSubtype: 'GOODS',
+    reviewRecommended: false,
+    expectedSignals: ['risk:government-benefit-phishing', 'deal-channel:link'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -1779,7 +1934,8 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
     },
   },
   {
-    label: 'private owner apartment sale with any payment and questions by phone from twelve hour audit guard',
+    label:
+      'private owner apartment sale with any payment and questions by phone from twelve hour audit guard',
     text: `Продаю квартиру в селе Подлужном изобильненского района ставропольского края, в квартире 3 комнаты, ванная, кухня, веранда, все коммуникации, отдельно земельный участок 4 сотки, документы на квартиру и участок есть, срочно, недорого, небольшой торг, собственник, любой вид оплаты .На сообщения не отвечает все вопросы только по телефону +7 900 000 00 24`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
@@ -2207,6 +2363,51 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'animal adoption relocation mention from fourteen hour audit guard',
     text: `Кошка ищет дом, отдают в добрые руки при переезде, пишите в личку.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'government services status from blind spot false-positive guard',
+    text: `На госуслугах можно проверить статус заявления, ссылка есть на сайте администрации.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'ordinary meeting plus response from blind spot false-positive guard',
+    text: `Кто идет завтра на встречу, ставьте плюс.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'civic bare domain from blind spot false-positive guard',
+    text: `На сайте администрации example-raion.ru опубликован график отключений воды.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'civic email contact from blind spot false-positive guard',
+    text: `Почта администрации для жалоб info@example.ru, напишите обращение по форме.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'private avito resale from blind spot false-positive guard',
+    text: `Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

@@ -48,7 +48,7 @@ export function canCommercialActionDelete(params: {
     return false;
   }
 
-  return params.evidenceTier === 'DIRECT' && params.hasDirectDealEvidence;
+  return params.evidenceTier === 'DIRECT' || params.hasDirectDealEvidence;
 }
 
 export function sigmoid(value: number): number {
@@ -91,6 +91,19 @@ export function hasStrongCommercialCampaignEvidence(
 
   const thresholds = COMMERCIAL_ENGINE_CONFIG.campaignEvidence;
   const hasDealAnchor = state.hasContact || state.hasDealChannel || state.hasTransactional;
+  const hasRepeatedDomainSelfPromo =
+    (context.repeatedDomainDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
+    (state.hasDealChannel ||
+      state.hasPromoContext ||
+      state.hasBusinessContext ||
+      state.hasServiceContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext ||
+      state.hasGoodsRetailContext ||
+      state.hasGroupPromoContext ||
+      state.hasCommercialAudienceContext ||
+      state.hasChannelPlacementContext ||
+      state.hasCallToActionContext);
 
   return (
     (context.repeatedPhoneDistinctChatCount >= thresholds.repeatedContactChats &&
@@ -99,6 +112,7 @@ export function hasStrongCommercialCampaignEvidence(
       state.hasDealChannel) ||
     ((context.repeatedHandleDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
       state.hasContact) ||
+    hasRepeatedDomainSelfPromo ||
     ((context.senderDistinctChatCount5m ?? 0) >= thresholds.senderVelocity5mChats &&
       hasDealAnchor) ||
     (context.sameTextDistinctChatCount >= thresholds.repeatedTextChats && hasDealAnchor) ||
@@ -204,7 +218,9 @@ export class CommercialSecondStageScorer {
         state.hasBusinessContext ||
         state.hasPromoContext) &&
       (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-    const priceMatchCount = countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN);
+    const priceMatchCount =
+      countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN) ||
+      countPatternMatches(normalizedText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN);
     const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
     const multiSkuPriceLineCount = countPatternMatches(
       rawLoweredText,

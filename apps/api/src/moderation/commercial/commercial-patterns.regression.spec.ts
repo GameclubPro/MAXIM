@@ -262,6 +262,72 @@ describe('commercial pattern regressions', () => {
       subtype: 'GOODS_RETAIL',
       signals: ['goods-retail:plant-nursery-stock', 'goods-retail:plant-nursery-shipping'],
     },
+    {
+      label: 'paid group mailing with emoji keycap prices from sixteen hour audit miss',
+      text: '3️⃣ дня рассылка 8️⃣6️⃣0️⃣Р. 5️⃣0️⃣0️⃣ групп MAX, база групп, фото/видео отчет. Пишите в личку https://example.com/max-mailing',
+      subtype: 'SERVICES',
+      signals: ['risk:paid-group-mailing', 'transaction:price', 'deal-channel:link'],
+    },
+    {
+      label: 'leaflet assembly work with spaced role from sixteen hour audit miss',
+      text: 'С Б О Р Щ И К упаковка листовок. Оплата 1️⃣0️⃣ 0️⃣0️⃣0️⃣ руб, график свободный, телефон +7 900 000 02 01',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:leaflet-assembly-work', 'transaction:price', 'contact:phone'],
+    },
+    {
+      label: 'wb helper vacancy from sixteen hour audit miss',
+      text: 'Срочно требуется помощник для работы с WB. В день от 4500 р, без опыта, подробности https://example.com/wb-job',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:требуется', 'transaction:price', 'deal-channel:link'],
+    },
+    {
+      label: 'legal document services from sixteen hour audit miss',
+      text: 'Юридические услуги: подготовка исковых заявлений, претензий и жалоб, представительство в суде. Телефон +7 900 000 02 02',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:legal-document-service', 'contact:phone'],
+    },
+    {
+      label: 'collectible violet retail from sixteen hour audit miss',
+      text: 'Коллекционные фиалки, детки и стартеры, список сортов. Минимальный заказ, упаковка, отправка СДЭК и почтой. 150 руб, ватсап +7 900 000 02 04',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:collectible-flower-retail', 'transaction:price', 'contact:phone'],
+    },
+    {
+      label: 'developer house with implied million price from sixteen hour audit miss',
+      text: 'Дом от застройщика в новом поселке. Подходит под семейную ипотеку, стоимость 8.5 млн, отделка, телефон +7 900 000 02 05',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:дом-от-застройщика', 'transaction:implied-price', 'contact:phone'],
+    },
+    {
+      label: 'generic domain service promo from blind spot sweep',
+      text: 'Новый сервис доставки еды, скидка по промокоду START. Переходите example-food.ru/menu, заказ онлайн',
+      subtype: 'GOODS',
+      signals: ['promo:промокод', 'deal-channel:generic-domain'],
+    },
+    {
+      label: 'service marketplace link from blind spot sweep',
+      text: 'Ремонт холодильников на дому, диагностика бесплатно, гарантия. Запись тут avito.ru/services/remont-holodilnikov',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:appliance-repair', 'deal-channel:marketplace-service-link'],
+    },
+    {
+      label: 'email contact service from blind spot sweep',
+      text: 'Бухгалтерское сопровождение ИП и ООО, отчетность и декларации. Заявки на почту buh-office@example.com',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:accounting-service', 'contact:email'],
+    },
+    {
+      label: 'soft response cta service from blind spot sweep',
+      text: 'Ресницы, брови, ламинирование. Свободные окошки завтра, кто хочет - ставьте плюс',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:ресниц', 'contact:soft-response-cta'],
+    },
+    {
+      label: 'government benefit phishing from blind spot sweep',
+      text: 'Получите выплату 10000 через госуслуги, заполните анкету по ссылке clck.ru/abc123',
+      subtype: 'GOODS',
+      signals: ['risk:government-benefit-phishing', 'deal-channel:link'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -335,6 +401,28 @@ describe('commercial pattern regressions', () => {
       expect.arrayContaining(['service-specialty:appliance-repair', 'contact:phone']),
     );
     expect(['REVIEW_ONLY', 'WARN']).toContain(result?.actionBand);
+  });
+
+  it('detects balcony glazing service under balanced thresholds', () => {
+    const result = detect(
+      'Остекление и утепление балконов и лоджий, отделка пространства под ключ. Бесплатный замер и расчет стоимости, телефон +7 900 000 02 03',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 55,
+          commercialAdsDeleteThreshold: 76,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'service-specialty:balcony-glazing-service',
+        'transaction:implied-price',
+        'contact:phone',
+      ]),
+    );
   });
 
   it('does not let generic medical appointment wording become buyout evidence', () => {
@@ -447,8 +535,48 @@ describe('commercial pattern regressions', () => {
       'private Toyota Vitz resale with ex wording from sixteen hour audit false positive',
       'Продам Toyota Vitz 2010 года, экс владелец, пробег 120000, цена 600000, +7 900 000 01 26',
     ],
+    [
+      'government services status is not benefit phishing',
+      'На госуслугах можно проверить статус заявления, ссылка есть на сайте администрации.',
+    ],
+    [
+      'ordinary meeting plus response is not service cta',
+      'Кто идет завтра на встречу, ставьте плюс.',
+    ],
+    [
+      'civic bare domain is not commercial generic domain',
+      'На сайте администрации example-raion.ru опубликован график отключений воды.',
+    ],
+    [
+      'civic email contact is not commercial contact',
+      'Почта администрации для жалоб info@example.ru, напишите обращение по форме.',
+    ],
+    [
+      'private avito resale stays private',
+      'Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.',
+    ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
+  });
+
+  it('does not classify collectible flower starters as auto parts', () => {
+    const result = detect(
+      'Эксклюзивные коллекционные фиалки, детки и стартеры, упаковка, отправка СДЭК, 150 руб.',
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('goods-retail:collectible-flower-retail');
+    expect(result?.matchedSignals).not.toContain('goods-retail:auto-parts-retail');
+    expect(result?.matchedSignals).not.toContain('property-agent:эксклюзив');
+  });
+
+  it('does not treat the domain portion of an email as a generic deal channel', () => {
+    const result = detect(
+      'Бухгалтерское сопровождение ИП и ООО, отчетность и декларации. Заявки на почту buh-office@example.com',
+    );
+
+    expect(result?.matchedSignals).toContain('contact:email');
+    expect(result?.matchedSignals).not.toContain('deal-channel:generic-domain');
   });
 
   it('keeps repeated private clothing resale out of commercial actions even with campaign context', () => {

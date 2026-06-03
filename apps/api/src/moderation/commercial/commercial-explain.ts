@@ -25,11 +25,15 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
   });
   const hasHighRiskEvidence = matchedSignals.some((signal) => signal.startsWith('risk:'));
   const hasPriceEvidence =
-    matchedSignals.includes('transaction:price') || matchedSignals.includes('combo:contact+price');
+    matchedSignals.includes('transaction:price') ||
+    matchedSignals.includes('transaction:implied-price') ||
+    matchedSignals.includes('combo:contact+price');
   const hasStrongContactEvidence =
     matchedSignals.includes('contact:phone') ||
+    matchedSignals.includes('contact:contextual-phone') ||
     matchedSignals.includes('contact:masked-phone') ||
-    matchedSignals.includes('contact:handle');
+    matchedSignals.includes('contact:handle') ||
+    matchedSignals.includes('contact:email');
   const hasLinkEvidence = matchedSignals.some((signal) => signal.startsWith('deal-channel:'));
   const hasDirectDealEvidence =
     (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
@@ -93,7 +97,9 @@ export function buildCommercialFeatureVector(
         ? 1
         : 0,
     massDistribution: hasPrefix('campaign:') || hasPrefix('channel-placement:') ? 1 : 0,
-    priceStructure: hasAny('transaction:price', 'combo:contact+price') ? 1 : 0,
+    priceStructure: hasAny('transaction:price', 'transaction:implied-price', 'combo:contact+price')
+      ? 1
+      : 0,
     cta: hasPrefix('cta:') || hasPrefix('group-promo:') ? 1 : 0,
     negativePrivateContext: negativeSignals.some(
       (signal) =>

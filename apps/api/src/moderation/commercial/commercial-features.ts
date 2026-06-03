@@ -52,8 +52,11 @@ import {
   ADS_SPECIAL_TOKEN_MATCHERS,
   ADS_LINK_PATTERN,
   ADS_MARKETPLACE_LINK_PATTERN,
+  ADS_MARKETPLACE_SERVICE_LINK_PATTERN,
+  ADS_GENERIC_DOMAIN_LINK_PATTERN,
   ADS_PRICE_PATTERN,
   ADS_PRICE_RANGE_PATTERN,
+  ADS_IMPLIED_PRICE_PATTERN,
   ADS_TRANSACTIONAL_PATTERN,
   ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN,
   ADS_PRIVATE_LOW_QUANTITY_COMMERCIAL_OVERRIDE_PATTERN,
@@ -61,8 +64,11 @@ import {
   ADS_URGENCY_PATTERN,
   ADS_QUANTITY_PATTERN,
   ADS_PHONE_PATTERN,
+  ADS_CONTEXTUAL_PHONE_PATTERN,
   ADS_MASKED_PHONE_PATTERN,
   ADS_HANDLE_CONTACT_PATTERN,
+  ADS_EMAIL_CONTACT_PATTERN,
+  ADS_SOFT_RESPONSE_CTA_PATTERN,
   ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
   ADS_MULTI_SKU_PRICE_LINE_PATTERN,
 } from './commercial-patterns';
@@ -175,9 +181,12 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     );
   const hasDealSignal =
     ADS_LINK_PATTERN.test(rawLoweredText) ||
+    ADS_MARKETPLACE_SERVICE_LINK_PATTERN.test(rawLoweredText) ||
     ADS_PHONE_PATTERN.test(rawLoweredText) ||
+    ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
     ADS_MASKED_PHONE_PATTERN.test(rawLoweredText) ||
     ADS_HANDLE_CONTACT_PATTERN.test(rawLoweredText) ||
+    ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText) ||
     ADS_PRICE_PATTERN.test(rawLoweredText) ||
     ADS_PRICE_RANGE_PATTERN.test(rawLoweredText) ||
     ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
@@ -197,8 +206,7 @@ export function hasCommercialSpamMarkers(text: string): boolean {
   const hasPrivateSingleListingContext = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.some(({ pattern }) =>
     matchesPattern(pattern),
   );
-  const hasPrivateLowQuantityGoodsListing =
-    isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
+  const hasPrivateLowQuantityGoodsListing = isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
   const hasPrivateGoodsItemContext =
     hasPrivateSingleListingContext ||
     hasPrivateLowQuantityGoodsListing ||
@@ -232,6 +240,7 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     hasServiceCommercialContext ||
     hasGoodsRetailContext ||
     hasCallToActionContext ||
+    ADS_SOFT_RESPONSE_CTA_PATTERN.test(rawLoweredText) ||
     hasGroupPromotionIntent ||
     hasCommercialAudienceContext ||
     hasChannelPlacementContext ||
@@ -373,9 +382,7 @@ function hasCommercialMarker(marker: string, context: CommercialMarkerContext): 
   }
 
   if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
-    return context.normalizedTokensWithoutUrls.some((token) =>
-      token.startsWith(normalizedMarker),
-    );
+    return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
   }
 
   return (
@@ -402,11 +409,9 @@ export function collectCommercialSignals(params: {
   const weights = scoringConfig.weights;
   const campaignWeights = scoringConfig.campaignWeights;
   const positiveFactor =
-    scoringConfig.positiveFactorBase +
-    profile.strictness * scoringConfig.positiveFactorStrictness;
+    scoringConfig.positiveFactorBase + profile.strictness * scoringConfig.positiveFactorStrictness;
   const negativeFactor =
-    scoringConfig.negativeFactorBase -
-    profile.strictness * scoringConfig.negativeFactorStrictness;
+    scoringConfig.negativeFactorBase - profile.strictness * scoringConfig.negativeFactorStrictness;
 
   let score = 0;
   const matchedSignals: string[] = [];
@@ -758,6 +763,29 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
+  const hasStructuredContextForImpliedPrice =
+    hasPropertyAgentContext ||
+    hasCommercialPropertyContext ||
+    hasRecruitmentContext ||
+    hasServiceContext ||
+    hasServiceOfferContext ||
+    hasServiceSpecialtyContext ||
+    hasGoodsRetailContext ||
+    hasBuyoutContext ||
+    hasBusinessContext ||
+    hasPromoContext;
+  if (
+    !hasPrice &&
+    hasStructuredContextForImpliedPrice &&
+    (ADS_IMPLIED_PRICE_PATTERN.test(rawLoweredText) ||
+      ADS_IMPLIED_PRICE_PATTERN.test(normalizedText))
+  ) {
+    addPositive('transaction:implied-price', weights.price);
+    hasPrice = true;
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
+
   if (ADS_TRANSACTIONAL_PATTERN.test(normalizedText)) {
     addPositive('transaction:keywords', weights.transactionalKeyword);
     hasTransactional = true;
@@ -793,6 +821,17 @@ export function collectCommercialSignals(params: {
   }
 
   if (
+    !hasPhoneContact &&
+    (ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_CONTEXTUAL_PHONE_PATTERN.test(normalizedText))
+  ) {
+    addPositive('contact:contextual-phone', weights.phone);
+    hasContact = true;
+    hasPhoneContact = true;
+    hasDealSignal = true;
+  }
+
+  if (
     ADS_MASKED_PHONE_PATTERN.test(rawLoweredText) ||
     ADS_MASKED_PHONE_PATTERN.test(normalizedText)
   ) {
@@ -811,8 +850,43 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
+  if (ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText)) {
+    addPositive('contact:email', weights.contactMarker);
+    hasContact = true;
+    hasDealSignal = true;
+  }
+
   if (ADS_LINK_PATTERN.test(rawLoweredText)) {
     addPositive('deal-channel:link', weights.link);
+    hasDealChannel = true;
+    hasDealSignal = true;
+  }
+
+  const hasMarketplaceServiceLink = ADS_MARKETPLACE_SERVICE_LINK_PATTERN.test(rawLoweredText);
+  if (hasMarketplaceServiceLink && !hasDealChannel) {
+    addPositive('deal-channel:marketplace-service-link', weights.link);
+    hasDealChannel = true;
+    hasDealSignal = true;
+  }
+
+  const hasGenericDomainLink =
+    !hasDealChannel &&
+    ADS_GENERIC_DOMAIN_LINK_PATTERN.test(rawLoweredText) &&
+    (hasPromoContext ||
+      hasBusinessContext ||
+      hasServiceContext ||
+      hasServiceOfferContext ||
+      hasServiceSpecialtyContext ||
+      hasGoodsRetailContext ||
+      hasRecruitmentContext ||
+      hasInfoProductContext ||
+      hasGroupPromotionIntent ||
+      hasCommercialAudienceContext ||
+      hasCommercialPropertyContext ||
+      hasPropertyAgentContext ||
+      hasCallToActionContext);
+  if (hasGenericDomainLink) {
+    addPositive('deal-channel:generic-domain', weights.link);
     hasDealChannel = true;
     hasDealSignal = true;
   }
@@ -900,7 +974,7 @@ export function collectCommercialSignals(params: {
     }
   }
 
-  if (ADS_MARKETPLACE_LINK_PATTERN.test(rawLoweredText)) {
+  if (ADS_MARKETPLACE_LINK_PATTERN.test(rawLoweredText) && !hasMarketplaceServiceLink) {
     addNegative('private:marketplace-link', weights.marketplaceLinkNegative);
     hasPrivateSaleContext = true;
   }
@@ -996,6 +1070,24 @@ export function collectCommercialSignals(params: {
     hasSearchRequestContext = true;
   }
 
+  if (
+    ADS_SOFT_RESPONSE_CTA_PATTERN.test(rawLoweredText) &&
+    !hasSearchRequestContext &&
+    (hasServiceContext ||
+      hasServiceOfferContext ||
+      hasServiceSpecialtyContext ||
+      hasRecruitmentContext ||
+      hasInfoProductContext ||
+      hasGoodsRetailContext ||
+      hasBusinessContext ||
+      hasPromoContext)
+  ) {
+    addPositive('contact:soft-response-cta', weights.contactMarker);
+    hasContact = true;
+    hasDealSignal = true;
+    hasCallToActionContext = true;
+  }
+
   if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
     addPositive('combo:intent+deal', weights.comboIntentDeal);
   }
@@ -1082,10 +1174,7 @@ export function collectCommercialSignals(params: {
 
   if (hasGroupContext && hasDealChannel && hasGroupPromotionIntent) {
     const hasExplicitGroupCommercialContext =
-      hasGroupTradeContext ||
-      hasCommercialAudienceContext ||
-      hasBusinessContext ||
-      hasPromoContext;
+      hasGroupTradeContext || hasCommercialAudienceContext || hasBusinessContext || hasPromoContext;
     addPositive(
       'combo:group-promo+deal',
       hasExplicitGroupCommercialContext
