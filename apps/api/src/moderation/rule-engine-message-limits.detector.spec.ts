@@ -248,7 +248,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
           chatId: 'chat-1',
           userId: 'user-1',
           settings,
-          hasMediaAttachment: true,
+          hasExcludedAttachment: true,
         }),
       ).resolves.toBeNull();
     }

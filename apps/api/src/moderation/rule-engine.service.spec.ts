@@ -3821,7 +3821,6 @@ describe('RuleEngineService', () => {
 
   it.each([
     ['photo', { hasPhotoAttachment: true }],
-    ['sticker', { hasStickerAttachment: true }],
     ['video', { hasVideoAttachment: true }],
     ['file', { hasFileAttachment: true }],
     ['voice', { hasVoiceAttachment: true }],
@@ -3853,6 +3852,31 @@ describe('RuleEngineService', () => {
       expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(false);
     },
   );
+
+  it('triggers the built-in anti-spam burst for sticker attachments', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    let result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ antiSpamEnabled: true }),
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: '',
+        settings: buildSettings({ antiSpamEnabled: true }),
+        domainAllowlist: [],
+        hasStickerAttachment: true,
+      });
+    }
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_RATE_LIMIT')).toBe(true);
+  });
 
   it('allows one duplicate, then escalates to WARN/MUTE/BAN in sequence', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);

@@ -13621,7 +13621,7 @@ describe('ModerationService', () => {
     expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений'),
+      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений или стикеров'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
@@ -13634,7 +13634,6 @@ describe('ModerationService', () => {
 
   it.each([
     ['photo', createPhotoAttachmentUpdate],
-    ['sticker', createStickerAttachmentUpdate],
     ['video', createVideoAttachmentUpdate],
     ['file', createFileAttachmentUpdate],
     ['voice', createVoiceAttachmentUpdate],
@@ -13699,6 +13698,76 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     },
   );
+
+  it('hard-bans rapid sticker messages through the real rule engine', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            antiSpamEnabled: true,
+            antiDuplicateEnabled: false,
+            messageLimitsBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const redisCounter = createRedisCounterMock();
+    const ruleEngine = new RuleEngineService(redisCounter as never);
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    for (let index = 1; index <= 6; index += 1) {
+      await service.handleUpdate(createStickerAttachmentUpdate(index));
+    }
+
+    expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
+      expect.stringContaining('message:anti-spam-burst'),
+      expect.any(Number),
+    );
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-sticker-6');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      messageLimitsBanNotice('Алексей', 'слишком частая отправка сообщений или стикеров'),
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({
+        messageId: 'msg-sticker-6',
+        ruleCode: 'MESSAGE_RATE_LIMIT',
+        action: SanctionAction.BAN,
+      }),
+    });
+  });
 
   it('does not hard-ban rapid forwarded message batches through the built-in anti-spam window', async () => {
     const prisma = {

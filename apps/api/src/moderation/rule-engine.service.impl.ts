@@ -687,9 +687,8 @@ export class RuleEngineService {
       skipStatefulMessageLimits,
       commercialCampaignContext,
     } = params;
-    const hasMediaAttachment = Boolean(
+    const hasAntiSpamBurstExcludedAttachment = Boolean(
       hasPhotoAttachment ||
-      hasStickerAttachment ||
       hasVideoAttachment ||
       hasFileAttachment ||
       hasVoiceAttachment ||
@@ -803,7 +802,7 @@ export class RuleEngineService {
           chatId,
           userId,
           settings,
-          hasMediaAttachment,
+          hasExcludedAttachment: hasAntiSpamBurstExcludedAttachment,
           skipAntiSpamBurstLimit,
         });
     if (antiSpamViolation) {

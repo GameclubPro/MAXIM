@@ -4158,7 +4158,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      const reason = `слишком частая отправка сообщений: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
+      const reason = `слишком частая отправка сообщений или стикеров: не более ${ANTI_SPAM_BURST_LIMIT} за ${ANTI_SPAM_BURST_WINDOW_SEC}с`;
       return this.renderEditableBotSpeechTemplate({
         style: botSpeechStyle ?? null,
         fieldKey: 'messageLimitsBotMessageText',
@@ -4383,7 +4383,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'MESSAGE_RATE_LIMIT') {
-      return 'слишком частая отправка сообщений';
+      return 'слишком частая отправка сообщений или стикеров';
     }
 
     if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
