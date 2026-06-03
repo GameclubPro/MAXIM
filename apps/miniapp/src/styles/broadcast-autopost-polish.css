@@ -1085,7 +1085,17 @@ body.settings-drilldown-open .toast__close {
   gap: 7px;
 }
 
+.broadcast-planner__suggested-row {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+}
+
 .broadcast-planner__suggested-chip {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 94px;
   min-height: 44px;
   border-style: solid;
   border-radius: 13px;
@@ -1580,20 +1590,22 @@ body.settings-drilldown-open .toast__close {
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar.has-issues {
-  grid-template-columns: minmax(0, 1fr) minmax(42px, auto) minmax(126px, 0.92fr);
+  grid-template-columns: minmax(82px, 0.82fr) 42px minmax(122px, 1fr);
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issues {
+  min-width: 0;
   gap: 4px;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__issue {
   min-height: 26px;
-  max-width: 104px;
+  max-width: 100%;
+  padding: 0 8px;
   border: 0;
   background: #fff3e1;
   color: #87570f;
-  font-size: 0.56rem;
+  font-size: 0.54rem;
 }
 
 .settings-drilldown__panel--broadcast-screen .broadcast-publish-bar__test,

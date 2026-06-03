@@ -120,8 +120,8 @@
   border-radius: 22px;
   border: 1px solid rgba(210, 225, 239, 0.78);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 251, 255, 0.9)),
-    rgba(255, 255, 255, 0.86);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 251, 255, 0.985)),
+    rgba(255, 255, 255, 0.98);
   box-shadow:
     0 12px 30px rgba(28, 61, 92, 0.13),
     0 1px 0 rgba(255, 255, 255, 0.74) inset;
@@ -130,6 +130,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 3px;
+  isolation: isolate;
   z-index: 20;
   transition:
     transform 0.24s ease,
@@ -137,6 +138,18 @@
     box-shadow 0.2s ease;
   will-change: transform, opacity;
   backface-visibility: hidden;
+}
+
+.bottom-nav::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * (var(--app-safe-bottom) + var(--bottom-nav-offset) + 16px));
+  height: calc(100% + var(--app-safe-bottom) + var(--bottom-nav-offset) + 28px);
+  background: linear-gradient(180deg, rgba(244, 249, 253, 0), rgba(244, 249, 253, 0.98) 32%);
+  pointer-events: none;
 }
 
 .bottom-nav.is-keyboard-open {

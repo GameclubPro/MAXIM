@@ -5261,6 +5261,12 @@ button.channel-dialog-message__avatar {
   gap: 5px;
   padding: 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.channel-suggest-composer__modifier-row::-webkit-scrollbar {
+  display: none;
 }
 
 .channel-suggest-composer__submit {
@@ -5404,6 +5410,11 @@ button.channel-dialog-message__avatar {
 
   .channel-suggest-composer__modifier-row {
     gap: 4px;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-right: 4px;
+    mask-image: linear-gradient(90deg, #000 0 calc(100% - 10px), transparent 100%);
   }
 
   .channel-suggest-composer__tool,
@@ -5417,6 +5428,7 @@ button.channel-dialog-message__avatar {
   .channel-suggest-composer__submit {
     width: 38px;
     min-width: 38px;
+    height: 38px;
     min-height: 38px;
     padding: 0;
   }
@@ -5443,7 +5455,7 @@ button.channel-dialog-message__avatar {
 
   .channel-suggest-composer__modifier-row {
     gap: 3px;
-    padding-right: 12px;
+    padding-right: 8px;
   }
 
   .channel-suggest-composer__phone {
@@ -5460,6 +5472,7 @@ button.channel-dialog-message__avatar {
   .channel-suggest-composer__submit {
     width: 36px;
     min-width: 36px;
+    height: 36px;
     min-height: 36px;
   }
 }
