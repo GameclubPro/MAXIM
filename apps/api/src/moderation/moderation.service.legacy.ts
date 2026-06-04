@@ -1526,17 +1526,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
         violations.find((item) => item.ruleCode === 'STICKER_RATE_LIMIT') ??
         violations[0];
+      const commercialActionBand =
+        topViolation.ruleCode === 'COMMERCIAL_AD'
+          ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
+          : null;
+      const isCommercialReviewOnly = commercialActionBand === 'REVIEW_ONLY';
 
-      this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
-      await this.prisma.violation.create({
-        data: {
-          chatId,
-          userId: senderId,
-          ruleCode: topViolation.ruleCode,
-          score: topViolation.score,
-        },
-      });
-      if (this.globalSpammerIntelligence) {
+      if (!isCommercialReviewOnly) {
+        this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
+        await this.prisma.violation.create({
+          data: {
+            chatId,
+            userId: senderId,
+            ruleCode: topViolation.ruleCode,
+            score: topViolation.score,
+          },
+        });
+      }
+      if (this.globalSpammerIntelligence && !isCommercialReviewOnly) {
         this.runGlobalSpammerSideEffect(
           { chatId, userId: senderId, messageId, action: 'record-commercial-spammer-observations' },
           async () => {
@@ -1554,10 +1561,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const messageAgeMs = Date.now() - new Date(createdAt).getTime();
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-      const commercialActionBand =
-        topViolation.ruleCode === 'COMMERCIAL_AD'
-          ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
-          : null;
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
         commercialActionBand === null ||
@@ -1622,7 +1625,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               )
             : null;
         const isPhoneNumberHit = topViolation.ruleCode === 'PHONE_NUMBER_BLOCKED';
-        const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
+        const isTextFilterHit =
+          this.isTextFilterViolation(topViolation.ruleCode) && !isCommercialReviewOnly;
         const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
         const isMessageLimitsHit =
           this.isMessageLimitsViolation(topViolation.ruleCode) && !isPhoneNumberHit;

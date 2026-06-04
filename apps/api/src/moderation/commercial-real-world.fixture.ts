@@ -1528,6 +1528,17 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'rehabilitation center from sixteen hour audit miss',
+    text: `Реабилитационный центр Birlik основан на миннесотской 12 шаговой программе. А так же: Гештальт терапия! Арт терапия! Групповая терапия! Индивидуальная терапия! Спортивная терапия! Мы готовы помочь!!! И наша помощь анонимна!!! Телефон +7 900 000 02 21.`,
+    expectedSubtype: 'SERVICES',
+    expectedSignals: ['service-specialty:rehab-center-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'scrap metal buyout contextual priem from recall regression pack',
     text: `Приём металлолома, цветной и черный металл. Расчет сразу, выезд, звоните +7 900 000 00 94.`,
     expectedSubtype: 'BUYOUT',
@@ -2280,6 +2291,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'medical center recommendation request from false-positive regression pack',
     text: `Кто знает хороший медицинский центр для УЗИ?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'rehabilitation center recommendation request from sixteen hour audit guard',
+    text: `Кто знает хороший реабилитационный центр, родственнику нужна помощь?`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

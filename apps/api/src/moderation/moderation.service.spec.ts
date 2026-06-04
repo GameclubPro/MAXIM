@@ -11367,6 +11367,92 @@ describe('ModerationService', () => {
     });
   });
 
+  it('keeps review-only commercial detections out of user-facing moderation', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
+            textFiltersMuteEnabled: true,
+            textFiltersBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.95,
+            reason: 'Campaign-dependent commercial candidate',
+            metadata: {
+              confidenceScore: 95,
+              decisionBand: 'HIGH',
+              matchedSignals: ['channel-placement:mass-invite-link', 'deal-channel:link'],
+              negativeSignals: ['private:marketplace-link'],
+              actionBand: 'REVIEW_ONLY',
+              reviewRecommended: true,
+              reviewReasons: ['campaign-dependent'],
+              appliedThresholds: {
+                warnThreshold: 45,
+                deleteThreshold: 65,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.violation.count).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.NONE,
+        metadata: expect.not.objectContaining({
+          textFilterViolationCount24h: expect.any(Number),
+        }),
+      }),
+    });
+  });
+
   it('does not moderate message when commercial detector returns no violation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),

@@ -74,6 +74,12 @@ describe('commercial pattern regressions', () => {
       signals: ['service-specialty:medical-service', 'promo:скидк', 'contact:phone'],
     },
     {
+      label: 'rehabilitation center from sixteen hour audit miss',
+      text: 'Реабилитационный центр Birlik основан на миннесотской 12 шаговой программе. Гештальт терапия, арт терапия, групповая терапия, индивидуальная терапия. Мы готовы помочь, помощь анонимна. Телефон +7 900 000 02 21.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:rehab-center-service', 'contact:phone'],
+    },
+    {
       label: 'scrap metal buyout',
       text: 'Приём металлолома, цветной и черный металл. Расчет сразу, выезд, звоните +7 900 000 00 94.',
       subtype: 'BUYOUT',
@@ -467,6 +473,10 @@ describe('commercial pattern regressions', () => {
       'Кто настраивал Яндекс Директ, подскажите нормального специалиста?',
     ],
     ['medical center recommendation request', 'Кто знает хороший медицинский центр для УЗИ?'],
+    [
+      'rehabilitation center recommendation request',
+      'Кто знает хороший реабилитационный центр, родственнику нужна помощь?',
+    ],
     [
       'plain medical appointment queue',
       'Прием у врача задержали на 40 минут, кто сейчас в очереди?',
