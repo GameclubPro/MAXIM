@@ -11912,56 +11912,37 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     actorUserId: string;
   }): Promise<number | null> {
-    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
-    const activeMembershipWhere: Prisma.ChatBotMembershipWhereInput = {
-      status: ChatBotMembershipStatus.ACTIVE,
-    };
-    if (runtimeBotIds.length > 0) {
-      activeMembershipWhere.botId = { in: runtimeBotIds };
-    }
-
-    const runtimeScopeFilters: Prisma.ChatWhereInput[] = [
+    const nonPrivateChatFilters = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
+      id: {
+        startsWith: prefix,
+      },
+    }));
+    const managedChatScopeFilters: Prisma.ChatWhereInput[] = [
       {
         botMemberships: {
-          some: activeMembershipWhere,
+          some: {
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+        },
+      },
+      {
+        botMemberships: {
+          none: {},
         },
       },
     ];
 
-    if (runtimeBotIds.length > 0) {
-      const inRuntimeScope = { in: runtimeBotIds };
-      runtimeScopeFilters.push({
-        botMemberships: {
-          none: {},
-        },
-        OR: [
-          { primaryBotId: inRuntimeScope },
-          { botId: inRuntimeScope },
-          { primaryBotId: null, botId: null },
-        ],
-      });
-    } else {
-      runtimeScopeFilters.push({
-        botMemberships: {
-          none: {},
-        },
-      });
-    }
-
+    let chatCount: number | null = null;
     try {
-      return await this.prisma.chat.count({
+      chatCount = await this.prisma.chat.count({
         where: {
           entityType: ChatEntityType.CHAT,
           AND: [
             {
-              OR: runtimeScopeFilters,
+              OR: managedChatScopeFilters,
             },
             {
-              NOT: DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
-                id: {
-                  startsWith: prefix,
-                },
-              })),
+              NOT: nonPrivateChatFilters,
             },
           ],
         },
@@ -11974,6 +11955,51 @@ export class AdminService implements OnModuleDestroy {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to estimate managed chat count for developer super ban notice',
+      );
+    }
+
+    const catalogCount = await this.estimateDeveloperSuperBanManagedBotCatalogChatCount(params);
+    const counts = [chatCount, catalogCount].filter(
+      (count): count is number => typeof count === 'number' && Number.isFinite(count),
+    );
+    return counts.length > 0 ? Math.max(...counts) : null;
+  }
+
+  private async estimateDeveloperSuperBanManagedBotCatalogChatCount(params: {
+    sourceChatId: string;
+    actorUserId: string;
+  }): Promise<number | null> {
+    const catalog = this.prisma.managedBotChatCatalog;
+    if (!catalog) {
+      return null;
+    }
+
+    try {
+      const rows = (await catalog.findMany({
+        where: {
+          entityType: ChatEntityType.CHAT,
+          status: 'ACTIVE',
+          NOT: DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
+            chatId: {
+              startsWith: prefix,
+            },
+          })),
+        },
+        select: {
+          chatId: true,
+        },
+        distinct: ['chatId'],
+      })) as Array<{ chatId: string }>;
+
+      return rows.length;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          sourceChatId: params.sourceChatId,
+          actorUserId: params.actorUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to estimate managed bot catalog chat count for developer super ban notice',
       );
       return null;
     }

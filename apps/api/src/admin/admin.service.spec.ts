@@ -7855,7 +7855,18 @@ describe('AdminService.applyManualSystemBan', () => {
         }),
       }),
     );
-    expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          entityType: ChatEntityType.CHAT,
+          status: 'ACTIVE',
+        }),
+        select: {
+          chatId: true,
+        },
+        distinct: ['chatId'],
+      }),
+    );
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -7968,7 +7979,18 @@ describe('AdminService.applyManualSystemBan', () => {
       expect.any(String),
       expect.any(Number),
     );
-    expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          entityType: ChatEntityType.CHAT,
+          status: 'ACTIVE',
+        }),
+        select: {
+          chatId: true,
+        },
+        distinct: ['chatId'],
+      }),
+    );
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -7978,6 +8000,92 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('заблокирован в 3 чатах по решению разработчика бота'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        botId: 'command-bot',
+      }),
+    );
+  });
+
+  it('uses all active bot catalog rows for developer super ban coverage notice', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.count.mockResolvedValue(2);
+    prisma.managedBotChatCatalog.findMany.mockResolvedValue([
+      { chatId: 'chat-command-bot' },
+      { chatId: 'chat-other-bot-1' },
+      { chatId: 'chat-other-bot-2' },
+      { chatId: 'chat-other-bot-3' },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([]);
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(),
+      kickMember: jest.fn(),
+    };
+    const redisCounter = {
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+    const globalSpammerIntelligence = {
+      recordDeveloperForcedGlobalBlacklist: jest.fn().mockResolvedValue({ outcome: 'registry' }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock({ botId: 'command-bot' }) as never,
+      undefined,
+      redisCounter as never,
+    );
+    (service as unknown as { globalSpammerIntelligence: unknown }).globalSpammerIntelligence =
+      globalSpammerIntelligence;
+
+    jest.spyOn(service, 'applyManualModerationAction').mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь забанен.',
+    });
+
+    await service.processDeveloperSuperBanJob({
+      kind: 'developer_super_ban',
+      jobId: 'developer-super-ban-job-catalog-total',
+      sourceChatId: 'chat-1',
+      commandBotId: 'command-bot',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: '98315271',
+        username: null,
+        displayName: 'Разработчик',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({
+          botId: 'command-bot',
+        }),
+        select: {
+          chatId: true,
+        },
+        distinct: ['chatId'],
+      }),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('заблокирован в 4 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
