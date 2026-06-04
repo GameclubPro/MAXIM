@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 HOST="${1:-ubuntu@185.241.192.168}"
 SSH_KEY="${VK_PROXY_SSH_KEY:-$HOME/.ssh/id_rsa_vk_maxim_proxy}"
+VERIFY_IP="${VK_PROXY_VERIFY_IP:-${HOST##*@}}"
 LOCAL_CONF="infra/vk-proxy/nginx/major-maksimov-proxy.conf"
 LOCAL_SITE_DIR="infra/www/major-maksimov"
 REMOTE_SITE_DIR="/var/www/major-maksimov-public"
@@ -45,7 +46,8 @@ ssh -i "$SSH_KEY" "$HOST" "\
   rm -f /tmp/major-index.html /tmp/bot.webp /tmp/major-maksimov-proxy.conf"
 
 echo "Verifying VK proxy routes..."
-curl -fsS --max-time 20 --resolve major-maksimov.ru:443:185.241.192.168 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -i '^x-maxim-vk-proxy: app'
-curl -fsS --max-time 20 --resolve major-maksimov.ru:443:185.241.192.168 -D - -o /dev/null https://major-maksimov.ru/api/health/live | grep -i '^x-maxim-vk-proxy: api'
+curl -fsS --max-time 20 --resolve "major-maksimov.ru:443:${VERIFY_IP}" -D - -o /dev/null https://major-maksimov.ru/app/ | grep -i '^x-maxim-vk-proxy: app'
+curl -fsS --max-time 20 --resolve "major-maksimov.ru:443:${VERIFY_IP}" -D - -o /dev/null https://major-maksimov.ru/api/health/live | grep -i '^x-maxim-vk-proxy: api'
+curl -fsS --max-time 20 --resolve "app.major-maksimov.ru:443:${VERIFY_IP}" -D - -o /dev/null https://app.major-maksimov.ru/app/ | grep -i '^location: https://major-maksimov.ru/app/'
 
 echo "Done: VK major proxy applied on ${HOST}"
