@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-HOST="${1:-ubuntu@185.241.192.137}"
+HOST="${1:-ubuntu@185.241.192.168}"
 SSH_KEY="${VK_PROXY_SSH_KEY:-$HOME/.ssh/id_rsa_vk_maxim_proxy}"
 LOCAL_CONF="infra/vk-proxy/nginx/major-maksimov-proxy.conf"
 LOCAL_SITE_DIR="infra/www/major-maksimov"
