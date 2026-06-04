@@ -45,10 +45,6 @@ ssh -i "$SSH_KEY" "$HOST" "\
   rm -f /tmp/major-index.html /tmp/bot.webp /tmp/major-maksimov-proxy.conf"
 
 echo "Verifying VK proxy routes..."
-curl -fsS --max-time 20 -D - -o /dev/null https://app.major-maksimov.ru/ | grep -E '^HTTP/|^HTTP/2 200|^HTTP/1.1 200'
-curl -fsS --max-time 20 https://app.major-maksimov.ru/ | grep -F 'Бот-модератор для чатов MAX' >/dev/null
-curl -fsS --max-time 20 -D - -o /dev/null https://app.major-maksimov.ru/app/ | grep -E '^HTTP/|^HTTP/2 200|^HTTP/1.1 200'
-curl -fsS --max-time 20 -D - -o /dev/null https://app.major-maksimov.ru/api/health/live | grep -i '^x-maxim-vk-proxy: api'
 curl -fsS --max-time 20 --resolve major-maksimov.ru:443:185.241.192.168 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -i '^x-maxim-vk-proxy: app'
 curl -fsS --max-time 20 --resolve major-maksimov.ru:443:185.241.192.168 -D - -o /dev/null https://major-maksimov.ru/api/health/live | grep -i '^x-maxim-vk-proxy: api'
 

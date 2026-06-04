@@ -46,4 +46,7 @@ curl -fsS --max-time 15 https://major-maksimov.ru/ | grep -F 'Бот-модер�
 echo "Verifying major-maksimov.ru app route..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -i '^HTTP/2 200'
 
+echo "Verifying app.major-maksimov.ru canonical redirect..."
+curl -fsS --max-time 15 -D - -o /dev/null https://app.major-maksimov.ru/app/ | grep -i '^location: https://major-maksimov.ru/app/'
+
 echo "Done: major-maksimov.ru public site applied on ${HOST}"
