@@ -108,6 +108,7 @@
 - Portable repo-local access from any device:
   - copy `infra/env/vps.env.example` to root `.env.vps` and keep it out of git
   - verify with `./infra/scripts/vps-connect.sh doctor`
+  - if agent SSH is blocked after an IP change, use `./infra/scripts/vps-connect.sh ensure-ssh`; with `MAXIM_YC_SSH_SECURITY_GROUP_ID` configured it authorizes the current `/32` or `MAXIM_YC_SSH_SOURCE_CIDR`, then runs `doctor`
   - use `./infra/scripts/vps-connect.sh shell|health|ps|logs <service>|deploy main [services...]`
   - use `./infra/scripts/vps-connect.sh monitor-readonly [duration-sec] [interval-sec]` for read-only production observation; it samples health, compose status, restart counts, public `/app/`, and filtered API role logs without reconciling webhooks or sending bot messages
   - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper
