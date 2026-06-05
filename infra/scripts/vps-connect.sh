@@ -29,6 +29,8 @@ Commands:
   deploy [branch] [services]  Run the main production deploy script on the VPS
   deploy-scale [branch] [...] Run the split/load-testing deploy script on the VPS
   rollback-runtime <ref> [...] Rebuild/recreate API roles from a previous git ref
+  allow-ssh-current-ip [sg]  Add current public IP/32 to the Yandex Cloud SSH security group
+  ensure-ssh [sg]            Allow current public IP, then run doctor
   health                      Check local-on-VPS and public health endpoints
   monitor-readonly [duration-sec] [interval-sec]
                               Sample health, ps, restarts, public app, and error logs
@@ -92,11 +94,118 @@ ssh_args() {
   printf '%s\0' "${args[@]}"
 }
 
+yc_args() {
+  local args=()
+
+  if [[ -n "${MAXIM_YC_PROFILE:-}" ]]; then
+    args=(--profile "$MAXIM_YC_PROFILE")
+  fi
+
+  printf '%s\0' "${args[@]}"
+}
+
+detect_public_ipv4() {
+  local ip
+  local url
+  local urls=()
+
+  if [[ -n "${MAXIM_PUBLIC_IP_URL:-}" ]]; then
+    urls+=("$MAXIM_PUBLIC_IP_URL")
+  fi
+
+  urls+=("https://api.ipify.org" "https://ifconfig.me/ip")
+
+  for url in "${urls[@]}"; do
+    ip="$(curl -4 -fsS --connect-timeout 5 --max-time 10 "$url" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ssh_source_cidr() {
+  local ip
+
+  if [[ -n "${MAXIM_YC_SSH_SOURCE_CIDR:-}" ]]; then
+    if [[ "$MAXIM_YC_SSH_SOURCE_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+      printf '%s' "$MAXIM_YC_SSH_SOURCE_CIDR"
+      return 0
+    fi
+
+    echo "MAXIM_YC_SSH_SOURCE_CIDR must be an IPv4 CIDR, for example 203.0.113.7/32." >&2
+    return 1
+  fi
+
+  ip="$(detect_public_ipv4)" || return 1
+  printf '%s/32' "$ip"
+}
+
+allow_ssh_current_ip() {
+  local sg="${1:-${MAXIM_YC_SSH_SECURITY_GROUP_ID:-${MAXIM_YC_SSH_SECURITY_GROUP_NAME:-}}}"
+  local cidr
+  local description
+  local current_rules
+  local timeout_sec="${MAXIM_YC_COMMAND_TIMEOUT_SEC:-30}"
+  local args=()
+
+  if ! command -v yc >/dev/null 2>&1; then
+    echo "yc not found"
+    exit 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl not found"
+    exit 1
+  fi
+
+  if [[ -z "$sg" ]]; then
+    echo "Set MAXIM_YC_SSH_SECURITY_GROUP_ID or MAXIM_YC_SSH_SECURITY_GROUP_NAME in .env.vps, or pass a security group id/name."
+    exit 1
+  fi
+
+  cidr="$(ssh_source_cidr)" || {
+    echo "Could not resolve SSH source CIDR."
+    exit 1
+  }
+
+  mapfile -d '' -t args < <(yc_args)
+
+  current_rules="$(timeout "$timeout_sec" yc "${args[@]}" vpc security-group get "$sg")" || {
+    echo "Could not read Yandex Cloud security group '$sg'."
+    exit 1
+  }
+
+  if grep -Fq -- "- $cidr" <<<"$current_rules"; then
+    echo "SSH already allowed from $cidr in $sg."
+    return 0
+  fi
+
+  description="ssh-codex-$(date -u +%Y%m%d)-${cidr//[.\/]/-}"
+  timeout "$timeout_sec" yc "${args[@]}" vpc security-group update-rules "$sg" \
+    --add-rule "description=$description,direction=ingress,port=22,protocol=tcp,v4-cidrs=$cidr" >/dev/null
+
+  echo "Allowed SSH from $cidr in $sg."
+}
+
+maybe_allow_ssh_current_ip() {
+  case "${MAXIM_VPS_AUTO_AUTHORIZE_SSH:-0}" in
+    1|true|TRUE|yes|YES)
+      if ! allow_ssh_current_ip >/dev/null; then
+        echo "Warning: could not auto-authorize current SSH source IP; continuing with SSH attempt." >&2
+      fi
+      ;;
+  esac
+}
+
 remote_exec() {
   local command="$1"
   local remote_command
   local args=()
 
+  maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
   printf -v remote_command 'cd %q && %s' "$MAXIM_VPS_REPO_DIR" "$command"
   ssh "${args[@]}" "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
@@ -120,6 +229,7 @@ open_shell() {
   local args=()
   local remote_command
 
+  maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
   printf -v remote_command 'cd %q && exec "${SHELL:-bash}"' "$MAXIM_VPS_REPO_DIR"
   ssh "${args[@]}" -t "$MAXIM_VPS_SSH_TARGET" "bash -lc $(printf '%q' "$remote_command")"
@@ -164,6 +274,7 @@ doctor() {
     exit 1
   fi
 
+  maybe_allow_ssh_current_ip
   mapfile -d '' -t args < <(ssh_args)
 
   echo "Config:"
@@ -175,6 +286,11 @@ doctor() {
 
   ssh "${args[@]}" -o BatchMode=yes -o ConnectTimeout=10 "$MAXIM_VPS_SSH_TARGET" \
     "cd $(printf '%q' "$MAXIM_VPS_REPO_DIR") && printf 'remote_repo=%s\n' \"\$PWD\" && git rev-parse --short HEAD && docker compose version"
+}
+
+ensure_ssh() {
+  allow_ssh_current_ip "$@"
+  doctor
 }
 
 yc_shell() {
@@ -232,6 +348,12 @@ case "$command" in
     ;;
   rollback-runtime)
     rollback_runtime "$@"
+    ;;
+  allow-ssh-current-ip)
+    allow_ssh_current_ip "$@"
+    ;;
+  ensure-ssh)
+    ensure_ssh "$@"
     ;;
   health)
     health
