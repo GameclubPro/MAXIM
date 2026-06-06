@@ -3,6 +3,7 @@ server {
   server_name _;
 
   root /usr/share/nginx/html;
+  charset utf-8;
   gzip on;
   gzip_vary on;
   gzip_proxied any;
@@ -20,10 +21,9 @@ server {
     image/svg+xml;
 
   location = __MINIAPP_BASE_PATH__index.html {
+    gzip off;
     try_files $uri =404;
-    expires -1;
     add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-    add_header Pragma "no-cache" always;
   }
 
   location = __MINIAPP_BASE_PATH__site.webmanifest {
@@ -47,11 +47,11 @@ server {
   location @stale_miniapp_js_asset {
     default_type application/javascript;
     add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-    add_header Pragma "no-cache" always;
     return 200 "try{window.sessionStorage.setItem('maxim:stale-js-asset-reload:v1',window.location.href)}catch(e){}window.location.reload();throw new Error('Stale mini app asset; reloading.');\n";
   }
 
   location __MINIAPP_BASE_PATH__ {
+    gzip off;
     try_files $uri $uri/ __MINIAPP_BASE_PATH__index.html;
     add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
   }
