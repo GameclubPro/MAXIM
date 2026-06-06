@@ -30,6 +30,7 @@ else
     "api-moderation-background"
     "api-action"
     "miniapp-static"
+    "miniapp-major-static"
   )
 fi
 
@@ -337,6 +338,7 @@ reexec_if_current_script_changed
 ensure_compose_env
 stop_conflicting_stacks
 ensure_service_requested_if_down "miniapp-static"
+ensure_service_requested_if_down "miniapp-major-static"
 if has_requested_api_service; then
   ensure_service_requested_if_down "api-enqueue"
   ensure_service_requested_if_down "api-ingress"
@@ -394,6 +396,7 @@ recreate_service_wave "worker" \
   "api-moderation-realtime-d" \
   "api-moderation-background"
 recreate_service_wave "support" "api-admin" "miniapp-static"
+recreate_service_wave "major static" "miniapp-major-static"
 recreate_service_wave "ingress" "api-ingress"
 ensure_requested_services_running
 
@@ -417,6 +420,9 @@ curl -i https://maxim.play-team.ru/api/health/ready
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/
+fi
+if contains_service "miniapp-major-static" "${SERVICES[@]}"; then
+  curl -i https://major-maksimov.ru/app/
 fi
 
 echo "Done: branch=$BRANCH services=${SERVICES[*]}"

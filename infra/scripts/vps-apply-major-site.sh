@@ -22,9 +22,16 @@ if [[ ! -f "$LOCAL_SITE_DIR/index.html" ]]; then
   exit 1
 fi
 
+if grep -Eq 'listen[[:space:]]+4443([[:space:];]|$)' "$LOCAL_CONF"; then
+  echo "Refusing to apply $LOCAL_CONF: temporary 4443 listeners must not be shipped."
+  exit 1
+fi
+
 scp "$LOCAL_CONF" "${HOST}:${REMOTE_CONF_TMP}"
 ssh "$HOST" "rm -rf '${REMOTE_SITE_TMP}' && mkdir -p '${REMOTE_SITE_TMP}'"
 scp "$LOCAL_SITE_DIR/index.html" "${HOST}:${REMOTE_SITE_TMP}/index.html"
+
+ssh "$HOST" "curl -fsS --max-time 10 http://127.0.0.1:3003/app/ >/dev/null"
 
 ssh "$HOST" "\
   sudo mkdir -p /etc/nginx/backups && \
@@ -45,6 +52,7 @@ curl -fsS --max-time 15 https://major-maksimov.ru/ | grep -F 'Бот-модер�
 
 echo "Verifying major-maksimov.ru app route..."
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/app/ | grep -Ei '^HTTP/[0-9.]+ 200'
+curl -fsS --max-time 15 https://major-maksimov.ru/app/ | grep -F 'https://major-maksimov.ru/app/' >/dev/null
 curl -fsS --max-time 15 -D - -o /dev/null https://major-maksimov.ru/ios-canary/ping.txt | grep -Ei '^HTTP/[0-9.]+ 200'
 
 echo "Verifying app.major-maksimov.ru canonical redirect..."
