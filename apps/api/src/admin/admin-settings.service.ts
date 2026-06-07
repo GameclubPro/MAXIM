@@ -19,9 +19,11 @@ import {
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { MaxClientService } from '../max/max-client.service';
+import { MAX_API_SOURCE_TAGS, MaxClientService } from '../max/max-client.service';
+import { EventType, Operator, SanctionAction } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
+import type { ResolvedBotAssignmentData } from './admin-chat-settings';
 import {
   publishChatRules,
   readChatRules,
@@ -58,6 +60,9 @@ const NIGHT_MODE_TRANSITION_SETTING_KEYS = new Set<keyof ChatSettings>([
   'nightModeEndTimeMinutes',
   'nightModeTimezone',
 ]);
+
+const MANUAL_GROUP_CLOSE_NOTICE_TEXT =
+  '🔒 Группа временно закрыта. Сообщения участников будут удаляться, пока администратор не откроет группу снова.';
 
 @Injectable()
 export class AdminSettingsService {
@@ -167,6 +172,7 @@ export class AdminSettingsService {
     await this.legacyAdminService.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
     const shouldReconcileNightModeTransitions =
       this.shouldReconcileNightModeTransitionsAfterUpdate(body);
+    const previousManualCloseState = await this.readManualGroupCloseNoticeState(chatId);
     const settings = await saveChatSettings({
       prisma: this.prisma,
       chatContextCache: this.chatContextCache,
@@ -181,6 +187,13 @@ export class AdminSettingsService {
       refreshExecutionReadiness: (settings) =>
         this.legacyAdminService.refreshChatSettingsExecutionReadiness(chatId, settings),
     });
+    if (settings.nightModeForceCloseEnabled && !previousManualCloseState.enabled) {
+      await this.sendManualGroupCloseNotice({
+        chatId,
+        settings,
+        botAssignmentData: previousManualCloseState.botAssignmentData,
+      });
+    }
     if (shouldReconcileNightModeTransitions) {
       await this.reconcileNightModeTransitions([chatId]);
     }
@@ -538,6 +551,7 @@ export class AdminSettingsService {
         this.legacyAdminService.isRequiredSubscriptionCurrentlyActiveForSettings(settings),
       scheduleReadinessRefresh: (params) =>
         this.legacyAdminService.scheduleApplySettingsToAllReadinessRefreshForSettings(params),
+      onManualGroupCloseEnabled: (params) => this.sendManualGroupCloseNotice(params),
     });
     if (shouldReconcileNightModeTransitions) {
       await this.reconcileNightModeTransitions(result.appliedChatIds);
@@ -625,5 +639,107 @@ export class AdminSettingsService {
         'Failed to reconcile night mode transition jobs after settings update',
       );
     }
+  }
+
+  private async readManualGroupCloseNoticeState(chatId: string): Promise<{
+    enabled: boolean;
+    botAssignmentData: ResolvedBotAssignmentData;
+  }> {
+    const [settings, botAssignmentData] = await Promise.all([
+      this.prisma.chatSettings.findUnique({
+        where: { chatId },
+        select: {
+          nightModeForceCloseEnabled: true,
+        },
+      }),
+      this.legacyAdminService.resolveChatSettingsWriteBotAssignmentData(chatId),
+    ]);
+
+    return {
+      enabled: settings?.nightModeForceCloseEnabled === true,
+      botAssignmentData,
+    };
+  }
+
+  private async sendManualGroupCloseNotice(params: {
+    chatId: string;
+    settings: Pick<
+      ChatSettings,
+      'nightModeForceCloseForever' | 'nightModeForceCloseDays' | 'nightModeForceCloseHours'
+    >;
+    botAssignmentData?: ResolvedBotAssignmentData;
+  }): Promise<void> {
+    const botId = params.botAssignmentData?.botId ?? params.botAssignmentData?.primaryBotId ?? null;
+    const text = this.buildManualGroupCloseNoticeText(params.settings);
+    try {
+      const sent = await this.maxClient.sendMessageImmediateWithId(
+        params.chatId,
+        text,
+        { textFormat: 'markdown' },
+        {
+          trafficClass: 'interactive',
+          actionHealthLane: 'interactive',
+          sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+          ignoreFailureMetricStatuses: [403, 404],
+          ...(botId ? { botId } : {}),
+        },
+      );
+
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId: params.chatId,
+          botId,
+          userId: botId ?? 'bot',
+          messageId: sent.messageId,
+          eventType: EventType.SYSTEM,
+          ruleCode: 'MANUAL_GROUP_CLOSE_NOTICE',
+          action: SanctionAction.NONE,
+          maskedExcerpt: null,
+          score: 0.1,
+          operator: Operator.BOT,
+          metadata: {
+            reason: 'Manual group close notice sent after admin enabled close mode',
+            closeMode: params.settings.nightModeForceCloseForever ? 'forever' : 'timed',
+            closeDurationHours: params.settings.nightModeForceCloseForever
+              ? null
+              : params.settings.nightModeForceCloseDays * 24 +
+                params.settings.nightModeForceCloseHours,
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          botId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send manual group close notice',
+      );
+    }
+  }
+
+  private buildManualGroupCloseNoticeText(
+    settings: Pick<
+      ChatSettings,
+      'nightModeForceCloseForever' | 'nightModeForceCloseDays' | 'nightModeForceCloseHours'
+    >,
+  ): string {
+    if (settings.nightModeForceCloseForever) {
+      return MANUAL_GROUP_CLOSE_NOTICE_TEXT;
+    }
+
+    const totalHours = settings.nightModeForceCloseDays * 24 + settings.nightModeForceCloseHours;
+    if (totalHours <= 0) {
+      return MANUAL_GROUP_CLOSE_NOTICE_TEXT;
+    }
+
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    const parts = [
+      days > 0 ? `${days} д.` : '',
+      hours > 0 ? `${hours} ч.` : '',
+    ].filter(Boolean);
+    return `${MANUAL_GROUP_CLOSE_NOTICE_TEXT}\n\nСрок закрытия: ${parts.join(' ')}.`;
   }
 }

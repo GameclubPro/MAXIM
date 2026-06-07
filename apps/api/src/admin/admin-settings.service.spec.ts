@@ -316,6 +316,9 @@ function createService(
     auditLog: {
       create: jest.fn().mockResolvedValue({}),
     },
+    moderationEvent: {
+      create: jest.fn().mockResolvedValue({}),
+    },
   };
   const chatContextCache = {
     invalidate: jest.fn().mockResolvedValue(undefined),
@@ -327,6 +330,10 @@ function createService(
     sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
       messageId: 'message-2',
       url: 'https://max.ru/chats/chat-1/message/2',
+    }),
+    sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+      messageId: 'message-1',
+      url: 'https://max.ru/chats/chat-1/message/1',
     }),
     uploadImage: jest.fn().mockResolvedValue({ token: 'rules-image-1' }),
   };
@@ -586,6 +593,64 @@ describe('AdminSettingsService chat rules', () => {
     });
 
     expect(nightModeTransitionScheduler.reconcileChats).toHaveBeenCalledWith(['chat-1']);
+  });
+
+  it('sends one chat notice when manual group close is enabled', async () => {
+    const { maxClient, prisma, service } = createService({
+      botAssignmentData: {
+        botId: 'bot-1',
+        primaryBotId: 'bot-1',
+      },
+      currentSettings: createPersistedChatSettings({
+        nightModeForceCloseEnabled: false,
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Группа временно закрыта'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'interactive',
+        sourceTag: 'moderation_notice',
+        botId: 'bot-1',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        botId: 'bot-1',
+        userId: 'bot-1',
+        messageId: 'message-1',
+        eventType: 'SYSTEM',
+        ruleCode: 'MANUAL_GROUP_CLOSE_NOTICE',
+        action: 'NONE',
+      }),
+    });
+  });
+
+  it('does not resend the manual close notice when the group was already closed', async () => {
+    const { maxClient, service } = createService({
+      currentSettings: createPersistedChatSettings({
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: true,
+      }),
+    });
+
+    await service.updateSettings('chat-1', user as never, {
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
   });
 
   it('builds channel settings screen without routing through legacy getChannelSettingsScreen', async () => {
@@ -955,6 +1020,48 @@ describe('AdminSettingsService chat rules', () => {
       'chat-1',
       'chat-2',
     ]);
+  });
+
+  it('sends manual close notices only to target chats newly closed by apply-to-all', async () => {
+    const { maxClient, prisma, service } = createService({
+      botAssignmentData: {
+        botId: 'bot-1',
+        primaryBotId: 'bot-1',
+      },
+      applyTargetChats: [
+        createChatSummary({ id: 'chat-1' }),
+        createChatSummary({ id: 'chat-2', title: 'Второй чат' }),
+      ],
+    });
+    prisma.chatSettings.findUnique.mockImplementation(async ({ where }: { where: { chatId: string } }) =>
+      where.chatId === 'chat-2'
+        ? createPersistedChatSettings({
+            chatId: 'chat-2',
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          })
+        : createPersistedChatSettings({
+            chatId: where.chatId,
+            nightModeForceCloseEnabled: false,
+          }),
+    );
+    const settings = chatSettingsSchema.parse({
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    });
+
+    await service.applySettingsToAllChats('chat-1', user as never, settings);
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Группа временно закрыта'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        sourceTag: 'moderation_notice',
+        botId: 'bot-1',
+      }),
+    );
   });
 
   it('applies settings sections without routing through legacy section endpoint', async () => {
