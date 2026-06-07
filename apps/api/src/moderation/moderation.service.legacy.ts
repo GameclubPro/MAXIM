@@ -16712,7 +16712,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private stripLooseMarkdownMarkers(text: string): string {
-    return text.replace(/(?:\*\*\*|\*\*|___|__|~~)/g, '');
+    return text.replace(/(?:\*\*\*|\*\*)/g, '');
   }
 
   private withHtmlMessageOptions(options?: MaxSendMessageOptions): MaxSendMessageOptions {
