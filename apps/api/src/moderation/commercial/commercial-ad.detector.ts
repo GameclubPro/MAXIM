@@ -199,7 +199,11 @@ export class CommercialAdDetector {
       return null;
     }
 
-    if (state.hasJobSeekingContext) {
+    if (state.hasJobSeekingContext && !hasRecruitmentOfferOverride(state)) {
+      return null;
+    }
+
+    if (isOfficialAppStoreReferenceNoise(state, rawLoweredText)) {
       return null;
     }
 
@@ -211,7 +215,11 @@ export class CommercialAdDetector {
       hasRideShareContext(rawLoweredText) &&
       !state.hasBusinessContext &&
       !state.hasDealChannel &&
-      !state.hasPrice
+      !state.hasServiceContext &&
+      !state.hasRecruitmentContext &&
+      !state.hasGoodsRetailContext &&
+      !state.hasGroupPromoContext &&
+      !state.hasCommercialAudienceContext
     ) {
       return null;
     }
@@ -327,6 +335,89 @@ export class CommercialAdDetector {
       classifierReasons: secondStage?.classifierReasons ?? [],
     };
   }
+}
+
+function hasRecruitmentOfferOverride(state: ReturnType<typeof collectCommercialSignals>): boolean {
+  if (!state.hasRecruitmentContext) {
+    return false;
+  }
+
+  const hasOfferMarker = state.matchedSignals.some((signal) =>
+    RECRUITMENT_OFFER_OVERRIDE_SIGNALS.has(signal),
+  );
+  if (!hasOfferMarker) {
+    return false;
+  }
+
+  return state.matchedSignals.some(
+    (signal) =>
+      signal === 'combo:recruitment+deal' ||
+      signal === 'risk:structured-job-vacancy' ||
+      signal === 'contact:implicit-vacancy-offer' ||
+      signal === 'contact:recruitment-response-keyword',
+  );
+}
+
+const RECRUITMENT_OFFER_OVERRIDE_SIGNALS = new Set([
+  'recruitment:ваканси',
+  'recruitment:сотрудничеств',
+  'recruitment:отклик',
+  'recruitment:требуется',
+  'recruitment:набор',
+  'recruitment:ищет-команду',
+  'recruitment:приглашаем-на-должность',
+  'recruitment:приглашает-на-службу',
+  'recruitment:приглашаем-роли',
+  'recruitment:вахта-условия',
+  'recruitment:warehouse-job-conditions',
+  'recruitment:работа-условия',
+  'recruitment:people-work-conditions',
+  'recruitment:набирают-специалистов',
+  'recruitment:есть-работа',
+  'recruitment:marketplace-review-work',
+  'recruitment:роль-условия',
+  'recruitment:leaflet-daily-side-job',
+  'recruitment:leaflet-assembly-work',
+  'recruitment:remote-network-work',
+  'recruitment:hr-chat-recruiter',
+  'recruitment:свободное-рабочее-место',
+  'recruitment:контрактная-служба',
+  'recruitment:контрактная-служба-мо',
+  'risk:structured-job-vacancy',
+]);
+
+function isOfficialAppStoreReferenceNoise(
+  state: ReturnType<typeof collectCommercialSignals>,
+  rawLoweredText: string,
+): boolean {
+  if (
+    state.hasPrice ||
+    state.hasContact ||
+    state.hasTransactional ||
+    state.matchedSignals.some((signal) => signal.startsWith('risk:'))
+  ) {
+    return false;
+  }
+
+  const hasOnlyOfficialAppStoreLinkContext =
+    state.matchedSignals.includes('business:официально') &&
+    state.matchedSignals.includes('deal-channel:link') &&
+    state.matchedSignals.every(
+      (signal) =>
+        signal === 'business:официально' ||
+        signal === 'deal-channel:link' ||
+        signal === 'combo:business+deal',
+    );
+  if (!hasOnlyOfficialAppStoreLinkContext) {
+    return false;
+  }
+
+  return (
+    /(?:apps\.apple\.com|play\.google\.com\/store)/iu.test(rawLoweredText) &&
+    /(?:официальн[\p{L}\p{N}_-]*\s+приложени[\p{L}\p{N}_-]*|госуслуг[\p{L}\p{N}_-]*)/iu.test(
+      rawLoweredText,
+    )
+  );
 }
 
 function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[]): boolean {

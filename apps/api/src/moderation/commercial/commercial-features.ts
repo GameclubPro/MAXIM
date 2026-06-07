@@ -10,6 +10,7 @@ import {
   ADS_SERVICE_INTENT_MARKERS,
   ADS_BUYOUT_MARKERS,
   ADS_BUYOUT_PATTERNS,
+  ADS_BUYOUT_DEAL_PATTERN,
   ADS_PROMO_MARKERS,
   ADS_BUSINESS_MARKERS,
   ADS_BUSINESS_PATTERNS,
@@ -578,6 +579,17 @@ export function collectCommercialSignals(params: {
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
+  if (
+    highRiskCommercialHits.length > 0 &&
+    !highRiskCommercialHits.some(({ label }) => label === 'government-benefit-phishing') &&
+    /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      normalizedText,
+    )
+  ) {
+    addPositive('transaction:high-risk-offer', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
 
   const rawLinkCommercialHits = ADS_HIGH_RISK_RAW_LINK_PATTERNS.filter(({ pattern }) =>
     pattern.test(rawLoweredText),
@@ -600,11 +612,25 @@ export function collectCommercialSignals(params: {
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
+  if (
+    hasBuyoutContext &&
+    (ADS_BUYOUT_DEAL_PATTERN.test(normalizedText) || ADS_BUYOUT_DEAL_PATTERN.test(rawLoweredText))
+  ) {
+    addPositive('transaction:buyout-deal', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
 
   const hasPaydayLoanRisk = highRiskCommercialHits.some(({ label }) => label === 'loan-leadgen');
+  const hasCryptoInvestmentRisk = highRiskCommercialHits.some(
+    ({ label }) => label === 'crypto-investment',
+  );
   const recruitmentHits = [
     ...ADS_RECRUITMENT_MARKERS.filter(
-      (marker) => !(hasPaydayLoanRisk && marker === 'зарплат') && hasMarker(marker),
+      (marker) =>
+        !(hasPaydayLoanRisk && marker === 'зарплат') &&
+        !(hasCryptoInvestmentRisk && marker === 'доход') &&
+        hasMarker(marker),
     ),
     ...ADS_RECRUITMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
       ({ label }) => label,
@@ -1075,9 +1101,16 @@ export function collectCommercialSignals(params: {
     hasSearchRequestContext = true;
   }
 
+  const hasOnlyBareQuestionSearchContext =
+    hasSearchRequestContext &&
+    negativeSignals.length > 0 &&
+    negativeSignals.every((signal) => signal === 'context:question');
+  const hasBlockingSearchRequestContext =
+    hasSearchRequestContext && !hasOnlyBareQuestionSearchContext;
+
   if (
     ADS_SOFT_RESPONSE_CTA_PATTERN.test(rawLoweredText) &&
-    !hasSearchRequestContext &&
+    !hasBlockingSearchRequestContext &&
     (hasServiceContext ||
       hasServiceOfferContext ||
       hasServiceSpecialtyContext ||
@@ -1118,7 +1151,7 @@ export function collectCommercialSignals(params: {
   if (
     hasServiceSpecialtyContext &&
     (hasPhoneContact || hasContact || hasDealChannel) &&
-    !hasSearchRequestContext
+    !hasBlockingSearchRequestContext
   ) {
     addPositive(
       profile.sensitivity === 'STRICT'
@@ -1135,7 +1168,7 @@ export function collectCommercialSignals(params: {
   if (
     profile.sensitivity === 'STRICT' &&
     hasIntent &&
-    !hasSearchRequestContext &&
+    !hasBlockingSearchRequestContext &&
     (hasPhoneContact || hasPrice || hasTransactional || hasDealChannel)
   ) {
     const hasStrictIntentCommercialAnchor =
@@ -1161,7 +1194,7 @@ export function collectCommercialSignals(params: {
   if (
     profile.sensitivity === 'STRICT' &&
     hasPhoneContact &&
-    !hasSearchRequestContext &&
+    !hasBlockingSearchRequestContext &&
     (hasServiceSpecialtyContext ||
       hasPromoContext ||
       hasBusinessContext ||

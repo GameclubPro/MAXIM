@@ -159,6 +159,13 @@ describe('commercial pattern regressions', () => {
       signals: ['recruitment:ваканси', 'recruitment:отклик', 'contact:phone'],
     },
     {
+      label: 'job-seeking hook with vacancy offer is still recruitment',
+      text: 'Нужна работа? Вакансия удаленно, доход от 3000 в день, пишите в MAX https://max.ru/join/work',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:ваканси', 'recruitment:доход', 'deal-channel:link'],
+      negativeSignals: ['job-seeking:job-seeking:search'],
+    },
+    {
       label: 'remote recruitment with roughly wording is not quoted-ad discussion',
       text: 'Открыта вакансия удаленной работы. Нужен менеджер по работе с холодной/теплой базой. Зп 17000 в месяц. Примерно час работы в день. Пишите на мой личный +7 900 000 01 06 Мах или вотсап.',
       subtype: 'RECRUITMENT',
@@ -345,6 +352,66 @@ describe('commercial pattern regressions', () => {
       text: 'Получите выплату 10000 через госуслуги, заполните анкету по ссылке clck.ru/abc123',
       subtype: 'GOODS',
       signals: ['risk:government-benefit-phishing', 'deal-channel:link'],
+    },
+    {
+      label: 'wireless internet service from forty eight hour audit miss',
+      text: 'БЕСПРОВОДНОЙ ИНТЕРНЕТ В ЧАСТНЫЙ ДОМ! Скорость до 200 мегабит. Тел.: +7 900 000 03 01. Объявление.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:internet-connection-service', 'contact:phone'],
+    },
+    {
+      label: 'addiction detox service from forty eight hour audit miss',
+      text: 'Отравление, похмелье. Вывод из запоя, кодировка, снятие ломки, реабилитация. Помощь анонимна, телефон +7 900 000 03 02.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:addiction-detox-service', 'contact:phone'],
+    },
+    {
+      label: 'telecom connection services from forty eight hour audit miss',
+      text: 'Подключение услуг РОСТЕЛЕКОМ: Интернет, Wink, видеонаблюдение, мобильная связь. Прием заявок по телефону +7 900 000 03 03. Реклама.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:internet-connection-service', 'contact:phone'],
+    },
+    {
+      label: 'story channel subscription from forty eight hour audit miss',
+      text: 'ДУШЕВНЫЕ ИСТОРИИ НА ВЕЧЕР. Рекомендуем Вам подписаться на канал, переходите по ссылке https://max.ru/join/story',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:subscribe-channel-link', 'deal-channel:link'],
+    },
+    {
+      label: 'paid sports raffle channel from forty eight hour audit miss',
+      text: 'ВНИМАНИЕ! РОЗЫГРЫШ 50.000 РУБЛЕЙ ЗА ПОДПИСКУ В КАНАЛ. Автор зарабатывает на спорте, ссылка https://max.ru/join/sport',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['risk:paid-raffle', 'channel-placement:subscribe-channel-link', 'deal-channel:link'],
+    },
+    {
+      label: 'ai fitting app promo from forty eight hour audit miss',
+      text: 'Попробуй Кадрум — AI-примерку одежды, крутые нейро-фотосессии и фото для профиля. Ссылка kadrum.ai',
+      subtype: 'GOODS',
+      signals: ['business:ai-media-app-promo', 'deal-channel:generic-domain'],
+    },
+    {
+      label: 'obfuscated casino landing from agent blind spot',
+      text: 'К а з и н о win4land точка com, бонус за регистрацию и быстрый депозит.',
+      subtype: 'GOODS',
+      signals: ['risk:betting-gambling'],
+    },
+    {
+      label: 'electronics buyout without explicit phone from agent blind spot',
+      text: 'Куплю ноутбуки и айфоны в любом состоянии. Оценка сразу, выезд к вам, расчет наличными.',
+      subtype: 'BUYOUT',
+      signals: ['buyout:used-electronics-buyout', 'transaction:buyout-deal'],
+    },
+    {
+      label: 'property lead magnet from agent blind spot',
+      text: 'Бесплатный подбор новостроек. Квартиры от застройщика без комиссии, оставьте заявку на сайте novostroy-example.ru',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:новостройки-лидоген', 'deal-channel:generic-domain'],
+    },
+    {
+      label: 'crypto investment stays high risk instead of recruitment',
+      text: 'Крипто-сигналы: пассивный доход, разбор портфеля и закрытый канал. Пишите https://max.ru/join/crypto',
+      subtype: 'GOODS',
+      signals: ['risk:crypto-investment', 'deal-channel:link'],
     },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
@@ -584,6 +651,22 @@ describe('commercial pattern regressions', () => {
     [
       'private auto engine exchange with repair wording is not a service offer',
       'Обмен. Мото не предлагать. ДВС после капремонта, ставился новый венец, не сошёлся со стартером, нужно поменять. Двигатель обкатку не прошёл. Остальное в ЛС, в комплект отдам поршни, клапаны, вкладыши, кольца новые.',
+    ],
+    [
+      'youtube tutorial with no ads is not a setup service',
+      'Без рекламы: видео на YouTube как настроить роутер дома, просто инструкция для соседей https://youtube.com/watch?v=abc',
+    ],
+    [
+      'official government app store link is not app directory spam',
+      'Официальное приложение Госуслуги можно скачать в App Store: https://apps.apple.com/ru/app/gosuslugi/id123456',
+    ],
+    [
+      'job seeking with payment details stays allowed',
+      'Ищу подработку на лето с ежедневной оплатой, писать в личку.',
+    ],
+    [
+      'rideshare with price stays allowed',
+      'Водитель завтра Абакан Таштып Абаза, 3 места по 500 рублей, телефон +7 900 000 03 04.',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();

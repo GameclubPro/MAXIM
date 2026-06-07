@@ -3,6 +3,7 @@ export const COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES = [
   'private-single:',
   'private-goods:',
   'search:',
+  'search-pattern:',
   'context:',
   'job-seeking:',
 ] as const;

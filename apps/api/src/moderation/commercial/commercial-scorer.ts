@@ -435,7 +435,17 @@ export class CommercialSecondStageScorer {
     } else if (
       state.hasGoodsRetailContext &&
       commercialProbability >= commercialLogitConfig.goodsRetailProbability &&
-      (primarySubtype === 'GOODS' || primarySubtype === 'GENERIC')
+      (primarySubtype === 'GOODS' ||
+        primarySubtype === 'GENERIC' ||
+        (primarySubtype === 'SERVICES' &&
+          state.matchedSignals.some(
+            (signal) =>
+              signal === 'goods-retail:home-food-order' ||
+              signal === 'goods-retail:home-goods-low-price-order' ||
+              signal === 'goods-retail:order-flow' ||
+              signal === 'goods-retail:wholesale-produce' ||
+              signal === 'goods-retail:poultry-farm-order',
+          )))
     ) {
       pushSupportingSubtype(primarySubtype);
       primarySubtype = 'GOODS_RETAIL';

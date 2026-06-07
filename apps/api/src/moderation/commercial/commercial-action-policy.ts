@@ -18,6 +18,10 @@ export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput
     return 'ALLOW';
   }
 
+  if (input.confidenceScore >= input.deleteThreshold && input.hasHighRiskEvidence) {
+    return 'DELETE_AND_ESCALATE';
+  }
+
   const campaignOnly = input.hasCampaignContext && !input.hasDirectDealEvidence;
   if (campaignOnly) {
     return input.reviewRecommended ? 'REVIEW_ONLY' : 'WARN';
@@ -31,9 +35,6 @@ export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput
   }
 
   if (input.confidenceScore >= input.deleteThreshold) {
-    if (input.hasHighRiskEvidence) {
-      return 'DELETE_AND_ESCALATE';
-    }
     if (input.evidenceTier === 'DIRECT' || input.hasDirectDealEvidence) {
       return 'DELETE';
     }
