@@ -200,6 +200,61 @@ export function resolveNextNightModeTransitionOccurrences(
   return occurrences.sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
 }
 
+export function resolveCurrentNightModeCloseOccurrence(
+  settings: NightModeTransitionScheduleSettings,
+  now = new Date(),
+): NightModeTransitionOccurrence | null {
+  if (!settings.nightModeEnabled) {
+    return null;
+  }
+
+  const startMinutes = normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
+  const endMinutes = normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
+  if (startMinutes === endMinutes) {
+    return null;
+  }
+
+  const timezone = normalizeNightModeTimezone(settings.nightModeTimezone);
+  const currentMinutes = getCurrentMinutesInTimeZone(timezone, now);
+  if (currentMinutes === null) {
+    return null;
+  }
+
+  const currentDateKey = formatDateKeyInTimeZone(now, timezone);
+  const previousDateKey = addDaysToDateKey(currentDateKey, -1);
+  const isClosed =
+    startMinutes < endMinutes
+      ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+      : currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  if (!isClosed) {
+    return null;
+  }
+
+  const sessionDateKey = resolveNightModeTransitionSessionDateKey({
+    currentDateKey,
+    previousDateKey,
+    currentMinutes,
+    startMinutes,
+    endMinutes,
+    status: 'closed',
+  });
+  const dueAt = zonedDateTimeToUtc(sessionDateKey, startMinutes, timezone);
+  if (dueAt.getTime() > now.getTime()) {
+    return null;
+  }
+
+  return {
+    transition: 'close',
+    dueAt,
+    sessionKey: buildNightModeTransitionSessionKey({
+      timezone,
+      startMinutes,
+      endMinutes,
+      sessionDateKey,
+    }),
+  };
+}
+
 export function buildNightModeTransitionSessionKey(params: {
   timezone: string;
   startMinutes: number;

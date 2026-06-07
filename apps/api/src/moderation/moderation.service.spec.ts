@@ -7187,7 +7187,7 @@ describe('ModerationService', () => {
     }
   });
 
-  it('does not send a late close notice when the scheduler starts after the close boundary', async () => {
+  it('does not invent a late close notice without a close-boundary snapshot', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:40:00.000Z'));
     try {
       const prisma = {

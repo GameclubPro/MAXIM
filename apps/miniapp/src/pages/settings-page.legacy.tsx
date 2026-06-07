@@ -9831,8 +9831,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="night-force-close-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                При включении бот отправит уведомление в группу, а затем будет
-                                удалять сообщения не-админов без повторных сообщений.
+                                Пока ручное закрытие активно, бот молча удаляет сообщения не-админов
+                                без дополнительного текста.
                               </p>
                             ) : null}
                           </div>
@@ -9964,8 +9964,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </small>
                               ) : (
                                 <p className="settings-native-toggle__hint">
-                                  Бот отправит уведомление и будет удалять новые сообщения весь
-                                  выбранный срок без повторных сообщений.
+                                  Бот будет молча удалять новые сообщения весь выбранный срок.
                                 </p>
                               )}
                             </div>

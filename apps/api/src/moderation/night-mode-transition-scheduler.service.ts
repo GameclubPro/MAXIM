@@ -15,7 +15,9 @@ import {
   type NightModeTransitionJob,
 } from './night-mode-transition.queue';
 import {
+  resolveCurrentNightModeCloseOccurrence,
   resolveNextNightModeTransitionOccurrences,
+  type NightModeTransitionOccurrence,
   type NightModeTransitionScheduleSettings,
 } from './night-mode-transition-time.util';
 
@@ -103,7 +105,7 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
             : {}),
         });
 
-        await this.enqueueChatSettingsRows(settingsRows);
+        await this.enqueueChatSettingsRows(settingsRows, { includeCurrentClose: true });
 
         if (settingsRows.length < NIGHT_MODE_TRANSITION_BOOTSTRAP_BATCH_SIZE) {
           break;
@@ -132,7 +134,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
     await this.clearChatJobsForChatIds(normalizedChatIds);
     if (settings) {
-      await this.enqueueChatSettingsOccurrences(settings.chatId, settings);
+      await this.enqueueChatSettingsOccurrences(settings.chatId, settings, {
+        includeCurrentClose: true,
+      });
     }
   }
 
@@ -169,7 +173,9 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
     await this.clearChatJobsForChatIds([chatId]);
     if (await this.hasActiveBotMembership(chatId)) {
-      await this.enqueueChatSettingsOccurrences(chatId, settings);
+      await this.enqueueChatSettingsOccurrences(chatId, settings, {
+        includeCurrentClose: true,
+      });
     }
   }
 
@@ -187,19 +193,22 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
 
     await this.clearChatJobsForChatIds(chatIds);
     for (const settings of settingsRows) {
-      await this.enqueueChatSettingsOccurrences(settings.chatId, settings);
+      await this.enqueueChatSettingsOccurrences(settings.chatId, settings, {
+        includeCurrentClose: true,
+      });
     }
   }
 
   private async enqueueChatSettingsRows(
     settingsRows: readonly (NightModeTransitionScheduleSettings & { chatId: string })[],
+    options: { includeCurrentClose?: boolean } = {},
   ): Promise<void> {
     if (!this.queue) {
       return;
     }
 
     for (const settings of settingsRows) {
-      await this.enqueueChatSettingsOccurrences(settings.chatId, settings);
+      await this.enqueueChatSettingsOccurrences(settings.chatId, settings, options);
     }
   }
 
@@ -310,12 +319,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   private async enqueueChatSettingsOccurrences(
     chatId: string,
     settings: NightModeTransitionScheduleSettings,
+    options: { includeCurrentClose?: boolean } = {},
   ): Promise<void> {
     if (!this.queue) {
       return;
     }
 
-    const occurrences = resolveNextNightModeTransitionOccurrences(settings);
+    const occurrences = this.resolveTransitionOccurrences(settings, options);
     if (occurrences.length === 0) {
       return;
     }
@@ -351,6 +361,32 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
         },
       );
     }
+  }
+
+  private resolveTransitionOccurrences(
+    settings: NightModeTransitionScheduleSettings,
+    options: { includeCurrentClose?: boolean },
+  ): NightModeTransitionOccurrence[] {
+    const occurrences = resolveNextNightModeTransitionOccurrences(settings);
+    if (!options.includeCurrentClose) {
+      return occurrences;
+    }
+
+    const currentClose = resolveCurrentNightModeCloseOccurrence(settings);
+    if (
+      !currentClose ||
+      occurrences.some(
+        (occurrence) =>
+          occurrence.transition === currentClose.transition &&
+          occurrence.sessionKey === currentClose.sessionKey,
+      )
+    ) {
+      return occurrences;
+    }
+
+    return [currentClose, ...occurrences].sort(
+      (left, right) => left.dueAt.getTime() - right.dueAt.getTime(),
+    );
   }
 
   private async clearChatJobsForChatIds(chatIds: readonly string[]): Promise<void> {

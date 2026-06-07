@@ -33,12 +33,6 @@ type SettingsApplyReadinessRefresh = {
   requiredSubscriptionChannelIds: readonly string[];
 };
 
-type ManualGroupCloseApplyNoticeParams = {
-  chatId: string;
-  botAssignmentData: ResolvedBotAssignmentData;
-  settings: ChatSettings;
-};
-
 function mergeBotSpeechMediaForKeys(
   current: ChatSettings['botSpeechMedia'] | undefined,
   source: ChatSettings['botSpeechMedia'],
@@ -100,7 +94,6 @@ export async function applySettingsToAllChats(params: {
   assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
-  onManualGroupCloseEnabled?: (params: ManualGroupCloseApplyNoticeParams) => Promise<void>;
   botSpeechMediaKeys?: readonly string[];
 }): Promise<ApplySettingsToAllChatsResult> {
   const parsed = chatSettingsSchema.safeParse(params.body);
@@ -162,9 +155,6 @@ export async function applySettingsToAllChats(params: {
   if (shouldValidateRequiredSubscription) {
     await params.assertRequiredSubscriptionSettings(normalizedSettings);
   }
-  const shouldCheckManualGroupCloseNotice =
-    settingsUpdatePayload.nightModeForceCloseEnabled === true &&
-    typeof params.onManualGroupCloseEnabled === 'function';
 
   await mapWithConcurrencyLimit(
     appliedChatIds,
@@ -172,18 +162,10 @@ export async function applySettingsToAllChats(params: {
     async (chatId) => {
       const botAssignmentData = await params.resolveBotAssignmentData(chatId);
       const currentTargetSettings =
-        (shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0) ||
-        shouldCheckManualGroupCloseNotice
+        shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
           ? await params.prisma.chatSettings.findUnique({
               where: { chatId },
-              select: {
-                ...(shouldApplyBotSpeechMedia && botSpeechMediaKeys.length > 0
-                  ? { botSpeechMedia: true }
-                  : {}),
-                ...(shouldCheckManualGroupCloseNotice
-                  ? { nightModeForceCloseEnabled: true }
-                  : {}),
-              },
+              select: { botSpeechMedia: true },
             })
           : null;
       const scopedBotSpeechMedia =
@@ -261,17 +243,6 @@ export async function applySettingsToAllChats(params: {
       ]);
 
       await params.chatContextCache.invalidate(chatId);
-
-      if (
-        shouldCheckManualGroupCloseNotice &&
-        !currentTargetSettings?.nightModeForceCloseEnabled
-      ) {
-        await params.onManualGroupCloseEnabled?.({
-          chatId,
-          botAssignmentData,
-          settings: normalizedSettings,
-        });
-      }
     },
   );
 
