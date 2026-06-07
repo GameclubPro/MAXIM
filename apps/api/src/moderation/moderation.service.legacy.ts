@@ -72,6 +72,7 @@ import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
   BOT_PRIVATE_MENU_APP_LINE,
   buildBotStartQuickActionText,
@@ -8374,8 +8375,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await prepareRequiredSubscriptionNoticeContext();
         return this.sendBotMessageWithOptionalAutoDelete({
           chatId: params.chatId,
-          text: textValue,
-          messageOptions: requiredSubscriptionMessageOptions,
+          text: this.renderRequiredSubscriptionNoticeHtml(textValue),
+          messageOptions: this.withHtmlMessageOptions(requiredSubscriptionMessageOptions),
           media: this.resolveBotSpeechMedia(params.settings, mediaFieldKey),
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
@@ -8474,6 +8475,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (action !== SanctionAction.NONE) {
+        const requiredSubscriptionBanNoticeText =
+          action === SanctionAction.BAN
+            ? this.buildRequiredSubscriptionBanExplanation(
+                params.userLabel,
+                followUpMissingChannelTitles,
+                params.settings.requiredSubscriptionMuteDurationHours,
+                params.settings.botSpeechStyle,
+              )
+            : null;
         await this.applySanctionAction({
           chatId: params.chatId,
           userId: params.userId,
@@ -8483,15 +8493,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
           deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-          botMessageOptions: requiredSubscriptionMessageOptions,
+          botMessageOptions:
+            requiredSubscriptionBanNoticeText !== null
+              ? this.withHtmlMessageOptions(requiredSubscriptionMessageOptions)
+              : requiredSubscriptionMessageOptions,
           sanctionNoticeText:
-            action === SanctionAction.BAN
-              ? this.buildRequiredSubscriptionBanExplanation(
-                  params.userLabel,
-                  followUpMissingChannelTitles,
-                  params.settings.requiredSubscriptionMuteDurationHours,
-                  params.settings.botSpeechStyle,
-                )
+            requiredSubscriptionBanNoticeText !== null
+              ? this.renderRequiredSubscriptionNoticeHtml(requiredSubscriptionBanNoticeText)
               : undefined,
           botSpeechStyle: params.settings.botSpeechStyle,
           trackAsGlobalSpammer: false,
@@ -16685,7 +16693,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       {
         ...(resolvedMessageOptions ?? {}),
-        textFormat: 'markdown',
+        textFormat: resolvedMessageOptions?.textFormat ?? 'markdown',
       },
       this.buildBotMessageDispatchOptions({
         deleteBotMessagesEnabled,
@@ -16695,6 +16703,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }),
     );
     return true;
+  }
+
+  private renderRequiredSubscriptionNoticeHtml(text: string): string {
+    return this.stripLooseMarkdownMarkers(
+      renderSupportedMarkdownAsHtml(text, { blockMode: 'raw' }),
+    );
+  }
+
+  private stripLooseMarkdownMarkers(text: string): string {
+    return text.replace(/(?:\*\*\*|\*\*|___|__|~~)/g, '');
+  }
+
+  private withHtmlMessageOptions(options?: MaxSendMessageOptions): MaxSendMessageOptions {
+    return {
+      ...(options ?? {}),
+      textFormat: 'html',
+    };
   }
 
   private resolveBotSpeechMedia(

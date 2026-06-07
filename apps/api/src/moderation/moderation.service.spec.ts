@@ -15836,7 +15836,7 @@ describe('ModerationService', () => {
       expect(noticeText).toContain('Афиша района');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
           messageLink: {
             type: 'reply',
             mid: 'mid-rules-1',
@@ -15861,6 +15861,55 @@ describe('ModerationService', () => {
           },
         }),
       );
+    });
+
+    it('renders markdown-heavy required subscription templates as html without visible markers', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageText:
+          '👋 {user}, приветствую. **Ваша публикация удалена.**\n\n**✏️ Что-бы иметь возможность писать сообщения в группе, задавать вопросы, необходимо выполнить условие. **\n\n**💙 **Нужно подписаться на {channels}',
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Нижегородский районный чат',
+          link: 'https://max.ru/channels/nizhegorodskiy-chat',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeOptions).toEqual(expect.objectContaining({ textFormat: 'html' }));
+      expect(noticeText).toContain('<strong>Ваша публикация удалена.</strong>');
+      expect(noticeText).toContain('<a href="max://user/user-1">Алексей</a>');
+      expect(noticeText).toContain('Нижегородский районный чат');
+      expect(noticeText).not.toMatch(/(?:\*\*|__|\+\+|~~|\^\^)/u);
     });
 
     it('retries a required-subscription delete with the next eligible bot after a terminal 403', async () => {
@@ -16382,7 +16431,7 @@ describe('ModerationService', () => {
       expect(noticeText).toContain('Новости MAX');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
           messageLink: {
             type: 'reply',
             mid: 'mid-rules-1',
@@ -16470,7 +16519,7 @@ describe('ModerationService', () => {
       expect(noticeText).toContain('Новости MAX');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
-          textFormat: 'markdown',
+          textFormat: 'html',
           messageLink: {
             type: 'reply',
             mid: 'mid-rules-1',
