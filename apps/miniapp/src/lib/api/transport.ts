@@ -1,6 +1,6 @@
 import { buildApiErrorMessage } from '../api-error';
 import { traceFirstMiniappApiResult } from '../boot-trace';
-import { API_BASE, API_BASES, normalizeApiBases } from '../public-config';
+import { API_BASES } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
@@ -57,10 +57,7 @@ export function createApiTransport(
 ): ApiTransport {
   let cachedInitData = resolveInitDataValue(initData);
   let preferredApiBase: string | null = null;
-  const apiBases = normalizeApiBases(
-    options.apiBases?.[0] ?? API_BASE,
-    options.apiBases?.slice(1) ?? API_BASES.slice(1),
-  );
+  const apiBases = options.apiBases?.length ? options.apiBases : API_BASES;
 
   const readInitData = (refresh = false): string => {
     if (refresh || typeof initData === 'function') {
@@ -87,7 +84,7 @@ export function createApiTransport(
 
     return headers;
   };
-  const resolveAttemptBases = (init: RequestInit): string[] => {
+  const resolveAttemptBases = (): readonly string[] => {
     if (!preferredApiBase) {
       return apiBases;
     }
@@ -153,7 +150,7 @@ export function createApiTransport(
     authInitData: string,
     init: RequestInit = {},
   ): Promise<FetchAttemptResult> => {
-    const attemptBases = resolveAttemptBases(init);
+    const attemptBases = resolveAttemptBases();
     if (attemptBases.length <= 1) {
       return fetchWithTimeout(attemptBases[0], path, authInitData, init);
     }
