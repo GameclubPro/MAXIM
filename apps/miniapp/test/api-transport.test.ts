@@ -169,6 +169,83 @@ test('aborts hanging requests after the configured timeout', async () => {
   }
 });
 
+test('uses the first reachable API base for idempotent requests', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      throw new TypeError('Network request failed');
+    }
+
+    return createResponse({
+      ok: true,
+      status: 200,
+      text: JSON.stringify([{ id: 'chat-1' }]),
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: [
+      'https://api-cdn.flex-craft.ru/api/v1',
+      'https://major-maksimov.ru/api/v1',
+    ],
+  });
+
+  const result = await api.request('/chats');
+
+  assert.deepEqual(result, [{ id: 'chat-1' }]);
+  assert.deepEqual(
+    calls.map((call) => String(call.input)),
+    [
+      'https://api-cdn.flex-craft.ru/api/v1/chats',
+      'https://major-maksimov.ru/api/v1/chats',
+    ],
+  );
+});
+
+test('uses the selected API base for follow-up mutation requests', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      throw new TypeError('Network request failed');
+    }
+
+    return createResponse({
+      ok: true,
+      status: init?.method === 'POST' ? 204 : 200,
+      text: init?.method === 'POST' ? '' : JSON.stringify([{ id: 'chat-1' }]),
+      contentType: init?.method === 'POST' ? null : 'application/json',
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: [
+      'https://api-cdn.flex-craft.ru/api/v1',
+      'https://major-maksimov.ru/api/v1',
+    ],
+  });
+
+  await api.request('/chats');
+  await api.request('/chats/chat-1/settings', {
+    method: 'POST',
+    body: JSON.stringify({ antiSpamEnabled: true }),
+  });
+
+  assert.deepEqual(
+    calls.map((call) => `${new Headers(call.init?.headers).get('Content-Type') ?? ''} ${call.input}`),
+    [
+      ' https://api-cdn.flex-craft.ru/api/v1/chats',
+      ' https://major-maksimov.ru/api/v1/chats',
+      'application/json https://major-maksimov.ru/api/v1/chats/chat-1/settings',
+    ],
+  );
+});
+
 test.afterEach(() => {
   delete (globalThis as { fetch?: typeof fetch }).fetch;
 });

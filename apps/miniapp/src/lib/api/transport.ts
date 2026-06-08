@@ -1,6 +1,6 @@
 import { buildApiErrorMessage } from '../api-error';
 import { traceFirstMiniappApiResult } from '../boot-trace';
-import { API_BASE } from '../public-config';
+import { API_BASE, API_BASES, normalizeApiBases } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
@@ -8,6 +8,16 @@ const API_REQUEST_TIMEOUT_MS = 25_000;
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
   requestKeepalive: (path: string, init?: RequestInit) => void;
+};
+
+export type ApiTransportOptions = {
+  apiBases?: readonly string[];
+  requestTimeoutMs?: number;
+};
+
+type FetchAttemptResult = {
+  apiBase: string;
+  response: Response;
 };
 
 function resolveInitDataValue(initData: string | (() => string)): string {
@@ -42,8 +52,17 @@ async function waitForUpdatedInitData(
   return latestInitData;
 }
 
-export function createApiTransport(initData: string | (() => string)): ApiTransport {
+export function createApiTransport(
+  initData: string | (() => string),
+  options: ApiTransportOptions = {},
+): ApiTransport {
   let cachedInitData = resolveInitDataValue(initData);
+  let preferredApiBase: string | null = null;
+  const apiBases = normalizeApiBases(
+    options.apiBases?.[0] ?? API_BASE,
+    options.apiBases?.slice(1) ?? API_BASES.slice(1),
+  );
+  const requestTimeoutMs = options.requestTimeoutMs ?? API_REQUEST_TIMEOUT_MS;
 
   const readInitData = (refresh = false): string => {
     if (refresh || typeof initData === 'function') {
@@ -70,18 +89,26 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
 
     return headers;
   };
+  const resolveAttemptBases = (init: RequestInit): string[] => {
+    if (!preferredApiBase) {
+      return apiBases;
+    }
+
+    return [preferredApiBase, ...apiBases.filter((base) => base !== preferredApiBase)];
+  };
   const fetchWithTimeout = async (
+    apiBase: string,
     path: string,
     authInitData: string,
     init: RequestInit = {},
-  ): Promise<Response> => {
+  ): Promise<FetchAttemptResult> => {
     const controller = new AbortController();
     let timedOut = false;
     const abortFromCaller = () => controller.abort();
     const timeoutId = globalThis.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, API_REQUEST_TIMEOUT_MS);
+    }, requestTimeoutMs);
     if (init.signal) {
       if (init.signal.aborted) {
         abortFromCaller();
@@ -91,11 +118,13 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
     }
 
     try {
-      return await fetch(`${API_BASE}${path}`, {
+      const response = await fetch(`${apiBase}${path}`, {
         ...init,
         signal: controller.signal,
         headers: buildHeaders(authInitData, init),
       });
+      preferredApiBase = apiBase;
+      return { apiBase, response };
     } catch (error: unknown) {
       if (timedOut) {
         traceFirstMiniappApiResult({
@@ -121,15 +150,64 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
       init.signal?.removeEventListener('abort', abortFromCaller);
     }
   };
+  const fetchWithFallback = async (
+    path: string,
+    authInitData: string,
+    init: RequestInit = {},
+  ): Promise<FetchAttemptResult> => {
+    const attemptBases = resolveAttemptBases(init);
+    if (attemptBases.length <= 1) {
+      return fetchWithTimeout(attemptBases[0], path, authInitData, init);
+    }
+
+    if (['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
+      return new Promise<FetchAttemptResult>((resolve, reject) => {
+        let settled = false;
+        let completed = 0;
+        let lastError: unknown;
+
+        for (const apiBase of attemptBases) {
+          void fetchWithTimeout(apiBase, path, authInitData, init)
+            .then((result) => {
+              if (settled) {
+                return;
+              }
+
+              settled = true;
+              resolve(result);
+            })
+            .catch((error: unknown) => {
+              completed += 1;
+              lastError = error;
+              if (!settled && completed === attemptBases.length) {
+                settled = true;
+                reject(lastError);
+              }
+            });
+        }
+      });
+    }
+
+    let lastError: unknown;
+    for (const apiBase of attemptBases) {
+      try {
+        return await fetchWithTimeout(apiBase, path, authInitData, init);
+      } catch (error: unknown) {
+        lastError = error;
+      }
+    }
+
+    throw lastError;
+  };
 
   return {
     async request(path: string, init: RequestInit = {}) {
       const authInitData = readInitData();
-      let response = await fetchWithTimeout(path, authInitData, init);
+      let { apiBase, response } = await fetchWithFallback(path, authInitData, init);
       if (response.status === 401 && typeof initData === 'function') {
         const refreshedInitData = await waitForUpdatedInitData(readInitData, authInitData);
         if (refreshedInitData && refreshedInitData !== authInitData) {
-          response = await fetchWithTimeout(path, refreshedInitData, init);
+          ({ apiBase, response } = await fetchWithTimeout(apiBase, path, refreshedInitData, init));
         }
       }
 
@@ -168,7 +246,7 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
     },
     requestKeepalive(path: string, init: RequestInit = {}) {
       const headers = buildHeaders(readInitData(), init);
-      void fetch(`${API_BASE}${path}`, {
+      void fetch(`${preferredApiBase ?? apiBases[0]}${path}`, {
         ...init,
         headers,
         keepalive: true,

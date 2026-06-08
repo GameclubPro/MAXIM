@@ -25,10 +25,46 @@ export function normalizeApiBase(value: string | undefined): string {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
+export function normalizeApiFallbackBases(value: string | undefined): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const item of (value ?? '').split(',')) {
+    const normalized = normalizeApiBase(item);
+    if (!item.trim() || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result;
+}
+
+export function normalizeApiBases(primary: string, fallbacks: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const base of [primary, ...fallbacks]) {
+    const normalized = normalizeApiBase(base);
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  return result.length ? result : [DEFAULT_API_BASE];
+}
+
 export const PUBLIC_BASE_PATH = normalizeBasePath(
   IMPORT_META_ENV?.VITE_PUBLIC_BASE_PATH,
   DEFAULT_PUBLIC_BASE_PATH,
 );
 export const PUBLIC_ROUTER_BASENAME = PUBLIC_BASE_PATH.replace(/\/+$/u, '');
 export const API_BASE = normalizeApiBase(IMPORT_META_ENV?.VITE_API_BASE);
+export const API_FALLBACK_BASES = normalizeApiFallbackBases(IMPORT_META_ENV?.VITE_API_FALLBACK_BASES);
+export const API_BASES = normalizeApiBases(API_BASE, API_FALLBACK_BASES);
 export const HEALTH_BASE = API_BASE.replace(/\/v1$/u, '');

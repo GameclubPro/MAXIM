@@ -3,6 +3,7 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
+  readonly VITE_API_FALLBACK_BASES?: string;
   readonly VITE_PUBLIC_BASE_PATH?: string;
   readonly VITE_APP_NAME?: string;
   readonly VITE_APP_DESCRIPTION?: string;
