@@ -97,6 +97,20 @@ describe('commercial action policy', () => {
     ).toBe('WARN');
   });
 
+  it('keeps non-escalation risk evidence under high false-positive guard', () => {
+    expect(
+      resolveCommercialActionPolicy({
+        ...BASE_INPUT,
+        evidenceTier: 'HIGH_RISK',
+        fpRisk: 90,
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: false,
+      }),
+    ).toBe('WARN');
+  });
+
   it('warns or reviews medium-band detections even with direct evidence', () => {
     expect(
       resolveCommercialActionPolicy({

@@ -11308,6 +11308,7 @@ describe('ModerationService', () => {
             metadata: {
               confidenceScore: 88,
               decisionBand: 'HIGH',
+              actionBand: 'DELETE',
               matchedSignals: ['intent:продам', 'contact:пишите в лс'],
               negativeSignals: [],
               appliedThresholds: {
@@ -11453,6 +11454,79 @@ describe('ModerationService', () => {
     });
   });
 
+  it('keeps commercial detections without action band out of user-facing moderation', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
+            textFiltersMuteEnabled: true,
+            textFiltersBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.95,
+            reason: 'Commercial candidate from legacy path',
+            metadata: {
+              confidenceScore: 95,
+              decisionBand: 'HIGH',
+              matchedSignals: ['channel-placement:mass-invite-link', 'deal-channel:link'],
+            },
+          },
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.violation.count).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
   it('does not moderate message when commercial detector returns no violation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
@@ -11548,6 +11622,7 @@ describe('ModerationService', () => {
             metadata: {
               confidenceScore: 92,
               decisionBand: 'HIGH',
+              actionBand: 'DELETE',
               matchedSignals: ['intent:продам', 'contact:пишите в лс', 'transaction:price'],
               negativeSignals: [],
               appliedThresholds: {

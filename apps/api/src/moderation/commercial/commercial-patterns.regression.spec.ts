@@ -430,6 +430,18 @@ describe('commercial pattern regressions', () => {
       signals: ['risk:p2p-crypto-arbitrage', 'transaction:high-risk-offer'],
     },
     {
+      label: 'p2p crypto arbitrage invite-only chat without explicit contact',
+      text: 'P2P связки каждый день, закрытый чат, вход по инвайту.',
+      subtype: 'GOODS',
+      signals: ['risk:p2p-crypto-arbitrage', 'transaction:high-risk-offer'],
+    },
+    {
+      label: 'credit history leadgen with comments response',
+      text: 'Кредитная история испорчена? Поможем получить деньги быстро, ответ в комментариях.',
+      subtype: 'GOODS',
+      signals: ['risk:loan-leadgen', 'transaction:high-risk-offer', 'contact:comments-response'],
+    },
+    {
       label: 'payment card drop leadgen',
       text: 'Нужны карты для приема переводов, без визита, оплата ежедневно, пишите в тг cashwork77.',
       subtype: 'GOODS',
@@ -568,6 +580,42 @@ describe('commercial pattern regressions', () => {
       text: 'Предлагаю козье молоко, творог, йогурт, сыры. Доставим до вашего подъезда . т 89277172079',
       subtype: 'GOODS_RETAIL',
       signals: ['goods-retail:home-dairy-retail', 'contact:phone'],
+    },
+    {
+      label: 'home dairy applications with delivery rounds',
+      text: 'Домашняя молочка: сметана, творог, кефир, сыр. Развоз по пятницам, заявки в личку.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:home-dairy-retail', 'contact:в личк'],
+    },
+    {
+      label: 'euphemistic auto buyout with immediate settlement',
+      text: 'Заберу авто в любом состоянии, расчет сразу на месте. Документы не проблема.',
+      subtype: 'BUYOUT',
+      signals: ['buyout:auto-same-day-buyout', 'transaction:buyout-deal'],
+    },
+    {
+      label: 'euphemistic livestock procurement with immediate settlement',
+      text: 'Приедем заберём коров и бычков, расчет на месте живым весом.',
+      subtype: 'BUYOUT',
+      signals: ['buyout:livestock-procurement', 'transaction:buyout-deal'],
+    },
+    {
+      label: 'remote project recruitment with income but no contact',
+      text: 'Нужны люди в проект. Доход от 7000 в день, без вложений, обучение.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:people-work-conditions', 'transaction:implied-price'],
+    },
+    {
+      label: 'paid group directory addition',
+      text: 'Каталог групп района: 1. Чат мам https://max.ru/join/a 2. Работа https://max.ru/join/b 3. Услуги https://max.ru/join/c. Добавление платное.',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:paid-directory-addition', 'deal-channel:link'],
+    },
+    {
+      label: 'group promo through profile link',
+      text: 'Наш чат для мам, заходите, ссылка в профиле.',
+      subtype: 'GROUP_PROMOTION',
+      signals: ['combo:group-promo+profile-contact', 'contact:ссылка в профиле'],
     },
     {
       label: 'short stay island lodging from agent recall sweep',
@@ -880,6 +928,10 @@ describe('commercial pattern regressions', () => {
       'Официальное приложение Работа России можно скачать в App Store: https://apps.apple.com/ru/app/trudvsem/id123',
     ],
     [
+      'news intensity wording is not info product',
+      'Магнитная буря началась, в ближайшие часы интенсивность геомагнитных возмущений может усилиться. Прислать новость https://example.com/news',
+    ],
+    [
       'work app store tutorial is not app directory spam',
       'Инструкция: скачайте приложение Работа России через App Store, чтобы проверить статус резюме https://apps.apple.com/ru/app/trudvsem/id123',
     ],
@@ -916,12 +968,36 @@ describe('commercial pattern regressions', () => {
       'Подскажите, кто брал кредит в банке, какие ставки сейчас?',
     ],
     [
+      'credit history advice question is not loan leadgen',
+      'Кредитная история испортилась, кто знает как исправить без новых займов?',
+    ],
+    [
       'job seeking with payment details stays allowed',
       'Ищу подработку на лето с ежедневной оплатой, писать в личку.',
     ],
     [
+      'personal project volunteer request stays allowed',
+      'Нужны люди в проект двора на субботник, без оплаты, просто помочь соседям.',
+    ],
+    [
       'rideshare with price stays allowed',
       'Водитель завтра Абакан Таштып Абаза, 3 места по 500 рублей, телефон +7 900 000 03 04.',
+    ],
+    [
+      'personal car pickup is not auto buyout',
+      'Заберу авто из сервиса после ремонта, расчет уже закрыт по заказ-наряду.',
+    ],
+    [
+      'private land construction context is not building service',
+      'Земельный участок ровный, при строительстве жилого дома сырости не будет. Свет рядом, цена 350 000, телефон +7 900 000 10 21.',
+    ],
+    [
+      'livestock logistics note is not procurement',
+      'Приедем заберём коров с пастбища после дождя, хозяин уже предупредил.',
+    ],
+    [
+      'chat recommendation with profile link stays allowed',
+      'Посоветуйте чат для мам, ссылка в профиле у соседки не открывается.',
     ],
     [
       'resale pricing discussion from twenty four hour audit false positive',

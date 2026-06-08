@@ -33,7 +33,7 @@ export function resolveCommercialActionPolicy(
 
   if (
     input.fpRisk >= COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold &&
-    !input.hasHighRiskEvidence
+    !input.hasEscalationRiskEvidence
   ) {
     return input.reviewRecommended ? 'REVIEW_ONLY' : 'WARN';
   }

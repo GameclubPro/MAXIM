@@ -680,15 +680,32 @@ export function collectCommercialSignals(params: {
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
+  const hasP2pAccessOffer =
+    highRiskCommercialHitLabels.includes('p2p-crypto-arbitrage') &&
+    /(?:^|[^\p{L}\p{N}_-])(?:закрыт[\p{L}\p{N}_-]*\s+чат|инвайт|вход\s+(?:по\s+)?инвайт[\p{L}\p{N}_-]*|вход\s+в\s+(?:чат|канал|групп[\p{L}\p{N}_-]*))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      normalizedText,
+    );
+  const hasLoanCommentOffer =
+    highRiskCommercialHitLabels.includes('loan-leadgen') &&
+    /(?:^|[^\p{L}\p{N}_-])(?:ответ[\p{L}\p{N}_-]*\s+в\s+комментар[\p{L}\p{N}_-]*|комментар[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      normalizedText,
+    );
   if (
     highRiskCommercialHitLabels.length > 0 &&
     !highRiskCommercialHitLabels.includes('government-benefit-phishing') &&
-    /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|связ[ьи]|контакт[\p{L}\p{N}_-]*|мессенджер[\p{L}\p{N}_-]*|whatsapp|ватсап|telegram|телеграм|max|мах|тел\.?|телефон|звон[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      normalizedText,
-    )
+    (hasP2pAccessOffer ||
+      hasLoanCommentOffer ||
+      /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|связ[ьи]|контакт[\p{L}\p{N}_-]*|мессенджер[\p{L}\p{N}_-]*|whatsapp|ватсап|telegram|телеграм|max|мах|тел\.?|телефон|звон[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        normalizedText,
+      ))
   ) {
     addPositive('transaction:high-risk-offer', weights.transactionalKeyword);
     hasTransactional = true;
+    hasDealSignal = true;
+  }
+  if (hasLoanCommentOffer) {
+    addPositive('contact:comments-response', weights.contactMarker);
+    hasContact = true;
     hasDealSignal = true;
   }
 
@@ -1347,6 +1364,17 @@ export function collectCommercialSignals(params: {
         ? weights.comboGroupPromoDealExplicit
         : weights.comboGroupPromoDealWeak,
     );
+    hasGroupPromoContext = true;
+    hasCommercialContext = true;
+  }
+
+  if (
+    hasGroupContext &&
+    hasGroupPromotionIntent &&
+    !hasDealChannel &&
+    contactHits.some((marker) => marker === 'ссылка в профиле' || marker === 'ссылка в описании')
+  ) {
+    addPositive('combo:group-promo+profile-contact', weights.comboGroupPromoDealWeak);
     hasGroupPromoContext = true;
     hasCommercialContext = true;
   }

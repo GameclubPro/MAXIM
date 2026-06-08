@@ -1531,7 +1531,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         topViolation.ruleCode === 'COMMERCIAL_AD'
           ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
           : null;
-      const isCommercialReviewOnly = commercialActionBand === 'REVIEW_ONLY';
+      const isCommercialReviewOnly =
+        topViolation.ruleCode === 'COMMERCIAL_AD' &&
+        (commercialActionBand === null ||
+          commercialActionBand === 'ALLOW' ||
+          commercialActionBand === 'REVIEW_ONLY');
 
       if (!isCommercialReviewOnly) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
@@ -1564,7 +1568,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
-        commercialActionBand === null ||
         commercialActionBand === 'DELETE' ||
         commercialActionBand === 'DELETE_AND_ESCALATE';
       const shouldDeleteViolationMessage = canDeleteMessage && shouldDeleteByCommercialPolicy;
