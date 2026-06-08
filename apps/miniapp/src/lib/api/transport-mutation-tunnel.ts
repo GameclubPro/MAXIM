@@ -1,4 +1,6 @@
 const MUTATION_TUNNEL_PATH = '/_mutation-tunnel';
+const COMPRESSED_TUNNEL_BODY_THRESHOLD = 1024;
+const MAX_TUNNEL_URL_LENGTH = 7500;
 
 type FetchAttemptResult = {
   apiBase: string;
@@ -14,6 +16,10 @@ type FetchWithTimeout = (
 
 function encodeBase64UrlUtf8(value: string): string {
   const bytes = new TextEncoder().encode(value);
+  return encodeBase64UrlBytes(bytes);
+}
+
+function encodeBase64UrlBytes(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
@@ -23,7 +29,23 @@ function encodeBase64UrlUtf8(value: string): string {
   return globalThis.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
 }
 
-function buildMutationTunnelPath(path: string, init: RequestInit = {}): string | null {
+async function encodeGzipBody(value: string): Promise<string | null> {
+  if (typeof CompressionStream === 'undefined') {
+    return null;
+  }
+
+  try {
+    const compressed = new Blob([value])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'));
+    const buffer = await new Response(compressed).arrayBuffer();
+    return encodeBase64UrlBytes(new Uint8Array(buffer));
+  } catch {
+    return null;
+  }
+}
+
+async function buildMutationTunnelPath(path: string, init: RequestInit = {}): Promise<string | null> {
   const method = (init.method ?? 'GET').toUpperCase();
   if (
     ['GET', 'HEAD'].includes(method) ||
@@ -45,10 +67,21 @@ function buildMutationTunnelPath(path: string, init: RequestInit = {}): string |
   }
 
   if (typeof init.body === 'string' && init.body) {
-    params.set('body', encodeBase64UrlUtf8(init.body));
+    const body = encodeBase64UrlUtf8(init.body);
+    const bodyGzip =
+      init.body.length >= COMPRESSED_TUNNEL_BODY_THRESHOLD
+        ? await encodeGzipBody(init.body)
+        : null;
+
+    if (bodyGzip && bodyGzip.length < body.length) {
+      params.set('bodyGzip', bodyGzip);
+    } else {
+      params.set('body', body);
+    }
   }
 
-  return `${MUTATION_TUNNEL_PATH}?${params.toString()}`;
+  const tunnelPath = `${MUTATION_TUNNEL_PATH}?${params.toString()}`;
+  return tunnelPath.length <= MAX_TUNNEL_URL_LENGTH ? tunnelPath : null;
 }
 
 export async function fetchMutationWithTunnelFallback(
@@ -59,7 +92,7 @@ export async function fetchMutationWithTunnelFallback(
   fetchWithTimeout: FetchWithTimeout,
 ): Promise<FetchAttemptResult> {
   const tryMutationTunnel = async (apiBase: string): Promise<FetchAttemptResult | null> => {
-    const tunnelPath = buildMutationTunnelPath(path, init);
+    const tunnelPath = await buildMutationTunnelPath(path, init);
     if (!tunnelPath) {
       return null;
     }
@@ -68,7 +101,7 @@ export async function fetchMutationWithTunnelFallback(
       headers: init.headers,
       signal: init.signal,
     });
-    return tunnelResult.response.status === 405 ? null : tunnelResult;
+    return [405, 413, 414].includes(tunnelResult.response.status) ? null : tunnelResult;
   };
 
   let lastError: unknown;

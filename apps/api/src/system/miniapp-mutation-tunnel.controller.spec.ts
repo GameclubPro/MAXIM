@@ -1,4 +1,5 @@
 import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
+import { gzipSync } from 'node:zlib';
 import { MiniappMutationTunnelController } from './miniapp-mutation-tunnel.controller';
 
 type ReplyMock = {
@@ -66,6 +67,59 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.header).toHaveBeenCalledWith('Content-Type', 'application/json; charset=utf-8');
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
+  });
+
+  it('accepts gzip-compressed tunnel bodies', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({ message: 'x'.repeat(4096) });
+    const bodyGzip = gzipSync(Buffer.from(payload, 'utf8'))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+
+    global.fetch = jest.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'PUT',
+        path: '/chats/chat-1/settings',
+        bodyGzip,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/chats/chat-1/settings',
+      expect.objectContaining({
+        method: 'PUT',
+        body: payload,
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(204);
+    expect(reply.send).toHaveBeenCalledWith();
+  });
+
+  it('rejects ambiguous compressed and plain tunnel bodies', async () => {
+    const controller = new MiniappMutationTunnelController();
+    global.fetch = jest.fn() as typeof fetch;
+
+    await expect(
+      controller.tunnel(
+        {
+          method: 'PUT',
+          path: '/chats/chat-1/settings',
+          body: 'e30',
+          bodyGzip: 'e30',
+        },
+        'InitData auth_date=1&hash=test',
+        createReply() as never,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('rejects recursive tunnel targets', async () => {

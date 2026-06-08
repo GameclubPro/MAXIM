@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
+import { gunzipSync } from 'node:zlib';
 import { InitDataGuard } from '../auth/init-data.guard';
 
 const ALLOWED_TUNNEL_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -234,6 +235,7 @@ type MutationTunnelQuery = {
   method?: string;
   path?: string;
   body?: string;
+  bodyGzip?: string;
   contentType?: string;
   nonce?: string;
 };
@@ -249,7 +251,7 @@ export class MiniappMutationTunnelController {
   ): Promise<void> {
     const method = this.normalizeMethod(query.method);
     const target = this.normalizePath(query.path, method);
-    const body = this.decodeBody(query.body);
+    const body = this.decodeBody(query.body, query.bodyGzip);
     const contentType = this.normalizeContentType(query.contentType, body);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TUNNEL_TIMEOUT_MS);
@@ -325,21 +327,51 @@ export class MiniappMutationTunnelController {
     return normalized;
   }
 
-  private decodeBody(value: string | undefined): string | undefined {
-    if (!value) {
+  private decodeBody(
+    value: string | undefined,
+    gzipValue: string | undefined,
+  ): string | undefined {
+    if (value && gzipValue) {
+      throw new BadRequestException('Ambiguous tunnel body');
+    }
+
+    if (!value && !gzipValue) {
       return undefined;
     }
 
-    if (value.length > MAX_TUNNEL_BODY_LENGTH) {
+    const encodedValue = value ?? gzipValue;
+    if (!encodedValue) {
+      return undefined;
+    }
+
+    if (encodedValue.length > MAX_TUNNEL_BODY_LENGTH) {
       throw new BadRequestException('Tunnel body is too large');
     }
 
+    const decoded = this.decodeBase64Url(encodedValue);
+    const body = gzipValue ? this.gunzipBody(decoded) : decoded.toString('utf8');
+    if (body.length > MAX_TUNNEL_BODY_LENGTH) {
+      throw new BadRequestException('Tunnel body is too large');
+    }
+
+    return body;
+  }
+
+  private decodeBase64Url(value: string): Buffer {
     if (!/^[A-Za-z0-9_-]+$/u.test(value) || value.length % 4 === 1) {
       throw new BadRequestException('Invalid tunnel body');
     }
 
     const padded = value.padEnd(value.length + ((4 - (value.length % 4)) % 4), '=');
-    return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  }
+
+  private gunzipBody(value: Buffer): string {
+    try {
+      return gunzipSync(value).toString('utf8');
+    } catch {
+      throw new BadRequestException('Invalid tunnel body');
+    }
   }
 
   private normalizeContentType(
