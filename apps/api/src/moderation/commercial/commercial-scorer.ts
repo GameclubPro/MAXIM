@@ -405,6 +405,7 @@ export class CommercialSecondStageScorer {
           state.matchedSignals.some(
             (signal) =>
               signal === 'goods-retail:home-food-order' ||
+              signal === 'goods-retail:home-dairy-retail' ||
               signal === 'goods-retail:home-goods-low-price-order' ||
               signal === 'goods-retail:order-flow' ||
               signal === 'goods-retail:wholesale-produce' ||

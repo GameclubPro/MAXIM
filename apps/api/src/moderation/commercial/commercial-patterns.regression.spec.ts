@@ -564,6 +564,12 @@ describe('commercial pattern regressions', () => {
       signals: ['goods-retail:home-food-order', 'transaction:price', 'contact:handle'],
     },
     {
+      label: 'home dairy delivery from final prod audit false negative',
+      text: 'Предлагаю козье молоко, творог, йогурт, сыры. Доставим до вашего подъезда . т 89277172079',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:home-dairy-retail', 'contact:phone'],
+    },
+    {
       label: 'short stay island lodging from agent recall sweep',
       text: 'Сдаю бюджетное жильё на Ольхоне: домики, душ, мангал. Телефон +7 900 000 10 20',
       subtype: 'PROPERTY_AGENT',
@@ -869,6 +875,10 @@ describe('commercial pattern regressions', () => {
     [
       'home dumplings recommendation request stays allowed',
       'Кто делает домашние пельмени, посоветуйте контакты.',
+    ],
+    [
+      'home dairy recommendation request stays allowed',
+      'Кто покупал козье молоко и творог у соседей, посоветуйте проверенные контакты.',
     ],
     [
       'loan discussion is not loan leadgen',

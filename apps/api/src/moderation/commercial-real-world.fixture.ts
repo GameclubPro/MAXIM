@@ -1892,6 +1892,18 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'home dairy delivery from final prod audit false negative',
+    text: `Предлагаю козье молоко, творог, йогурт, сыры. Доставим до вашего подъезда . т 89277172079`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:home-dairy-retail', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'short stay island lodging from agent recall sweep',
     text: `Сдаю бюджетное жильё на Ольхоне: домики, душ, мангал. Телефон +7 900 000 10 20`,
     expectedSubtype: 'PROPERTY_AGENT',
@@ -2528,6 +2540,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'home dumplings recommendation request from agent recall sweep',
     text: `Кто делает домашние пельмени, посоветуйте контакты.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'home dairy recommendation request from final prod audit guard',
+    text: `Кто покупал козье молоко и творог у соседей, посоветуйте проверенные контакты.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

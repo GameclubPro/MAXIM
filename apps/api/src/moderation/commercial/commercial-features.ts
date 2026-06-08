@@ -337,6 +337,7 @@ function hasStrongGoodsRetailEvidence(
       signal === 'goods-retail:clearance-stock-retail' ||
       signal === 'goods-retail:farm-livestock-retail' ||
       signal === 'goods-retail:poultry-farm-order' ||
+      signal === 'goods-retail:home-dairy-retail' ||
       signal === 'goods-retail:home-food-order' ||
       signal === 'goods-retail:commercial-equipment' ||
       signal === 'goods-retail:bath-tub-retail' ||
