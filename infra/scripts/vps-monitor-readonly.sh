@@ -85,7 +85,7 @@ sample_once() {
   run_step restart-counts ./infra/scripts/vps-connect.sh exec \
     'ids=$(docker ps -q --filter label=com.docker.compose.project=infra); docker inspect --format "{{.Name}}\t{{.RestartCount}}\t{{.State.Status}}\t{{.State.StartedAt}}" $ids'
   run_step log-scan scan_service_logs
-  run_step public-app curl -fsS -o /dev/null -w 'app %{http_code} %{time_total}\n' \
+  run_step public-app curl -fsS --max-time 15 -o /dev/null -w 'app %{http_code} %{time_total}\n' \
     https://maxim.play-team.ru/app/
 }
 
