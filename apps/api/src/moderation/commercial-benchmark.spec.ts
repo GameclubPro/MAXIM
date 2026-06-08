@@ -295,6 +295,44 @@ describe('commercial deterministic benchmark', () => {
     expect(['WARN', 'REVIEW_ONLY']).toContain(actionBand);
   });
 
+  it.each([
+    [
+      'messaging automation spam repeated across chats',
+      'ПРОДАЖА КАЧЕСТВЕННОЙ РАССЫЛКИ, ДЕШЕВО. ЛУЧШИЕ ТАРИФЫ ПИСАТЬ В ЛС. ПОЛУЧИТЬ КЛИЕНТСКУЮ БАЗУ И ДЕНЬГИ. ПРОДАЮ САЙТ НА ЗАКАЗ НЕДОРОГО ТГ ЗАБЛОКИРОВАЛИ? САЙТ ПОМОЖЕТ РЕШИТЬ ЛЮБУЮ ПРОБЛЕМУ. ТАК ЖЕ ПИСАТЬ В ЛС',
+    ],
+    [
+      'remote bank vacancy repeated across chats',
+      'Требуются сотрудники на удаленку в Альфа банк, подойдет всем 18+ студентам и мамам в декрете. Работаем в агентском портале через телефон, график свободный, ЗП белая на карту. Все вопросы в л/с Новичкам бонус 10000тыс.',
+    ],
+  ])('keeps campaign-only high-risk %s out of delete actions', async (_label, text) => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      text,
+      {},
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 4,
+          sameTextDistinctChatCount: 4,
+          repeatedPhoneDistinctChatCount: 0,
+          repeatedLinkDistinctChatCount: 0,
+          nearTextDistinctChatCount: 4,
+          repeatedDomainDistinctChatCount: 0,
+          repeatedHandleDistinctChatCount: 0,
+          senderDistinctChatCount5m: 2,
+          senderDistinctChatCount30m: 4,
+          senderDistinctChatCount120m: 4,
+        },
+      },
+    );
+
+    expect(violation).toBeDefined();
+    const actionBand = String(readMetadata(violation).actionBand ?? 'UNKNOWN');
+    expect(actionBand).not.toBe('DELETE');
+    expect(actionBand).not.toBe('DELETE_AND_ESCALATE');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(actionBand);
+  });
+
   it('keeps hot-path commercial detection within the deterministic perf budget', async () => {
     const service = createRuleEngine();
     const samples = [

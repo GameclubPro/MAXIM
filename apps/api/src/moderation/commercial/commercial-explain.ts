@@ -34,7 +34,15 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     matchedSignals.includes('contact:masked-phone') ||
     matchedSignals.includes('contact:handle') ||
     matchedSignals.includes('contact:email');
+  const hasPhoneEvidence =
+    matchedSignals.includes('contact:phone') ||
+    matchedSignals.includes('contact:contextual-phone') ||
+    matchedSignals.includes('contact:masked-phone');
   const hasLinkEvidence = matchedSignals.some((signal) => signal.startsWith('deal-channel:'));
+  const hasNonCampaignDirectDealEvidence =
+    hasPriceEvidence ||
+    hasPhoneEvidence ||
+    hasLinkEvidence;
   const hasDirectDealEvidence =
     (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
     (hasLinkEvidence && hasStrongContactEvidence) ||
@@ -53,6 +61,7 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     reviewRecommended: detection.reviewRecommended,
     hasCampaignContext: detection.campaignContext !== null,
     hasDirectDealEvidence,
+    hasNonCampaignDirectDealEvidence,
     hasHighRiskEvidence,
   });
   const reasonCodes = buildReasonCodes({
