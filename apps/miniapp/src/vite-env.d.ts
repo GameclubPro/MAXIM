@@ -70,6 +70,8 @@ type MaxWebAppBridge = {
 };
 
 declare global {
+  const __MAXIM_API_FALLBACKS_ENABLED__: boolean | undefined;
+
   interface Window {
     WebApp?: MaxWebAppBridge;
     MAX?: {

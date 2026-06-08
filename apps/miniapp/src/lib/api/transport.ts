@@ -4,6 +4,10 @@ import { API_BASES } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
+const API_FALLBACKS_ENABLED =
+  typeof __MAXIM_API_FALLBACKS_ENABLED__ === 'boolean'
+    ? __MAXIM_API_FALLBACKS_ENABLED__
+    : true;
 
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
@@ -151,7 +155,7 @@ export function createApiTransport(
     init: RequestInit = {},
   ): Promise<FetchAttemptResult> => {
     const attemptBases = resolveAttemptBases();
-    if (attemptBases.length <= 1) {
+    if (!API_FALLBACKS_ENABLED || attemptBases.length <= 1) {
       return fetchWithTimeout(attemptBases[0], path, authInitData, init);
     }
 
