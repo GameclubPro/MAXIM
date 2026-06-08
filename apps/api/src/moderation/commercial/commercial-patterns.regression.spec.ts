@@ -825,6 +825,14 @@ describe('commercial pattern regressions', () => {
       'Подборка полезных чатов района: женский чат https://max.ru/join/a, доска объявлений https://max.ru/join/b, соседи https://max.ru/join/c.',
     ],
     [
+      'district group directory with job and service group names stays allowed',
+      'Присоединяйся к группам по Краснокаменску и округу. Добавляйте контакты, чтобы не потерять любимые группы: Работа, Вакансии Краснокаменск https://max.ru/join/a, Недвижимость Краснокаменск https://max.ru/join/b, Услуги Краснокаменск https://max.ru/join/c.',
+    ],
+    [
+      'realtor group catalog with price word in title stays allowed',
+      'ГРУППЫ ДЛЯ КОЛЛЕГ С ЭКСКЛЮЗИВНОЙ НЕДВИЖИМОСТЬЮ. Вступай скорее. 1. Основной канал https://max.ru/join/a 2. Каталог групп https://max.ru/join/b 3. Первая цена https://max.ru/join/c 4. Вся недвижимость https://max.ru/join/d.',
+    ],
+    [
       'private avito resale stays private',
       'Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.',
     ],

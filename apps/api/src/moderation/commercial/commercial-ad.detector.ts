@@ -372,36 +372,43 @@ function isLikelyThirdPartyChatDirectoryNoise(
   if (
     state.hasPrice ||
     state.hasContact ||
-    state.hasTransactional ||
-    state.hasCampaignContext ||
     state.matchedSignals.some((signal) => signal.startsWith('risk:'))
   ) {
     return false;
   }
 
-  const directoryOnlySignals = new Set([
-    'channel-placement:доска объявлений',
-    'combo:business+deal',
-    'combo:group-promo+deal',
-    'deal-channel:link',
-    'group:чат',
-  ]);
-  if (!state.matchedSignals.every((signal) => directoryOnlySignals.has(signal))) {
+  if (!state.hasDealChannel) {
+    return false;
+  }
+
+  const hasDirectoryWording =
+    /(?:^|[^\p{L}\p{N}_-])(?:подборк[\p{L}\p{N}_-]*|список|каталог|навигатор|полезн[\p{L}\p{N}_-]*)(?:[\s\S]{0,100})(?:чат[\p{L}\p{N}_-]*|групп[\p{L}\p{N}_-]*|канал[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    ) ||
+    /(?:^|[^\p{L}\p{N}_-])(?:присоединяйся|вступай)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,60})(?:групп[\p{L}\p{N}_-]*|чат(?:ы|ов|ам|ами|ах)|канал(?:ы|ов|ам|ами|ах))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+  if (!hasDirectoryWording) {
+    return false;
+  }
+
+  const linkCount =
+    rawLoweredText.match(/(?:https?:\/\/|max\.ru\/join\/|\[url\])/giu)?.length ?? 0;
+  const numberedItemCount =
+    rawLoweredText.match(/(?:^|[\s.,;:])\d{1,2}\s*[.)]\s+\p{L}/giu)?.length ?? 0;
+  if (linkCount < 3 && numberedItemCount < 4) {
     return false;
   }
 
   if (
-    /(?:^|[^\p{L}\p{N}_-])(?:подборк[\p{L}\p{N}_-]*|список|каталог|навигатор|полезн[\p{L}\p{N}_-]*)(?:[\s\S]{0,80})(?:чат[\p{L}\p{N}_-]*|групп[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      rawLoweredText,
-    ) &&
-    !/(?:^|[^\p{L}\p{N}_-])(?:подпис(?:ывайтесь|аться|ка)|переход(?:ите)?|размест(?:им|ить|иться)|реклам[\p{L}\p{N}_-]*|охват[\p{L}\p{N}_-]*|аудитори[\p{L}\p{N}_-]*|цена|стоимость|прайс|продвижени[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+    /(?:^|[^\p{L}\p{N}_-])(?:размест(?:им|ить|иться)|реклам[\p{L}\p{N}_-]*|рассылк[\p{L}\p{N}_-]*|охват[\p{L}\p{N}_-]*|аудитори[\p{L}\p{N}_-]*|цена\s+за\s+пост|стоимость\s+(?:реклам[\p{L}\p{N}_-]*|размещени[\p{L}\p{N}_-]*)|прайс|продвижени[\p{L}\p{N}_-]*|платим\s+комисси[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
       rawLoweredText,
     )
   ) {
-    return true;
+    return false;
   }
 
-  return false;
+  return true;
 }
 
 function hasRideShareCommercialOverride(
