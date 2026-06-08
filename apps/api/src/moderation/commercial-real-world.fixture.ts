@@ -599,7 +599,7 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'warehouse job in Moscow from twelve hour audit miss',
     text: `Работа в Москве, склад. Бесплатная регистрация, трудовой договор, зарплата каждый месяц, аванс каждую неделю. Работа на складе через ТСД-сканер, сортировка товаров. 120000-200000 рублей. Телефон +7 900 000 00 96.`,
     expectedSubtype: 'RECRUITMENT',
-    reviewRecommended: true,
+    reviewRecommended: false,
     expectedSignals: ['recruitment:warehouse-job-conditions', 'contact:phone'],
     overrides: {
       commercialAdsSensitivity: 'BALANCED',

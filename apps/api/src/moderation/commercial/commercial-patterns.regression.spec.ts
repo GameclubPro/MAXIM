@@ -413,6 +413,60 @@ describe('commercial pattern regressions', () => {
       subtype: 'GOODS',
       signals: ['risk:crypto-investment', 'deal-channel:link'],
     },
+    {
+      label: 'loan leadgen with mixed-script salary wording',
+      text: 'Дeньги дo зapплaты oнлaйн, oдoбpeниe 15 минут, без отказа. Ccылкa в профиле.',
+      subtype: 'GOODS',
+      signals: ['risk:loan-leadgen', 'transaction:high-risk-offer', 'contact:ссылка в профиле'],
+    },
+    {
+      label: 'p2p crypto arbitrage training leadgen',
+      text: 'P2P арбитраж: связки каждый день, депозит от 5000, обучение в закрытом чате, вход по инвайту.',
+      subtype: 'INFO_PRODUCT',
+      signals: ['risk:p2p-crypto-arbitrage', 'transaction:high-risk-offer'],
+    },
+    {
+      label: 'payment card drop leadgen',
+      text: 'Нужны карты для приема переводов, без визита, оплата ежедневно, пишите в тг cashwork77.',
+      subtype: 'GOODS',
+      signals: ['risk:payment-card-drop-leadgen', 'contact:handle'],
+    },
+    {
+      label: 'iphone repair service with casual wording',
+      text: 'Чиню айфоны, меняю стекла и батареи, выезд по городу. Писать в лс.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:digital-service', 'contact:в лс'],
+    },
+    {
+      label: 'pet grooming appointment service',
+      text: 'Груминг собак и кошек, стрижка когтей, вычес, купание. Принимаю по записи, свободно завтра.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:pet-grooming-service', 'contact:по записи'],
+    },
+    {
+      label: 'kids event animator service',
+      text: 'Аниматоры на детский праздник, шоу мыльных пузырей, аквагрим. Бронируйте дату, пишите в личку.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:kids-event-service', 'contact:пишите в лич'],
+    },
+    {
+      label: 'channel ad window placement slang',
+      text: 'Свободные окна в кaнaлe, 24ч топ, охват живой. Статa скину, место 700р, связь @adm_rek',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:ad-window-top', 'transaction:price', 'contact:handle'],
+    },
+    {
+      label: 'info product registration through form',
+      text: 'Марафон по отношениям 7 дней, практики и эфиры, места ограничены, регистрация через анкету.',
+      subtype: 'INFO_PRODUCT',
+      signals: ['info:марафон', 'transaction:keywords'],
+    },
+    {
+      label: 'short stay apartment booking',
+      text: 'Апартаменты у моря свободны с 12 июля. До пляжа 5 минут, бронь по предоплате, календарь в личку.',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:посуточная-бронь-апартаментов', 'transaction:keywords'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -430,6 +484,16 @@ describe('commercial pattern regressions', () => {
     expect(result?.primarySubtype).toBe('GOODS_RETAIL');
     expect(result?.matchedSignals).toContain('goods-retail:bath-tub-retail');
     expect(result?.matchedSignals).not.toContain('recruitment:работа-условия');
+  });
+
+  it('escalates obfuscated salary loan leadgen instead of sending it to review only', () => {
+    const result = detect(
+      'Дeньги дo зapплaты oнлaйн, oдoбpeниe 15 минут, без отказа. Ccылкa в профиле.',
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS');
+    expect(result?.matchedSignals).toContain('risk:loan-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
   });
 
   it('detects emoji separated multi-object Flora showcase under balanced thresholds', () => {
@@ -659,6 +723,38 @@ describe('commercial pattern regressions', () => {
     [
       'official government app store link is not app directory spam',
       'Официальное приложение Госуслуги можно скачать в App Store: https://apps.apple.com/ru/app/gosuslugi/id123456',
+    ],
+    [
+      'official work app store link is not app directory spam',
+      'Официальное приложение Работа России можно скачать в App Store: https://apps.apple.com/ru/app/trudvsem/id123',
+    ],
+    [
+      'work app store tutorial is not app directory spam',
+      'Инструкция: скачайте приложение Работа России через App Store, чтобы проверить статус резюме https://apps.apple.com/ru/app/trudvsem/id123',
+    ],
+    [
+      'civic benefit instruction on administration site is not phishing',
+      'Компенсацию за ЖКХ оформляют через Госуслуги, заявление по ссылке на сайте администрации https://example-raion.ru/benefits',
+    ],
+    [
+      'fraud warning quoting loan ad is not a commercial loan offer',
+      'Полиция предупреждает: мошенники рассылают займ без отказа, не переходите по ссылкам',
+    ],
+    [
+      'private low quantity seedlings stay private',
+      'Продам рассаду помидоров, осталось 10 штук по 50 рублей, самовывоз, пишите в личку',
+    ],
+    [
+      'rideshare passenger wording is not logistics service',
+      'Водитель завтра Абакан Таштып Абаза, 3 места по 500 рублей, перевозка пассажиров, телефон +7 900 000 10 06',
+    ],
+    [
+      'student seeking marketplace side job stays allowed',
+      'Студент ищет подработку на Ozon или WB, график после учебы, писать в личку',
+    ],
+    [
+      'loan discussion is not loan leadgen',
+      'Подскажите, кто брал кредит в банке, какие ставки сейчас?',
     ],
     [
       'job seeking with payment details stays allowed',

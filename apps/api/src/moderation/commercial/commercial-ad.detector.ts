@@ -213,9 +213,9 @@ export class CommercialAdDetector {
 
     if (
       hasRideShareContext(rawLoweredText) &&
+      !hasRideShareCommercialOverride(state) &&
       !state.hasBusinessContext &&
       !state.hasDealChannel &&
-      !state.hasServiceContext &&
       !state.hasRecruitmentContext &&
       !state.hasGoodsRetailContext &&
       !state.hasGroupPromoContext &&
@@ -393,12 +393,16 @@ function isOfficialAppStoreReferenceNoise(
   if (
     state.hasPrice ||
     state.hasContact ||
-    state.hasTransactional ||
-    state.matchedSignals.some((signal) => signal.startsWith('risk:'))
+    state.hasTransactional
   ) {
     return false;
   }
 
+  const hasOfficialAppStoreRisk = state.matchedSignals.some(
+    (signal) =>
+      signal === 'risk:app-store-directory-promo' ||
+      signal === 'risk:app-store-directory-link',
+  );
   const hasOnlyOfficialAppStoreLinkContext =
     state.matchedSignals.includes('business:официально') &&
     state.matchedSignals.includes('deal-channel:link') &&
@@ -406,9 +410,11 @@ function isOfficialAppStoreReferenceNoise(
       (signal) =>
         signal === 'business:официально' ||
         signal === 'deal-channel:link' ||
+        signal === 'risk:app-store-directory-promo' ||
+        signal === 'risk:app-store-directory-link' ||
         signal === 'combo:business+deal',
     );
-  if (!hasOnlyOfficialAppStoreLinkContext) {
+  if (!hasOnlyOfficialAppStoreLinkContext && !hasOfficialAppStoreRisk) {
     return false;
   }
 
@@ -425,7 +431,20 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
     (signal) =>
       signal === 'context:quoted-ad-example' ||
       signal === 'context:moderation-ad-discussion' ||
-      signal === 'context:channel-metrics-not-selling',
+      signal === 'context:channel-metrics-not-selling' ||
+      signal === 'context:public-fraud-warning' ||
+      signal === 'context:official-civic-instruction',
+  );
+}
+
+function hasRideShareCommercialOverride(
+  state: ReturnType<typeof collectCommercialSignals>,
+): boolean {
+  return state.matchedSignals.some(
+    (signal) =>
+      signal.startsWith('service-specialty:') &&
+      signal !== 'service-specialty:перевозк' &&
+      signal !== 'service-specialty:logistics-delivery',
   );
 }
 

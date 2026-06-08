@@ -4,7 +4,10 @@ import type { CommercialThresholdProfile } from '../rule-engine-commercial-thres
 import type { CommercialSubtype } from '../rule-engine.contract';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { buildCommercialFeatureVector } from './commercial-explain';
-import { normalizeCommercialText } from './commercial-normalization';
+import {
+  normalizeCommercialConfusables,
+  normalizeCommercialText,
+} from './commercial-normalization';
 import {
   ADS_INTENT_MARKERS,
   ADS_SERVICE_INTENT_MARKERS,
@@ -83,6 +86,7 @@ import type {
 
 type CommercialMarkerContext = {
   normalizedTextWithoutUrls: string;
+  normalizedConfusableTextWithoutUrls: string;
   rawLoweredTextWithoutUrls: string;
   normalizedTokensWithoutUrls: string[];
 };
@@ -187,9 +191,9 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
     ADS_MASKED_PHONE_PATTERN.test(rawLoweredText) ||
     ADS_HANDLE_CONTACT_PATTERN.test(rawLoweredText) ||
-    ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText) ||
-    ADS_PRICE_PATTERN.test(rawLoweredText) ||
-    ADS_PRICE_RANGE_PATTERN.test(rawLoweredText) ||
+    (hasEmailLikeText(rawLoweredText) && ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText)) ||
+    (hasPriceLikeText(rawLoweredText) &&
+      (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_RANGE_PATTERN.test(rawLoweredText))) ||
     ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
     hasIntentContext ||
     ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
@@ -302,16 +306,21 @@ export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState):
     state.hasCommercialAudienceContext ||
     state.hasChannelPlacementContext ||
     state.hasServiceOfferContext ||
-    hasStrongGoodsRetailEvidence(state, { includePrivateResaleWeakSignals: false })
+    hasStrongGoodsRetailEvidence(state, {
+      includePrivateResaleWeakSignals: false,
+      includeLowQuantityPlantStock: false,
+    })
   );
 }
 
 function hasStrongGoodsRetailEvidence(
   state: CommercialSignalState,
-  options: { includePrivateResaleWeakSignals: boolean } = {
+  options: { includePrivateResaleWeakSignals: boolean; includeLowQuantityPlantStock?: boolean } = {
     includePrivateResaleWeakSignals: true,
+    includeLowQuantityPlantStock: true,
   },
 ): boolean {
+  const includeLowQuantityPlantStock = options.includeLowQuantityPlantStock ?? true;
   return state.matchedSignals.some(
     (signal) =>
       signal === 'goods-retail:sizes-and-colors' ||
@@ -323,7 +332,7 @@ function hasStrongGoodsRetailEvidence(
       signal === 'goods-retail:wholesale-produce' ||
       signal === 'goods-retail:volume-price-table' ||
       signal === 'goods-retail:apparel-retail-order-flow' ||
-      signal === 'goods-retail:plant-nursery-stock' ||
+      (includeLowQuantityPlantStock && signal === 'goods-retail:plant-nursery-stock') ||
       signal === 'goods-retail:plant-nursery-shipping' ||
       signal === 'goods-retail:clearance-stock-retail' ||
       signal === 'goods-retail:farm-livestock-retail' ||
@@ -359,15 +368,32 @@ function buildCommercialMarkerContext(
   rawLoweredText: string,
 ): CommercialMarkerContext {
   const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
+  const rawLoweredTextWithoutUrlsNormalized = normalizeCommercialConfusables(
+    rawLoweredTextWithoutUrls,
+  );
   const normalizedTextWithoutUrls =
     rawLoweredTextWithoutUrls === rawLoweredText
       ? normalizedText
       : normalizeCommercialText(rawLoweredTextWithoutUrls);
+  const normalizedTextWithRawConfusables =
+    rawLoweredTextWithoutUrlsNormalized === rawLoweredTextWithoutUrls
+      ? normalizedTextWithoutUrls
+      : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
+  const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
+  const normalizedTokensWithoutUrls = [
+    ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
+    ...(hasDistinctConfusableText
+      ? (normalizedTextWithRawConfusables.match(/[\p{L}\p{N}]+/gu) ?? [])
+      : []),
+  ];
 
   return {
     normalizedTextWithoutUrls,
+    normalizedConfusableTextWithoutUrls: hasDistinctConfusableText
+      ? normalizedTextWithRawConfusables
+      : '',
     rawLoweredTextWithoutUrls,
-    normalizedTokensWithoutUrls: normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? [],
+    normalizedTokensWithoutUrls,
   };
 }
 
@@ -388,6 +414,8 @@ function hasCommercialMarker(marker: string, context: CommercialMarkerContext): 
 
   return (
     context.normalizedTextWithoutUrls.includes(normalizedMarker) ||
+    (context.normalizedConfusableTextWithoutUrls !== '' &&
+      context.normalizedConfusableTextWithoutUrls.includes(normalizedMarker)) ||
     context.rawLoweredTextWithoutUrls.includes(marker.toLowerCase())
   );
 }
@@ -395,8 +423,33 @@ function hasCommercialMarker(marker: string, context: CommercialMarkerContext): 
 function matchesCommercialPattern(pattern: RegExp, context: CommercialMarkerContext): boolean {
   return (
     pattern.test(context.normalizedTextWithoutUrls) ||
+    (context.normalizedConfusableTextWithoutUrls !== '' &&
+      pattern.test(context.normalizedConfusableTextWithoutUrls)) ||
     pattern.test(context.rawLoweredTextWithoutUrls)
   );
+}
+
+function hasPriceLikeText(value: string): boolean {
+  return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
+    value,
+  );
+}
+
+function hasGenericDomainLikeText(value: string): boolean {
+  return /\.(?:ru|рф|com|net|org|su|shop|online|site|pro|io|app|ai)(?:$|[^\p{L}\p{N}_-])/iu.test(
+    value,
+  );
+}
+
+function hasEmailLikeText(value: string): boolean {
+  const atIndex = value.indexOf('@');
+  if (atIndex <= 0 || atIndex >= value.length - 4) {
+    return false;
+  }
+
+  const domainCandidate = value.slice(atIndex + 1, atIndex + 256);
+  const dotIndex = domainCandidate.indexOf('.');
+  return dotIndex > 0 && dotIndex < domainCandidate.length - 2;
 }
 
 export function collectCommercialSignals(params: {
@@ -783,10 +836,10 @@ export function collectCommercialSignals(params: {
   }
 
   if (
-    ADS_PRICE_PATTERN.test(rawLoweredText) ||
-    ADS_PRICE_PATTERN.test(normalizedText) ||
-    ADS_PRICE_RANGE_PATTERN.test(rawLoweredText) ||
-    ADS_PRICE_RANGE_PATTERN.test(normalizedText)
+    (hasPriceLikeText(rawLoweredText) &&
+      (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_RANGE_PATTERN.test(rawLoweredText))) ||
+    (hasPriceLikeText(normalizedText) &&
+      (ADS_PRICE_PATTERN.test(normalizedText) || ADS_PRICE_RANGE_PATTERN.test(normalizedText)))
   ) {
     addPositive('transaction:price', weights.price);
     hasPrice = true;
@@ -881,7 +934,7 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
-  if (ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText)) {
+  if (hasEmailLikeText(rawLoweredText) && ADS_EMAIL_CONTACT_PATTERN.test(rawLoweredText)) {
     addPositive('contact:email', weights.contactMarker);
     hasContact = true;
     hasDealSignal = true;
@@ -902,6 +955,7 @@ export function collectCommercialSignals(params: {
 
   const hasGenericDomainLink =
     !hasDealChannel &&
+    hasGenericDomainLikeText(rawLoweredText) &&
     ADS_GENERIC_DOMAIN_LINK_PATTERN.test(rawLoweredText) &&
     (hasPromoContext ||
       hasBusinessContext ||

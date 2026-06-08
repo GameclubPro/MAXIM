@@ -1,4 +1,7 @@
-import { normalizeCommercialText } from './commercial-normalization';
+import {
+  normalizeCommercialConfusables,
+  normalizeCommercialText,
+} from './commercial-normalization';
 
 describe('normalizeCommercialText', () => {
   it('collapses intentionally spaced commercial words', () => {
@@ -9,5 +12,11 @@ describe('normalizeCommercialText', () => {
   it('keeps regular words around obfuscated tokens readable', () => {
     expect(normalizeCommercialText('Сдам офис в центре')).toBe('сдам офис в центре');
     expect(normalizeCommercialText('Подскажите, где офис?')).toBe('подскажите, где офис?');
+  });
+
+  it('normalizes common visual Latin confusables in commercial spam words', () => {
+    expect(normalizeCommercialConfusables('Дeньги дo зapплaты oнлaйн')).toBe(
+      'деньги до зарплаты онлайн',
+    );
   });
 });

@@ -81,6 +81,12 @@ export function countPatternMatches(
   return count;
 }
 
+function hasPriceLikeText(value: string): boolean {
+  return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
+    value,
+  );
+}
+
 export function hasStrongCommercialCampaignEvidence(
   context: CommercialCampaignContext | null | undefined,
   state: CommercialSignalState,
@@ -219,8 +225,11 @@ export class CommercialSecondStageScorer {
         state.hasPromoContext) &&
       (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
     const priceMatchCount =
-      countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN) ||
-      countPatternMatches(normalizedText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN);
+      (hasPriceLikeText(rawLoweredText) &&
+        countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN)) ||
+      (hasPriceLikeText(normalizedText) &&
+        countPatternMatches(normalizedText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN)) ||
+      0;
     const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
     const multiSkuPriceLineCount = countPatternMatches(
       rawLoweredText,

@@ -317,4 +317,36 @@ describe('commercial deterministic benchmark', () => {
     expect(p95).toBeLessThanOrEqual(5);
     expect(p99).toBeLessThanOrEqual(15);
   });
+
+  it('keeps adversarial commercial near-misses within the deterministic perf budget', async () => {
+    const service = createRuleEngine();
+    const samples = [
+      `продам ${Array.from({ length: 1200 }, (_, index) => index % 10).join(' ')} x`,
+      `попробуйте ${Array.from({ length: 80 }, (_, index) => `label${index}`).join('.')}.invalidtld`,
+      `напишите ${Array.from({ length: 900 }, () => 'a').join('.')}@${Array.from(
+        { length: 120 },
+        () => 'b',
+      ).join('-')}-invalid`,
+      `розыгрыш ${Array.from({ length: 420 }, () => '1').join(' ')} рублей за спортX`,
+      'Бесплатный подбор новостроек. Квартиры от застройщика без комиссии.',
+    ];
+    const timings: number[] = [];
+
+    for (let index = 0; index < 500; index += 1) {
+      const text = samples[index % samples.length] ?? 'обычное сообщение';
+      const startedAt = performance.now();
+      const violation = await detectCommercialViolation(service, text);
+      timings.push(performance.now() - startedAt);
+      if (text.includes('новостроек')) {
+        expect(violation).toBeUndefined();
+      }
+    }
+
+    timings.sort((left, right) => left - right);
+    const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
+    const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
+
+    expect(p95).toBeLessThanOrEqual(75);
+    expect(p99).toBeLessThanOrEqual(100);
+  });
 });
