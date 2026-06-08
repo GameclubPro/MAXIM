@@ -1397,6 +1397,19 @@ export function collectCommercialSignals(params: {
     addPositive('combo:goods-retail+deal', weights.comboPromoDeal);
   }
 
+  if (
+    hasGoodsRetailContext &&
+    !hasPrivateGoodsItemContext &&
+    hasContact &&
+    !hasPrice &&
+    !hasDealChannel &&
+    matchedSignals.includes('goods-retail:collectible-flower-retail')
+  ) {
+    addPositive('transaction:retail-inquiry', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
+
   if (hasRecruitmentContext && (hasContact || hasDealChannel || hasTransactional)) {
     addPositive('combo:recruitment+deal', weights.comboRecruitmentDeal);
   }

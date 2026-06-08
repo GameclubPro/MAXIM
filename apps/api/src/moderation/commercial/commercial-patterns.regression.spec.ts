@@ -876,6 +876,21 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('DELETE');
   });
 
+  it('flags short collectible flower retail under balanced real chat thresholds', () => {
+    const result = detect('Сортовые фиалки по вопросам в личку', {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 50,
+        commercialAdsDeleteThreshold: 70,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('goods-retail:collectible-flower-retail');
+    expect(result?.matchedSignals).toContain('transaction:retail-inquiry');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
   it('keeps ordinary pc sale out of betting high risk', () => {
     const result = detect(
       'Полный комплект ПК для работы и учебы, игр, тянет GTA V и прочие. 4-ядерный процессор AMD A10. Возможна доставка. Цена 10500 +7 900 000 10 13. Звоните, тут не могу ответить.',
