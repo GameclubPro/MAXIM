@@ -33,6 +33,17 @@ async function bootstrap() {
     credentials: true,
   });
 
+  app.getHttpAdapter().getInstance().addHook('onSend', (request, reply, payload, done) => {
+    if (request.url.startsWith('/api/')) {
+      reply
+        .header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        .header('Pragma', 'no-cache')
+        .header('Expires', '0');
+    }
+
+    done(null, payload);
+  });
+
   await app.listen(port, '0.0.0.0');
 }
 

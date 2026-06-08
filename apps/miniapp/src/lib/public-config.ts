@@ -12,10 +12,14 @@ function normalizeBasePath(value: string | undefined, fallback: string): string 
   return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
 }
 
-function normalizeApiBase(value: string | undefined): string {
+export function normalizeApiBase(value: string | undefined): string {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   if (!trimmed) {
     return DEFAULT_API_BASE;
+  }
+
+  if (/^(?:https?:)?\/\//iu.test(trimmed)) {
+    return trimmed;
   }
 
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
