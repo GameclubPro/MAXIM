@@ -44,6 +44,49 @@ const globalSpammerCandidateStatuses = new Set<GlobalSpammerCandidateStatus | 'A
   'SUPPRESSED',
   'ALL',
 ]);
+const globalSpammerRegistryStatuses = new Set([
+  'NONE',
+  'ACTIVE_CONFIRMED',
+  'LOCAL_BLOCKED',
+  'MEDIUM_REVIEW',
+  'SUPPRESSED',
+  'EXPIRED',
+  'ADMIN_EXEMPT',
+]);
+const globalSpammerPolicyActions = new Set(['NONE', 'DELETE_AND_KICK', 'SHADOW_DELETE_AND_KICK']);
+const globalSpammerEnforcementModes = new Set(['enforce', 'shadow']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function parseGlobalSpammerUserDiagnosticsResponse(
+  response: unknown,
+): GlobalSpammerUserDiagnostics {
+  if (!isRecord(response) || typeof response.userId !== 'string') {
+    throw new Error('Invalid spammer diagnostics response');
+  }
+
+  const policy = response.policy;
+  const registry = response.registry;
+  const reputationSummary = response.reputationSummary;
+  if (
+    !isRecord(policy) ||
+    !globalSpammerRegistryStatuses.has(String(policy.registryStatus)) ||
+    !globalSpammerPolicyActions.has(String(policy.action)) ||
+    !globalSpammerEnforcementModes.has(String(policy.enforcementMode)) ||
+    typeof policy.deleteSpammersEnabled !== 'boolean' ||
+    !isRecord(registry) ||
+    !Array.isArray(response.observations) ||
+    !Array.isArray(response.graphSignals) ||
+    !Array.isArray(response.campaigns) ||
+    !isRecord(reputationSummary)
+  ) {
+    throw new Error('Invalid spammer diagnostics response');
+  }
+
+  return response as GlobalSpammerUserDiagnostics;
+}
 
 function parseLogsDashboardRange(range: LogsDashboardRange): LogsDashboardRange {
   if (!logsDashboardRanges.has(range)) {
@@ -322,7 +365,7 @@ export async function getGlobalSpammerUserDiagnostics(
     `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`,
     request,
   );
-  return response as GlobalSpammerUserDiagnostics;
+  return parseGlobalSpammerUserDiagnosticsResponse(response);
 }
 
 export async function reviewGlobalSpammerCandidate(

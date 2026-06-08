@@ -576,6 +576,59 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('normalizes legacy confidence levels when listing the review queue', async () => {
+    const { observations, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    const observedAt = new Date('2026-05-29T12:00:00.000Z');
+
+    observations.push({
+      id: 'obs-dirty-confidence',
+      userId: 'user-dirty-confidence',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      confidenceLevel: 'MEDIUM_REVIEW',
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      messageId: null,
+      evidenceHash: 'dirty-confidence-hash',
+      evidence: null,
+      observedAt,
+      expiresAt: new Date('2026-06-12T12:00:00.000Z'),
+      suppressedAt: null,
+      suppressionReason: null,
+    });
+    prisma.globalSpammerCandidate.findMany.mockResolvedValueOnce([
+      {
+        userId: 'user-dirty-confidence',
+        status: 'PENDING',
+        confidenceScore: 0.68,
+        sourceBreakdown: {},
+        lastReason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+        lastChatId: 'chat-1',
+        lastEvidence: null,
+        lastUserLabel: null,
+        suppressedUntil: null,
+        reviewedAt: null,
+        reviewedByUserId: null,
+        reviewReason: null,
+        falsePositive: false,
+        chats: [],
+      },
+    ]);
+
+    const queue = await service.listReviewQueue({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      includeObservations: true,
+    });
+
+    expect(queue.items[0]?.observations[0]).toEqual(
+      expect.objectContaining({
+        confidenceLevel: 'MEDIUM',
+      }),
+    );
+  });
+
   it('promotes high-confidence fanout to the registry', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
@@ -905,6 +958,30 @@ describe('GlobalSpammerIntelligenceService', () => {
         onlyReputationSignals: true,
       }),
     );
+  });
+
+  it('reuses the source reputation rollup for repeated diagnostics', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    prisma.spammerObservation.groupBy
+      .mockResolvedValueOnce([
+        {
+          source: 'FANOUT_HIGH',
+          _count: { _all: 12 },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await service.getUserDiagnostics({
+      chatId: 'chat-1',
+      userId: 'user-cache-1',
+    });
+    await service.getUserDiagnostics({
+      chatId: 'chat-1',
+      userId: 'user-cache-2',
+    });
+
+    expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
   });
 
   it('suppresses active observations after manual unban', async () => {

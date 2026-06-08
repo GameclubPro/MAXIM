@@ -104,7 +104,7 @@ import {
   updateSettings,
 } from '../lib/api/chat-settings-client';
 import { getVkParsingCapability } from '../lib/api/vk-parsing-client';
-import { getGlobalSpammerReviewMetrics } from '../lib/api/events-client';
+import { getGlobalSpammerReviewMetrics } from '../lib/api/spammer-review-client';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {

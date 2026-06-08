@@ -192,10 +192,20 @@ export class ManualModerationService {
         const profile = profiles.get(item.userId.trim());
         return {
           ...item,
-          displayName: profile?.displayName ?? item.displayName ?? item.lastUserLabel ?? null,
-          avatarUrl: profile?.avatarUrl ?? item.avatarUrl ?? null,
-          profileUrl: profile?.profileUrl ?? item.profileUrl ?? null,
-          profileHandoffUrl: profile?.profileHandoffUrl ?? item.profileHandoffUrl ?? null,
+          displayName:
+            this.readTrimmedString(profile?.displayName) ??
+            this.readTrimmedString(item.displayName) ??
+            this.readTrimmedString(item.lastUserLabel) ??
+            null,
+          avatarUrl:
+            this.sanitizeContractUrl(profile?.avatarUrl) ??
+            this.sanitizeContractUrl(item.avatarUrl),
+          profileUrl:
+            this.sanitizeContractUrl(profile?.profileUrl) ??
+            this.sanitizeContractUrl(item.profileUrl),
+          profileHandoffUrl:
+            this.sanitizeContractUrl(profile?.profileHandoffUrl) ??
+            this.sanitizeContractUrl(item.profileHandoffUrl),
         };
       }),
     };
@@ -211,11 +221,41 @@ export class ManualModerationService {
 
     return {
       ...response,
-      displayName: profile?.displayName ?? response.displayName ?? null,
-      avatarUrl: profile?.avatarUrl ?? response.avatarUrl ?? null,
-      profileUrl: profile?.profileUrl ?? response.profileUrl ?? null,
-      profileHandoffUrl: profile?.profileHandoffUrl ?? response.profileHandoffUrl ?? null,
+      displayName:
+        this.readTrimmedString(profile?.displayName) ??
+        this.readTrimmedString(response.displayName) ??
+        null,
+      avatarUrl:
+        this.sanitizeContractUrl(profile?.avatarUrl) ??
+        this.sanitizeContractUrl(response.avatarUrl),
+      profileUrl:
+        this.sanitizeContractUrl(profile?.profileUrl) ??
+        this.sanitizeContractUrl(response.profileUrl),
+      profileHandoffUrl:
+        this.sanitizeContractUrl(profile?.profileHandoffUrl) ??
+        this.sanitizeContractUrl(response.profileHandoffUrl),
     };
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private sanitizeContractUrl(value: unknown): string | null {
+    const trimmed = this.readTrimmedString(value);
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+      return trimmed;
+    } catch {
+      return null;
+    }
   }
 
   private async resolveGlobalSpammerProfiles(

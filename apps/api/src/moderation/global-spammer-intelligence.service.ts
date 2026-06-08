@@ -398,6 +398,7 @@ const SOURCE_BASE_REPUTATION_WEIGHTS: Record<GlobalSpammerObservationSource, num
 };
 
 const SOURCE_REPUTATION_WINDOW_DAYS = 30;
+const SOURCE_REPUTATION_CACHE_TTL_MS = 30_000;
 const RECENT_SUPPRESSION_MEMORY_DAYS = 30;
 const GRAPH_SIGNAL_TTL_DAYS = 14;
 const GRAPH_OBSERVATION_TTL_DAYS = 14;
@@ -425,6 +426,10 @@ const PROMOTION_BEHAVIOR_SOURCES = new Set<GlobalSpammerObservationSource>([
 export class GlobalSpammerIntelligenceService {
   private readonly logger = new Logger(GlobalSpammerIntelligenceService.name);
   private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
+  private sourceReputationCache: {
+    expiresAtMs: number;
+    rows: SourceReputation[];
+  } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -760,6 +765,7 @@ export class GlobalSpammerIntelligenceService {
         suppressionReason: activeSuppression?.reason ?? null,
       },
     });
+    this.invalidateSourceReputationCache();
 
     const campaignSummaries = await this.recordCampaignClustersForObservation({
       userId,
@@ -953,6 +959,7 @@ export class GlobalSpammerIntelligenceService {
         },
       }),
     ]);
+    this.invalidateSourceReputationCache();
 
     return { ok: true };
   }
@@ -1104,7 +1111,7 @@ export class GlobalSpammerIntelligenceService {
       items: candidates.map((candidate) => ({
         userId: candidate.userId,
         status: candidate.status,
-        confidenceScore: candidate.confidenceScore,
+        confidenceScore: this.clampScore(candidate.confidenceScore),
         sourceBreakdown: candidate.sourceBreakdown,
         lastReason: candidate.lastReason,
         lastChatId: candidate.lastChatId,
@@ -1126,8 +1133,8 @@ export class GlobalSpammerIntelligenceService {
         observations: (observationsByUserId.get(candidate.userId) ?? []).slice(0, 6).map((row) => ({
           id: row.id,
           source: row.source,
-          score: row.score,
-          confidenceLevel: row.confidenceLevel,
+          score: this.clampScore(row.score),
+          confidenceLevel: this.normalizeConfidenceLevel(row.confidenceLevel, row.score),
           reason: row.reason,
           chatId: row.chatId,
           messageId: row.messageId,
@@ -1816,7 +1823,7 @@ export class GlobalSpammerIntelligenceService {
       candidate: candidate
         ? {
             status: candidate.status,
-            confidenceScore: candidate.confidenceScore,
+            confidenceScore: this.clampScore(candidate.confidenceScore),
             lastReason: candidate.lastReason,
             reviewedAt: candidate.reviewedAt?.toISOString() ?? null,
             reviewedByUserId: candidate.reviewedByUserId,
@@ -1835,8 +1842,8 @@ export class GlobalSpammerIntelligenceService {
       observations: observations.map((row) => ({
         id: row.id,
         source: row.source,
-        score: row.score,
-        confidenceLevel: row.confidenceLevel,
+        score: this.clampScore(row.score),
+        confidenceLevel: this.normalizeConfidenceLevel(row.confidenceLevel, row.score),
         reason: row.reason,
         chatId: row.chatId,
         observedAt: row.observedAt.toISOString(),
@@ -1846,7 +1853,7 @@ export class GlobalSpammerIntelligenceService {
       graphSignals: graphSignals.map((row) => ({
         signalType: row.signalType,
         source: row.source,
-        score: row.score,
+        score: this.clampScore(row.score),
         chatId: row.chatId,
         observedAt: row.observedAt.toISOString(),
         expiresAt: row.expiresAt.toISOString(),
@@ -1905,6 +1912,11 @@ export class GlobalSpammerIntelligenceService {
   }
 
   async getSourceReputation(now = new Date()): Promise<SourceReputation[]> {
+    const cacheNowMs = Date.now();
+    if (this.sourceReputationCache && this.sourceReputationCache.expiresAtMs > cacheNowMs) {
+      return this.sourceReputationCache.rows.map((row) => ({ ...row }));
+    }
+
     const since = new Date(now.getTime() - SOURCE_REPUTATION_WINDOW_DAYS * DAY_MS);
     const [observed, suppressed] = await Promise.all([
       this.prisma.spammerObservation.groupBy({
@@ -1931,7 +1943,7 @@ export class GlobalSpammerIntelligenceService {
       }),
     ]);
     const suppressedBySource = new Map(suppressed.map((row) => [row.source, row._count._all]));
-    return observed
+    const rows = observed
       .map((row) => {
         const observations = row._count._all;
         const suppressedCount = suppressedBySource.get(row.source) ?? 0;
@@ -1950,6 +1962,15 @@ export class GlobalSpammerIntelligenceService {
         };
       })
       .sort((left, right) => left.source.localeCompare(right.source));
+    this.sourceReputationCache = {
+      expiresAtMs: cacheNowMs + SOURCE_REPUTATION_CACHE_TTL_MS,
+      rows,
+    };
+    return rows.map((row) => ({ ...row }));
+  }
+
+  private invalidateSourceReputationCache(): void {
+    this.sourceReputationCache = null;
   }
 
   private async getSourceReputationMap(now: Date): Promise<Map<string, SourceReputation>> {
@@ -3926,6 +3947,17 @@ export class GlobalSpammerIntelligenceService {
       return 'MEDIUM';
     }
     return 'LOW';
+  }
+
+  private normalizeConfidenceLevel(
+    value: string | null | undefined,
+    score: number,
+  ): GlobalSpammerConfidenceLevel {
+    const normalized = value?.trim().toUpperCase();
+    if (normalized === 'LOW' || normalized === 'MEDIUM' || normalized === 'HIGH') {
+      return normalized;
+    }
+    return this.resolveConfidenceLevel(this.clampScore(score));
   }
 
   private emptyDecision(

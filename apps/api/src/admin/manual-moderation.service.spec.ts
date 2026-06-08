@@ -14,10 +14,12 @@ const profile = {
   profileHandoffUrl: 'https://max.ru/777000_bot?start=pm2_user_1',
 };
 
-function createLegacyAdminServiceMock() {
+function createLegacyAdminServiceMock(resolvedProfile: typeof profile = profile) {
   return {
     assertChatAdmin: jest.fn().mockResolvedValue(undefined),
-    resolveUserProfilesForAdminSurface: jest.fn().mockResolvedValue(new Map([['user-1', profile]])),
+    resolveUserProfilesForAdminSurface: jest
+      .fn()
+      .mockResolvedValue(new Map([['user-1', resolvedProfile]])),
   };
 }
 
@@ -164,6 +166,43 @@ describe('ManualModerationService spammer profiles', () => {
         displayName: null,
         avatarUrl: null,
         lastUserLabel: 'Старое имя',
+      }),
+    );
+  });
+
+  it('drops invalid profile urls instead of failing spammer dossier validation', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock({
+      displayName: '  Марина Орлова  ',
+      avatarUrl: 'not-a-url',
+      profileUrl: 'max://user/user-1',
+      profileHandoffUrl: 'javascript:alert(1)',
+    });
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const queue = await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      status: 'PENDING',
+      limit: '6',
+    });
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics('chat-1', 'user-1', authUser);
+
+    expect(queue.items[0]).toEqual(
+      expect.objectContaining({
+        displayName: 'Марина Орлова',
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
+      }),
+    );
+    expect(diagnostics).toEqual(
+      expect.objectContaining({
+        displayName: 'Марина Орлова',
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
       }),
     );
   });
