@@ -158,24 +158,10 @@ export function createApiTransport(
       return fetchWithTimeout(attemptBases[0], path, authInitData, init);
     }
 
-    if (['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
-      return Promise.any(
-        attemptBases.map((apiBase) => fetchWithTimeout(apiBase, path, authInitData, init)),
-      ).catch((error: unknown) => {
-        throw error instanceof AggregateError ? error.errors.at(-1) : error;
-      });
-    }
-
-    let lastError: unknown;
-    for (const apiBase of attemptBases) {
-      try {
-        return await fetchWithTimeout(apiBase, path, authInitData, init);
-      } catch (error: unknown) {
-        lastError = error;
-      }
-    }
-
-    throw lastError;
+    const { fetchWithApiBaseFallback } = await import('./transport-fallback');
+    return fetchWithApiBaseFallback(attemptBases, init, (apiBase) =>
+      fetchWithTimeout(apiBase, path, authInitData, init),
+    );
   };
 
   return {
