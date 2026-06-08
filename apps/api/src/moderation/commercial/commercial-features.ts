@@ -683,7 +683,7 @@ export function collectCommercialSignals(params: {
   if (
     highRiskCommercialHitLabels.length > 0 &&
     !highRiskCommercialHitLabels.includes('government-benefit-phishing') &&
-    /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
+    /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|связ[ьи]|контакт[\p{L}\p{N}_-]*|мессенджер[\p{L}\p{N}_-]*|whatsapp|ватсап|telegram|телеграм|max|мах|тел\.?|телефон|звон[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
       normalizedText,
     )
   ) {

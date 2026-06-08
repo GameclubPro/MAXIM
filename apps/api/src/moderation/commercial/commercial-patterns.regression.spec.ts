@@ -612,6 +612,29 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
   });
 
+  it('keeps sanitized esoteric service contacts above balanced evidence gates', () => {
+    const result = detect(
+      'Ольга Романовна - сильнейшая ясновидящая и потомственная гадалка с опытом более 25 лет. Работаю по белой магии. Помогу вернуть гармонию в отношения, увидеть перспективы в финансах и работе. Связь со мной: Max: [phone], WhatsApp: [phone], Telegram: [phone], телефон для звонков: [phone].',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 60,
+          commercialAdsDeleteThreshold: 81,
+        },
+      },
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'risk:paid-esoteric-service',
+        'transaction:high-risk-offer',
+        'contact:whatsapp',
+        'contact:telegram',
+      ]),
+    );
+  });
+
   it('detects emoji separated multi-object Flora showcase under balanced thresholds', () => {
     const result = detect(
       'ЖК Флора 🌱 Г.Сочи Кудепста ♦️ Студия ♦️ 24м2 ♦️ черновая 🔥7.200.000 ♦️ Студия ♦️ 24м2 ♦️ РМТ 🔥8.500.000 ♦️ Студия ♦️ 26м2 ♦️ РМТ 🔥8.600.000 Все предложения по комплексам Флора, Летний и Лестория от собственника на ключах 🔑 📱 +7 900 000 01 01 Виктория',
