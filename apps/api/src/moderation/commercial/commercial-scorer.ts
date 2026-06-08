@@ -7,6 +7,10 @@ import {
 import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
 import type { CommercialDecisionBand, CommercialSubtype } from '../rule-engine.contract';
 import { estimateCommercialFpRisk } from './commercial-explain';
+import {
+  hasStrongCommercialCampaignEvidence,
+  resolveCommercialEvidenceProfile,
+} from './commercial-evidence';
 import { isCommercialDeleteAction } from './commercial-subtypes';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import {
@@ -33,6 +37,7 @@ export function canCommercialActionDelete(params: {
   actionBand: CommercialActionBand | string | null;
   evidenceTier: CommercialEvidenceTier | string | null;
   hasHighRiskEvidence: boolean;
+  hasEscalationRiskEvidence?: boolean;
   hasDirectDealEvidence: boolean;
   fpRisk: number | null;
 }): boolean {
@@ -40,7 +45,7 @@ export function canCommercialActionDelete(params: {
     return false;
   }
 
-  if (params.hasHighRiskEvidence) {
+  if (params.hasEscalationRiskEvidence === true) {
     return true;
   }
 
@@ -48,7 +53,7 @@ export function canCommercialActionDelete(params: {
     return false;
   }
 
-  return params.evidenceTier === 'DIRECT' || params.hasDirectDealEvidence;
+  return params.hasDirectDealEvidence;
 }
 
 export function sigmoid(value: number): number {
@@ -84,45 +89,6 @@ export function countPatternMatches(
 function hasPriceLikeText(value: string): boolean {
   return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
     value,
-  );
-}
-
-export function hasStrongCommercialCampaignEvidence(
-  context: CommercialCampaignContext | null | undefined,
-  state: CommercialSignalState,
-): boolean {
-  if (!context) {
-    return false;
-  }
-
-  const thresholds = COMMERCIAL_ENGINE_CONFIG.campaignEvidence;
-  const hasDealAnchor = state.hasContact || state.hasDealChannel || state.hasTransactional;
-  const hasRepeatedDomainSelfPromo =
-    (context.repeatedDomainDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
-    (state.hasDealChannel ||
-      state.hasPromoContext ||
-      state.hasBusinessContext ||
-      state.hasServiceContext ||
-      state.hasRecruitmentContext ||
-      state.hasInfoProductContext ||
-      state.hasGoodsRetailContext ||
-      state.hasGroupPromoContext ||
-      state.hasCommercialAudienceContext ||
-      state.hasChannelPlacementContext ||
-      state.hasCallToActionContext);
-
-  return (
-    (context.repeatedPhoneDistinctChatCount >= thresholds.repeatedContactChats &&
-      state.hasContact) ||
-    (context.repeatedLinkDistinctChatCount >= thresholds.repeatedContactChats &&
-      state.hasDealChannel) ||
-    ((context.repeatedHandleDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
-      state.hasContact) ||
-    hasRepeatedDomainSelfPromo ||
-    ((context.senderDistinctChatCount5m ?? 0) >= thresholds.senderVelocity5mChats &&
-      hasDealAnchor) ||
-    (context.sameTextDistinctChatCount >= thresholds.repeatedTextChats && hasDealAnchor) ||
-    ((context.nearTextDistinctChatCount ?? 0) >= thresholds.repeatedTextChats && hasDealAnchor)
   );
 }
 
@@ -205,25 +171,14 @@ export class CommercialSecondStageScorer {
       return cached;
     }
 
-    const directDealEvidence =
-      (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
-      (state.hasDealChannel && state.hasContact);
-    const strongCampaignEvidence = hasStrongCommercialCampaignEvidence(
-      commercialCampaignContext,
+    const evidence = resolveCommercialEvidenceProfile({
       state,
-    );
-    const structuredEvidence =
-      (state.hasPropertyAgentContext ||
-        state.hasCommercialPropertyContext ||
-        state.hasRecruitmentContext ||
-        state.hasInfoProductContext ||
-        state.hasBuyoutContext ||
-        state.hasServiceContext ||
-        state.hasGoodsRetailContext ||
-        state.hasGroupPromoContext ||
-        state.hasBusinessContext ||
-        state.hasPromoContext) &&
-      (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
+      appliedThresholds,
+      commercialCampaignContext,
+    });
+    const directDealEvidence = evidence.hasClassifierDirectDealEvidence;
+    const strongCampaignEvidence = evidence.hasStrongCampaignEvidence;
+    const structuredEvidence = evidence.hasStructuredEvidence;
     const priceMatchCount =
       (hasPriceLikeText(rawLoweredText) &&
         countPatternMatches(rawLoweredText, ADS_PRICE_CAPTURE_GLOBAL_PATTERN)) ||

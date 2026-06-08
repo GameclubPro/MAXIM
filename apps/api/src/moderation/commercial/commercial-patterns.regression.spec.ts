@@ -557,6 +557,26 @@ describe('commercial pattern regressions', () => {
       signals: ['property-agent:комиссия-агентам', 'contact:phone'],
       negativeSignals: ['private:property-sale'],
     },
+    {
+      label: 'short home dumplings order from agent recall sweep',
+      text: 'Домашние пельмени 500р/кг, заказ @foodhome',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:home-food-order', 'transaction:price', 'contact:handle'],
+    },
+    {
+      label: 'short stay island lodging from agent recall sweep',
+      text: 'Сдаю бюджетное жильё на Ольхоне: домики, душ, мангал. Телефон +7 900 000 10 20',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:short-stay-domiki-booking', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
+    },
+    {
+      label: 'bare question sauna kit self promo from agent recall sweep',
+      text: 'Хотите баню под ключ? Полная сборка, доставка отдельно, заказывайте готовое решение.',
+      subtype: 'GOODS_RETAIL',
+      signals: ['business:заказывайте', 'transaction:keywords', 'goods-retail:inventory'],
+      negativeSignals: ['context:question'],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -795,6 +815,10 @@ describe('commercial pattern regressions', () => {
       'Почта администрации для жалоб info@example.ru, напишите обращение по форме.',
     ],
     [
+      'third party chat directory with links is not own channel placement ad',
+      'Подборка полезных чатов района: женский чат https://max.ru/join/a, доска объявлений https://max.ru/join/b, соседи https://max.ru/join/c.',
+    ],
+    [
       'private avito resale stays private',
       'Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.',
     ],
@@ -843,6 +867,10 @@ describe('commercial pattern regressions', () => {
       'Студент ищет подработку на Ozon или WB, график после учебы, писать в личку',
     ],
     [
+      'home dumplings recommendation request stays allowed',
+      'Кто делает домашние пельмени, посоветуйте контакты.',
+    ],
+    [
       'loan discussion is not loan leadgen',
       'Подскажите, кто брал кредит в банке, какие ставки сейчас?',
     ],
@@ -873,7 +901,21 @@ describe('commercial pattern regressions', () => {
 
     expect(result?.primarySubtype).toBe('INFO_PRODUCT');
     expect(result?.matchedSignals).toContain('info:курс');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
+    expect(result?.reasonCodes).toContain('evidence:DIRECT');
+    expect(result?.reasonCodes).not.toContain('evidence:action-direct');
+  });
+
+  it('deletes paid course ads when independent action-direct evidence is present', () => {
+    const result = detect(
+      'Открыт набор на курс по маркетплейсам. Цена 3000 руб, места ограничены, запись https://max.ru/join/course.',
+    );
+
+    expect(result?.primarySubtype).toBe('INFO_PRODUCT');
+    expect(result?.matchedSignals).toContain('info:курс');
+    expect(result?.matchedSignals).toContain('deal-channel:link');
     expect(result?.actionBand).toBe('DELETE');
+    expect(result?.reasonCodes).toContain('evidence:action-direct');
   });
 
   it('flags short collectible flower retail under balanced real chat thresholds', () => {

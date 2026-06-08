@@ -12,9 +12,12 @@ export type CommercialActionPolicyInput = {
   hasDirectDealEvidence: boolean;
   hasNonCampaignDirectDealEvidence: boolean;
   hasHighRiskEvidence: boolean;
+  hasEscalationRiskEvidence: boolean;
 };
 
-export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput): CommercialActionBand {
+export function resolveCommercialActionPolicy(
+  input: CommercialActionPolicyInput,
+): CommercialActionBand {
   if (input.confidenceScore < input.warnThreshold) {
     return 'ALLOW';
   }
@@ -24,7 +27,7 @@ export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput
     return input.reviewRecommended ? 'REVIEW_ONLY' : 'WARN';
   }
 
-  if (input.confidenceScore >= input.deleteThreshold && input.hasHighRiskEvidence) {
+  if (input.confidenceScore >= input.deleteThreshold && input.hasEscalationRiskEvidence) {
     return 'DELETE_AND_ESCALATE';
   }
 
@@ -36,7 +39,7 @@ export function resolveCommercialActionPolicy(input: CommercialActionPolicyInput
   }
 
   if (input.confidenceScore >= input.deleteThreshold) {
-    if (input.evidenceTier === 'DIRECT' || input.hasDirectDealEvidence) {
+    if (input.hasDirectDealEvidence) {
       return 'DELETE';
     }
     return input.reviewRecommended ? 'REVIEW_ONLY' : 'WARN';

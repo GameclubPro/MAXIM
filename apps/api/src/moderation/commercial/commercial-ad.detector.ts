@@ -11,10 +11,8 @@ import {
   hasRideShareContext,
   isLikelyPrivateLowQuantityGoodsListing,
 } from './commercial-features';
-import {
-  CommercialSecondStageScorer,
-  hasStrongCommercialCampaignEvidence,
-} from './commercial-scorer';
+import { resolveCommercialEvidenceProfile } from './commercial-evidence';
+import { CommercialSecondStageScorer } from './commercial-scorer';
 import { normalizeCommercialText } from './commercial-normalization';
 import { classifyCommercialDetection } from './commercial-subtypes';
 import type { CommercialLegacyEvidenceStrength } from './commercial.types';
@@ -91,98 +89,16 @@ export class CommercialAdDetector {
       return null;
     }
 
-    const hasStandardCommercialEvidence =
-      state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
-    const hasCampaignStrongEvidence = hasStrongCommercialCampaignEvidence(
-      commercialCampaignContext,
+    const evidence = resolveCommercialEvidenceProfile({
       state,
-    );
-    const hasStructuredVacancyContactEvidence =
-      state.hasContact && state.matchedSignals.includes('risk:structured-job-vacancy');
-    const hasStructuredBuyoutPhoneEvidence =
-      state.hasBuyoutContext &&
-      state.hasPhoneContact &&
-      !state.hasSearchRequestContext &&
-      !state.hasPrivateSaleContext &&
-      !state.hasPrivateGoodsItemContext;
-    const hasBalancedStructuredServicePhoneAnchor = [
-      'intent:language-lessons',
-      'intent:строительная-бригада',
-      'intent:все-виды-работ',
-      'intent:crane-beam-under-key',
-      'intent:window-door-maintenance',
-      'intent:custom-art-order',
-      'intent:construction-multi-service',
-      'intent:занимаюсь-услугами',
-      'service-specialty:appliance-repair',
-      'service-specialty:custom-handmade-order',
-      'service-specialty:custom-art-order',
-      'service-specialty:crane-beam-installation',
-      'service-specialty:pvc-window-door-repair',
-      'service-specialty:speech-therapy-lessons',
-      'service-specialty:tree-yard-repair-service',
-      'service-specialty:yard-cleanup-service',
-      'service-specialty:paving-landscaping-service',
-    ].some((signal) => state.matchedSignals.includes(signal));
-    const hasStructuredServicePhoneEvidence =
-      state.hasServiceContext &&
-      state.hasPhoneContact &&
-      !state.hasSearchRequestContext &&
-      !state.hasPrivateSaleContext &&
-      !state.hasPrivateGoodsItemContext &&
-      (appliedThresholds.strictness >= 0.2 || hasBalancedStructuredServicePhoneAnchor);
-    const hasStructuredPropertyContactEvidence =
-      (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
-      state.hasContact &&
-      !state.hasSearchRequestContext;
-    const hasStructuredRetailTransactionalEvidence =
-      state.hasGoodsRetailContext &&
-      (state.hasPhoneContact ||
-        state.hasDealChannel ||
-        state.hasPrice ||
-        (state.hasTransactional &&
-          state.matchedSignals.includes('goods-retail:clearance-stock-retail'))) &&
-      !state.hasSearchRequestContext &&
-      !state.hasPrivateGoodsItemContext;
-    const hasStrongCommercialEvidence =
-      state.hasPrice ||
-      state.hasDealChannel ||
-      (state.hasContact && state.hasTransactional) ||
-      hasStructuredVacancyContactEvidence ||
-      hasStructuredBuyoutPhoneEvidence ||
-      hasStructuredServicePhoneEvidence ||
-      hasStructuredPropertyContactEvidence ||
-      hasStructuredRetailTransactionalEvidence ||
-      hasCampaignStrongEvidence;
-    const hasStructuredCommercialContext =
-      state.hasPromoContext ||
-      state.hasBusinessContext ||
-      state.hasBuyoutContext ||
-      state.hasRecruitmentContext ||
-      state.hasInfoProductContext ||
-      state.hasGroupPromoContext ||
-      state.hasServiceContext ||
-      state.hasCommercialPropertyContext ||
-      state.hasGoodsRetailContext ||
-      state.hasCampaignContext;
+      appliedThresholds,
+      commercialCampaignContext,
+    });
     const hasSelfPromotionalCommercialContext = hasExplicitSelfPromotionalCommercialContext(state);
-    const hasPrivateSaleCommercialOverride =
-      state.hasPropertyAgentContext ||
-      state.hasCommercialPropertyContext ||
-      state.hasBusinessContext ||
-      state.hasGroupPromoContext ||
-      state.hasCommercialAudienceContext ||
-      state.hasRecruitmentContext ||
-      state.hasBuyoutContext ||
-      state.hasInfoProductContext ||
-      state.hasGoodsRetailContext ||
-      (state.hasServiceContext &&
-        (!state.hasPropertyPrivateContext || state.hasServiceOfferContext)) ||
-      state.hasServiceOfferContext;
     const hasPrivateLowQuantityGoodsListing =
       isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
 
-    if (state.hasPrivateSaleContext && !hasPrivateSaleCommercialOverride) {
+    if (state.hasPrivateSaleContext && !evidence.hasPrivateSaleCommercialOverride) {
       return null;
     }
 
@@ -190,11 +106,25 @@ export class CommercialAdDetector {
       return null;
     }
 
+    const hasOnlyBareQuestionSearchContext =
+      state.negativeSignals.length > 0 &&
+      state.negativeSignals.every((signal) => signal === 'context:question');
+    const hasBareQuestionSelfPromoTransactionalEvidence =
+      hasOnlyBareQuestionSearchContext &&
+      hasSelfPromotionalCommercialContext &&
+      evidence.hasStructuredCommercialContext &&
+      state.hasTransactional &&
+      (state.hasBusinessContext ||
+        state.hasCallToActionContext ||
+        state.hasServiceContext ||
+        state.hasServiceOfferContext);
+
     if (
       state.hasSearchRequestContext &&
       !state.hasPrice &&
       !state.hasContact &&
-      !state.hasDealChannel
+      !state.hasDealChannel &&
+      !hasBareQuestionSelfPromoTransactionalEvidence
     ) {
       return null;
     }
@@ -235,16 +165,20 @@ export class CommercialAdDetector {
       return null;
     }
 
+    if (isLikelyThirdPartyChatDirectoryNoise(state, rawLoweredText)) {
+      return null;
+    }
+
     if (
       appliedThresholds.strictness < 0.35 &&
-      !(hasStructuredCommercialContext && hasStrongCommercialEvidence)
+      !(evidence.hasStructuredCommercialContext && evidence.hasStrongCommercialEvidence)
     ) {
       return null;
     }
 
     if (
       appliedThresholds.strictness < 0.65 &&
-      !(hasStructuredCommercialContext && hasStandardCommercialEvidence)
+      !(evidence.hasStructuredCommercialContext && evidence.hasStandardCommercialEvidence)
     ) {
       return null;
     }
@@ -282,9 +216,7 @@ export class CommercialAdDetector {
       confidenceScore,
       decisionBand,
       appliedThresholds,
-      hasCampaignDependentEvidence:
-        state.hasCampaignContext &&
-        hasStrongCommercialCampaignEvidence(commercialCampaignContext, state),
+      hasCampaignDependentEvidence: state.hasCampaignContext && evidence.hasStrongCampaignEvidence,
     });
     const secondStage = this.commercialSecondStageScorer.evaluate({
       normalizedText,
@@ -431,6 +363,45 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
       signal === 'context:public-fraud-warning' ||
       signal === 'context:official-civic-instruction',
   );
+}
+
+function isLikelyThirdPartyChatDirectoryNoise(
+  state: ReturnType<typeof collectCommercialSignals>,
+  rawLoweredText: string,
+): boolean {
+  if (
+    state.hasPrice ||
+    state.hasContact ||
+    state.hasTransactional ||
+    state.hasCampaignContext ||
+    state.matchedSignals.some((signal) => signal.startsWith('risk:'))
+  ) {
+    return false;
+  }
+
+  const directoryOnlySignals = new Set([
+    'channel-placement:доска объявлений',
+    'combo:business+deal',
+    'combo:group-promo+deal',
+    'deal-channel:link',
+    'group:чат',
+  ]);
+  if (!state.matchedSignals.every((signal) => directoryOnlySignals.has(signal))) {
+    return false;
+  }
+
+  if (
+    /(?:^|[^\p{L}\p{N}_-])(?:подборк[\p{L}\p{N}_-]*|список|каталог|навигатор|полезн[\p{L}\p{N}_-]*)(?:[\s\S]{0,80})(?:чат[\p{L}\p{N}_-]*|групп[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    ) &&
+    !/(?:^|[^\p{L}\p{N}_-])(?:подпис(?:ывайтесь|аться|ка)|переход(?:ите)?|размест(?:им|ить|иться)|реклам[\p{L}\p{N}_-]*|охват[\p{L}\p{N}_-]*|аудитори[\p{L}\p{N}_-]*|цена|стоимость|прайс|продвижени[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function hasRideShareCommercialOverride(

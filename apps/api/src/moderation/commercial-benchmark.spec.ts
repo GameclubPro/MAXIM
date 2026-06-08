@@ -6,6 +6,7 @@ import {
   auditCommercialRequiredAnchors,
   buildCommercialFeatureVector,
 } from './commercial/commercial-features';
+import { resolveCommercialSignalEvidence } from './commercial/commercial-evidence';
 import { canCommercialActionDelete } from './commercial/commercial-scorer';
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -175,12 +176,10 @@ describe('commercial deterministic benchmark', () => {
         }
       }
       const evidenceTier = String(metadata.evidenceTier ?? metadata.evidenceStrength ?? 'NONE');
-      const hasDirectEvidence =
-        matchedSignals.includes('transaction:price') ||
-        matchedSignals.includes('contact:phone') ||
-        matchedSignals.some((signal) => signal.startsWith('deal-channel:')) ||
-        matchedSignals.includes('combo:contact+price');
-      const hasHighRiskEvidence = matchedSignals.some((signal) => signal.startsWith('risk:'));
+      const evidence = resolveCommercialSignalEvidence(matchedSignals);
+      const hasDirectEvidence = evidence.hasActionDirectDealEvidence;
+      const hasHighRiskEvidence = evidence.hasHighRiskEvidence;
+      const hasEscalationRiskEvidence = evidence.hasEscalationRiskEvidence;
       if (
         (actionBand === 'DELETE' || actionBand === 'DELETE_AND_ESCALATE') &&
         !hasDirectEvidence &&
@@ -195,6 +194,7 @@ describe('commercial deterministic benchmark', () => {
           actionBand,
           evidenceTier,
           hasHighRiskEvidence,
+          hasEscalationRiskEvidence,
           hasDirectDealEvidence: hasDirectEvidence,
           fpRisk: typeof metadata.fpRisk === 'number' ? metadata.fpRisk : null,
         }) &&

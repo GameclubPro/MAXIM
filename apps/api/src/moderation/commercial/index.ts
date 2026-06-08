@@ -5,11 +5,14 @@ export {
   COMMERCIAL_PATTERN_RULES,
   findCommercialPatternRules,
 } from './commercial-patterns';
+export { CommercialSecondStageScorer, canCommercialActionDelete } from './commercial-scorer';
 export {
-  CommercialSecondStageScorer,
-  canCommercialActionDelete,
   hasStrongCommercialCampaignEvidence,
-} from './commercial-scorer';
+  resolveCommercialEvidenceProfile,
+  resolveCommercialSignalEvidence,
+  type CommercialSignalEvidenceProfile,
+  type CommercialStateEvidenceProfile,
+} from './commercial-evidence';
 export {
   COMMERCIAL_SUBTYPE_POLICIES,
   classifyCommercialDetection,

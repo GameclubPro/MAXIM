@@ -2,6 +2,7 @@ import type { CommercialSubtype } from '../rule-engine.contract';
 import type { CommercialDecisionBand } from '../rule-engine.contract';
 import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import { resolveCommercialEvidenceProfile } from './commercial-evidence';
 import type {
   CommercialActionBand,
   CommercialClassification,
@@ -199,28 +200,15 @@ export function classifyCommercialDetection(params: {
     .slice(0, subtypeConfig.maxSupportingSubtypes)
     .map((entry) => entry.subtype);
 
-  const hasDirectEvidence =
-    (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
-    (state.hasDealChannel && state.hasContact);
-  const hasStructuredEvidence =
-    (state.hasPropertyAgentContext ||
-      state.hasCommercialPropertyContext ||
-      state.hasRecruitmentContext ||
-      state.hasInfoProductContext ||
-      state.hasBuyoutContext ||
-      state.hasServiceContext ||
-      state.hasGoodsRetailContext ||
-      state.hasGroupPromoContext ||
-      state.hasBusinessContext ||
-      state.hasPromoContext) &&
-    (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-  const evidenceStrength: CommercialClassification['evidenceStrength'] = hasDirectEvidence
-    ? 'DIRECT'
-    : hasCampaignDependentEvidence
-      ? 'CAMPAIGN'
-      : hasStructuredEvidence
-        ? 'STRUCTURED'
-        : 'BORDERLINE';
+  const evidence = resolveCommercialEvidenceProfile({ state, appliedThresholds });
+  const evidenceStrength: CommercialClassification['evidenceStrength'] =
+    evidence.hasClassifierDirectDealEvidence
+      ? 'DIRECT'
+      : hasCampaignDependentEvidence
+        ? 'CAMPAIGN'
+        : evidence.hasStructuredEvidence
+          ? 'STRUCTURED'
+          : 'BORDERLINE';
   const suppressPropertyAgentReviewNoise =
     primarySubtype === 'PROPERTY_AGENT' &&
     confidenceScore >= appliedThresholds.deleteThreshold &&

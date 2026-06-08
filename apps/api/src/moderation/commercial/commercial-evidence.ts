@@ -1,0 +1,271 @@
+import type { CommercialCampaignContext } from '../commercial-campaign.util';
+import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
+import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import type { CommercialSignalState } from './commercial.types';
+
+const PRICE_EVIDENCE_SIGNALS = new Set([
+  'transaction:price',
+  'transaction:implied-price',
+  'combo:contact+price',
+]);
+
+const STRONG_CONTACT_SIGNALS = new Set([
+  'contact:phone',
+  'contact:contextual-phone',
+  'contact:masked-phone',
+  'contact:handle',
+  'contact:email',
+]);
+
+const ESCALATION_RISK_SIGNALS = new Set([
+  'risk:bank-card-leadgen',
+  'risk:betting-gambling',
+  'risk:bulk-client-leadgen',
+  'risk:casino-landing-link',
+  'risk:casino-slot-promo',
+  'risk:crypto-investment',
+  'risk:debt-relief-service',
+  'risk:document-service',
+  'risk:government-benefit-phishing',
+  'risk:loan-leadgen',
+  'risk:messaging-automation',
+  'risk:online-lottery-bonus',
+  'risk:p2p-crypto-arbitrage',
+  'risk:paid-group-mailing',
+  'risk:paid-raffle',
+  'risk:paid-raffle-transfer',
+  'risk:paid-review-task',
+  'risk:payment-card-drop-leadgen',
+  'risk:referral-bonus-link',
+]);
+
+const BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS = new Set([
+  'intent:language-lessons',
+  'intent:строительная-бригада',
+  'intent:все-виды-работ',
+  'intent:crane-beam-under-key',
+  'intent:window-door-maintenance',
+  'intent:custom-art-order',
+  'intent:construction-multi-service',
+  'intent:занимаюсь-услугами',
+  'service-specialty:appliance-repair',
+  'service-specialty:custom-handmade-order',
+  'service-specialty:custom-art-order',
+  'service-specialty:crane-beam-installation',
+  'service-specialty:pvc-window-door-repair',
+  'service-specialty:speech-therapy-lessons',
+  'service-specialty:tree-yard-repair-service',
+  'service-specialty:yard-cleanup-service',
+  'service-specialty:paving-landscaping-service',
+]);
+
+export type CommercialSignalEvidenceProfile = {
+  hasPriceEvidence: boolean;
+  hasStrongContactEvidence: boolean;
+  hasPhoneEvidence: boolean;
+  hasLinkEvidence: boolean;
+  hasHighRiskEvidence: boolean;
+  hasEscalationRiskEvidence: boolean;
+  hasNonCampaignDirectDealEvidence: boolean;
+  hasActionDirectDealEvidence: boolean;
+};
+
+export type CommercialStateEvidenceProfile = CommercialSignalEvidenceProfile & {
+  hasClassifierDirectDealEvidence: boolean;
+  hasStructuredEvidence: boolean;
+  hasStandardCommercialEvidence: boolean;
+  hasStructuredVacancyContactEvidence: boolean;
+  hasStructuredBuyoutPhoneEvidence: boolean;
+  hasStructuredServicePhoneEvidence: boolean;
+  hasStructuredPropertyContactEvidence: boolean;
+  hasStructuredRetailTransactionalEvidence: boolean;
+  hasStrongCampaignEvidence: boolean;
+  hasStrongCommercialEvidence: boolean;
+  hasStructuredCommercialContext: boolean;
+  hasPrivateSaleCommercialOverride: boolean;
+};
+
+export function resolveCommercialSignalEvidence(
+  matchedSignals: readonly string[],
+): CommercialSignalEvidenceProfile {
+  const hasPrefix = (prefix: string): boolean =>
+    matchedSignals.some((signal) => signal.startsWith(prefix));
+  const hasAny = (signals: ReadonlySet<string>): boolean =>
+    matchedSignals.some((signal) => signals.has(signal));
+
+  const hasHighRiskEvidence = hasPrefix('risk:');
+  const hasEscalationRiskEvidence = hasAny(ESCALATION_RISK_SIGNALS);
+  const hasPriceEvidence = hasAny(PRICE_EVIDENCE_SIGNALS);
+  const hasStrongContactEvidence = hasAny(STRONG_CONTACT_SIGNALS);
+  const hasPhoneEvidence =
+    matchedSignals.includes('contact:phone') ||
+    matchedSignals.includes('contact:contextual-phone') ||
+    matchedSignals.includes('contact:masked-phone');
+  const hasLinkEvidence = hasPrefix('deal-channel:');
+  const hasNonCampaignDirectDealEvidence = hasPriceEvidence || hasPhoneEvidence || hasLinkEvidence;
+  const hasActionDirectDealEvidence =
+    (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
+    (hasLinkEvidence && hasStrongContactEvidence) ||
+    (hasHighRiskEvidence && (hasPriceEvidence || hasStrongContactEvidence || hasLinkEvidence));
+
+  return {
+    hasPriceEvidence,
+    hasStrongContactEvidence,
+    hasPhoneEvidence,
+    hasLinkEvidence,
+    hasHighRiskEvidence,
+    hasEscalationRiskEvidence,
+    hasNonCampaignDirectDealEvidence,
+    hasActionDirectDealEvidence,
+  };
+}
+
+export function hasStrongCommercialCampaignEvidence(
+  context: CommercialCampaignContext | null | undefined,
+  state: CommercialSignalState,
+): boolean {
+  if (!context) {
+    return false;
+  }
+
+  const thresholds = COMMERCIAL_ENGINE_CONFIG.campaignEvidence;
+  const hasDealAnchor = state.hasContact || state.hasDealChannel || state.hasTransactional;
+  const hasRepeatedDomainSelfPromo =
+    (context.repeatedDomainDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
+    (state.hasDealChannel ||
+      state.hasPromoContext ||
+      state.hasBusinessContext ||
+      state.hasServiceContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext ||
+      state.hasGoodsRetailContext ||
+      state.hasGroupPromoContext ||
+      state.hasCommercialAudienceContext ||
+      state.hasChannelPlacementContext ||
+      state.hasCallToActionContext);
+
+  return (
+    (context.repeatedPhoneDistinctChatCount >= thresholds.repeatedContactChats &&
+      state.hasContact) ||
+    (context.repeatedLinkDistinctChatCount >= thresholds.repeatedContactChats &&
+      state.hasDealChannel) ||
+    ((context.repeatedHandleDistinctChatCount ?? 0) >= thresholds.repeatedContactChats &&
+      state.hasContact) ||
+    hasRepeatedDomainSelfPromo ||
+    ((context.senderDistinctChatCount5m ?? 0) >= thresholds.senderVelocity5mChats &&
+      hasDealAnchor) ||
+    (context.sameTextDistinctChatCount >= thresholds.repeatedTextChats && hasDealAnchor) ||
+    ((context.nearTextDistinctChatCount ?? 0) >= thresholds.repeatedTextChats && hasDealAnchor)
+  );
+}
+
+export function resolveCommercialEvidenceProfile(params: {
+  state: CommercialSignalState;
+  appliedThresholds?: CommercialThresholdProfile;
+  commercialCampaignContext?: CommercialCampaignContext | null;
+}): CommercialStateEvidenceProfile {
+  const { state, appliedThresholds, commercialCampaignContext } = params;
+  const signalEvidence = resolveCommercialSignalEvidence(state.matchedSignals);
+  const hasSignal = (signal: string): boolean => state.matchedSignals.includes(signal);
+  const hasBalancedStructuredServicePhoneAnchor = state.matchedSignals.some((signal) =>
+    BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS.has(signal),
+  );
+  const hasClassifierDirectDealEvidence =
+    (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
+    (state.hasDealChannel && state.hasContact);
+  const hasStructuredEvidence =
+    (state.hasPropertyAgentContext ||
+      state.hasCommercialPropertyContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext ||
+      state.hasBuyoutContext ||
+      state.hasServiceContext ||
+      state.hasGoodsRetailContext ||
+      state.hasGroupPromoContext ||
+      state.hasBusinessContext ||
+      state.hasPromoContext) &&
+    (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
+  const hasStandardCommercialEvidence =
+    state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
+  const hasStructuredVacancyContactEvidence =
+    state.hasContact && hasSignal('risk:structured-job-vacancy');
+  const hasStructuredBuyoutPhoneEvidence =
+    state.hasBuyoutContext &&
+    state.hasPhoneContact &&
+    !state.hasSearchRequestContext &&
+    !state.hasPrivateSaleContext &&
+    !state.hasPrivateGoodsItemContext;
+  const hasStructuredServicePhoneEvidence =
+    state.hasServiceContext &&
+    state.hasPhoneContact &&
+    !state.hasSearchRequestContext &&
+    !state.hasPrivateSaleContext &&
+    !state.hasPrivateGoodsItemContext &&
+    ((appliedThresholds?.strictness ?? 1) >= 0.2 || hasBalancedStructuredServicePhoneAnchor);
+  const hasStructuredPropertyContactEvidence =
+    (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
+    state.hasContact &&
+    !state.hasSearchRequestContext;
+  const hasStructuredRetailTransactionalEvidence =
+    state.hasGoodsRetailContext &&
+    (state.hasPhoneContact ||
+      state.hasDealChannel ||
+      state.hasPrice ||
+      (state.hasTransactional && hasSignal('goods-retail:clearance-stock-retail'))) &&
+    !state.hasSearchRequestContext &&
+    !state.hasPrivateGoodsItemContext;
+  const hasStrongCampaignEvidence = hasStrongCommercialCampaignEvidence(
+    commercialCampaignContext,
+    state,
+  );
+  const hasStrongCommercialEvidence =
+    state.hasPrice ||
+    state.hasDealChannel ||
+    (state.hasContact && state.hasTransactional) ||
+    hasStructuredVacancyContactEvidence ||
+    hasStructuredBuyoutPhoneEvidence ||
+    hasStructuredServicePhoneEvidence ||
+    hasStructuredPropertyContactEvidence ||
+    hasStructuredRetailTransactionalEvidence ||
+    hasStrongCampaignEvidence;
+  const hasStructuredCommercialContext =
+    state.hasPromoContext ||
+    state.hasBusinessContext ||
+    state.hasBuyoutContext ||
+    state.hasRecruitmentContext ||
+    state.hasInfoProductContext ||
+    state.hasGroupPromoContext ||
+    state.hasServiceContext ||
+    state.hasCommercialPropertyContext ||
+    state.hasGoodsRetailContext ||
+    state.hasCampaignContext;
+  const hasPrivateSaleCommercialOverride =
+    state.hasPropertyAgentContext ||
+    state.hasCommercialPropertyContext ||
+    state.hasBusinessContext ||
+    state.hasGroupPromoContext ||
+    state.hasCommercialAudienceContext ||
+    state.hasRecruitmentContext ||
+    state.hasBuyoutContext ||
+    state.hasInfoProductContext ||
+    state.hasGoodsRetailContext ||
+    (state.hasServiceContext &&
+      (!state.hasPropertyPrivateContext || state.hasServiceOfferContext)) ||
+    state.hasServiceOfferContext;
+
+  return {
+    ...signalEvidence,
+    hasClassifierDirectDealEvidence,
+    hasStructuredEvidence,
+    hasStandardCommercialEvidence,
+    hasStructuredVacancyContactEvidence,
+    hasStructuredBuyoutPhoneEvidence,
+    hasStructuredServicePhoneEvidence,
+    hasStructuredPropertyContactEvidence,
+    hasStructuredRetailTransactionalEvidence,
+    hasStrongCampaignEvidence,
+    hasStrongCommercialEvidence,
+    hasStructuredCommercialContext,
+    hasPrivateSaleCommercialOverride,
+  };
+}

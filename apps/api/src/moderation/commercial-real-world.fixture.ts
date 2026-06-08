@@ -1879,6 +1879,42 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'short home dumplings order from agent recall sweep',
+    text: `Домашние пельмени 500р/кг, заказ @foodhome`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:home-food-order', 'transaction:price', 'contact:handle'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'short stay island lodging from agent recall sweep',
+    text: `Сдаю бюджетное жильё на Ольхоне: домики, душ, мангал. Телефон +7 900 000 10 20`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    reviewRecommended: false,
+    expectedSignals: ['property-agent:short-stay-domiki-booking', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'bare question sauna kit self promo from agent recall sweep',
+    text: `Хотите баню под ключ? Полная сборка, доставка отдельно, заказывайте готовое решение.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['business:заказывайте', 'transaction:keywords', 'goods-retail:inventory'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -2454,6 +2490,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
     },
   },
   {
+    label: 'third party chat directory with links from evidence-refactor false-positive guard',
+    text: `Подборка полезных чатов района: женский чат https://max.ru/join/a, доска объявлений https://max.ru/join/b, соседи https://max.ru/join/c.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'private avito resale from blind spot false-positive guard',
     text: `Продам детскую коляску б/у, самовывоз, ссылка на avito.ru/items/private-stroller, цена 3000 руб.`,
     overrides: {
@@ -2474,6 +2519,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'private auto engine exchange with repair wording from final sixteen hour audit guard',
     text: `Обмен. Мото не предлагать. ДВС после капремонта, ставился новый венец, не сошёлся со стартером, нужно поменять. Двигатель обкатку не прошёл. Остальное в ЛС, в комплект отдам поршни, клапаны, вкладыши, кольца новые.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'home dumplings recommendation request from agent recall sweep',
+    text: `Кто делает домашние пельмени, посоветуйте контакты.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

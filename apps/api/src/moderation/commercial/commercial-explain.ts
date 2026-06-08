@@ -1,6 +1,10 @@
 import type { CommercialDetection } from './commercial-ad.detector';
 import { resolveCommercialActionPolicy } from './commercial-action-policy';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import {
+  resolveCommercialSignalEvidence,
+  type CommercialSignalEvidenceProfile,
+} from './commercial-evidence';
 import type {
   CommercialEvidenceTier,
   CommercialExplainableDecision,
@@ -23,34 +27,11 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     evidenceStrength: detection.evidenceStrength,
     primarySubtype: detection.primarySubtype,
   });
-  const hasHighRiskEvidence = matchedSignals.some((signal) => signal.startsWith('risk:'));
-  const hasPriceEvidence =
-    matchedSignals.includes('transaction:price') ||
-    matchedSignals.includes('transaction:implied-price') ||
-    matchedSignals.includes('combo:contact+price');
-  const hasStrongContactEvidence =
-    matchedSignals.includes('contact:phone') ||
-    matchedSignals.includes('contact:contextual-phone') ||
-    matchedSignals.includes('contact:masked-phone') ||
-    matchedSignals.includes('contact:handle') ||
-    matchedSignals.includes('contact:email');
-  const hasPhoneEvidence =
-    matchedSignals.includes('contact:phone') ||
-    matchedSignals.includes('contact:contextual-phone') ||
-    matchedSignals.includes('contact:masked-phone');
-  const hasLinkEvidence = matchedSignals.some((signal) => signal.startsWith('deal-channel:'));
-  const hasNonCampaignDirectDealEvidence =
-    hasPriceEvidence ||
-    hasPhoneEvidence ||
-    hasLinkEvidence;
-  const hasDirectDealEvidence =
-    (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
-    (hasLinkEvidence && hasStrongContactEvidence) ||
-    (hasHighRiskEvidence && (hasPriceEvidence || hasStrongContactEvidence || hasLinkEvidence));
+  const evidence = resolveCommercialSignalEvidence(matchedSignals);
   const evidenceTier = resolveEvidenceTier({
     legacyStrength: detection.evidenceStrength,
-    hasHighRiskEvidence,
-    hasDirectDealEvidence,
+    hasHighRiskEvidence: evidence.hasHighRiskEvidence,
+    hasDirectDealEvidence: evidence.hasActionDirectDealEvidence,
   });
   const actionBand = resolveCommercialActionPolicy({
     confidenceScore: detection.confidenceScore,
@@ -60,13 +41,15 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     evidenceTier,
     reviewRecommended: detection.reviewRecommended,
     hasCampaignContext: detection.campaignContext !== null,
-    hasDirectDealEvidence,
-    hasNonCampaignDirectDealEvidence,
-    hasHighRiskEvidence,
+    hasDirectDealEvidence: evidence.hasActionDirectDealEvidence,
+    hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
+    hasHighRiskEvidence: evidence.hasHighRiskEvidence,
+    hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
   });
   const reasonCodes = buildReasonCodes({
     detection,
     featureVector,
+    signalEvidence: evidence,
     fpRisk,
     actionBand,
     evidenceTier,
@@ -173,6 +156,7 @@ function resolveEvidenceTier(params: {
 function buildReasonCodes(params: {
   detection: CommercialDetection;
   featureVector: CommercialFeatureVector;
+  signalEvidence: CommercialSignalEvidenceProfile;
   fpRisk: number;
   actionBand: string;
   evidenceTier: CommercialEvidenceTier;
@@ -184,6 +168,27 @@ function buildReasonCodes(params: {
 
   if (params.featureVector.highRisk > 0) {
     reasonCodes.add('high-risk-signal');
+  }
+  if (params.signalEvidence.hasEscalationRiskEvidence) {
+    reasonCodes.add('risk:escalation-grade');
+  }
+  if (params.signalEvidence.hasActionDirectDealEvidence) {
+    reasonCodes.add('evidence:action-direct');
+  }
+  if (
+    params.signalEvidence.hasHighRiskEvidence &&
+    !params.signalEvidence.hasActionDirectDealEvidence
+  ) {
+    reasonCodes.add('evidence:high-risk-only');
+  }
+  if (params.signalEvidence.hasPriceEvidence && params.signalEvidence.hasStrongContactEvidence) {
+    reasonCodes.add('evidence:direct:price-contact');
+  }
+  if (params.signalEvidence.hasPriceEvidence && params.signalEvidence.hasLinkEvidence) {
+    reasonCodes.add('evidence:direct:price-link');
+  }
+  if (params.signalEvidence.hasLinkEvidence && params.signalEvidence.hasStrongContactEvidence) {
+    reasonCodes.add('evidence:direct:link-contact');
   }
   if (params.featureVector.priceStructure > 0 && params.featureVector.contactEvidence > 0) {
     reasonCodes.add('direct-price-contact');
