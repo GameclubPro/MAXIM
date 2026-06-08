@@ -7,6 +7,7 @@ import { BackgroundRuntimeGovernorService } from './background-runtime-governor.
 import { MaxApiMetricsService } from './max-api-metrics.service';
 import { MiniappBootTraceController } from './miniapp-boot-trace.controller';
 import { MiniappBootTraceService } from './miniapp-boot-trace.service';
+import { MiniappMutationTunnelController } from './miniapp-mutation-tunnel.controller';
 import { QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemController } from './system.controller';
@@ -22,7 +23,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: 'moderation-actions' }),
   ],
-  controllers: [SystemController, MiniappBootTraceController],
+  controllers: [SystemController, MiniappBootTraceController, MiniappMutationTunnelController],
   providers: [
     QueueMetricsService,
     ActionHealthService,
