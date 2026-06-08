@@ -65,6 +65,8 @@ export const PUBLIC_BASE_PATH = normalizeBasePath(
 );
 export const PUBLIC_ROUTER_BASENAME = PUBLIC_BASE_PATH.replace(/\/+$/u, '');
 export const API_BASE = normalizeApiBase(IMPORT_META_ENV?.VITE_API_BASE);
-export const API_FALLBACK_BASES = normalizeApiFallbackBases(IMPORT_META_ENV?.VITE_API_FALLBACK_BASES);
-export const API_BASES = normalizeApiBases(API_BASE, API_FALLBACK_BASES);
+export const API_BASES = normalizeApiBases(
+  API_BASE,
+  normalizeApiFallbackBases(IMPORT_META_ENV?.VITE_API_FALLBACK_BASES),
+);
 export const HEALTH_BASE = API_BASE.replace(/\/v1$/u, '');

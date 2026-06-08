@@ -12,7 +12,6 @@ export type ApiTransport = {
 
 export type ApiTransportOptions = {
   apiBases?: readonly string[];
-  requestTimeoutMs?: number;
 };
 
 type FetchAttemptResult = {
@@ -62,7 +61,6 @@ export function createApiTransport(
     options.apiBases?.[0] ?? API_BASE,
     options.apiBases?.slice(1) ?? API_BASES.slice(1),
   );
-  const requestTimeoutMs = options.requestTimeoutMs ?? API_REQUEST_TIMEOUT_MS;
 
   const readInitData = (refresh = false): string => {
     if (refresh || typeof initData === 'function') {
@@ -108,7 +106,7 @@ export function createApiTransport(
     const timeoutId = globalThis.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, requestTimeoutMs);
+    }, API_REQUEST_TIMEOUT_MS);
     if (init.signal) {
       if (init.signal.aborted) {
         abortFromCaller();
@@ -161,30 +159,10 @@ export function createApiTransport(
     }
 
     if (['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
-      return new Promise<FetchAttemptResult>((resolve, reject) => {
-        let settled = false;
-        let completed = 0;
-        let lastError: unknown;
-
-        for (const apiBase of attemptBases) {
-          void fetchWithTimeout(apiBase, path, authInitData, init)
-            .then((result) => {
-              if (settled) {
-                return;
-              }
-
-              settled = true;
-              resolve(result);
-            })
-            .catch((error: unknown) => {
-              completed += 1;
-              lastError = error;
-              if (!settled && completed === attemptBases.length) {
-                settled = true;
-                reject(lastError);
-              }
-            });
-        }
+      return Promise.any(
+        attemptBases.map((apiBase) => fetchWithTimeout(apiBase, path, authInitData, init)),
+      ).catch((error: unknown) => {
+        throw error instanceof AggregateError ? error.errors.at(-1) : error;
       });
     }
 
