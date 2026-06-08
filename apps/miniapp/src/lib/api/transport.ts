@@ -155,6 +155,25 @@ export function createApiTransport(
       return fetchWithTimeout(attemptBases[0], path, authInitData, init);
     }
 
+    if (!['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
+      let lastError: unknown;
+      for (const apiBase of attemptBases) {
+        try {
+          const result = await fetchWithTimeout(apiBase, path, authInitData, init);
+          if (result.response.status === 405 && apiBase !== attemptBases.at(-1)) {
+            lastError = new Error('API front door rejected method');
+            continue;
+          }
+
+          return result;
+        } catch (error: unknown) {
+          lastError = error;
+        }
+      }
+
+      throw lastError;
+    }
+
     const { fetchWithApiBaseFallback } = await import('./transport-fallback');
     return fetchWithApiBaseFallback(attemptBases, init, (apiBase) =>
       fetchWithTimeout(apiBase, path, authInitData, init),

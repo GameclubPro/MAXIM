@@ -246,6 +246,51 @@ test('uses the selected API base for follow-up mutation requests', async () => {
   );
 });
 
+test('falls back to the next API base when a mutation method is rejected by the front door', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      return createResponse({
+        ok: false,
+        status: 405,
+        text: 'Method Not Allowed',
+        contentType: 'text/html',
+      });
+    }
+
+    return createResponse({
+      ok: true,
+      status: 204,
+      text: '',
+      contentType: null,
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: [
+      'https://api-cdn.flex-craft.ru/api/v1',
+      'https://major-maksimov.ru/api/v1',
+    ],
+  });
+
+  const result = await api.request('/chats/chat-1/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ antiSpamEnabled: true }),
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(
+    calls.map((call) => String(call.input)),
+    [
+      'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/settings',
+      'https://major-maksimov.ru/api/v1/chats/chat-1/settings',
+    ],
+  );
+});
+
 test.afterEach(() => {
   delete (globalThis as { fetch?: typeof fetch }).fetch;
 });
