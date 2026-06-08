@@ -156,54 +156,14 @@ export function createApiTransport(
     }
 
     if (!['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
-      const tryMutationTunnel = async (apiBase: string): Promise<FetchAttemptResult | null> => {
-        const { buildMutationTunnelPath } = await import('./transport-mutation-tunnel');
-        const tunnelPath = buildMutationTunnelPath(path, init);
-        if (!tunnelPath) {
-          return null;
-        }
-
-        const tunnelResult = await fetchWithTimeout(apiBase, tunnelPath, authInitData, {
-          headers: init.headers,
-          signal: init.signal,
-        });
-        return tunnelResult.response.status === 405 ? null : tunnelResult;
-      };
-      let lastError: unknown;
-      for (const apiBase of attemptBases) {
-        try {
-          const result = await fetchWithTimeout(apiBase, path, authInitData, init);
-          if (result.response.status === 405 && apiBase !== attemptBases.at(-1)) {
-            const tunnelResult = await tryMutationTunnel(apiBase);
-            if (tunnelResult) {
-              return tunnelResult;
-            }
-
-            lastError = new Error('API front door rejected method');
-            continue;
-          }
-
-          return result;
-        } catch (error: unknown) {
-          if (init.signal?.aborted) {
-            throw error;
-          }
-
-          lastError = error;
-          if (apiBase !== attemptBases.at(-1)) {
-            try {
-              const tunnelResult = await tryMutationTunnel(apiBase);
-              if (tunnelResult) {
-                return tunnelResult;
-              }
-            } catch (tunnelError: unknown) {
-              lastError = tunnelError;
-            }
-          }
-        }
-      }
-
-      throw lastError;
+      const { fetchMutationWithTunnelFallback } = await import('./transport-mutation-tunnel');
+      return fetchMutationWithTunnelFallback(
+        attemptBases,
+        path,
+        authInitData,
+        init,
+        fetchWithTimeout,
+      );
     }
 
     const { fetchWithApiBaseFallback } = await import('./transport-fallback');
