@@ -368,9 +368,8 @@ function buildCommercialMarkerContext(
   rawLoweredText: string,
 ): CommercialMarkerContext {
   const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
-  const rawLoweredTextWithoutUrlsNormalized = normalizeCommercialConfusables(
-    rawLoweredTextWithoutUrls,
-  );
+  const rawLoweredTextWithoutUrlsNormalized =
+    normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
   const normalizedTextWithoutUrls =
     rawLoweredTextWithoutUrls === rawLoweredText
       ? normalizedText
@@ -427,6 +426,41 @@ function matchesCommercialPattern(pattern: RegExp, context: CommercialMarkerCont
       pattern.test(context.normalizedConfusableTextWithoutUrls)) ||
     pattern.test(context.rawLoweredTextWithoutUrls)
   );
+}
+
+function collectFirstMarkers(
+  markers: readonly string[],
+  predicate: (marker: string) => boolean,
+  limit: number,
+): string[] {
+  const hits: string[] = [];
+  for (const marker of markers) {
+    if (hits.length >= limit) {
+      break;
+    }
+    if (predicate(marker) && !hits.includes(marker)) {
+      hits.push(marker);
+    }
+  }
+  return hits;
+}
+
+function collectFirstPatternLabels(
+  patterns: readonly { label: string; pattern: RegExp }[],
+  predicate: (pattern: RegExp) => boolean,
+  limit: number,
+  seed: readonly string[] = [],
+): string[] {
+  const hits = [...seed];
+  for (const { label, pattern } of patterns) {
+    if (hits.length >= limit) {
+      break;
+    }
+    if (predicate(pattern) && !hits.includes(label)) {
+      hits.push(label);
+    }
+  }
+  return hits;
 }
 
 function hasPriceLikeText(value: string): boolean {
@@ -539,27 +573,33 @@ export function collectCommercialSignals(params: {
     hasPropertyPrivateContext = true;
   }
 
-  const privateSingleListingHits = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
+  const privateSingleListingHits = collectFirstPatternLabels(
+    ADS_PRIVATE_SINGLE_LISTING_PATTERNS,
+    matchesPattern,
+    2,
   );
-  for (const { label } of privateSingleListingHits.slice(0, 2)) {
+  for (const label of privateSingleListingHits) {
     addNegative(`private-single:${label}`, weights.privateSingleListing, true);
     hasPrivateGoodsItemContext = true;
     hasPrivateSaleContext = true;
   }
 
-  const intentHits = ADS_INTENT_MARKERS.filter((marker) => {
-    if (
-      hasPropertyPrivateContext &&
-      hasUtilityPaymentContext &&
-      ADS_SERVICE_INTENT_MARKERS.has(marker)
-    ) {
-      return false;
-    }
+  const intentHits = collectFirstMarkers(
+    ADS_INTENT_MARKERS,
+    (marker) => {
+      if (
+        hasPropertyPrivateContext &&
+        hasUtilityPaymentContext &&
+        ADS_SERVICE_INTENT_MARKERS.has(marker)
+      ) {
+        return false;
+      }
 
-    return hasMarker(marker);
-  });
-  for (const marker of intentHits.slice(0, 3)) {
+      return hasMarker(marker);
+    },
+    3,
+  );
+  for (const marker of intentHits) {
     addPositive(`intent:${marker}`, weights.intent);
     hasIntent = true;
     if (ADS_SERVICE_INTENT_MARKERS.has(marker)) {
@@ -568,63 +608,70 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
-  const serviceOfferHits = ADS_SERVICE_OFFER_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
-  );
-  for (const { label } of serviceOfferHits.slice(0, 2)) {
+  const serviceOfferHits = collectFirstPatternLabels(ADS_SERVICE_OFFER_PATTERNS, matchesPattern, 2);
+  for (const label of serviceOfferHits) {
     addPositive(`intent:${label}`, weights.serviceOffer);
     hasIntent = true;
     hasServiceOfferContext = true;
     hasDealSignal = true;
   }
 
-  const promoHits = ADS_PROMO_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of promoHits.slice(0, 3)) {
+  const promoHits = collectFirstMarkers(ADS_PROMO_MARKERS, hasMarker, 3);
+  for (const marker of promoHits) {
     addPositive(`promo:${marker}`, weights.promo);
     hasPromoContext = true;
     hasCommercialContext = true;
   }
 
-  const propertyAgentHits = ADS_PROPERTY_AGENT_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
+  const propertyAgentHits = collectFirstPatternLabels(
+    ADS_PROPERTY_AGENT_PATTERNS,
+    matchesPattern,
+    3,
   );
-  for (const { label } of propertyAgentHits.slice(0, 3)) {
+  for (const label of propertyAgentHits) {
     addPositive(`property-agent:${label}`, weights.propertyAgent);
     hasPropertyAgentContext = true;
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
 
-  const commercialPropertyHits = ADS_PROPERTY_COMMERCIAL_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
+  const commercialPropertyHits = collectFirstPatternLabels(
+    ADS_PROPERTY_COMMERCIAL_PATTERNS,
+    matchesPattern,
+    2,
   );
-  for (const { label } of commercialPropertyHits.slice(0, 2)) {
+  for (const label of commercialPropertyHits) {
     addPositive(`property-commercial:${label}`, weights.propertyCommercial);
     hasCommercialPropertyContext = true;
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
 
-  const businessHits = [
-    ...ADS_BUSINESS_MARKERS.filter(
-      (marker) =>
-        !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
-        hasMarker(marker),
-    ),
-    ...ADS_BUSINESS_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-      ({ label }) => label,
-    ),
-  ];
-  for (const marker of [...new Set(businessHits)].slice(0, 2)) {
+  const businessMarkerHits = collectFirstMarkers(
+    ADS_BUSINESS_MARKERS,
+    (marker) =>
+      !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
+      hasMarker(marker),
+    2,
+  );
+  const businessHits = collectFirstPatternLabels(
+    ADS_BUSINESS_PATTERNS,
+    matchesPattern,
+    2,
+    businessMarkerHits,
+  );
+  for (const marker of businessHits) {
     addPositive(`business:${marker}`, weights.business);
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
 
-  const highRiskCommercialHits = ADS_HIGH_RISK_COMMERCIAL_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
+  const highRiskCommercialHitLabels = collectFirstPatternLabels(
+    ADS_HIGH_RISK_COMMERCIAL_PATTERNS,
+    matchesPattern,
+    3,
   );
-  for (const { label } of highRiskCommercialHits.slice(0, 3)) {
+  for (const label of highRiskCommercialHitLabels) {
     addPositive(
       `risk:${label}`,
       ADS_HIGH_RISK_COMMERCIAL_SIGNAL_WEIGHTS.get(label) ?? weights.highRiskFallback,
@@ -633,8 +680,8 @@ export function collectCommercialSignals(params: {
     hasCommercialContext = true;
   }
   if (
-    highRiskCommercialHits.length > 0 &&
-    !highRiskCommercialHits.some(({ label }) => label === 'government-benefit-phishing') &&
+    highRiskCommercialHitLabels.length > 0 &&
+    !highRiskCommercialHitLabels.includes('government-benefit-phishing') &&
     /(?:^|[^\p{L}\p{N}_-])(?:бонус|депозит|выигрыш[\p{L}\p{N}_-]*|зеркал[\p{L}\p{N}_-]*|регистрац[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|пишите|заявк[\p{L}\p{N}_-]*|стартов[\p{L}\p{N}_-]*\s+баланс)(?=$|[^\p{L}\p{N}_-])/iu.test(
       normalizedText,
     )
@@ -644,22 +691,25 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
-  const rawLinkCommercialHits = ADS_HIGH_RISK_RAW_LINK_PATTERNS.filter(({ pattern }) =>
-    pattern.test(rawLoweredText),
+  const rawLinkCommercialHits = collectFirstPatternLabels(
+    ADS_HIGH_RISK_RAW_LINK_PATTERNS,
+    (pattern) => pattern.test(rawLoweredText),
+    2,
   );
-  for (const { label } of rawLinkCommercialHits.slice(0, 2)) {
+  for (const label of rawLinkCommercialHits) {
     addPositive(`risk:${label}`, weights.rawHighRiskLink);
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
 
-  const buyoutHits = [
-    ...ADS_BUYOUT_MARKERS.filter((marker) => hasMarker(marker)),
-    ...ADS_BUYOUT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-      ({ label }) => label,
-    ),
-  ];
-  for (const marker of buyoutHits.slice(0, 2)) {
+  const buyoutMarkerHits = collectFirstMarkers(ADS_BUYOUT_MARKERS, hasMarker, 2);
+  const buyoutHits = collectFirstPatternLabels(
+    ADS_BUYOUT_PATTERNS,
+    matchesPattern,
+    2,
+    buyoutMarkerHits,
+  );
+  for (const marker of buyoutHits) {
     addPositive(`buyout:${marker}`, weights.buyout);
     hasBuyoutContext = true;
     hasBusinessContext = true;
@@ -674,69 +724,83 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
-  const hasPaydayLoanRisk = highRiskCommercialHits.some(({ label }) => label === 'loan-leadgen');
-  const hasCryptoInvestmentRisk = highRiskCommercialHits.some(
-    ({ label }) => label === 'crypto-investment',
+  const hasPaydayLoanRisk = highRiskCommercialHitLabels.includes('loan-leadgen');
+  const hasCryptoInvestmentRisk = highRiskCommercialHitLabels.includes('crypto-investment');
+  const recruitmentMarkerHits = collectFirstMarkers(
+    ADS_RECRUITMENT_MARKERS,
+    (marker) =>
+      !(hasPaydayLoanRisk && marker === 'зарплат') &&
+      !(hasCryptoInvestmentRisk && marker === 'доход') &&
+      hasMarker(marker),
+    2,
   );
-  const recruitmentHits = [
-    ...ADS_RECRUITMENT_MARKERS.filter(
-      (marker) =>
-        !(hasPaydayLoanRisk && marker === 'зарплат') &&
-        !(hasCryptoInvestmentRisk && marker === 'доход') &&
-        hasMarker(marker),
-    ),
-    ...ADS_RECRUITMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-      ({ label }) => label,
-    ),
-  ];
-  for (const marker of [...new Set(recruitmentHits)].slice(0, 2)) {
+  const recruitmentHits = collectFirstPatternLabels(
+    ADS_RECRUITMENT_PATTERNS,
+    matchesPattern,
+    2,
+    recruitmentMarkerHits,
+  );
+  for (const marker of recruitmentHits) {
     addPositive(`recruitment:${marker}`, weights.recruitment);
     hasRecruitmentContext = true;
     hasCommercialContext = true;
   }
-  if (
+  const hasRecruitmentResponseKeywordHit =
     recruitmentHits.includes('hr-chat-recruiter') ||
-    recruitmentHits.includes('remote-network-work')
-  ) {
+    recruitmentHits.includes('remote-network-work') ||
+    (recruitmentHits.length > 0 &&
+      ADS_RECRUITMENT_PATTERNS.some(
+        ({ label, pattern }) =>
+          (label === 'hr-chat-recruiter' || label === 'remote-network-work') &&
+          matchesPattern(pattern),
+      ));
+  if (hasRecruitmentResponseKeywordHit) {
     addPositive('contact:recruitment-response-keyword', weights.contactMarker);
     hasContact = true;
     hasDealSignal = true;
   }
-  if (recruitmentHits.includes('leaflet-daily-side-job')) {
+  const hasLeafletDailySideJobHit =
+    recruitmentHits.includes('leaflet-daily-side-job') ||
+    (recruitmentHits.length > 0 &&
+      ADS_RECRUITMENT_PATTERNS.some(
+        ({ label, pattern }) => label === 'leaflet-daily-side-job' && matchesPattern(pattern),
+      ));
+  if (hasLeafletDailySideJobHit) {
     addPositive('contact:implicit-vacancy-offer', weights.contactMarker);
     hasContact = true;
     hasDealSignal = true;
   }
 
-  const infoProductHits = ADS_INFO_PRODUCT_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of infoProductHits.slice(0, 2)) {
+  const infoProductHits = collectFirstMarkers(ADS_INFO_PRODUCT_MARKERS, hasMarker, 2);
+  for (const marker of infoProductHits) {
     addPositive(`info:${marker}`, weights.infoProduct);
     hasInfoProductContext = true;
     hasCommercialContext = true;
   }
 
-  const serviceSpecialtyHits = [
-    ...ADS_SERVICE_SPECIALTY_MARKERS.filter(
-      (marker) =>
-        !(
-          hasPropertyPrivateContext &&
-          !hasServiceOfferContext &&
-          PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
-        ) && hasMarker(marker),
-    ),
-    ...ADS_SERVICE_SPECIALTY_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-      ({ label }) => label,
-    ),
-  ];
-  for (const marker of [...new Set(serviceSpecialtyHits)].slice(0, 3)) {
+  const serviceSpecialtyMarkerHits = collectFirstMarkers(
+    ADS_SERVICE_SPECIALTY_MARKERS,
+    (marker) =>
+      !(
+        hasPropertyPrivateContext &&
+        !hasServiceOfferContext &&
+        PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+      ) && hasMarker(marker),
+    3,
+  );
+  const serviceSpecialtyHits = collectFirstPatternLabels(
+    ADS_SERVICE_SPECIALTY_PATTERNS,
+    matchesPattern,
+    3,
+    serviceSpecialtyMarkerHits,
+  );
+  for (const marker of serviceSpecialtyHits) {
     addPositive(`service-specialty:${marker}`, weights.serviceSpecialty);
     hasServiceSpecialtyContext = true;
   }
 
-  const goodsRetailHits = ADS_GOODS_RETAIL_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
-  );
-  for (const { label } of goodsRetailHits.slice(0, 3)) {
+  const goodsRetailHits = collectFirstPatternLabels(ADS_GOODS_RETAIL_PATTERNS, matchesPattern, 3);
+  for (const label of goodsRetailHits) {
     addPositive(`goods-retail:${label}`, weights.goodsRetail);
     hasGoodsRetailContext = true;
     hasCommercialContext = true;
@@ -761,52 +825,61 @@ export function collectCommercialSignals(params: {
     hasCommercialContext = true;
   }
 
-  const groupContextHits = ADS_GROUP_CONTEXT_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of groupContextHits.slice(0, 2)) {
+  const groupContextHits = collectFirstMarkers(ADS_GROUP_CONTEXT_MARKERS, hasMarker, 2);
+  for (const marker of groupContextHits) {
     addPositive(`group:${marker}`, weights.groupContext);
     hasGroupContext = true;
   }
 
-  const groupPromoHits = ADS_GROUP_PROMO_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of groupPromoHits.slice(0, 2)) {
+  const groupPromoHits = collectFirstMarkers(ADS_GROUP_PROMO_MARKERS, hasMarker, 2);
+  for (const marker of groupPromoHits) {
     addPositive(`group-promo:${marker}`, weights.groupPromo);
     hasGroupContext = true;
     hasGroupPromotionIntent = true;
     hasCallToActionContext = true;
   }
 
-  const groupSelfReferenceHits = ADS_GROUP_SELF_REFERENCE_MARKERS.filter((marker) =>
-    hasMarker(marker),
+  const groupSelfReferenceHits = collectFirstMarkers(
+    ADS_GROUP_SELF_REFERENCE_MARKERS,
+    (marker) => hasMarker(marker),
+    2,
   );
-  for (const marker of groupSelfReferenceHits.slice(0, 2)) {
+  for (const marker of groupSelfReferenceHits) {
     addPositive(`group-self:${marker}`, weights.groupSelfReference);
     hasGroupContext = true;
     hasGroupPromotionIntent = true;
   }
 
-  const groupTradeHits = ADS_GROUP_TRADE_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of groupTradeHits.slice(0, 3)) {
+  const groupTradeHits = collectFirstMarkers(ADS_GROUP_TRADE_MARKERS, hasMarker, 3);
+  for (const marker of groupTradeHits) {
     addPositive(`group-trade:${marker}`, weights.groupTrade);
     hasGroupTradeContext = true;
   }
 
-  const commercialAudienceHits = ADS_COMMERCIAL_AUDIENCE_MARKERS.filter((marker) =>
-    hasMarker(marker),
+  const commercialAudienceHits = collectFirstMarkers(
+    ADS_COMMERCIAL_AUDIENCE_MARKERS,
+    (marker) => hasMarker(marker),
+    2,
   );
-  for (const marker of commercialAudienceHits.slice(0, 2)) {
+  for (const marker of commercialAudienceHits) {
     addPositive(`audience:${marker}`, weights.commercialAudience);
     hasCommercialAudienceContext = true;
     hasBusinessContext = true;
     hasCommercialContext = true;
   }
 
-  const channelPlacementHits = [
-    ...ADS_CHANNEL_PLACEMENT_MARKERS.filter((marker) => hasMarker(marker)),
-    ...ADS_CHANNEL_PLACEMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-      ({ label }) => label,
-    ),
-  ];
-  for (const marker of [...new Set(channelPlacementHits)].slice(0, 4)) {
+  const channelPlacementMarkerHits = collectFirstMarkers(
+    ADS_CHANNEL_PLACEMENT_MARKERS,
+    hasMarker,
+    4,
+  );
+  const channelPlacementHits = collectFirstPatternLabels(
+    ADS_CHANNEL_PLACEMENT_PATTERNS,
+    matchesPattern,
+    4,
+    channelPlacementMarkerHits,
+  );
+  for (const marker of channelPlacementHits) {
     addPositive(`channel-placement:${marker}`, weights.channelPlacement);
     hasGroupContext = true;
     hasGroupTradeContext = true;
@@ -829,8 +902,8 @@ export function collectCommercialSignals(params: {
     hasCommercialContext = true;
   }
 
-  const callToActionHits = ADS_CALL_TO_ACTION_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of callToActionHits.slice(0, 2)) {
+  const callToActionHits = collectFirstMarkers(ADS_CALL_TO_ACTION_MARKERS, hasMarker, 2);
+  for (const marker of callToActionHits) {
     addPositive(`cta:${marker}`, weights.callToAction);
     hasCallToActionContext = true;
   }
@@ -890,8 +963,8 @@ export function collectCommercialSignals(params: {
     hasCommercialContext = true;
   }
 
-  const contactHits = ADS_CONTACT_MARKERS.filter((marker) => hasMarker(marker));
-  for (const marker of contactHits.slice(0, 2)) {
+  const contactHits = collectFirstMarkers(ADS_CONTACT_MARKERS, hasMarker, 2);
+  for (const marker of contactHits) {
     addPositive(`contact:${marker}`, weights.contactMarker);
     hasContact = true;
     hasDealSignal = true;
@@ -953,23 +1026,25 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
+  const hasGenericDomainCommercialContext =
+    hasPromoContext ||
+    hasBusinessContext ||
+    hasServiceContext ||
+    hasServiceOfferContext ||
+    hasServiceSpecialtyContext ||
+    hasGoodsRetailContext ||
+    hasRecruitmentContext ||
+    hasInfoProductContext ||
+    hasGroupPromotionIntent ||
+    hasCommercialAudienceContext ||
+    hasCommercialPropertyContext ||
+    hasPropertyAgentContext ||
+    hasCallToActionContext;
   const hasGenericDomainLink =
     !hasDealChannel &&
+    hasGenericDomainCommercialContext &&
     hasGenericDomainLikeText(rawLoweredText) &&
-    ADS_GENERIC_DOMAIN_LINK_PATTERN.test(rawLoweredText) &&
-    (hasPromoContext ||
-      hasBusinessContext ||
-      hasServiceContext ||
-      hasServiceOfferContext ||
-      hasServiceSpecialtyContext ||
-      hasGoodsRetailContext ||
-      hasRecruitmentContext ||
-      hasInfoProductContext ||
-      hasGroupPromotionIntent ||
-      hasCommercialAudienceContext ||
-      hasCommercialPropertyContext ||
-      hasPropertyAgentContext ||
-      hasCallToActionContext);
+    ADS_GENERIC_DOMAIN_LINK_PATTERN.test(rawLoweredText);
   if (hasGenericDomainLink) {
     addPositive('deal-channel:generic-domain', weights.link);
     hasDealChannel = true;
@@ -1113,10 +1188,8 @@ export function collectCommercialSignals(params: {
     hasPrivateSaleContext = true;
   }
 
-  const privateGoodsHits = ADS_PRIVATE_GOODS_PATTERNS.filter(({ pattern }) =>
-    matchesPattern(pattern),
-  );
-  for (const { label } of privateGoodsHits.slice(0, 2)) {
+  const privateGoodsHits = collectFirstPatternLabels(ADS_PRIVATE_GOODS_PATTERNS, matchesPattern, 2);
+  for (const label of privateGoodsHits) {
     addNegative(`private-goods:${label}`, weights.privateGoods, true);
     hasPrivateGoodsItemContext = true;
     hasPrivateSaleContext = true;

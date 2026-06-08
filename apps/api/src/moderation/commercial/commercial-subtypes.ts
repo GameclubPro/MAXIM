@@ -110,10 +110,16 @@ export function classifyCommercialDetection(params: {
     subtypeScores.set(subtype, Math.max(score, subtypeScores.get(subtype) ?? 0));
   };
 
-  if (
-    state.hasChannelPlacementContext ||
-    (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent)
-  ) {
+  const hasWeakAudiencePlacementContext =
+    state.hasCommercialAudienceContext &&
+    state.hasGroupPromotionIntent &&
+    !state.hasServiceContext &&
+    !state.hasRecruitmentContext &&
+    !state.hasGoodsRetailContext &&
+    !state.hasPropertyAgentContext &&
+    !state.hasCommercialPropertyContext &&
+    !state.hasBuyoutContext;
+  if (state.hasChannelPlacementContext || hasWeakAudiencePlacementContext) {
     addSubtype('CHANNEL_PLACEMENT', subtypeConfig.CHANNEL_PLACEMENT);
   }
 

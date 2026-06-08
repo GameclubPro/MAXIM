@@ -381,7 +381,11 @@ describe('commercial pattern regressions', () => {
       label: 'paid sports raffle channel from forty eight hour audit miss',
       text: 'ВНИМАНИЕ! РОЗЫГРЫШ 50.000 РУБЛЕЙ ЗА ПОДПИСКУ В КАНАЛ. Автор зарабатывает на спорте, ссылка https://max.ru/join/sport',
       subtype: 'CHANNEL_PLACEMENT',
-      signals: ['risk:paid-raffle', 'channel-placement:subscribe-channel-link', 'deal-channel:link'],
+      signals: [
+        'risk:paid-raffle',
+        'channel-placement:subscribe-channel-link',
+        'deal-channel:link',
+      ],
     },
     {
       label: 'ai fitting app promo from forty eight hour audit miss',
@@ -466,6 +470,92 @@ describe('commercial pattern regressions', () => {
       text: 'Апартаменты у моря свободны с 12 июля. До пляжа 5 минут, бронь по предоплате, календарь в личку.',
       subtype: 'PROPERTY_AGENT',
       signals: ['property-agent:посуточная-бронь-апартаментов', 'transaction:keywords'],
+    },
+    {
+      label: 'electrical wiring service from twenty four hour audit miss',
+      text: 'Замена проводки в квартире, в доме. Сборка щитов. Работы на линиях электропередачи -кВ. Выполнение устройства заземления. ☎️Тел +7 900 000 10 01.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:electrical-wiring-service', 'contact:phone'],
+    },
+    {
+      label: 'ready business sale reverse price order from twenty four hour audit miss',
+      text: 'Так же продается бизнес за 100000 в Саянске, готовый. Писать +7 900 000 10 02',
+      subtype: 'GOODS',
+      signals: ['business:business-sale', 'contact:phone'],
+    },
+    {
+      label: 'short collectible flower retail from twenty four hour audit miss',
+      text: 'Сортовые фиалки по вопросам в личку',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:collectible-flower-retail'],
+    },
+    {
+      label: 'vehicle advertising placement from twenty four hour audit miss',
+      text: 'Разместим вашу рекламу на наших авто +7 900 000 10 03',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:vehicle-ad-placement', 'contact:phone'],
+    },
+    {
+      label: 'uzbek mixed wildberries warehouse recruitment from twenty four hour audit miss',
+      text: 'WILDBERRIES МОСКОВСКАЯ ОБЛАСТЬ. Бепул яшаш жой! ТРУДОВОЙ ДОГОВОР. Сортировка товара 4000₽, ойлик маош. ТУЛИК ДОКУМЕНТ БИЛАН ИШГА ОЛАМИЗ! Мурожаат учун: Телеграм/max/ прямой. +7 900 000 10 04',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:warehouse-job-conditions', 'contact:phone'],
+    },
+    {
+      label: 'door retail discount from twenty four hour audit miss',
+      text: 'ВНИМАНИЕ! Снижение цен на все металлические и межкомнатные двери. Двери с терморазрывом от 27000 руб! Рассрочка на все без %, тел. +7 900 000 10 05',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:door-window-retail-discount', 'transaction:price'],
+    },
+    {
+      label: 'custom song service from twenty four hour audit miss',
+      text: 'Делаю полноценные песни по вашим идеям. Цена вопроса - 1000₽. Чтобы начать, просто напиши мне в личку.',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:custom-song-service', 'transaction:price'],
+    },
+    {
+      label: 'stretch ceiling service from twenty four hour audit miss',
+      text: 'НАТЯЖНЫЕ ПОТОЛКИ -20% пенсионерам. Замер бесплатный, звони по номеру +7 900 000 10 06',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:stretch-ceiling-service', 'contact:phone'],
+    },
+    {
+      label: 'wood outbuilding retail from twenty four hour audit miss',
+      text: 'Предлагаем вашему вниманию изделия из сухого пиломатериала: хоз блоки, беседки, уличные туалеты. Находимся в п. Центральный, ул. Промышленная 41. +7 900 000 10 07',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:wood-outbuilding-retail', 'contact:phone'],
+    },
+    {
+      label: 'mortgage studio promo from twenty four hour audit miss',
+      text: 'Ремонт в подарок + ставка 4,5%. Студия 30,44 м² уже с ремонтом. Первоначальный взнос 400 000 ₽. Напишите СТУДИЯ, рассчитаем под вас. +7 900 000 10 08',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:mortgage-studio-promo', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
+    },
+    {
+      label: 'septic and excavator service from twenty four hour audit miss',
+      text: 'ВЫГРЕБНЫЕ ЯМЫ ПОД КЛЮЧ, УСЛУГИ МИНИ ЭКСКАВАТОРА И САМОСВАЛА +7 900 000 10 09',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:septic-excavator-service', 'contact:phone'],
+    },
+    {
+      label: 'multi role shift pay recruitment from twenty four hour audit miss',
+      text: 'На постоянную работу в кафе требуется уборщица: график 6/1, 3800р. за смену. Дворник: график 6/1, 3600р. за смену. +7 900 000 10 10',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:роль-условия', 'contact:phone'],
+    },
+    {
+      label: 'driver park payout recruitment from twenty four hour audit miss',
+      text: 'Парк где не требуется самозанятость. 24/7 поддержка. Моментальная выплата средств. +7 900 000 10 11',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:driver-park-payout-work', 'contact:phone'],
+    },
+    {
+      label: 'agent commission townhouse from twenty four hour audit miss',
+      text: 'КП АВСТРИЯ. ТАУНХАУС 130 кв.м. Лучшая цена 14 000 000₽. Комиссия агентам 250000₽ в цене. +7 900 000 10 12',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:комиссия-агентам', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
     },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
@@ -764,8 +854,79 @@ describe('commercial pattern regressions', () => {
       'rideshare with price stays allowed',
       'Водитель завтра Абакан Таштып Абаза, 3 места по 500 рублей, телефон +7 900 000 03 04.',
     ],
+    [
+      'resale pricing discussion from twenty four hour audit false positive',
+      'Если оптовик покупает по 700 р, то можно смело продавать по 1500.',
+    ],
+    [
+      'news subscription wording with in course idiom stays allowed',
+      'Подпишитесь, чтобы быть в курсе городских новостей и важных объявлений администрации. https://example.com/news',
+    ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
+  });
+
+  it('still detects paid course ads after narrowing course marker', () => {
+    const result = detect(
+      'Открыт набор на курс по маркетплейсам. Цена 3000 руб, места ограничены, пишите в личку.',
+    );
+
+    expect(result?.primarySubtype).toBe('INFO_PRODUCT');
+    expect(result?.matchedSignals).toContain('info:курс');
+    expect(result?.actionBand).toBe('DELETE');
+  });
+
+  it('keeps ordinary pc sale out of betting high risk', () => {
+    const result = detect(
+      'Полный комплект ПК для работы и учебы, игр, тянет GTA V и прочие. 4-ядерный процессор AMD A10. Возможна доставка. Цена 10500 +7 900 000 10 13. Звоните, тут не могу ответить.',
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS');
+    expect(result?.actionBand).toBe('DELETE');
+    expect(result?.matchedSignals).not.toContain('risk:betting-gambling');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps banquet vacancy out of bank card high risk', () => {
+    const result = detect(
+      'Вакансия. Требуются повара, ставка от 5500 +банкетные. График 6/1, официальное оформление. Связь: +7 900 000 10 14',
+    );
+
+    expect(result?.primarySubtype).toBe('RECRUITMENT');
+    expect(result?.actionBand).toBe('DELETE');
+    expect(result?.matchedSignals).not.toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('keeps massage service out of messaging automation and channel placement', () => {
+    const result = detect(
+      'Приглашаем на массаж за 1800₽ для новых клиентов. У нас остаются 99% из всех пришедших! Запись/консультация +7 900 000 10 15',
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.actionBand).toBe('DELETE');
+    expect(result?.matchedSignals).not.toContain('risk:messaging-automation');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('still escalates bank card leadgen after tightening bank word boundaries', () => {
+    const result = detect(
+      'Альфа-Банк. Дарим 500 ₽ за оформление Альфа-Карты. Подробности по ссылке https://example.com/card',
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS');
+    expect(result?.matchedSignals).toContain('risk:bank-card-leadgen');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('still detects messaging automation after removing bare ban word', () => {
+    const result = detect(
+      'Новый софт для автоматической рассылки по чатам в MAX: прокси, аккаунты, база сообщений. Купить можно на канале https://example.com/soft',
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain('risk:messaging-automation');
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
   });
 
   it('does not classify collectible flower starters as auto parts', () => {

@@ -390,18 +390,13 @@ function isOfficialAppStoreReferenceNoise(
   state: ReturnType<typeof collectCommercialSignals>,
   rawLoweredText: string,
 ): boolean {
-  if (
-    state.hasPrice ||
-    state.hasContact ||
-    state.hasTransactional
-  ) {
+  if (state.hasPrice || state.hasContact || state.hasTransactional) {
     return false;
   }
 
   const hasOfficialAppStoreRisk = state.matchedSignals.some(
     (signal) =>
-      signal === 'risk:app-store-directory-promo' ||
-      signal === 'risk:app-store-directory-link',
+      signal === 'risk:app-store-directory-promo' || signal === 'risk:app-store-directory-link',
   );
   const hasOnlyOfficialAppStoreLinkContext =
     state.matchedSignals.includes('business:официально') &&
@@ -431,6 +426,7 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
     (signal) =>
       signal === 'context:quoted-ad-example' ||
       signal === 'context:moderation-ad-discussion' ||
+      signal === 'context:resale-pricing-discussion' ||
       signal === 'context:channel-metrics-not-selling' ||
       signal === 'context:public-fraud-warning' ||
       signal === 'context:official-civic-instruction',
