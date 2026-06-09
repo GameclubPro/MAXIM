@@ -735,29 +735,31 @@ export class AdminManagedBroadcastRuntime {
       const now = new Date();
       const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
       const autoRetryBefore = new Date(now.getTime() - MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS);
-      const activeDueRows = await this.prisma.managedBroadcast.findMany({
-        where: {
-          status: PrismaManagedBroadcastStatus.ACTIVE,
-          nextSendAt: { lte: now },
-          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-        },
-        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: dueBatchSize,
-        select: { id: true },
-      });
-      const retryableDueRows = await this.prisma.managedBroadcast.findMany({
-        where: {
-          status: {
-            in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
+      const [activeDueRows, retryableDueRows] = await Promise.all([
+        this.prisma.managedBroadcast.findMany({
+          where: {
+            status: PrismaManagedBroadcastStatus.ACTIVE,
+            nextSendAt: { lte: now },
+            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
           },
-          nextSendAt: { lte: now },
-          updatedAt: { lte: autoRetryBefore },
-          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-        },
-        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-        take: dueBatchSize,
-        select: { id: true },
-      });
+          orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+          take: dueBatchSize,
+          select: { id: true },
+        }),
+        this.prisma.managedBroadcast.findMany({
+          where: {
+            status: {
+              in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
+            },
+            nextSendAt: { lte: now },
+            updatedAt: { lte: autoRetryBefore },
+            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+          },
+          orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+          take: dueBatchSize,
+          select: { id: true },
+        }),
+      ]);
       const reservedRecoveryCount = Math.min(
         retryableDueRows.length,
         Math.min(recoveryBatchSize, dueBatchSize),
@@ -2302,7 +2304,19 @@ export class AdminManagedBroadcastRuntime {
         staleLockBefore,
       );
       const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
-      await this.ensureManagedBroadcastDeliveryRows(row, currentOccurrence, targetChatIds);
+      let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex: currentOccurrence,
+        },
+        orderBy: [{ targetChatId: 'asc' }],
+      });
+      initialDeliveries = await this.ensureManagedBroadcastDeliveryRows(
+        row,
+        currentOccurrence,
+        targetChatIds,
+        initialDeliveries,
+      );
 
       const request: PreparedManagedBroadcastRequest = {
         payload: {
@@ -2341,13 +2355,6 @@ export class AdminManagedBroadcastRuntime {
       const sentChatIds: string[] = [];
       const failedChatIds: string[] = [];
       let firstSendError: unknown = null;
-      let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
-        where: {
-          broadcastId: row.id,
-          occurrenceIndex: currentOccurrence,
-        },
-        orderBy: [{ targetChatId: 'asc' }],
-      });
 
       if (reason === 'startup' || reason === 'scheduled') {
         initialDeliveries = await this.recoverManagedBroadcastDeliveriesForAutomaticRun(
@@ -2617,10 +2624,10 @@ export class AdminManagedBroadcastRuntime {
               lastError: null,
             },
           });
-          sentChatIds.push(delivery.targetChatId);
           if (persistedSentMessage.count === 0) {
             continue;
           }
+          sentChatIds.push(delivery.targetChatId);
 
           await this.recordManagedBroadcastCommentDialogReference({
             chatId: delivery.targetChatId,
@@ -3985,20 +3992,109 @@ export class AdminManagedBroadcastRuntime {
     row: Pick<PersistedManagedBroadcast, 'id' | 'cycleCount'>,
     fromOccurrenceIndex: number,
     targetChatIds: string[],
-  ): Promise<void> {
-    if (targetChatIds.length === 0) {
-      return;
+    deliveries: PersistedManagedBroadcastDelivery[],
+  ): Promise<PersistedManagedBroadcastDelivery[]> {
+    const normalizedTargetChatIds = this.normalizeManagedBroadcastTargetChatIds(targetChatIds);
+    if (normalizedTargetChatIds.length === 0) {
+      return deliveries;
     }
 
     const cycleCount = Math.max(fromOccurrenceIndex, this.normalizeManagedBroadcastCycleCount(row));
+    const existingCurrentTargetChatIds = new Set(
+      deliveries.map((delivery) => delivery.targetChatId),
+    );
+    if (
+      cycleCount === fromOccurrenceIndex &&
+      normalizedTargetChatIds.every((targetChatId) =>
+        existingCurrentTargetChatIds.has(targetChatId),
+      )
+    ) {
+      return deliveries;
+    }
+
+    const expectedRemainingDeliveryRows =
+      normalizedTargetChatIds.length * (cycleCount - fromOccurrenceIndex + 1);
+    const existingRemainingDeliveryRows = await this.prisma.managedBroadcastDelivery.count({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: {
+          gte: fromOccurrenceIndex,
+          lte: cycleCount,
+        },
+        targetChatId: {
+          in: normalizedTargetChatIds,
+        },
+      },
+    });
+
+    if (existingRemainingDeliveryRows >= expectedRemainingDeliveryRows) {
+      if (
+        normalizedTargetChatIds.some(
+          (targetChatId) => !existingCurrentTargetChatIds.has(targetChatId),
+        )
+      ) {
+        return this.prisma.managedBroadcastDelivery.findMany({
+          where: {
+            broadcastId: row.id,
+            occurrenceIndex: fromOccurrenceIndex,
+          },
+          orderBy: [{ targetChatId: 'asc' }],
+        });
+      }
+      return deliveries;
+    }
+
+    const existingDeliveries: Array<{ occurrenceIndex: number; targetChatId: string }> =
+      await this.prisma.managedBroadcastDelivery.findMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex: {
+            gte: fromOccurrenceIndex,
+            lte: cycleCount,
+          },
+          targetChatId: {
+            in: normalizedTargetChatIds,
+          },
+        },
+        select: {
+          occurrenceIndex: true,
+          targetChatId: true,
+        },
+      });
+    const existingKeys = new Set(
+      existingDeliveries.map((delivery) => `${delivery.occurrenceIndex}:${delivery.targetChatId}`),
+    );
+    const missingRows = this.buildManagedBroadcastDeliveryRows(
+      row.id,
+      normalizedTargetChatIds,
+      fromOccurrenceIndex,
+      cycleCount,
+    ).filter(
+      (delivery) => !existingKeys.has(`${delivery.occurrenceIndex}:${delivery.targetChatId}`),
+    );
+
+    if (missingRows.length === 0) {
+      return deliveries;
+    }
+
+    const currentOccurrenceMissing = missingRows.some(
+      (delivery) => delivery.occurrenceIndex === fromOccurrenceIndex,
+    );
     await this.prisma.managedBroadcastDelivery.createMany({
-      data: this.buildManagedBroadcastDeliveryRows(
-        row.id,
-        targetChatIds,
-        fromOccurrenceIndex,
-        cycleCount,
-      ),
+      data: missingRows,
       skipDuplicates: true,
+    });
+
+    if (!currentOccurrenceMissing) {
+      return deliveries;
+    }
+
+    return this.prisma.managedBroadcastDelivery.findMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: fromOccurrenceIndex,
+      },
+      orderBy: [{ targetChatId: 'asc' }],
     });
   }
 
@@ -5057,5 +5153,4 @@ export class AdminManagedBroadcastRuntime {
       throw lastError;
     }
   }
-
 }

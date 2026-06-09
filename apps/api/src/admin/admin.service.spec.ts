@@ -517,6 +517,15 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
     if (typeof where.targetChatId === 'string' && delivery.targetChatId !== where.targetChatId) {
       return false;
     }
+    if (where.targetChatId && typeof where.targetChatId === 'object') {
+      const targetChatIdFilter = where.targetChatId as { in?: string[] };
+      if (
+        Array.isArray(targetChatIdFilter.in) &&
+        !targetChatIdFilter.in.includes(delivery.targetChatId)
+      ) {
+        return false;
+      }
+    }
     if (where.status && typeof where.status === 'string' && delivery.status !== where.status) {
       return false;
     }
@@ -21335,6 +21344,184 @@ describe('AdminService.sendBroadcast', () => {
       expect.objectContaining({
         status: 'COMPLETED',
         sentChatIds: ['chat-1'],
+        failedChatIds: [],
+      }),
+    );
+  });
+
+  it('recovers managed broadcasts with partially missing delivery rows without duplicating targets', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2', 'chat-3'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: true,
+        cycleEveryHours: 1,
+        cycleCount: 2,
+        sentCount: 0,
+        status: 'ACTIVE',
+        lastError: null,
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-2',
+          sentAt: new Date('2026-03-03T10:00:00.000Z'),
+        },
+      ],
+    });
+    deliveries[0].remoteMessageId = 'mid-chat-2';
+    deliveries[0].sentAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValueOnce({
+          messageId: 'mid-chat-1',
+          url: null,
+        })
+        .mockResolvedValueOnce({
+          messageId: 'mid-chat-3',
+          url: null,
+        }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      2,
+      'chat-3',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    const currentDeliveries = deliveries.filter((delivery) => delivery.occurrenceIndex === 1);
+    const futureDeliveries = deliveries.filter((delivery) => delivery.occurrenceIndex === 2);
+    expect(deliveries).toHaveLength(6);
+    expect(prisma.managedBroadcastDelivery.createMany).toHaveBeenLastCalledWith({
+      data: expect.arrayContaining([
+        expect.objectContaining({ occurrenceIndex: 1, targetChatId: 'chat-1' }),
+        expect.objectContaining({ occurrenceIndex: 1, targetChatId: 'chat-3' }),
+        expect.objectContaining({ occurrenceIndex: 2, targetChatId: 'chat-1' }),
+        expect.objectContaining({ occurrenceIndex: 2, targetChatId: 'chat-2' }),
+        expect.objectContaining({ occurrenceIndex: 2, targetChatId: 'chat-3' }),
+      ]),
+      skipDuplicates: true,
+    });
+    expect(currentDeliveries).toHaveLength(3);
+    expect(currentDeliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-1',
+        }),
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-2',
+        }),
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-3',
+          status: 'SENT',
+          remoteMessageId: 'mid-chat-3',
+        }),
+      ]),
+    );
+    expect(new Set(currentDeliveries.map((delivery) => delivery.targetChatId))).toEqual(
+      new Set(['chat-1', 'chat-2', 'chat-3']),
+    );
+    expect(futureDeliveries).toHaveLength(3);
+    expect(futureDeliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        }),
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        }),
+        expect.objectContaining({
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-3',
+          status: 'PENDING',
+        }),
+      ]),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'ACTIVE',
+        sentChatIds: ['chat-1', 'chat-3'],
         failedChatIds: [],
       }),
     );
