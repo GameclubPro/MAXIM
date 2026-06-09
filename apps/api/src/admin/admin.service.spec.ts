@@ -7740,7 +7740,9 @@ describe('AdminService.applyManualSystemBan', () => {
   it('records developer super ban blacklist and skips managed-chat fanout', async () => {
     const prisma = createPrismaMock();
     prisma.chat.count.mockResolvedValue(14123);
-    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-2' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ message_id: 'mid-source-2' }])
+      .mockResolvedValueOnce([{ chat_count: '27' }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -7855,18 +7857,15 @@ describe('AdminService.applyManualSystemBan', () => {
         }),
       }),
     );
-    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          entityType: ChatEntityType.CHAT,
-          status: 'ACTIVE',
-        }),
-        select: {
-          chatId: true,
-        },
-        distinct: ['chatId'],
-      }),
-    );
+    expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
+    const catalogCountSqlText =
+      prisma.$queryRaw.mock.calls
+        .map((call) => extractSqlText(call[0]))
+        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
+    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
+    expect(catalogCountSqlText).toContain('entity_type =');
+    expect(catalogCountSqlText).toContain('status =');
+    expect(catalogCountSqlText).not.toContain('bot_id =');
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -7887,6 +7886,7 @@ describe('AdminService.applyManualSystemBan', () => {
   it('records source-chat no-rights fallback without inspecting managed-chat fanout', async () => {
     const prisma = createPrismaMock();
     prisma.chat.count.mockResolvedValue(3);
+    prisma.$queryRaw.mockResolvedValueOnce([{ chat_count: 2 }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -7979,24 +7979,18 @@ describe('AdminService.applyManualSystemBan', () => {
       expect.any(String),
       expect.any(Number),
     );
-    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          entityType: ChatEntityType.CHAT,
-          status: 'ACTIVE',
-        }),
-        select: {
-          chatId: true,
-        },
-        distinct: ['chatId'],
-      }),
-    );
+    expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
+    const catalogCountSqlText =
+      prisma.$queryRaw.mock.calls
+        .map((call) => extractSqlText(call[0]))
+        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
+    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
+    expect(catalogCountSqlText).not.toContain('bot_id =');
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(assertBotCanManageMembers).not.toHaveBeenCalled();
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('заблокирован в 3 чатах по решению разработчика бота'),
@@ -8011,13 +8005,7 @@ describe('AdminService.applyManualSystemBan', () => {
   it('uses all active bot catalog rows for developer super ban coverage notice', async () => {
     const prisma = createPrismaMock();
     prisma.chat.count.mockResolvedValue(2);
-    prisma.managedBotChatCatalog.findMany.mockResolvedValue([
-      { chatId: 'chat-command-bot' },
-      { chatId: 'chat-other-bot-1' },
-      { chatId: 'chat-other-bot-2' },
-      { chatId: 'chat-other-bot-3' },
-    ]);
-    prisma.$queryRaw.mockResolvedValueOnce([]);
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([{ chat_count: 4n }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -8072,17 +8060,13 @@ describe('AdminService.applyManualSystemBan', () => {
       deleteBotMessagesDelayMinutes: 3,
     });
 
-    expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.not.objectContaining({
-          botId: 'command-bot',
-        }),
-        select: {
-          chatId: true,
-        },
-        distinct: ['chatId'],
-      }),
-    );
+    expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
+    const catalogCountSqlText =
+      prisma.$queryRaw.mock.calls
+        .map((call) => extractSqlText(call[0]))
+        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
+    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
+    expect(catalogCountSqlText).not.toContain('bot_id');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('заблокирован в 4 чатах по решению разработчика бота'),

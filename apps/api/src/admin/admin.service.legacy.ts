@@ -11969,29 +11969,31 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     actorUserId: string;
   }): Promise<number | null> {
-    const catalog = this.prisma.managedBotChatCatalog;
-    if (!catalog) {
+    if (!this.prisma.managedBotChatCatalog) {
       return null;
     }
 
     try {
-      const rows = (await catalog.findMany({
-        where: {
-          entityType: ChatEntityType.CHAT,
-          status: 'ACTIVE',
-          NOT: DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
-            chatId: {
-              startsWith: prefix,
-            },
-          })),
-        },
-        select: {
-          chatId: true,
-        },
-        distinct: ['chatId'],
-      })) as Array<{ chatId: string }>;
+      const privateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
+        ? Prisma.sql`AND NOT (${Prisma.join(
+            DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map(
+              (prefix) => Prisma.sql`chat_id LIKE ${`${prefix}%`}`,
+            ),
+            ' OR ',
+          )})`
+        : Prisma.empty;
+      const rows = await this.prisma.$queryRaw<Array<{ chat_count: bigint | number | string }>>(
+        Prisma.sql`
+          SELECT COUNT(DISTINCT chat_id) AS chat_count
+          FROM managed_bot_chat_catalog
+          WHERE entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
+            AND status = 'ACTIVE'
+            ${privateDialogFilter}
+        `,
+      );
+      const count = Number(rows[0]?.chat_count ?? 0);
 
-      return rows.length;
+      return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
     } catch (error: unknown) {
       this.logger.warn(
         {
