@@ -11912,83 +11912,54 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     actorUserId: string;
   }): Promise<number | null> {
-    const nonPrivateChatFilters = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map((prefix) => ({
-      id: {
-        startsWith: prefix,
-      },
-    }));
-    const managedChatScopeFilters: Prisma.ChatWhereInput[] = [
-      {
-        botMemberships: {
-          some: {
-            status: ChatBotMembershipStatus.ACTIVE,
-          },
-        },
-      },
-      {
-        botMemberships: {
-          none: {},
-        },
-      },
-    ];
-
-    let chatCount: number | null = null;
     try {
-      chatCount = await this.prisma.chat.count({
-        where: {
-          entityType: ChatEntityType.CHAT,
-          AND: [
-            {
-              OR: managedChatScopeFilters,
-            },
-            {
-              NOT: nonPrivateChatFilters,
-            },
-          ],
-        },
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          sourceChatId: params.sourceChatId,
-          actorUserId: params.actorUserId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to estimate managed chat count for developer super ban notice',
-      );
-    }
-
-    const catalogCount = await this.estimateDeveloperSuperBanManagedBotCatalogChatCount(params);
-    const counts = [chatCount, catalogCount].filter(
-      (count): count is number => typeof count === 'number' && Number.isFinite(count),
-    );
-    return counts.length > 0 ? Math.max(...counts) : null;
-  }
-
-  private async estimateDeveloperSuperBanManagedBotCatalogChatCount(params: {
-    sourceChatId: string;
-    actorUserId: string;
-  }): Promise<number | null> {
-    if (!this.prisma.managedBotChatCatalog) {
-      return null;
-    }
-
-    try {
-      const privateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
+      const chatPrivateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
         ? Prisma.sql`AND NOT (${Prisma.join(
             DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map(
-              (prefix) => Prisma.sql`chat_id LIKE ${`${prefix}%`}`,
+              (prefix) => Prisma.sql`c.id LIKE ${`${prefix}%`}`,
+            ),
+            ' OR ',
+          )})`
+        : Prisma.empty;
+      const catalogPrivateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
+        ? Prisma.sql`AND NOT (${Prisma.join(
+            DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map(
+              (prefix) => Prisma.sql`catalog.chat_id LIKE ${`${prefix}%`}`,
             ),
             ' OR ',
           )})`
         : Prisma.empty;
       const rows = await this.prisma.$queryRaw<Array<{ chat_count: bigint | number | string }>>(
         Prisma.sql`
+          WITH managed_chat_ids AS (
+            SELECT c.id AS chat_id
+            FROM chats c
+            WHERE c.entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
+              ${chatPrivateDialogFilter}
+              AND (
+                EXISTS (
+                  SELECT 1
+                  FROM chat_bot_memberships membership
+                  WHERE membership.chat_id = c.id
+                    AND membership.status = ${ChatBotMembershipStatus.ACTIVE}::"ChatBotMembershipStatus"
+                )
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM chat_bot_memberships membership
+                  WHERE membership.chat_id = c.id
+                )
+              )
+
+            UNION ALL
+
+            SELECT catalog.chat_id
+            FROM managed_bot_chat_catalog catalog
+            WHERE catalog.entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
+              AND catalog.status = 'ACTIVE'
+              ${catalogPrivateDialogFilter}
+          )
           SELECT COUNT(DISTINCT chat_id) AS chat_count
-          FROM managed_bot_chat_catalog
-          WHERE entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
-            AND status = 'ACTIVE'
-            ${privateDialogFilter}
+          FROM managed_chat_ids
         `,
       );
       const count = Number(rows[0]?.chat_count ?? 0);
@@ -12001,7 +11972,7 @@ export class AdminService implements OnModuleDestroy {
           actorUserId: params.actorUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to estimate managed bot catalog chat count for developer super ban notice',
+        'Failed to estimate managed chat count for developer super ban notice',
       );
       return null;
     }
