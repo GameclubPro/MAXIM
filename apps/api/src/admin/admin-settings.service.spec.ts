@@ -8,6 +8,12 @@ const user = {
   chatTitle: null,
 };
 
+function createPrismaUniqueConflictError() {
+  return Object.assign(new Error('Unique constraint failed on the fields: (`chat_id`)'), {
+    code: 'P2002',
+  });
+}
+
 function createPersistedChatRules(overrides: Record<string, unknown> = {}) {
   return {
     id: 'rules-1',
@@ -299,6 +305,7 @@ function createService(
       update: jest.fn().mockResolvedValue({}),
     },
     chatRules: {
+      findUnique: jest.fn().mockResolvedValue(options.persistedRules ?? createPersistedChatRules()),
       upsert: jest.fn().mockResolvedValue(options.persistedRules ?? createPersistedChatRules()),
       update: jest
         .fn()
@@ -444,6 +451,24 @@ describe('AdminSettingsService chat rules', () => {
     expect(
       legacyAdminService.resolveRequiredSubscriptionChannelHeadersForSettings,
     ).toHaveBeenCalledWith(['channel-1']);
+  });
+
+  it('recovers chat settings screen when chat rules lazy creation races', async () => {
+    const recoveredRules = createPersistedChatRules({
+      text: 'Строку правил создал параллельный запрос.',
+    });
+    const { prisma, service } = createService();
+    prisma.chatRules.upsert.mockRejectedValueOnce(createPrismaUniqueConflictError());
+    prisma.chatRules.findUnique.mockResolvedValueOnce(recoveredRules);
+
+    const result = await service.getChatSettingsScreen('chat-1', user as never, {
+      liveAdminCheck: false,
+    });
+
+    expect(result.rules.text).toBe('Строку правил создал параллельный запрос.');
+    expect(prisma.chatRules.findUnique).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+    });
   });
 
   it('reads chat settings without routing through legacy getSettings', async () => {
@@ -1294,6 +1319,37 @@ describe('AdminSettingsService chat rules', () => {
       },
     });
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('updates rules draft after concurrent chat rules creation wins the upsert race', async () => {
+    const { prisma, service } = createService();
+    prisma.chatRules.upsert.mockRejectedValueOnce(createPrismaUniqueConflictError());
+    prisma.chatRules.update.mockResolvedValueOnce(
+      createPersistedChatRules({
+        text: 'Пишите по теме.',
+        autoTextEnabled: false,
+      }),
+    );
+
+    const result = await service.updateRules('chat-1', user as never, {
+      text: 'Пишите по теме.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+    });
+
+    expect(result.text).toBe('Пишите по теме.');
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        text: 'Пишите по теме.',
+        autoTextEnabled: false,
+      }),
+    });
   });
 
   it('updates chat poll draft without routing through legacy updateChatPoll', async () => {

@@ -22,6 +22,7 @@ import type {
 import type { ChatRules as PersistedChatRules } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { normalizeLegacyProfileButtonUrl } from './admin-profile-links';
+import { isPrismaKnownError } from './admin-legacy-utils';
 import {
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   RULES_IMAGE_MAX_BYTES,
@@ -309,14 +310,29 @@ export async function ensureChatRules(params: {
   prisma: PrismaService;
   chatId: string;
 }): Promise<PersistedChatRules> {
-  return params.prisma.chatRules.upsert({
-    where: { chatId: params.chatId },
-    create: {
-      chatId: params.chatId,
-      autoTextEnabled: true,
-    },
-    update: {},
-  });
+  try {
+    return await params.prisma.chatRules.upsert({
+      where: { chatId: params.chatId },
+      create: {
+        chatId: params.chatId,
+        autoTextEnabled: true,
+      },
+      update: {},
+    });
+  } catch (error: unknown) {
+    if (!isPrismaKnownError(error, 'P2002')) {
+      throw error;
+    }
+
+    const existing = await params.prisma.chatRules.findUnique({
+      where: { chatId: params.chatId },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    throw error;
+  }
 }
 
 export async function hydratePublishedRulesUrl(params: {
@@ -723,16 +739,29 @@ export async function saveChatRulesDraft(params: {
     }
   }
 
-  const rules = await params.prisma.chatRules.upsert({
-    where: { chatId: params.chatId },
-    create: {
-      chatId: params.chatId,
-      ...normalizedDraft,
-    },
-    update: {
-      ...normalizedDraft,
-    },
-  });
+  const rulesUpdate = {
+    ...normalizedDraft,
+  };
+  let rules: PersistedChatRules;
+  try {
+    rules = await params.prisma.chatRules.upsert({
+      where: { chatId: params.chatId },
+      create: {
+        chatId: params.chatId,
+        ...normalizedDraft,
+      },
+      update: rulesUpdate,
+    });
+  } catch (error: unknown) {
+    if (!isPrismaKnownError(error, 'P2002')) {
+      throw error;
+    }
+
+    rules = await params.prisma.chatRules.update({
+      where: { chatId: params.chatId },
+      data: rulesUpdate,
+    });
+  }
 
   await params.prisma.auditLog.create({
     data: {

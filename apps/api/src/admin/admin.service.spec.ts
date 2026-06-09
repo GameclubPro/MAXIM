@@ -561,8 +561,27 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
   }
 
   prisma.managedBroadcastDelivery.createMany.mockImplementation(
-    async ({ data }: { data: Array<Record<string, unknown>> }) => {
+    async ({
+      data,
+      skipDuplicates,
+    }: {
+      data: Array<Record<string, unknown>>;
+      skipDuplicates?: boolean;
+    }) => {
+      let count = 0;
       for (const row of data) {
+        if (
+          skipDuplicates &&
+          deliveries.some(
+            (delivery) =>
+              delivery.broadcastId === String(row.broadcastId) &&
+              delivery.occurrenceIndex === Number(row.occurrenceIndex) &&
+              delivery.targetChatId === String(row.targetChatId),
+          )
+        ) {
+          continue;
+        }
+
         deliveries.push({
           id: `delivery-${deliveries.length + 1}`,
           broadcastId: String(row.broadcastId),
@@ -577,8 +596,9 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
           createdAt: new Date('2026-03-01T00:00:00.000Z'),
           updatedAt: new Date('2026-03-01T00:00:00.000Z'),
         });
+        count += 1;
       }
-      return { count: data.length };
+      return { count };
     },
   );
   prisma.managedBroadcastDelivery.findMany.mockImplementation(
@@ -21227,6 +21247,95 @@ describe('AdminService.sendBroadcast', () => {
         status: 'PARTIAL',
         sentCount: 0,
         nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+  });
+
+  it('recovers legacy managed broadcasts that have no delivery rows', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: [],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'ACTIVE',
+        lastError: null,
+        lockedAt: null,
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-1',
+        url: null,
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Напоминание',
+      undefined,
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_broadcast',
+      }),
+    );
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        broadcastId: 'broadcast-1',
+        occurrenceIndex: 1,
+        targetChatId: 'chat-1',
+        status: 'SENT',
+        remoteMessageId: 'mid-chat-1',
+      }),
+    ]);
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'COMPLETED',
+        sentChatIds: ['chat-1'],
+        failedChatIds: [],
       }),
     );
   });

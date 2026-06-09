@@ -2302,6 +2302,7 @@ export class AdminManagedBroadcastRuntime {
         staleLockBefore,
       );
       const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
+      await this.ensureManagedBroadcastDeliveryRows(row, currentOccurrence, targetChatIds);
 
       const request: PreparedManagedBroadcastRequest = {
         payload: {
@@ -3978,6 +3979,27 @@ export class AdminManagedBroadcastRuntime {
       }
     }
     return rows;
+  }
+
+  private async ensureManagedBroadcastDeliveryRows(
+    row: Pick<PersistedManagedBroadcast, 'id' | 'cycleCount'>,
+    fromOccurrenceIndex: number,
+    targetChatIds: string[],
+  ): Promise<void> {
+    if (targetChatIds.length === 0) {
+      return;
+    }
+
+    const cycleCount = Math.max(fromOccurrenceIndex, this.normalizeManagedBroadcastCycleCount(row));
+    await this.prisma.managedBroadcastDelivery.createMany({
+      data: this.buildManagedBroadcastDeliveryRows(
+        row.id,
+        targetChatIds,
+        fromOccurrenceIndex,
+        cycleCount,
+      ),
+      skipDuplicates: true,
+    });
   }
 
   private async recoverManagedBroadcastDeliveriesForAutomaticRun(
