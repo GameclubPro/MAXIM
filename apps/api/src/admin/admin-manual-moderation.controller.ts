@@ -137,8 +137,14 @@ export class AdminManualModerationController {
     @Param('chatId') chatId: string,
     @Param('userId') targetUserId: string,
     @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
   ) {
-    return this.moderationService.getGlobalSpammerUserDiagnostics(chatId, targetUserId, user);
+    return this.moderationService.getGlobalSpammerUserDiagnostics(
+      chatId,
+      targetUserId,
+      user,
+      query,
+    );
   }
 
   @Post('chats/:chatId/spammer-review/:userId')

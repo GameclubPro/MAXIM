@@ -359,12 +359,18 @@ export async function getGlobalSpammerUserDiagnostics(
   api: ApiTransport,
   chatId: string,
   userId: string,
+  query: Partial<{
+    includeProfile: boolean;
+  }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<GlobalSpammerUserDiagnostics> {
-  const response = await api.request(
-    `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`,
-    request,
-  );
+  const params = new URLSearchParams();
+  if (query.includeProfile === false) {
+    params.set('includeProfile', 'false');
+  }
+  const suffix = params.toString();
+  const path = `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`;
+  const response = await api.request(suffix ? `${path}?${suffix}` : path, request);
   return parseGlobalSpammerUserDiagnosticsResponse(response);
 }
 

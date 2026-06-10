@@ -73,7 +73,6 @@ type SpammerDiagnosticsTarget = {
   avatarUrl?: string | null;
   profileUrl?: string | null;
   profileHandoffUrl?: string | null;
-  confidenceScore?: number | null;
 };
 type ScoreMeterStyle = CSSProperties & { '--spammer-score': string };
 
@@ -857,10 +856,6 @@ function resolveDiagnosticsConfidenceScore(
   );
 }
 
-function resolveTargetConfidenceScore(target: SpammerDiagnosticsTarget | null): number | null {
-  return normalizeDiagnosticsScore(target?.confidenceScore);
-}
-
 function formatDiagnosticsScorePercent(score: number): string {
   return `${Math.round(score * 100)}%`;
 }
@@ -1279,9 +1274,7 @@ function SpammerDiagnosticsSheet({
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
   const signalCount = signalGroups.reduce((sum, group) => sum + group.userSignalCount, 0);
-  const confidenceScore = diagnostics
-    ? resolveDiagnosticsConfidenceScore(diagnostics)
-    : resolveTargetConfidenceScore(target);
+  const confidenceScore = diagnostics ? resolveDiagnosticsConfidenceScore(diagnostics) : null;
   const confidencePercent = confidenceScore === null ? null : Math.round(confidenceScore * 100);
   const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
   const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
@@ -1353,25 +1346,6 @@ function SpammerDiagnosticsSheet({
     >
       {isLoading ? (
         <div className="spammer-diagnostics__state">
-          {confidenceScore !== null && confidencePercent !== null ? (
-            <div
-              className="spammer-diagnostics__confidence spammer-diagnostics__confidence--loading"
-              role="progressbar"
-              aria-label="Уверенность"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={confidencePercent}
-              style={buildScoreMeterStyle(confidenceScore)}
-            >
-              <span className="spammer-diagnostics__confidence-head">
-                <span>Уверенность</span>
-                <strong>{formatDiagnosticsScorePercent(confidenceScore)}</strong>
-              </span>
-              <span className="spammer-diagnostics__confidence-track" aria-hidden="true">
-                <span className="spammer-diagnostics__confidence-fill" />
-              </span>
-            </div>
-          ) : null}
           <Spinner size="sm" label="Загружаем диагностику" />
         </div>
       ) : errorMessage ? (
@@ -2069,6 +2043,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     ),
     queryFn: ({ signal }) =>
       getGlobalSpammerUserDiagnostics(api, chatId ?? '', spammerDiagnosticsTarget?.userId ?? '', {
+        includeProfile: false,
+      }, {
         signal,
       }),
     enabled: Boolean(chatId && spammerDiagnosticsTarget?.userId),
@@ -2370,7 +2346,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       avatarUrl: candidate.avatarUrl ?? null,
       profileUrl: candidate.profileUrl ?? null,
       profileHandoffUrl: candidate.profileHandoffUrl ?? null,
-      confidenceScore: candidate.confidenceScore,
     });
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {

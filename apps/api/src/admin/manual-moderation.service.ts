@@ -103,13 +103,27 @@ export class ManualModerationService {
     return globalSpammerReviewMetricsSchema.parse(response);
   }
 
-  async getGlobalSpammerUserDiagnostics(chatId: string, targetUserId: string, user: AuthUser) {
+  async getGlobalSpammerUserDiagnostics(
+    chatId: string,
+    targetUserId: string,
+    user: AuthUser,
+    query: unknown = {},
+  ) {
     await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    const queryRecord =
+      query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
+    const includeProfile = this.parseBooleanQuery(
+      queryRecord.includeProfile ?? queryRecord.includeProfiles,
+      true,
+    );
     const response = await this.globalSpammerIntelligence.getUserDiagnostics({
       chatId,
       userId: targetUserId,
     });
     const parsedResponse = globalSpammerUserDiagnosticsSchema.parse(response);
+    if (!includeProfile) {
+      return parsedResponse;
+    }
     const enrichedResponse = await this.attachGlobalSpammerDiagnosticsProfile(
       chatId,
       parsedResponse,

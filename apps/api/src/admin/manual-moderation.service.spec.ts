@@ -170,6 +170,37 @@ describe('ManualModerationService spammer profiles', () => {
     );
   });
 
+  it('skips profile enrichment for lightweight spammer dossier diagnostics', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics(
+      'chat-1',
+      'user-1',
+      authUser,
+      { includeProfile: 'false' },
+    );
+
+    expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(diagnostics).toEqual(
+      expect.objectContaining({
+        userId: 'user-1',
+        displayName: null,
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
+      }),
+    );
+  });
+
   it('drops invalid profile urls instead of failing spammer dossier validation', async () => {
     const legacyAdminService = createLegacyAdminServiceMock({
       displayName: '  Марина Орлова  ',

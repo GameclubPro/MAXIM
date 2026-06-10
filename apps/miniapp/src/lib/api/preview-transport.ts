@@ -4331,6 +4331,7 @@ function buildPreviewSpammerDiagnostics(
   candidates: readonly GlobalSpammerReviewCandidate[],
   chatId: string,
   userId: string,
+  includeProfile = true,
 ): GlobalSpammerUserDiagnostics {
   const now = new Date();
   if (userId === 'preview-spammer-1') {
@@ -4376,10 +4377,10 @@ function buildPreviewSpammerDiagnostics(
     return globalSpammerUserDiagnosticsSchema.parse({
       userId,
       chatId,
-      displayName,
-      avatarUrl: buildPreviewAvatarDataUrl(displayName, '#7db8ff', '#4d89ff'),
-      profileUrl: buildPreviewProfileUrl('oleg-repeat'),
-      profileHandoffUrl: buildPreviewProfileHandoffUrl('oleg-repeat'),
+      displayName: includeProfile ? displayName : null,
+      avatarUrl: includeProfile ? buildPreviewAvatarDataUrl(displayName, '#7db8ff', '#4d89ff') : null,
+      profileUrl: includeProfile ? buildPreviewProfileUrl('oleg-repeat') : null,
+      profileHandoffUrl: includeProfile ? buildPreviewProfileHandoffUrl('oleg-repeat') : null,
       policy: {
         userId,
         chatId,
@@ -4534,10 +4535,10 @@ function buildPreviewSpammerDiagnostics(
   return globalSpammerUserDiagnosticsSchema.parse({
     userId,
     chatId,
-    displayName,
-    avatarUrl: candidate?.avatarUrl ?? null,
-    profileUrl: candidate?.profileUrl ?? null,
-    profileHandoffUrl: candidate?.profileHandoffUrl ?? null,
+    displayName: includeProfile ? displayName : null,
+    avatarUrl: includeProfile ? (candidate?.avatarUrl ?? null) : null,
+    profileUrl: includeProfile ? (candidate?.profileUrl ?? null) : null,
+    profileHandoffUrl: includeProfile ? (candidate?.profileHandoffUrl ?? null) : null,
     policy: {
       userId,
       chatId,
@@ -5513,11 +5514,15 @@ async function handleChatRequest(
   }
 
   if (tail[0] === 'spammer-diagnostics' && tail[1] && method === 'GET') {
+    const includeProfile =
+      url.searchParams.get('includeProfile') !== 'false' &&
+      url.searchParams.get('includeProfiles') !== 'false';
     return cloneJson(
       buildPreviewSpammerDiagnostics(
         state.spammerReviewCandidates,
         chatId,
         decodeURIComponent(tail[1]),
+        includeProfile,
       ),
     );
   }
