@@ -849,7 +849,7 @@ function resolveDiagnosticsConfidenceScore(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): number | null {
   return normalizeDiagnosticsScore(
-      diagnostics.policy.confidenceScore ??
+    diagnostics.policy.confidenceScore ??
       diagnostics.registry.confidenceScore ??
       diagnostics.candidate?.confidenceScore ??
       diagnostics.policy.shadowScore ??
@@ -1045,12 +1045,7 @@ function buildDiagnosticsSignalGroups(
 }
 
 function formatDiagnosticsSignalCount(count: number): string {
-  return `${count} ${formatRussianCountLabel(
-    count,
-    'сигнал',
-    'сигнала',
-    'сигналов',
-  )}`;
+  return `${count} ${formatRussianCountLabel(count, 'сигнал', 'сигнала', 'сигналов')}`;
 }
 
 function resolveDiagnosticsActiveUntil(diagnostics: GlobalSpammerUserDiagnostics): string | null {
