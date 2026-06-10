@@ -656,6 +656,7 @@ export const SETTINGS_SECTION_KEYS = {
   ],
   limits: [
     'antiSpamEnabled',
+    'deleteSpammersEnabled',
     'messageCountLimitEnabled',
     'messageCountLimitMessages',
     'messageCountLimitWindowHours',

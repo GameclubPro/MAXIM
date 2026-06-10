@@ -17062,12 +17062,14 @@ describe('AdminService settings screen endpoints', () => {
       { mode: 'all', favoriteTypes: [], chatIds: [] },
       expect.arrayContaining([
         'antiSpamEnabled',
+        'deleteSpammersEnabled',
         'messageLimitsBotMessageEnabled',
         'phoneNumbersEnabled',
       ]),
       ['messageLimitsBotMessageText', 'messageLimitsWarnMessageText'],
     );
     const limitsSettingKeys = applySpy.mock.calls.at(-1)?.[5] as string[];
+    expect(limitsSettingKeys).toContain('deleteSpammersEnabled');
     expect(limitsSettingKeys).not.toContain('phoneNumbersEscalationWindowHours');
     expect(limitsSettingKeys).not.toContain('messageLimitsBlockedWords');
     expect(limitsSettingKeys).not.toContain('messageLimitsBlockedDomains');

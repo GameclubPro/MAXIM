@@ -88,6 +88,9 @@ export const INVITATION_ACCESS_REQUIRED_COUNT_MIN = 1;
 export const INVITATION_ACCESS_REQUIRED_COUNT_MAX = 10;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
 export const MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX = 300;
+export const MAX_MESSAGE_LENGTH_MIN = 50;
+export const MAX_MESSAGE_LENGTH_MAX = 1500;
+export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
 export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
@@ -670,7 +673,12 @@ export const chatSettingsSchema = z
       messageCountLimitMessages: z.number().int().min(1).max(10).default(5),
       messageCountLimitWindowHours: z.number().int().min(1).max(24).default(1),
       maxMessageLengthEnabled: z.boolean().default(false),
-      maxMessageLength: z.number().int().min(50).max(1500).default(1500),
+      maxMessageLength: z
+        .number()
+        .int()
+        .min(MAX_MESSAGE_LENGTH_MIN)
+        .max(MAX_MESSAGE_LENGTH_MAX)
+        .default(MAX_MESSAGE_LENGTH_DEFAULT),
       photoMessageCooldownEnabled: z.boolean().default(false),
       photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
       stickerMessageCooldownEnabled: z.boolean().default(false),

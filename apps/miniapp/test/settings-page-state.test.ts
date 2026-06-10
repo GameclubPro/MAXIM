@@ -107,6 +107,7 @@ test('SECTION_SETTING_KEYS includes advanced tuning for links and duplicates plu
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnoreLinksEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateIgnorePhonesEnabled'));
   assert.ok(SECTION_SETTING_KEYS.duplicates.includes('duplicateNearMatchEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.limits.includes('deleteSpammersEnabled'));
   assert.ok(SECTION_SETTING_KEYS.limits.includes('phoneNumbersEnabled'));
   assert.ok(!SECTION_SETTING_KEYS.limits.includes('phoneNumbersEscalationWindowHours'));
 });
