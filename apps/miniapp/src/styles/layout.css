@@ -44,7 +44,7 @@
 }
 
 .app-shell--immersive.app-shell--comments-dialog {
-  --comments-dialog-top-overscan: 0px;
+  --comments-dialog-top-overscan: 2px;
   --comments-dialog-top-safe-space: max(
     var(--app-safe-top, 0px),
     var(--app-visual-viewport-top, 0px)
