@@ -47,7 +47,7 @@ server {
   location @stale_miniapp_js_asset {
     default_type application/javascript;
     add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
-    return 200 "try{window.sessionStorage.setItem('maxim:stale-js-asset-reload:v1',window.location.href)}catch(e){}window.location.reload();throw new Error('Stale mini app asset; reloading.');\n";
+    return 200 "(()=>{const k='maxim:stale-js-asset-reload:v2';const n=Date.now().toString(36);let c=0;try{c=Number(sessionStorage.getItem(k)||'0')||0;sessionStorage.setItem(k,String(c+1))}catch(e){}if(c>2){document.documentElement.innerHTML='<head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Обновление</title></head><body style=\"margin:0;font-family:system-ui,sans-serif;background:#f7fafc;color:#102033;display:grid;min-height:100vh;place-items:center\"><main style=\"max-width:320px;padding:24px;text-align:center\"><h1 style=\"font-size:22px;margin:0 0 10px\">Обновляем приложение</h1><p style=\"font-size:15px;line-height:1.45;margin:0 0 18px\">Открылась старая версия. Нажмите кнопку ниже, чтобы загрузить свежую.</p><button id=\"maxim-refresh\" style=\"border:0;border-radius:12px;background:#0f6bff;color:white;font:inherit;font-weight:700;padding:12px 18px\">Обновить</button></main></body>';const b=document.getElementById('maxim-refresh');if(b){b.onclick=()=>{try{sessionStorage.removeItem(k)}catch(e){}location.replace('__MINIAPP_BASE_PATH__?__maxim_reload='+n)}}return}const u=new URL(window.location.href);u.searchParams.set('__maxim_reload',n);window.location.replace(c>0?'__MINIAPP_BASE_PATH__?__maxim_reload='+n:u.toString());})();\n";
   }
 
   location __MINIAPP_BASE_PATH__ {
