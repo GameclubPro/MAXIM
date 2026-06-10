@@ -22,6 +22,12 @@
   --comments-native-green: #28b883;
   --comments-native-coral: #df7c68;
   --comments-native-x: clamp(8px, 2.1vw, 13px);
+  --comments-native-header-height: 36px;
+  --comments-native-header-gap: 4px;
+  --comments-feed-edge-height: clamp(18px, 4.8vh, 34px);
+  --comments-feed-edge-start: rgba(234, 246, 248, 0.96);
+  --comments-feed-edge-mid: rgba(234, 246, 248, 0.72);
+  --comments-feed-edge-end: rgba(234, 246, 248, 0);
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 44px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 30rem);
   --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 58px), 24rem);
@@ -58,13 +64,41 @@
 
 .channel-dialog-screen--comments .channel-dialog-shell.has-comments-header {
   grid-template-rows: auto minmax(0, 1fr) auto;
-  row-gap: 4px;
+  row-gap: var(--comments-native-header-gap);
+  isolation: isolate;
+}
+
+.channel-dialog-screen--comments .channel-dialog-shell.has-comments-header::before {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  top: calc(
+    var(--comments-native-header-height) + var(--comments-dialog-notification-top-nudge, 0px) +
+      var(--comments-native-header-gap)
+  );
+  left: 0;
+  right: 0;
+  height: var(--comments-feed-edge-height);
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    var(--comments-feed-edge-start) 0%,
+    var(--comments-feed-edge-mid) 42%,
+    var(--comments-feed-edge-end) 100%
+  );
 }
 
 .channel-dialog-screen--comments .channel-dialog-comments-header {
-  min-height: 36px;
+  min-height: calc(
+    var(--comments-native-header-height) + var(--comments-dialog-notification-top-nudge, 0px)
+  );
   padding: 0 40px 0 0;
   grid-template-columns: minmax(0, 1fr);
+}
+
+.channel-dialog-screen--comments .channel-dialog-notifications {
+  top: calc(1px + var(--comments-dialog-notification-top-nudge, 0px));
+  transform: none;
 }
 
 .channel-dialog-screen--comments .channel-dialog-notifications__toggle {
@@ -105,11 +139,12 @@
   padding: 2px 0 0;
   overscroll-behavior: contain;
   scrollbar-gutter: auto;
+  scroll-padding-top: calc(var(--comments-feed-edge-height) + 6px);
 }
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
   gap: 7px;
-  padding: 2px 0 9px;
+  padding: 6px 0 9px;
 }
 
 .channel-dialog-screen--comments .channel-dialog-message {
@@ -770,6 +805,9 @@
     --comments-native-own: linear-gradient(145deg, rgba(47, 108, 148, 0.96), rgba(32, 83, 122, 0.94));
     --comments-native-own-ink: rgba(238, 248, 252, 0.95);
     --comments-native-own-muted: rgba(196, 225, 240, 0.62);
+    --comments-feed-edge-start: rgba(7, 19, 29, 0.96);
+    --comments-feed-edge-mid: rgba(7, 19, 29, 0.74);
+    --comments-feed-edge-end: rgba(7, 19, 29, 0);
   }
 
   .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
