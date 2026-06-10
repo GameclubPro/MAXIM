@@ -325,6 +325,17 @@ type PolicyDecisionRiskContext = {
   campaignBreakdown: Prisma.InputJsonValue | null;
 };
 
+type GlobalSpammerRow = Prisma.GlobalSpammerGetPayload<Record<string, never>>;
+type GlobalSpammerCandidateRow = Prisma.GlobalSpammerCandidateGetPayload<Record<string, never>>;
+type GlobalSpammerSuppressionRow = Prisma.GlobalSpammerSuppressionGetPayload<Record<string, never>>;
+
+type PolicyDecisionLookupContext = {
+  now?: Date;
+  registry?: GlobalSpammerRow | null;
+  candidate?: GlobalSpammerCandidateRow | null;
+  activeSuppression?: GlobalSpammerSuppressionRow | null;
+};
+
 type LocalAdminDecisionRow = {
   adminUserId: string;
   userId: string;
@@ -1528,10 +1539,11 @@ export class GlobalSpammerIntelligenceService {
     recordDecision?: boolean;
     enforced?: boolean;
     riskContext?: PolicyDecisionRiskContext | null;
+    lookupContext?: PolicyDecisionLookupContext;
   }): Promise<GlobalSpammerPolicyDecision> {
     const userId = this.normalizeUserId(params.userId);
     const chatId = this.normalizeText(params.chatId ?? '') || null;
-    const now = new Date();
+    const now = params.lookupContext?.now ?? new Date();
     const enforcementMode = params.enforcementMode ?? this.defaultEnforcementMode;
     const adminExempt = Boolean(params.adminExempt);
 
@@ -1571,13 +1583,19 @@ export class GlobalSpammerIntelligenceService {
       });
     }
 
-    const activeSuppression = await this.findActiveSuppression(userId, now);
+    const activeSuppression =
+      params.lookupContext?.activeSuppression !== undefined
+        ? params.lookupContext.activeSuppression
+        : await this.findActiveSuppression(userId, now);
     let decision: GlobalSpammerPolicyDecision;
-    const registry = await this.prisma.globalSpammer.findUnique({
-      where: {
-        userId,
-      },
-    });
+    const registry =
+      params.lookupContext?.registry !== undefined
+        ? params.lookupContext.registry
+        : await this.prisma.globalSpammer.findUnique({
+            where: {
+              userId,
+            },
+          });
     const developerForcedRegistryActive =
       Boolean(registry?.expiresAt && registry.expiresAt > now) &&
       this.hasDeveloperForcedSource(registry?.sourceBreakdown);
@@ -1675,11 +1693,14 @@ export class GlobalSpammerIntelligenceService {
           enforced: false,
         });
       } else {
-        const candidate = await this.prisma.globalSpammerCandidate.findUnique({
-          where: {
-            userId,
-          },
-        });
+        const candidate =
+          params.lookupContext?.candidate !== undefined
+            ? params.lookupContext.candidate
+            : await this.prisma.globalSpammerCandidate.findUnique({
+                where: {
+                  userId,
+                },
+              });
         decision = this.buildPolicyDecision({
           userId,
           chatId,
@@ -1731,12 +1752,9 @@ export class GlobalSpammerIntelligenceService {
     }
     const chatId = this.normalizeText(params.chatId ?? '') || null;
     const now = new Date();
-    const [resolvedDeleteSpammersEnabled, localAdminDecision] = await Promise.all([
-      params.deleteSpammersEnabled ?? this.resolveDeleteSpammersEnabled(chatId),
-      this.resolveLocalAdminDecision(userId, chatId),
-    ]);
-    const resolvedAdminExempt = params.adminExempt ?? localAdminDecision?.decision === 'ALLOW';
     const [
+      resolvedDeleteSpammersEnabled,
+      localAdminDecision,
       registry,
       candidate,
       activeSuppression,
@@ -1746,6 +1764,8 @@ export class GlobalSpammerIntelligenceService {
       campaigns,
       latestShadowScore,
     ] = await Promise.all([
+      params.deleteSpammersEnabled ?? this.resolveDeleteSpammersEnabled(chatId),
+      this.resolveLocalAdminDecision(userId, chatId),
       this.prisma.globalSpammer.findUnique({ where: { userId } }),
       this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
       this.findActiveSuppression(userId, now),
@@ -1766,6 +1786,7 @@ export class GlobalSpammerIntelligenceService {
       this.listUserCampaignDiagnostics(userId),
       this.getLatestShadowScoreDiagnostics(userId),
     ]);
+    const resolvedAdminExempt = params.adminExempt ?? localAdminDecision?.decision === 'ALLOW';
     const riskContext = this.buildPolicyRiskContextFromDiagnostics({
       campaigns,
       latestShadowScore,
@@ -1779,6 +1800,12 @@ export class GlobalSpammerIntelligenceService {
       adminExempt: resolvedAdminExempt,
       enforcementMode,
       riskContext,
+      lookupContext: {
+        now,
+        registry,
+        candidate,
+        activeSuppression,
+      },
     });
     if (localAdminDecision?.decision === 'BLOCK') {
       const action = !resolvedDeleteSpammersEnabled

@@ -984,6 +984,21 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
   });
 
+  it('reuses preloaded registry state while building diagnostics policy', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.getUserDiagnostics({
+      chatId: 'chat-1',
+      userId: 'user-dossier-cache',
+      deleteSpammersEnabled: true,
+    });
+
+    expect(prisma.globalSpammer.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerCandidate.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerSuppression.findFirst).toHaveBeenCalledTimes(1);
+  });
+
   it('suppresses active observations after manual unban', async () => {
     const { prisma, observations } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
