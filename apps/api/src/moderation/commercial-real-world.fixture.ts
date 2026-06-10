@@ -884,6 +884,23 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'short cabbage seedling clearance stock from twenty four hour audit miss',
+    text: `Продам остатки рассады белокочанной капусты : Надежда, Амагер, Московская поздняя, Грибовская.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:продам',
+      'promo:остатк',
+      'goods-retail:plant-nursery-clearance-stock',
+      'transaction:clearance-stock',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 48,
+      commercialAdsDeleteThreshold: 68,
+    },
+  },
+  {
     label: 'broiler delivery sale from six hour manual review',
     text: `Реализуем и доставляем на дом цыплят бройлеров Кобб 500, возрастом 65 дней, весом от 4 до 5 кг. Цена 180 руб за кг. +7 900 000 00 38.`,
     expectedSubtype: 'GOODS_RETAIL',
@@ -1433,6 +1450,21 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
       commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'avito review side income from twenty four hour audit miss',
+    text: `Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: true,
+    expectedSignals: [
+      'recruitment:marketplace-review-work',
+      'contact:пишите в лич',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 46,
+      commercialAdsDeleteThreshold: 66,
     },
   },
   {

@@ -631,6 +631,26 @@ describe('commercial pattern regressions', () => {
       signals: ['business:заказывайте', 'transaction:keywords', 'goods-retail:inventory'],
       negativeSignals: ['context:question'],
     },
+    {
+      label: 'short cabbage seedling clearance stock from twenty four hour audit miss',
+      text: 'Продам остатки рассады белокочанной капусты : Надежда, Амагер, Московская поздняя, Грибовская.',
+      subtype: 'GOODS_RETAIL',
+      signals: [
+        'intent:продам',
+        'promo:остатк',
+        'goods-retail:plant-nursery-clearance-stock',
+        'transaction:clearance-stock',
+      ],
+    },
+    {
+      label: 'avito review side income from twenty four hour audit miss',
+      text: 'Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.',
+      subtype: 'RECRUITMENT',
+      signals: [
+        'recruitment:marketplace-review-work',
+        'contact:пишите в лич',
+      ],
+    },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
 
@@ -779,6 +799,31 @@ describe('commercial pattern regressions', () => {
     expect(result?.primarySubtype).toBe('SERVICES');
     expect(result?.matchedSignals).not.toContain('buyout:закуп');
     expect(result?.matchedSignals).not.toContain('buyout:livestock-procurement');
+  });
+
+  it('keeps campaign-heavy third-party chat directories review-only instead of delete', () => {
+    const result = detect(
+      'Подббдд 1 /2 Чаты 1 женский чат https://max.ru/join/a 2 доска объявлений обгэс https://max.ru/join/b 3 доска объявлений 1 https://max.ru/join/c 4 взаимосылочная 1 https://max.ru/join/d 5 группа для женщин причёски, мода, домоводство https://max.ru/join/e 6 НСК и НСО доска объявлений https://max.ru/join/f 7 Нск пристань надежда для бездомных животных https://max.ru/join/g 8 Нск и НСО недвижимость https://max.ru/join/h 9 Нск и НСО аренда квартир https://max.ru/join/i 10 Новосибирск https://max.ru/join/j 11 НСО и Новосибирск https://max.ru/join/k 12 женский журнал https://max.ru/join/l 13 Нск и НСО отдам - возьму в дар https://max.ru/join/m 14 Нск и НСО работа https://max.ru/join/n 15 Нск и НСО услуги https://max.ru/join/o 16 Нск и НСО реклама https://max.ru/join/p',
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 7,
+          sameTextDistinctChatCount: 6,
+          repeatedPhoneDistinctChatCount: 0,
+          repeatedLinkDistinctChatCount: 6,
+          nearTextDistinctChatCount: 6,
+          repeatedDomainDistinctChatCount: 21,
+          repeatedHandleDistinctChatCount: 0,
+          senderDistinctChatCount5m: 6,
+          senderDistinctChatCount30m: 6,
+          senderDistinctChatCount120m: 7,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(result?.reviewRecommended).toBe(true);
+    expect(result?.reasonCodes).toContain('fp-risk-high');
   });
 
   it.each([
@@ -946,6 +991,14 @@ describe('commercial pattern regressions', () => {
     [
       'private low quantity seedlings stay private',
       'Продам рассаду помидоров, осталось 10 штук по 50 рублей, самовывоз, пишите в личку',
+    ],
+    [
+      'short private seedling leftovers without named varieties stays private',
+      'Продам остатки рассады помидоров, 10 штук по 50 рублей, самовывоз',
+    ],
+    [
+      'short private seedling leftovers without price stays private',
+      'Продам остатки рассады помидоров, самовывоз',
     ],
     [
       'rideshare passenger wording is not logistics service',

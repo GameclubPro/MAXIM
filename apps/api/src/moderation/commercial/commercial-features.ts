@@ -823,6 +823,11 @@ export function collectCommercialSignals(params: {
     hasGoodsRetailContext = true;
     hasCommercialContext = true;
   }
+  if (goodsRetailHits.includes('plant-nursery-clearance-stock')) {
+    addPositive('transaction:clearance-stock', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
 
   const multiSkuPriceLineCount = countPatternMatches(
     rawLoweredText,
