@@ -901,6 +901,24 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'multi price seedling leftovers from post deploy audit miss',
+    text: `Продам остатки рассады томатов грунтовых 11 шт, цена 30 руб зашт, перцев красных, жёлтых, шоколадных, цена 20 руб за шт. Самовывоз Северск, Иглаково`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:продам',
+      'promo:остатк',
+      'goods-retail:plant-nursery-stock',
+      'transaction:price',
+      'transaction:keywords',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 48,
+      commercialAdsDeleteThreshold: 68,
+    },
+  },
+  {
     label: 'broiler delivery sale from six hour manual review',
     text: `Реализуем и доставляем на дом цыплят бройлеров Кобб 500, возрастом 65 дней, весом от 4 до 5 кг. Цена 180 руб за кг. +7 900 000 00 38.`,
     expectedSubtype: 'GOODS_RETAIL',

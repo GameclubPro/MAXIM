@@ -64,6 +64,7 @@ import {
   ADS_TRANSACTIONAL_PATTERN,
   ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN,
   ADS_PRIVATE_LOW_QUANTITY_COMMERCIAL_OVERRIDE_PATTERN,
+  ADS_PLANT_MULTI_PRICE_LISTING_PATTERN,
   ADS_PROPERTY_UTILITY_PAYMENT_PATTERN,
   ADS_URGENCY_PATTERN,
   ADS_QUANTITY_PATTERN,
@@ -354,6 +355,10 @@ export function isLikelyPrivateLowQuantityGoodsListing(rawLoweredText: string): 
   }
 
   if (!ADS_PRIVATE_LOW_QUANTITY_GOODS_PATTERN.test(textWithoutUrls)) {
+    return false;
+  }
+
+  if (ADS_PLANT_MULTI_PRICE_LISTING_PATTERN.test(textWithoutUrls)) {
     return false;
   }
 

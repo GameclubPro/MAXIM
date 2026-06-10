@@ -643,6 +643,18 @@ describe('commercial pattern regressions', () => {
       ],
     },
     {
+      label: 'multi price seedling leftovers from post deploy audit miss',
+      text: 'Продам остатки рассады томатов грунтовых 11 шт, цена 30 руб зашт, перцев красных, жёлтых, шоколадных, цена 20 руб за шт. Самовывоз Северск, Иглаково',
+      subtype: 'GOODS_RETAIL',
+      signals: [
+        'intent:продам',
+        'promo:остатк',
+        'goods-retail:plant-nursery-stock',
+        'transaction:price',
+        'transaction:keywords',
+      ],
+    },
+    {
       label: 'avito review side income from twenty four hour audit miss',
       text: 'Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.',
       subtype: 'RECRUITMENT',
