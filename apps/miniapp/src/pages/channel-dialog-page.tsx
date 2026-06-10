@@ -599,11 +599,6 @@ function getViewportDistanceToBottom(viewport: HTMLElement): number {
   return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
 }
 
-function getScrollPaddingTop(viewport: HTMLElement): number {
-  const value = Number.parseFloat(window.getComputedStyle(viewport).scrollPaddingTop);
-  return Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
 function resolveNextUnreadMessageId(
   messages: ChannelDialogMessage[],
   previousLastMessageId: string | null,
@@ -3224,7 +3219,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       '.channel-dialog-compose__surface',
     );
     const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
-    const topInset = Math.max(18, getScrollPaddingTop(viewport));
+    const topInset = 18;
     const bottomInset = composeHeight + 22;
     const availableHeight = Math.max(140, viewport.clientHeight - topInset - bottomInset);
     const desiredTop =
