@@ -7770,7 +7770,7 @@ describe('AdminService.applyManualSystemBan', () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
       .mockResolvedValueOnce([{ message_id: 'mid-source-2' }])
-      .mockResolvedValueOnce([{ chat_count: '14123' }]);
+      .mockResolvedValueOnce([{ active_membership_count: '16232' }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -7880,16 +7880,16 @@ describe('AdminService.applyManualSystemBan', () => {
     });
     expect(prisma.chat.count).not.toHaveBeenCalled();
     expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
-    const catalogCountSqlText =
+    const activeMembershipCountSqlText =
       prisma.$queryRaw.mock.calls
         .map((call) => extractSqlText(call[0]))
-        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
-    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
-    expect(catalogCountSqlText).toContain('FROM chats');
-    expect(catalogCountSqlText).toContain('FROM chat_bot_memberships');
-    expect(catalogCountSqlText).toContain('FROM managed_bot_chat_catalog');
-    expect(catalogCountSqlText).toContain('UNION ALL');
-    expect(catalogCountSqlText).not.toContain('bot_id =');
+        .find((text) => text.includes('active_membership_count')) ?? '';
+    expect(activeMembershipCountSqlText).toContain('COUNT(*)');
+    expect(activeMembershipCountSqlText).toContain('FROM chat_bot_memberships');
+    expect(activeMembershipCountSqlText).toContain('JOIN chats');
+    expect(activeMembershipCountSqlText).toContain('membership.status');
+    expect(activeMembershipCountSqlText).not.toContain('managed_bot_chat_catalog');
+    expect(activeMembershipCountSqlText).not.toContain('bot_id =');
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -7898,7 +7898,7 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(resolveManualFanoutTargetState).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 14123 чатах по решению разработчика бота'),
+      expect.stringContaining('заблокирован в 16232 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
@@ -7909,7 +7909,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
   it('records source-chat no-rights fallback without inspecting managed-chat fanout', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValueOnce([{ chat_count: 3 }]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ active_membership_count: 3 }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -8004,14 +8004,15 @@ describe('AdminService.applyManualSystemBan', () => {
     );
     expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
     expect(prisma.chat.count).not.toHaveBeenCalled();
-    const catalogCountSqlText =
+    const activeMembershipCountSqlText =
       prisma.$queryRaw.mock.calls
         .map((call) => extractSqlText(call[0]))
-        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
-    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
-    expect(catalogCountSqlText).toContain('FROM chats');
-    expect(catalogCountSqlText).toContain('FROM chat_bot_memberships');
-    expect(catalogCountSqlText).not.toContain('bot_id =');
+        .find((text) => text.includes('active_membership_count')) ?? '';
+    expect(activeMembershipCountSqlText).toContain('COUNT(*)');
+    expect(activeMembershipCountSqlText).toContain('FROM chat_bot_memberships');
+    expect(activeMembershipCountSqlText).toContain('JOIN chats');
+    expect(activeMembershipCountSqlText).not.toContain('managed_bot_chat_catalog');
+    expect(activeMembershipCountSqlText).not.toContain('bot_id =');
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -8028,9 +8029,11 @@ describe('AdminService.applyManualSystemBan', () => {
     );
   });
 
-  it('uses all active bot catalog rows for developer super ban coverage notice', async () => {
+  it('uses the sum of active bot memberships for developer super ban coverage notice', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([{ chat_count: 4n }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ active_membership_count: 12n }]);
     const maxClient = {
       deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -8087,18 +8090,18 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(prisma.managedBotChatCatalog.findMany).not.toHaveBeenCalled();
     expect(prisma.chat.count).not.toHaveBeenCalled();
-    const catalogCountSqlText =
+    const activeMembershipCountSqlText =
       prisma.$queryRaw.mock.calls
         .map((call) => extractSqlText(call[0]))
-        .find((text) => text.includes('managed_bot_chat_catalog')) ?? '';
-    expect(catalogCountSqlText).toContain('COUNT(DISTINCT chat_id)');
-    expect(catalogCountSqlText).toContain('FROM chats');
-    expect(catalogCountSqlText).toContain('FROM chat_bot_memberships');
-    expect(catalogCountSqlText).toContain('UNION ALL');
-    expect(catalogCountSqlText).not.toContain('bot_id');
+        .find((text) => text.includes('active_membership_count')) ?? '';
+    expect(activeMembershipCountSqlText).toContain('COUNT(*)');
+    expect(activeMembershipCountSqlText).toContain('FROM chat_bot_memberships');
+    expect(activeMembershipCountSqlText).toContain('JOIN chats');
+    expect(activeMembershipCountSqlText).not.toContain('managed_bot_chat_catalog');
+    expect(activeMembershipCountSqlText).not.toContain('bot_id');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('заблокирован в 4 чатах по решению разработчика бота'),
+      expect.stringContaining('заблокирован в 12 чатах по решению разработчика бота'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,

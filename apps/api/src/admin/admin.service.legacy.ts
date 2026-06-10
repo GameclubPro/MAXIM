@@ -11913,7 +11913,7 @@ export class AdminService implements OnModuleDestroy {
     actorUserId: string;
   }): Promise<number | null> {
     try {
-      const chatPrivateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
+      const privateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
         ? Prisma.sql`AND NOT (${Prisma.join(
             DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map(
               (prefix) => Prisma.sql`c.id LIKE ${`${prefix}%`}`,
@@ -11921,48 +11921,19 @@ export class AdminService implements OnModuleDestroy {
             ' OR ',
           )})`
         : Prisma.empty;
-      const catalogPrivateDialogFilter = DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.length
-        ? Prisma.sql`AND NOT (${Prisma.join(
-            DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES.map(
-              (prefix) => Prisma.sql`catalog.chat_id LIKE ${`${prefix}%`}`,
-            ),
-            ' OR ',
-          )})`
-        : Prisma.empty;
-      const rows = await this.prisma.$queryRaw<Array<{ chat_count: bigint | number | string }>>(
+      const rows = await this.prisma.$queryRaw<
+        Array<{ active_membership_count: bigint | number | string }>
+      >(
         Prisma.sql`
-          WITH managed_chat_ids AS (
-            SELECT c.id AS chat_id
-            FROM chats c
-            WHERE c.entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
-              ${chatPrivateDialogFilter}
-              AND (
-                EXISTS (
-                  SELECT 1
-                  FROM chat_bot_memberships membership
-                  WHERE membership.chat_id = c.id
-                    AND membership.status = ${ChatBotMembershipStatus.ACTIVE}::"ChatBotMembershipStatus"
-                )
-                OR NOT EXISTS (
-                  SELECT 1
-                  FROM chat_bot_memberships membership
-                  WHERE membership.chat_id = c.id
-                )
-              )
-
-            UNION ALL
-
-            SELECT catalog.chat_id
-            FROM managed_bot_chat_catalog catalog
-            WHERE catalog.entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
-              AND catalog.status = 'ACTIVE'
-              ${catalogPrivateDialogFilter}
-          )
-          SELECT COUNT(DISTINCT chat_id) AS chat_count
-          FROM managed_chat_ids
+          SELECT COUNT(*) AS active_membership_count
+          FROM chat_bot_memberships membership
+          JOIN chats c ON c.id = membership.chat_id
+          WHERE membership.status = ${ChatBotMembershipStatus.ACTIVE}::"ChatBotMembershipStatus"
+            AND c.entity_type = ${ChatEntityType.CHAT}::"ChatEntityType"
+            ${privateDialogFilter}
         `,
       );
-      const count = Number(rows[0]?.chat_count ?? 0);
+      const count = Number(rows[0]?.active_membership_count ?? 0);
 
       return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
     } catch (error: unknown) {
