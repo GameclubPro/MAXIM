@@ -1228,8 +1228,9 @@
 
 .spammer-diagnostics__hero-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(116px, 0.52fr);
   align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -1247,6 +1248,70 @@
   font-weight: 900;
   line-height: 1.08;
   overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__confidence {
+  --spammer-score: 0%;
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--spammer-accent) 24%, rgba(198, 214, 228, 0.8));
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.58)),
+    color-mix(in srgb, var(--spammer-accent-soft) 58%, rgba(255, 255, 255, 0.82));
+  box-shadow:
+    0 8px 18px color-mix(in srgb, var(--spammer-accent) 14%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+
+.spammer-diagnostics__confidence-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.spammer-diagnostics__confidence-head span {
+  min-width: 0;
+  color: #60778c;
+  font-size: 0.54rem;
+  font-weight: 850;
+  line-height: 1.08;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+
+.spammer-diagnostics__confidence-head strong {
+  color: var(--spammer-accent-strong);
+  font-size: 0.86rem;
+  font-weight: 920;
+  line-height: 1;
+}
+
+.spammer-diagnostics__confidence-track,
+.spammer-diagnostics__signal-score-track {
+  position: relative;
+  display: block;
+  min-width: 0;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--spammer-accent-soft) 42%, rgba(216, 227, 238, 0.86));
+}
+
+.spammer-diagnostics__confidence-fill,
+.spammer-diagnostics__signal-score-fill {
+  display: block;
+  width: var(--spammer-score);
+  max-width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--spammer-accent), var(--spammer-accent-strong)),
+    var(--spammer-accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--spammer-accent) 34%, transparent);
 }
 
 .spammer-diagnostics__section-head strong {
@@ -1310,9 +1375,9 @@
 
 .spammer-diagnostics__signal-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(58px, 72px);
   align-items: center;
-  gap: 4px;
+  gap: 9px;
   min-width: 0;
   padding: 10px 11px;
   border-radius: 8px;
@@ -1335,6 +1400,26 @@
   font-weight: 860;
   line-height: 1.16;
   overflow-wrap: anywhere;
+}
+
+.spammer-diagnostics__signal-score {
+  --spammer-score: 0%;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  justify-items: end;
+}
+
+.spammer-diagnostics__signal-score span:first-child {
+  color: var(--spammer-accent-strong);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.spammer-diagnostics__signal-score-track {
+  width: 100%;
+  height: 5px;
 }
 
 .spammer-diagnostics__signal-copy span,

@@ -16,6 +16,7 @@ import '../styles/settings-drilldown-core.css';
 import '../styles/dashboard-events.css';
 import {
   startTransition,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   useDeferredValue,
@@ -72,7 +73,9 @@ type SpammerDiagnosticsTarget = {
   avatarUrl?: string | null;
   profileUrl?: string | null;
   profileHandoffUrl?: string | null;
+  confidenceScore?: number | null;
 };
+type ScoreMeterStyle = CSSProperties & { '--spammer-score': string };
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
@@ -835,6 +838,37 @@ function resolveDiagnosticsAutoAction(diagnostics: GlobalSpammerUserDiagnostics)
   return 'Ничего не делает';
 }
 
+function normalizeDiagnosticsScore(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function resolveDiagnosticsConfidenceScore(
+  diagnostics: GlobalSpammerUserDiagnostics,
+): number | null {
+  return normalizeDiagnosticsScore(
+      diagnostics.policy.confidenceScore ??
+      diagnostics.registry.confidenceScore ??
+      diagnostics.candidate?.confidenceScore ??
+      diagnostics.policy.shadowScore ??
+      null,
+  );
+}
+
+function resolveTargetConfidenceScore(target: SpammerDiagnosticsTarget | null): number | null {
+  return normalizeDiagnosticsScore(target?.confidenceScore);
+}
+
+function formatDiagnosticsScorePercent(score: number): string {
+  return `${Math.round(score * 100)}%`;
+}
+
+function buildScoreMeterStyle(score: number): ScoreMeterStyle {
+  return { '--spammer-score': `${Math.round(score * 100)}%` };
+}
+
 function resolveDiagnosticsVerdictTone(
   diagnostics: GlobalSpammerUserDiagnostics,
 ): 'danger' | 'warning' | 'success' | 'neutral' {
@@ -1250,6 +1284,10 @@ function SpammerDiagnosticsSheet({
   const signalGroups = diagnostics ? buildDiagnosticsSignalGroups(diagnostics) : [];
   const facts = diagnostics ? buildDiagnosticsFacts(diagnostics) : [];
   const signalCount = signalGroups.reduce((sum, group) => sum + group.userSignalCount, 0);
+  const confidenceScore = diagnostics
+    ? resolveDiagnosticsConfidenceScore(diagnostics)
+    : resolveTargetConfidenceScore(target);
+  const confidencePercent = confidenceScore === null ? null : Math.round(confidenceScore * 100);
   const profileUserId = diagnostics?.userId.trim() || target?.userId.trim() || '';
   const profileDisplayName = resolveSpammerDiagnosticsName(target, diagnostics);
   const profileAvatarUrl = resolveSpammerDiagnosticsAvatarUrl(target, diagnostics);
@@ -1320,6 +1358,25 @@ function SpammerDiagnosticsSheet({
     >
       {isLoading ? (
         <div className="spammer-diagnostics__state">
+          {confidenceScore !== null && confidencePercent !== null ? (
+            <div
+              className="spammer-diagnostics__confidence spammer-diagnostics__confidence--loading"
+              role="progressbar"
+              aria-label="Уверенность"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={confidencePercent}
+              style={buildScoreMeterStyle(confidenceScore)}
+            >
+              <span className="spammer-diagnostics__confidence-head">
+                <span>Уверенность</span>
+                <strong>{formatDiagnosticsScorePercent(confidenceScore)}</strong>
+              </span>
+              <span className="spammer-diagnostics__confidence-track" aria-hidden="true">
+                <span className="spammer-diagnostics__confidence-fill" />
+              </span>
+            </div>
+          ) : null}
           <Spinner size="sm" label="Загружаем диагностику" />
         </div>
       ) : errorMessage ? (
@@ -1389,6 +1446,26 @@ function SpammerDiagnosticsSheet({
               <div className="spammer-diagnostics__verdict-copy">
                 <h4>{resolveDiagnosticsAutoAction(diagnostics)}</h4>
               </div>
+
+              {confidenceScore !== null && confidencePercent !== null ? (
+                <div
+                  className="spammer-diagnostics__confidence"
+                  role="progressbar"
+                  aria-label="Уверенность"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={confidencePercent}
+                  style={buildScoreMeterStyle(confidenceScore)}
+                >
+                  <span className="spammer-diagnostics__confidence-head">
+                    <span>Уверенность</span>
+                    <strong>{formatDiagnosticsScorePercent(confidenceScore)}</strong>
+                  </span>
+                  <span className="spammer-diagnostics__confidence-track" aria-hidden="true">
+                    <span className="spammer-diagnostics__confidence-fill" />
+                  </span>
+                </div>
+              ) : null}
             </div>
           </article>
 
@@ -2298,6 +2375,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       avatarUrl: candidate.avatarUrl ?? null,
       profileUrl: candidate.profileUrl ?? null,
       profileHandoffUrl: candidate.profileHandoffUrl ?? null,
+      confidenceScore: candidate.confidenceScore,
     });
   };
   const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
