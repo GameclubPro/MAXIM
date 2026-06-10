@@ -2,6 +2,10 @@
   animation: pageReveal 0.45s ease both;
 }
 
+.channel-dialog-screen--comments.page-enter {
+  animation-name: commentsPageReveal;
+}
+
 .stagger-in {
   animation: riseIn 0.45s ease both;
 }
@@ -17,6 +21,17 @@
   from {
     opacity: 0;
     transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes commentsPageReveal {
+  from {
+    opacity: 0;
+    transform: translateY(0);
   }
   to {
     opacity: 1;

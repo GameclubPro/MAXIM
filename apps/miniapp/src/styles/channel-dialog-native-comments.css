@@ -22,19 +22,40 @@
   --comments-native-green: #28b883;
   --comments-native-coral: #df7c68;
   --comments-native-x: clamp(8px, 2.1vw, 13px);
+  --comments-native-edge-inline: var(--comments-native-x);
+  --comments-native-edge-top: 0px;
+  --comments-native-edge-bottom: max(0px, var(--safe-bottom, 0px));
+  --comments-native-top-bleed: var(--comments-dialog-top-bleed, 4px);
+  --comments-native-notification-top: calc(
+    1px + var(--comments-dialog-notification-top-nudge, 0px)
+  );
+  --comments-compose-surface-gap: 6px;
+  --comments-compose-surface-padding: 7px;
+  --comments-compose-surface-radius: 24px;
+  --comments-compose-toolbar-height: 34px;
+  --comments-compose-toolbar-gap: 7px;
+  --comments-compose-quick-action-gap: 5px;
+  --comments-compose-action-size: 36px;
+  --comments-compose-action-radius: 14px;
+  --comments-compose-row-gap: 7px;
+  --comments-compose-field-min-height: 44px;
+  --comments-compose-field-padding: 11px 14px;
+  --comments-compose-submit-size: 44px;
+  --comments-compose-submit-radius: 17px;
+  --comments-compose-emoji-columns: repeat(8, minmax(0, 1fr));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 44px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 30rem);
   --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 58px), 24rem);
   --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 50px), 30rem);
   --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 58px), 24rem);
-  min-height: calc(100% + 2px);
-  padding: var(--comments-dialog-top-overscan, 0px) var(--comments-native-x)
-    max(0px, var(--safe-bottom, 0px));
+  min-height: calc(100% + var(--comments-native-top-bleed));
+  padding: var(--comments-native-edge-top) var(--comments-native-edge-inline)
+    var(--comments-native-edge-bottom);
   background: var(--comments-native-bg);
 }
 
 .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
-  inset: -2px 0 0;
+  inset: calc(0px - var(--comments-native-top-bleed)) 0 0;
   background:
     linear-gradient(180deg, rgba(245, 253, 255, 0.34), rgba(232, 247, 250, 0.08)),
     var(--channel-dialog-wallpaper-image),
@@ -74,7 +95,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-notifications {
-  top: calc(1px + var(--comments-dialog-notification-top-nudge, 0px));
+  top: var(--comments-native-notification-top);
   transform: none;
   pointer-events: auto;
 }
@@ -407,8 +428,8 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose {
-  margin-inline: calc(-1 * var(--comments-native-x));
-  padding: 0 var(--comments-native-x);
+  margin-inline: calc(-1 * var(--comments-native-edge-inline));
+  padding: 0 var(--comments-native-edge-inline);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -419,10 +440,10 @@
 .channel-dialog-screen--comments .channel-dialog-compose__surface {
   position: relative;
   overflow: visible;
-  gap: 6px;
-  padding: 7px;
+  gap: var(--comments-compose-surface-gap);
+  padding: var(--comments-compose-surface-padding);
   border: 1px solid rgba(255, 255, 255, 0.66);
-  border-radius: 24px;
+  border-radius: var(--comments-compose-surface-radius);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(234, 249, 252, 0.7)),
     rgba(239, 250, 252, 0.66);
@@ -441,20 +462,20 @@
 
 .channel-dialog-screen--comments .channel-dialog-compose__toolbar {
   grid-template-columns: auto minmax(0, 1fr);
-  min-height: 34px;
-  gap: 7px;
+  min-height: var(--comments-compose-toolbar-height);
+  gap: var(--comments-compose-toolbar-gap);
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__quick-actions {
-  gap: 5px;
+  gap: var(--comments-compose-quick-action-gap);
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__attach {
-  width: 36px;
-  min-width: 36px;
-  min-height: 36px;
+  width: var(--comments-compose-action-size);
+  min-width: var(--comments-compose-action-size);
+  min-height: var(--comments-compose-action-size);
   border: 1px solid rgba(255, 255, 255, 0.66);
-  border-radius: 14px;
+  border-radius: var(--comments-compose-action-radius);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(237, 248, 251, 0.58)),
     rgba(255, 255, 255, 0.54);
@@ -491,7 +512,7 @@
 .channel-dialog-screen--comments .channel-dialog-compose__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 7px;
+  gap: var(--comments-compose-row-gap);
   align-items: end;
 }
 
@@ -500,9 +521,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
-  min-height: 44px;
+  min-height: var(--comments-compose-field-min-height);
   max-height: 126px;
-  padding: 11px 14px;
+  padding: var(--comments-compose-field-padding);
   border: 1px solid rgba(255, 255, 255, 0.68);
   border-radius: 18px;
   background:
@@ -534,10 +555,10 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-submit {
-  width: 44px;
-  min-width: 44px;
-  min-height: 44px;
-  border-radius: 17px;
+  width: var(--comments-compose-submit-size);
+  min-width: var(--comments-compose-submit-size);
+  min-height: var(--comments-compose-submit-size);
+  border-radius: var(--comments-compose-submit-radius);
   background: linear-gradient(145deg, #35a8ee, #1d7fd0);
   box-shadow:
     0 12px 24px rgba(29, 132, 201, 0.23),
@@ -656,7 +677,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__emoji-grid {
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: var(--comments-compose-emoji-columns);
   gap: 5px;
 }
 
@@ -699,6 +720,15 @@
 @media (max-width: 420px) {
   .channel-dialog-screen--comments {
     --comments-native-x: 7px;
+    --comments-compose-surface-padding: 6px;
+    --comments-compose-surface-radius: 23px;
+    --comments-compose-toolbar-height: 32px;
+    --comments-compose-toolbar-gap: 6px;
+    --comments-compose-action-size: 34px;
+    --comments-compose-action-radius: 13px;
+    --comments-compose-field-min-height: 43px;
+    --comments-compose-field-padding: 10px 13px;
+    --comments-compose-submit-size: 43px;
     --channel-dialog-comments-bubble-max-width: min(calc(100% - 41px), 30rem);
     --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 47px), 27rem);
     --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 54px), 22rem);
@@ -718,33 +748,6 @@
     padding: 8px 11px 9px;
   }
 
-  .channel-dialog-screen--comments .channel-dialog-compose__surface {
-    padding: 6px;
-    border-radius: 23px;
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-compose__toolbar {
-    min-height: 32px;
-    gap: 6px;
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-compose__attach {
-    width: 34px;
-    min-width: 34px;
-    min-height: 34px;
-    border-radius: 13px;
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
-    min-height: 43px;
-    padding: 10px 13px;
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-submit {
-    width: 43px;
-    min-width: 43px;
-    min-height: 43px;
-  }
 }
 
 @media (max-width: 370px) {
@@ -757,7 +760,7 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__emoji-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    --comments-compose-emoji-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

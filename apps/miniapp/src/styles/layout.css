@@ -44,14 +44,8 @@
 }
 
 .app-shell--immersive.app-shell--comments-dialog {
-  --comments-dialog-top-overscan: 2px;
-  --comments-dialog-top-safe-space: max(
-    var(--app-safe-top, 0px),
-    var(--app-visual-viewport-top, 0px)
-  );
-  --immersive-top-bleed: calc(
-    var(--comments-dialog-top-safe-space) + var(--comments-dialog-top-overscan)
-  );
+  --comments-dialog-top-bleed: 4px;
+  --immersive-top-bleed: var(--comments-dialog-top-bleed);
 }
 
 .app-shell--immersive.app-shell--suggest-dialog {
@@ -448,7 +442,7 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 @media (min-width: 720px) {
-  .app-shell {
+  .app-shell:not(.app-shell--immersive) {
     max-width: 960px;
     margin: 0 auto;
     padding: calc(var(--app-safe-top) + 16px) var(--space-5)
@@ -567,7 +561,7 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 @media (max-width: 380px) {
-  .app-shell {
+  .app-shell:not(.app-shell--immersive) {
     padding-top: calc(var(--app-safe-top) + 8px);
   }
 

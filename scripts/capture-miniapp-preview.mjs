@@ -623,6 +623,58 @@ async function assertCommentsComposerPinned(page) {
   }
 }
 
+async function assertCommentsTopEdgeCovered(page) {
+  if (screenshotTarget !== 'native') {
+    return;
+  }
+
+  const layout = await page.evaluate(() => {
+    const shell = document.querySelector('.app-shell--comments-dialog');
+    const screen = document.querySelector('.channel-dialog-screen--comments');
+    const backdrop = document.querySelector('.channel-dialog-screen__backdrop');
+
+    if (
+      !(shell instanceof HTMLElement) ||
+      !(screen instanceof HTMLElement) ||
+      !(backdrop instanceof HTMLElement)
+    ) {
+      return null;
+    }
+
+    const shellRect = shell.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const backdropRect = backdrop.getBoundingClientRect();
+    const shellStyle = getComputedStyle(shell);
+    const screenStyle = getComputedStyle(screen);
+
+    return {
+      shellTop: shellRect.top,
+      screenTop: screenRect.top,
+      backdropTop: backdropRect.top,
+      shellPaddingTop: Number.parseFloat(shellStyle.paddingTop) || 0,
+      screenPaddingTop: Number.parseFloat(screenStyle.paddingTop) || 0,
+    };
+  });
+
+  if (!layout) {
+    throw new Error('Comments dialog layout nodes were not found for top edge check.');
+  }
+
+  const topGap = Math.max(layout.shellTop, layout.screenTop, layout.backdropTop);
+  if (topGap > 0.5 || layout.shellPaddingTop > 0.5 || layout.screenPaddingTop > 0.5) {
+    throw new Error(
+      [
+        'Comments dialog top edge is not covered',
+        `(shellTop=${layout.shellTop.toFixed(2)},`,
+        `screenTop=${layout.screenTop.toFixed(2)},`,
+        `backdropTop=${layout.backdropTop.toFixed(2)},`,
+        `shellPaddingTop=${layout.shellPaddingTop.toFixed(2)},`,
+        `screenPaddingTop=${layout.screenPaddingTop.toFixed(2)})`,
+      ].join(' '),
+    );
+  }
+}
+
 async function openBroadcastPlannerTimeSheet(page) {
   await page.waitForTimeout(1000);
 
@@ -846,6 +898,10 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
 
     if (scenario.beforeShot) {
       await scenario.beforeShot(page);
+    }
+
+    if (scenario.name.includes('dialog-comments')) {
+      await assertCommentsTopEdgeCovered(page);
     }
 
     const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
