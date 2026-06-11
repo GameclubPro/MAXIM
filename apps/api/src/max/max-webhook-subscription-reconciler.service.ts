@@ -1,7 +1,12 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { BotWebhookSubscriptionSnapshot, WebhookSubscriptionSnapshot } from '@maxim/contracts';
+import type {
+  BotWebhookOperationalDiagnostics,
+  BotWebhookSubscriptionSnapshot,
+  WebhookSubscriptionSnapshot,
+} from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChatBotMembershipStatus } from '../prisma/prisma-client';
 import { getAppRole, roleRunsIngress } from '../runtime/app-role';
 import {
   WebhookSubscriptionStatusService,
@@ -16,6 +21,11 @@ const DEFAULT_RECONCILE_INTERVAL_MS = 60 * 1_000;
 const DEFAULT_STALE_INGRESS_MS = 5 * 60 * 1_000;
 const DEFAULT_STALE_RECREATE_COOLDOWN_MS = 10 * 60 * 1_000;
 const REQUIRED_WEBHOOK_UPDATE_TYPES_SET = new Set<string>(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES);
+
+type BotWebhookMembershipDiagnostics = {
+  activeMemberships: number;
+  lastMembershipWebhookAt: string | null;
+};
 
 @Injectable()
 export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, OnModuleDestroy {
@@ -77,10 +87,11 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     try {
       const syncState = await this.webhookSubscriptionStatusService.getSyncState();
       const operationalBots = this.getOperationalBots();
-      const latestRecordedIncomingByBot = await this.resolveLatestRecordedIncomingWebhookAtByBot(
-        syncState,
-        operationalBots.map((bot) => bot.id),
-      );
+      const botIds = operationalBots.map((bot) => bot.id);
+      const [latestRecordedIncomingByBot, membershipDiagnosticsByBot] = await Promise.all([
+        this.resolveLatestRecordedIncomingWebhookAtByBot(syncState, botIds),
+        this.resolveMembershipDiagnosticsByBot(botIds),
+      ]);
       const latestRecordedIncomingWebhookAt = this.resolveLatestIso(
         Object.values(latestRecordedIncomingByBot),
       );
@@ -91,6 +102,10 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
             syncState?.bots?.[bot.id] ?? null,
             {
               latestRecordedIncomingWebhookAt: latestRecordedIncomingByBot[bot.id] ?? null,
+              membershipDiagnostics: membershipDiagnosticsByBot[bot.id] ?? {
+                activeMemberships: 0,
+                lastMembershipWebhookAt: null,
+              },
             },
             reason,
           ),
@@ -159,6 +174,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     extraUpdateTypes: readonly string[];
     otherSubscriptionsCount: number;
     staleIngress: boolean;
+    operationalIssues: readonly string[];
   }): WebhookSubscriptionSnapshot['status'] {
     if (!input.configured) {
       return 'disabled';
@@ -173,6 +189,10 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     }
 
     if (input.staleIngress) {
+      return 'warning';
+    }
+
+    if (input.operationalIssues.length > 0) {
       return 'warning';
     }
 
@@ -208,6 +228,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     syncState: WebhookSubscriptionBotSyncState | null,
     botState: {
       latestRecordedIncomingWebhookAt: string | null;
+      membershipDiagnostics: BotWebhookMembershipDiagnostics;
     },
     reason: 'startup' | 'scheduled',
   ): Promise<{
@@ -336,6 +357,13 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           }
         : current;
     const refreshedActualUpdateTypes = [...refreshedCurrent.updateTypes].sort();
+    const operationalDiagnostics = this.buildOperationalDiagnostics({
+      bot,
+      hasCurrentSubscription: Boolean(refreshedCurrent.url),
+      latestRecordedIncomingWebhookAt: botState.latestRecordedIncomingWebhookAt,
+      membershipDiagnostics: botState.membershipDiagnostics,
+    });
+    const operationalIssues = operationalDiagnostics?.issueCodes ?? [];
 
     return {
       snapshot: {
@@ -354,6 +382,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           ),
           otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
           staleIngress,
+          operationalIssues,
         }),
         configured: true,
         url: target.maskedUrl,
@@ -369,12 +398,15 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         ),
         otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
         lastError: null,
-        note: this.buildBotNote({
-          botId: bot.id,
-          reason,
-          staleIngressAt: botState.latestRecordedIncomingWebhookAt,
-          autoRecreatedAt: shouldAutoRecreateStaleIngress ? reconciledAt : null,
-        }),
+        note:
+          this.buildOperationalBotNote(bot.id, operationalDiagnostics) ??
+          this.buildBotNote({
+            botId: bot.id,
+            reason,
+            staleIngressAt: botState.latestRecordedIncomingWebhookAt,
+            autoRecreatedAt: shouldAutoRecreateStaleIngress ? reconciledAt : null,
+          }),
+        ...(operationalDiagnostics ? { operationalDiagnostics } : {}),
       },
       syncState: {
         configuredUrl: target.url,
@@ -388,6 +420,54 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
             : (syncState?.lastAutoRecreateAt ?? null),
       },
     };
+  }
+
+  private buildOperationalDiagnostics(params: {
+    bot: MaxBotDefinition;
+    hasCurrentSubscription: boolean;
+    latestRecordedIncomingWebhookAt: string | null;
+    membershipDiagnostics: BotWebhookMembershipDiagnostics;
+  }): BotWebhookOperationalDiagnostics | null {
+    if (params.bot.state !== 'active') {
+      return null;
+    }
+
+    const issueCodes: BotWebhookOperationalDiagnostics['issueCodes'] = [];
+    if (params.hasCurrentSubscription && params.membershipDiagnostics.activeMemberships === 0) {
+      issueCodes.push('no-active-memberships');
+    }
+    if (params.hasCurrentSubscription && !params.latestRecordedIncomingWebhookAt) {
+      issueCodes.push('no-incoming-webhooks');
+    }
+
+    return {
+      lifecycleState: params.bot.state,
+      activeMemberships: params.membershipDiagnostics.activeMemberships,
+      hasCurrentSubscription: params.hasCurrentSubscription,
+      lastIncomingWebhookAt: params.latestRecordedIncomingWebhookAt,
+      lastMembershipWebhookAt: params.membershipDiagnostics.lastMembershipWebhookAt,
+      issueCodes,
+    };
+  }
+
+  private buildOperationalBotNote(
+    botId: string,
+    diagnostics: BotWebhookOperationalDiagnostics | null,
+  ): string | null {
+    const issueCodes = diagnostics?.issueCodes ?? [];
+    if (issueCodes.length === 0) {
+      return null;
+    }
+
+    const details: string[] = [];
+    if (issueCodes.includes('no-active-memberships')) {
+      details.push('нет active chat_bot_memberships');
+    }
+    if (issueCodes.includes('no-incoming-webhooks')) {
+      details.push('нет записанных входящих webhook');
+    }
+
+    return `Активный бот ${botId} имеет webhook subscription, но ${details.join(' и ')}.`;
   }
 
   private buildBotNote(params: {
@@ -473,6 +553,50 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     );
   }
 
+  private async resolveMembershipDiagnosticsByBot(
+    botIds: readonly string[],
+  ): Promise<Record<string, BotWebhookMembershipDiagnostics>> {
+    const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))];
+    if (normalizedBotIds.length === 0) {
+      return {};
+    }
+
+    const rows = await this.prisma.chatBotMembership.groupBy({
+      by: ['botId'],
+      _count: {
+        _all: true,
+      },
+      _max: {
+        lastWebhookAt: true,
+      },
+      where: {
+        botId: {
+          in: normalizedBotIds,
+        },
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+    });
+    const byBot = new Map(
+      rows.map((row) => [
+        row.botId,
+        {
+          activeMemberships: row._count._all,
+          lastMembershipWebhookAt: row._max.lastWebhookAt?.toISOString() ?? null,
+        } satisfies BotWebhookMembershipDiagnostics,
+      ]),
+    );
+
+    return Object.fromEntries(
+      normalizedBotIds.map((botId) => [
+        botId,
+        byBot.get(botId) ?? {
+          activeMemberships: 0,
+          lastMembershipWebhookAt: null,
+        },
+      ]),
+    );
+  }
+
   private resolveLatestIso(values: Iterable<string | null | undefined>): string | null {
     let latest: string | null = null;
     for (const value of values) {
@@ -539,6 +663,37 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           : `Webhook coverage синхронизирована для ${snapshots.length} ботов.`,
       botCount: snapshots.length,
       bots: snapshotsByBot,
+      operationalDiagnostics: this.buildAggregateOperationalDiagnostics(snapshots),
+    };
+  }
+
+  private buildAggregateOperationalDiagnostics(
+    snapshots: readonly BotWebhookSubscriptionSnapshot[],
+  ): NonNullable<WebhookSubscriptionSnapshot['operationalDiagnostics']> {
+    const warningBotIds: string[] = [];
+    const noActiveMembershipBotIds: string[] = [];
+    const noIncomingWebhookBotIds: string[] = [];
+
+    for (const snapshot of snapshots) {
+      const issueCodes = snapshot.operationalDiagnostics?.issueCodes ?? [];
+      if (issueCodes.length === 0) {
+        continue;
+      }
+
+      warningBotIds.push(snapshot.botId);
+      if (issueCodes.includes('no-active-memberships')) {
+        noActiveMembershipBotIds.push(snapshot.botId);
+      }
+      if (issueCodes.includes('no-incoming-webhooks')) {
+        noIncomingWebhookBotIds.push(snapshot.botId);
+      }
+    }
+
+    return {
+      warningBotCount: warningBotIds.length,
+      warningBotIds,
+      noActiveMembershipBotIds,
+      noIncomingWebhookBotIds,
     };
   }
 

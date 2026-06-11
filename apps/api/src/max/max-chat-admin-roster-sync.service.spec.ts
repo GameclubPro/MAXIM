@@ -334,6 +334,79 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
+  it('backs off repeated terminal bot access failures before clearing allowlist again', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    const { service, prisma, maxClient, chatContextCache } = createService();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: {
+          code: 'chat.denied',
+          message: 'chat denied',
+        },
+      },
+    });
+    maxClient.getCurrentChatMemberAccess.mockRejectedValue(deniedError);
+
+    try {
+      await expect(
+        service.processJob({
+          chatId: '-100124',
+          botIds: ['bot-1'],
+          title: 'Lost admin chat',
+          entityType: 'channel',
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        service.processJob({
+          chatId: '-100124',
+          botIds: ['bot-1'],
+          title: 'Lost admin chat',
+          entityType: 'channel',
+        }),
+      ).resolves.toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a short managed_refresh source backoff after source limit pressure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    const { service, maxClient, maxBotLinkService } = createService();
+    maxClient.getCurrentChatMemberAccess.mockRejectedValue(
+      new Error('MAX API managed_refresh source limit exceeded for bot bot-1'),
+    );
+
+    try {
+      await expect(
+        service.processJob({
+          chatId: '-100131',
+          botIds: ['bot-1'],
+          title: 'Busy chat',
+          entityType: 'chat',
+        }),
+      ).rejects.toThrow('source limit exceeded');
+      await expect(
+        service.processJob({
+          chatId: '-100132',
+          botIds: ['bot-1'],
+          title: 'Another busy chat',
+          entityType: 'chat',
+        }),
+      ).rejects.toThrow('source backoff active');
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledTimes(2);
+  });
+
   it('retries a fresh webhook bot_added sync while bot admin rights are still propagating', async () => {
     const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
       createService();

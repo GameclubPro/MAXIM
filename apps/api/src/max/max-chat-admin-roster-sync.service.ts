@@ -33,6 +33,8 @@ const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS = 3_000;
 const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
+const CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS = 10_000;
+const CHAT_ADMIN_ROSTER_SYNC_TERMINAL_BOT_BACKOFF_MS = 5 * 60 * 1_000;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 const MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS = 3 * 24 * 60 * 60 * 1_000;
@@ -52,6 +54,8 @@ class PendingBotAdminGrantError extends Error {
 @Injectable()
 export class MaxChatAdminRosterSyncService {
   private readonly logger = new Logger(MaxChatAdminRosterSyncService.name);
+  private managedRefreshSourceBackoffUntilMs = 0;
+  private readonly terminalBotBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -201,9 +205,24 @@ export class MaxChatAdminRosterSyncService {
 
     const candidateBotIds = await this.resolveCandidateBotIds(normalized);
     let recoverableError: unknown = null;
+    let attemptedCandidate = false;
+    let skippedDueToTerminalBackoff = false;
 
     for (const botId of candidateBotIds) {
+      if (this.isManagedRefreshSourceBackoffActive()) {
+        throw new Error('MAX API managed_refresh source backoff active');
+      }
+
+      if (
+        normalized.source !== 'webhook_bot_added' &&
+        this.isTerminalBotBackoffActive(normalized.chatId, botId)
+      ) {
+        skippedDueToTerminalBackoff = true;
+        continue;
+      }
+
       try {
+        attemptedCandidate = true;
         const requestOptions = this.buildChatAdminRosterReadOptions(normalized, botId);
         const access = await this.maxClient.getCurrentChatMemberAccess(
           normalized.chatId,
@@ -228,7 +247,13 @@ export class MaxChatAdminRosterSyncService {
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
           await this.persistBotSelfAccessSnapshot(normalized, botId, null);
+          this.markTerminalBotBackoff(normalized.chatId, botId);
           continue;
+        }
+
+        if (this.isRateLimitPressureError(error)) {
+          this.markManagedRefreshSourceBackoff();
+          throw error;
         }
 
         recoverableError ??= error;
@@ -237,6 +262,18 @@ export class MaxChatAdminRosterSyncService {
 
     if (recoverableError) {
       throw recoverableError;
+    }
+
+    if (!attemptedCandidate && skippedDueToTerminalBackoff) {
+      this.logger.debug(
+        {
+          chatId: normalized.chatId,
+          botIds: candidateBotIds,
+          source: normalized.source ?? null,
+        },
+        'Skipped chat admin roster sync because every candidate bot is in terminal backoff',
+      );
+      return false;
     }
 
     if (this.shouldRetryPendingAdminGrant(normalized)) {
@@ -1338,6 +1375,60 @@ export class MaxChatAdminRosterSyncService {
       normalizedMessage.includes('chat not found') ||
       normalizedMessage.includes('forbidden')
     );
+  }
+
+  private isRateLimitPressureError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } } | null)?.response?.status;
+    if (status === 429) {
+      return true;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    const normalizedMessage = message.trim().toLowerCase();
+    return (
+      normalizedMessage.includes('rate limit exceeded') ||
+      normalizedMessage.includes('source limit exceeded')
+    );
+  }
+
+  private isManagedRefreshSourceBackoffActive(now = Date.now()): boolean {
+    if (this.managedRefreshSourceBackoffUntilMs <= now) {
+      this.managedRefreshSourceBackoffUntilMs = 0;
+      return false;
+    }
+
+    return true;
+  }
+
+  private markManagedRefreshSourceBackoff(now = Date.now()): void {
+    this.managedRefreshSourceBackoffUntilMs = Math.max(
+      this.managedRefreshSourceBackoffUntilMs,
+      now + CHAT_ADMIN_ROSTER_SYNC_SOURCE_BACKOFF_MS,
+    );
+  }
+
+  private isTerminalBotBackoffActive(chatId: string, botId: string, now = Date.now()): boolean {
+    const key = this.buildTerminalBotBackoffKey(chatId, botId);
+    const backoffUntilMs = this.terminalBotBackoffUntilMs.get(key) ?? 0;
+    if (backoffUntilMs <= now) {
+      if (backoffUntilMs > 0) {
+        this.terminalBotBackoffUntilMs.delete(key);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  private markTerminalBotBackoff(chatId: string, botId: string, now = Date.now()): void {
+    this.terminalBotBackoffUntilMs.set(
+      this.buildTerminalBotBackoffKey(chatId, botId),
+      now + CHAT_ADMIN_ROSTER_SYNC_TERMINAL_BOT_BACKOFF_MS,
+    );
+  }
+
+  private buildTerminalBotBackoffKey(chatId: string, botId: string): string {
+    return `${chatId}:${botId}`;
   }
 
   private toPrismaEntityType(entityType?: 'chat' | 'channel' | null): ChatEntityType | null {

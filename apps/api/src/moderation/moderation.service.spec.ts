@@ -15636,7 +15636,7 @@ describe('ModerationService', () => {
             chatId: string,
             userId: string,
             requiredChannelIds: string[],
-          ) => Promise<{ missingChannelIds: string[] } | null>;
+          ) => Promise<{ missingChannelIds: string[]; unresolvedChannelIds: string[] } | null>;
         }
       ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', [
         'channel-1',
@@ -15655,7 +15655,10 @@ describe('ModerationService', () => {
       expect(membershipLookupService.getMembership).toHaveBeenCalledTimes(3);
 
       resolvers[2]?.(true);
-      await expect(lookupPromise).resolves.toEqual({ missingChannelIds: [] });
+      await expect(lookupPromise).resolves.toEqual({
+        missingChannelIds: [],
+        unresolvedChannelIds: [],
+      });
     });
 
     it('checks every configured required subscription chat or channel before passing the message', async () => {
@@ -17498,7 +17501,7 @@ describe('ModerationService', () => {
       expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
     });
 
-    it('enforces conservatively when MAX membership lookup errors persist after strict retry', async () => {
+    it('annotates unresolved required channels when terminal MAX membership errors persist', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -17507,8 +17510,13 @@ describe('ModerationService', () => {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
       const redisCounter = createRequiredSubscriptionRedisCounter();
+      const terminalError = createMaxApiError(
+        403,
+        'Request failed with status code 403',
+        'chat.denied',
+      );
       const maxClient = {
-        hasChatMember: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+        hasChatMember: jest.fn().mockRejectedValue(terminalError),
         getChatSnapshot: jest.fn().mockResolvedValue({
           title: 'Новости MAX',
           link: 'https://max.ru/channels/news-max',
@@ -17541,6 +17549,38 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       expect(prisma.violation.create).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(prisma.moderationEvent.create.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.objectContaining({
+              data: expect.objectContaining({
+                ruleCode: 'REQUIRED_SUBSCRIPTION_DELETE',
+                metadata: expect.objectContaining({
+                  channelIds: ['channel-1'],
+                  requiredChannelIds: ['channel-1'],
+                  missingChannelIds: ['channel-1'],
+                  unresolvedChannelIds: ['channel-1'],
+                  requiredSubscriptionConservativeEnforcement: true,
+                }),
+              }),
+            }),
+          ],
+          [
+            expect.objectContaining({
+              data: expect.objectContaining({
+                ruleCode: 'REQUIRED_SUBSCRIPTION',
+                metadata: expect.objectContaining({
+                  channelIds: ['channel-1'],
+                  requiredChannelIds: ['channel-1'],
+                  missingChannelIds: ['channel-1'],
+                  unresolvedChannelIds: ['channel-1'],
+                  requiredSubscriptionConservativeEnforcement: true,
+                }),
+              }),
+            }),
+          ],
+        ]),
+      );
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 

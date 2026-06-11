@@ -14,6 +14,41 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     jest.clearAllMocks();
   });
 
+  function createPrismaMock(
+    params: {
+      latestWebhookByBot?: Record<string, Date | null>;
+      activeMembershipsByBot?: Record<string, { count: number; lastWebhookAt: Date | null }>;
+    } = {},
+  ) {
+    const latestWebhookByBot = params.latestWebhookByBot ?? {};
+    const activeMembershipsByBot = params.activeMembershipsByBot ?? {};
+    return {
+      chatBotMembership: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+        groupBy: jest.fn().mockImplementation((args: { where?: { status?: unknown } }) => {
+          if (args.where?.status === 'ACTIVE') {
+            return Promise.resolve(
+              Object.entries(activeMembershipsByBot).map(([botId, value]) => ({
+                botId,
+                _count: { _all: value.count },
+                _max: { lastWebhookAt: value.lastWebhookAt },
+              })),
+            );
+          }
+
+          return Promise.resolve(
+            Object.entries(latestWebhookByBot)
+              .filter(([, value]) => value !== null)
+              .map(([botId, value]) => ({
+                botId,
+                _max: { lastWebhookAt: value },
+              })),
+          );
+        }),
+      },
+    };
+  }
+
   it('repairs missing webhook update types and stores a healthy snapshot', async () => {
     process.env.APP_ROLE = 'ingress';
 
@@ -57,12 +92,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       maxClient as never,
       botRegistry as never,
       statusService as never,
-      {
-        chatBotMembership: {
-          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
-          groupBy: jest.fn().mockResolvedValue([]),
-        },
-      } as never,
+      createPrismaMock() as never,
       {
         get: jest.fn((key: string, fallback?: number) => {
           if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
@@ -112,6 +142,98 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('marks an active bot with a subscription but no memberships or incoming webhook as warning', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: 'idle_bot',
+          state: 'active',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: 'idle_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-idle_bot'),
+    };
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue({
+        bots: {},
+        lastGlobalIncomingWebhookAt: null,
+        lastGlobalAutoRecreateAt: null,
+      }),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
+        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/***',
+      }),
+      listWebhookSubscriptions: jest.fn().mockResolvedValue([
+        {
+          url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
+          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+      ]),
+      matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
+        return url === 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path';
+      }),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/idle_bot/secret-path',
+        updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      createPrismaMock() as never,
+      {
+        get: jest.fn((key: string, fallback?: number) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'warning',
+        operationalDiagnostics: {
+          warningBotCount: 1,
+          warningBotIds: ['idle_bot'],
+          noActiveMembershipBotIds: ['idle_bot'],
+          noIncomingWebhookBotIds: ['idle_bot'],
+        },
+        bots: expect.objectContaining({
+          idle_bot: expect.objectContaining({
+            status: 'warning',
+            operationalDiagnostics: {
+              lifecycleState: 'active',
+              activeMemberships: 0,
+              hasCurrentSubscription: true,
+              lastIncomingWebhookAt: null,
+              lastMembershipWebhookAt: null,
+              issueCodes: ['no-active-memberships', 'no-incoming-webhooks'],
+            },
+            note: expect.stringContaining('нет active chat_bot_memberships'),
+          }),
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('leaves the shared snapshot untouched when reconcile is not active on the current app role', async () => {
     process.env.APP_ROLE = 'admin';
 
@@ -142,12 +264,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       maxClient as never,
       botRegistry as never,
       statusService as never,
-      {
-        chatBotMembership: {
-          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
-          groupBy: jest.fn().mockResolvedValue([]),
-        },
-      } as never,
+      createPrismaMock() as never,
       {
         get: jest.fn((_: string, fallback?: number) => fallback),
       } as never,
@@ -215,12 +332,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       maxClient as never,
       botRegistry as never,
       statusService as never,
-      {
-        chatBotMembership: {
-          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
-          groupBy: jest.fn().mockResolvedValue([]),
-        },
-      } as never,
+      createPrismaMock() as never,
       {
         get: jest.fn((key: string, fallback?: number | string) => {
           if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
@@ -319,12 +431,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       maxClient as never,
       botRegistry as never,
       statusService as never,
-      {
-        chatBotMembership: {
-          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
-          groupBy: jest.fn().mockResolvedValue([]),
-        },
-      } as never,
+      createPrismaMock() as never,
       {
         get: jest.fn((key: string, fallback?: number | string) => {
           if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
@@ -451,12 +558,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       maxClient as never,
       botRegistry as never,
       statusService as never,
-      {
-        chatBotMembership: {
-          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
-          groupBy: jest.fn().mockResolvedValue([]),
-        },
-      } as never,
+      createPrismaMock() as never,
       {
         get: jest.fn((key: string, fallback?: number | string) => {
           if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {

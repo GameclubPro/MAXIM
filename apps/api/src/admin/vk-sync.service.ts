@@ -141,11 +141,18 @@ export class VkSyncService {
     const startedAt = new Date();
     try {
       const wallPages = await this.fetchWallPages(source, reason);
+      if (wallPages.leaseLost) {
+        return 0;
+      }
       const posts = wallPages.posts;
 
-      await this.recordSourceHeartbeat(source.id);
+      if (!(await this.recordSourceHeartbeat(source.id))) {
+        return 0;
+      }
       const importResult = await this.upsertPostsBatch(source, posts, startedAt);
-      await this.recordSourceHeartbeat(source.id);
+      if (!(await this.recordSourceHeartbeat(source.id))) {
+        return 0;
+      }
       if (this.shouldAutoPublishImportedPosts(source, reason)) {
         await this.publishService.enqueueAutoPublishImportedPosts(
           source.chatId,
@@ -156,8 +163,8 @@ export class VkSyncService {
       const adaptiveIntervalMs = this.resolveAdaptiveSyncIntervalMs(source, posts, completedAt);
       const newestPost = this.resolveNewestPost(posts);
 
-      await this.prisma.vkParsingSource.update({
-        where: { id: source.id },
+      const completed = await this.prisma.vkParsingSource.updateMany({
+        where: this.buildOwnedSourceLeaseWhere(source.id),
         data: {
           syncStatus: VK_SOURCE_SYNC_STATUS_IDLE,
           nextSyncAt: new Date(completedAt.getTime() + adaptiveIntervalMs),
@@ -186,6 +193,9 @@ export class VkSyncService {
           lastError: null,
         },
       });
+      if (completed.count === 0) {
+        return 0;
+      }
       if (reason !== 'source-added') {
         void this.preflightPostMediaSafely(source, importResult.mediaPreflightPosts);
       }
@@ -205,8 +215,8 @@ export class VkSyncService {
           ? this.resolveSyncBackoffMs(failureCount)
           : null;
       const nextRetryAt = backoffMs === null ? null : new Date(completedAt.getTime() + backoffMs);
-      await this.prisma.vkParsingSource.update({
-        where: { id: source.id },
+      const failed = await this.prisma.vkParsingSource.updateMany({
+        where: this.buildOwnedSourceLeaseWhere(source.id),
         data: {
           syncStatus:
             backoffMs !== null ? VK_SOURCE_SYNC_STATUS_BACKOFF : VK_SOURCE_SYNC_STATUS_ERROR,
@@ -230,6 +240,9 @@ export class VkSyncService {
           lastError: classified.message,
         },
       });
+      if (failed.count === 0) {
+        return 0;
+      }
       this.logDedupedWarning(
         `vk-sync:${source.id}:${classified.code}`,
         {
@@ -250,7 +263,12 @@ export class VkSyncService {
   private async fetchWallPages(
     source: VkParsingSourceRow,
     reason: VkParsingSyncReason,
-  ): Promise<{ posts: NormalizedVkPost[]; pages: number; offsets: number[] }> {
+  ): Promise<{
+    posts: NormalizedVkPost[];
+    pages: number;
+    offsets: number[];
+    leaseLost: boolean;
+  }> {
     const postsByKey = new Map<string, NormalizedVkPost>();
     const offsets: number[] = [];
     const maxPages = this.resolveFetchPageLimit(source, reason);
@@ -264,7 +282,9 @@ export class VkSyncService {
         count: this.fetchCount,
         offset,
       });
-      await this.recordSourceHeartbeat(source.id);
+      if (!(await this.recordSourceHeartbeat(source.id))) {
+        return { posts: [], pages: offsets.length, offsets, leaseLost: true };
+      }
       const pagePosts = (wall.items ?? [])
         .map((item) => this.normalizePost(item))
         .filter(
@@ -297,6 +317,7 @@ export class VkSyncService {
       posts: [...postsByKey.values()],
       pages: offsets.length,
       offsets,
+      leaseLost: false,
     };
   }
 
@@ -453,19 +474,24 @@ export class VkSyncService {
     return source;
   }
 
-  private async recordSourceHeartbeat(sourceId: string): Promise<void> {
+  private async recordSourceHeartbeat(sourceId: string): Promise<boolean> {
     const now = new Date();
-    await this.prisma.vkParsingSource.updateMany({
-      where: {
-        id: sourceId,
-        syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
-        syncLockedBy: this.workerId,
-      },
+    const updated = await this.prisma.vkParsingSource.updateMany({
+      where: this.buildOwnedSourceLeaseWhere(sourceId),
       data: {
         syncHeartbeatAt: now,
         syncLockDeadlineAt: new Date(now.getTime() + this.syncLeaseTtlMs),
       },
     });
+    return updated.count > 0;
+  }
+
+  private buildOwnedSourceLeaseWhere(sourceId: string): Prisma.VkParsingSourceWhereInput {
+    return {
+      id: sourceId,
+      syncStatus: VK_SOURCE_SYNC_STATUS_SYNCING,
+      syncLockedBy: this.workerId,
+    };
   }
 
   private resolveImportedPostStatus(

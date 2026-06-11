@@ -4,9 +4,15 @@ import {
   isLegacyAndroidSettingsDrilldownUserAgent,
   openMaxBotLink,
   openMaxBotLinkAndClose,
+  readyMaxMiniApp,
 } from '../src/lib/max-bridge';
 
 type MockBridge = {
+  initData?: string | null;
+  init_data?: string | null;
+  initDataUnsafe?: Record<string, unknown>;
+  init_data_unsafe?: Record<string, unknown>;
+  ready?: () => void;
   close?: () => void;
   openLink?: (url: string) => void;
   openMaxLink?: (url: string) => void;
@@ -56,6 +62,43 @@ test.afterEach(() => {
   Object.assign(globalThis, {
     window: originalWindow,
   });
+});
+
+test('readyMaxMiniApp ignores browser bridge stubs without init data', () => {
+  const assignedUrls: string[] = [];
+  let readyCount = 0;
+  setMockWindow(
+    {
+      initDataUnsafe: {},
+      ready: () => {
+        readyCount += 1;
+      },
+    },
+    assignedUrls,
+  );
+
+  readyMaxMiniApp();
+
+  assert.equal(readyCount, 0);
+});
+
+test('readyMaxMiniApp keeps native ready when bridge init data exists', () => {
+  const assignedUrls: string[] = [];
+  let readyCount = 0;
+  setMockWindow(
+    {
+      initData: 'query_id=abc&hash=def',
+      initDataUnsafe: {},
+      ready: () => {
+        readyCount += 1;
+      },
+    },
+    assignedUrls,
+  );
+
+  readyMaxMiniApp();
+
+  assert.equal(readyCount, 1);
 });
 
 test('openMaxBotLink falls back to location assign when bridge is unavailable', () => {

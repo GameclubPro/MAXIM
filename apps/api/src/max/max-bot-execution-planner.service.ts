@@ -12,7 +12,11 @@ import type {
   ManagedEntityType,
 } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import { MaxClientService, type MaxChatMemberAccess } from './max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  type MaxChatMemberAccess,
+} from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
@@ -42,10 +46,13 @@ const ASSIST_CAPABILITIES_BY_ENTITY: Record<
     'access_prewarm',
   ],
 };
+const ACCESS_SNAPSHOT_REFRESH_DEBOUNCE_MS = 60_000;
+const ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS = 10_000;
 
 @Injectable()
 export class MaxBotExecutionPlannerService {
   private readonly logger = new Logger(MaxBotExecutionPlannerService.name);
+  private managedRefreshBackoffUntilMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -224,6 +231,11 @@ export class MaxBotExecutionPlannerService {
       if (!bot || !canDiscoverChatsForBotState(bot.state)) {
         continue;
       }
+      const cachedSnapshot = this.readFreshPermissionsSummary(membership.permissionsSnapshot);
+      if (cachedSnapshot) {
+        continue;
+      }
+
       const snapshot = await this.refreshBotAccessSnapshot(chatId, bot.id);
       await this.prisma.chatBotMembership.update({
         where: {
@@ -561,14 +573,23 @@ export class MaxBotExecutionPlannerService {
     chatId: string,
     botId: string,
   ): Promise<PermissionsSummary> {
+    if (this.isManagedRefreshBackoffActive()) {
+      return this.resolveStoredPermissionsSnapshot(chatId, botId);
+    }
+
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId,
         trafficClass: 'background',
         timeoutMs: 1_500,
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
       });
       return this.toPermissionsSummary(access);
     } catch (error: unknown) {
+      if (this.isRateLimitPressureError(error)) {
+        this.markManagedRefreshBackoff();
+      }
+
       this.logger.warn(
         {
           chatId,
@@ -578,20 +599,27 @@ export class MaxBotExecutionPlannerService {
         'Failed to refresh bot access snapshot for execution planner',
       );
 
-      const state = await this.loadChatState(chatId);
-      const existing = state.memberships.find((membership) => membership.botId === botId) ?? null;
-      const snapshot = this.normalizePermissionsSummary(existing?.permissionsSnapshot ?? null);
-      if (snapshot) {
-        return snapshot;
-      }
-
-      return {
-        checkedAt: new Date().toISOString(),
-        isAdmin: false,
-        isOwner: false,
-        permissions: [],
-      };
+      return this.resolveStoredPermissionsSnapshot(chatId, botId);
     }
+  }
+
+  private async resolveStoredPermissionsSnapshot(
+    chatId: string,
+    botId: string,
+  ): Promise<PermissionsSummary> {
+    const state = await this.loadChatState(chatId);
+    const existing = state.memberships.find((membership) => membership.botId === botId) ?? null;
+    const snapshot = this.normalizePermissionsSummary(existing?.permissionsSnapshot ?? null);
+    if (snapshot) {
+      return snapshot;
+    }
+
+    return {
+      checkedAt: null,
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    };
   }
 
   private toPermissionsSummary(access: MaxChatMemberAccess): PermissionsSummary {
@@ -603,6 +631,50 @@ export class MaxBotExecutionPlannerService {
         new Set(access.permissions.map((item) => item.trim()).filter(Boolean)),
       ),
     };
+  }
+
+  private readFreshPermissionsSummary(value: unknown, now = Date.now()): PermissionsSummary | null {
+    const snapshot = this.normalizePermissionsSummary(value);
+    if (!snapshot?.checkedAt) {
+      return null;
+    }
+
+    const checkedAtMs = Date.parse(snapshot.checkedAt);
+    if (!Number.isFinite(checkedAtMs) || checkedAtMs + ACCESS_SNAPSHOT_REFRESH_DEBOUNCE_MS <= now) {
+      return null;
+    }
+
+    return snapshot;
+  }
+
+  private isRateLimitPressureError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } } | null)?.response?.status;
+    if (status === 429) {
+      return true;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    const normalizedMessage = message.trim().toLowerCase();
+    return (
+      normalizedMessage.includes('rate limit exceeded') ||
+      normalizedMessage.includes('source limit exceeded')
+    );
+  }
+
+  private isManagedRefreshBackoffActive(now = Date.now()): boolean {
+    if (this.managedRefreshBackoffUntilMs <= now) {
+      this.managedRefreshBackoffUntilMs = 0;
+      return false;
+    }
+
+    return true;
+  }
+
+  private markManagedRefreshBackoff(now = Date.now()): void {
+    this.managedRefreshBackoffUntilMs = Math.max(
+      this.managedRefreshBackoffUntilMs,
+      now + ACCESS_SNAPSHOT_RATE_LIMIT_BACKOFF_MS,
+    );
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

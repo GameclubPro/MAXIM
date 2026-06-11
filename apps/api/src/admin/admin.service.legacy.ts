@@ -1367,10 +1367,24 @@ export class AdminService implements OnModuleDestroy {
           botId: true,
         },
       });
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
+        userId,
+        requestedItems: items.length,
+        source: 'strict_access_edges',
+      });
       const visibleChatIds = new Set(
         rows
-          .filter((row) => this.isManagedEntityAccessBotInRuntimeScope(row.botId))
-          .map((row) => row.chatId),
+          .filter((row) => {
+            const chatId = this.readTrimmedString(row.chatId);
+            const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+            return (
+              Boolean(chatId && botId) &&
+              activeMembershipKeys.has(
+                this.buildManagedEntityRepairEdgeKey(chatId ?? '', botId ?? ''),
+              )
+            );
+          })
+          .map((row) => this.readTrimmedString(row.chatId) ?? row.chatId),
       );
 
       return items
@@ -1386,6 +1400,89 @@ export class AdminService implements OnModuleDestroy {
         'Failed to filter managed entities by strict access edges',
       );
       return [];
+    }
+  }
+
+  private async readActiveManagedEntityMembershipKeys(
+    rows: ReadonlyArray<{ chatId: string; botId: string }>,
+    context: {
+      userId: string;
+      requestedItems: number;
+      source: string;
+    },
+  ): Promise<Set<string>> {
+    const normalizedRows = rows
+      .map((row) => {
+        const chatId = this.readTrimmedString(row.chatId);
+        const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+        if (!chatId || !botId || !this.isManagedEntityAccessBotInRuntimeScope(botId)) {
+          return null;
+        }
+        return { chatId, botId };
+      })
+      .filter((row): row is { chatId: string; botId: string } => row !== null);
+    if (normalizedRows.length === 0) {
+      return new Set();
+    }
+
+    const memberships = (this.prisma as unknown as { chatBotMembership?: unknown })
+      .chatBotMembership;
+    if (!memberships || typeof memberships !== 'object') {
+      return new Set(
+        normalizedRows.map((row) => this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId)),
+      );
+    }
+
+    const membershipClient = memberships as {
+      findMany?: (args: unknown) => Promise<Array<{ chatId: string; botId: string }>>;
+    };
+    if (typeof membershipClient.findMany !== 'function') {
+      return new Set(
+        normalizedRows.map((row) => this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId)),
+      );
+    }
+
+    const chatIds = Array.from(new Set(normalizedRows.map((row) => row.chatId)));
+    const botIds = Array.from(new Set(normalizedRows.map((row) => row.botId)));
+    try {
+      const activeMemberships = await membershipClient.findMany({
+        where: {
+          chatId: {
+            in: chatIds,
+          },
+          botId: {
+            in: botIds,
+          },
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+      const requestedKeys = new Set(
+        normalizedRows.map((row) => this.buildManagedEntityRepairEdgeKey(row.chatId, row.botId)),
+      );
+      return new Set(
+        activeMemberships
+          .map((row) => {
+            const chatId = this.readTrimmedString(row.chatId);
+            const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+            return chatId && botId ? this.buildManagedEntityRepairEdgeKey(chatId, botId) : null;
+          })
+          .filter((key): key is string => key !== null && requestedKeys.has(key)),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: context.userId,
+          requestedItems: context.requestedItems,
+          source: context.source,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to filter managed entities by active bot membership',
+      );
+      return new Set();
     }
   }
 
@@ -23245,7 +23342,10 @@ export class AdminService implements OnModuleDestroy {
     const repairWrites: Array<{ chat: ChatSummary; botId: string }> = [];
     for (const { chat, botIds } of repairCandidates) {
       const repairableBotIds = botIds.filter(
-        (botId) => !deniedRepairKeys.has(this.buildManagedEntityRepairEdgeKey(chat.id, botId)),
+        (botId) => {
+          const key = this.buildManagedEntityRepairEdgeKey(chat.id, botId);
+          return !deniedRepairKeys.has(key);
+        },
       );
       if (client?.upsert && repairableBotIds.length > 0) {
         repairedChatIds.add(chat.id);

@@ -26,6 +26,14 @@ function createWebhookSubscriptionSnapshot(
     otherSubscriptionsCount: number;
     lastError: string | null;
     note: string | null;
+    botCount: number;
+    bots: Record<string, unknown>;
+    operationalDiagnostics: {
+      warningBotCount: number;
+      warningBotIds: string[];
+      noActiveMembershipBotIds: string[];
+      noIncomingWebhookBotIds: string[];
+    };
   }> = {},
 ) {
   return {
@@ -41,6 +49,8 @@ function createWebhookSubscriptionSnapshot(
     otherSubscriptionsCount: 0,
     lastError: null,
     note: 'Webhook coverage OK',
+    botCount: 1,
+    bots: {},
     ...overrides,
   };
 }
@@ -755,6 +765,86 @@ describe('SystemDashboardService', () => {
       },
       alerts: expect.arrayContaining([
         expect.objectContaining({ code: 'webhook-subscription-critical', level: 'critical' }),
+      ]),
+    });
+  });
+
+  it('adds a warning alert when an active subscribed bot has no runtime footprint', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(
+          createWebhookSubscriptionSnapshot({
+            status: 'warning',
+            otherSubscriptionsCount: 1,
+            operationalDiagnostics: {
+              warningBotCount: 1,
+              warningBotIds: ['id613000010769_6_bot'],
+              noActiveMembershipBotIds: ['id613000010769_6_bot'],
+              noIncomingWebhookBotIds: ['id613000010769_6_bot'],
+            },
+            bots: {
+              id613000010769_6_bot: {
+                botId: 'id613000010769_6_bot',
+                status: 'warning',
+                configured: true,
+                url: 'https://maxim.play-team.ru/api/webhook/max/id613000010769_6_bot/***',
+                checkedAt: '2026-03-29T12:00:00.000Z',
+                reconciledAt: null,
+                requiredUpdateTypes: ['message_created'],
+                actualUpdateTypes: ['message_created'],
+                missingUpdateTypes: [],
+                extraUpdateTypes: [],
+                otherSubscriptionsCount: 1,
+                lastError: null,
+                note: 'Активный бот id613000010769_6_bot имеет webhook subscription, но нет active chat_bot_memberships.',
+                operationalDiagnostics: {
+                  lifecycleState: 'active',
+                  activeMemberships: 0,
+                  hasCurrentSubscription: true,
+                  lastIncomingWebhookAt: null,
+                  lastMembershipWebhookAt: null,
+                  issueCodes: ['no-active-memberships', 'no-incoming-webhooks'],
+                },
+              },
+            },
+          }),
+        ),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: {
+        status: 'warning',
+      },
+      alerts: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'webhook-operational-bot-idle',
+          level: 'warning',
+          detail: expect.stringContaining('id613000010769_6_bot'),
+        }),
       ]),
     });
   });

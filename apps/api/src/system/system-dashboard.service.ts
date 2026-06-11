@@ -490,7 +490,11 @@ export class SystemDashboardService {
   private buildWebhookSubscriptionAlert(
     snapshot: WebhookSubscriptionSnapshot,
   ): SystemDashboardAlert | null {
-    if (snapshot.status === 'healthy') {
+    const operationalDiagnostics = snapshot.operationalDiagnostics;
+    if (
+      snapshot.status === 'healthy' &&
+      (!operationalDiagnostics || operationalDiagnostics.warningBotCount === 0)
+    ) {
       return null;
     }
 
@@ -518,6 +522,38 @@ export class SystemDashboardService {
         detail,
         recommendedAction:
           'Проверьте reconcile и текущие subscriptions. Не выполняйте ручную чистку чужих URL без подтверждения.',
+      };
+    }
+
+    if (operationalDiagnostics && operationalDiagnostics.warningBotCount > 0) {
+      const details: string[] = [`боты: ${operationalDiagnostics.warningBotIds.join(', ')}`];
+      if (operationalDiagnostics.noActiveMembershipBotIds.length > 0) {
+        details.push(
+          `без active memberships: ${operationalDiagnostics.noActiveMembershipBotIds.join(', ')}`,
+        );
+      }
+      if (operationalDiagnostics.noIncomingWebhookBotIds.length > 0) {
+        details.push(
+          `без входящих webhook: ${operationalDiagnostics.noIncomingWebhookBotIds.join(', ')}`,
+        );
+      }
+      if (snapshot.otherSubscriptionsCount > 0) {
+        details.push(`дополнительных subscriptions: ${snapshot.otherSubscriptionsCount}`);
+      }
+      if (snapshot.extraUpdateTypes.length > 0) {
+        details.push(`лишние update types: ${snapshot.extraUpdateTypes.join(', ')}`);
+      }
+      if (snapshot.lastError) {
+        details.push(`последняя ошибка: ${snapshot.lastError}`);
+      }
+
+      return {
+        code: 'webhook-operational-bot-idle',
+        level: 'warning',
+        title: 'Active bot с подпиской не участвует в runtime',
+        detail: details.join('; '),
+        recommendedAction:
+          'Проверьте, должен ли бот быть active: подключите его к managed chats/channels или переведите в dormant/disabled. Subscriptions не удаляйте без подтверждения владельца.',
       };
     }
 
@@ -709,9 +745,7 @@ export class SystemDashboardService {
     }
 
     const details = [
-      snapshot.circuitOpenSources > 0
-        ? `circuit open: ${snapshot.circuitOpenSources}`
-        : null,
+      snapshot.circuitOpenSources > 0 ? `circuit open: ${snapshot.circuitOpenSources}` : null,
       sourceFailuresHigh
         ? `source failures за ${snapshot.windowMin} мин: ${snapshot.sourceFailureCount}`
         : null,

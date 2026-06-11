@@ -142,7 +142,11 @@ export class VkParsingService {
       throw new BadRequestException(parsed.error.format());
     }
     const feed = await this.sourceService.updateSource(chatId, sourceId, user, parsed.data);
-    if (parsed.data.autoPublishEnabled === false || parsed.data.importEnabled === false) {
+    if (
+      parsed.data.autoPublishEnabled === false ||
+      parsed.data.importEnabled === false ||
+      parsed.data.publishMode === 'REVIEW'
+    ) {
       await this.publishService.clearQueuedAutoPublishForSource(chatId, sourceId);
     }
     return feed;

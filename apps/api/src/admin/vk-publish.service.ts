@@ -576,7 +576,10 @@ export class VkPublishService {
         );
         return;
       }
-      await this.recordPublishAttempt(post.id, params.idempotencyKey);
+      const attemptRecorded = await this.recordPublishAttempt(post.id, params.idempotencyKey);
+      if (!attemptRecorded) {
+        return;
+      }
       await this.autoPublishPost(post, settings);
     } catch (error) {
       const classified = classifyVkParsingPublishError(error);
@@ -1018,7 +1021,8 @@ export class VkPublishService {
     if (
       post.source.status !== VK_SOURCE_STATUS_ACTIVE ||
       post.source.importEnabled === false ||
-      post.source.autoPublishEnabled === false
+      post.source.autoPublishEnabled === false ||
+      post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW
     ) {
       return false;
     }
@@ -1209,11 +1213,12 @@ export class VkPublishService {
     await this.addPublishJob(post, reason, nextIdempotencyKey, new Date(), scheduledAt);
   }
 
-  private async recordPublishAttempt(postId: string, idempotencyKey: string): Promise<void> {
-    await this.prisma.vkParsingPost.updateMany({
+  private async recordPublishAttempt(postId: string, idempotencyKey: string): Promise<boolean> {
+    const updated = await this.prisma.vkParsingPost.updateMany({
       where: { id: postId, publishIdempotencyKey: idempotencyKey },
       data: { publishAttemptCount: { increment: 1 } },
     });
+    return updated.count > 0;
   }
 
   private resolveAllowedScheduleAt(
@@ -1594,6 +1599,7 @@ export class VkPublishService {
         if (!this.shouldTryNextPhotoCandidate(error)) {
           throw error;
         }
+        await this.rememberPhotoCandidateFailure(candidateUrl, mediaIdentity, error);
       }
     }
 
@@ -1616,10 +1622,35 @@ export class VkPublishService {
     mediaIdentity: string | null = null,
   ): Promise<VkParsingMediaCacheRow> {
     const cache = await this.mediaCache.preflightMediaUrl(imageUrl, mediaIdentity);
+    if (this.readUploadPayload(cache)) {
+      return cache;
+    }
     if (cache.status === VK_MEDIA_STATUS_FAILED) {
       throw new BadRequestException(cache.lastError || `Фото ${index + 1} недоступно.`);
     }
     return cache;
+  }
+
+  private async rememberPhotoCandidateFailure(
+    imageUrl: string,
+    mediaIdentity: string | null,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      await this.mediaCache.writeMediaCache(
+        imageUrl,
+        {
+          status: VK_MEDIA_STATUS_FAILED,
+          lastError: this.formatError(error),
+        },
+        mediaIdentity,
+      );
+    } catch (cacheError) {
+      this.logger.warn(
+        { err: cacheError, imageUrl, mediaIdentity },
+        'Failed to record stale VK photo candidate',
+      );
+    }
   }
 
   private readUploadPayload(cache: VkParsingMediaCacheRow): Record<string, unknown> | null {

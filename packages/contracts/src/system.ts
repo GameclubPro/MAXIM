@@ -24,6 +24,8 @@ export {
 } from './core.js';
 export {
   actionHealthSnapshotSchema,
+  botWebhookOperationalDiagnosticsSchema,
+  botWebhookOperationalIssueSchema,
   botOwnershipFoundationSnapshotSchema,
   botWebhookSubscriptionSnapshotSchema,
   queueMetricsSnapshotSchema,
@@ -43,9 +45,12 @@ export {
   systemRuntimeQueuePrioritySchema,
   systemRuntimeProfileSchema,
   systemRuntimeTopologySourceSchema,
+  webhookSubscriptionOperationalDiagnosticsSchema,
   webhookSubscriptionSnapshotSchema,
   type ActionHealthSnapshot,
   type BotOwnershipFoundationSnapshot,
+  type BotWebhookOperationalDiagnostics,
+  type BotWebhookOperationalIssue,
   type BotWebhookSubscriptionSnapshot,
   type QueueMetricsSnapshot,
   type SystemCanaryRecommendation,
@@ -68,4 +73,5 @@ export {
   type SystemRuntimeRole,
   type SystemRuntimeTopologySource,
   type WebhookSubscriptionSnapshot,
+  type WebhookSubscriptionOperationalDiagnostics,
 } from './system-core.js';

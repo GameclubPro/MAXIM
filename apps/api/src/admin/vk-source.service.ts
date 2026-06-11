@@ -389,6 +389,7 @@ export class VkSourceService {
   private async enqueueSourceSync(sourceId: string, reason: VkParsingSyncReason): Promise<number> {
     const now = new Date();
     const staleLockBefore = new Date(now.getTime() - this.syncLeaseTtlMs);
+    const resetCircuitState = reason === 'manual' || reason === 'source-added';
     const updated = await this.prisma.vkParsingSource.updateMany({
       where: {
         id: sourceId,
@@ -413,11 +414,15 @@ export class VkSourceService {
         syncLockedBy: null,
         syncLockDeadlineAt: null,
         syncHeartbeatAt: null,
-        terminalFailureCount: 0,
-        circuitOpenedAt: null,
-        circuitReasonCode: null,
-        circuitReason: null,
-        circuitRetryAt: null,
+        ...(resetCircuitState
+          ? {
+              terminalFailureCount: 0,
+              circuitOpenedAt: null,
+              circuitReasonCode: null,
+              circuitReason: null,
+              circuitRetryAt: null,
+            }
+          : {}),
       },
     });
     if (updated.count === 0) {

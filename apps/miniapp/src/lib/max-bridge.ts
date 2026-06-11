@@ -30,9 +30,20 @@ export function getMaxBridge() {
   return resolveBridge();
 }
 
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasNonEmptyObject(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && Object.keys(value).length > 0;
+}
+
 function hasBridgeRuntimePayload(bridge: ReturnType<typeof resolveBridge>): boolean {
   return Boolean(
-    bridge?.initData || bridge?.init_data || bridge?.initDataUnsafe || bridge?.init_data_unsafe,
+    hasNonEmptyString(bridge?.initData) ||
+      hasNonEmptyString(bridge?.init_data) ||
+      hasNonEmptyObject(bridge?.initDataUnsafe) ||
+      hasNonEmptyObject(bridge?.init_data_unsafe),
   );
 }
 

@@ -161,9 +161,11 @@ export class VkParsingMediaCacheService {
     mediaIdentity: string | null,
   ): Promise<VkParsingMediaCacheRow | null> {
     if (mediaIdentity) {
-      const cached = await this.prisma.vkParsingMediaCache.findFirst({
+      const rows = await this.prisma.vkParsingMediaCache.findMany({
         where: { OR: [{ mediaIdentity }, { url }] },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       });
+      const cached = this.pickCanonicalCacheRow(rows, url, mediaIdentity);
       if (cached) {
         return cached;
       }
@@ -302,13 +304,19 @@ export class VkParsingMediaCacheService {
     url: string,
     data: VkParsingMediaCacheWriteData,
   ): Promise<VkParsingMediaCacheRow> {
-    const { createData, updateData } = this.buildMediaCacheMutation(url, data, null);
+    return this.prisma.$transaction(
+      async (tx) => {
+        await this.lockMediaCacheKeys(tx, [`url:${url}`]);
+        const { createData, updateData } = this.buildMediaCacheMutation(url, data, null);
 
-    return this.prisma.vkParsingMediaCache.upsert({
-      where: { url },
-      create: createData,
-      update: updateData,
-    });
+        return tx.vkParsingMediaCache.upsert({
+          where: { url },
+          create: createData,
+          update: updateData,
+        });
+      },
+      { timeout: 5_000, maxWait: 5_000 },
+    );
   }
 
   private async writeMediaCacheWithIdentityLock(
@@ -374,7 +382,7 @@ export class VkParsingMediaCacheService {
     url: string,
     mediaIdentity: string,
   ): number {
-    const hasReusableUpload = Boolean(row.maxUploadPayload) || Boolean(row.maxUploadToken);
+    const hasReusableUpload = this.hasReusableUpload(row);
     return (
       (hasReusableUpload ? 8 : 0) +
       (row.mediaIdentity === mediaIdentity ? 4 : 0) +

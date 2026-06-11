@@ -343,6 +343,11 @@ type RequiredSubscriptionMembershipResolution = {
   fresh: boolean;
 };
 
+type RequiredSubscriptionMembershipResult = {
+  missingChannelIds: string[];
+  unresolvedChannelIds: string[];
+};
+
 type BotSpeechResolvedMedia = {
   base64: string;
   mimeType: string;
@@ -8295,6 +8300,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
           return !metadata || !metadata.usable;
         });
+    const conservativeRequiredSubscriptionEnforcement =
+      membership.unresolvedChannelIds.length > 0;
+    const requiredSubscriptionChannelMetadata = {
+      channelIds: requiredChannelIds,
+      requiredChannelIds,
+      missingChannelIds: membership.missingChannelIds,
+      unresolvedChannelIds: membership.unresolvedChannelIds,
+      requiredSubscriptionConservativeEnforcement:
+        conservativeRequiredSubscriptionEnforcement,
+    };
     const missingChannels = membership.missingChannelIds
       .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== null);
@@ -8336,8 +8351,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           operator: Operator.BOT,
           metadata: {
             action: SanctionAction.DELETE_MESSAGE,
-            requiredChannelIds,
-            missingChannelIds: membership.missingChannelIds,
+            ...requiredSubscriptionChannelMetadata,
             missingChannelTitles,
           },
         },
@@ -8544,8 +8558,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           operator: Operator.BOT,
           metadata: {
             action,
-            requiredChannelIds,
-            missingChannelIds: membership.missingChannelIds,
+            ...requiredSubscriptionChannelMetadata,
             missingChannelTitles: followUpMissingChannelTitles,
             requiredSubscriptionViolationCount24h,
             requiredSubscriptionEscalationWindowHours:
@@ -9226,7 +9239,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     requiredChannelIds: readonly string[],
-  ): Promise<{ missingChannelIds: string[] }> {
+  ): Promise<RequiredSubscriptionMembershipResult> {
     const membershipChecks = await this.mapWithConcurrency(
       requiredChannelIds,
       this.requiredSubscriptionLookupConcurrency,
@@ -9274,7 +9287,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (channelId) => membershipsByChannelId.get(channelId) !== true,
     );
 
-    return { missingChannelIds };
+    return { missingChannelIds, unresolvedChannelIds };
   }
 
   private async resolveRequiredSubscriptionNoticeChannels(params: {
@@ -9466,6 +9479,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             channelId,
             userId,
             backoffMs: transient ? REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS : 0,
+            statusCode: this.extractStatusCode(error),
+            code: this.extractMaxErrorCode(error),
             error: error instanceof Error ? error.message : 'Unknown error',
           },
           'Failed to resolve required subscription membership',
@@ -9555,6 +9570,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           channelId: normalizedChannelId,
           userId: normalizedUserId,
           backoffMs: transient ? REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS : 0,
+          statusCode: this.extractStatusCode(error),
+          code: this.extractMaxErrorCode(error),
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to resolve required subscription membership',

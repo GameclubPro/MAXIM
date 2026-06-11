@@ -9048,6 +9048,93 @@ describe('AdminService.listChannels', () => {
     );
   });
 
+  it('filters fresh home access edges without an active bot membership', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+        {
+          chat: {
+            id: 'channel-active',
+            title: 'Живой канал',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHANNEL',
+            primaryBotId: '777000_bot',
+            botId: '777000_bot',
+          },
+        },
+        {
+          chat: {
+            id: 'channel-stale',
+            title: 'Канал без membership',
+            createdAt: new Date('2026-03-01T10:00:00.000Z'),
+            entityType: 'CHANNEL',
+            primaryBotId: '777000_bot',
+            botId: '777000_bot',
+          },
+        },
+      ]);
+      prisma.channelSettings.findMany.mockResolvedValue([]);
+      (prisma as any).chatBotMembership = {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ chatId: 'channel-active', botId: '777000_bot' }]),
+      };
+      (prisma as any).managedEntityAccessEdge = {
+        findMany: jest.fn().mockResolvedValue([
+          { chatId: 'channel-active', botId: '777000_bot' },
+          { chatId: 'channel-stale', botId: '777000_bot' },
+        ]),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        {} as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+
+      await expect(
+        service.listChannels({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'channel-active',
+          title: 'Живой канал',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          channelOverview: {
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        }),
+      ]);
+      expect((prisma as any).chatBotMembership.findMany).toHaveBeenCalledWith({
+        where: {
+          chatId: {
+            in: ['channel-active', 'channel-stale'],
+          },
+          botId: {
+            in: ['777000_bot'],
+          },
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('repairs missing allowlist access edges inline and queues roster validation', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     try {
@@ -9179,6 +9266,9 @@ describe('AdminService.listChannels', () => {
         findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]),
         upsert: jest.fn().mockResolvedValue(undefined),
       };
+      (prisma as any).chatBotMembership = {
+        findMany: jest.fn().mockResolvedValue([]),
+      };
       const rosterSync = {
         scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
       };
@@ -9242,6 +9332,7 @@ describe('AdminService.listChannels', () => {
           }),
         }),
       );
+      expect((prisma as any).chatBotMembership.findMany).not.toHaveBeenCalled();
       expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
         chatId: 'channel-legacy',
         botIds: ['777000_bot'],

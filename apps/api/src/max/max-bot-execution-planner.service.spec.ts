@@ -187,6 +187,8 @@ function createFixture() {
     chat,
     bots,
     memberships,
+    prisma,
+    maxClient,
     maxBotLinkService,
   };
 }
@@ -276,6 +278,48 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(plan.sharedMode).toBe('owned');
     expect(plan.partnerBotId).toBeNull();
+  });
+
+  it('refreshes stale access snapshots on the managed_refresh source lane', async () => {
+    const fixture = createFixture();
+
+    await fixture.service.refreshChatBotCapabilitySnapshots({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      botId: 'id613002203036_4_bot',
+    });
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
+      botId: 'id613002203036_4_bot',
+      trafficClass: 'background',
+      timeoutMs: 1_500,
+      sourceTag: 'managed_refresh',
+    });
+  });
+
+  it('uses fresh persisted access snapshots instead of repeating managed_refresh reads', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
+    const fixture = createFixture();
+    for (const membership of fixture.memberships) {
+      membership.permissionsSnapshot = {
+        checkedAt: '2026-05-14T08:59:30.000Z',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_messages'],
+      };
+    }
+
+    try {
+      await fixture.service.refreshChatBotCapabilitySnapshots({
+        chatId: 'chat-1',
+        entityType: 'chat',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.update).not.toHaveBeenCalled();
   });
 
   it('does not promote a draining standby bot to primary', async () => {

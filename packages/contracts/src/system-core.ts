@@ -113,6 +113,24 @@ export type WebhookSubscriptionSnapshotStatus = z.infer<
   typeof webhookSubscriptionSnapshotStatusSchema
 >;
 
+export const botWebhookOperationalIssueSchema = z.enum([
+  'no-active-memberships',
+  'no-incoming-webhooks',
+]);
+export type BotWebhookOperationalIssue = z.infer<typeof botWebhookOperationalIssueSchema>;
+
+export const botWebhookOperationalDiagnosticsSchema = z.object({
+  lifecycleState: z.string(),
+  activeMemberships: z.number().int().min(0),
+  hasCurrentSubscription: z.boolean(),
+  lastIncomingWebhookAt: z.string().datetime().nullable(),
+  lastMembershipWebhookAt: z.string().datetime().nullable(),
+  issueCodes: z.array(botWebhookOperationalIssueSchema),
+});
+export type BotWebhookOperationalDiagnostics = z.infer<
+  typeof botWebhookOperationalDiagnosticsSchema
+>;
+
 export const botWebhookSubscriptionSnapshotSchema = z.object({
   botId: z.string(),
   status: webhookSubscriptionSnapshotStatusSchema,
@@ -127,8 +145,19 @@ export const botWebhookSubscriptionSnapshotSchema = z.object({
   otherSubscriptionsCount: z.number().int().min(0),
   lastError: z.string().nullable(),
   note: z.string().nullable(),
+  operationalDiagnostics: botWebhookOperationalDiagnosticsSchema.optional(),
 });
 export type BotWebhookSubscriptionSnapshot = z.infer<typeof botWebhookSubscriptionSnapshotSchema>;
+
+export const webhookSubscriptionOperationalDiagnosticsSchema = z.object({
+  warningBotCount: z.number().int().min(0),
+  warningBotIds: z.array(z.string()),
+  noActiveMembershipBotIds: z.array(z.string()),
+  noIncomingWebhookBotIds: z.array(z.string()),
+});
+export type WebhookSubscriptionOperationalDiagnostics = z.infer<
+  typeof webhookSubscriptionOperationalDiagnosticsSchema
+>;
 
 export const webhookSubscriptionSnapshotSchema = z.object({
   status: webhookSubscriptionSnapshotStatusSchema,
@@ -145,6 +174,7 @@ export const webhookSubscriptionSnapshotSchema = z.object({
   note: z.string().nullable(),
   botCount: z.number().int().min(0),
   bots: z.record(z.string(), botWebhookSubscriptionSnapshotSchema),
+  operationalDiagnostics: webhookSubscriptionOperationalDiagnosticsSchema.optional(),
 });
 export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
 
