@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import { cn } from '../lib/cn';
 import type { ApiTransport } from '../lib/api/transport';
 
@@ -18,6 +19,8 @@ export type ManagedLinkButtonFieldsProps = {
   textMaxLength?: number;
   urlHint?: string | null;
   textHint?: string | null;
+  textInputRef?: Ref<HTMLInputElement>;
+  urlInputRef?: Ref<HTMLInputElement>;
 };
 
 export function ManagedLinkButtonFields({
@@ -35,28 +38,17 @@ export function ManagedLinkButtonFields({
   urlPlaceholder = 'https://max.ru/...',
   textPlaceholder = 'Открыть',
   textMaxLength = 32,
-  urlHint = 'Вставьте ссылку вручную.',
-  textHint = 'Текст кнопки задаётся вручную.',
+  urlHint = null,
+  textHint = null,
+  textInputRef,
+  urlInputRef,
 }: ManagedLinkButtonFieldsProps) {
   return (
     <div className="settings-button-fields">
-      <label className={cn('field settings-url-field', urlError && 'field--error')}>
-        <span className="field__label">{urlLabel}</span>
-        <input
-          type="url"
-          inputMode="url"
-          value={urlValue}
-          onChange={(event) => onUrlChange(event.target.value)}
-          placeholder={urlPlaceholder}
-          disabled={disabled}
-        />
-        {urlError ? <small className="field__hint">{urlError}</small> : null}
-        {!urlError && urlHint !== null ? <small className="field__hint">{urlHint}</small> : null}
-      </label>
-
       <label className={cn('field settings-text-field', textError && 'field--error')}>
         <span className="field__label">{textLabel}</span>
         <input
+          ref={textInputRef}
           type="text"
           maxLength={textMaxLength}
           value={textValue}
@@ -67,8 +59,29 @@ export function ManagedLinkButtonFields({
         {textError ? <small className="field__hint">{textError}</small> : null}
         {!textError && textHint !== null ? <small className="field__hint">{textHint}</small> : null}
       </label>
+
+      <label className={cn('field settings-url-field', urlError && 'field--error')}>
+        <span className="field__label">{urlLabel}</span>
+        <input
+          ref={urlInputRef}
+          type="url"
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          enterKeyHint="next"
+          value={urlValue}
+          onChange={(event) => onUrlChange(event.target.value)}
+          placeholder={urlPlaceholder}
+          disabled={disabled}
+        />
+        {urlError ? <small className="field__hint">{urlError}</small> : null}
+        {!urlError && urlHint !== null ? <small className="field__hint">{urlHint}</small> : null}
+      </label>
     </div>
   );
 }
+
+export const ButtonLabelField = ManagedLinkButtonFields;
 
 export default ManagedLinkButtonFields;

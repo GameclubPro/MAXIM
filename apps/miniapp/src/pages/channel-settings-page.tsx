@@ -75,6 +75,7 @@ import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/s
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
+  formatBroadcastButtonsPreview,
   formatBroadcastButtonsStatus,
   hasBroadcastLinkButtonErrors,
   trimBroadcastLinkButtons,
@@ -1878,6 +1879,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastVisibleButtons = [...normalizedBroadcastButtons, ...broadcastSystemButtons];
   const broadcastHasVisibleButtons = broadcastVisibleButtons.length > 0;
   const broadcastVisibleButtonStatus = formatBroadcastButtonsStatus(broadcastVisibleButtons);
+  const broadcastVisibleButtonPreview = formatBroadcastButtonsPreview(broadcastVisibleButtons);
   const broadcastOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
@@ -1896,7 +1898,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? [
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingBroadcastReviewPayload)}`,
         pendingBroadcastReviewPayload.buttonEnabled || broadcastSystemButtons.length > 0
-          ? `Кнопки · ${formatBroadcastButtonsStatus([
+          ? `Кнопки · ${formatBroadcastButtonsPreview([
               ...pendingBroadcastReviewPayload.buttons,
               ...broadcastSystemButtons,
             ])}`
@@ -2093,7 +2095,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastButtonsSignalValue = !broadcastButtonDraftValid
     ? 'Ошибка'
     : broadcastHasVisibleButtons
-      ? `${broadcastVisibleButtons.length} кноп.`
+      ? broadcastVisibleButtonPreview
       : 'Без кнопок';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'

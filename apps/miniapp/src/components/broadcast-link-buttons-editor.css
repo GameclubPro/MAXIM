@@ -51,16 +51,38 @@
   line-height: 1;
 }
 
+.broadcast-link-editor__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.broadcast-link-editor__preset {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text-primary);
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.broadcast-link-editor__preset:disabled {
+  opacity: 0.5;
+}
+
 .broadcast-link-editor__preview {
   display: grid;
-  gap: 10px;
-  border-radius: 18px;
+  gap: 8px;
+  border-radius: 12px;
   border: 1px solid rgba(62, 96, 127, 0.12);
-  background:
-    radial-gradient(120% 120% at 100% 0%, rgba(11, 132, 255, 0.1), transparent 55%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 249, 255, 0.92)),
-    rgba(255, 255, 255, 0.94);
-  padding: 12px;
+  background: rgba(247, 250, 252, 0.92);
+  padding: 10px;
 }
 
 .broadcast-link-editor--compact .broadcast-link-editor__preview {
@@ -97,18 +119,19 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 38px;
+  min-height: 36px;
   min-width: 0;
   flex: 1 1 calc(33.333% - 6px);
-  border-radius: 14px;
+  border-radius: 9px;
   padding: 0 12px;
-  border: 1px solid rgba(11, 132, 255, 0.16);
-  background: rgba(255, 255, 255, 0.9);
-  color: #0b4f86;
+  border: 1px solid rgba(7, 141, 164, 0.18);
+  background: rgba(255, 255, 255, 0.96);
+  color: #095d6f;
   font-size: 0.76rem;
   font-weight: 700;
   line-height: 1.2;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .broadcast-link-editor__preview-pill.is-empty {
@@ -145,11 +168,11 @@
 
 .broadcast-link-editor__card {
   display: grid;
-  gap: 10px;
-  border-radius: 18px;
+  gap: 9px;
+  border-radius: 12px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.9);
-  padding: 12px;
+  padding: 10px;
 }
 
 .broadcast-link-editor--compact .broadcast-link-editor__card {
@@ -166,30 +189,35 @@
 }
 
 .broadcast-link-editor__card-copy {
-  display: grid;
-  gap: 4px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .broadcast-link-editor__card-copy strong {
+  min-width: 0;
   font-size: 0.84rem;
   line-height: 1.18;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .broadcast-link-editor__badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 20px;
-  width: fit-content;
-  padding: 0 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  background: rgba(244, 248, 253, 0.96);
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(190, 207, 221, 0.88);
+  background: rgba(247, 250, 252, 0.92);
   color: var(--text-secondary);
   font-size: 0.62rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .broadcast-link-editor__remove {
@@ -216,11 +244,9 @@
   gap: 12px;
   width: 100%;
   border: 1px dashed rgba(11, 132, 255, 0.28);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 248, 255, 0.94)),
-    rgba(255, 255, 255, 0.95);
-  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 10px;
   text-align: left;
   color: inherit;
 }
@@ -285,9 +311,13 @@
 }
 
 .broadcast-link-editor__add-copy strong {
+  min-width: 0;
   font-size: 0.84rem;
   line-height: 1.18;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .broadcast-link-editor__add-copy small {
@@ -297,7 +327,7 @@
 }
 
 .broadcast-link-editor__limit {
-  border-radius: 16px;
+  border-radius: 10px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(244, 248, 253, 0.96);
   padding: 11px 12px;
@@ -316,10 +346,7 @@
 }
 
 .settings-drilldown .broadcast-link-editor__preview {
-  background:
-    radial-gradient(140% 140% at 100% 0%, var(--settings-panel-accent-soft), transparent 58%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 254, 0.94)),
-    rgba(255, 255, 255, 0.95);
+  background: rgba(247, 250, 252, 0.92);
 }
 
 .settings-drilldown .broadcast-link-editor__count {
@@ -329,8 +356,8 @@
 }
 
 .settings-drilldown .broadcast-link-editor__preview-pill {
-  border-color: rgba(188, 205, 220, 0.88);
-  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--settings-panel-accent-border);
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .settings-drilldown .broadcast-link-editor__card {
@@ -342,6 +369,82 @@
 .settings-drilldown .broadcast-link-editor__add {
   border-style: solid;
   border-color: var(--settings-panel-accent-border);
+}
+
+.broadcast-link-editor .settings-button-fields {
+  gap: 7px;
+}
+
+.broadcast-link-editor .field {
+  gap: 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+.broadcast-link-editor .field > span,
+.broadcast-link-editor .field__label {
+  min-height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
+}
+
+.broadcast-link-editor .field input {
+  min-height: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.broadcast-link-editor--sheet {
+  gap: 7px;
+}
+
+.broadcast-link-editor--sheet .broadcast-link-editor__preview,
+.broadcast-link-editor--sheet .broadcast-link-editor__card,
+.broadcast-link-editor--sheet .broadcast-link-editor__add,
+.broadcast-link-editor--sheet .broadcast-link-editor__limit {
+  border-radius: 9px;
+}
+
+.broadcast-link-editor--sheet .broadcast-link-editor__stack {
+  gap: 7px;
+}
+
+.broadcast-link-editor--sheet .broadcast-link-editor__card {
+  gap: 7px;
+  padding: 8px;
+}
+
+.broadcast-link-editor--sheet .broadcast-link-editor__preview {
+  padding: 8px;
+}
+
+.broadcast-link-editor--sheet .settings-button-fields {
+  gap: 6px;
+}
+
+.broadcast-link-editor--sheet .field input {
+  min-height: 38px;
+  height: 38px;
+  border-radius: 9px;
+  font-size: 16px;
+}
+
+.broadcast-link-editor--sheet .field__hint {
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 390px) {

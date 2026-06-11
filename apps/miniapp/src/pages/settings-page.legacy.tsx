@@ -115,6 +115,7 @@ import type {
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
+  formatBroadcastButtonsPreview,
   formatBroadcastButtonsStatus,
   hasBroadcastLinkButtonErrors,
   trimBroadcastLinkButtons,
@@ -4516,7 +4517,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         `Кому · ${pendingMailingReviewAudienceLabel}`,
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingMailingReviewPayload)}`,
         pendingMailingReviewPayload.buttonEnabled || mailingSystemButtons.length > 0
-          ? `Кнопки · ${formatBroadcastButtonsStatus([
+          ? `Кнопки · ${formatBroadcastButtonsPreview([
               ...pendingMailingReviewPayload.buttons,
               ...mailingSystemButtons,
             ])}`
@@ -4603,6 +4604,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingVisibleButtons = [...normalizedMailingButtons, ...mailingSystemButtons];
   const mailingHasVisibleButtons = mailingVisibleButtons.length > 0;
   const mailingVisibleButtonStatus = formatBroadcastButtonsStatus(mailingVisibleButtons);
+  const mailingVisibleButtonPreview = formatBroadcastButtonsPreview(mailingVisibleButtons);
   const mailingVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
@@ -4691,7 +4693,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingButtonsSignalValue = !mailingButtonDraftValid
     ? 'Ошибка'
     : mailingHasVisibleButtons
-      ? `${mailingVisibleButtons.length} кноп.`
+      ? mailingVisibleButtonPreview
       : 'Без кнопок';
   const mailingPlannerPending = mailingPlannerState.isDaySheetOpen;
   const mailingAudienceReady =
@@ -5906,8 +5908,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         enabled: nextButtons.length > 0,
                                       })
                                     }
-                                    title="Сетка кнопок"
-                                    subtitle="До 8 кнопок"
+                                    title="Кнопки сообщения"
+                                    subtitle="Название и ссылка"
                                     urlPlaceholder="https://max.ru/channel/..."
                                     textPlaceholder="Открыть"
                                   />
@@ -6599,8 +6601,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Открыть"
-                                  title="Сетка кнопок"
-                                  subtitle="До 8 кнопок"
+                                  title="Кнопки сообщения"
+                                  subtitle="Название и ссылка"
                                 />
                               ) : null}
                             </div>
@@ -7255,8 +7257,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Правила чата"
-                                  title="Сетка кнопок"
-                                  subtitle="До 8 кнопок"
+                                  title="Кнопки сообщения"
+                                  subtitle="Название и ссылка"
                                 />
                               ) : null}
                             </div>
@@ -7467,8 +7469,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 }
                                 urlPlaceholder="https://max.ru/channel/..."
                                 textPlaceholder="Открыть"
-                                title="Сетка кнопок"
-                                subtitle="До 8 кнопок"
+                                title="Кнопки сообщения"
+                                subtitle="Название и ссылка"
                               />
                             ) : null}
 
@@ -7861,8 +7863,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 }
                                 urlPlaceholder="https://max.ru/profile/..."
                                 textPlaceholder="Открыть"
-                                title="Сетка кнопок"
-                                subtitle="До 8 кнопок"
+                                title="Кнопки сообщения"
+                                subtitle="Название и ссылка"
                               />
                             ) : null}
                           </div>
@@ -8980,8 +8982,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               }
                               urlPlaceholder="https://max.ru/channel/..."
                               textPlaceholder="Открыть"
-                              title="Сетка кнопок"
-                              subtitle="До 8 кнопок"
+                              title="Кнопки сообщения"
+                              subtitle="Название и ссылка"
                             />
                           ) : null}
                         </div>
@@ -9750,8 +9752,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }
                                   urlPlaceholder="https://max.ru/channel/..."
                                   textPlaceholder="Правила чата"
-                                  title="Сетка кнопок"
-                                  subtitle="До 8 кнопок"
+                                  title="Кнопки сообщения"
+                                  subtitle="Название и ссылка"
                                 />
                               ) : null}
                             </div>

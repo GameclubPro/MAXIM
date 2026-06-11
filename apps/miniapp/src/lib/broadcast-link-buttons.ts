@@ -113,6 +113,22 @@ export function formatBroadcastButtonsStatus(buttons: BroadcastLinkButton[]): st
   return `${count} ${noun}`;
 }
 
+export function formatBroadcastButtonsPreview(buttons: BroadcastLinkButton[]): string {
+  const labels = buttons
+    .map((button) => button.text.trim())
+    .filter((label) => label.length > 0);
+
+  if (labels.length === 0) {
+    return formatBroadcastButtonsStatus(buttons);
+  }
+
+  if (labels.length <= 2) {
+    return labels.join(', ');
+  }
+
+  return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
+}
+
 export {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS,

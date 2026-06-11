@@ -5,7 +5,10 @@ import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markd
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
-import { buildBroadcastPreviewButtonRows } from '../lib/broadcast-link-buttons';
+import {
+  buildBroadcastPreviewButtonRows,
+  formatBroadcastButtonsPreview,
+} from '../lib/broadcast-link-buttons';
 import { openFileInputPicker } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -115,6 +118,12 @@ export function BroadcastContentComposer({
   const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
   const previewButtonRows = buildBroadcastPreviewButtonRows(previewButtons, previewSystemButtons);
   const previewButtonCount = previewButtons.length + previewSystemButtons.length;
+  const previewButtonLabel = formatBroadcastButtonsPreview([
+    ...previewButtons,
+    ...previewSystemButtons,
+  ]);
+  const openButtonsLabel =
+    previewButtonCount > 0 ? `Кнопки: ${previewButtonLabel}` : buttonsStatusLabel;
   const hasPreview = Boolean(normalizedText || imagePreviewItems.length > 0 || videoLabel);
   const remainingLength = maxLength - text.length;
   const isNearTextLimit =
@@ -407,8 +416,8 @@ export function BroadcastContentComposer({
                   )}
                   onClick={onOpenButtons}
                   disabled={isBusy}
-                  aria-label={buttonsActive ? buttonsStatusLabel : 'Добавить кнопки'}
-                  title={buttonsActive ? buttonsStatusLabel : 'Добавить кнопки'}
+                  aria-label={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
+                  title={buttonsActive ? openButtonsLabel : 'Добавить кнопки'}
                 >
                   <IconoirLink aria-hidden focusable="false" />
                 </button>
@@ -436,9 +445,9 @@ export function BroadcastContentComposer({
                   )}
                   onClick={onOpenButtons}
                   disabled={isBusy}
-                  title={buttonsStatusLabel}
+                  title={openButtonsLabel}
                 >
-                  {previewButtonCount > 0 ? `${previewButtonCount} кноп.` : buttonsStatusLabel}
+                  {previewButtonCount > 0 ? previewButtonLabel : buttonsStatusLabel}
                 </button>
               ) : null}
             </span>

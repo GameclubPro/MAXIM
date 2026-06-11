@@ -22,9 +22,10 @@
   position: relative;
   width: min(100%, 560px);
   max-height: min(calc(var(--app-viewport-height, 100dvh) - 24px), 720px);
-  overflow-y: auto;
   display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 8px;
+  overflow: hidden;
   border-radius: 14px 14px 10px 10px;
   border: 1px solid rgba(132, 152, 169, 0.2);
   background: #f8fafb;
@@ -130,7 +131,16 @@
   font-weight: 760;
 }
 
+.broadcast-buttons-sheet__body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+
 .broadcast-buttons-sheet__empty-action {
+  width: 100%;
   min-height: 42px;
   border: 0;
   border-radius: 10px;

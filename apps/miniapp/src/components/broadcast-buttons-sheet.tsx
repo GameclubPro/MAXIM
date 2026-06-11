@@ -7,7 +7,10 @@ import {
   type BroadcastLinkButtonPreset,
 } from './broadcast-link-buttons-editor';
 import type { ApiTransport } from '../lib/api/transport';
-import type { BroadcastLinkButtonFieldErrors } from '../lib/broadcast-link-buttons';
+import {
+  formatBroadcastButtonsPreview,
+  type BroadcastLinkButtonFieldErrors,
+} from '../lib/broadcast-link-buttons';
 import { cn } from '../lib/cn';
 import { useNativeBackHandler } from '../lib/native-back';
 import './broadcast-buttons-sheet.css';
@@ -69,9 +72,12 @@ export function BroadcastButtonsSheet({
     }
 
     const previousOverflow = document.body.style.overflow;
+    const previousRootOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = previousOverflow;
+      document.documentElement.style.overflow = previousRootOverflow;
     };
   }, [open]);
 
@@ -79,6 +85,7 @@ export function BroadcastButtonsSheet({
   if (!open || !portalTarget) {
     return null;
   }
+  const buttonsPreview = formatBroadcastButtonsPreview(buttons);
 
   return createPortal(
     <div className="broadcast-buttons-sheet" aria-hidden={!open}>
@@ -103,9 +110,8 @@ export function BroadcastButtonsSheet({
           </span>
 
           <span className="broadcast-buttons-sheet__copy">
-            <strong id="broadcast-buttons-sheet-title">
-              {enabled ? `Кнопки · ${buttons.length}/8` : 'Кнопки'}
-            </strong>
+            <strong id="broadcast-buttons-sheet-title">Кнопки сообщения</strong>
+            {enabled && buttons.length > 0 ? <small>{buttonsPreview}</small> : null}
           </span>
 
           <button
@@ -120,7 +126,7 @@ export function BroadcastButtonsSheet({
 
         <label className="broadcast-buttons-sheet__toggle">
           <span>
-            <strong>{enabled ? 'Активны' : 'Выключены'}</strong>
+            <strong>{enabled ? 'Включены' : 'Выключены'}</strong>
           </span>
           <span className="settings-native-switch" aria-label="Добавить кнопки">
             <input
@@ -135,32 +141,35 @@ export function BroadcastButtonsSheet({
           </span>
         </label>
 
-        {enabled ? (
-          <BroadcastLinkButtonsEditor
-            api={api}
-            contextEntityType={contextEntityType}
-            buttons={buttons}
-            errors={errors}
-            revealNextStepSignal={revealNextStepSignal}
-            compact
-            presets={presets}
-            title=""
-            subtitle=""
-            onChange={onChange}
-            disabled={disabled}
-            urlPlaceholder={urlPlaceholder}
-            textPlaceholder={textPlaceholder}
-          />
-        ) : (
-          <button
-            type="button"
-            className="broadcast-buttons-sheet__empty-action"
-            onClick={() => onEnabledChange(true)}
-            disabled={disabled}
-          >
-            Добавить
-          </button>
-        )}
+        <div className="broadcast-buttons-sheet__body">
+          {enabled ? (
+            <BroadcastLinkButtonsEditor
+              api={api}
+              contextEntityType={contextEntityType}
+              buttons={buttons}
+              errors={errors}
+              revealNextStepSignal={revealNextStepSignal}
+              compact
+              className="broadcast-link-editor--sheet"
+              presets={presets}
+              title=""
+              subtitle=""
+              onChange={onChange}
+              disabled={disabled}
+              urlPlaceholder={urlPlaceholder}
+              textPlaceholder={textPlaceholder}
+            />
+          ) : (
+            <button
+              type="button"
+              className="broadcast-buttons-sheet__empty-action"
+              onClick={() => onEnabledChange(true)}
+              disabled={disabled}
+            >
+              Добавить
+            </button>
+          )}
+        </div>
       </section>
     </div>,
     portalTarget,

@@ -6,6 +6,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
   MAX_BROADCAST_LINK_BUTTONS,
+  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   createEmptyBroadcastLinkButton,
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
@@ -28,6 +29,7 @@ type BroadcastLinkButtonsEditorProps = {
   title?: string;
   subtitle?: string;
   compact?: boolean;
+  className?: string;
   urlPlaceholder?: string;
   textPlaceholder?: string;
   onChange: (buttons: BroadcastLinkButton[]) => void;
@@ -41,15 +43,18 @@ export function BroadcastLinkButtonsEditor({
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
   presets = [],
-  title = 'Сетка кнопок',
-  subtitle = 'До 8 кнопок',
+  title = 'Кнопки сообщения',
+  subtitle = 'Название и ссылка',
   compact = false,
+  className,
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
   onChange,
 }: BroadcastLinkButtonsEditorProps) {
   const addButtonRef = useRef<HTMLButtonElement | null>(null);
+  const firstTextInputRef = useRef<HTMLInputElement | null>(null);
   const previousCountRef = useRef(buttons.length);
+  const didAutofocusInitialEmptyButtonRef = useRef(false);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
   const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
   const emptyButtonIndex = buttons.findIndex((button) => !button.url.trim());
@@ -94,8 +99,19 @@ export function BroadcastLinkButtonsEditor({
       buttons.length > 0 &&
       buttons.length < MAX_BROADCAST_LINK_BUTTONS &&
       buttons.length !== previousCount;
+    const shouldFocusFirstButton =
+      buttons.length === 1 && previousCount === 0 && !buttons[0]?.url.trim();
 
     previousCountRef.current = buttons.length;
+
+    if (shouldFocusFirstButton) {
+      didAutofocusInitialEmptyButtonRef.current = true;
+      const timeoutId = window.setTimeout(() => {
+        firstTextInputRef.current?.focus();
+        firstTextInputRef.current?.select();
+      }, 80);
+      return () => window.clearTimeout(timeoutId);
+    }
 
     if (!shouldRevealAddButton || !addButtonRef.current) {
       return;
@@ -105,7 +121,27 @@ export function BroadcastLinkButtonsEditor({
       block: 'nearest',
       behavior: previousCount === 0 ? 'smooth' : 'auto',
     });
-  }, [buttons.length]);
+    return undefined;
+  }, [buttons]);
+
+  useEffect(() => {
+    if (didAutofocusInitialEmptyButtonRef.current || buttons.length !== 1) {
+      return;
+    }
+
+    const button = buttons[0];
+    if (!button || button.url.trim()) {
+      return;
+    }
+
+    didAutofocusInitialEmptyButtonRef.current = true;
+    const timeoutId = window.setTimeout(() => {
+      firstTextInputRef.current?.focus();
+      firstTextInputRef.current?.select();
+    }, 80);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [buttons]);
 
   useEffect(() => {
     if (!shouldSpotlightNextStep || !addButtonRef.current) {
@@ -181,7 +217,13 @@ export function BroadcastLinkButtonsEditor({
   }
 
   return (
-    <div className={cn('broadcast-link-editor', compact && 'broadcast-link-editor--compact')}>
+    <div
+      className={cn(
+        'broadcast-link-editor',
+        compact && 'broadcast-link-editor--compact',
+        className,
+      )}
+    >
       <div className="broadcast-link-editor__head">
         {title || subtitle ? (
           <div className="broadcast-link-editor__copy">
@@ -193,6 +235,8 @@ export function BroadcastLinkButtonsEditor({
           {buttons.length}/{MAX_BROADCAST_LINK_BUTTONS}
         </span>
       </div>
+
+      <ButtonPreview buttons={buttons} />
 
       {canShowPresets ? (
         <div className="broadcast-link-editor__presets" aria-label="Быстрые кнопки">
@@ -226,9 +270,9 @@ export function BroadcastLinkButtonsEditor({
               <div className="broadcast-link-editor__card-top">
                 <div className="broadcast-link-editor__card-copy">
                   <span className="broadcast-link-editor__badge">
-                    {compact ? index + 1 : index === 0 ? 'Основная' : `Доп. ${index}`}
+                    {buttons.length === 1 ? 'Кнопка' : `${index + 1}`}
                   </span>
-                  {compact ? null : <strong>Кнопка {index + 1}</strong>}
+                  <strong>{button.text.trim() || textPlaceholder}</strong>
                 </div>
                 <button
                   type="button"
@@ -253,11 +297,12 @@ export function BroadcastLinkButtonsEditor({
                 textError={error.text}
                 disabled={disabled}
                 urlLabel="Ссылка"
-                textLabel="Текст"
+                textLabel="Название"
                 urlPlaceholder={urlPlaceholder}
                 textPlaceholder={textPlaceholder}
                 urlHint={null}
                 textHint={null}
+                textInputRef={index === 0 ? firstTextInputRef : undefined}
               />
             </article>
           );
@@ -286,6 +331,44 @@ export function BroadcastLinkButtonsEditor({
 }
 
 export default BroadcastLinkButtonsEditor;
+
+function ButtonPreview({ buttons }: { buttons: BroadcastLinkButton[] }) {
+  const visibleButtons = buttons.filter((button) => button.text.trim() || button.url.trim());
+  if (visibleButtons.length === 0) {
+    return (
+      <div className="broadcast-link-editor__empty">
+        <strong>Кнопок пока нет</strong>
+      </div>
+    );
+  }
+
+  const rows: BroadcastLinkButton[][] = [];
+  for (let index = 0; index < visibleButtons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
+    rows.push(visibleButtons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW));
+  }
+
+  return (
+    <div className="broadcast-link-editor__preview" aria-label="Превью кнопок">
+      <div className="broadcast-link-editor__preview-board">
+        {rows.map((row, rowIndex) => (
+          <div className="broadcast-link-editor__preview-row" key={`preview-row-${rowIndex}`}>
+            {row.map((button, buttonIndex) => (
+              <span
+                className={cn(
+                  'broadcast-link-editor__preview-pill',
+                  !button.url.trim() && 'is-empty',
+                )}
+                key={`preview-button-${rowIndex}-${buttonIndex}`}
+              >
+                {button.text.trim() || 'Открыть'}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function canApplyPreset(
   preset: BroadcastLinkButtonPreset,
