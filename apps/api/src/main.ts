@@ -31,6 +31,7 @@ async function bootstrap() {
   app.enableCors({
     origin: true,
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   app.getHttpAdapter().getInstance().addHook('onSend', (request, reply, payload, done) => {
