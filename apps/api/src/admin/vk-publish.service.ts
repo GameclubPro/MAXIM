@@ -239,6 +239,10 @@ export class VkPublishService {
       throw new BadRequestException(describeVkParsingSkipReason(skipReason));
     }
     this.assertPreparedPublishPayload(prepared);
+    const locked = await this.lockManualPublishPost(post.id, chatId);
+    if (!locked) {
+      throw new BadRequestException('Этот VK-пост уже публикуется.');
+    }
 
     return this.publishPreparedPostToMax(post, prepared, {
       actorUserId,
@@ -847,6 +851,14 @@ export class VkPublishService {
           publishLockedAt: null,
           lastError: formattedError,
           autoPublishError: params.auto ? formattedError : post.autoPublishError,
+          ...(params.auto
+            ? {}
+            : {
+                publishQueuedAt: null,
+                publishScheduledAt: null,
+                publishIdempotencyKey: null,
+                publishReason: null,
+              }),
           ...(accessLossResult?.recorded
             ? {
                 publishQueuedAt: null,
@@ -924,6 +936,22 @@ export class VkPublishService {
     }
 
     throw lastError instanceof Error ? lastError : new Error('MAX attachment is not ready.');
+  }
+
+  private async lockManualPublishPost(postId: string, chatId: string): Promise<boolean> {
+    const locked = await this.prisma.vkParsingPost.updateMany({
+      where: {
+        id: postId,
+        chatId,
+        status: { notIn: [VK_POST_STATUS_PUBLISHED, VK_POST_STATUS_UNAVAILABLE] },
+        publishLockedAt: null,
+      },
+      data: {
+        publishLockedAt: new Date(),
+        publishReason: 'manual-retry',
+      },
+    });
+    return locked.count > 0;
   }
 
   private async enqueuePostPublish(

@@ -3160,6 +3160,7 @@ describe('VkParsingService', () => {
       },
     };
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.update.mockResolvedValue({
       ...post,
       status: 'PUBLISHED',
@@ -3223,6 +3224,7 @@ describe('VkParsingService', () => {
     });
     prisma.chat.findUnique.mockResolvedValue({ entityType: ChatEntityType.CHAT });
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.update.mockResolvedValue({
       ...post,
       status: 'PUBLISHED',
@@ -3303,6 +3305,25 @@ describe('VkParsingService', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
+  it('does not manually publish a VK post while another publish is locked', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource();
+    const post = createPostRow({ source, text: 'Уже публикуется' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: 'Уже публикуется',
+        photoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('уже публикуется');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
+  });
+
   it('uses cached media preflight failures with a photo-specific publish error', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();
@@ -3334,6 +3355,7 @@ describe('VkParsingService', () => {
       source,
     };
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingMediaCache.findUnique.mockResolvedValue({
       id: 'media-1',
       url: 'https://sun1.example/missing.jpg',
@@ -3394,6 +3416,7 @@ describe('VkParsingService', () => {
       createdAt: new Date('2026-05-25T10:00:00.000Z'),
       updatedAt: new Date('2026-05-25T10:00:00.000Z'),
     });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     maxClient.uploadImage.mockResolvedValue({ token: 'image-token' });
     maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
       messageId: 'mid-1',
@@ -3607,6 +3630,7 @@ describe('VkParsingService', () => {
       publishedUrl: 'https://max.ru/channels/channel-1/message/mid-1',
       publishedAtMax: new Date('2026-05-25T10:05:00.000Z'),
     });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     maxClient.uploadImage.mockResolvedValue({ token: 'image-token' });
     maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
       messageId: 'mid-1',
@@ -3713,6 +3737,7 @@ describe('VkParsingService', () => {
       source,
     };
     prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
     prisma.vkParsingPost.update.mockResolvedValue({
       ...post,
       status: 'PUBLISHED',
