@@ -4,6 +4,10 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
+import {
+  applyNativeVisualMode,
+  installNativeVisualModeInitScript,
+} from './miniapp-native-visual-mode.mjs';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3000/app/';
@@ -13,13 +17,14 @@ const deviceProfiles = previewDevicePresets;
 
 function printUsage() {
   console.log(`Usage:
-  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/']
+  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--target device|native]
   npm run emulator:miniapp -- [--base-url http://127.0.0.1:3000/app/] [--reuse-server]
 
 Environment:
   MINIAPP_EMULATOR_DEVICE
   MINIAPP_EMULATOR_ROUTE
   MINIAPP_EMULATOR_BASE_URL
+  MINIAPP_EMULATOR_TARGET=device|native
   MINIAPP_EMULATOR_REUSE_SERVER=1
   MINIAPP_EMULATOR_HEADLESS=1
   MINIAPP_EMULATOR_TIMEOUT_MS=1500
@@ -66,6 +71,12 @@ function parseArgs(argv) {
 
     if (arg === '--base-url') {
       options.baseUrl = nextValue;
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--target') {
+      options.target = nextValue;
       index += 1;
       continue;
     }
@@ -238,6 +249,9 @@ async function main() {
     process.env.MINIAPP_EMULATOR_BASE_URL ??
     DEFAULT_BASE_URL
   ).trim();
+  const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'device')
+    .trim()
+    .toLowerCase();
   const reuseServer = args.reuseServer ?? envFlag('MINIAPP_EMULATOR_REUSE_SERVER');
   const headless = args.headless ?? envFlag('MINIAPP_EMULATOR_HEADLESS');
   const timeoutMs =
@@ -246,6 +260,10 @@ async function main() {
 
   if (!profile) {
     throw new Error('Device must be one of: android, iphone, iphone-se');
+  }
+
+  if (target !== 'device' && target !== 'native') {
+    throw new Error('Target must be one of: device, native');
   }
 
   const device = devices[profile.viewportName];
@@ -302,11 +320,18 @@ async function main() {
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow',
     });
+    if (target === 'native') {
+      await installNativeVisualModeInitScript(context);
+    }
+
     const page = await context.newPage();
     await page.goto(previewUrl, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
+    if (target === 'native') {
+      await applyNativeVisualMode(page, profile);
+    }
 
-    console.log(`Mini app emulator ready: ${previewUrl}`);
+    console.log(`Mini app emulator ready (${target}): ${previewUrl}`);
 
     if (timeoutMs > 0) {
       await page.waitForTimeout(timeoutMs);

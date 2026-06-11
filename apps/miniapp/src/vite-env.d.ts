@@ -73,6 +73,7 @@ declare global {
   const __MAXIM_API_FALLBACKS_ENABLED__: boolean | undefined;
 
   interface Window {
+    __MAXIM_FORCE_NATIVE_VISUAL_MODE__?: boolean;
     WebApp?: MaxWebAppBridge;
     MAX?: {
       WebApp?: MaxWebAppBridge;

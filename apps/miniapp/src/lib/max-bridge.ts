@@ -37,6 +37,10 @@ function hasBridgeRuntimePayload(bridge: ReturnType<typeof resolveBridge>): bool
 }
 
 function shouldSkipNativeSideEffects(): boolean {
+  if (typeof window !== 'undefined' && window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true) {
+    return true;
+  }
+
   if (typeof document === 'undefined') {
     return false;
   }
@@ -200,9 +204,16 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
     ? getPreviewDevicePreset(options.previewDevice)
     : null;
   const platform = normalizePlatform(bridge?.platform, options.previewDevice);
+  const forceNativeVisualMode = window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true;
 
   root.dataset.maxPlatform = platform;
-  root.dataset.maxClient = previewPreset ? 'preview' : bridge ? 'native' : 'browser';
+  root.dataset.maxClient = forceNativeVisualMode
+    ? 'native'
+    : previewPreset
+      ? 'preview'
+      : bridge
+        ? 'native'
+        : 'browser';
 
   const legacySettingsDrilldownReason = resolveSettingsDrilldownLegacyReason(platform);
   if (legacySettingsDrilldownReason) {
