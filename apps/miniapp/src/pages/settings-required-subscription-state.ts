@@ -5,6 +5,8 @@ export type RequiredSubscriptionSelectedChannel = {
   title: string;
   link: string;
   entityType: 'chat' | 'channel';
+  avatarUrl: string | null;
+  participantsCount: number | null;
 };
 
 export type RequiredSubscriptionUnavailableChannelReason = 'unavailable';
@@ -110,6 +112,8 @@ export function buildRequiredSubscriptionChannelCollections(params: {
         title: availableChannel.title,
         link: normalizeLink(availableChannel.link) ?? '',
         entityType: availableChannel.entityType,
+        avatarUrl: availableChannel.avatarUrl ?? null,
+        participantsCount: availableChannel.participantsCount ?? null,
       });
       continue;
     }

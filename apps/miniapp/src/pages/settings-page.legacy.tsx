@@ -352,6 +352,11 @@ const LazyVkParsingCard = lazy(() =>
   import('../components/vk-parsing-card').then((module) => ({ default: module.VkParsingCard })),
 );
 const LazySettingsTimeFields = lazy(() => import('./settings/night-mode-time-fields'));
+const LazyRequiredSubscriptionSourcePicker = lazy(() =>
+  import('../components/required-subscription-source-picker').then((module) => ({
+    default: module.RequiredSubscriptionSourcePicker,
+  })),
+);
 const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
   import('../components/managed-entity-access-diagnostics').then((module) => ({
     default: module.ManagedEntityAccessDiagnosticsBanner,
@@ -10801,7 +10806,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="required-subscription__selection-list">
-                            {selectedRequiredSubscriptionChannels.map((channel, index) => {
+                            {selectedRequiredSubscriptionChannels.map((channel) => {
                               const linkPreview = formatRequiredSubscriptionLinkPreview(
                                 channel.link,
                               );
@@ -10811,9 +10816,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   key={`required-subscription-channel-${channel.id}`}
                                   className="required-subscription__selection-card"
                                 >
-                                  <span className="required-subscription__selection-rank">
-                                    {index + 1}
-                                  </span>
+                                  <EntityAvatar
+                                    title={channel.title}
+                                    entityType={channel.entityType}
+                                    avatarUrl={channel.avatarUrl}
+                                    className="required-subscription__selection-avatar"
+                                  />
                                   <div
                                     className="required-subscription__selection-body"
                                     title={channel.link || channel.title}
@@ -10894,67 +10902,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <small className="field__hint">{requiredSubscriptionChannelsError}</small>
                         ) : null}
 
-                        <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
-                          <button
-                            type="button"
-                            className="button button--ghost managed-giveaway__channel-action"
-                            disabled={
-                              requiredSubscriptionEntitiesLoading ||
-                              requiredSubscriptionEntitiesSyncing
+                        <Suspense
+                          fallback={
+                            <div className="required-subscription__source-picker">
+                              <div className="required-subscription__source-skeleton" aria-hidden>
+                                <span />
+                                <span />
+                                <span />
+                              </div>
+                            </div>
+                          }
+                        >
+                          <LazyRequiredSubscriptionSourcePicker
+                            choices={availableRequiredSubscriptionChannelChoices}
+                            selectedCount={requiredSubscriptionSelectedCount}
+                            maxSelectedCount={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+                            loading={requiredSubscriptionEntitiesLoading}
+                            syncing={requiredSubscriptionEntitiesSyncing}
+                            error={
+                              requiredSubscriptionEntitiesError
+                                ? formatApiError(requiredSubscriptionEntitiesError)
+                                : null
                             }
-                            onClick={refreshRequiredSubscriptionChannels}
-                          >
-                            {requiredSubscriptionEntitiesSyncing
-                              ? 'Обновляем список...'
-                              : 'Обновить список'}
-                          </button>
-                        </div>
-
-                        {requiredSubscriptionEntitiesBackoffActive ? (
-                          <small className="field__hint">
-                            MAX временно ограничил обновление. Повторите позже.
-                          </small>
-                        ) : null}
-
-                        <div className="managed-giveaway__channel-picker">
-                          {requiredSubscriptionEntitiesLoading ? (
-                            <span>Загружаем ваши чаты и каналы...</span>
-                          ) : null}
-                          {!requiredSubscriptionEntitiesLoading &&
-                          requiredSubscriptionEntitiesSyncing ? (
-                            <span>Синхронизируем список чатов и каналов...</span>
-                          ) : null}
-                          {requiredSubscriptionEntitiesError ? (
-                            <span>
-                              Ошибка загрузки списка:{' '}
-                              {formatApiError(requiredSubscriptionEntitiesError)}
-                            </span>
-                          ) : null}
-                          {!requiredSubscriptionEntitiesLoading &&
-                          !requiredSubscriptionEntitiesSyncing &&
-                          !requiredSubscriptionEntitiesError &&
-                          availableRequiredSubscriptionChannelChoices.length === 0 ? (
-                            <span>{requiredSubscriptionPickerEmptyState}</span>
-                          ) : null}
-                          {!requiredSubscriptionEntitiesLoading &&
-                          !requiredSubscriptionEntitiesError
-                            ? availableRequiredSubscriptionChannelChoices.map((channel) => (
-                                <button
-                                  key={`required-subscription-choice-${channel.id}`}
-                                  type="button"
-                                  className="managed-giveaway__channel-picker-item"
-                                  onClick={() => addRequiredSubscriptionChannel(channel.id)}
-                                  disabled={
-                                    requiredSubscriptionSelectedCount >=
-                                    REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-                                  }
-                                >
-                                  {formatRequiredSubscriptionEntityLabel(channel.entityType)} ·{' '}
-                                  {channel.title}
-                                </button>
-                              ))
-                            : null}
-                        </div>
+                            backoffActive={requiredSubscriptionEntitiesBackoffActive}
+                            emptyState={requiredSubscriptionPickerEmptyState}
+                            onAdd={addRequiredSubscriptionChannel}
+                            onRefresh={refreshRequiredSubscriptionChannels}
+                          />
+                        </Suspense>
 
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
@@ -10993,53 +10968,62 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </>
                         ) : null}
 
-                        <div className="managed-giveaway__editor-grid">
-                          <label
-                            className={cn(
-                              'field settings-text-field',
-                              requiredSubscriptionExternalChannelError && 'field--error',
-                            )}
-                          >
-                            <span>Ссылка на чат или канал</span>
-                            <input
-                              type="text"
-                              value={requiredSubscriptionExternalChannelValue}
-                              onChange={(event) => {
-                                setRequiredSubscriptionExternalChannelValue(event.target.value);
-                                if (requiredSubscriptionExternalChannelError) {
-                                  setRequiredSubscriptionExternalChannelError('');
-                                }
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault();
-                                  handleResolveRequiredSubscriptionExternalChannel();
-                                }
-                              }}
-                              placeholder="https://max.ru/... или id чата/канала"
-                              disabled={isResolvingRequiredSubscriptionChannel}
-                            />
-                            {requiredSubscriptionExternalChannelError ? (
-                              <small className="field__hint">
-                                {requiredSubscriptionExternalChannelError}
-                              </small>
-                            ) : null}
-                          </label>
-                          <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
-                            <button
-                              type="button"
-                              className="button button--ghost managed-giveaway__channel-action"
-                              disabled={
-                                isResolvingRequiredSubscriptionChannel ||
-                                requiredSubscriptionSelectedCount >=
-                                  REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-                              }
-                              onClick={handleResolveRequiredSubscriptionExternalChannel}
+                        <div className="required-subscription__external-source">
+                          <div className="required-subscription__external-copy">
+                            <strong>Не нашли в списке?</strong>
+                            <small>
+                              Добавьте публичную ссылку или ID. Бот проверит источник перед
+                              сохранением.
+                            </small>
+                          </div>
+                          <div className="managed-giveaway__editor-grid">
+                            <label
+                              className={cn(
+                                'field settings-text-field',
+                                requiredSubscriptionExternalChannelError && 'field--error',
+                              )}
                             >
-                              {isResolvingRequiredSubscriptionChannel
-                                ? 'Проверяем ссылку...'
-                                : 'Добавить ссылку на чат или канал'}
-                            </button>
+                              <span>Ссылка на чат или канал</span>
+                              <input
+                                type="text"
+                                value={requiredSubscriptionExternalChannelValue}
+                                onChange={(event) => {
+                                  setRequiredSubscriptionExternalChannelValue(event.target.value);
+                                  if (requiredSubscriptionExternalChannelError) {
+                                    setRequiredSubscriptionExternalChannelError('');
+                                  }
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    handleResolveRequiredSubscriptionExternalChannel();
+                                  }
+                                }}
+                                placeholder="https://max.ru/... или id чата/канала"
+                                disabled={isResolvingRequiredSubscriptionChannel}
+                              />
+                              {requiredSubscriptionExternalChannelError ? (
+                                <small className="field__hint">
+                                  {requiredSubscriptionExternalChannelError}
+                                </small>
+                              ) : null}
+                            </label>
+                            <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                              <button
+                                type="button"
+                                className="button button--ghost managed-giveaway__channel-action"
+                                disabled={
+                                  isResolvingRequiredSubscriptionChannel ||
+                                  requiredSubscriptionSelectedCount >=
+                                    REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+                                }
+                                onClick={handleResolveRequiredSubscriptionExternalChannel}
+                              >
+                                {isResolvingRequiredSubscriptionChannel
+                                  ? 'Проверяем ссылку...'
+                                  : 'Добавить ссылку на чат или канал'}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>

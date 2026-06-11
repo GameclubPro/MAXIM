@@ -123,6 +123,8 @@ test('prefers fresh managed channel metadata over stale resolved fallback for th
       title: 'Свежий managed title',
       link: 'https://max.ru/managed-channel-public',
       entityType: 'channel',
+      avatarUrl: null,
+      participantsCount: null,
     },
   ]);
 });
@@ -151,6 +153,8 @@ test('uses resolved metadata when the managed channel snapshot still has no publ
       title: 'Resolved with link',
       link: 'https://max.ru/resolved-channel-public',
       entityType: 'channel',
+      avatarUrl: null,
+      participantsCount: null,
     },
   ]);
   assert.deepEqual(collections.selectedUnavailableChannels, []);
@@ -170,6 +174,8 @@ test('keeps selected chats in the chosen required subscription list', () => {
       title: 'Чат MAX',
       link: 'https://max.ru/chat-public',
       entityType: 'chat',
+      avatarUrl: null,
+      participantsCount: null,
     },
   ]);
 });
@@ -191,12 +197,16 @@ test('keeps selected channels without a public link in the chosen required subsc
       title: 'Channel channel-public',
       link: 'https://max.ru/channel-public',
       entityType: 'channel',
+      avatarUrl: null,
+      participantsCount: null,
     },
     {
       id: 'channel-no-link',
       title: 'Без ссылки',
       link: '',
       entityType: 'channel',
+      avatarUrl: null,
+      participantsCount: null,
     },
   ]);
   assert.deepEqual(collections.selectedUnavailableChannels, [
