@@ -239,6 +239,12 @@ export function classifyCommercialDetection(params: {
   if (hasCampaignDependentEvidence && evidenceStrength === 'CAMPAIGN') {
     reviewReasons.push('campaign-dependent');
   }
+  if (
+    state.matchedSignals.includes('recruitment:marketplace-review-work') ||
+    state.matchedSignals.includes('recruitment:paid-social-actions-work')
+  ) {
+    reviewReasons.push('paid-review-work');
+  }
   if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
     reviewReasons.push('generic-subtype');
   }
@@ -257,6 +263,7 @@ export function classifyCommercialDetection(params: {
     reviewReasons.length > 0 &&
     (decisionBand !== 'HIGH' ||
       reviewReasons.includes('campaign-dependent') ||
+      reviewReasons.includes('paid-review-work') ||
       reviewReasons.includes('generic-subtype') ||
       reviewReasons.includes('conflicting-negative-signals'));
 

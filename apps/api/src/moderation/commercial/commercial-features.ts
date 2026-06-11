@@ -139,6 +139,14 @@ export function hasCommercialSpamMarkers(text: string): boolean {
         ADS_SERVICE_INTENT_MARKERS.has(marker)
       ) && hasMarker(marker),
   );
+  const hasPrivateSingleListingContext = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.some(({ pattern }) =>
+    matchesPattern(pattern),
+  );
+  const serviceOfferPatterns = hasPrivateSingleListingContext
+    ? ADS_SERVICE_OFFER_PATTERNS.filter(
+        ({ label }) => !isPrivateObjectConditionServiceNoise(label, rawLoweredText),
+      )
+    : ADS_SERVICE_OFFER_PATTERNS;
   const hasServiceOfferContext =
     [...ADS_SERVICE_INTENT_MARKERS].some(
       (marker) =>
@@ -147,7 +155,12 @@ export function hasCommercialSpamMarkers(text: string): boolean {
           hasUtilityPaymentContext &&
           ADS_SERVICE_INTENT_MARKERS.has(marker)
         ) && hasMarker(marker),
-    ) || ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    ) || serviceOfferPatterns.some(({ pattern }) => matchesPattern(pattern));
+  const serviceSpecialtyPatterns = hasPrivateSingleListingContext
+    ? ADS_SERVICE_SPECIALTY_PATTERNS.filter(
+        ({ label }) => !isPrivateObjectConditionServiceNoise(label, rawLoweredText),
+      )
+    : ADS_SERVICE_SPECIALTY_PATTERNS;
   const hasServiceSpecialtyContext =
     ADS_SERVICE_SPECIALTY_MARKERS.some(
       (marker) =>
@@ -155,8 +168,13 @@ export function hasCommercialSpamMarkers(text: string): boolean {
           hasPropertyPrivateContext &&
           !hasServiceOfferContext &&
           PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+        ) &&
+        !(
+          hasPrivateSingleListingContext &&
+          !hasServiceOfferContext &&
+          isPrivateObjectConditionServiceNoise(marker, rawLoweredText)
         ) && hasMarker(marker),
-    ) || ADS_SERVICE_SPECIALTY_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    ) || serviceSpecialtyPatterns.some(({ pattern }) => matchesPattern(pattern));
   const hasGroupContext = ADS_GROUP_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
   const hasGroupPromotionIntent =
     ADS_GROUP_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -203,9 +221,6 @@ export function hasCommercialSpamMarkers(text: string): boolean {
         hasMarker('каталог') ||
         hasMarker('ассортимент') ||
         hasMarker('заказывайте')));
-  const hasPrivateSingleListingContext = ADS_PRIVATE_SINGLE_LISTING_PATTERNS.some(({ pattern }) =>
-    matchesPattern(pattern),
-  );
   const hasPrivateLowQuantityGoodsListing = isLikelyPrivateLowQuantityGoodsListing(rawLoweredText);
   const hasPrivateGoodsItemContext =
     hasPrivateSingleListingContext ||
@@ -379,6 +394,29 @@ export function hasRideShareContext(rawLoweredText: string): boolean {
   return ADS_RIDE_SHARE_CONTEXT_PATTERN.test(rawLoweredText);
 }
 
+function isPrivateObjectConditionServiceNoise(label: string, rawLoweredText: string): boolean {
+  if (
+    /(?:^|[^\p{L}\p{N}_-])(?:выполн(?:ю|им)|выполня(?:ю|ем)|оказыва(?:ю|ем)|предлага(?:ю|ем)|сдела(?:ю|ем)|ремонтир(?:ую|уем)|строительн[\p{L}\p{N}_-]*\s+бригад[\p{L}\p{N}_-]*|ремонт\s+под\s+ключ|услуг[\p{L}\p{N}_-]*\s+ремонт[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    label === 'ремонт' ||
+    label === 'construction-multi-service' ||
+    label === 'tree-yard-repair-service' ||
+    label === 'yard-cleanup-service'
+  ) {
+    return /(?:^|[^\p{L}\p{N}_-])(?:косметическ[\p{L}\p{N}_-]*\s+ремонт|требуется\s+(?:небольшой\s+)?(?:косметическ[\p{L}\p{N}_-]*\s+)?ремонт|ремонт\s+(?:фасад[\p{L}\p{N}_-]*|кузов[\p{L}\p{N}_-]*|двигател[\p{L}\p{N}_-]*|после\s+дтп|после\s+покупк[\p{L}\p{N}_-]*|не\s+требуется))(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+  }
+
+  return false;
+}
+
 function hasGenericDomainLikeText(value: string): boolean {
   return /\.(?:ru|рф|com|net|org|su|shop|online|site|pro|io|app|ai)(?:$|[^\p{L}\p{N}_-])/iu.test(
     value,
@@ -517,7 +555,13 @@ export function collectCommercialSignals(params: {
     hasDealSignal = true;
   }
 
-  const serviceOfferHits = collectFirstPatternLabels(ADS_SERVICE_OFFER_PATTERNS, matchesPattern, 2);
+  const serviceOfferPatterns =
+    privateSingleListingHits.length > 0
+      ? ADS_SERVICE_OFFER_PATTERNS.filter(
+          ({ label }) => !isPrivateObjectConditionServiceNoise(label, rawLoweredText),
+        )
+      : ADS_SERVICE_OFFER_PATTERNS;
+  const serviceOfferHits = collectFirstPatternLabels(serviceOfferPatterns, matchesPattern, 2);
   for (const label of serviceOfferHits) {
     addPositive(`intent:${label}`, weights.serviceOffer);
     hasIntent = true;
@@ -714,11 +758,22 @@ export function collectCommercialSignals(params: {
         hasPropertyPrivateContext &&
         !hasServiceOfferContext &&
         PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+      ) &&
+      !(
+        privateSingleListingHits.length > 0 &&
+        !hasServiceOfferContext &&
+        isPrivateObjectConditionServiceNoise(marker, rawLoweredText)
       ) && hasMarker(marker),
     3,
   );
+  const serviceSpecialtyPatterns =
+    privateSingleListingHits.length > 0
+      ? ADS_SERVICE_SPECIALTY_PATTERNS.filter(
+          ({ label }) => !isPrivateObjectConditionServiceNoise(label, rawLoweredText),
+        )
+      : ADS_SERVICE_SPECIALTY_PATTERNS;
   const serviceSpecialtyHits = collectFirstPatternLabels(
-    ADS_SERVICE_SPECIALTY_PATTERNS,
+    serviceSpecialtyPatterns,
     matchesPattern,
     3,
     serviceSpecialtyMarkerHits,

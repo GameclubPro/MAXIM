@@ -498,11 +498,13 @@ export class CommercialSecondStageScorer {
       );
     }
 
-    const hasHardReviewReason = reviewReasons.includes('campaign-dependent');
+    const hasHardReviewReason =
+      reviewReasons.includes('campaign-dependent') || reviewReasons.includes('paid-review-work');
     let reviewRecommended =
       reviewReasons.length > 0 &&
       (adjustedDecisionBand !== 'HIGH' ||
         reviewReasons.includes('campaign-dependent') ||
+        reviewReasons.includes('paid-review-work') ||
         reviewReasons.includes('generic-subtype') ||
         reviewReasons.includes('conflicting-negative-signals'));
 

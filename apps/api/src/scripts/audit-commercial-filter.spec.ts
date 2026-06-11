@@ -1,4 +1,8 @@
-import { deriveSafeContextBucket, readCliOptions } from './audit-commercial-filter';
+import {
+  derivePolicyCategory,
+  deriveSafeContextBucket,
+  readCliOptions,
+} from './audit-commercial-filter';
 
 const emptySnapshot = {
   hit: false,
@@ -106,5 +110,40 @@ describe('deriveSafeContextBucket', () => {
         historical: emptySnapshot,
       }),
     ).not.toBe('rules_or_moderation_context');
+  });
+});
+
+describe('derivePolicyCategory', () => {
+  it('keeps high-fp review-only detections in the gray zone instead of negative corpus labels', () => {
+    expect(
+      derivePolicyCategory({
+        category: 'current_only',
+        current: {
+          ...emptySnapshot,
+          hit: true,
+          confidenceScore: 41,
+          decisionBand: 'MEDIUM',
+          actionBand: 'REVIEW_ONLY',
+          fpRisk: 82,
+          reviewRecommended: true,
+        },
+      }),
+    ).toBe('gray_zone');
+  });
+
+  it('still flags high-fp hard deletes as false-positive candidates', () => {
+    expect(
+      derivePolicyCategory({
+        category: 'current_only',
+        current: {
+          ...emptySnapshot,
+          hit: true,
+          confidenceScore: 80,
+          decisionBand: 'HIGH',
+          actionBand: 'DELETE',
+          fpRisk: 82,
+        },
+      }),
+    ).toBe('false_positive_candidate');
   });
 });

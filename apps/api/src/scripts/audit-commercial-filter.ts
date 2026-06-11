@@ -697,7 +697,7 @@ function deriveCategory(historicalHit: boolean, currentHit: boolean): AuditCateg
   return 'stable_clear';
 }
 
-function derivePolicyCategory(params: {
+export function derivePolicyCategory(params: {
   category: AuditCategory;
   current: CommercialSnapshot;
 }): AuditPolicyCategory {
@@ -707,6 +707,12 @@ function derivePolicyCategory(params: {
   }
   if (!current.hit) {
     return 'none';
+  }
+  if (
+    (current.actionBand === 'WARN' || current.actionBand === 'REVIEW_ONLY') &&
+    ((current.fpRisk ?? 0) >= 70 || current.reviewRecommended)
+  ) {
+    return 'gray_zone';
   }
   if ((current.fpRisk ?? 0) >= 70) {
     return 'false_positive_candidate';

@@ -922,6 +922,14 @@ describe('commercial pattern regressions', () => {
       'Продам полусапожки весна осень, размер 38, состояние отличное - 1300 руб.',
     ],
     [
+      'private home textile resale from twenty four hour audit false positive',
+      'Продается новый комплект дивандеков. Эти стильные чехлы идеально подходят для защиты дивана от загрязнений. Комплект включает два чехла размером 90см /210см. Не подошли нам, сразу не успели сдать. На Озоне один стоит 1895р. Отдам дешевле, чем приобрела на маркетплейсе. Оба за 2700р.',
+    ],
+    [
+      'private kiosk single object resale from twenty four hour audit false positive',
+      'Срочно продаю киоск в хорошем состоянии. Металлический киоск белого цвета, площадью около 10 кв.м. Требуется небольшой косметический ремонт фасада. Стоимость 40 тыс. руб., торг возможен. По всем вопросам звоните по номеру телефона +7 900 000 10 31.',
+    ],
+    [
       'animal adoption relocation mention is not logistics advertising',
       'Кошка ищет дом, отдают в добрые руки при переезде, пишите в личку.',
     ],
@@ -1076,6 +1084,10 @@ describe('commercial pattern regressions', () => {
     [
       'home dairy recommendation request stays allowed',
       'Кто покупал козье молоко и творог у соседей, посоветуйте проверенные контакты.',
+    ],
+    [
+      'buyer strawberry route order request stays allowed',
+      'Добрый день, а можно сделать заказ на клубнику Азию по маршруту автобуса, может быть будет кому-то удобно попутно?',
     ],
     [
       'commercial property recommendation request stays allowed',
