@@ -900,13 +900,17 @@ export function deriveSafeContextBucket(params: {
 }): AuditSafeContextBucket {
   const negativeSignals = [...params.current.negativeSignals, ...params.historical.negativeSignals];
   const text = params.text.toLowerCase();
+  const hasCommercialHit = params.current.hit || params.historical.hit;
   const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
   const hasSignalPrefix = (prefix: string): boolean =>
     negativeSignals.some((signal) => signal.startsWith(prefix));
 
+  if (hasSignal('context:moderation-ad-discussion') || hasSignal('context:quoted-ad-example')) {
+    return 'rules_or_moderation_context';
+  }
+
   if (
-    hasSignal('context:moderation-ad-discussion') ||
-    hasSignal('context:quoted-ad-example') ||
+    !hasCommercialHit &&
     RULES_OR_MODERATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(text))
   ) {
     return 'rules_or_moderation_context';

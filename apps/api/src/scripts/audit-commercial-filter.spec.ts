@@ -62,4 +62,19 @@ describe('deriveSafeContextBucket', () => {
       }),
     ).toBe('rules_or_moderation_context');
   });
+
+  it('does not let text-only rules wording override an existing commercial hit', () => {
+    expect(
+      deriveSafeContextBucket({
+        text: 'Объявления Казань. Тут только ссылки на группы, другие удаляем. Присоединяйся к чату.',
+        current: {
+          ...emptySnapshot,
+          hit: true,
+          actionBand: 'REVIEW_ONLY',
+          primarySubtype: 'CHANNEL_PLACEMENT',
+        },
+        historical: emptySnapshot,
+      }),
+    ).not.toBe('rules_or_moderation_context');
+  });
 });
