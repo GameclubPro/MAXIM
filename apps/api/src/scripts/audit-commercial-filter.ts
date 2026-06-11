@@ -185,14 +185,15 @@ const INFO_PRODUCT_SEGMENT_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_-])(?:курс|вебинар|марафон|обучен|наставнич|разбор|созвон|урок)(?=[\p{L}\p{N}_-]|$)/iu,
 ] as const;
 
-function readCliOptions(argv: readonly string[]): CliOptions {
+export function readCliOptions(argv: readonly string[]): CliOptions {
   const args = [...argv];
   const now = new Date();
   const since =
     readDateOption(args, '--since') ??
     new Date(now.getTime() - DEFAULT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   const until = readDateOption(args, '--until') ?? now;
-  const limit = readLimitOption(args, '--limit') ?? DEFAULT_LIMIT;
+  const parsedLimit = readLimitOption(args, '--limit');
+  const limit = parsedLimit === undefined ? DEFAULT_LIMIT : parsedLimit;
   const sample = readPositiveIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
   const exportJsonlPath = readStringOption(args, '--export-jsonl');
@@ -265,12 +266,23 @@ function readLimitOption(args: readonly string[], name: string): number | null |
 
 function readStringOption(args: readonly string[], name: string): string | undefined {
   const index = args.findIndex((arg) => arg === name);
-  if (index < 0) {
+  if (index >= 0) {
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) {
+      throw new Error(`${name} requires a value`);
+    }
+
+    return value.trim() || undefined;
+  }
+
+  const inlinePrefix = `${name}=`;
+  const inlineValue = args.find((arg) => arg.startsWith(inlinePrefix));
+  if (!inlineValue) {
     return undefined;
   }
 
-  const value = args[index + 1];
-  if (!value || value.startsWith('--')) {
+  const value = inlineValue.slice(inlinePrefix.length);
+  if (!value) {
     throw new Error(`${name} requires a value`);
   }
 
@@ -1379,8 +1391,10 @@ async function main() {
   }
 }
 
-void main().catch((error: unknown) => {
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  console.error(message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  void main().catch((error: unknown) => {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    console.error(message);
+    process.exitCode = 1;
+  });
+}
