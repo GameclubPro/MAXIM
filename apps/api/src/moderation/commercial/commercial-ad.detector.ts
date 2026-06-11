@@ -357,6 +357,9 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
   return negativeSignals.some(
     (signal) =>
       signal === 'context:quoted-ad-example' ||
+      signal === 'context:commercial-review-question' ||
+      signal === 'context:channel-ad-due-diligence' ||
+      signal === 'context:local-news-subscribe' ||
       signal === 'context:moderation-ad-discussion' ||
       signal === 'context:resale-pricing-discussion' ||
       signal === 'context:channel-metrics-not-selling' ||
@@ -426,6 +429,18 @@ function isLikelyDeliveryDiscussionNoise(
   state: ReturnType<typeof collectCommercialSignals>,
   rawLoweredText: string,
 ): boolean {
+  const hasDeliveryPlatformOnboardingOnly =
+    state.matchedSignals.includes('service-specialty:delivery-platform-onboarding') &&
+    !state.matchedSignals.some(
+      (signal) =>
+        signal.startsWith('service-specialty:') &&
+        signal !== 'service-specialty:delivery-platform-onboarding',
+    );
+  const hasDeliveryComplaintContext =
+    /(?:^|[^\p{L}\p{N}_-])(?:заказал[аи]?|заказ|курьер[\p{L}\p{N}_-]*|ozon|озон|доставк[\p{L}\p{N}_-]*|оплат[\p{L}\p{N}_-]*\s+наличн[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,180})(?:это\s+нормальн[\p{L}\p{N}_-]*|просит|пишет|звонит|мне|меня|в\s+личк[\p{L}\p{N}_-]*|личн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    );
+
   if (
     !state.matchedSignals.includes('promo:доставк') ||
     state.hasIntent ||
@@ -433,9 +448,9 @@ function isLikelyDeliveryDiscussionNoise(
     state.hasBuyoutContext ||
     state.hasRecruitmentContext ||
     state.hasInfoProductContext ||
-    state.hasServiceContext ||
+    (state.hasServiceContext && !hasDeliveryPlatformOnboardingOnly) ||
     state.hasServiceOfferContext ||
-    state.hasServiceSpecialtyContext ||
+    (state.hasServiceSpecialtyContext && !hasDeliveryPlatformOnboardingOnly) ||
     state.hasGoodsRetailContext ||
     state.hasGroupPromoContext ||
     state.hasCommercialAudienceContext ||
@@ -463,7 +478,10 @@ function isLikelyDeliveryDiscussionNoise(
     return false;
   }
 
-  return /(?:^|[^\p{L}\p{N}_-])(?:мне|меня|она|он|они|я\s+писал[аи]?|пишет|звонит|адрес|удалил[аи]?|разборк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-    rawLoweredText,
+  return (
+    hasDeliveryComplaintContext ||
+    /(?:^|[^\p{L}\p{N}_-])(?:мне|меня|она|он|они|я\s+писал[аи]?|пишет|звонит|адрес|удалил[аи]?|разборк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
   );
 }

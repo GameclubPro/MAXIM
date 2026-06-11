@@ -24,6 +24,7 @@ import {
   ADS_RETAIL_ORDER_FLOW_PATTERN,
   ADS_REVIEW_CLEARING_HIGH_RISK_SIGNALS,
 } from './commercial-patterns';
+import { countPatternMatches, hasPriceLikeText } from './commercial-match-utils';
 import type {
   CommercialActionBand,
   CommercialClassification,
@@ -64,32 +65,6 @@ export function sigmoid(value: number): number {
 
   const exponent = Math.exp(value);
   return exponent / (1 + exponent);
-}
-
-export function countPatternMatches(
-  value: string,
-  pattern: RegExp,
-  limit: number = COMMERCIAL_ENGINE_CONFIG.secondStage.countLimits.defaultPatternMatches,
-): number {
-  if (!value || limit <= 0) {
-    return 0;
-  }
-
-  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
-  const matcher = new RegExp(pattern.source, flags);
-  let count = 0;
-
-  while (count < limit && matcher.exec(value)) {
-    count += 1;
-  }
-
-  return count;
-}
-
-function hasPriceLikeText(value: string): boolean {
-  return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
-    value,
-  );
 }
 
 function shouldRunCommercialSecondStage(params: {

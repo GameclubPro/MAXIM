@@ -29,10 +29,40 @@ describe('audit-commercial-filter CLI options', () => {
   it('keeps --limit all as an unlimited audit', () => {
     expect(readCliOptions(['--limit', 'all']).limit).toBeNull();
     expect(readCliOptions(['--limit=all']).limit).toBeNull();
+    expect(readCliOptions(['--limit=ALL']).limit).toBeNull();
   });
 
   it('uses the default limit only when --limit is omitted', () => {
     expect(readCliOptions([]).limit).toBe(1500);
+  });
+
+  it('rejects non-integer limit values instead of truncating them', () => {
+    expect(() => readCliOptions(['--limit', '10x'])).toThrow(
+      '--limit must be a positive integer or "all"',
+    );
+    expect(() => readCliOptions(['--limit', '1e6'])).toThrow(
+      '--limit must be a positive integer or "all"',
+    );
+    expect(() => readCliOptions(['--limit', '0'])).toThrow(
+      '--limit must be a positive integer or "all"',
+    );
+  });
+
+  it('keeps missing option values explicit', () => {
+    expect(() => readCliOptions(['--limit'])).toThrow('--limit requires a value');
+    expect(() => readCliOptions(['--sample'])).toThrow('--sample requires a value');
+  });
+
+  it('rejects non-integer sample values instead of truncating them', () => {
+    expect(() => readCliOptions(['--sample', '2x'])).toThrow(
+      '--sample must be a positive integer',
+    );
+    expect(() => readCliOptions(['--sample', '1e6'])).toThrow(
+      '--sample must be a positive integer',
+    );
+    expect(() => readCliOptions(['--sample', '0'])).toThrow(
+      '--sample must be a positive integer',
+    );
   });
 });
 

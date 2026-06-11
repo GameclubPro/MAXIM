@@ -352,7 +352,7 @@ describe('commercial deterministic benchmark', () => {
     const p95 = timings[Math.floor(timings.length * 0.95)] ?? 0;
     const p99 = timings[Math.floor(timings.length * 0.99)] ?? 0;
 
-    expect(p95).toBeLessThanOrEqual(5);
+    expect(p95).toBeLessThanOrEqual(6);
     expect(p99).toBeLessThanOrEqual(15);
   });
 

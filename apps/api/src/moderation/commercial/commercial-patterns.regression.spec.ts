@@ -624,6 +624,43 @@ describe('commercial pattern regressions', () => {
       signals: ['channel-placement:paid-directory-addition', 'deal-channel:link'],
     },
     {
+      label: 'agent rental commission to realtor from recall sweep',
+      text: 'Сдам квартиру на длительный срок, комиссия риэлтору 50%, показ сегодня, телефон +7 900 000 11 02.',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:комиссия-агенту-аренда', 'contact:phone'],
+      negativeSignals: ['private:property-sale'],
+    },
+    {
+      label: 'short stay apartment booking from recall sweep',
+      text: 'Квартира посуточно рядом с вокзалом, свободна на выходные, бронь в личку.',
+      subtype: 'PROPERTY_AGENT',
+      signals: ['property-agent:посуточная-квартира-бронь', 'contact:в личк'],
+    },
+    {
+      label: 'paid social actions work from recall sweep',
+      text: 'Ставь лайки, подписывайся и получай деньги на карту ежедневно, задания в личку.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:paid-social-actions-work', 'contact:в личк'],
+    },
+    {
+      label: 'chat correspondence operator from recall sweep',
+      text: 'Оператор переписки в MAX, свободный график, выплаты каждую неделю, обучение, пишите.',
+      subtype: 'RECRUITMENT',
+      signals: ['recruitment:chat-correspondence-operator'],
+    },
+    {
+      label: 'vp op channel cross promo from recall sweep',
+      text: 'ОП/ВП в MAX каналах, аудитория 12к, статистику скину в личку.',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:vp-op-cross-promo', 'contact:в личк'],
+    },
+    {
+      label: 'paid chat pin placement from recall sweep',
+      text: 'Закреп в чате на сутки 300р, оставляйте ссылку админу.',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:paid-pin-placement', 'transaction:price'],
+    },
+    {
       label: 'group promo through profile link',
       text: 'Наш чат для мам, заходите, ссылка в профиле.',
       subtype: 'GROUP_PROMOTION',
@@ -1091,6 +1128,58 @@ describe('commercial pattern regressions', () => {
     [
       'news subscription wording with in course idiom stays allowed',
       'Подпишитесь, чтобы быть в курсе городских новостей и важных объявлений администрации. https://example.com/news',
+    ],
+    [
+      'rental owner without commission stays allowed',
+      'Сдам квартиру, собственник, без комиссии, залог 10000.',
+    ],
+    [
+      'short stay apartment request stays allowed',
+      'Ищу квартиру посуточно на выходные, посоветуйте варианты.',
+    ],
+    [
+      'school voting likes without pay stay allowed',
+      'Поставьте лайк посту школы, это голосование без оплаты.',
+    ],
+    [
+      'max support operator story stays allowed',
+      'Оператор поддержки MAX ответил в чате, проблема решена.',
+    ],
+    [
+      'vp school homework stays allowed',
+      'ВП по математике задали на завтра, кто понял задачу?',
+    ],
+    [
+      'pin chat rules request stays allowed',
+      'Закрепите правила чата, чтобы новички видели их сверху.',
+    ],
+    [
+      'question quoting third party service ad stays allowed',
+      'Кто пользовался услугами мастера из объявления "ремонт окон от 3000, звоните"? Это нормальный специалист или реклама?',
+    ],
+    [
+      'course due diligence with price stays allowed',
+      'Кто проходил курс по маркетплейсам за 3000 руб, стоит ли своих денег? Нужны отзывы.',
+    ],
+    [
+      'ozon delivery complaint with cash request stays allowed',
+      'Заказал на Ozon доставку, курьер просит оплату наличными и пишет в личку, это нормально?',
+    ],
+    [
+      'channel ad due diligence with metrics stays allowed',
+      'Кто покупал рекламу в этом канале: ER24 8%, цена за пост 500р, статистика похожа на накрутку?',
+    ],
+    [
+      'generic district news subscribe footer stays allowed',
+      'Сегодня в парке открыли новую детскую площадку после ремонта. Подписывайтесь на канал района https://example.com/news',
+    ],
+    [
+      'private used dress resale with avito delivery stays allowed',
+      'Продам платье б/у, размер 44, не подошло. Возможна доставка по России Авито доставкой, цена 1200 руб.',
+    ],
+    [
+      'private seedling leftovers with one price stay allowed',
+      'Лишняя рассада после посадки: помидоры бычье сердце, черри, перец желтый. Отдам по 30 руб, самовывоз.',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();

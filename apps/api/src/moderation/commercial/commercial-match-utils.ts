@@ -1,0 +1,195 @@
+import { stripUrlsFromText } from '../../common/url-text.util';
+import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+import {
+  normalizeCommercialConfusables,
+  normalizeCommercialText,
+} from './commercial-normalization';
+import { ADS_SPECIAL_TOKEN_MATCHERS } from './commercial-patterns';
+
+export type CommercialMarkerContext = {
+  normalizedTextWithoutUrls: string;
+  normalizedConfusableTextWithoutUrls: string;
+  rawLoweredTextWithoutUrls: string;
+  normalizedTokensWithoutUrls: string[];
+};
+
+export type CommercialTextMatcher = {
+  context: CommercialMarkerContext;
+  hasMarker(marker: string): boolean;
+  matchesPattern(pattern: RegExp): boolean;
+};
+
+export function createCommercialTextMatcher(
+  normalizedText: string,
+  rawLoweredText: string,
+): CommercialTextMatcher {
+  const context = buildCommercialMarkerContext(normalizedText, rawLoweredText);
+  const markerCache = new Map<string, boolean>();
+  const patternCache = new WeakMap<RegExp, boolean>();
+
+  return {
+    context,
+    hasMarker(marker: string): boolean {
+      const cached = markerCache.get(marker);
+      if (cached !== undefined) {
+        return cached;
+      }
+
+      const hit = hasCommercialMarker(marker, context);
+      markerCache.set(marker, hit);
+      return hit;
+    },
+    matchesPattern(pattern: RegExp): boolean {
+      const cached = patternCache.get(pattern);
+      if (cached !== undefined) {
+        return cached;
+      }
+
+      const hit = matchesCommercialPattern(pattern, context);
+      patternCache.set(pattern, hit);
+      return hit;
+    },
+  };
+}
+
+export function buildCommercialMarkerContext(
+  normalizedText: string,
+  rawLoweredText: string,
+): CommercialMarkerContext {
+  const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
+  const rawLoweredTextWithoutUrlsNormalized =
+    normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
+  const normalizedTextWithoutUrls =
+    rawLoweredTextWithoutUrls === rawLoweredText
+      ? normalizedText
+      : normalizeCommercialText(rawLoweredTextWithoutUrls);
+  const normalizedTextWithRawConfusables =
+    rawLoweredTextWithoutUrlsNormalized === rawLoweredTextWithoutUrls
+      ? normalizedTextWithoutUrls
+      : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
+  const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
+  const normalizedTokensWithoutUrls = [
+    ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
+    ...(hasDistinctConfusableText
+      ? (normalizedTextWithRawConfusables.match(/[\p{L}\p{N}]+/gu) ?? [])
+      : []),
+  ];
+
+  return {
+    normalizedTextWithoutUrls,
+    normalizedConfusableTextWithoutUrls: hasDistinctConfusableText
+      ? normalizedTextWithRawConfusables
+      : '',
+    rawLoweredTextWithoutUrls,
+    normalizedTokensWithoutUrls,
+  };
+}
+
+export function hasCommercialMarker(marker: string, context: CommercialMarkerContext): boolean {
+  const normalizedMarker = normalizeCommercialText(marker);
+  if (!normalizedMarker) {
+    return false;
+  }
+
+  const specialTokenMatcher = ADS_SPECIAL_TOKEN_MATCHERS.get(normalizedMarker);
+  if (specialTokenMatcher) {
+    return context.normalizedTokensWithoutUrls.some((token) =>
+      testCommercialPattern(specialTokenMatcher, token),
+    );
+  }
+
+  if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
+    return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
+  }
+
+  return (
+    context.normalizedTextWithoutUrls.includes(normalizedMarker) ||
+    (context.normalizedConfusableTextWithoutUrls !== '' &&
+      context.normalizedConfusableTextWithoutUrls.includes(normalizedMarker)) ||
+    context.rawLoweredTextWithoutUrls.includes(marker.toLowerCase())
+  );
+}
+
+export function matchesCommercialPattern(
+  pattern: RegExp,
+  context: CommercialMarkerContext,
+): boolean {
+  return (
+    testCommercialPattern(pattern, context.normalizedTextWithoutUrls) ||
+    (context.normalizedConfusableTextWithoutUrls !== '' &&
+      testCommercialPattern(pattern, context.normalizedConfusableTextWithoutUrls)) ||
+    testCommercialPattern(pattern, context.rawLoweredTextWithoutUrls)
+  );
+}
+
+export function collectFirstMarkers(
+  markers: readonly string[],
+  predicate: (marker: string) => boolean,
+  limit: number,
+): string[] {
+  const hits: string[] = [];
+  for (const marker of markers) {
+    if (hits.length >= limit) {
+      break;
+    }
+    if (predicate(marker) && !hits.includes(marker)) {
+      hits.push(marker);
+    }
+  }
+  return hits;
+}
+
+export function collectFirstPatternLabels(
+  patterns: readonly { label: string; pattern: RegExp }[],
+  predicate: (pattern: RegExp) => boolean,
+  limit: number,
+  seed: readonly string[] = [],
+): string[] {
+  const hits = [...seed];
+  for (const { label, pattern } of patterns) {
+    if (hits.length >= limit) {
+      break;
+    }
+    if (predicate(pattern) && !hits.includes(label)) {
+      hits.push(label);
+    }
+  }
+  return hits;
+}
+
+export function countPatternMatches(
+  value: string,
+  pattern: RegExp,
+  limit: number = COMMERCIAL_ENGINE_CONFIG.secondStage.countLimits.defaultPatternMatches,
+): number {
+  if (!value || limit <= 0) {
+    return 0;
+  }
+
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const matcher = new RegExp(pattern.source, flags);
+  let count = 0;
+
+  while (count < limit && matcher.exec(value)) {
+    count += 1;
+  }
+
+  return count;
+}
+
+export function hasPriceLikeText(value: string): boolean {
+  return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
+    value,
+  );
+}
+
+function testCommercialPattern(pattern: RegExp, value: string): boolean {
+  if (!pattern.global && !pattern.sticky) {
+    return pattern.test(value);
+  }
+
+  pattern.lastIndex = 0;
+  const hit = pattern.test(value);
+  pattern.lastIndex = 0;
+  return hit;
+}

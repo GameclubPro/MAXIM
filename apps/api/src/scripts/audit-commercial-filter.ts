@@ -245,7 +245,7 @@ function readPositiveIntOption(args: readonly string[], name: string): number | 
     return undefined;
   }
 
-  const parsed = Number.parseInt(value, 10);
+  const parsed = parsePositiveInteger(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive integer`);
   }
@@ -263,12 +263,21 @@ function readLimitOption(args: readonly string[], name: string): number | null |
     return null;
   }
 
-  const parsed = Number.parseInt(value, 10);
+  const parsed = parsePositiveInteger(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive integer or "all"`);
   }
 
   return parsed;
+}
+
+function parsePositiveInteger(value: string): number {
+  if (!/^\d+$/u.test(value)) {
+    return Number.NaN;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
 }
 
 function readStringOption(args: readonly string[], name: string): string | undefined {
@@ -1117,7 +1126,7 @@ async function main() {
       [
         'COMMERCIAL_AD audit started',
         `window=${options.since.toISOString()}..${options.until.toISOString()}`,
-        `limit=${options.limit}`,
+        `limit=${options.limit === null ? 'all' : options.limit}`,
         `sample=${options.sample}`,
         `chatId=${options.chatId ?? 'ALL'}`,
         `candidates=${candidates.length}`,

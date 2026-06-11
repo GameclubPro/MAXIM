@@ -4,10 +4,14 @@ import type { CommercialThresholdProfile } from '../rule-engine-commercial-thres
 import type { CommercialSubtype } from '../rule-engine.contract';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import { buildCommercialFeatureVector } from './commercial-explain';
+import { normalizeCommercialText } from './commercial-normalization';
 import {
-  normalizeCommercialConfusables,
-  normalizeCommercialText,
-} from './commercial-normalization';
+  collectFirstMarkers,
+  collectFirstPatternLabels,
+  countPatternMatches,
+  createCommercialTextMatcher,
+  hasPriceLikeText,
+} from './commercial-match-utils';
 import {
   ADS_INTENT_MARKERS,
   ADS_SERVICE_INTENT_MARKERS,
@@ -53,7 +57,6 @@ import {
   ADS_PROPERTY_AGENT_PATTERNS,
   PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS,
   PROPERTY_LISTING_NOISE_BUSINESS_MARKERS,
-  ADS_SPECIAL_TOKEN_MATCHERS,
   ADS_LINK_PATTERN,
   ADS_MARKETPLACE_LINK_PATTERN,
   ADS_MARKETPLACE_SERVICE_LINK_PATTERN,
@@ -77,20 +80,12 @@ import {
   ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
   ADS_MULTI_SKU_PRICE_LINE_PATTERN,
 } from './commercial-patterns';
-import { countPatternMatches } from './commercial-scorer';
 import { resolveMissingCommercialAnchors } from './commercial-subtypes';
 import type {
   CommercialFeatureVector,
   CommercialRequiredAnchor,
   CommercialSignalState,
 } from './commercial.types';
-
-type CommercialMarkerContext = {
-  normalizedTextWithoutUrls: string;
-  normalizedConfusableTextWithoutUrls: string;
-  rawLoweredTextWithoutUrls: string;
-  normalizedTokensWithoutUrls: string[];
-};
 
 export function hasCommercialSpamMarkers(text: string): boolean {
   const normalizedText = normalizeCommercialText(text);
@@ -99,10 +94,9 @@ export function hasCommercialSpamMarkers(text: string): boolean {
     return false;
   }
 
-  const markerContext = buildCommercialMarkerContext(normalizedText, rawLoweredText);
-  const hasMarker = (marker: string): boolean => hasCommercialMarker(marker, markerContext);
-  const matchesPattern = (pattern: RegExp): boolean =>
-    matchesCommercialPattern(pattern, markerContext);
+  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText);
+  const hasMarker = matcher.hasMarker;
+  const matchesPattern = matcher.matchesPattern;
   const hasUtilityPaymentContext =
     ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(normalizedText) ||
     ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(rawLoweredText);
@@ -300,6 +294,15 @@ export function hasExplicitSelfPromotionalCommercialContext(state: CommercialSig
 }
 
 export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState): boolean {
+  const hasPersonalResaleContext = state.negativeSignals.some(
+    (signal) =>
+      signal === 'private:б/у' ||
+      signal === 'private:бу' ||
+      signal === 'private:не подошл' ||
+      signal === 'private-goods:resale-condition' ||
+      signal === 'private-goods:private-apparel-avito-delivery',
+  );
+
   return (
     state.hasBusinessContext ||
     state.hasDealChannel ||
@@ -310,29 +313,36 @@ export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState):
     hasStrongGoodsRetailEvidence(state, {
       includePrivateResaleWeakSignals: false,
       includeLowQuantityPlantStock: false,
+      includePrivateOrderFlowSignals: !hasPersonalResaleContext,
     })
   );
 }
 
 function hasStrongGoodsRetailEvidence(
   state: CommercialSignalState,
-  options: { includePrivateResaleWeakSignals: boolean; includeLowQuantityPlantStock?: boolean } = {
+  options: {
+    includePrivateResaleWeakSignals: boolean;
+    includeLowQuantityPlantStock?: boolean;
+    includePrivateOrderFlowSignals?: boolean;
+  } = {
     includePrivateResaleWeakSignals: true,
     includeLowQuantityPlantStock: true,
+    includePrivateOrderFlowSignals: true,
   },
 ): boolean {
   const includeLowQuantityPlantStock = options.includeLowQuantityPlantStock ?? true;
+  const includePrivateOrderFlowSignals = options.includePrivateOrderFlowSignals ?? true;
   return state.matchedSignals.some(
     (signal) =>
       signal === 'goods-retail:sizes-and-colors' ||
       signal === 'goods-retail:catalog-media' ||
       signal === 'goods-retail:manufacturer' ||
       signal === 'goods-retail:commercial-use' ||
-      signal === 'goods-retail:order-flow' ||
+      (includePrivateOrderFlowSignals && signal === 'goods-retail:order-flow') ||
       signal === 'goods-retail:bulk-materials' ||
       signal === 'goods-retail:wholesale-produce' ||
       signal === 'goods-retail:volume-price-table' ||
-      signal === 'goods-retail:apparel-retail-order-flow' ||
+      (includePrivateOrderFlowSignals && signal === 'goods-retail:apparel-retail-order-flow') ||
       (includeLowQuantityPlantStock && signal === 'goods-retail:plant-nursery-stock') ||
       signal === 'goods-retail:plant-nursery-shipping' ||
       signal === 'goods-retail:clearance-stock-retail' ||
@@ -367,112 +377,6 @@ export function isLikelyPrivateLowQuantityGoodsListing(rawLoweredText: string): 
 
 export function hasRideShareContext(rawLoweredText: string): boolean {
   return ADS_RIDE_SHARE_CONTEXT_PATTERN.test(rawLoweredText);
-}
-
-function buildCommercialMarkerContext(
-  normalizedText: string,
-  rawLoweredText: string,
-): CommercialMarkerContext {
-  const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
-  const rawLoweredTextWithoutUrlsNormalized =
-    normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
-  const normalizedTextWithoutUrls =
-    rawLoweredTextWithoutUrls === rawLoweredText
-      ? normalizedText
-      : normalizeCommercialText(rawLoweredTextWithoutUrls);
-  const normalizedTextWithRawConfusables =
-    rawLoweredTextWithoutUrlsNormalized === rawLoweredTextWithoutUrls
-      ? normalizedTextWithoutUrls
-      : normalizeCommercialText(rawLoweredTextWithoutUrlsNormalized);
-  const hasDistinctConfusableText = normalizedTextWithRawConfusables !== normalizedTextWithoutUrls;
-  const normalizedTokensWithoutUrls = [
-    ...(normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? []),
-    ...(hasDistinctConfusableText
-      ? (normalizedTextWithRawConfusables.match(/[\p{L}\p{N}]+/gu) ?? [])
-      : []),
-  ];
-
-  return {
-    normalizedTextWithoutUrls,
-    normalizedConfusableTextWithoutUrls: hasDistinctConfusableText
-      ? normalizedTextWithRawConfusables
-      : '',
-    rawLoweredTextWithoutUrls,
-    normalizedTokensWithoutUrls,
-  };
-}
-
-function hasCommercialMarker(marker: string, context: CommercialMarkerContext): boolean {
-  const normalizedMarker = normalizeCommercialText(marker);
-  if (!normalizedMarker) {
-    return false;
-  }
-
-  const specialTokenMatcher = ADS_SPECIAL_TOKEN_MATCHERS.get(normalizedMarker);
-  if (specialTokenMatcher) {
-    return context.normalizedTokensWithoutUrls.some((token) => specialTokenMatcher.test(token));
-  }
-
-  if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
-    return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
-  }
-
-  return (
-    context.normalizedTextWithoutUrls.includes(normalizedMarker) ||
-    (context.normalizedConfusableTextWithoutUrls !== '' &&
-      context.normalizedConfusableTextWithoutUrls.includes(normalizedMarker)) ||
-    context.rawLoweredTextWithoutUrls.includes(marker.toLowerCase())
-  );
-}
-
-function matchesCommercialPattern(pattern: RegExp, context: CommercialMarkerContext): boolean {
-  return (
-    pattern.test(context.normalizedTextWithoutUrls) ||
-    (context.normalizedConfusableTextWithoutUrls !== '' &&
-      pattern.test(context.normalizedConfusableTextWithoutUrls)) ||
-    pattern.test(context.rawLoweredTextWithoutUrls)
-  );
-}
-
-function collectFirstMarkers(
-  markers: readonly string[],
-  predicate: (marker: string) => boolean,
-  limit: number,
-): string[] {
-  const hits: string[] = [];
-  for (const marker of markers) {
-    if (hits.length >= limit) {
-      break;
-    }
-    if (predicate(marker) && !hits.includes(marker)) {
-      hits.push(marker);
-    }
-  }
-  return hits;
-}
-
-function collectFirstPatternLabels(
-  patterns: readonly { label: string; pattern: RegExp }[],
-  predicate: (pattern: RegExp) => boolean,
-  limit: number,
-  seed: readonly string[] = [],
-): string[] {
-  const hits = [...seed];
-  for (const { label, pattern } of patterns) {
-    if (hits.length >= limit) {
-      break;
-    }
-    if (predicate(pattern) && !hits.includes(label)) {
-      hits.push(label);
-    }
-  }
-  return hits;
-}
-
-function hasPriceLikeText(value: string): boolean {
-  return /(?:₽|руб|(?:^|[\s.,:;()/%+-])(?:\d(?:\uFE0F?\u20E3)?[\d\s.,\uFE0F\u20E3]*)р(?:$|[^\p{L}\p{N}_-])|₸|\$|€|💵|цен|стоимост|прайс)/iu.test(
-    value,
-  );
 }
 
 function hasGenericDomainLikeText(value: string): boolean {
@@ -557,10 +461,9 @@ export function collectCommercialSignals(params: {
   let hasChannelPlacementContext = false;
   let hasPropertyPrivateContext = false;
 
-  const markerContext = buildCommercialMarkerContext(normalizedText, rawLoweredText);
-  const hasMarker = (marker: string): boolean => hasCommercialMarker(marker, markerContext);
-  const matchesPattern = (pattern: RegExp): boolean =>
-    matchesCommercialPattern(pattern, markerContext);
+  const matcher = createCommercialTextMatcher(normalizedText, rawLoweredText);
+  const hasMarker = matcher.hasMarker;
+  const matchesPattern = matcher.matchesPattern;
   const hasUtilityPaymentContext =
     ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(normalizedText) ||
     ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(rawLoweredText);
@@ -771,10 +674,13 @@ export function collectCommercialSignals(params: {
   const hasRecruitmentResponseKeywordHit =
     recruitmentHits.includes('hr-chat-recruiter') ||
     recruitmentHits.includes('remote-network-work') ||
+    recruitmentHits.includes('chat-correspondence-operator') ||
     (recruitmentHits.length > 0 &&
       ADS_RECRUITMENT_PATTERNS.some(
         ({ label, pattern }) =>
-          (label === 'hr-chat-recruiter' || label === 'remote-network-work') &&
+          (label === 'hr-chat-recruiter' ||
+            label === 'remote-network-work' ||
+            label === 'chat-correspondence-operator') &&
           matchesPattern(pattern),
       ));
   if (hasRecruitmentResponseKeywordHit) {

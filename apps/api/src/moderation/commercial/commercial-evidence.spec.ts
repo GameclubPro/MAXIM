@@ -139,6 +139,36 @@ describe('commercial evidence profile', () => {
       },
     },
     {
+      label: 'non-escalation paid esoteric service risk',
+      signals: ['risk:paid-esoteric-service'],
+      expected: {
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: false,
+        hasNonCampaignDirectDealEvidence: false,
+        hasActionDirectDealEvidence: false,
+      },
+    },
+    {
+      label: 'non-escalation lead magnet risk',
+      signals: ['risk:lead-magnet'],
+      expected: {
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: false,
+        hasNonCampaignDirectDealEvidence: false,
+        hasActionDirectDealEvidence: false,
+      },
+    },
+    {
+      label: 'non-escalation app store directory promo risk',
+      signals: ['risk:app-store-directory-promo'],
+      expected: {
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: false,
+        hasNonCampaignDirectDealEvidence: false,
+        hasActionDirectDealEvidence: false,
+      },
+    },
+    {
       label: 'high risk with weak contact',
       signals: ['risk:loan-leadgen', 'contact:в личк'],
       expected: {
@@ -181,6 +211,48 @@ describe('commercial evidence profile', () => {
     expect(evidence.hasClassifierDirectDealEvidence).toBe(true);
     expect(evidence.hasActionDirectDealEvidence).toBe(false);
     expect(evidence.hasNonCampaignDirectDealEvidence).toBe(true);
+  });
+
+  it('requires strong deal evidence before campaign markers become action-direct', () => {
+    const campaignOnly = resolveCommercialEvidenceProfile({
+      state: buildState({
+        hasCampaignContext: true,
+        hasPrice: true,
+        matchedSignals: ['campaign:cross-chat-text', 'transaction:price'],
+      }),
+      appliedThresholds: STRICT_THRESHOLDS,
+      commercialCampaignContext: {
+        ...BASE_CAMPAIGN_CONTEXT,
+        sameTextDistinctChatCount: 12,
+        repeatedDomainDistinctChatCount: 12,
+      },
+    });
+
+    expect(campaignOnly.hasHighRiskEvidence).toBe(false);
+    expect(campaignOnly.hasStrongCampaignEvidence).toBe(false);
+    expect(campaignOnly.hasActionDirectDealEvidence).toBe(false);
+    expect(campaignOnly.hasClassifierDirectDealEvidence).toBe(false);
+  });
+
+  it('promotes high-risk direct anchors only when the contact/link evidence is strong', () => {
+    const weakContact = resolveCommercialEvidenceProfile({
+      state: buildState({
+        hasContact: true,
+        matchedSignals: ['risk:loan-leadgen', 'contact:в личк'],
+      }),
+      appliedThresholds: STRICT_THRESHOLDS,
+    });
+    const strongContact = resolveCommercialEvidenceProfile({
+      state: buildState({
+        hasContact: true,
+        hasDealChannel: true,
+        matchedSignals: ['risk:loan-leadgen', 'deal-channel:link', 'contact:handle'],
+      }),
+      appliedThresholds: STRICT_THRESHOLDS,
+    });
+
+    expect(weakContact.hasActionDirectDealEvidence).toBe(false);
+    expect(strongContact.hasActionDirectDealEvidence).toBe(true);
   });
 
   it('recognizes balanced service-phone anchors without loosening generic service phones', () => {
