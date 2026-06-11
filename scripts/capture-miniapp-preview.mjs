@@ -254,6 +254,17 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-dialog-comments-empty-thread',
+    path: '/chat/preview-chat/dialog/comments',
+    searchParams: {
+      token: 'preview-comments-token-0001',
+      thread: 'empty',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'channel-dialog-comments',
     path: '/channel/preview-channel/dialog/comments',
     searchParams: {
@@ -675,6 +686,45 @@ async function assertCommentsTopEdgeCovered(page) {
   }
 }
 
+async function assertCommentsContentTopInset(page) {
+  if (screenshotTarget !== 'native') {
+    return;
+  }
+
+  const layout = await page.evaluate(() => {
+    const list = document.querySelector('.channel-dialog-message-list');
+    const firstContent =
+      list?.querySelector('.channel-dialog-message, .channel-dialog-empty') ?? null;
+
+    if (!(list instanceof HTMLElement) || !(firstContent instanceof HTMLElement)) {
+      return null;
+    }
+
+    const listRect = list.getBoundingClientRect();
+    const firstContentRect = firstContent.getBoundingClientRect();
+    const listStyle = getComputedStyle(list);
+
+    return {
+      inset: firstContentRect.top - listRect.top,
+      listPaddingTop: Number.parseFloat(listStyle.paddingTop) || 0,
+    };
+  });
+
+  if (!layout) {
+    throw new Error('Comments content nodes were not found for top inset check.');
+  }
+
+  if (layout.inset < 6 || layout.listPaddingTop < 6) {
+    throw new Error(
+      [
+        'Comments content is too close to the top edge',
+        `(inset=${layout.inset.toFixed(2)},`,
+        `listPaddingTop=${layout.listPaddingTop.toFixed(2)})`,
+      ].join(' '),
+    );
+  }
+}
+
 async function openBroadcastPlannerTimeSheet(page) {
   await page.waitForTimeout(1000);
 
@@ -902,6 +952,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
 
     if (scenario.name.includes('dialog-comments')) {
       await assertCommentsTopEdgeCovered(page);
+      await assertCommentsContentTopInset(page);
     }
 
     const screenshotPath = path.join(shotDir, `${scenario.name}.png`);

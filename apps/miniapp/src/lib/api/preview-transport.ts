@@ -2443,12 +2443,17 @@ function buildPreviewDialogResponse(
       ? new URLSearchParams(window.location.search).get('thread')?.trim().toLowerCase()
       : null;
   const normalizedBucket =
-    dialogType === 'comments' && previewThreadVariant === 'short'
+    dialogType === 'comments' && previewThreadVariant === 'empty'
       ? {
           ...bucket,
-          messages: bucket.messages.slice(-2),
+          messages: [],
         }
-      : bucket;
+      : dialogType === 'comments' && previewThreadVariant === 'short'
+        ? {
+            ...bucket,
+            messages: bucket.messages.slice(-2),
+          }
+        : bucket;
 
   return channelDialogResponseSchema.parse({
     chatId,

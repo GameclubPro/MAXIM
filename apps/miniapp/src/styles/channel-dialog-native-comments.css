@@ -25,6 +25,7 @@
   --comments-native-edge-inline: var(--comments-native-x);
   --comments-native-edge-top: 0px;
   --comments-native-edge-bottom: max(0px, var(--safe-bottom, 0px));
+  --comments-native-content-top: 10px;
   --comments-native-top-bleed: var(--comments-dialog-top-bleed, 4px);
   --comments-native-notification-top: calc(
     1px + var(--comments-dialog-notification-top-nudge, 0px)
@@ -142,7 +143,7 @@
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
   gap: 7px;
-  padding: 0;
+  padding: var(--comments-native-content-top) 0 0;
 }
 
 .channel-dialog-screen--comments .channel-dialog-message {
@@ -720,6 +721,7 @@
 @media (max-width: 420px) {
   .channel-dialog-screen--comments {
     --comments-native-x: 7px;
+    --comments-native-content-top: 8px;
     --comments-compose-surface-padding: 6px;
     --comments-compose-surface-radius: 23px;
     --comments-compose-toolbar-height: 32px;
