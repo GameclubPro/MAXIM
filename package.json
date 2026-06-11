@@ -23,6 +23,7 @@
     "emulator:miniapp": "node scripts/open-miniapp-emulator.mjs",
     "emulator:miniapp:android": "node scripts/open-miniapp-emulator.mjs --device android",
     "emulator:miniapp:iphone": "node scripts/open-miniapp-emulator.mjs --device iphone",
+    "audit:miniapp:visual": "node scripts/audit-miniapp-visual.mjs",
     "lint": "eslint .",
     "loadtest:webhook": "node infra/scripts/loadtest-webhook-burst.mjs",
     "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",

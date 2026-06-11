@@ -5,11 +5,29 @@ import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets
 
 const DEFAULT_BASE_URL = 'https://maxim.play-team.ru/app/';
 const OUTPUT_ROOT = path.resolve(process.cwd(), 'artifacts/miniapp-screenshots');
-const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+const runLabel = (process.env.MINIAPP_SCREENSHOT_LABEL ?? '').trim();
+const timestamp =
+  runLabel.replace(/[^a-z0-9._-]+/giu, '-').replace(/^-+|-+$/gu, '') ||
+  new Date().toISOString().replace(/[:.]/g, '-');
 
 const deviceProfiles = previewDevicePresets;
 
 const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
+const colorScheme = (process.env.MINIAPP_SCREENSHOT_COLOR_SCHEME ?? 'light').trim().toLowerCase();
+const strictLayout = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_LAYOUT');
+const simulateKeyboard = parseEnvFlag('MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD');
+const keyboardOverlapPx = Number.parseInt(
+  process.env.MINIAPP_SCREENSHOT_KEYBOARD_OVERLAP_PX ?? '320',
+  10,
+);
+const normalizedKeyboardOverlapPx = Number.isFinite(keyboardOverlapPx)
+  ? Math.max(160, Math.min(keyboardOverlapPx, 420))
+  : 320;
+
+function parseEnvFlag(name) {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
 
 const scenarios = [
   {
@@ -395,6 +413,19 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-vk-parsing',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'vkParsing',
+    },
+    beforeShot: async (page) => {
+      await page
+        .locator('.settings-drilldown__panel--vk-parsing .vk-parsing-card')
+        .waitFor({ state: 'visible' });
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'channel-settings-broadcast',
     path: '/channel/preview-channel/settings',
     searchParams: {
@@ -526,6 +557,15 @@ const scenarios = [
     path: '/legal/privacy',
     beforeShot: async (page) => {
       await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'init-missing',
+    path: '/',
+    preview: false,
+    beforeShot: async (page) => {
+      await page.locator('.init-missing-card').waitFor({ state: 'visible' });
+      await page.waitForTimeout(200);
     },
   },
   {
@@ -800,7 +840,7 @@ async function openBroadcastPlannerTimeSheet(page) {
   throw new Error('Broadcast planner time sheet trigger was not found.');
 }
 
-function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}) {
+function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}, options = {}) {
   const base = new URL(baseUrl);
   const normalizedBasePath = base.pathname.endsWith('/')
     ? base.pathname.slice(0, -1)
@@ -809,8 +849,10 @@ function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams =
   const url = new URL(base.toString());
 
   url.pathname = `${normalizedBasePath}${normalizedRoutePath}`;
-  url.searchParams.set('preview', '1');
-  url.searchParams.set('device', queryDevice);
+  if (options.preview !== false) {
+    url.searchParams.set('preview', '1');
+    url.searchParams.set('device', queryDevice);
+  }
   for (const [key, value] of Object.entries(scenarioSearchParams)) {
     if (value != null && String(value).trim()) {
       url.searchParams.set(key, String(value));
@@ -823,7 +865,13 @@ async function ensureDir(dir) {
   await mkdir(dir, { recursive: true });
 }
 
-async function waitForPreviewApp(page) {
+async function waitForApp(page, scenario) {
+  if (scenario.preview === false) {
+    await page.waitForSelector('.app-shell', { timeout: 20_000 });
+    await page.waitForLoadState('networkidle');
+    return;
+  }
+
   await page.waitForSelector('.design-preview__device', { timeout: 20_000 });
   await page.waitForSelector('.app-shell', { timeout: 20_000 });
   await page.waitForLoadState('networkidle');
@@ -886,6 +934,10 @@ async function applyNativeScreenshotMode(page, profile) {
       }
 
       .design-preview .bottom-nav {
+        position: fixed !important;
+        left: 50% !important;
+        right: auto !important;
+        bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset, 8px)) !important;
         width: min(calc(100% - 24px), var(--app-shell-max-width)) !important;
       }
 
@@ -905,6 +957,364 @@ async function applyNativeScreenshotMode(page, profile) {
     window.dispatchEvent(new Event('resize'));
   }, profile);
   await page.waitForTimeout(120);
+}
+
+async function simulateKeyboardViewport(page) {
+  if (!simulateKeyboard) {
+    return;
+  }
+
+  await page.addStyleTag({
+    content: `
+      html[data-max-keyboard-open='true'] .bottom-nav {
+        opacity: 0 !important;
+        pointer-events: none !important;
+        transform: translate(-50%, calc(100% + var(--space-6, 32px) + var(--app-keyboard-overlap, 0px))) !important;
+      }
+    `,
+  });
+
+  await page.evaluate((overlapPx) => {
+    const root = document.documentElement;
+    root.style.setProperty('--app-keyboard-overlap', `${overlapPx}px`);
+    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event('focusin'));
+    root.setAttribute('data-max-keyboard-open', 'true');
+  }, normalizedKeyboardOverlapPx);
+  await page.waitForTimeout(180);
+}
+
+async function assertStrictLayout(page, scenario) {
+  if (!strictLayout) {
+    return;
+  }
+
+  await assertAppHasVisibleContent(page, scenario);
+  await assertViewportBounds(page, scenario);
+  await assertNoUnexpectedHorizontalOverflow(page, scenario);
+  await assertPrimaryControlsReachable(page, scenario);
+  await assertChartsPainted(page, scenario);
+  await assertKeyboardState(page, scenario);
+}
+
+async function assertAppHasVisibleContent(page, scenario) {
+  const content = await page.evaluate(() => {
+    const root =
+      document.querySelector('.design-preview__device-screen') ??
+      document.querySelector('.app-shell') ??
+      document.body;
+    if (!(root instanceof HTMLElement)) {
+      return null;
+    }
+
+    const visibleText = root.innerText.replace(/\s+/gu, ' ').trim();
+    const visibleElements = Array.from(
+      root.querySelectorAll('button, a, input, textarea, canvas, svg, img, [role="button"]'),
+    ).filter((element) => {
+      if (!(element instanceof HTMLElement || element instanceof SVGElement)) {
+        return false;
+      }
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 1 &&
+        rect.height > 1 &&
+        style.visibility !== 'hidden' &&
+        style.display !== 'none' &&
+        Number.parseFloat(style.opacity || '1') > 0.01
+      );
+    }).length;
+
+    return {
+      textLength: visibleText.length,
+      visibleElements,
+    };
+  });
+
+  if (!content || (content.textLength < 20 && content.visibleElements < 3)) {
+    throw new Error(
+      `Scenario ${scenario.name} looks blank (text=${content?.textLength ?? 0}, elements=${
+        content?.visibleElements ?? 0
+      }).`,
+    );
+  }
+}
+
+async function assertViewportBounds(page, scenario) {
+  const issues = await page.evaluate((keyboardMode) => {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const selectors = [
+      '.app-shell:not(.app-shell--immersive)',
+      keyboardMode ? null : '.bottom-nav:not(.is-keyboard-open)',
+      '.shell-topbar',
+      '.compact-page-header',
+      '.settings-drilldown',
+      '.broadcast-buttons-sheet__panel',
+      '.time-field-sheet',
+      '.channel-dialog-screen',
+      '.channel-dialog-compose__surface',
+      '.giveaway-page__overlay-card',
+      '.init-missing-card',
+    ];
+
+    return selectors.filter(Boolean).flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector)).flatMap((element) => {
+        if (!(element instanceof HTMLElement)) {
+          return [];
+        }
+        const style = getComputedStyle(element);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          Number.parseFloat(style.opacity || '1') <= 0.01
+        ) {
+          return [];
+        }
+
+        const rect = element.getBoundingClientRect();
+        const topTolerance = selector === '.channel-dialog-screen' ? 12 : 2;
+        const problem =
+          rect.left < -2 ||
+          rect.right > viewportWidth + 2 ||
+          rect.top < -topTolerance ||
+          rect.top > viewportHeight + 2;
+        return problem
+          ? [
+              {
+                selector,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                viewportWidth,
+                viewportHeight,
+              },
+            ]
+          : [];
+      }),
+    );
+  }, simulateKeyboard);
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has viewport-bound issue at ${first.selector}: ` +
+        `left=${first.left.toFixed(1)} right=${first.right.toFixed(1)} top=${first.top.toFixed(
+          1,
+        )} viewport=${first.viewportWidth}x${first.viewportHeight}.`,
+    );
+  }
+}
+
+async function assertNoUnexpectedHorizontalOverflow(page, scenario) {
+  const overflow = await page.evaluate(() => {
+    const root =
+      document.querySelector('.design-preview__device-screen') ??
+      document.querySelector('.app-shell') ??
+      document.documentElement;
+    if (!(root instanceof HTMLElement)) {
+      return null;
+    }
+
+    const allowedOverflowSelectors = [
+      '.broadcast-planner',
+      '.channel-stats-graph',
+      '.channel-insights',
+      '.channel-dialog-messages',
+      '.vk-parsing-feed',
+      '.settings-drilldown',
+      '[data-allow-horizontal-overflow]',
+    ];
+
+    const rootOverflow = root.scrollWidth - root.clientWidth;
+    const offenders = Array.from(root.querySelectorAll('*')).flatMap((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return [];
+      }
+      if (allowedOverflowSelectors.some((selector) => element.closest(selector))) {
+        return [];
+      }
+
+      const style = getComputedStyle(element);
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        Number.parseFloat(style.opacity || '1') <= 0.01
+      ) {
+        return [];
+      }
+
+      const rect = element.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const overflowLeft = rootRect.left - rect.left;
+      const overflowRight = rect.right - rootRect.right;
+      if (overflowLeft > 3 || overflowRight > 3) {
+        return [
+          {
+            className: element.className?.toString() ?? element.tagName,
+            tagName: element.tagName,
+            overflowLeft,
+            overflowRight,
+          },
+        ];
+      }
+
+      return [];
+    });
+
+    return {
+      rootOverflow,
+      offenders: offenders.slice(0, 3),
+    };
+  });
+
+  if (!overflow) {
+    return;
+  }
+
+  if (overflow.rootOverflow > 4 || overflow.offenders.length > 0) {
+    const first = overflow.offenders[0];
+    throw new Error(
+      `Scenario ${scenario.name} has horizontal overflow: root=${overflow.rootOverflow}px` +
+        (first
+          ? `, first=${first.tagName}.${first.className} left=${first.overflowLeft.toFixed(
+              1,
+            )} right=${first.overflowRight.toFixed(1)}`
+          : ''),
+    );
+  }
+}
+
+async function assertPrimaryControlsReachable(page, scenario) {
+  const issues = await page.evaluate((keyboardMode) => {
+    const viewportHeight = window.innerHeight;
+    const selectors = [
+      keyboardMode ? null : '.bottom-nav:not(.is-keyboard-open)',
+      '.channel-dialog-compose__surface',
+      '.settings-drilldown__footer',
+      '.broadcast-buttons-sheet__panel',
+      '.time-field-sheet',
+    ];
+
+    return selectors.filter(Boolean).flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector)).flatMap((element) => {
+        if (!(element instanceof HTMLElement)) {
+          return [];
+        }
+        const style = getComputedStyle(element);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          Number.parseFloat(style.opacity || '1') <= 0.01
+        ) {
+          return [];
+        }
+
+        const rect = element.getBoundingClientRect();
+        return rect.bottom > viewportHeight + 2
+          ? [
+              {
+                selector,
+                bottom: rect.bottom,
+                viewportHeight,
+              },
+            ]
+          : [];
+      }),
+    );
+  }, simulateKeyboard);
+
+  if (issues.length > 0) {
+    const first = issues[0];
+    throw new Error(
+      `Scenario ${scenario.name} has unreachable primary control ${first.selector}: ` +
+        `bottom=${first.bottom.toFixed(1)} viewport=${first.viewportHeight}.`,
+    );
+  }
+}
+
+async function assertChartsPainted(page, scenario) {
+  if (!scenario.name.includes('stats')) {
+    return;
+  }
+
+  const painted = await page.evaluate(() => {
+    const chart =
+      document.querySelector('.channel-stats-graph__bar') ??
+      document.querySelector('.channel-stats-graph svg') ??
+      document.querySelector('canvas');
+    if (
+      !(
+        chart instanceof HTMLElement ||
+        chart instanceof SVGElement ||
+        chart instanceof HTMLCanvasElement
+      )
+    ) {
+      return false;
+    }
+
+    const rect = chart.getBoundingClientRect();
+    if (rect.width <= 2 || rect.height <= 2) {
+      return false;
+    }
+
+    if (chart instanceof HTMLCanvasElement) {
+      const context = chart.getContext('2d');
+      if (!context) {
+        return false;
+      }
+      const sampleWidth = Math.min(chart.width, 64);
+      const sampleHeight = Math.min(chart.height, 64);
+      const data = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+      for (let index = 3; index < data.length; index += 4) {
+        if (data[index] > 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    return true;
+  });
+
+  if (!painted) {
+    throw new Error(`Scenario ${scenario.name} did not render a visible chart/graph element.`);
+  }
+}
+
+async function assertKeyboardState(page, scenario) {
+  if (!simulateKeyboard || scenario.preview === false || scenario.name.includes('dialog')) {
+    return;
+  }
+
+  const state = await page.evaluate(() => {
+    const root = document.documentElement;
+    const nav = document.querySelector('.bottom-nav');
+    if (!(nav instanceof HTMLElement)) {
+      return null;
+    }
+    const rect = nav.getBoundingClientRect();
+    const style = getComputedStyle(nav);
+    return {
+      keyboardOpen: root.dataset.maxKeyboardOpen === 'true',
+      opacity: Number.parseFloat(style.opacity || '1'),
+      pointerEvents: style.pointerEvents,
+      top: rect.top,
+      viewportHeight: window.innerHeight,
+    };
+  });
+
+  if (!state) {
+    return;
+  }
+
+  if (!state.keyboardOpen || state.opacity > 0.05 || state.pointerEvents !== 'none') {
+    throw new Error(
+      `Scenario ${scenario.name} keyboard simulation did not hide bottom nav ` +
+        `(keyboardOpen=${state.keyboardOpen}, opacity=${state.opacity}, pointerEvents=${state.pointerEvents}).`,
+    );
+  }
 }
 
 function resolveScreenshotLocator(page) {
@@ -931,7 +1341,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
 
   const context = await browser.newContext({
     ...device,
-    colorScheme: 'light',
+    colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
     locale: 'ru-RU',
     timezoneId: 'Europe/Moscow',
   });
@@ -941,10 +1351,27 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   await ensureDir(shotDir);
 
   for (const scenario of activeScenarios) {
-    const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice, scenario.searchParams);
+    const url = buildPreviewUrl(
+      baseUrl,
+      scenario.path,
+      profile.queryDevice,
+      scenario.searchParams,
+      {
+        preview: scenario.preview,
+      },
+    );
+    if (scenario.preview === false) {
+      await context.clearCookies();
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      await page.evaluate(() => {
+        window.sessionStorage.clear();
+        window.localStorage.removeItem('maxim:design-preview-device');
+      });
+    }
     await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await waitForPreviewApp(page);
+    await waitForApp(page, scenario);
     await applyNativeScreenshotMode(page, profile);
+    await simulateKeyboardViewport(page);
 
     if (scenario.beforeShot) {
       await scenario.beforeShot(page);
@@ -954,6 +1381,8 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
       await assertCommentsTopEdgeCovered(page);
       await assertCommentsContentTopInset(page);
     }
+
+    await assertStrictLayout(page, scenario);
 
     const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
     const locator = resolveScreenshotLocator(page);

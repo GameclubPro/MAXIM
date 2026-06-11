@@ -6582,7 +6582,7 @@
 .giveaway-page--modal-only {
   width: 100%;
   max-width: none;
-  min-height: 100svh;
+  min-height: var(--app-viewport-height, 100svh);
   margin: 0;
   padding: 0;
   gap: 0;
@@ -7271,7 +7271,8 @@
   isolation: isolate;
   width: min(100%, 390px);
   max-height: calc(
-    100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px
+    var(--app-viewport-height, 100svh) - var(--app-safe-top, 0px) - var(--app-safe-bottom, 0px) -
+      24px
   );
   display: grid;
   justify-items: stretch;
@@ -8214,15 +8215,14 @@
 .giveaway-page__overlay--standalone .giveaway-page__overlay-card {
   width: 100%;
   max-width: none;
-  min-height: 100svh;
-  height: 100svh;
+  min-height: var(--app-viewport-height, 100svh);
+  height: var(--app-viewport-height, 100svh);
   max-height: none;
   align-content: start;
   gap: 12px;
   overflow-y: auto;
-  padding: calc(env(safe-area-inset-top, 0px) + 18px)
-    max(15px, calc(env(safe-area-inset-right, 0px) + 15px))
-    calc(env(safe-area-inset-bottom, 0px) + 18px)
+  padding: calc(var(--app-safe-top, 0px) + 18px)
+    max(15px, calc(env(safe-area-inset-right, 0px) + 15px)) calc(var(--app-safe-bottom, 0px) + 18px)
     max(15px, calc(env(safe-area-inset-left, 0px) + 15px));
   border: 0;
   border-radius: 0;
@@ -8233,14 +8233,6 @@
   box-shadow: none;
   transform-origin: center;
   animation: giveaway-dark-screen-in 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@supports (height: 100dvh) {
-  .giveaway-page__overlay-card,
-  .giveaway-page__overlay--standalone .giveaway-page__overlay-card {
-    min-height: 100dvh;
-    height: 100dvh;
-  }
 }
 
 .giveaway-page__overlay-card::before {

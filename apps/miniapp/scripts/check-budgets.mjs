@@ -38,6 +38,14 @@ const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 20 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
+const SETTINGS_CSS_BUDGET_GZIP = 76 * 1024;
+const CHANNEL_SETTINGS_JS_BUDGET_GZIP = 104 * 1024;
+const CHANNEL_SETTINGS_CSS_BUDGET_GZIP = 76 * 1024;
+const CHANNEL_DIALOG_JS_BUDGET_GZIP = 82 * 1024;
+const CHANNEL_DIALOG_CSS_BUDGET_GZIP = 22 * 1024;
+const CHANNEL_STATS_JS_BUDGET_GZIP = 26 * 1024;
+const GIVEAWAY_JS_BUDGET_GZIP = 58 * 1024;
+const VK_PARSING_CARD_JS_BUDGET_GZIP = 86 * 1024;
 const BUDGET_TOLERANCE_GZIP = 320;
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -129,19 +137,58 @@ const startupCss = new Set([...entryAssets.css, ...chatsAssets.css]);
 
 const settingsAssets = collectAssets(findManifestKey('src/pages/settings-page.tsx'));
 const settingsIncrementalJs = difference(settingsAssets.js, startupJs);
+const settingsIncrementalCss = difference(settingsAssets.css, startupCss);
+const channelSettingsAssets = collectAssets(findManifestKey('src/pages/channel-settings-page.tsx'));
+const channelSettingsIncrementalJs = difference(channelSettingsAssets.js, startupJs);
+const channelSettingsIncrementalCss = difference(channelSettingsAssets.css, startupCss);
+const channelDialogAssets = collectAssets(findManifestKey('src/pages/channel-dialog-page.tsx'));
+const channelDialogIncrementalJs = difference(channelDialogAssets.js, startupJs);
+const channelDialogIncrementalCss = difference(channelDialogAssets.css, startupCss);
+const channelStatsAssets = collectAssets(findManifestKey('src/pages/channel-stats-page.tsx'));
+const channelStatsIncrementalJs = difference(channelStatsAssets.js, startupJs);
+const giveawayAssets = collectAssets(findManifestKey('src/pages/giveaway-page.tsx'));
+const giveawayIncrementalJs = difference(giveawayAssets.js, startupJs);
+const vkParsingCardAssets = collectAssets(
+  findManifestKey('src/components/vk-parsing/vk-parsing-card.tsx'),
+);
+const vkParsingCardIncrementalJs = difference(vkParsingCardAssets.js, startupJs);
 
 const startupJsGzip = sumGzip(startupJs);
 const startupCssGzip = sumGzip(startupCss);
 const settingsJsGzip = sumGzip(settingsIncrementalJs);
+const settingsCssGzip = sumGzip(settingsIncrementalCss);
+const channelSettingsJsGzip = sumGzip(channelSettingsIncrementalJs);
+const channelSettingsCssGzip = sumGzip(channelSettingsIncrementalCss);
+const channelDialogJsGzip = sumGzip(channelDialogIncrementalJs);
+const channelDialogCssGzip = sumGzip(channelDialogIncrementalCss);
+const channelStatsJsGzip = sumGzip(channelStatsIncrementalJs);
+const giveawayJsGzip = sumGzip(giveawayIncrementalJs);
+const vkParsingCardJsGzip = sumGzip(vkParsingCardIncrementalJs);
 
 assertBudget('Startup JS', startupJsGzip, STARTUP_JS_BUDGET_GZIP);
 assertBudget('Startup CSS', startupCssGzip, STARTUP_CSS_BUDGET_GZIP);
 assertBudget('Settings JS', settingsJsGzip, SETTINGS_JS_BUDGET_GZIP);
+assertBudget('Settings CSS', settingsCssGzip, SETTINGS_CSS_BUDGET_GZIP);
+assertBudget('Channel settings JS', channelSettingsJsGzip, CHANNEL_SETTINGS_JS_BUDGET_GZIP);
+assertBudget('Channel settings CSS', channelSettingsCssGzip, CHANNEL_SETTINGS_CSS_BUDGET_GZIP);
+assertBudget('Channel dialog JS', channelDialogJsGzip, CHANNEL_DIALOG_JS_BUDGET_GZIP);
+assertBudget('Channel dialog CSS', channelDialogCssGzip, CHANNEL_DIALOG_CSS_BUDGET_GZIP);
+assertBudget('Channel stats JS', channelStatsJsGzip, CHANNEL_STATS_JS_BUDGET_GZIP);
+assertBudget('Giveaway JS', giveawayJsGzip, GIVEAWAY_JS_BUDGET_GZIP);
+assertBudget('VK parsing card JS', vkParsingCardJsGzip, VK_PARSING_CARD_JS_BUDGET_GZIP);
 
 console.log(
   [
     `Startup JS: ${formatKb(startupJsGzip)} gzip`,
     `Startup CSS: ${formatKb(startupCssGzip)} gzip`,
     `Settings JS: ${formatKb(settingsJsGzip)} gzip`,
+    `Settings CSS: ${formatKb(settingsCssGzip)} gzip`,
+    `Channel settings JS: ${formatKb(channelSettingsJsGzip)} gzip`,
+    `Channel settings CSS: ${formatKb(channelSettingsCssGzip)} gzip`,
+    `Channel dialog JS: ${formatKb(channelDialogJsGzip)} gzip`,
+    `Channel dialog CSS: ${formatKb(channelDialogCssGzip)} gzip`,
+    `Channel stats JS: ${formatKb(channelStatsJsGzip)} gzip`,
+    `Giveaway JS: ${formatKb(giveawayJsGzip)} gzip`,
+    `VK parsing card JS: ${formatKb(vkParsingCardJsGzip)} gzip`,
   ].join('\n'),
 );

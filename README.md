@@ -51,8 +51,11 @@ The wrapper runs repo-standard commands on the VPS without storing secrets in gi
 - iPhone preview: `npm run emulator:miniapp`
 - Android preview: `npm run emulator:miniapp:android`
 - Custom screen: `npm run emulator:miniapp -- --device android --route '/chat/preview-chat/settings?focus=broadcast'`
+- Production visual audit: `npm run audit:miniapp:visual`
 
 The emulator starts the Vite mini-app locally, opens `/app/?preview=1` with mock data, and applies a Playwright mobile device profile so you can inspect the mini-app in a phone-sized browser immediately.
+
+The visual audit uses the production `/app/` domains, native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
 
 ## Role-based API runtime
 

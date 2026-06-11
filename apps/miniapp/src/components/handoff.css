@@ -2,7 +2,10 @@
   .settings-handoff-card {
     position: relative;
     overflow: hidden;
-    min-height: min(520px, calc(100vh - var(--app-safe-top) - var(--app-safe-bottom) - 132px));
+    min-height: min(
+      520px,
+      calc(var(--app-viewport-height, 100vh) - var(--app-safe-top) - var(--app-safe-bottom) - 132px)
+    );
     display: grid;
     align-items: center;
     padding: clamp(22px, 6vw, 34px);
@@ -227,7 +230,10 @@
 
 @media (max-width: 520px) {
   .settings-handoff-card {
-    min-height: min(500px, calc(100vh - var(--app-safe-top) - var(--app-safe-bottom) - 104px));
+    min-height: min(
+      500px,
+      calc(var(--app-viewport-height, 100vh) - var(--app-safe-top) - var(--app-safe-bottom) - 104px)
+    );
     padding: 24px 18px;
     border-radius: 24px;
   }
