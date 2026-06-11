@@ -185,6 +185,13 @@ const INFO_PRODUCT_SEGMENT_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_-])(?:курс|вебинар|марафон|обучен|наставнич|разбор|созвон|урок)(?=[\p{L}\p{N}_-]|$)/iu,
 ] as const;
 
+const RULES_OR_MODERATION_CONTEXT_PATTERNS = [
+  /(?:^|[^\p{L}\p{N}_-])(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,80})(?:запрещ[её]н[\p{L}\p{N}_-]*|нельзя|удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр[\p{L}\p{N}_-]*)/iu,
+  /(?:^|[^\p{L}\p{N}_-])(?:запрещ[её]н[\p{L}\p{N}_-]*|нельзя|удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,80})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)/iu,
+  /(?:^|[^\p{L}\p{N}_-])(?:пример|образец|цитат[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)/iu,
+  /(?:^|[^\p{L}\p{N}_-])(?:бот|фильтр[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|блокир[\p{L}\p{N}_-]*|фильтру[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)?/iu,
+] as const;
+
 export function readCliOptions(argv: readonly string[]): CliOptions {
   const args = [...argv];
   const now = new Date();
@@ -886,7 +893,7 @@ function deriveSegment(record: {
   return 'OTHER';
 }
 
-function deriveSafeContextBucket(params: {
+export function deriveSafeContextBucket(params: {
   text: string;
   current: CommercialSnapshot;
   historical: CommercialSnapshot;
@@ -900,9 +907,7 @@ function deriveSafeContextBucket(params: {
   if (
     hasSignal('context:moderation-ad-discussion') ||
     hasSignal('context:quoted-ad-example') ||
-    /(?:^|[^\p{L}\p{N}_-])(?:правил[\p{L}\p{N}_-]*|запрещен[\p{L}\p{N}_-]*|запреща[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр|бот)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      text,
-    )
+    RULES_OR_MODERATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(text))
   ) {
     return 'rules_or_moderation_context';
   }
