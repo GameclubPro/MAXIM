@@ -987,6 +987,7 @@ async function assertViewportBounds(page, scenario) {
       '.shell-topbar',
       '.settings-drilldown',
       '.broadcast-buttons-sheet__panel',
+      '.broadcast-planner-sheet__panel',
       '.time-field-sheet',
       '.channel-dialog-screen',
       '.channel-dialog-compose__surface',
@@ -1128,11 +1129,17 @@ async function assertNoUnexpectedHorizontalOverflow(page, scenario) {
 async function assertPrimaryControlsReachable(page, scenario) {
   const issues = await page.evaluate((keyboardMode) => {
     const viewportHeight = window.innerHeight;
+    const hasActiveOverlay = Boolean(
+      document.querySelector(
+        '.broadcast-buttons-sheet__panel, .broadcast-planner-sheet__panel, .time-field-sheet, .giveaway-page__overlay-card',
+      ),
+    );
     const selectors = [
       keyboardMode ? null : '.bottom-nav:not(.is-keyboard-open)',
       '.channel-dialog-compose__surface',
-      '.settings-drilldown__footer',
+      hasActiveOverlay ? null : '.settings-drilldown__footer',
       '.broadcast-buttons-sheet__panel',
+      '.broadcast-planner-sheet__panel',
       '.time-field-sheet',
     ];
 
