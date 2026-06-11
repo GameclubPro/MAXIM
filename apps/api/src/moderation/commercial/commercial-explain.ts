@@ -190,6 +190,12 @@ function buildReasonCodes(params: {
   if (params.signalEvidence.hasLinkEvidence && params.signalEvidence.hasStrongContactEvidence) {
     reasonCodes.add('evidence:direct:link-contact');
   }
+  if (
+    params.signalEvidence.hasTransactionalDirectDealEvidence &&
+    params.signalEvidence.hasStrongContactEvidence
+  ) {
+    reasonCodes.add('evidence:direct:transaction-contact');
+  }
   if (params.featureVector.priceStructure > 0 && params.featureVector.contactEvidence > 0) {
     reasonCodes.add('direct-price-contact');
   }

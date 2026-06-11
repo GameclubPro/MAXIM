@@ -3,10 +3,10 @@
 exports[`commercial deterministic benchmark meets recall, false-positive, subtype, and action-policy gates 1`] = `
 {
   "byAction": {
-    "DELETE": 52,
+    "DELETE": 54,
     "DELETE_AND_ESCALATE": 13,
     "REVIEW_ONLY": 17,
-    "WARN": 63,
+    "WARN": 61,
   },
   "bySubtype": {
     "BUYOUT": 5,

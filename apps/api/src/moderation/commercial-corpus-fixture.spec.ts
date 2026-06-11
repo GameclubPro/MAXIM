@@ -17,6 +17,7 @@ type CommercialCorpusRecord = {
   isHardNegative?: unknown;
   policyCategory?: unknown;
   segment?: unknown;
+  safeContextBucket?: unknown;
   text?: unknown;
   current?: unknown;
   historical?: unknown;
@@ -64,6 +65,10 @@ function isAmbiguousAction(action: unknown): boolean {
   return typeof action === 'string' && AMBIGUOUS_ACTIONS.has(action);
 }
 
+function pushCount(map: Map<string, number>, key: string) {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
 function isSanitizedText(value: string): boolean {
   const rawLinkPattern =
     /\b(?:https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|clck\.ru\/|bit\.ly\/|goo\.su\/|tinyurl\.com\/)/iu;
@@ -109,6 +114,7 @@ describe('commercial sanitized corpus fixture', () => {
     let campaignOnlyDeleteCount = 0;
     let subtypeComparableCount = 0;
     let subtypeMatchCount = 0;
+    const safeContextHitCounts = new Map<string, number>();
 
     for (const [index, record] of records.entries()) {
       const lineNumber = index + 1;
@@ -116,6 +122,7 @@ describe('commercial sanitized corpus fixture', () => {
       const expectedAction = readString(record.expectedAction);
       const expectedSubtype = readString(record.expectedSubtype);
       const policyCategory = readString(record.policyCategory);
+      const safeContextBucket = readString(record.safeContextBucket) ?? 'none';
       const text = readString(record.text);
       const current = readSnapshot(record.current);
       const historical = readSnapshot(record.historical);
@@ -130,6 +137,9 @@ describe('commercial sanitized corpus fixture', () => {
       }
       if (!text || !isSanitizedText(text)) {
         errors.push(`line ${lineNumber}: text is missing or not sanitized`);
+      }
+      if (currentHit && safeContextBucket !== 'none') {
+        pushCount(safeContextHitCounts, safeContextBucket);
       }
 
       if (label === 'positive_candidate') {
@@ -180,6 +190,12 @@ describe('commercial sanitized corpus fixture', () => {
       if (record.isHardNegative === true && label === 'positive_candidate') {
         errors.push(`line ${lineNumber}: positive candidate cannot be marked hard-negative`);
       }
+      if (
+        safeContextBucket === 'rules_or_moderation_context' &&
+        currentHit
+      ) {
+        errors.push(`line ${lineNumber}: rules/moderation safe-context must not hit`);
+      }
     }
 
     const hardRecall = hardPositiveHitCount / hardPositiveCount;
@@ -198,5 +214,6 @@ describe('commercial sanitized corpus fixture', () => {
     expect(deleteFalsePositiveCount).toBe(0);
     expect(grayDeleteCount).toBe(0);
     expect(campaignOnlyDeleteCount).toBe(0);
+    expect(safeContextHitCounts.get('rules_or_moderation_context') ?? 0).toBe(0);
   });
 });

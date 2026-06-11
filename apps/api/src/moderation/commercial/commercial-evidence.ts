@@ -9,6 +9,8 @@ const PRICE_EVIDENCE_SIGNALS = new Set([
   'combo:contact+price',
 ]);
 
+const TRANSACTION_DIRECT_DEAL_SIGNALS = new Set(['transaction:buyout-deal']);
+
 const STRONG_CONTACT_SIGNALS = new Set([
   'contact:phone',
   'contact:contextual-phone',
@@ -66,6 +68,7 @@ export type CommercialSignalEvidenceProfile = {
   hasLinkEvidence: boolean;
   hasHighRiskEvidence: boolean;
   hasEscalationRiskEvidence: boolean;
+  hasTransactionalDirectDealEvidence: boolean;
   hasNonCampaignDirectDealEvidence: boolean;
   hasActionDirectDealEvidence: boolean;
 };
@@ -102,11 +105,18 @@ export function resolveCommercialSignalEvidence(
     matchedSignals.includes('contact:contextual-phone') ||
     matchedSignals.includes('contact:masked-phone');
   const hasLinkEvidence = hasPrefix('deal-channel:');
-  const hasNonCampaignDirectDealEvidence = hasPriceEvidence || hasPhoneEvidence || hasLinkEvidence;
+  const hasTransactionalDirectDealEvidence = hasAny(TRANSACTION_DIRECT_DEAL_SIGNALS);
+  const hasNonCampaignDirectDealEvidence =
+    hasPriceEvidence || hasPhoneEvidence || hasLinkEvidence || hasTransactionalDirectDealEvidence;
   const hasActionDirectDealEvidence =
     (hasPriceEvidence && (hasStrongContactEvidence || hasLinkEvidence)) ||
     (hasLinkEvidence && hasStrongContactEvidence) ||
-    (hasHighRiskEvidence && (hasPriceEvidence || hasStrongContactEvidence || hasLinkEvidence));
+    (hasTransactionalDirectDealEvidence && hasStrongContactEvidence) ||
+    (hasHighRiskEvidence &&
+      (hasPriceEvidence ||
+        hasStrongContactEvidence ||
+        hasLinkEvidence ||
+        hasTransactionalDirectDealEvidence));
 
   return {
     hasPriceEvidence,
@@ -115,6 +125,7 @@ export function resolveCommercialSignalEvidence(
     hasLinkEvidence,
     hasHighRiskEvidence,
     hasEscalationRiskEvidence,
+    hasTransactionalDirectDealEvidence,
     hasNonCampaignDirectDealEvidence,
     hasActionDirectDealEvidence,
   };

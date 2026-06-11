@@ -570,6 +570,18 @@ describe('commercial pattern regressions', () => {
       negativeSignals: ['private:property-sale'],
     },
     {
+      label: 'commercial property coffee shop lease boundary',
+      text: 'Сдам место под кофейню 18 м² в проходном ТЦ, мокрая точка, витрина, 45000 в месяц. Звоните +7 900 000 11 01.',
+      subtype: 'PROPERTY_COMMERCIAL',
+      signals: ['property-commercial:commercial-space', 'contact:phone'],
+    },
+    {
+      label: 'urgent damaged auto buyout with free tow',
+      text: 'Срочно выкупим авто после ДТП без документов, деньги сразу, эвакуатор бесплатно. Пишите @auto_cash.',
+      subtype: 'BUYOUT',
+      signals: ['buyout:auto-same-day-buyout', 'transaction:buyout-deal', 'contact:handle'],
+    },
+    {
       label: 'short home dumplings order from agent recall sweep',
       text: 'Домашние пельмени 500р/кг, заказ @foodhome',
       subtype: 'GOODS_RETAIL',
@@ -1029,6 +1041,14 @@ describe('commercial pattern regressions', () => {
       'Кто покупал козье молоко и творог у соседей, посоветуйте проверенные контакты.',
     ],
     [
+      'commercial property recommendation request stays allowed',
+      'Подскажите, где недорого снять кабинет для занятий два раза в неделю?',
+    ],
+    [
+      'info product experience question stays allowed',
+      'Кто проходил курс по маркетплейсам, стоит ли своих денег? Нужны отзывы.',
+    ],
+    [
       'loan discussion is not loan leadgen',
       'Подскажите, кто брал кредит в банке, какие ставки сейчас?',
     ],
@@ -1205,5 +1225,16 @@ describe('commercial pattern regressions', () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it('uses buyout transaction evidence for delete decisions when a strong contact is present', () => {
+    const result = detect(
+      'Срочно выкупим авто после ДТП без документов, деньги сразу, эвакуатор бесплатно. Пишите @auto_cash.',
+    );
+
+    expect(result?.primarySubtype).toBe('BUYOUT');
+    expect(result?.actionBand).toBe('DELETE');
+    expect(result?.reasonCodes).toContain('evidence:action-direct');
+    expect(result?.reasonCodes).toContain('evidence:direct:transaction-contact');
   });
 });

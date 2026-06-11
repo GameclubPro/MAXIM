@@ -18,6 +18,7 @@ type CommercialCorpusRecord = {
   isHardNegative?: unknown;
   policyCategory?: unknown;
   segment?: unknown;
+  safeContextBucket?: unknown;
   text?: unknown;
   current?: unknown;
   historical?: unknown;
@@ -141,6 +142,7 @@ function readCorpusRecord(value: unknown): CommercialCorpusRecord | null {
     isHardNegative: record.isHardNegative,
     policyCategory: record.policyCategory,
     segment: record.segment,
+    safeContextBucket: record.safeContextBucket,
     text: record.text,
     current: record.current,
     historical: record.historical,
@@ -216,6 +218,8 @@ async function main() {
   const labelCounts = new Map<string, number>();
   const actionCounts = new Map<string, number>();
   const segmentCounts = new Map<string, number>();
+  const safeContextBucketCounts = new Map<string, number>();
+  const safeContextHitCounts = new Map<string, number>();
   let positiveCount = 0;
   let negativeCount = 0;
   let grayCount = 0;
@@ -235,6 +239,7 @@ async function main() {
     const expectedSubtype = readString(record.expectedSubtype);
     const policyCategory = readString(record.policyCategory);
     const segment = readString(record.segment) ?? 'UNKNOWN';
+    const safeContextBucket = readString(record.safeContextBucket) ?? 'none';
     const text = readString(record.text);
     const current = readSnapshot(record.current);
     const historical = readSnapshot(record.historical);
@@ -255,6 +260,10 @@ async function main() {
     }
     pushCount(labelCounts, label);
     pushCount(segmentCounts, segment);
+    pushCount(safeContextBucketCounts, safeContextBucket);
+    if (currentHit && safeContextBucket !== 'none') {
+      pushCount(safeContextHitCounts, safeContextBucket);
+    }
 
     if (label === 'positive_candidate') {
       positiveCount += 1;
@@ -340,12 +349,21 @@ async function main() {
   if (campaignOnlyDeleteCount > 0) {
     errors.push(`campaign_only_delete_count=${campaignOnlyDeleteCount}`);
   }
+  if ((safeContextHitCounts.get('rules_or_moderation_context') ?? 0) > 0) {
+    errors.push(
+      `rules_or_moderation_context_hit_count=${safeContextHitCounts.get(
+        'rules_or_moderation_context',
+      )}`,
+    );
+  }
 
   console.log('Commercial corpus validation');
   console.log(`records=${records.length}`);
   console.log(`labels=${formatCounts(labelCounts) || 'none'}`);
   console.log(`actions=${formatCounts(actionCounts) || 'none'}`);
   console.log(`segments=${formatCounts(segmentCounts) || 'none'}`);
+  console.log(`safe_context_buckets=${formatCounts(safeContextBucketCounts) || 'none'}`);
+  console.log(`safe_context_hits=${formatCounts(safeContextHitCounts) || 'none'}`);
   console.log(`hard_recall=${Number.isNaN(hardRecall) ? 'n/a' : hardRecall.toFixed(4)}`);
   console.log(`false_positive_rate=${falsePositiveRate.toFixed(4)}`);
   console.log(

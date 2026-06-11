@@ -26,7 +26,7 @@ loadEnv({ path: resolve(__dirname, '../../../../.env'), override: false, quiet: 
 type CliOptions = {
   since: Date;
   until: Date;
-  limit: number;
+  limit: number | null;
   sample: number;
   chatId?: string;
   exportJsonlPath?: string;
@@ -86,6 +86,17 @@ type AuditSegment =
   | 'SERVICES'
   | 'OTHER';
 
+type AuditSafeContextBucket =
+  | 'rules_or_moderation_context'
+  | 'spam_complaint_or_fraud_warning'
+  | 'news_or_analytics'
+  | 'brand_mention_only'
+  | 'private_one_off_sale'
+  | 'ordinary_recruitment'
+  | 'public_training_or_help'
+  | 'request_or_recommendation'
+  | 'none';
+
 type AuditCorpusLabel =
   | 'positive_candidate'
   | 'negative_candidate'
@@ -128,6 +139,7 @@ type AuditRecord = {
   category: AuditCategory;
   policyCategory: AuditPolicyCategory;
   segment: AuditSegment;
+  safeContextBucket: AuditSafeContextBucket;
   label: AuditCorpusLabel;
   labelSource: AuditCorpusLabelSource;
   expectedAction: string | null;
@@ -180,7 +192,7 @@ function readCliOptions(argv: readonly string[]): CliOptions {
     readDateOption(args, '--since') ??
     new Date(now.getTime() - DEFAULT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   const until = readDateOption(args, '--until') ?? now;
-  const limit = readPositiveIntOption(args, '--limit') ?? DEFAULT_LIMIT;
+  const limit = readLimitOption(args, '--limit') ?? DEFAULT_LIMIT;
   const sample = readPositiveIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
   const exportJsonlPath = readStringOption(args, '--export-jsonl');
@@ -233,6 +245,24 @@ function readPositiveIntOption(args: readonly string[], name: string): number | 
   return parsed;
 }
 
+function readLimitOption(args: readonly string[], name: string): number | null | undefined {
+  const value = readStringOption(args, name);
+  if (!value) {
+    return undefined;
+  }
+
+  if (value.toLowerCase() === 'all') {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer or "all"`);
+  }
+
+  return parsed;
+}
+
 function readStringOption(args: readonly string[], name: string): string | undefined {
   const index = args.findIndex((arg) => arg === name);
   if (index < 0) {
@@ -252,6 +282,7 @@ async function loadCandidates(
   options: CliOptions,
 ): Promise<AuditCandidateRow[]> {
   const chatFilterSql = options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``;
+  const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
 
   return prisma.$queryRaw<AuditCandidateRow[]>(Prisma.sql`
     with base as (
@@ -280,7 +311,7 @@ async function loadCandidates(
         and s.commercial_ads_filter_enabled = true
         ${chatFilterSql}
       order by w.created_at desc
-      limit ${options.limit}
+      ${limitSql}
     )
     select
       base.*,
@@ -843,6 +874,83 @@ function deriveSegment(record: {
   return 'OTHER';
 }
 
+function deriveSafeContextBucket(params: {
+  text: string;
+  current: CommercialSnapshot;
+  historical: CommercialSnapshot;
+}): AuditSafeContextBucket {
+  const negativeSignals = [...params.current.negativeSignals, ...params.historical.negativeSignals];
+  const text = params.text.toLowerCase();
+  const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
+  const hasSignalPrefix = (prefix: string): boolean =>
+    negativeSignals.some((signal) => signal.startsWith(prefix));
+
+  if (
+    hasSignal('context:moderation-ad-discussion') ||
+    hasSignal('context:quoted-ad-example') ||
+    /(?:^|[^\p{L}\p{N}_-])(?:правил[\p{L}\p{N}_-]*|запрещен[\p{L}\p{N}_-]*|запреща[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр|бот)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return 'rules_or_moderation_context';
+  }
+
+  if (
+    hasSignal('context:public-fraud-warning') ||
+    /(?:^|[^\p{L}\p{N}_-])(?:мошенник[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|жалоб[\p{L}\p{N}_-]*|полици[\p{L}\p{N}_-]*|мвд|предупрежда(?:ет|ют|ем)|осторожн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return 'spam_complaint_or_fraud_warning';
+  }
+
+  if (
+    hasSignal('context:local-news-subscribe') ||
+    hasSignal('context:channel-metrics-not-selling') ||
+    /(?:^|[^\p{L}\p{N}_-])(?:новост[\p{L}\p{N}_-]*|отчет|отч[её]т|аналитик[\p{L}\p{N}_-]*|статистик[\p{L}\p{N}_-]*|обзор|рынк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return 'news_or_analytics';
+  }
+
+  if (
+    hasSignal('context:official-civic-instruction') ||
+    hasSignal('context:public-voting-contest') ||
+    /(?:^|[^\p{L}\p{N}_-])(?:администраци[\p{L}\p{N}_-]*|госуслуг[\p{L}\p{N}_-]*|компенсаци[\p{L}\p{N}_-]*|голосовани[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*\s+бесплатн[\p{L}\p{N}_-]*|центр\s+занятост[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return 'public_training_or_help';
+  }
+
+  if (hasSignalPrefix('job-seeking:')) {
+    return 'ordinary_recruitment';
+  }
+
+  if (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:')) {
+    return 'request_or_recommendation';
+  }
+
+  if (
+    hasSignalPrefix('private:') ||
+    hasSignalPrefix('private-single:') ||
+    hasSignalPrefix('private-goods:')
+  ) {
+    return 'private_one_off_sale';
+  }
+
+  if (
+    /(?:^|[^\p{L}\p{N}_-])(?:отзыв|жалоба|подскажите|посоветуйте|кто\s+знает)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})(?:wildberries|wb|вб|ozon|озон|авито|банк|маркетплейс[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      text,
+    )
+  ) {
+    return 'brand_mention_only';
+  }
+
+  return 'none';
+}
+
 function makeExcerpt(text: string, limit = 220): string {
   const normalized = text.replace(/\s+/gu, ' ').trim();
   if (normalized.length <= limit) {
@@ -889,6 +997,7 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
         chatId: record.chatId,
         chatTitle: record.chatTitle,
         chatEntityType: record.chatEntityType,
+        safeContextBucket: record.safeContextBucket,
         messageId: record.messageId,
         senderId: record.senderId,
         text: record.sanitizedText,
@@ -915,6 +1024,7 @@ async function exportCorpusJsonl(pathname: string, records: readonly AuditRecord
         category: record.category,
         policyCategory: record.policyCategory,
         segment: record.segment,
+        safeContextBucket: record.safeContextBucket,
         text: record.sanitizedText,
         settings: record.settings,
         commercialCampaignContext: record.commercialCampaignContext,
@@ -973,6 +1083,7 @@ async function main() {
     const policyCategoryCounts = new Map<AuditPolicyCategory, number>();
     const corpusLabelCounts = new Map<AuditCorpusLabel, number>();
     const segmentCounts = new Map<`${AuditCategory}:${AuditSegment}`, number>();
+    const safeContextBucketCounts = new Map<AuditSafeContextBucket, number>();
     const currentSignalCounts = new Map<string, number>();
     const currentSubtypeCounts = new Map<string, number>();
     const currentReviewReasonCounts = new Map<string, number>();
@@ -1038,6 +1149,7 @@ async function main() {
         currentSignals: current.matchedSignals,
         historicalSignals: historical.matchedSignals,
       });
+      const safeContextBucket = deriveSafeContextBucket({ text, current, historical });
       const policyCategory = derivePolicyCategory({ category, current });
       const corpusLabel = deriveCorpusLabel({ category, policyCategory, current, historical });
       const sanitizedText = sanitizeAuditText(text);
@@ -1046,6 +1158,7 @@ async function main() {
       pushCount(policyCategoryCounts, policyCategory);
       pushCount(corpusLabelCounts, corpusLabel.label);
       pushCount(segmentCounts, `${category}:${segment}`);
+      pushCount(safeContextBucketCounts, safeContextBucket);
       for (const signal of current.matchedSignals) {
         pushCount(currentSignalCounts, signal);
       }
@@ -1069,6 +1182,7 @@ async function main() {
         category,
         policyCategory,
         segment,
+        safeContextBucket,
         ...corpusLabel,
         createdAt: row.createdAt,
         webhookEventId: row.webhookEventId,
@@ -1132,6 +1246,7 @@ async function main() {
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
     console.log(`policy_category_breakdown=${formatCounts(policyCategoryCounts) || 'none'}`);
     console.log(`corpus_label_breakdown=${formatCounts(corpusLabelCounts) || 'none'}`);
+    console.log(`safe_context_bucket_breakdown=${formatCounts(safeContextBucketCounts) || 'none'}`);
     console.log(
       `historical_only_segments=${
         formatCounts(
@@ -1224,6 +1339,7 @@ async function main() {
             `messageId=${record.messageId}`,
             `senderId=${record.senderId ?? 'unknown'}`,
             `segment=${record.segment}`,
+            `safeContext=${record.safeContextBucket}`,
             `policy=${record.policyCategory}`,
             `label=${record.label}`,
             `expectedAction=${record.expectedAction ?? 'n/a'}`,
