@@ -53,6 +53,8 @@ export class CommercialSecondStageDecisionCache {
       Math.round(confidenceScore),
       appliedThresholds.warnThreshold,
       appliedThresholds.deleteThreshold,
+      appliedThresholds.sensitivity,
+      Math.round(appliedThresholds.strictness * 1000),
       commercialCampaignContext?.sameTextDistinctChatCount ?? 0,
       commercialCampaignContext?.repeatedPhoneDistinctChatCount ?? 0,
       commercialCampaignContext?.repeatedLinkDistinctChatCount ?? 0,

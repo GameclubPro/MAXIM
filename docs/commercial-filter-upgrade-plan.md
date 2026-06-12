@@ -1,6 +1,6 @@
 # Commercial Filter Upgrade Plan
 
-Дата ревизии: 2026-06-11.
+Дата ревизии: 2026-06-13.
 
 Документ описывает практический план дальнейшего апгрейда commercial ad filter после точечных runtime-исправлений по 24h-аудиту. Цель: поднять precision на safe-context сообщениях, сохранить recall по явной коммерции и сделать каждую блокировку объяснимой для аудита.
 
@@ -53,6 +53,36 @@ docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
    - `true_commercial`.
 4. Для каждого false-positive кандидата сохранить минимальный sanitized текст, expected action, expected subtype, current signals и желаемый suppressor/threshold.
 5. Повторить audit после каждого изменения фильтра на новом 24h окне и на frozen corpus.
+
+## Latest 24h Audit Baseline
+
+Окно `2026-06-11T22:28:39Z..2026-06-12T22:28:39Z`, prod `api-admin`,
+`--limit all`, sanitized exports:
+
+- candidates: `20562`;
+- evaluated after bot/admin/service skips: `15730`;
+- stable clear: `14104`;
+- stable hit: `746`;
+- current only: `876`;
+- historical only: `4`;
+- dangerous action counters: `delete_false_positive_candidates=0`,
+  `gray_delete_candidates=0`, `campaign_only_delete_candidates=0`.
+
+This slice fixed or pinned regressions for:
+
+- historical-only-style misses: bulk material sale, MAX/MAH reply CTA contact,
+  service/produce audit cases already covered locally;
+- false-positive suppressors: local news subscribe channel, public/library
+  master-class signup, currency-rate news;
+- private seedling leftovers: small leftover/self-pickup listings stay allowed,
+  while structured nursery clearance stock remains commercial;
+- second-stage cache key: include sensitivity and rounded strictness.
+
+Do not interpret every `safeContextBucket` hit as a false positive. The 24h
+audit showed wide buckets such as `news_or_analytics` and
+`private_one_off_sale` can contain true ads because the bucket classifier is a
+triage heuristic, not a labeler. Use sanitized samples plus matched signals and
+action evidence before adding broad suppressors.
 
 Локальные команды:
 

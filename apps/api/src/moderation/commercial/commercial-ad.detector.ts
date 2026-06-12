@@ -364,7 +364,9 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
       signal === 'context:resale-pricing-discussion' ||
       signal === 'context:channel-metrics-not-selling' ||
       signal === 'context:public-fraud-warning' ||
-      signal === 'context:official-civic-instruction',
+      signal === 'context:official-civic-instruction' ||
+      signal === 'context:public-training-or-event' ||
+      signal === 'context:currency-rate-news',
   );
 }
 
@@ -395,8 +397,7 @@ function isLikelyThirdPartyChatDirectoryNoise(
     return false;
   }
 
-  const linkCount =
-    rawLoweredText.match(/(?:https?:\/\/|max\.ru\/join\/|\[url\])/giu)?.length ?? 0;
+  const linkCount = rawLoweredText.match(/(?:https?:\/\/|max\.ru\/join\/|\[url\])/giu)?.length ?? 0;
   const numberedItemCount =
     rawLoweredText.match(/(?:^|[\s.,;:])\d{1,2}\s*[.)]\s+\p{L}/giu)?.length ?? 0;
   if (linkCount < 3 && numberedItemCount < 4) {

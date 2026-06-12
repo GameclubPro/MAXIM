@@ -702,15 +702,13 @@ describe('commercial pattern regressions', () => {
         'transaction:price',
         'transaction:keywords',
       ],
+      negativeSignals: ['private-goods:private-seedling-leftovers'],
     },
     {
       label: 'avito review side income from twenty four hour audit miss',
       text: 'Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.',
       subtype: 'RECRUITMENT',
-      signals: [
-        'recruitment:marketplace-review-work',
-        'contact:пишите в лич',
-      ],
+      signals: ['recruitment:marketplace-review-work', 'contact:пишите в лич'],
     },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
@@ -1157,10 +1155,7 @@ describe('commercial pattern regressions', () => {
       'max support operator story stays allowed',
       'Оператор поддержки MAX ответил в чате, проблема решена.',
     ],
-    [
-      'vp school homework stays allowed',
-      'ВП по математике задали на завтра, кто понял задачу?',
-    ],
+    ['vp school homework stays allowed', 'ВП по математике задали на завтра, кто понял задачу?'],
     [
       'pin chat rules request stays allowed',
       'Закрепите правила чата, чтобы новички видели их сверху.',
@@ -1192,6 +1187,22 @@ describe('commercial pattern regressions', () => {
     [
       'private seedling leftovers with one price stay allowed',
       'Лишняя рассада после посадки: помидоры бычье сердце, черри, перец желтый. Отдам по 30 руб, самовывоз.',
+    ],
+    [
+      'private seedling leftovers with several small prices stay allowed',
+      'Продам остатки рассады: томаты 5 шт по 50 руб, перец 4 шт по 60 руб, самовывоз.',
+    ],
+    [
+      'district news channel subscription stays allowed',
+      'Подписывайтесь на наш канал района, новости каждый день https://t.me/news',
+    ],
+    [
+      'library master class sign-up stays allowed',
+      'Мастер-класс в библиотеке, запись по ссылке https://example.ru/event',
+    ],
+    [
+      'currency exchange rate news is not an info product',
+      'Курс доллара сегодня вырос, подробности https://example.ru/news',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();
@@ -1337,5 +1348,43 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('DELETE');
     expect(result?.reasonCodes).toContain('evidence:action-direct');
     expect(result?.reasonCodes).toContain('evidence:direct:transaction-contact');
+  });
+
+  it('detects bulk material sale with phone-only question wording', () => {
+    const result = detect('ПРОДАМ СЫПУЧИЕ МАТЕРИАЛЫ! ВОПРОСЫ +7 900 000 00 00');
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('goods-retail:bulk-materials');
+    expect(result?.matchedSignals).toContain('contact:phone');
+  });
+
+  it('treats MAX and MAH reply CTA as contact for explicit services', () => {
+    const serviceInMax = detect('Маникюр, запись открыта, пишите в МАХ');
+    const repairInMax = detect('Ремонт квартир, пишите в MAX');
+
+    expect(serviceInMax?.primarySubtype).toBe('SERVICES');
+    expect(serviceInMax?.matchedSignals).toContain('contact:пишите в мах');
+    expect(repairInMax?.primarySubtype).toBe('SERVICES');
+    expect(repairInMax?.matchedSignals).toContain('contact:пишите в max');
+  });
+
+  it('keeps recent audit service and produce misses covered', () => {
+    const electrical = detect(
+      'Электромонтажные работы любой сложности. Сварочные и сантехнические работы. Отопление. +7 900 000 00 00',
+    );
+    const moving = detect(
+      'ПЕРЕЕЗДЫ ПОД КЛЮЧ. ДОМАШНИЙ ДАЧНЫЙ ОФИСНЫЙ. ГРУЗЧИКИ АККУРАТНЫЕ. ВЫВОЗ МУСОРА. ГАЗЕЛЬ КАМАЗ ЗИЛ +7 900 000 00 00 ЗВОНИТЕ',
+    );
+    const strawberry = detect(
+      'Продается домашняя клубника. Ягода крупная, сладкая. Суходол т +7 900 000 00 00',
+    );
+
+    expect(electrical?.primarySubtype).toBe('SERVICES');
+    expect(electrical?.matchedSignals).toContain('service-specialty:электромонтаж');
+    expect(electrical?.matchedSignals).toContain('contact:phone');
+    expect(moving?.primarySubtype).toBe('SERVICES');
+    expect(moving?.matchedSignals).toContain('service-specialty:moving-cargo-service');
+    expect(strawberry?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(strawberry?.matchedSignals).toContain('goods-retail:wholesale-produce');
   });
 });

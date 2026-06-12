@@ -24,6 +24,27 @@ describe('commercial action policy', () => {
     ).toBe('ALLOW');
   });
 
+  it('starts warning exactly at the warn threshold', () => {
+    expect(
+      resolveCommercialActionPolicy({
+        ...BASE_INPUT,
+        confidenceScore: BASE_INPUT.warnThreshold,
+      }),
+    ).toBe('WARN');
+  });
+
+  it('starts deleting exactly at the delete threshold with action-direct evidence', () => {
+    expect(
+      resolveCommercialActionPolicy({
+        ...BASE_INPUT,
+        confidenceScore: BASE_INPUT.deleteThreshold,
+        evidenceTier: 'DIRECT',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+      }),
+    ).toBe('DELETE');
+  });
+
   it('keeps campaign-only detections out of delete actions', () => {
     expect(
       resolveCommercialActionPolicy({
@@ -134,6 +155,19 @@ describe('commercial action policy', () => {
         hasNonCampaignDirectDealEvidence: true,
       }),
     ).toBe('WARN');
+  });
+
+  it('routes high false-positive review detections to review-only', () => {
+    expect(
+      resolveCommercialActionPolicy({
+        ...BASE_INPUT,
+        evidenceTier: 'DIRECT',
+        fpRisk: 90,
+        reviewRecommended: true,
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+      }),
+    ).toBe('REVIEW_ONLY');
   });
 
   it('keeps the high false-positive guard boundary at 70 for direct evidence', () => {

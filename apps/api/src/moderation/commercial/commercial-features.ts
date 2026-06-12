@@ -173,7 +173,8 @@ export function hasCommercialSpamMarkers(text: string): boolean {
           hasPrivateSingleListingContext &&
           !hasServiceOfferContext &&
           isPrivateObjectConditionServiceNoise(marker, rawLoweredText)
-        ) && hasMarker(marker),
+        ) &&
+        hasMarker(marker),
     ) || serviceSpecialtyPatterns.some(({ pattern }) => matchesPattern(pattern));
   const hasGroupContext = ADS_GROUP_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
   const hasGroupPromotionIntent =
@@ -315,8 +316,12 @@ export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState):
       signal === 'private:бу' ||
       signal === 'private:не подошл' ||
       signal === 'private-goods:resale-condition' ||
-      signal === 'private-goods:private-apparel-avito-delivery',
+      signal === 'private-goods:private-apparel-avito-delivery' ||
+      signal === 'private-goods:private-seedling-leftovers',
   );
+  const hasCommercialSeedlingClearance =
+    state.negativeSignals.includes('private-goods:private-seedling-leftovers') &&
+    state.matchedSignals.includes('goods-retail:plant-nursery-clearance-stock');
 
   return (
     state.hasBusinessContext ||
@@ -325,6 +330,7 @@ export function hasPrivateGoodsCommercialOverride(state: CommercialSignalState):
     state.hasCommercialAudienceContext ||
     state.hasChannelPlacementContext ||
     state.hasServiceOfferContext ||
+    hasCommercialSeedlingClearance ||
     hasStrongGoodsRetailEvidence(state, {
       includePrivateResaleWeakSignals: false,
       includeLowQuantityPlantStock: false,
@@ -763,7 +769,8 @@ export function collectCommercialSignals(params: {
         privateSingleListingHits.length > 0 &&
         !hasServiceOfferContext &&
         isPrivateObjectConditionServiceNoise(marker, rawLoweredText)
-      ) && hasMarker(marker),
+      ) &&
+      hasMarker(marker),
     3,
   );
   const serviceSpecialtyPatterns =

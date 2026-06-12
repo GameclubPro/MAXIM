@@ -51,6 +51,21 @@ describe('CommercialSecondStageDecisionCache', () => {
     expect(withCampaign).not.toBe(withoutCampaign);
   });
 
+  it('includes sensitivity and strictness in the key', () => {
+    const cache = new CommercialSecondStageDecisionCache();
+    const balanced = cache.buildKey(baseKeyParams);
+    const strict = cache.buildKey({
+      ...baseKeyParams,
+      appliedThresholds: {
+        ...baseKeyParams.appliedThresholds,
+        sensitivity: 'STRICT',
+        strictness: 0.56,
+      },
+    });
+
+    expect(strict).not.toBe(balanced);
+  });
+
   it('refreshes read entries before evicting the oldest decision', () => {
     const cache = new CommercialSecondStageDecisionCache(2);
     const firstKey = cache.buildKey(baseKeyParams);
