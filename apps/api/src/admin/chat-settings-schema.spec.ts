@@ -124,6 +124,26 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     });
   });
 
+  it('normalizes required subscription state from selected sources', () => {
+    const enabled = chatSettingsSchema.parse({
+      requiredSubscriptionEnabled: false,
+      requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
+    });
+    const disabled = chatSettingsSchema.parse({
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: [],
+      requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
+    });
+
+    expect(enabled.requiredSubscriptionEnabled).toBe(true);
+    expect(enabled.requiredSubscriptionChannelIds).toEqual(['channel-1']);
+    expect(enabled.requiredSubscriptionExpiresAt).toBe('');
+    expect(disabled.requiredSubscriptionEnabled).toBe(false);
+    expect(disabled.requiredSubscriptionChannelIds).toEqual([]);
+    expect(disabled.requiredSubscriptionExpiresAt).toBe('');
+  });
+
   it('rejects bot speech media with non-image mime type', () => {
     const result = chatSettingsSchema.safeParse({
       botSpeechMedia: {

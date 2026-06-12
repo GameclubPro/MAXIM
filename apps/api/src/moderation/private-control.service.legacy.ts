@@ -7418,19 +7418,16 @@ export class PrivateControlService {
   }
 
   private isRequiredSubscriptionCurrentlyActive(
-    settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionExpiresAt'>,
+    settings: Pick<
+      ChatSettings,
+      'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds'
+    >,
   ): boolean {
     if (!settings.requiredSubscriptionEnabled) {
       return false;
     }
 
-    const expiresAt = settings.requiredSubscriptionExpiresAt.trim();
-    if (!expiresAt) {
-      return true;
-    }
-
-    const timestampMs = Date.parse(expiresAt);
-    return !Number.isFinite(timestampMs) || timestampMs > Date.now();
+    return settings.requiredSubscriptionChannelIds.length > 0;
   }
 
   private buildRulesSanctionsSummary(

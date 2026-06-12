@@ -8217,10 +8217,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     systemMode: SystemModeSnapshot;
     settings: Pick<
       ChatSettings,
-      | 'requiredSubscriptionEnabled'
-      | 'requiredSubscriptionChannelIds'
-      | 'requiredSubscriptionExpiresAt'
-      | 'requiredSubscriptionBotMessageEnabled'
+	      | 'requiredSubscriptionEnabled'
+	      | 'requiredSubscriptionChannelIds'
+	      | 'requiredSubscriptionBotMessageEnabled'
       | 'requiredSubscriptionBotMessageText'
       | 'requiredSubscriptionAdminContactButtonEnabled'
       | 'requiredSubscriptionAdminContactButtonUrl'

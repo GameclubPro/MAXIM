@@ -4,8 +4,6 @@ import {
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MAX_MESSAGE_LENGTH_MAX,
   MAX_MESSAGE_LENGTH_MIN,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   type AllowlistMatchType,
   type ApplySettingsTarget,
   type BotSpeechMediaImage,
@@ -1701,63 +1699,6 @@ export function formatInvitationAccessCount(count: number): string {
   return `${safeCount} друзей`;
 }
 
-export function clampRequiredSubscriptionDurationDays(days: number): number {
-  return Math.min(
-    REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
-    Math.max(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN, Math.round(days)),
-  );
-}
-
-export function formatRequiredSubscriptionDurationDays(days: number): string {
-  const safeDays = clampRequiredSubscriptionDurationDays(days);
-  const mod10 = safeDays % 10;
-  const mod100 = safeDays % 100;
-
-  if (mod10 === 1 && mod100 !== 11) {
-    return `${safeDays} день`;
-  }
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-    return `${safeDays} дня`;
-  }
-  return `${safeDays} дней`;
-}
-
-export function formatRequiredSubscriptionDurationDaysCompact(days: number): string {
-  return `${clampRequiredSubscriptionDurationDays(days)}д`;
-}
-
-export function parseRequiredSubscriptionExpiresAt(value: string | null | undefined): Date | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const normalized = value.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const parsed = new Date(normalized);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-export function formatRequiredSubscriptionExpiryBadge(value: string | null | undefined): string {
-  const parsed = parseRequiredSubscriptionExpiresAt(value);
-  if (!parsed) {
-    return 'Без срока';
-  }
-
-  const formatter = new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric',
-    month: 'short',
-  });
-  return `до ${formatter.format(parsed)}`;
-}
-
-export function isRequiredSubscriptionExpired(value: string | null | undefined): boolean {
-  const parsed = parseRequiredSubscriptionExpiresAt(value);
-  return parsed ? parsed.getTime() <= Date.now() : false;
-}
-
 export function formatRequiredSubscriptionEntityLabel(entityType: 'chat' | 'channel'): string {
   return entityType === 'chat' ? 'Чат' : 'Канал';
 }
@@ -1890,31 +1831,6 @@ export function ClockIcon() {
     >
       <circle cx="12" cy="12" r="8.25" />
       <path d="M12 7.75v4.8l3.45 1.95" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function RequiredSubscriptionTimerIcon({ days }: { days: number }) {
-  const safeDays = clampRequiredSubscriptionDurationDays(days);
-  const minuteHandY = safeDays >= 10 ? '9.2' : '8.6';
-
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false" width="22" height="22">
-      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.75" opacity="0.95" />
-      <path
-        d={`M12 ${minuteHandY}v3.95l3 1.85`}
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8.45 4.85h7.1"
-        stroke="currentColor"
-        strokeWidth="1.55"
-        strokeLinecap="round"
-        opacity="0.72"
-      />
     </svg>
   );
 }

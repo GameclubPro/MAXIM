@@ -145,7 +145,7 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
 });
 
-test('buildRulesTextFromSettingsScreen skips expired required subscription rules', () => {
+test('buildRulesTextFromSettingsScreen treats legacy required subscription expiry as indefinite', () => {
   const screen = createScreen({
     settings: chatSettingsSchema.parse({
       requiredSubscriptionEnabled: true,
@@ -165,6 +165,6 @@ test('buildRulesTextFromSettingsScreen skips expired required subscription rules
   });
 
   const text = buildRulesTextFromSettingsScreen(screen);
-  assert.doesNotMatch(text, /Чтобы писать в чат, сначала подпишитесь/);
+  assert.match(text, /Чтобы писать в чат, сначала подпишитесь на: Новости проекта\./);
   assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
 });

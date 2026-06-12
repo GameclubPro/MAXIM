@@ -131,6 +131,13 @@ test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections'
   );
 });
 
+test('required subscription section keeps expiry and duration out of scoped saves', () => {
+  assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionEnabled'));
+  assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionChannelIds'));
+  assert.ok(!SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionDurationDays'));
+  assert.ok(!SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionExpiresAt'));
+});
+
 test('mergeSectionSettings preserves multi-button arrays when saving a section', () => {
   const current = createSettings({
     deleteSpammersEnabled: true,
@@ -151,6 +158,27 @@ test('mergeSectionSettings preserves multi-button arrays when saving a section',
   assert.deepEqual(merged.linkBotButtons, saved.linkBotButtons);
   assert.equal(merged.linkBotButtonEnabled, true);
   assert.equal(merged.deleteSpammersEnabled, true);
+});
+
+test('mergeSectionSettings does not copy legacy required subscription expiry fields', () => {
+  const current = createSettings({
+    requiredSubscriptionEnabled: false,
+    requiredSubscriptionChannelIds: [],
+    requiredSubscriptionDurationDays: 7,
+    requiredSubscriptionExpiresAt: '2026-04-01T00:00:00.000Z',
+  });
+  const saved = createSettings({
+    requiredSubscriptionEnabled: true,
+    requiredSubscriptionChannelIds: ['channel-1'],
+    requiredSubscriptionDurationDays: 14,
+    requiredSubscriptionExpiresAt: '',
+  });
+
+  const merged = mergeSectionSettings(current, saved, 'requiredSubscription');
+  assert.equal(merged.requiredSubscriptionEnabled, true);
+  assert.deepEqual(merged.requiredSubscriptionChannelIds, ['channel-1']);
+  assert.equal(merged.requiredSubscriptionDurationDays, 7);
+  assert.equal(merged.requiredSubscriptionExpiresAt, '2026-04-01T00:00:00.000Z');
 });
 
 test('mergeSectionSettings preserves advanced duplicate and link tuning plus phone allow toggle', () => {

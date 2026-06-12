@@ -689,7 +689,7 @@ body.settings-home-page-open .bottom-nav__item.is-active::after {
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
-    .required-subscription__timer-card,
+    .required-subscription__summary-card,
     .required-subscription__board
   ) {
   border-radius: 20px;
@@ -1034,20 +1034,10 @@ body.settings-home-page-open .bottom-nav__item.is-active::after {
   border-radius: 16px;
 }
 
-.settings-drilldown__panel--required-subscription .required-subscription__timer-card,
+.settings-drilldown__panel--required-subscription .required-subscription__summary-card,
 .settings-drilldown__panel--required-subscription .required-subscription__board {
   padding: 12px;
   gap: 10px;
-}
-
-.required-subscription__timer-icon-shell {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-}
-
-.required-subscription__timer-copy strong {
-  font-size: 0.96rem;
 }
 
 .required-subscription__selection-card {
@@ -1474,7 +1464,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
-    .required-subscription__timer-card,
+    .required-subscription__summary-card,
     .required-subscription__board
   ) {
   border-radius: 16px;
@@ -1712,8 +1702,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   letter-spacing: 0;
 }
 
-.settings-drilldown .settings-length-limit__slider,
-.settings-drilldown .required-subscription__timer-slider {
+.settings-drilldown .settings-length-limit__slider {
   accent-color: var(--settings-panel-accent);
 }
 
@@ -1956,7 +1945,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   text-transform: none;
 }
 
-.settings-drilldown .required-subscription__timer-card,
+.settings-drilldown .required-subscription__summary-card,
 .settings-drilldown .required-subscription__board {
   padding: 10px;
   gap: 9px;
@@ -3216,7 +3205,7 @@ body.channel-settings-page-open {
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
-    .required-subscription__timer-card,
+    .required-subscription__summary-card,
     .required-subscription__board
   ) {
   border-radius: 17px;
@@ -3366,8 +3355,7 @@ body.channel-settings-page-open {
 
 .settings-drilldown .allowlist-panel__head,
 .settings-drilldown .allowlist-results__head,
-.settings-drilldown .managed-giveaway__title-row,
-.settings-drilldown .required-subscription__timer-head {
+.settings-drilldown .managed-giveaway__title-row {
   gap: 8px;
 }
 
@@ -3440,19 +3428,13 @@ body.channel-settings-page-open {
   min-height: 36px;
 }
 
-.settings-drilldown .required-subscription__timer-card,
+.settings-drilldown .required-subscription__summary-card,
 .settings-drilldown .required-subscription__board,
 .settings-drilldown .managed-giveaway__section,
 .settings-drilldown .managed-giveaway__surface,
 .settings-drilldown .managed-giveaway__subsection {
   padding: 10px;
   gap: 9px;
-}
-
-.settings-drilldown .required-subscription__timer-icon-shell {
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
 }
 
 .settings-drilldown .required-subscription__selection-list {
@@ -3935,7 +3917,7 @@ body.channel-settings-page-open {
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
-    .required-subscription__timer-card,
+    .required-subscription__summary-card,
     .required-subscription__board
   ) {
   border-radius: 14px;
@@ -4061,7 +4043,7 @@ body.channel-settings-page-open {
 
 .settings-drilldown .allowlist-panel,
 .settings-drilldown .settings-word-banlist,
-.settings-drilldown .required-subscription__timer-card,
+.settings-drilldown .required-subscription__summary-card,
 .settings-drilldown .required-subscription__board,
 .settings-drilldown .managed-giveaway__section,
 .settings-drilldown .managed-giveaway__surface,
@@ -4082,8 +4064,7 @@ body.channel-settings-page-open {
 .settings-drilldown .allowlist-results__head,
 .settings-drilldown .allowlist-item__header,
 .settings-drilldown .broadcast-stage-card__head,
-.settings-drilldown .managed-giveaway__title-row,
-.settings-drilldown .required-subscription__timer-head {
+.settings-drilldown .managed-giveaway__title-row {
   gap: 7px;
 }
 
@@ -4362,15 +4343,6 @@ body.channel-settings-page-open {
     font-size: 0.74rem;
   }
 
-  .settings-drilldown__panel--required-subscription .required-subscription__timer-head {
-    grid-template-columns: minmax(0, 1fr) 34px;
-    align-items: start;
-  }
-
-  .settings-drilldown__panel--required-subscription .required-subscription__timer-icon-shell {
-    width: 34px;
-    height: 34px;
-  }
 }
 
 /* Settings second clarity pass: remove repeated captions and keep dense screens readable. */

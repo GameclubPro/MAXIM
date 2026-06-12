@@ -2415,7 +2415,7 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('starts a required subscription timer when the block is enabled', async () => {
+  it('keeps required subscription indefinite when the block is enabled', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-16T12:00:00.000Z'));
 
     try {
@@ -2453,7 +2453,7 @@ describe('AdminService required subscription settings', () => {
       });
 
       expect(result.requiredSubscriptionDurationDays).toBe(10);
-      expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-26T12:00:00.000Z');
+      expect(result.requiredSubscriptionExpiresAt).toBe('');
       expect(prisma.chat.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           update: {
@@ -2461,11 +2461,11 @@ describe('AdminService required subscription settings', () => {
               upsert: {
                 update: expect.objectContaining({
                   requiredSubscriptionDurationDays: 10,
-                  requiredSubscriptionExpiresAt: '2026-04-26T12:00:00.000Z',
+                  requiredSubscriptionExpiresAt: '',
                 }),
                 create: expect.objectContaining({
                   requiredSubscriptionDurationDays: 10,
-                  requiredSubscriptionExpiresAt: '2026-04-26T12:00:00.000Z',
+                  requiredSubscriptionExpiresAt: '',
                 }),
               },
             },
@@ -2477,7 +2477,7 @@ describe('AdminService required subscription settings', () => {
     }
   });
 
-  it('keeps the existing required subscription timer until channels or days change', async () => {
+  it('clears an existing required subscription timer on save', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-20T12:00:00.000Z'));
 
     try {
@@ -2527,7 +2527,7 @@ describe('AdminService required subscription settings', () => {
         requiredSubscriptionBotMessageText: 'Новая подсказка.',
       });
 
-      expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-24T09:30:00.000Z');
+      expect(result.requiredSubscriptionExpiresAt).toBe('');
       expect(prisma.chat.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           update: expect.objectContaining({
@@ -2535,7 +2535,7 @@ describe('AdminService required subscription settings', () => {
               upsert: expect.objectContaining({
                 update: expect.objectContaining({
                   requiredSubscriptionDurationDays: 7,
-                  requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
+                  requiredSubscriptionExpiresAt: '',
                 }),
               }),
             }),
@@ -3573,7 +3573,7 @@ describe('AdminService required subscription settings', () => {
     });
   });
 
-  it('rejects enabled required subscription without channels', async () => {
+  it('disables required subscription when enabled payload has no channels', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -3586,22 +3586,34 @@ describe('AdminService required subscription settings', () => {
       createConfigMock() as never,
     );
 
-    let thrown: unknown;
-    try {
-      await service.updateSettings('chat-1', actor, {
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: [],
-      });
-    } catch (error: unknown) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(BadRequestException);
-    expect((thrown as BadRequestException).getResponse()).toMatchObject({
-      requiredSubscriptionChannelIds: {
-        _errors: ['Выберите хотя бы один чат или канал для обязательной подписки.'],
-      },
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: [],
     });
+
+    expect(result.requiredSubscriptionEnabled).toBe(false);
+    expect(result.requiredSubscriptionChannelIds).toEqual([]);
+    expect(result.requiredSubscriptionExpiresAt).toBe('');
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+                requiredSubscriptionExpiresAt: '',
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+                requiredSubscriptionExpiresAt: '',
+              }),
+            },
+          },
+        },
+      }),
+    );
   });
 
   it('accepts required subscription channels without a public link when the bot is admin there', async () => {

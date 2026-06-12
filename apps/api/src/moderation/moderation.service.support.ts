@@ -433,41 +433,11 @@ export type ActiveBotSpeechProfile = {
   characterName: string;
 };
 
-export function normalizeRequiredSubscriptionExpiresAt(value: string | null | undefined): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const normalized = value.trim();
-  if (!normalized) {
-    return '';
-  }
-
-  const timestampMs = Date.parse(normalized);
-  if (!Number.isFinite(timestampMs)) {
-    return '';
-  }
-
-  return new Date(timestampMs).toISOString();
-}
-
-export function hasRequiredSubscriptionExpired(
-  settings: Pick<ChatSettings, 'requiredSubscriptionExpiresAt'>,
-): boolean {
-  const expiresAt = normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
-  if (!expiresAt) {
-    return false;
-  }
-
-  return Date.parse(expiresAt) <= Date.now();
-}
-
 export function isRequiredSubscriptionCurrentlyActive(
   settings: Pick<
     ChatSettings,
     | 'requiredSubscriptionEnabled'
     | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionExpiresAt'
   >,
 ): boolean {
   const channelIds = Array.isArray(settings.requiredSubscriptionChannelIds)
@@ -476,8 +446,7 @@ export function isRequiredSubscriptionCurrentlyActive(
 
   return (
     settings.requiredSubscriptionEnabled &&
-    channelIds.length > 0 &&
-    !hasRequiredSubscriptionExpired(settings)
+    channelIds.length > 0
   );
 }
 

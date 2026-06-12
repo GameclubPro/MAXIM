@@ -871,14 +871,6 @@ export const chatSettingsSchema = z
       ctx,
     );
 
-    if (value.requiredSubscriptionEnabled && value.requiredSubscriptionChannelIds.length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requiredSubscriptionChannelIds'],
-        message: 'Выберите хотя бы один чат или канал для обязательной подписки.',
-      });
-    }
-
     for (const [enabledKey, urlKey] of CHAT_ADMIN_CONTACT_BUTTON_GROUPS) {
       if (value[enabledKey] && !isValidAdminContactButtonUrl(value[urlKey])) {
         ctx.addIssue({
@@ -1092,6 +1084,9 @@ export const chatSettingsSchema = z
     }
   })
   .transform((value) => {
+    const requiredSubscriptionChannelIds = Array.from(
+      new Set(value.requiredSubscriptionChannelIds.map((item) => item.trim()).filter(Boolean)),
+    );
     const greetingBotButtonState = buildStoredLinkButtonState({
       buttons: value.greetingBotButtons,
       buttonEnabled: value.greetingBotButtonEnabled,
@@ -1137,6 +1132,9 @@ export const chatSettingsSchema = z
 
     return {
       ...value,
+      requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
+      requiredSubscriptionChannelIds,
+      requiredSubscriptionExpiresAt: '',
       greetingBotButtons: greetingBotButtonState.buttons,
       greetingBotButtonEnabled: greetingBotButtonState.buttonEnabled,
       greetingBotButtonUrl: greetingBotButtonState.buttonUrl,

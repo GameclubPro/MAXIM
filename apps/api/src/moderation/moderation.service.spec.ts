@@ -17134,7 +17134,7 @@ describe('ModerationService', () => {
       );
     });
 
-    it('skips required subscription checks after the timer expires', async () => {
+    it('ignores legacy required subscription expiry and keeps enforcing selected sources', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-04-16T12:00:00.000Z'));
 
       try {
@@ -17148,7 +17148,12 @@ describe('ModerationService', () => {
         };
         const maxClient = {
           hasChatMember: jest.fn().mockResolvedValue(false),
-          getChatSnapshot: jest.fn(),
+          getChatSnapshot: jest.fn().mockResolvedValue({
+            title: 'Новости MAX',
+            link: 'https://max.ru/channels/news-max',
+            participantsCount: 100,
+            entityType: 'channel',
+          }),
           deleteMessage: jest.fn(),
           sendMessage: jest.fn(),
           kickMember: jest.fn(),
@@ -17166,12 +17171,20 @@ describe('ModerationService', () => {
 
         await service.handleUpdate(createUpdate());
 
-        expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-        expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
-        expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-        expect(maxClient.sendMessage).not.toHaveBeenCalled();
-        expect(prisma.violation.create).not.toHaveBeenCalled();
-        expect(ruleEngine.detect).toHaveBeenCalled();
+        expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+          trafficClass: 'critical',
+          timeoutMs: 2_000,
+          sourceTag: 'required_subscription_membership',
+        });
+        expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+          trafficClass: 'background',
+          timeoutMs: 2_500,
+          sourceTag: 'required_subscription_metadata',
+        });
+        expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1', expect.any(Object));
+        expect(maxClient.sendMessage).toHaveBeenCalled();
+        expect(prisma.violation.create).toHaveBeenCalled();
+        expect(ruleEngine.detect).not.toHaveBeenCalled();
       } finally {
         jest.useRealTimers();
       }

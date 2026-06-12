@@ -1,9 +1,6 @@
 import {
   MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   type ApplySettingsTarget,
   chatRulesSchema,
@@ -48,7 +45,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -324,11 +320,6 @@ import {
   inferCommercialSensitivitySliderValue,
   normalizeLegacyChatCommentScope,
   formatRequiredSubscriptionCount,
-  clampRequiredSubscriptionDurationDays,
-  formatRequiredSubscriptionDurationDays,
-  formatRequiredSubscriptionDurationDaysCompact,
-  formatRequiredSubscriptionExpiryBadge,
-  isRequiredSubscriptionExpired,
   formatRequiredSubscriptionEntityLabel,
   formatRequiredSubscriptionLinkPreview,
   getRouteChatTitle,
@@ -336,7 +327,6 @@ import {
   resolveDesktopToggleRowLabel,
   CalendarIcon,
   ClockIcon,
-  RequiredSubscriptionTimerIcon,
   TrashIcon,
   BotSpeechStyleIcon,
   StyleSelectedIcon,
@@ -984,7 +974,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setDraft(normalizeDuplicateFlowSettings(normalizeLegacyChatCommentScope(settingsQuery.data)));
+    setDraft(
+      normalizeDuplicateFlowSettings(
+        normalizeLegacyChatCommentScope(normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)),
+      ),
+    );
     setFieldErrors({});
     setDuplicateWindowInputValue('');
   }, [settingsQuery.data]);
@@ -1142,7 +1136,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const serverSnapshot = useMemo(
     () =>
-      settingsQuery.data ? JSON.stringify(normalizeLegacyChatCommentScope(settingsQuery.data)) : '',
+      settingsQuery.data
+        ? JSON.stringify(
+            normalizeLegacyChatCommentScope(
+              normalizeRequiredSubscriptionDraftSettings(settingsQuery.data),
+            ),
+          )
+        : '',
     [settingsQuery.data],
   );
   const rulesServerSnapshot = useMemo(
@@ -1886,6 +1886,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError(key);
   }
 
+  function normalizeRequiredSubscriptionDraftSettings(settings: ChatSettings): ChatSettings {
+    const requiredSubscriptionChannelIds = Array.from(
+      new Set(
+        settings.requiredSubscriptionChannelIds
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    );
+
+    return {
+      ...settings,
+      requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
+      requiredSubscriptionChannelIds,
+      requiredSubscriptionExpiresAt: '',
+    };
+  }
+
   function setBotSpeechMediaImage(key: BotSpeechMediaFieldKey, image: BotSpeechMediaImage | null) {
     setDraft((current) => {
       if (!current) {
@@ -1993,23 +2010,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       return {
         ...current,
+        requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: [...current.requiredSubscriptionChannelIds, channelId],
+        requiredSubscriptionExpiresAt: '',
       };
     });
     clearFieldError('requiredSubscriptionChannelIds');
   }
 
   function removeRequiredSubscriptionChannel(channelId: string) {
-    setDraft((current) =>
-      current
-        ? {
-            ...current,
-            requiredSubscriptionChannelIds: current.requiredSubscriptionChannelIds.filter(
-              (item) => item !== channelId,
-            ),
-          }
-        : current,
-    );
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const requiredSubscriptionChannelIds = current.requiredSubscriptionChannelIds.filter(
+        (item) => item !== channelId,
+      );
+      return {
+        ...current,
+        requiredSubscriptionEnabled: requiredSubscriptionChannelIds.length > 0,
+        requiredSubscriptionChannelIds,
+        requiredSubscriptionExpiresAt: '',
+      };
+    });
     clearFieldError('requiredSubscriptionChannelIds');
   }
 
@@ -2103,7 +2127,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function syncSavedSectionSettings(section: ApplySectionKey, saved: ChatSettings) {
-    setDraft((current) => (current ? mergeSectionSettings(current, saved, section) : saved));
+    const normalizedSaved = normalizeRequiredSubscriptionDraftSettings(saved);
+    setDraft((current) =>
+      current ? mergeSectionSettings(current, normalizedSaved, section) : normalizedSaved,
+    );
     clearSectionErrors(section);
     queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
       ['settings-screen', chatId],
@@ -2111,7 +2138,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         current
           ? {
               ...current,
-              settings: mergeSectionSettings(current.settings, saved, section),
+              settings: mergeSectionSettings(
+                normalizeRequiredSubscriptionDraftSettings(current.settings),
+                normalizedSaved,
+                section,
+              ),
             }
           : current,
     );
@@ -2148,13 +2179,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function validateDraft(value: ChatSettings): ChatSettings | null {
-    const parsed = chatSettingsSchema.safeParse(value);
+    const normalizedValue = normalizeRequiredSubscriptionDraftSettings(value);
+    const parsed = chatSettingsSchema.safeParse(normalizedValue);
 
     if (parsed.success) {
+      const normalizedParsed = normalizeRequiredSubscriptionDraftSettings(parsed.data);
       const nextErrors: FieldErrors = {};
 
       if (
-        parsed.data.requiredSubscriptionEnabled &&
+        normalizedParsed.requiredSubscriptionEnabled &&
         selectedUnavailableRequiredSubscriptionChannels.length > 0
       ) {
         nextErrors.requiredSubscriptionChannelIds =
@@ -2163,7 +2196,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       if (Object.keys(nextErrors).length === 0) {
         setFieldErrors({});
-        return parsed.data;
+        return normalizedParsed;
       }
 
       setFieldErrors(nextErrors);
@@ -2387,15 +2420,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     setMuteDurationValue(key, Number(draft[key]) + deltaHours);
-  }
-
-  function setRequiredSubscriptionDurationDaysValue(nextValue: number) {
-    setFieldValue(
-      'requiredSubscriptionDurationDays',
-      clampRequiredSubscriptionDurationDays(
-        nextValue,
-      ) as ChatSettings['requiredSubscriptionDurationDays'],
-    );
   }
 
   function adjustDeleteBotMessagesDelayValue(
@@ -4250,29 +4274,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const requiredSubscriptionStaleCount = selectedUnavailableRequiredSubscriptionChannels.length;
   const requiredSubscriptionUnavailableCount =
     unavailableManagedRequiredSubscriptionChannels.length;
-  const requiredSubscriptionDurationDays = clampRequiredSubscriptionDurationDays(
-    Number(draft?.requiredSubscriptionDurationDays ?? REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT),
-  );
-  const requiredSubscriptionExpiresAt = draft?.requiredSubscriptionExpiresAt?.trim() ?? '';
-  const requiredSubscriptionTimerDirty =
-    requiredSubscriptionDurationDays !==
-      (settingsQuery.data?.requiredSubscriptionDurationDays ??
-        REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT) ||
-    draft?.requiredSubscriptionEnabled !== settingsQuery.data?.requiredSubscriptionEnabled ||
-    JSON.stringify(draft?.requiredSubscriptionChannelIds ?? []) !==
-      JSON.stringify(settingsQuery.data?.requiredSubscriptionChannelIds ?? []);
-  const requiredSubscriptionTimerExpired =
-    draft?.requiredSubscriptionEnabled &&
-    isRequiredSubscriptionExpired(requiredSubscriptionExpiresAt);
-  const requiredSubscriptionTimerBadge = requiredSubscriptionTimerExpired
-    ? 'Срок истек'
-    : !requiredSubscriptionTimerDirty && requiredSubscriptionExpiresAt
-      ? formatRequiredSubscriptionExpiryBadge(requiredSubscriptionExpiresAt)
-      : formatRequiredSubscriptionDurationDaysCompact(requiredSubscriptionDurationDays);
-  const requiredSubscriptionSliderProgress =
-    ((requiredSubscriptionDurationDays - REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN) /
-      (REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX - REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN)) *
-    100;
+  const requiredSubscriptionIsActive = requiredSubscriptionSelectedCount > 0;
+  const requiredSubscriptionStateTone =
+    requiredSubscriptionStaleCount > 0
+      ? 'warning'
+      : requiredSubscriptionIsActive
+        ? 'active'
+        : 'idle';
+  const requiredSubscriptionStateLabel =
+    requiredSubscriptionStaleCount > 0
+      ? 'Проверить'
+      : requiredSubscriptionIsActive
+        ? 'Активна'
+        : 'Не настроена';
   const areChannelsSyncing =
     requiredSubscriptionEntitiesLoading || requiredSubscriptionEntitiesSyncing;
   const requiredSubscriptionPickerEmptyState =
@@ -4281,18 +4295,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : requiredSubscriptionUnavailableCount > 0
         ? 'Нет доступных чатов или каналов для добавления. Недоступные элементы показаны ниже.'
         : 'Нет доступных чатов или каналов в списке. Добавьте ссылку вручную.';
-  const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
-    ? areChannelsSyncing
-      ? 'Синхронизируем список чатов и каналов...'
-      : requiredSubscriptionStaleCount > 0
-        ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
-        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionTimerBadge}`
-    : 'Выключено';
-  const requiredSubscriptionCardStatus = draft?.requiredSubscriptionEnabled
-    ? requiredSubscriptionTimerExpired
-      ? 'Срок'
-      : `${requiredSubscriptionSelectedCount}`
-    : 'Выкл';
+  const requiredSubscriptionHeaderSummary = areChannelsSyncing
+    ? 'Синхронизируем список чатов и каналов...'
+    : requiredSubscriptionStaleCount > 0
+      ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
+      : requiredSubscriptionIsActive
+        ? `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · бессрочно`
+        : 'Не настроена';
+  const requiredSubscriptionCardStatus =
+    requiredSubscriptionStaleCount > 0
+      ? 'Проверить'
+      : requiredSubscriptionIsActive
+        ? `${requiredSubscriptionSelectedCount}`
+        : '0';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
     : 'Выключено';
@@ -4889,10 +4904,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return false;
     }
 
-    const savedSettings = settingsQuery.data;
+    const draftSettings =
+      section === 'requiredSubscription' ? normalizeRequiredSubscriptionDraftSettings(draft) : draft;
+    const savedSettings =
+      section === 'requiredSubscription'
+        ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
+        : settingsQuery.data;
     return (
-      SECTION_SETTING_KEYS[section].some((key) => draft[key] !== savedSettings[key]) ||
-      hasSectionBotSpeechMediaChanges(draft, savedSettings, section)
+      SECTION_SETTING_KEYS[section].some((key) => draftSettings[key] !== savedSettings[key]) ||
+      hasSectionBotSpeechMediaChanges(draftSettings, savedSettings, section)
     );
   }
 
@@ -4910,7 +4930,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return null;
     }
 
-    return validateDraft(mergeSectionSettings(settingsQuery.data, draft, section));
+    const baseSettings =
+      section === 'requiredSubscription'
+        ? normalizeRequiredSubscriptionDraftSettings(settingsQuery.data)
+        : settingsQuery.data;
+    const draftSettings =
+      section === 'requiredSubscription' ? normalizeRequiredSubscriptionDraftSettings(draft) : draft;
+
+    return validateDraft(mergeSectionSettings(baseSettings, draftSettings, section));
   }
 
   function buildCommentsPayload() {
@@ -10668,130 +10695,46 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     expandedSections.requiredSubscription && 'is-open',
                   )}
                 >
-                  {expandedSections.requiredSubscription ? (
-                    <div className="settings-section__collapse-inner managed-giveaway">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Требовать подписку
-                            </span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'requiredSubscriptionEnabled' && 'is-open',
-                              )}
-                              aria-label="Пояснение для обязательной подписки"
-                              aria-controls="required-subscription-enabled-hint"
-                              aria-expanded={openHintKey === 'requiredSubscriptionEnabled'}
-                              onClick={() => toggleHint('requiredSubscriptionEnabled')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
+	                  {expandedSections.requiredSubscription ? (
+	                    <div className="settings-section__collapse-inner managed-giveaway">
+	                      <div
+	                        className="required-subscription__summary-card"
+	                        data-state={requiredSubscriptionStateTone}
+	                      >
+	                        <div className="required-subscription__summary-main">
+	                          <span className="required-subscription__eyebrow">Правило</span>
+	                          <strong>Обязательная подписка</strong>
+	                          <small>
+	                            {requiredSubscriptionIsActive
+	                              ? 'Работает бессрочно, пока источник остается в списке. Сообщения без подписки удаляются.'
+	                              : 'Выберите чат или канал: правило включится автоматически и без срока действия.'}
+	                          </small>
+	                        </div>
+	                        <span className="required-subscription__state-pill">
+	                          {requiredSubscriptionStateLabel}
+	                        </span>
+	                      </div>
 
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить обязательную подписку перед отправкой сообщений"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.requiredSubscriptionEnabled}
-                              onChange={(event) => {
-                                setFieldValue('requiredSubscriptionEnabled', event.target.checked);
-                                if (!event.target.checked) {
-                                  clearFieldError('requiredSubscriptionChannelIds');
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'requiredSubscriptionEnabled' ? (
-                          <p
-                            id="required-subscription-enabled-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Сообщения без подписки удаляются.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      <div
-                        className={cn(
-                          'managed-giveaway__section',
-                          'required-subscription__timer-card',
-                          requiredSubscriptionTimerExpired && 'is-expired',
-                        )}
-                      >
-                        <div className="required-subscription__timer-head">
-                          <div className="required-subscription__timer-copy">
-                            <div className="required-subscription__timer-caption">
-                              <span className="required-subscription__hero-label">Таймер</span>
-                              <small>{requiredSubscriptionTimerBadge}</small>
-                            </div>
-                            <strong>
-                              {formatRequiredSubscriptionDurationDays(
-                                requiredSubscriptionDurationDays,
-                              )}
-                            </strong>
-                          </div>
-                          <span className="required-subscription__timer-icon-shell" aria-hidden>
-                            <RequiredSubscriptionTimerIcon
-                              days={requiredSubscriptionDurationDays}
-                            />
-                          </span>
-                        </div>
-
-                        <div className="required-subscription__timer-slider-wrap">
-                          <input
-                            className="required-subscription__timer-slider invitation-access__slider"
-                            type="range"
-                            min={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN}
-                            max={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX}
-                            step={1}
-                            value={requiredSubscriptionDurationDays}
-                            onChange={(event) =>
-                              setRequiredSubscriptionDurationDaysValue(Number(event.target.value))
-                            }
-                            style={
-                              {
-                                '--required-subscription-slider-progress': `${requiredSubscriptionSliderProgress}%`,
-                              } as CSSProperties
-                            }
-                            aria-label="Срок действия обязательной подписки в днях"
-                          />
-                          <div className="required-subscription__timer-scale" aria-hidden>
-                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN} день</span>
-                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX} дней</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="managed-giveaway__section required-subscription__board">
-                        <div className="managed-giveaway__title-row">
-                          <div className="managed-giveaway__section-copy">
-                            <strong>Чаты и каналы</strong>
-                            <small>
-                              {requiredSubscriptionSelectedCount}/
-                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
-                            </small>
-                          </div>
+	                      <div className="managed-giveaway__section required-subscription__board">
+	                        <div className="managed-giveaway__title-row">
+	                          <div className="managed-giveaway__section-copy">
+	                            <strong>Источники подписки</strong>
+	                            <small>
+	                              {requiredSubscriptionSelectedCount}/
+	                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано · бессрочно
+	                            </small>
+	                          </div>
 
                           <SettingsHintAnchor
                             hintKey="requiredSubscriptionChannels"
                             openHintKey={openHintKey}
-                            onToggleHint={toggleHint}
-                            label="Пояснение для обязательной подписки"
-                          >
-                            В списке ваши чаты и каналы. Чужие чаты и каналы добавляйте ссылкой,
-                            если бот там администратор.
-                          </SettingsHintAnchor>
-                        </div>
+	                            onToggleHint={toggleHint}
+	                            label="Пояснение для обязательной подписки"
+	                          >
+	                            Выберите свои чаты или каналы из списка. Правило включается само,
+	                            работает без срока и выключается только после удаления всех источников.
+	                          </SettingsHintAnchor>
+	                        </div>
 
                         {requiredSubscriptionStaleCount > 0 ? (
                           <p
@@ -10801,10 +10744,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             Есть недоступные ссылки. Исправьте или удалите их.
-                          </p>
-                        ) : null}
+	                          </p>
+	                        ) : null}
 
-                        {selectedRequiredSubscriptionChannels.length > 0 ? (
+	                        {requiredSubscriptionSelectedCount === 0 ? (
+	                          <div className="required-subscription__selection-empty">
+	                            <strong>Источники пока не выбраны</strong>
+	                            <span>
+	                              Добавьте чат или канал ниже, и обязательная подписка сразу станет
+	                              активной.
+	                            </span>
+	                          </div>
+	                        ) : null}
+
+	                        {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="required-subscription__selection-list">
                             {selectedRequiredSubscriptionChannels.map((channel) => {
                               const linkPreview = formatRequiredSubscriptionLinkPreview(

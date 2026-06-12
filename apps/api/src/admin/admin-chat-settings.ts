@@ -3,7 +3,6 @@ import {
   chatSettingsSchema,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
-  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   normalizeMessageLimitsBlockedDomainCandidate,
   normalizeMessageLimitsBlockedWordCandidate,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
@@ -20,7 +19,6 @@ import {
   CHAT_SETTINGS_BUTTON_GROUPS,
   DEFAULT_CHAT_SETTINGS,
   type AdminActionSource,
-  REQUIRED_SUBSCRIPTION_DURATION_DAY_MS,
 } from './admin.service.support';
 import { buildStoredLinkButtonState } from './admin-chat-rules';
 
@@ -31,10 +29,6 @@ export type ChatSettingsCurrentState = Pick<
   | 'nightModeForceCloseHours'
   | 'nightModeForceCloseDays'
   | 'nightModeForceCloseUntil'
-  | 'requiredSubscriptionEnabled'
-  | 'requiredSubscriptionChannelIds'
-  | 'requiredSubscriptionDurationDays'
-  | 'requiredSubscriptionExpiresAt'
 >;
 
 export type ResolvedBotAssignmentData = {
@@ -74,132 +68,20 @@ export function areBroadcastButtonsEqual(
   });
 }
 
-export function normalizeRequiredSubscriptionExpiresAt(value: unknown): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-
-  const normalized = value.trim();
-  if (!normalized) {
-    return '';
-  }
-
-  const timestampMs = Date.parse(normalized);
-  if (!Number.isFinite(timestampMs)) {
-    return '';
-  }
-
-  return new Date(timestampMs).toISOString();
-}
-
-export function hasRequiredSubscriptionExpired(
-  settings: Pick<ChatSettings, 'requiredSubscriptionExpiresAt'>,
-): boolean {
-  const expiresAt = normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
-  if (!expiresAt) {
-    return false;
-  }
-
-  return Date.parse(expiresAt) <= Date.now();
-}
-
 export function isRequiredSubscriptionCurrentlyActive(
   settings: Pick<
     ChatSettings,
     | 'requiredSubscriptionEnabled'
     | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionExpiresAt'
   >,
 ): boolean {
   return (
     settings.requiredSubscriptionEnabled &&
-    settings.requiredSubscriptionChannelIds.length > 0 &&
-    !hasRequiredSubscriptionExpired(settings)
+    settings.requiredSubscriptionChannelIds.length > 0
   );
 }
 
-function buildRequiredSubscriptionExpiresAt(durationDays: number): string {
-  return new Date(Date.now() + durationDays * REQUIRED_SUBSCRIPTION_DURATION_DAY_MS).toISOString();
-}
-
-function resolveRequiredSubscriptionExpiresAt(
-  settings: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionDurationDays'
-    | 'requiredSubscriptionExpiresAt'
-  >,
-  currentState?: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionDurationDays'
-    | 'requiredSubscriptionExpiresAt'
-  > | null,
-  options?: {
-    resetRequiredSubscriptionExpiration?: boolean;
-  },
-): string {
-  if (
-    !settings.requiredSubscriptionEnabled ||
-    settings.requiredSubscriptionChannelIds.length === 0
-  ) {
-    return '';
-  }
-
-  if (options?.resetRequiredSubscriptionExpiration) {
-    return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-  }
-
-  if (currentState === undefined) {
-    return normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
-  }
-
-  if (!currentState?.requiredSubscriptionEnabled) {
-    return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-  }
-
-  const currentExpiresAt = normalizeRequiredSubscriptionExpiresAt(
-    currentState.requiredSubscriptionExpiresAt,
-  );
-  if (!currentExpiresAt || hasRequiredSubscriptionExpired(currentState)) {
-    return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-  }
-
-  if (currentState.requiredSubscriptionDurationDays !== settings.requiredSubscriptionDurationDays) {
-    return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-  }
-
-  if (
-    currentState.requiredSubscriptionChannelIds.length !==
-    settings.requiredSubscriptionChannelIds.length
-  ) {
-    return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-  }
-
-  for (const [index, channelId] of settings.requiredSubscriptionChannelIds.entries()) {
-    if (currentState.requiredSubscriptionChannelIds[index] !== channelId) {
-      return buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
-    }
-  }
-
-  return currentExpiresAt;
-}
-
-function normalizeRequiredSubscriptionSettings(
-  settings: ChatSettings,
-  currentState?: Pick<
-    ChatSettings,
-    | 'requiredSubscriptionEnabled'
-    | 'requiredSubscriptionChannelIds'
-    | 'requiredSubscriptionDurationDays'
-    | 'requiredSubscriptionExpiresAt'
-  > | null,
-  options?: {
-    resetRequiredSubscriptionExpiration?: boolean;
-  },
-): ChatSettings {
+function normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSettings {
   const requiredSubscriptionChannelIds = Array.from(
     new Set(
       settings.requiredSubscriptionChannelIds
@@ -214,28 +96,14 @@ function normalizeRequiredSubscriptionSettings(
       Math.round(Number(settings.requiredSubscriptionDurationDays)),
     ),
   );
-  const requiredSubscriptionEnabled =
-    settings.requiredSubscriptionEnabled && requiredSubscriptionChannelIds.length > 0;
-  const requiredSubscriptionExpiresAt = requiredSubscriptionEnabled
-    ? resolveRequiredSubscriptionExpiresAt(
-        {
-          ...settings,
-          requiredSubscriptionEnabled,
-          requiredSubscriptionChannelIds,
-          requiredSubscriptionDurationDays,
-          requiredSubscriptionExpiresAt: settings.requiredSubscriptionExpiresAt,
-        },
-        currentState,
-        options,
-      )
-    : '';
+  const requiredSubscriptionEnabled = requiredSubscriptionChannelIds.length > 0;
 
   return {
     ...settings,
     requiredSubscriptionEnabled,
     requiredSubscriptionChannelIds,
     requiredSubscriptionDurationDays,
-    requiredSubscriptionExpiresAt,
+    requiredSubscriptionExpiresAt: '',
   };
 }
 
@@ -425,15 +293,12 @@ export function normalizeChatSettings(
   settings: ChatSettings,
   currentState?: ChatSettingsCurrentState | null,
   chatId?: string,
-  options?: {
-    resetRequiredSubscriptionExpiration?: boolean;
-  },
 ): ChatSettings {
   const normalized = normalizeNightModeSettings(
     normalizeBotSpeechMedia(
       normalizeInvitationAccessSettings(
         normalizeMessageLimitsBlockedLists(
-          normalizeRequiredSubscriptionSettings(settings, currentState, options),
+          normalizeRequiredSubscriptionSettings(settings),
         ),
       ),
     ),
@@ -664,10 +529,6 @@ export async function saveChatSettings(params: {
       nightModeForceCloseHours: true,
       nightModeForceCloseDays: true,
       nightModeForceCloseUntil: true,
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: true,
-      requiredSubscriptionDurationDays: true,
-      requiredSubscriptionExpiresAt: true,
     },
   });
   const normalizedSettings = normalizeChatSettings(
@@ -678,19 +539,6 @@ export async function saveChatSettings(params: {
       nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
       nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
       nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
-      requiredSubscriptionEnabled: currentSettings?.requiredSubscriptionEnabled ?? false,
-      requiredSubscriptionChannelIds: Array.isArray(currentSettings?.requiredSubscriptionChannelIds)
-        ? currentSettings.requiredSubscriptionChannelIds
-            .filter((item): item is string => typeof item === 'string')
-            .map((item) => item.trim())
-            .filter((item) => item.length > 0)
-        : [],
-      requiredSubscriptionDurationDays:
-        currentSettings?.requiredSubscriptionDurationDays ??
-        REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
-      requiredSubscriptionExpiresAt: normalizeRequiredSubscriptionExpiresAt(
-        currentSettings?.requiredSubscriptionExpiresAt,
-      ),
     },
     params.chatId,
   );

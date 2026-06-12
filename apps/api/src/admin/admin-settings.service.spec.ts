@@ -600,6 +600,88 @@ describe('AdminSettingsService chat rules', () => {
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
   });
 
+  it('normalizes required subscription settings to indefinite auto-enabled state', async () => {
+    const { legacyAdminService, prisma, service } = createService();
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      requiredSubscriptionEnabled: false,
+      requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
+    });
+
+    expect(result.requiredSubscriptionEnabled).toBe(true);
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
+    expect(result.requiredSubscriptionExpiresAt).toBe('');
+    expect(
+      legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionExpiresAt: '',
+      }),
+    );
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionExpiresAt: '',
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionExpiresAt: '',
+              }),
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  it('normalizes empty required subscription source list to disabled indefinite state', async () => {
+    const { prisma, service } = createService({
+      persistedSettings: createPersistedChatSettings({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
+      }),
+    });
+
+    const result = await service.updateSettings('chat-1', user as never, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: [],
+    });
+
+    expect(result.requiredSubscriptionEnabled).toBe(false);
+    expect(result.requiredSubscriptionChannelIds).toEqual([]);
+    expect(result.requiredSubscriptionExpiresAt).toBe('');
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+                requiredSubscriptionExpiresAt: '',
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+                requiredSubscriptionExpiresAt: '',
+              }),
+            },
+          },
+        }),
+      }),
+    );
+  });
+
   it('reconciles night mode transition jobs when schedule settings change', async () => {
     const { nightModeTransitionScheduler, service } = createService();
 
@@ -1046,6 +1128,67 @@ describe('AdminSettingsService chat rules', () => {
       ['chat-2'],
     );
     expect(nightModeTransitionScheduler.reconcileChats).not.toHaveBeenCalled();
+  });
+
+  it('applies required subscription section without copying duration or expiry fields', async () => {
+    const { legacyAdminService, prisma, service } = createService({
+      applyTargetChats: [createChatSummary({ id: 'chat-2', title: 'Второй чат' })],
+      persistedSettings: createPersistedChatSettings({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionDurationDays: 14,
+        requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
+      }),
+    });
+
+    legacyAdminService.isRequiredSubscriptionCurrentlyActiveForSettings.mockReturnValue(true);
+
+    const result = await service.applySettingsSectionToAllChats('chat-1', user as never, {
+      section: 'requiredSubscription',
+      target: { mode: 'selectedChats', favoriteTypes: [], chatIds: ['chat-2'] },
+    });
+
+    expect(result.updatedChats).toBe(1);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-2' },
+        update: expect.objectContaining({
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+              }),
+            },
+          },
+        }),
+      }),
+    );
+    const updatePayload = prisma.chat.upsert.mock.calls[0]?.[0].update.settings.upsert.update;
+    const createPayload = prisma.chat.upsert.mock.calls[0]?.[0].update.settings.upsert.create;
+    expect(updatePayload).not.toHaveProperty('requiredSubscriptionDurationDays');
+    expect(updatePayload).not.toHaveProperty('requiredSubscriptionExpiresAt');
+    expect(createPayload).not.toHaveProperty('requiredSubscriptionDurationDays');
+    expect(createPayload).not.toHaveProperty('requiredSubscriptionExpiresAt');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-2',
+        action: 'APPLY_SETTINGS_TO_ALL_CHATS',
+        payload: expect.objectContaining({
+          settingKeys: expect.arrayContaining([
+            'requiredSubscriptionEnabled',
+            'requiredSubscriptionChannelIds',
+          ]),
+        }),
+      }),
+    });
+    const auditPayload = prisma.auditLog.create.mock.calls[0]?.[0].data.payload;
+    expect(auditPayload.settingKeys).not.toContain('requiredSubscriptionDurationDays');
+    expect(auditPayload.settingKeys).not.toContain('requiredSubscriptionExpiresAt');
   });
 
   it('previews apply-settings target without routing through legacy preview endpoint', async () => {

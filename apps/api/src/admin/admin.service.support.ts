@@ -730,8 +730,6 @@ export const SETTINGS_SECTION_KEYS = {
   requiredSubscription: [
     'requiredSubscriptionEnabled',
     'requiredSubscriptionChannelIds',
-    'requiredSubscriptionDurationDays',
-    'requiredSubscriptionExpiresAt',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
     'requiredSubscriptionAdminContactButtonEnabled',
@@ -807,7 +805,6 @@ export const CONTRACT_FAVORITE_TYPE_BY_PRISMA = {
   [PrismaManagedEntityFavoriteType.SERVICE]: 'service',
 } as const satisfies Record<PrismaManagedEntityFavoriteType, ManagedEntityFavoriteType>;
 export const APPLY_SECTION_TARGET_PREVIEW_SAMPLE_LIMIT = 8;
-export const REQUIRED_SUBSCRIPTION_DURATION_DAY_MS = 24 * 60 * 60 * 1_000;
 export const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,

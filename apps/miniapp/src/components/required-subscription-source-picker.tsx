@@ -2,6 +2,7 @@ import type { ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   useEffect,
   useDeferredValue,
+  memo,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,7 @@ export type RequiredSubscriptionSourcePickerProps = {
 const SOURCE_PICKER_ROW_HEIGHT = 70;
 const SOURCE_PICKER_MAX_VISIBLE_ROWS = 6;
 const SOURCE_PICKER_OVERSCAN = 4;
+const SOURCE_PICKER_VIRTUALIZE_THRESHOLD = 40;
 
 function formatSourceLinkPreview(value: string | null | undefined): string | null {
   if (typeof value !== 'string') {
@@ -85,6 +87,77 @@ function getFilteredChoices(
   return filterBroadcastAudienceChoices(typedChoices, query);
 }
 
+function useIsFinePointer(): boolean {
+  const [isFinePointer, setIsFinePointer] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const query = window.matchMedia('(hover: hover) and (pointer: fine)');
+    const handleChange = () => setIsFinePointer(query.matches);
+    handleChange();
+    query.addEventListener?.('change', handleChange);
+    return () => query.removeEventListener?.('change', handleChange);
+  }, []);
+
+  return isFinePointer;
+}
+
+type RequiredSubscriptionSourceRowProps = {
+  choice: ManagedEntityHeader;
+  disabled: boolean;
+  onAdd: (channelId: string) => void;
+};
+
+const RequiredSubscriptionSourceRow = memo(function RequiredSubscriptionSourceRow({
+  choice,
+  disabled,
+  onAdd,
+}: RequiredSubscriptionSourceRowProps) {
+  const linkPreview = formatSourceLinkPreview(choice.link);
+  const typeLabel = formatSourceTypeLabel(choice.entityType);
+
+  return (
+    <div className="required-subscription__source-row" role="presentation">
+      <button
+        type="button"
+        className="required-subscription__source-card"
+        onClick={() => onAdd(choice.id)}
+        disabled={disabled}
+        role="option"
+        aria-selected="false"
+        aria-label={`Добавить ${typeLabel.toLowerCase()} ${choice.title}`}
+      >
+        <EntityAvatar
+          title={choice.title}
+          entityType={choice.entityType}
+          avatarUrl={choice.avatarUrl ?? null}
+          className="required-subscription__source-avatar"
+        />
+        <span className="required-subscription__source-copy">
+          <strong className="required-subscription__source-title">{choice.title}</strong>
+          <span className="required-subscription__source-meta">
+            <span className="required-subscription__source-type">{typeLabel}</span>
+            <span className="required-subscription__source-link">
+              {linkPreview ?? choice.id}
+            </span>
+          </span>
+        </span>
+        <span className="required-subscription__source-add" aria-hidden="true">
+          Добавить
+        </span>
+      </button>
+    </div>
+  );
+});
+
 export function RequiredSubscriptionSourcePicker({
   choices,
   selectedCount,
@@ -104,8 +177,11 @@ export function RequiredSubscriptionSourcePicker({
     SOURCE_PICKER_ROW_HEIGHT * SOURCE_PICKER_MAX_VISIBLE_ROWS,
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollTopRef = useRef<number | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const trimmedQuery = query.trim();
   const deferredQuery = useDeferredValue(trimmedQuery);
+  const isFinePointer = useIsFinePointer();
   const choiceCounts = useMemo(
     () => ({
       all: choices.length,
@@ -127,6 +203,8 @@ export function RequiredSubscriptionSourcePicker({
     [choices, deferredQuery, filter],
   );
   const hasReachedLimit = selectedCount >= maxSelectedCount;
+  const shouldVirtualize =
+    isFinePointer && filteredChoices.length > SOURCE_PICKER_VIRTUALIZE_THRESHOLD;
   const listHeight =
     filteredChoices.length > 0
       ? Math.min(
@@ -145,8 +223,14 @@ export function RequiredSubscriptionSourcePicker({
       }),
     [filteredChoices.length, listHeight, scrollTop, viewportHeight],
   );
-  const visibleChoices = filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex);
+  const visibleChoices = shouldVirtualize
+    ? filteredChoices.slice(virtualRange.startIndex, virtualRange.endIndex)
+    : filteredChoices;
   const visibleOffset = virtualRange.startIndex * SOURCE_PICKER_ROW_HEIGHT;
+  const visibleFrom = filteredChoices.length === 0 ? 0 : virtualRange.startIndex + 1;
+  const visibleTo = shouldVirtualize
+    ? Math.min(virtualRange.endIndex, filteredChoices.length)
+    : filteredChoices.length;
   const statusText = loading
     ? 'Загружаем список с главной...'
     : syncing
@@ -157,7 +241,9 @@ export function RequiredSubscriptionSourcePicker({
           ? 'MAX временно ограничил обновление. Повторите позже.'
           : hasReachedLimit
             ? `Лимит ${maxSelectedCount} источников достигнут.`
-            : formatSourceCount(filteredChoices.length, emptyState);
+            : shouldVirtualize && filteredChoices.length > 0
+              ? `${formatSourceCount(filteredChoices.length, emptyState)} · показано ${visibleFrom}-${visibleTo}`
+              : formatSourceCount(filteredChoices.length, emptyState);
   const emptySearchText = trimmedQuery
     ? 'Ничего не нашли. Очистите поиск или добавьте источник ссылкой ниже.'
     : emptyState;
@@ -166,6 +252,15 @@ export function RequiredSubscriptionSourcePicker({
     setScrollTop(0);
     scrollRef.current?.scrollTo({ top: 0 });
   }, [deferredQuery, filter]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -181,7 +276,25 @@ export function RequiredSubscriptionSourcePicker({
   }, []);
 
   function handleScroll(event: UIEvent<HTMLDivElement>) {
-    setScrollTop(event.currentTarget.scrollTop);
+    if (!shouldVirtualize) {
+      return;
+    }
+
+    pendingScrollTopRef.current = event.currentTarget.scrollTop;
+    if (scrollFrameRef.current !== null) {
+      return;
+    }
+
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const nextScrollTop = pendingScrollTopRef.current ?? 0;
+      pendingScrollTopRef.current = null;
+      setScrollTop((current) => {
+        const currentStart = Math.floor(current / SOURCE_PICKER_ROW_HEIGHT);
+        const nextStart = Math.floor(nextScrollTop / SOURCE_PICKER_ROW_HEIGHT);
+        return currentStart === nextStart ? current : nextScrollTop;
+      });
+    });
   }
 
   return (
@@ -242,58 +355,50 @@ export function RequiredSubscriptionSourcePicker({
       {!loading && !error && filteredChoices.length > 0 ? (
         <div
           ref={scrollRef}
-          className="required-subscription__source-list"
-          style={{ '--required-subscription-source-list-height': `${listHeight}px` } as CSSProperties}
+          className={cn(
+            'required-subscription__source-list',
+            !shouldVirtualize && 'is-static',
+          )}
+          style={
+            {
+              '--required-subscription-source-list-height': shouldVirtualize
+                ? `${listHeight}px`
+                : 'auto',
+            } as CSSProperties
+          }
           onScroll={handleScroll}
           role="listbox"
           aria-label="Доступные чаты и каналы для обязательной подписки"
         >
-          <div
-            className="required-subscription__source-list-spacer"
-            style={{ height: `${virtualRange.totalHeight}px` }}
-          >
+          {shouldVirtualize ? (
             <div
-              className="required-subscription__source-list-window"
-              style={{ transform: `translateY(${visibleOffset}px)` }}
+              className="required-subscription__source-list-spacer"
+              style={{ height: `${virtualRange.totalHeight}px` }}
             >
-              {visibleChoices.map((choice) => {
-                const linkPreview = formatSourceLinkPreview(choice.link);
-                const typeLabel = formatSourceTypeLabel(choice.entityType);
-
-                return (
-                  <button
+              <div
+                className="required-subscription__source-list-window"
+                style={{ transform: `translateY(${visibleOffset}px)` }}
+              >
+                {visibleChoices.map((choice) => (
+                  <RequiredSubscriptionSourceRow
                     key={`required-subscription-source-${choice.id}`}
-                    type="button"
-                    className="required-subscription__source-card"
-                    onClick={() => onAdd(choice.id)}
+                    choice={choice}
                     disabled={hasReachedLimit}
-                    role="option"
-                    aria-selected="false"
-                    aria-label={`Добавить ${typeLabel.toLowerCase()} ${choice.title}`}
-                  >
-                    <EntityAvatar
-                      title={choice.title}
-                      entityType={choice.entityType}
-                      avatarUrl={choice.avatarUrl ?? null}
-                      className="required-subscription__source-avatar"
-                    />
-                    <span className="required-subscription__source-copy">
-                      <strong className="required-subscription__source-title">{choice.title}</strong>
-                      <span className="required-subscription__source-meta">
-                        <span className="required-subscription__source-type">{typeLabel}</span>
-                        <span className="required-subscription__source-link">
-                          {linkPreview ?? choice.id}
-                        </span>
-                      </span>
-                    </span>
-                    <span className="required-subscription__source-add" aria-hidden="true">
-                      +
-                    </span>
-                  </button>
-                );
-              })}
+                    onAdd={onAdd}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
+          ) : (
+            visibleChoices.map((choice) => (
+              <RequiredSubscriptionSourceRow
+                key={`required-subscription-source-${choice.id}`}
+                choice={choice}
+                disabled={hasReachedLimit}
+                onAdd={onAdd}
+              />
+            ))
+          )}
         </div>
       ) : null}
 

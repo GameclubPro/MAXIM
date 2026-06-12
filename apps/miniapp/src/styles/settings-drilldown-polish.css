@@ -356,12 +356,12 @@
   }
 
   .settings-drilldown__panel--required-subscription
-    :is(.required-subscription__timer-card, .required-subscription__board) {
-    position: relative;
-    overflow: hidden;
-    border-radius: 24px;
-    border: 1px solid var(--settings-mobile-mode-border);
-    background:
+    :is(.required-subscription__summary-card, .required-subscription__board) {
+  position: relative;
+  overflow: visible;
+  border-radius: 24px;
+  border: 1px solid var(--settings-mobile-mode-border);
+  background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(244, 248, 253, 0.95)),
       rgba(255, 255, 255, 0.94);
     box-shadow:
@@ -369,7 +369,7 @@
       0 14px 28px rgba(20, 44, 68, 0.05);
   }
 
-  .settings-drilldown__panel--required-subscription .required-subscription__timer-card,
+  .settings-drilldown__panel--required-subscription .required-subscription__summary-card,
   .settings-drilldown__panel--required-subscription .required-subscription__board {
     padding: 16px;
   }
@@ -509,15 +509,6 @@
   .settings-drilldown__panel--ladder .settings-native-toggle--nested {
     margin-left: 10px;
     padding-left: 10px;
-  }
-
-  .required-subscription__timer-head {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .required-subscription__timer-icon-shell {
-    width: 44px;
-    height: 44px;
   }
 
   .settings-drilldown__panel--required-subscription .managed-giveaway__editor-grid {
