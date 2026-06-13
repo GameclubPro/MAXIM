@@ -41,6 +41,10 @@ function getStorageKey(entityType: BroadcastComposerDraftEntityType, entityId: s
   return `maxim:broadcast-composer:${entityType}:${entityId}`;
 }
 
+function getResetAckKey(entityType: BroadcastComposerDraftEntityType, entityId: string): string {
+  return `${getStorageKey(entityType, entityId)}:reset-ack`;
+}
+
 function canUseStorage(): boolean {
   try {
     return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -289,6 +293,58 @@ export async function loadBroadcastComposerDraftAsync(
   return loadBroadcastComposerDraft(entityType, entityId);
 }
 
+export async function clearBroadcastComposerDraft(
+  entityType: BroadcastComposerDraftEntityType,
+  entityId: string,
+): Promise<void> {
+  if (!entityId || typeof window === 'undefined') {
+    return;
+  }
+
+  const key = getStorageKey(entityType, entityId);
+  try {
+    if (canUseStorage()) {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Storage can be unavailable or quota-limited inside a WebView.
+  }
+
+  await Promise.allSettled([writeBroadcastDraftToIndexedDb(key, null), removeNativeStorageItem(key)]);
+}
+
+export function hasAppliedBroadcastComposerReset(
+  entityType: BroadcastComposerDraftEntityType,
+  entityId: string,
+  resetAt: string | null | undefined,
+): boolean {
+  if (!entityId || !resetAt || !canUseStorage()) {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(getResetAckKey(entityType, entityId)) === resetAt;
+  } catch {
+    return false;
+  }
+}
+
+export function markBroadcastComposerResetApplied(
+  entityType: BroadcastComposerDraftEntityType,
+  entityId: string,
+  resetAt: string,
+): void {
+  if (!entityId || !resetAt || !canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(getResetAckKey(entityType, entityId), resetAt);
+  } catch {
+    // Storage can be unavailable or quota-limited inside a WebView.
+  }
+}
+
 export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): boolean {
   const hasButtonDraft = draft.buttons.some((button) => button.text.trim() || button.url.trim());
   const hasImageDraft =
@@ -325,11 +381,7 @@ export function saveBroadcastComposerDraft(
   const key = getStorageKey(entityType, entityId);
   try {
     if (isBroadcastComposerDraftEmpty(draft)) {
-      if (canUseStorage()) {
-        window.localStorage.removeItem(key);
-      }
-      void writeBroadcastDraftToIndexedDb(key, null);
-      void removeNativeStorageItem(key);
+      void clearBroadcastComposerDraft(entityType, entityId);
       return;
     }
 

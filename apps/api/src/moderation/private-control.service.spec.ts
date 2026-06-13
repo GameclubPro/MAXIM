@@ -1012,13 +1012,20 @@ function createHarness(
       return saveGiveaway(createGiveaway({ ...existing, status: 'CANCELED' }));
     }),
   };
+  const redisStrings = new Map<string, string>();
+  const redisCounter = {
+    getString: jest.fn(async (key: string) => redisStrings.get(key) ?? null),
+    setStringWithTtl: jest.fn(async (key: string, value: string) => {
+      redisStrings.set(key, value);
+    }),
+  };
 
   const service = new PrivateControlService(
     maxClient as never,
     adminService as never,
     adminSettingsService as never,
     managedGiveawayService as never,
-    undefined,
+    redisCounter as never,
     {
       get: jest.fn((key: string) => {
         if (key === 'MAX_BOT_ID') {
@@ -1046,6 +1053,7 @@ function createHarness(
     adminService,
     adminSettingsService,
     managedGiveawayService,
+    redisCounter,
     chats,
     channels,
   };
@@ -3512,7 +3520,7 @@ describe('PrivateControlService', () => {
   });
 
   it('clears broadcast handoff draft from miniapp reset for the same chat', async () => {
-    const { service, maxClient, chats } = createHarness();
+    const { service, maxClient, redisCounter, chats } = createHarness();
     const actor = {
       userId: 'user-1',
       username: null,
@@ -3550,6 +3558,18 @@ describe('PrivateControlService', () => {
     const cleared = await service.clearBroadcastHandoffState(chats[0].id, actor, 'chat');
     expect(cleared.hasContent).toBe(false);
     expect(cleared.scheduledSlots).toEqual([]);
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      `miniapp:broadcast-composer-reset:v1:chat:${chats[0].id}:${actor.userId}`,
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      7 * 24 * 60 * 60,
+    );
+
+    const clientReset = await service.getBroadcastComposerClientResetState(
+      chats[0].id,
+      actor,
+      'chat',
+    );
+    expect(clientReset.resetAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
 
     const afterClear = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
     expect(afterClear.hasContent).toBe(false);

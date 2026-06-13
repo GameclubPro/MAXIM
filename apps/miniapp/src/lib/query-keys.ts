@@ -39,6 +39,8 @@ export const queryKeys = {
   chatSettingsScreen: (chatId: string | null | undefined) => ['settings-screen', chatId] as const,
   chatBroadcastHandoff: (chatId: string | null | undefined) =>
     ['broadcast-handoff-state', chatId] as const,
+  chatBroadcastComposerClientReset: (chatId: string | null | undefined) =>
+    ['broadcast-composer-client-reset', chatId] as const,
   currentUser: (chatId: string | null | undefined) => ['me', chatId ?? null] as const,
   settingsHeaderBotLoad: (botIdsSignature: string) =>
     ['settings-header-bot-load', botIdsSignature] as const,

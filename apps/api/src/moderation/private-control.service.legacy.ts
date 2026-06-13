@@ -429,6 +429,8 @@ type ForwardedRulesSource = {
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
+const BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX = 'miniapp:broadcast-composer-reset:v1';
+const BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC = 7 * 24 * 60 * 60;
 const BROADCAST_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const RULES_HANDOFF_DEDUP_WINDOW_MS = 20_000;
@@ -1637,7 +1639,32 @@ export class PrivateControlService {
       await this.saveSession(user.userId, session);
     }
 
+    await this.rememberBroadcastComposerClientReset(user.userId, entityType, sourceChatId);
+
     return this.buildBroadcastHandoffState(entityType, DEFAULT_BROADCAST_DRAFT);
+  }
+
+  async getBroadcastComposerClientResetState(
+    sourceChatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<{ resetAt: string | null }> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelSettings(sourceChatId, user);
+    } else {
+      await this.adminService.getSettings(sourceChatId, user);
+    }
+
+    if (!this.redisCounter) {
+      return { resetAt: null };
+    }
+
+    const resetAt = await this.redisCounter.getString(
+      this.broadcastComposerClientResetKey(user.userId, entityType, sourceChatId),
+    );
+    return {
+      resetAt: this.normalizeBroadcastComposerClientResetValue(resetAt),
+    };
   }
 
   async handoffRulesFromMiniapp(
@@ -13115,6 +13142,40 @@ export class PrivateControlService {
 
   private sessionKey(userId: string): string {
     return `${SESSION_KEY_PREFIX}:${userId}`;
+  }
+
+  private async rememberBroadcastComposerClientReset(
+    userId: string,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+  ): Promise<void> {
+    if (!this.redisCounter) {
+      return;
+    }
+
+    await this.redisCounter.setStringWithTtl(
+      this.broadcastComposerClientResetKey(userId, entityType, sourceChatId),
+      new Date().toISOString(),
+      BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC,
+    );
+  }
+
+  private broadcastComposerClientResetKey(
+    userId: string,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+  ): string {
+    return `${BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX}:${entityType}:${sourceChatId}:${userId}`;
+  }
+
+  private normalizeBroadcastComposerClientResetValue(value: string | null): string | null {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
   }
 
   private toPositiveInt(value: unknown, fallback: number): number {

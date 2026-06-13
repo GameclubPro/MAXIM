@@ -81,6 +81,7 @@ import {
   applySettingsSectionToAll,
   cancelManagedBroadcast,
   clearBroadcastHandoffState,
+  getBroadcastComposerClientResetState,
   getBroadcastHandoffState,
   getManagedBroadcast,
   getManagedBroadcastCalendar,
@@ -132,8 +133,11 @@ import {
   type BroadcastTimingMode,
 } from '../lib/broadcast-schedule';
 import {
+  clearBroadcastComposerDraft,
+  hasAppliedBroadcastComposerReset,
   loadBroadcastComposerDraft,
   loadBroadcastComposerDraftAsync,
+  markBroadcastComposerResetApplied,
   saveBroadcastComposerDraft,
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
@@ -524,6 +528,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const broadcastDraftRestoreEpochRef = useRef(0);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -615,9 +620,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     setMailingWorkspaceView('compose');
+    const restoreEpoch = ++broadcastDraftRestoreEpochRef.current;
     let cancelled = false;
     const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
-      if (cancelled) {
+      if (cancelled || restoreEpoch !== broadcastDraftRestoreEpochRef.current) {
         return;
       }
       setMailingTargetMode(savedBroadcastDraft.targetMode);
@@ -683,6 +689,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection === 'broadcast' &&
       handoffRequested,
     refetchOnWindowFocus: false,
+  });
+  const broadcastComposerClientResetQuery = useQuery({
+    queryKey: queryKeys.chatBroadcastComposerClientReset(chatId),
+    queryFn: ({ signal }) => getBroadcastComposerClientResetState(api, chatId ?? '', { signal }),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
   const meQuery = useQuery({
     queryKey: ['me', chatId ?? null],
@@ -2934,6 +2947,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingWorkspaceView('compose');
     resetMailingPlanner();
   }
+
+  useEffect(() => {
+    const resetAt = broadcastComposerClientResetQuery.data?.resetAt ?? null;
+    if (!chatId || !resetAt || hasAppliedBroadcastComposerReset('chat', chatId, resetAt)) {
+      return;
+    }
+
+    let cancelled = false;
+    broadcastDraftRestoreEpochRef.current += 1;
+
+    void (async () => {
+      await clearBroadcastComposerDraft('chat', chatId);
+      if (cancelled) {
+        return;
+      }
+
+      markBroadcastComposerResetApplied('chat', chatId, resetAt);
+      appliedBroadcastHandoffSignatureRef.current = null;
+      resetMailingComposer();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.chatBroadcastHandoff(chatId) });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [broadcastComposerClientResetQuery.data?.resetAt, chatId, queryClient]);
 
   function handleCancelMailingEdit() {
     resetMailingComposer();

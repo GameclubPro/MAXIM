@@ -54,6 +54,23 @@ import type {
 } from './shared-types';
 import type { ApiTransport } from './transport';
 
+export type BroadcastComposerClientResetState = {
+  resetAt: string | null;
+};
+
+function parseBroadcastComposerClientResetState(
+  response: unknown,
+): BroadcastComposerClientResetState {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return { resetAt: null };
+  }
+
+  const resetAt = (response as Record<string, unknown>).resetAt;
+  return {
+    resetAt: typeof resetAt === 'string' && resetAt.trim().length > 0 ? resetAt.trim() : null,
+  };
+}
+
 export async function getChatHeader(
   api: ApiTransport,
   chatId: string,
@@ -294,6 +311,17 @@ export async function clearBroadcastHandoffState(
     method: 'DELETE',
   });
   return broadcastHandoffStateSchema.parse(response);
+}
+
+export async function getBroadcastComposerClientResetState(
+  api: ApiTransport,
+  chatId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<BroadcastComposerClientResetState> {
+  const response = await api.request(`/chats/${chatId}/broadcast/client-reset`, {
+    signal: options.signal,
+  });
+  return parseBroadcastComposerClientResetState(response);
 }
 
 export async function handoffRules(api: ApiTransport, chatId: string) {
