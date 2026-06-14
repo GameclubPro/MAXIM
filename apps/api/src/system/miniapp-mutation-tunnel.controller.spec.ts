@@ -106,6 +106,75 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.send).toHaveBeenCalledWith();
   });
 
+  it('assembles chunked tunnel bodies before forwarding the mutation', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({
+      imageBase64: 'x'.repeat(16_000),
+      imageMimeType: 'image/jpeg',
+    });
+    const encoded = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+    const chunks = [encoded.slice(0, 7_000), encoded.slice(7_000)];
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    for (const [chunkIndex, chunk] of chunks.entries()) {
+      const chunkReply = createReply();
+      await controller.tunnel(
+        {
+          method: 'POST',
+          path: '/channels/channel-1/broadcast',
+          contentType: 'application/json',
+          uploadId: 'test-upload-id-123456',
+          chunkIndex: String(chunkIndex),
+          chunkCount: String(chunks.length),
+          chunk,
+        },
+        'InitData auth_date=1&hash=test',
+        chunkReply as never,
+      );
+      expect(chunkReply.status).toHaveBeenCalledWith(200);
+    }
+
+    await controller.tunnel(
+      {
+        method: 'POST',
+        path: '/channels/channel-1/broadcast',
+        contentType: 'application/json',
+        uploadId: 'test-upload-id-123456',
+        chunkCount: String(chunks.length),
+        commit: '1',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/channels/channel-1/broadcast',
+      expect.objectContaining({
+        method: 'POST',
+        body: payload,
+        headers: expect.objectContaining({
+          Authorization: 'InitData auth_date=1&hash=test',
+          'Content-Type': 'application/json',
+          'X-Miniapp-Mutation-Tunnel': '1',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
+  });
+
   it('rejects ambiguous compressed and plain tunnel bodies', async () => {
     const controller = new MiniappMutationTunnelController();
     global.fetch = jest.fn() as typeof fetch;
