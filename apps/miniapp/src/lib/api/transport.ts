@@ -27,6 +27,14 @@ function resolveInitDataValue(initData: string | (() => string)): string {
   return (typeof initData === 'function' ? initData() : initData).trim();
 }
 
+function shouldPreferMutationTunnel(apiBase: string): boolean {
+  try {
+    return new URL(apiBase, window.location.href).hostname === 'api-cdn.flex-craft.ru';
+  } catch {
+    return apiBase.includes('api-cdn.flex-craft.ru');
+  }
+}
+
 async function waitForUpdatedInitData(
   readInitData: (refresh?: boolean) => string,
   currentInitData: string,
@@ -158,6 +166,20 @@ export function createApiTransport(
     const method = (init.method ?? 'GET').toUpperCase();
 
     if (!API_FALLBACKS_ENABLED || attemptBases.length <= 1) {
+      if (!['GET', 'HEAD'].includes(method) && shouldPreferMutationTunnel(attemptBases[0])) {
+        const { fetchMutationWithTunnel } = await import('./transport-mutation-tunnel');
+        const tunnelResult = await fetchMutationWithTunnel(
+          attemptBases[0],
+          path,
+          authInitData,
+          init,
+          fetchWithTimeout,
+        );
+        if (tunnelResult) {
+          return tunnelResult;
+        }
+      }
+
       try {
         const result = await fetchWithTimeout(attemptBases[0], path, authInitData, init);
         if (!['GET', 'HEAD'].includes(method) && result.response.status === 405) {
