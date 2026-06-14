@@ -1,6 +1,6 @@
 import { buildApiErrorMessage } from '../api-error';
 import { traceFirstMiniappApiResult } from '../boot-trace';
-import { API_BASES } from '../public-config';
+import { resolveRuntimeApiBases } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 const API_REQUEST_TIMEOUT_MS = 25_000;
@@ -61,7 +61,7 @@ export function createApiTransport(
 ): ApiTransport {
   let cachedInitData = resolveInitDataValue(initData);
   let preferredApiBase: string | null = null;
-  const apiBases = options.apiBases?.length ? options.apiBases : API_BASES;
+  const apiBases = options.apiBases?.length ? options.apiBases : resolveRuntimeApiBases();
 
   const readInitData = (refresh = false): string => {
     if (refresh || typeof initData === 'function') {
@@ -155,11 +155,48 @@ export function createApiTransport(
     init: RequestInit = {},
   ): Promise<FetchAttemptResult> => {
     const attemptBases = resolveAttemptBases();
+    const method = (init.method ?? 'GET').toUpperCase();
+
     if (!API_FALLBACKS_ENABLED || attemptBases.length <= 1) {
-      return fetchWithTimeout(attemptBases[0], path, authInitData, init);
+      try {
+        const result = await fetchWithTimeout(attemptBases[0], path, authInitData, init);
+        if (!['GET', 'HEAD'].includes(method) && result.response.status === 405) {
+          const { fetchMutationWithTunnel } = await import('./transport-mutation-tunnel');
+          const tunnelResult = await fetchMutationWithTunnel(
+            attemptBases[0],
+            path,
+            authInitData,
+            init,
+            fetchWithTimeout,
+          );
+          if (tunnelResult) {
+            return tunnelResult;
+          }
+        }
+
+        return result;
+      } catch (error: unknown) {
+        if (init.signal?.aborted || ['GET', 'HEAD'].includes(method)) {
+          throw error;
+        }
+
+        const { fetchMutationWithTunnel } = await import('./transport-mutation-tunnel');
+        const tunnelResult = await fetchMutationWithTunnel(
+          attemptBases[0],
+          path,
+          authInitData,
+          init,
+          fetchWithTimeout,
+        );
+        if (tunnelResult) {
+          return tunnelResult;
+        }
+
+        throw error;
+      }
     }
 
-    if (!['GET', 'HEAD'].includes((init.method ?? 'GET').toUpperCase())) {
+    if (!['GET', 'HEAD'].includes(method)) {
       const { fetchMutationWithTunnelFallback } = await import('./transport-mutation-tunnel');
       return fetchMutationWithTunnelFallback(
         attemptBases,
@@ -221,12 +258,41 @@ export function createApiTransport(
       }
     },
     requestKeepalive(path: string, init: RequestInit = {}) {
+      const apiBase = preferredApiBase ?? apiBases[0];
       const headers = buildHeaders(readInitData(), init);
-      void fetch(`${preferredApiBase ?? apiBases[0]}${path}`, {
+      const method = (init.method ?? 'GET').toUpperCase();
+      const sendTunnel = async () => {
+        if (['GET', 'HEAD'].includes(method)) {
+          return;
+        }
+
+        const { buildMutationTunnelPath } = await import('./transport-mutation-tunnel');
+        const tunnelPath = await buildMutationTunnelPath(path, { ...init, headers });
+        if (!tunnelPath) {
+          return;
+        }
+
+        await fetch(`${apiBase}${tunnelPath}`, {
+          method: 'GET',
+          headers,
+          keepalive: true,
+          signal: init.signal,
+        });
+      };
+
+      void fetch(`${apiBase}${path}`, {
         ...init,
         headers,
         keepalive: true,
-      }).catch(() => undefined);
+      })
+        .then((response) => {
+          if (response.status === 405) {
+            void sendTunnel().catch(() => undefined);
+          }
+        })
+        .catch(() => {
+          void sendTunnel().catch(() => undefined);
+        });
     },
   };
 }

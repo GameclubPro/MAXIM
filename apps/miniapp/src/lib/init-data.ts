@@ -1,3 +1,32 @@
+const INIT_DATA_PARAM_NAMES = ['WebAppData', 'init_data', 'initData'] as const;
+
+function readParamFromNormalizedSource(source: string, names: readonly string[]): string {
+  const params = new URLSearchParams(source);
+  for (const key of names) {
+    const candidate = params.get(key);
+    if (candidate?.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  return '';
+}
+
+function readWrappedParam(source: string, names: readonly string[]): string {
+  const normalized = source.trim().replace(/^[?#]/u, '');
+  if (!normalized) {
+    return '';
+  }
+
+  const directValue = readParamFromNormalizedSource(normalized, names);
+  if (directValue) {
+    return directValue;
+  }
+
+  const queryIndex = normalized.indexOf('?');
+  return queryIndex >= 0 ? readParamFromNormalizedSource(normalized.slice(queryIndex + 1), names) : '';
+}
+
 function normalizeInitData(value: string): string {
   let current = value.trim();
 
@@ -26,7 +55,7 @@ function normalizeInitData(value: string): string {
 }
 
 function extractWrappedInitData(value: string): string | null {
-  const normalized = value.trim().replace(/^[?#]/u, '');
+  const normalized = value.trim();
   if (
     !normalized.includes('WebAppData=') &&
     !normalized.includes('init_data=') &&
@@ -35,27 +64,12 @@ function extractWrappedInitData(value: string): string | null {
     return null;
   }
 
-  const params = new URLSearchParams(normalized);
-  for (const key of ['WebAppData', 'init_data', 'initData']) {
-    const candidate = params.get(key);
-    if (candidate?.trim()) {
-      return candidate.trim();
-    }
-  }
-
-  return null;
+  return readWrappedParam(normalized, INIT_DATA_PARAM_NAMES) || null;
 }
 
 function readInitDataFromLocation(source: string): string {
-  const params = new URLSearchParams(source.replace(/^[?#]/u, ''));
-  for (const key of ['WebAppData', 'init_data', 'initData']) {
-    const candidate = params.get(key);
-    if (candidate?.trim()) {
-      return normalizeInitData(candidate);
-    }
-  }
-
-  return '';
+  const candidate = readWrappedParam(source, INIT_DATA_PARAM_NAMES);
+  return candidate ? normalizeInitData(candidate) : '';
 }
 
 function readUserIdValue(value: unknown): string | null {

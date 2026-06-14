@@ -272,6 +272,9 @@ export class MiniappMutationTunnelController {
       if (responseContentType) {
         reply.header('Content-Type', responseContentType);
       }
+      reply.header('Cache-Control', 'no-store, private');
+      reply.header('Pragma', 'no-cache');
+      reply.header('Vary', 'Authorization');
 
       const payload = await response.text();
       reply.status(response.status);

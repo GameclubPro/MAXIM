@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
   BrowserRouter as Router,
+  HashRouter,
   Navigate,
   Route,
   Routes,
@@ -45,6 +46,11 @@ import {
   preloadSettingsPage,
   preloadSystemPage,
 } from './pages/lazy-pages';
+
+const HASH_ROUTER_ENABLED =
+  typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
+const AppRouter = HASH_ROUTER_ENABLED ? HashRouter : Router;
+const ROUTER_BASENAME = HASH_ROUTER_ENABLED ? '' : PUBLIC_ROUTER_BASENAME;
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -127,6 +133,10 @@ function buildMergedLaunchRoute(targetRoute: string, currentSearch: string): str
 }
 
 function buildWindowPathForRoute(pathname: string): string {
+  if (HASH_ROUTER_ENABLED) {
+    return pathname;
+  }
+
   if (!PUBLIC_ROUTER_BASENAME) {
     return pathname;
   }
@@ -137,6 +147,12 @@ function buildWindowPathForRoute(pathname: string): string {
 function resolveRouterPathnameFromWindow(): string {
   if (typeof window === 'undefined') {
     return '/';
+  }
+
+  if (HASH_ROUTER_ENABLED) {
+    const hashRoute = window.location.hash.replace(/^#/u, '') || '/';
+    const parsedHashRoute = parseRoute(hashRoute);
+    return parsedHashRoute?.pathname || '/';
   }
 
   const pathname = window.location.pathname || '/';
@@ -197,6 +213,20 @@ function applyInitialLaunchRoute(targetRoute: string): void {
 
   const nextPathname = buildWindowPathForRoute(parsedTarget.pathname);
   const nextSearch = mergeRouteSearch(window.location.search, parsedTarget.search);
+  if (HASH_ROUTER_ENABLED) {
+    const currentHashRoute = parseRoute(window.location.hash.replace(/^#/u, '') || '/');
+    const currentHashPathname = currentHashRoute?.pathname || '/';
+    const currentHashSearch = currentHashRoute?.search || '';
+    const nextHashSearch = mergeRouteSearch(currentHashSearch, parsedTarget.search);
+    if (currentHashPathname === parsedTarget.pathname && currentHashSearch === nextHashSearch) {
+      return;
+    }
+
+    const nextUrl = `${window.location.pathname}${window.location.search}#${parsedTarget.pathname}${nextHashSearch}`;
+    window.history.replaceState(window.history.state, '', nextUrl);
+    return;
+  }
+
   if (window.location.pathname === nextPathname && window.location.search === nextSearch) {
     return;
   }
@@ -337,7 +367,7 @@ function AppRoutes({
 
 function PublicLegalRoutes() {
   return (
-    <Router basename={PUBLIC_ROUTER_BASENAME}>
+    <AppRouter basename={ROUTER_BASENAME}>
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
@@ -345,7 +375,7 @@ function PublicLegalRoutes() {
           <Route path="*" element={<Navigate to="/legal/agreement" replace />} />
         </Routes>
       </Suspense>
-    </Router>
+    </AppRouter>
   );
 }
 
@@ -475,7 +505,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <Router basename={PUBLIC_ROUTER_BASENAME}>
+        <AppRouter basename={ROUTER_BASENAME}>
           {preview.enabled && PreviewScaffold ? (
             <PreviewScaffold initialDevice={preview.device}>
               <AppRoutes apiClient={apiClient} launchInitData={null} />
@@ -483,7 +513,7 @@ export function App() {
           ) : (
             <AppRoutes apiClient={apiClient} launchInitData={initData} />
           )}
-        </Router>
+        </AppRouter>
       </ToastProvider>
     </QueryClientProvider>
   );

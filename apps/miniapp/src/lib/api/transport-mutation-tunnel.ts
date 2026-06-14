@@ -45,7 +45,10 @@ async function encodeGzipBody(value: string): Promise<string | null> {
   }
 }
 
-async function buildMutationTunnelPath(path: string, init: RequestInit = {}): Promise<string | null> {
+export async function buildMutationTunnelPath(
+  path: string,
+  init: RequestInit = {},
+): Promise<string | null> {
   const method = (init.method ?? 'GET').toUpperCase();
   if (
     ['GET', 'HEAD'].includes(method) ||
@@ -84,6 +87,25 @@ async function buildMutationTunnelPath(path: string, init: RequestInit = {}): Pr
   return tunnelPath.length <= MAX_TUNNEL_URL_LENGTH ? tunnelPath : null;
 }
 
+export async function fetchMutationWithTunnel(
+  apiBase: string,
+  path: string,
+  authInitData: string,
+  init: RequestInit,
+  fetchWithTimeout: FetchWithTimeout,
+): Promise<FetchAttemptResult | null> {
+  const tunnelPath = await buildMutationTunnelPath(path, init);
+  if (!tunnelPath) {
+    return null;
+  }
+
+  const tunnelResult = await fetchWithTimeout(apiBase, tunnelPath, authInitData, {
+    headers: init.headers,
+    signal: init.signal,
+  });
+  return [405, 413, 414].includes(tunnelResult.response.status) ? null : tunnelResult;
+}
+
 export async function fetchMutationWithTunnelFallback(
   attemptBases: readonly string[],
   path: string,
@@ -92,16 +114,7 @@ export async function fetchMutationWithTunnelFallback(
   fetchWithTimeout: FetchWithTimeout,
 ): Promise<FetchAttemptResult> {
   const tryMutationTunnel = async (apiBase: string): Promise<FetchAttemptResult | null> => {
-    const tunnelPath = await buildMutationTunnelPath(path, init);
-    if (!tunnelPath) {
-      return null;
-    }
-
-    const tunnelResult = await fetchWithTimeout(apiBase, tunnelPath, authInitData, {
-      headers: init.headers,
-      signal: init.signal,
-    });
-    return [405, 413, 414].includes(tunnelResult.response.status) ? null : tunnelResult;
+    return fetchMutationWithTunnel(apiBase, path, authInitData, init, fetchWithTimeout);
   };
 
   let lastError: unknown;

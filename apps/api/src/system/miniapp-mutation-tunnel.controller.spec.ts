@@ -65,6 +65,9 @@ describe('MiniappMutationTunnelController', () => {
       }),
     );
     expect(reply.header).toHaveBeenCalledWith('Content-Type', 'application/json; charset=utf-8');
+    expect(reply.header).toHaveBeenCalledWith('Cache-Control', 'no-store, private');
+    expect(reply.header).toHaveBeenCalledWith('Pragma', 'no-cache');
+    expect(reply.header).toHaveBeenCalledWith('Vary', 'Authorization');
     expect(reply.status).toHaveBeenCalledWith(200);
     expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
   });

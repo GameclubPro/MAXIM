@@ -68,3 +68,11 @@ export const API_BASES = import.meta.env?.VITE_API_FALLBACK_BASES
   ? normalizeApiBases(API_BASE, normalizeApiFallbackBases(import.meta.env.VITE_API_FALLBACK_BASES))
   : [API_BASE];
 export const HEALTH_BASE = API_BASE.replace(/\/v1$/u, '');
+
+export function resolveRuntimeApiBases(): string[] {
+  return API_BASES;
+}
+
+export function resolveRuntimeHealthBase(): string {
+  return HEALTH_BASE;
+}

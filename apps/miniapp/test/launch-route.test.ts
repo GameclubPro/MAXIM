@@ -71,6 +71,16 @@ test('resolves channel stats route from startapp payload', () => {
   assert.equal(resolveLaunchRoute(''), '/channel/-68085832859751/stats');
 });
 
+test('resolves startapp from hash-route query parameters', () => {
+  assignWindow(
+    `https://maxim.play-team.ru/app/#/?startapp=${encodeURIComponent(
+      encodeRouteStartParam('/chat/-68085832859751/settings'),
+    )}`,
+  );
+
+  assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/settings');
+});
+
 test('normalizes legacy /chats launcher route to root', () => {
   assignWindow(
     `https://maxim.play-team.ru/app/?startapp=${encodeURIComponent(

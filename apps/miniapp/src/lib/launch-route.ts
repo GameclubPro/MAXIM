@@ -47,6 +47,17 @@ function readString(value: unknown): string {
 }
 
 function readSearchParam(source: string, names: readonly string[]): string {
+  const normalized = source.trim().replace(/^[?#]/u, '');
+  const directValue = readSearchParamFromNormalizedSource(normalized, names);
+  if (directValue) {
+    return directValue;
+  }
+
+  const queryIndex = normalized.indexOf('?');
+  return queryIndex >= 0 ? readSearchParamFromNormalizedSource(normalized.slice(queryIndex + 1), names) : '';
+}
+
+function readSearchParamFromNormalizedSource(source: string, names: readonly string[]): string {
   const params = new URLSearchParams(source);
   for (const name of names) {
     const candidate = params.get(name);
@@ -62,7 +73,7 @@ function readStartParamFromLocation(): string {
   const names = ['WebAppStartParam', 'startapp', 'startApp', 'start_param', 'startParam'];
   return (
     readSearchParam(window.location.search, names) ||
-    readSearchParam(window.location.hash.replace(/^#/, ''), names)
+    readSearchParam(window.location.hash, names)
   );
 }
 

@@ -5,6 +5,7 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
   readonly VITE_API_FALLBACK_BASES?: string;
   readonly VITE_PUBLIC_BASE_PATH?: string;
+  readonly VITE_ROUTER_MODE?: string;
   readonly VITE_APP_NAME?: string;
   readonly VITE_APP_DESCRIPTION?: string;
   readonly VITE_APP_CANONICAL_URL?: string;
@@ -71,6 +72,7 @@ type MaxWebAppBridge = {
 
 declare global {
   const __MAXIM_API_FALLBACKS_ENABLED__: boolean | undefined;
+  const __MAXIM_ROUTER_MODE__: 'browser' | 'hash' | undefined;
 
   interface Window {
     __MAXIM_FORCE_NATIVE_VISUAL_MODE__?: boolean;

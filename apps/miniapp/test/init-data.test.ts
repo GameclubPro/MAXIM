@@ -124,6 +124,18 @@ test('falls back to hash WebAppData when neither bridge nor query values exist',
   assert.equal(getInitData(), 'hash-hash=new');
 });
 
+test('falls back to hash-route WebAppData when hash router owns the fragment', () => {
+  assignWindow('https://maxim.play-team.ru/app/#/?WebAppData=hash-route-hash%3Dnew');
+
+  assert.equal(getInitData(), 'hash-route-hash=new');
+});
+
+test('falls back to hash-route init_data when hash router owns the fragment', () => {
+  assignWindow('https://maxim.play-team.ru/app/#/chat/-1/settings?init_data=hash-route-init%3Dnew');
+
+  assert.equal(getInitData(), 'hash-route-init=new');
+});
+
 test('prefers hash WebAppData over stale query init_data when bridge initData is missing', () => {
   assignWindow(
     'https://maxim.play-team.ru/app/?init_data=query-hash%3Dstale#WebAppData=hash-hash%3Dfresh',

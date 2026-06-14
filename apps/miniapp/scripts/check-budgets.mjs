@@ -12,7 +12,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // and the large managed-entities home list virtualization needed for 100+ visible chats/channels.
 // The six-type managed-entity favorites UI adds server-backed optimistic targeting and migration
 // logic to the startup home surface; keep the added allowance narrow.
-const STARTUP_JS_BUDGET_GZIP = 112 * 1024;
+// Hash-router support keeps storage-hosted canary entry points usable; react-router keeps
+// enough of that branch in the browser build that the measured startup cost is still paid.
+const STARTUP_JS_BUDGET_GZIP = 112 * 1024 + 512;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast

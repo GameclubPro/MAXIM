@@ -390,6 +390,7 @@ services:
       dockerfile: apps/miniapp/Dockerfile
       args:
         VITE_APP_CANONICAL_URL: https://major-maksimov.ru/app/
+        VITE_API_BASE: https://api-cdn.flex-craft.ru/api/v1
         VITE_API_FALLBACK_BASES: https://major-maksimov.ru/api/v1
     restart: unless-stopped
     ports:

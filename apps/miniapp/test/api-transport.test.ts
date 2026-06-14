@@ -299,6 +299,50 @@ test('tunnels mutation requests when the front door rejects the original method'
   );
 });
 
+test('tunnels mutation requests when the only API base rejects the original method', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.includes('/_mutation-tunnel?')) {
+      return createResponse({
+        ok: true,
+        status: 204,
+        text: '',
+        contentType: null,
+      });
+    }
+
+    return createResponse({
+      ok: false,
+      status: 405,
+      text: 'Method Not Allowed',
+      contentType: 'text/plain',
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1'],
+  });
+
+  const result = await api.request('/chats/chat-1/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ antiSpamEnabled: true }),
+  });
+
+  assert.equal(result, null);
+  assert.equal(calls.length, 2);
+  assert.equal(String(calls[0].input), 'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/settings');
+  assert.match(
+    String(calls[1].input),
+    /^https:\/\/api-cdn\.flex-craft\.ru\/api\/v1\/_mutation-tunnel\?/u,
+  );
+  assert.equal(new URL(String(calls[1].input)).searchParams.get('method'), 'PUT');
+  assert.equal(new URL(String(calls[1].input)).searchParams.get('path'), '/chats/chat-1/settings');
+  assert.equal(calls[1].init?.method ?? 'GET', 'GET');
+});
+
 test('falls back to the next API base when mutation tunneling is rejected too', async () => {
   const calls: FetchCall[] = [];
 
@@ -390,6 +434,53 @@ test('tunnels mutation requests when the original CDN mutation fails as a networ
     new Headers(calls[1].init?.headers).get('Authorization'),
     'InitData auth_date=1&hash=first',
   );
+});
+
+test('tunnels keepalive mutation requests when the front door rejects the original method', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.includes('/_mutation-tunnel?')) {
+      return createResponse({
+        ok: true,
+        status: 204,
+        text: '',
+        contentType: null,
+      });
+    }
+
+    return createResponse({
+      ok: false,
+      status: 405,
+      text: 'Method Not Allowed',
+      contentType: 'text/plain',
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1'],
+  });
+
+  api.requestKeepalive('/chats/chat-1/members/user-1/profile/handoff', {
+    method: 'POST',
+    body: JSON.stringify({ label: 'Admin' }),
+  });
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+
+  assert.equal(calls.length, 2);
+  assert.equal(
+    String(calls[0].input),
+    'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/members/user-1/profile/handoff',
+  );
+  const tunnelUrl = new URL(String(calls[1].input));
+  assert.equal(tunnelUrl.origin, 'https://api-cdn.flex-craft.ru');
+  assert.equal(tunnelUrl.pathname, '/api/v1/_mutation-tunnel');
+  assert.equal(tunnelUrl.searchParams.get('method'), 'POST');
+  assert.equal(tunnelUrl.searchParams.get('path'), '/chats/chat-1/members/user-1/profile/handoff');
+  assert.equal(calls[1].init?.method, 'GET');
+  assert.equal(calls[1].init?.keepalive, true);
 });
 
 test.afterEach(() => {
