@@ -134,7 +134,6 @@ export function createApiTransport(
         signal: controller.signal,
         headers: buildHeaders(authInitData, init),
       });
-      preferredApiBase = apiBase;
       return { apiBase, response };
     } catch (error: unknown) {
       if (timedOut) {
@@ -180,6 +179,7 @@ export function createApiTransport(
           fetchWithTimeout,
         );
         if (tunnelResult) {
+          preferredApiBase = tunnelResult.apiBase;
           return tunnelResult;
         }
       }
@@ -196,10 +196,12 @@ export function createApiTransport(
             fetchWithTimeout,
           );
           if (tunnelResult) {
+            preferredApiBase = tunnelResult.apiBase;
             return tunnelResult;
           }
         }
 
+        preferredApiBase = result.apiBase;
         return result;
       } catch (error: unknown) {
         if (init.signal?.aborted || ['GET', 'HEAD'].includes(method)) {
@@ -215,6 +217,7 @@ export function createApiTransport(
           fetchWithTimeout,
         );
         if (tunnelResult) {
+          preferredApiBase = tunnelResult.apiBase;
           return tunnelResult;
         }
 
@@ -224,19 +227,23 @@ export function createApiTransport(
 
     if (!['GET', 'HEAD'].includes(method)) {
       const { fetchMutationWithTunnelFallback } = await import('./transport-mutation-tunnel');
-      return fetchMutationWithTunnelFallback(
+      const result = await fetchMutationWithTunnelFallback(
         attemptBases,
         path,
         authInitData,
         init,
         fetchWithTimeout,
       );
+      preferredApiBase = result.apiBase;
+      return result;
     }
 
     const { fetchWithApiBaseFallback } = await import('./transport-fallback');
-    return fetchWithApiBaseFallback(attemptBases, init, (apiBase) =>
+    const result = await fetchWithApiBaseFallback(attemptBases, init, (apiBase) =>
       fetchWithTimeout(apiBase, path, authInitData, init),
     );
+    preferredApiBase = result.apiBase;
+    return result;
   };
 
   return {

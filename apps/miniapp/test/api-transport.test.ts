@@ -196,6 +196,30 @@ test('uses the first reachable API base for idempotent requests', async () => {
   );
 });
 
+test('gives the primary API base a head start for idempotent requests', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({
+      ok: true,
+      status: 200,
+      text: JSON.stringify([{ id: 'chat-1' }]),
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://major-maksimov.ru/api/v1', 'https://api-cdn.flex-craft.ru/api/v1'],
+  });
+
+  const result = await api.request('/chats');
+
+  assert.deepEqual(result, [{ id: 'chat-1' }]);
+  assert.deepEqual(calls.map((call) => String(call.input)), [
+    'https://major-maksimov.ru/api/v1/chats',
+  ]);
+});
+
 test('uses the selected API base for follow-up mutation requests', async () => {
   const calls: FetchCall[] = [];
 
