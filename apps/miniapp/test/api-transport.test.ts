@@ -299,7 +299,7 @@ test('tunnels mutation requests when the front door rejects the original method'
   );
 });
 
-test('tunnels mutation requests when the only API base rejects the original method', async () => {
+test('prefers the mutation tunnel for a single CDN API base', async () => {
   const calls: FetchCall[] = [];
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -315,7 +315,7 @@ test('tunnels mutation requests when the only API base rejects the original meth
     }
 
     return createResponse({
-      ok: false,
+      ok: true,
       status: 405,
       text: 'Method Not Allowed',
       contentType: 'text/plain',
@@ -332,15 +332,46 @@ test('tunnels mutation requests when the only API base rejects the original meth
   });
 
   assert.equal(result, null);
-  assert.equal(calls.length, 2);
-  assert.equal(String(calls[0].input), 'https://api-cdn.flex-craft.ru/api/v1/chats/chat-1/settings');
+  assert.equal(calls.length, 1);
   assert.match(
-    String(calls[1].input),
+    String(calls[0].input),
     /^https:\/\/api-cdn\.flex-craft\.ru\/api\/v1\/_mutation-tunnel\?/u,
   );
-  assert.equal(new URL(String(calls[1].input)).searchParams.get('method'), 'PUT');
-  assert.equal(new URL(String(calls[1].input)).searchParams.get('path'), '/chats/chat-1/settings');
-  assert.equal(calls[1].init?.method ?? 'GET', 'GET');
+  assert.equal(new URL(String(calls[0].input)).searchParams.get('method'), 'PUT');
+  assert.equal(new URL(String(calls[0].input)).searchParams.get('path'), '/chats/chat-1/settings');
+  assert.equal(calls[0].init?.method ?? 'GET', 'GET');
+});
+
+test('prefers the mutation tunnel for the production CDN API hostname', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    return createResponse({
+      ok: true,
+      status: 204,
+      text: '',
+      contentType: null,
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api2.major-maksimov.ru/api/v1'],
+  });
+
+  const result = await api.request('/chats/chat-1/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ antiSpamEnabled: true }),
+  });
+
+  assert.equal(result, null);
+  assert.equal(calls.length, 1);
+  assert.match(
+    String(calls[0].input),
+    /^https:\/\/api2\.major-maksimov\.ru\/api\/v1\/_mutation-tunnel\?/u,
+  );
+  assert.equal(new URL(String(calls[0].input)).searchParams.get('method'), 'PUT');
+  assert.equal(new URL(String(calls[0].input)).searchParams.get('path'), '/chats/chat-1/settings');
 });
 
 test('falls back to the next API base when mutation tunneling is rejected too', async () => {

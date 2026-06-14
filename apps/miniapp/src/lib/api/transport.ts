@@ -8,6 +8,10 @@ const API_FALLBACKS_ENABLED =
   typeof __MAXIM_API_FALLBACKS_ENABLED__ === 'boolean'
     ? __MAXIM_API_FALLBACKS_ENABLED__
     : true;
+const MUTATION_TUNNEL_PREFERRED_HOSTS = new Set([
+  'api-cdn.flex-craft.ru',
+  'api2.major-maksimov.ru',
+]);
 
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
@@ -29,9 +33,9 @@ function resolveInitDataValue(initData: string | (() => string)): string {
 
 function shouldPreferMutationTunnel(apiBase: string): boolean {
   try {
-    return new URL(apiBase, window.location.href).hostname === 'api-cdn.flex-craft.ru';
+    return MUTATION_TUNNEL_PREFERRED_HOSTS.has(new URL(apiBase, window.location.href).hostname);
   } catch {
-    return apiBase.includes('api-cdn.flex-craft.ru');
+    return [...MUTATION_TUNNEL_PREFERRED_HOSTS].some((host) => apiBase.includes(host));
   }
 }
 
