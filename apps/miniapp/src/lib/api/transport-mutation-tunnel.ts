@@ -3,6 +3,7 @@ const COMPRESSED_TUNNEL_BODY_THRESHOLD = 1024;
 const MAX_TUNNEL_URL_LENGTH = 7500;
 const CHUNKED_TUNNEL_CHUNK_BYTES = 4_200;
 const MAX_CHUNKED_TUNNEL_BODY_LENGTH = 34 * 1024 * 1024;
+const CHUNKED_TUNNEL_CONCURRENCY = 6;
 
 type FetchAttemptResult = {
   apiBase: string;
@@ -136,9 +137,12 @@ async function fetchChunkedMutationWithTunnel(
     return null;
   }
 
-  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+  const sendChunk = async (chunkIndex: number): Promise<FetchAttemptResult | null> => {
     const start = chunkIndex * CHUNKED_TUNNEL_CHUNK_BYTES;
-    const chunk = bodyBytes.subarray(start, Math.min(bodyBytes.length, start + CHUNKED_TUNNEL_CHUNK_BYTES));
+    const chunk = bodyBytes.subarray(
+      start,
+      Math.min(bodyBytes.length, start + CHUNKED_TUNNEL_CHUNK_BYTES),
+    );
     const params = buildBaseTunnelParams(path, init);
     params.set('uploadId', uploadId);
     params.set('chunkIndex', String(chunkIndex));
@@ -154,9 +158,33 @@ async function fetchChunkedMutationWithTunnel(
       headers: init.headers,
       signal: init.signal,
     });
-    if (!chunkResult.response.ok) {
-      return chunkResult;
-    }
+
+    return chunkResult.response.ok ? null : chunkResult;
+  };
+
+  let nextChunkIndex = 0;
+  let failedChunkResult: FetchAttemptResult | null = null;
+  const workerCount = Math.min(CHUNKED_TUNNEL_CONCURRENCY, chunkCount);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (!failedChunkResult && nextChunkIndex < chunkCount) {
+        const chunkIndex = nextChunkIndex;
+        nextChunkIndex += 1;
+        const chunkResult = await sendChunk(chunkIndex);
+        if (chunkResult) {
+          failedChunkResult = chunkResult;
+          return;
+        }
+      }
+    }),
+  );
+
+  if (failedChunkResult) {
+    return failedChunkResult;
+  }
+
+  if (nextChunkIndex < chunkCount) {
+    return null;
   }
 
   const params = buildBaseTunnelParams(path, init);
