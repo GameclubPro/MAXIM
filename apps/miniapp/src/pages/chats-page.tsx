@@ -1355,7 +1355,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {renderFavoritePicker()}
       {renderFavoriteLabelsEditor()}
 
-      <GlassCard className={cn('chats-command', isFetching && 'is-syncing')} padding="sm" elevated>
+      <GlassCard
+        className={cn('chats-command', isFetching && 'is-syncing')}
+        hidden={isLoading}
+        padding="sm"
+        elevated
+      >
         <h1 className="chats-command__sr">{tabLabel}</h1>
         <div className="chats-command__topline">
           <nav className="chats-command__tabs" aria-label="Раздел">

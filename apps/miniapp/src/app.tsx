@@ -11,7 +11,6 @@ import {
 } from 'react-router-dom';
 import { Shell } from './components/shell';
 import { GlassCard } from './components/ui/glass-card';
-import { SkeletonCard } from './components/ui/skeleton';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import commentsSpaceDarkWallpaperUrl from './assets/wallpapers/comments-space-dark.webp';
@@ -63,16 +62,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-function RouteFallback() {
-  return (
-    <div className="page-stack page-enter">
-      <GlassCard className="settings-section">
-        <SkeletonCard lines={5} />
-      </GlassCard>
-    </div>
-  );
-}
 
 function parseRoute(route: string): URL | null {
   try {
@@ -327,7 +316,7 @@ function AppRoutes({
   return (
     <>
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
-      <Suspense fallback={<RouteFallback />}>
+      <Suspense fallback={null}>
         <Routes>
           <Route element={<Shell />}>
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
@@ -368,7 +357,7 @@ function AppRoutes({
 function PublicLegalRoutes() {
   return (
     <AppRouter basename={ROUTER_BASENAME}>
-      <Suspense fallback={<RouteFallback />}>
+      <Suspense fallback={null}>
         <Routes>
           <Route path="/legal/agreement" element={<LazyLegalAgreementPage />} />
           <Route path="/legal/privacy" element={<LazyPrivacyPolicyPage />} />
@@ -493,7 +482,9 @@ export function App() {
             <p>Проверьте:</p>
             <ul>
               <li>Откройте приложение из MAX, а не по прямой ссылке в браузере.</li>
-              <li>Если кнопка в боте не открывает панель, закройте приложение и попробуйте еще раз.</li>
+              <li>
+                Если кнопка в боте не открывает панель, закройте приложение и попробуйте еще раз.
+              </li>
               <li>При сохранении проблемы напишите администратору бота.</li>
             </ul>
           </div>

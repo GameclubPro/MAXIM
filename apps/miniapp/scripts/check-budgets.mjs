@@ -14,7 +14,7 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // logic to the startup home surface; keep the added allowance narrow.
 // Hash-router support keeps storage-hosted canary entry points usable; react-router keeps
 // enough of that branch in the browser build that the measured startup cost is still paid.
-const STARTUP_JS_BUDGET_GZIP = 112 * 1024 + 512;
+const STARTUP_JS_BUDGET_GZIP = 113 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast

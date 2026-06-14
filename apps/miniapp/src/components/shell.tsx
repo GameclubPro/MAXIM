@@ -23,7 +23,7 @@ import { useKeyboardOpen } from '../lib/use-keyboard-open';
 
 type ScreenInfo = {
   title: string;
-  subtitle: string;
+  subtitle?: string;
 };
 
 type BottomNavIconName = 'chats' | 'channels' | 'settings' | 'events';
@@ -175,8 +175,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   }
 
   return {
-    title: 'Ваши чаты',
-    subtitle: 'Управляйте правилами и смотрите статистику в одном месте.',
+    title: 'Панель',
   };
 }
 
