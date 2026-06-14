@@ -821,8 +821,8 @@ export const LINK_POLICY_OPTIONS: Array<{
   {
     value: 'ALLOWLIST_ONLY',
     eyebrow: 'Разрешённые',
-    label: 'Список',
-    description: 'Только ссылки из списка ниже.',
+    label: 'Белый список',
+    description: 'Удаляются все ссылки, кроме списка ниже.',
   },
 ];
 
@@ -1335,8 +1335,8 @@ export function formatAllowlistMetaLabel(
 ): string {
   const targetLabel =
     entry.matchType === 'DOMAIN'
-      ? 'Домен разрешен без срока удаления.'
-      : 'Ссылка разрешена без срока удаления.';
+      ? 'Домен не удаляется без таймера.'
+      : 'Ссылка не удаляется без таймера.';
 
   if (!scheduledAtLabel) {
     return targetLabel;

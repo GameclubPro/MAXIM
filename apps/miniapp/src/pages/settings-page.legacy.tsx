@@ -1505,8 +1505,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         tone: 'success',
         title:
           payload.matchType === 'DOMAIN'
-            ? 'Домен добавлен в разрешенные'
-            : 'Ссылка добавлена в разрешенные',
+            ? 'Домен добавлен в белый список'
+            : 'Ссылка добавлена в белый список',
       });
     },
     onError: (error) => {
@@ -1525,7 +1525,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setScheduleDomain(null);
       setScheduleError('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({ tone: 'success', title: 'Правило удалено из разрешенных' });
+      pushToast({ tone: 'success', title: 'Правило удалено из белого списка' });
     },
     onError: (error) => {
       pushToast({
@@ -4011,7 +4011,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.linkPolicy === 'ALERT_ONLY'
       ? 'Ссылки не удаляются'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
-        ? `Разрешено: ${allowlistEntries.length}`
+        ? `Не удалять: ${allowlistEntries.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
   const linksCardStatus =
     draft?.linkPolicy === 'ALERT_ONLY'
@@ -4019,7 +4019,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? allowlistEntries.length > 0
           ? `${allowlistEntries.length}`
-          : 'Список'
+          : 'Белый список'
         : `${linkStagesEnabledCount}/4`;
   const allowlistCountLabel =
     allowlistEntries.length === 1
@@ -5458,15 +5458,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="allowlist-panel__head">
                                 <div className="allowlist-panel__title-block">
                                   <div className="allowlist-panel__title-row">
-                                    <span className="field__label">Разрешено</span>
+                                    <span className="field__label">Белый список</span>
                                     <SettingsHintAnchor
                                       hintKey="linkAllowlistScope"
                                       openHintKey={openHintKey}
                                       onToggleHint={toggleHint}
-                                      label="Пояснение по разрешенным ссылкам и доменам"
+                                      label="Пояснение по белому списку ссылок и доменов"
                                     >
-                                      Выберите точную ссылку или весь домен. Доменные правила
-                                      разрешают все пути этого хоста и его поддоменов.
+                                      Выберите точную ссылку или весь домен. Доменные правила не
+                                      удаляют все пути этого хоста и его поддомены.
                                     </SettingsHintAnchor>
                                   </div>
                                 </div>
@@ -5477,7 +5477,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <div className="allowlist-composer">
                                 <div className="allowlist-composer__head">
-                                  <span className="allowlist-composer__label">Что разрешить</span>
+                                  <span className="allowlist-composer__label">Что не удалять</span>
                                   <SettingsHintAnchor
                                     hintKey="linkAllowlistMode"
                                     openHintKey={openHintKey}
@@ -5485,8 +5485,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     label="Пояснение по режиму разрешения ссылки"
                                   >
                                     {domainInputMode === 'DOMAIN'
-                                      ? 'Разрешит весь хост, например `example.com`.'
-                                      : 'Разрешит только один конкретный URL, включая путь и параметры.'}
+                                      ? 'Не удалять весь хост, например `example.com`.'
+                                      : 'Не удалять только один конкретный URL, включая путь и параметры.'}
                                   </SettingsHintAnchor>
                                 </div>
                                 <SegmentedControl
@@ -5560,7 +5560,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ) : null}
 
                               {domainsQuery.isLoading ? (
-                                <p className="allowlist-empty">Загрузка списка...</p>
+                                <p className="allowlist-empty">Загрузка белого списка...</p>
                               ) : null}
 
                               {domainsQuery.error ? (
@@ -5573,13 +5573,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 allowlistEntries.length > 0 ? (
                                   <div className="allowlist-results">
                                     <div className="allowlist-results__head">
-                                      <span className="allowlist-results__title">В списке</span>
+                                      <span className="allowlist-results__title">Не удаляются</span>
                                       <small>{allowlistCountLabel}</small>
                                     </div>
 
                                     <ul
                                       className="allowlist-list"
-                                      aria-label="Разрешенные ссылки и домены"
+                                      aria-label="Ссылки и домены, которые не удаляются"
                                     >
                                       {allowlistEntries.map((entry) => {
                                         const isScheduleOpen =
@@ -5665,7 +5665,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                     )
                                                   }
                                                   disabled={isDomainMutationPending}
-                                                  aria-label={`Удалить ${entry.domain} из разрешенных`}
+                                                  aria-label={`Удалить ${entry.domain} из белого списка`}
                                                   title="Удалить правило"
                                                 >
                                                   <TrashIcon />
@@ -5756,7 +5756,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </div>
                                 ) : (
                                   <p className="allowlist-empty">
-                                    Список пуст. Добавьте первое правило.
+                                    Белый список пуст. Добавьте ссылку или домен, которые бот не
+                                    будет удалять.
                                   </p>
                                 )
                               ) : null}
