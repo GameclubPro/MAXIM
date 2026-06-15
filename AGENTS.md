@@ -204,6 +204,7 @@
 - The public mini app should not expose internal primary, standby, or execution-owner details.
 - Home readiness is user-scoped. Keep user-visible completion separate from long-running global discovery completion.
 - Home visibility is access-edge scoped: show managed entities only from fresh `GRANTED` `managed_entity_access_edges` for the current user and runtime bot.
+- Settings/read access must stay aligned with home visibility: if a managed entity is admitted by a fresh `GRANTED` access edge and an active runtime bot membership, do not let a transient or bot-scoped MAX `403` downgrade it to `bot_denied` or prune user access before checking that edge.
 - Inline repair of missing managed-entity access edges must be allowlist-backed, preserve fresh denied edge states, and queue roster validation instead of trusting published snapshots alone.
 - Legacy allowlist rows can lack `primaryBotId`, `botId`, and bot memberships; keep those rows eligible for access-edge repair instead of filtering them out before repair.
 - Fresh `bot_added` candidates must not appear on home until MAX confirms that both the user and at least one runtime bot have admin rights.
