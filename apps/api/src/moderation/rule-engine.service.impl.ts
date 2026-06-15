@@ -654,6 +654,7 @@ export class RuleEngineService {
   async detect(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
@@ -672,6 +673,7 @@ export class RuleEngineService {
     const {
       chatId,
       userId,
+      messageId,
       text,
       settings,
       domainAllowlist,
@@ -872,6 +874,7 @@ export class RuleEngineService {
         ? await this.duplicateDetector.detectWithin({
             chatId,
             userId,
+            messageId,
             rawText: text,
             compactText: detectionContext.compactText,
             settings,

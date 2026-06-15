@@ -11,6 +11,20 @@ end
 return count
 `;
 
+const INCREMENT_ONCE_PER_MEMBER_WITH_TTL_SCRIPT = `
+local added = redis.call('SET', KEYS[2], '1', 'EX', ARGV[1], 'NX')
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if not added then
+  return {0, count}
+end
+count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return {1, count}
+`;
+
 const INCREMENT_BY_WITH_TTL_SCRIPT = `
 local count = redis.call('INCRBY', KEYS[1], ARGV[1])
 local ttl = redis.call('TTL', KEYS[1])
@@ -42,6 +56,24 @@ export class RedisCounterService {
     return Number(
       await this.redis.eval(INCREMENT_WITH_TTL_SCRIPT, 1, key, String(Math.trunc(ttlSeconds))),
     );
+  }
+
+  async incrementOncePerMemberWithTtl(
+    counterKey: string,
+    memberKey: string,
+    ttlSeconds: number,
+  ): Promise<{ inserted: boolean; count: number }> {
+    const result = (await this.redis.eval(
+      INCREMENT_ONCE_PER_MEMBER_WITH_TTL_SCRIPT,
+      2,
+      counterKey,
+      memberKey,
+      String(Math.trunc(ttlSeconds)),
+    )) as [number | string, number | string];
+    return {
+      inserted: Number(result?.[0] ?? 0) > 0,
+      count: Number(result?.[1] ?? 0),
+    };
   }
 
   async incrementByWithTtl(key: string, amount: number, ttlSeconds: number): Promise<number> {

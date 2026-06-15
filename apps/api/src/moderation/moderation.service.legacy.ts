@@ -1322,6 +1322,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,
+        messageId,
         text,
         settings,
         domainAllowlist: chat.domainAllowlist,

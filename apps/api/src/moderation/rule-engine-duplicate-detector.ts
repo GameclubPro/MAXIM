@@ -44,6 +44,7 @@ export class RuleEngineDuplicateDetector {
   async detectWithin(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     rawText: string;
     compactText: string;
     settings: ChatSettings;
@@ -70,6 +71,7 @@ export class RuleEngineDuplicateDetector {
   private async detectState(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     rawText: string;
     compactText: string;
     settings: ChatSettings;
@@ -85,7 +87,19 @@ export class RuleEngineDuplicateDetector {
     for (const fingerprint of fingerprints) {
       const hash = createHash('sha256').update(fingerprint.value).digest('hex').slice(0, 20);
       const flowKey = buildDuplicateStageKey(chatId, userId, hash, `flow:${fingerprint.type}`);
-      const total = await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1);
+      const countResult = await this.incrementFingerprintCount({
+        flowKey,
+        chatId,
+        userId,
+        hash,
+        fingerprintType: fingerprint.type,
+        messageId: params.messageId,
+        ttlSec: flow.windowSec + 1,
+      });
+      if (!countResult.inserted) {
+        continue;
+      }
+      const total = countResult.count;
       const repeatCount = Math.max(0, total - 1);
 
       if (repeatCount <= flow.allowedCount) {
@@ -129,6 +143,37 @@ export class RuleEngineDuplicateDetector {
     }
 
     return strongestHit ? { hit: strongestHit } : {};
+  }
+
+  private async incrementFingerprintCount(params: {
+    flowKey: string;
+    chatId: string;
+    userId: string;
+    hash: string;
+    fingerprintType: DuplicateFingerprintType;
+    messageId?: string;
+    ttlSec: number;
+  }): Promise<{ inserted: boolean; count: number }> {
+    const messageId = params.messageId?.trim();
+    if (!messageId) {
+      return {
+        inserted: true,
+        count: await this.redisCounter.incrementWithTtl(params.flowKey, params.ttlSec),
+      };
+    }
+
+    const messageHash = createHash('sha256').update(messageId).digest('hex').slice(0, 20);
+    const messageKey = buildDuplicateStageKey(
+      params.chatId,
+      params.userId,
+      params.hash,
+      `flow:${params.fingerprintType}:msg:${messageHash}`,
+    );
+    return this.redisCounter.incrementOncePerMemberWithTtl(
+      params.flowKey,
+      messageKey,
+      params.ttlSec,
+    );
   }
 
   private getFlowConfig(settings: ChatSettings): {

@@ -9,11 +9,30 @@ import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
   private readonly counters = new Map<string, number>();
+  private readonly members = new Set<string>();
 
   async incrementWithTtl(key: string): Promise<number> {
     const next = (this.counters.get(key) ?? 0) + 1;
     this.counters.set(key, next);
     return next;
+  }
+
+  async incrementOncePerMemberWithTtl(
+    counterKey: string,
+    memberKey: string,
+  ): Promise<{ inserted: boolean; count: number }> {
+    if (this.members.has(memberKey)) {
+      return {
+        inserted: false,
+        count: this.counters.get(counterKey) ?? 0,
+      };
+    }
+
+    this.members.add(memberKey);
+    return {
+      inserted: true,
+      count: await this.incrementWithTtl(counterKey),
+    };
   }
 }
 
@@ -4022,6 +4041,48 @@ describe('RuleEngineService', () => {
     expect(first.duplicateDecision).toBeUndefined();
     expect(second.duplicateDecision?.action).toBe('WARN');
     expect(second.duplicateDecision?.threshold).toBe(1);
+  });
+
+  it('does not count repeated delivery of the same message id as a duplicate', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateWarnMaxCount: 1,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+    });
+
+    const firstDelivery = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      messageId: 'mid-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+    const redelivery = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      messageId: 'mid-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+    const nextMessage = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      messageId: 'mid-2',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(firstDelivery.duplicateDecision).toBeUndefined();
+    expect(redelivery.duplicateDecision).toBeUndefined();
+    expect(redelivery.duplicateHit).toBeUndefined();
+    expect(nextMessage.duplicateDecision?.action).toBe('WARN');
+    expect(nextMessage.duplicateDecision?.threshold).toBe(1);
   });
 
   it('falls back to MUTE when BAN stage is disabled', async () => {
