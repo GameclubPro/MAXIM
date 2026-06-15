@@ -37,7 +37,7 @@ const originalWindow = globalThis.window;
 
 function setMockWindow(bridge: MockBridge | null, assignedUrls: string[]): void {
   const location = {
-    href: 'https://maxim.play-team.ru/app/',
+    href: 'https://major-maksimov.ru/app/',
     assign: (url: string) => {
       assignedUrls.push(url);
     },

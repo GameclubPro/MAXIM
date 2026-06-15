@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="${1:-/var/www/Chat_bot}"
-BASE_URL="${MINIAPP_SCREENSHOT_BASE_URL:-https://maxim.play-team.ru/app/}"
+BASE_URL="${MINIAPP_SCREENSHOT_BASE_URL:-https://major-maksimov.ru/app/}"
 DEVICE="${MINIAPP_SCREENSHOT_DEVICE:-all}"
 SCENARIOS="${MINIAPP_SCREENSHOT_SCENARIOS:-}"
 PLAYWRIGHT_IMAGE="${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.58.2-jammy}"

@@ -1,3 +1,4 @@
+import { getInitData } from './init-data';
 import { API_BASE } from './public-config';
 
 type MiniappBootTracePhase =
@@ -18,6 +19,8 @@ const MAX_DETAIL_STRING_LENGTH = 240;
 const MAX_DETAILS_JSON_LENGTH = 1_500;
 const MAX_ROUTE_LENGTH = 320;
 const SENSITIVE_PARAM_PATTERN = /(?:token|webapp|init[_-]?data|authorization|hash|secret|sig)/iu;
+const CDN_API_HOSTS = new Set(['api-cdn.flex-craft.ru', 'api2.major-maksimov.ru']);
+const TRACE_PATH = '/system/miniapp-boot-trace';
 
 const startedAtMs = Date.now();
 let sequence = 0;
@@ -181,6 +184,74 @@ function getCurrentRoute(): string | null {
   return sanitizeRoute(`${window.location.pathname}${window.location.search}`);
 }
 
+function encodeBase64UrlUtf8(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return window.btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+}
+
+function shouldUseMutationTunnel(apiBase: string): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return CDN_API_HOSTS.has(new URL(apiBase, window.location.href).hostname);
+  } catch {
+    return [...CDN_API_HOSTS].some((host) => apiBase.includes(host));
+  }
+}
+
+function buildTraceRequest(payload: unknown): {
+  url: string;
+  init: RequestInit;
+} | null {
+  const body = JSON.stringify(payload);
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+  });
+
+  if (shouldUseMutationTunnel(API_BASE)) {
+    const initData = getInitData();
+    if (initData) {
+      headers.set('Authorization', `InitData ${initData}`);
+      const params = new URLSearchParams({
+        method: 'POST',
+        path: TRACE_PATH,
+        nonce: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+        contentType: 'application/json',
+        body: encodeBase64UrlUtf8(body),
+      });
+
+      return {
+        url: `${API_BASE}/_mutation-tunnel?${params.toString()}`,
+        init: {
+          method: 'GET',
+          headers,
+          keepalive: true,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  return {
+    url: `${API_BASE}${TRACE_PATH}`,
+    init: {
+      method: 'POST',
+      headers,
+      body,
+      keepalive: true,
+    },
+  };
+}
+
 export function traceMiniappBoot(
   phase: MiniappBootTracePhase,
   details?: MiniappBootTraceDetails,
@@ -209,14 +280,12 @@ export function traceMiniappBoot(
     details: sanitizeDetails(details),
   };
 
-  void fetch(`${API_BASE}/system/miniapp-boot-trace`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    keepalive: true,
-  }).catch(() => undefined);
+  const request = buildTraceRequest(payload);
+  if (!request) {
+    return;
+  }
+
+  void fetch(request.url, request.init).catch(() => undefined);
 }
 
 export function traceMiniappLaunchRoute(targetRoute: string | null, source: string): void {

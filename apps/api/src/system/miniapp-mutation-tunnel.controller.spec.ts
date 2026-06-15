@@ -72,6 +72,53 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.send).toHaveBeenCalledWith(JSON.stringify({ ok: true }));
   });
 
+  it('allows miniapp boot trace through the CDN mutation tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({
+      phase: 'index_loaded',
+      sessionId: 'session-1',
+      elapsedMs: 1,
+    });
+    const body = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'POST',
+        path: '/system/miniapp-boot-trace',
+        body,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/system/miniapp-boot-trace',
+      expect.objectContaining({
+        method: 'POST',
+        body: payload,
+        headers: expect.objectContaining({
+          Authorization: 'InitData auth_date=1&hash=test',
+          'Content-Type': 'application/json',
+          'X-Miniapp-Mutation-Tunnel': '1',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('accepts gzip-compressed tunnel bodies', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

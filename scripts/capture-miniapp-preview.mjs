@@ -8,7 +8,7 @@ import {
   installNativeVisualModeInitScript,
 } from './miniapp-native-visual-mode.mjs';
 
-const DEFAULT_BASE_URL = 'https://maxim.play-team.ru/app/';
+const DEFAULT_BASE_URL = 'https://major-maksimov.ru/app/';
 const OUTPUT_ROOT = path.resolve(process.cwd(), 'artifacts/miniapp-screenshots');
 const runLabel = (process.env.MINIAPP_SCREENSHOT_LABEL ?? '').trim();
 const timestamp =

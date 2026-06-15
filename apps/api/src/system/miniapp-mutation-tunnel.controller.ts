@@ -29,6 +29,7 @@ const ENTITY_ID_SEGMENT = '[^/?#]+';
 const DIALOG_TYPE_SEGMENT = '[^/?#]+';
 
 const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
+  { method: 'POST', pattern: /^\/system\/miniapp-boot-trace$/u },
   {
     method: 'POST',
     pattern: new RegExp(

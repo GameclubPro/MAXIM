@@ -84,7 +84,7 @@
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
 - For MAX mini app top safe-area fixes, do not apply `safeTop`/CSS safe-area values as a blanket content offset; some MAX WebViews already account for system UI. Prefer `visualViewport` plus actual element measurements for guards around floating top controls.
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
-- `npm run screenshots:miniapp` defaults to the production app URL; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
+- `npm run screenshots:miniapp` defaults to `https://major-maksimov.ru/app/`; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
 - For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
 - Native mini app emulator/screenshots (`--target native`) install the safe MAX Bridge visual shim by default; use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for browser-without-bridge checks.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
@@ -149,7 +149,8 @@
   - rebuild only changed services
   - recreate containers with `--force-recreate`
   - check `/api/health/live` and `/api/health/ready` locally and publicly
-  - check `https://maxim.play-team.ru/app/` when mini app flows were touched
+  - check `https://major-maksimov.ru/app/` when mini app flows were touched
+  - check `https://app2.major-maksimov.ru/app/?v=<stamp>` after publishing the restricted-LTE CDN shell
 - During API deploys, `ready` can recover later than `live` while queues drain. Treat that as a recovery window first, not an instant regression.
 - If `/app/` returns `502`, check `docker compose ps miniapp-static` first.
 
