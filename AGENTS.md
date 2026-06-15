@@ -86,6 +86,7 @@
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
 - `npm run screenshots:miniapp` defaults to the production app URL; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
 - For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
+- Native mini app emulator/screenshots (`--target native`) install the safe MAX Bridge visual shim by default; use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for browser-without-bridge checks.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 - For Android MAX WebView file pickers, use a real transparent `<input type="file">` overlay on the tapped control; hidden 1px inputs plus programmatic `click()`/`showPicker()` can fail to open the picker.
 - For time-only mini app inputs, use shared `TimeField` instead of native `<input type="time">`; Android MAX WebViews can hide native picker action buttons.
