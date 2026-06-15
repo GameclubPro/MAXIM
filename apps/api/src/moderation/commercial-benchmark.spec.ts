@@ -107,6 +107,25 @@ function readCommercialSubtype(value: unknown): CommercialSubtype | null {
 }
 
 describe('commercial deterministic benchmark', () => {
+  it('warms service-phone commercial paths before the first measured detection', async () => {
+    const service = createRuleEngine();
+    const startedAt = performance.now();
+    const violation = await detectCommercialViolation(service, 'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42', {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(violation?.metadata).toEqual(
+      expect.objectContaining({
+        primarySubtype: 'SERVICES',
+        actionBand: 'REVIEW_ONLY',
+      }),
+    );
+    expect(elapsedMs).toBeLessThanOrEqual(150);
+  });
+
   it('meets recall, false-positive, subtype, and action-policy gates', async () => {
     const service = createRuleEngine();
     const falseNegatives: string[] = [];
@@ -367,6 +386,16 @@ describe('commercial deterministic benchmark', () => {
       ).join('-')}-invalid`,
       `розыгрыш ${Array.from({ length: 420 }, () => '1').join(' ')} рублей за спортX`,
       'Бесплатный подбор новостроек. Квартиры от застройщика без комиссии.',
+      `Мой канал с заметками про ручную работу ${Array.from({ length: 120 }, () => 'скидок').join(
+        ' ',
+      )} и заказов там нет.`,
+      `Открыла для себя аромат ${Array.from({ length: 80 }, () => 'для себя').join(
+        ' ',
+      )}, но это личный отзыв без продаж.`,
+      `Травы ${Array.from({ length: 80 }, (_, index) => `${index + 10}р.кг`).join(
+        ' ',
+      )} обсуждали в рецепте без заказов.`,
+      'Приглашаю на обсуждение салона, окрашивание и цены выросли, телефон администратора не нужен.',
     ];
     const timings: number[] = [];
 

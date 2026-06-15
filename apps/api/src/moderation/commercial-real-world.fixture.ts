@@ -1445,6 +1445,86 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'balanced print copy service from recall review',
+    text: `Печать фото и документов, ксерокопия, распечатка, ламинирование. Адрес: Ленина 10. Тел. +7 900 000 20 01`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: [
+      'service-specialty:print-copy-service',
+      'contact:phone',
+      'transaction:structured-service-phone-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced tool rental service from recall review',
+    text: `Прокат инструмента: перфоратор, болгарка, сварочный аппарат. Залог. Телефон +7 900 000 21 01`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: [
+      'service-specialty:tool-rental-service',
+      'contact:phone',
+      'transaction:structured-service-phone-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced locksmith service from recall review',
+    text: `Вскрытие замков круглосуточно, аварийное открытие дверей. Телефон +7 900 000 21 04`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: [
+      'service-specialty:locksmith-service',
+      'contact:phone',
+      'transaction:structured-service-phone-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced well drilling service from recall review',
+    text: `Бурение скважин на воду, обсадные трубы, гарантия. Телефон +7 900 000 21 05`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: [
+      'service-specialty:well-drilling-service',
+      'contact:phone',
+      'transaction:structured-service-phone-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced sewer cleaning service from recall review',
+    text: `Прочистка канализации, устранение засоров, выезд круглосуточно +7 900 000 21 06`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: [
+      'service-specialty:sewer-cleaning-service',
+      'contact:phone',
+      'transaction:structured-service-phone-offer',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
     label: 'balanced paving landscaping company from 24 hour audit miss',
     text: `Компания Профблагоустройство предлагает услуги: асфальтирование ангаров, площадок, дорожек любой сложности, укладка брусчатки, установка бордюра, бетонирование отмостки и площадок. Выезд на замер и консультация бесплатно. Пенсионерам скидка 10%. Телефон +7 900 000 00 74.`,
     expectedSubtype: 'SERVICES',
@@ -1462,6 +1542,22 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     expectedSignals: [
       'risk:paid-review-task',
       'recruitment:marketplace-review-work',
+      'deal-channel:link',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'paid contest vote task from self review',
+    text: `Платим за голос в конкурсе, 50 рублей за реакцию, ссылка на задание https://example.com/task`,
+    expectedSubtype: 'RECRUITMENT',
+    expectedSignals: [
+      'risk:paid-review-task',
+      'transaction:high-risk-offer',
+      'recruitment:paid-social-actions-work',
       'deal-channel:link',
     ],
     overrides: {
@@ -2010,6 +2106,78 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'service recommendation request from production logs',
     text: `Здравствуйте, кто ремонтирует стиральные машинки-автомат? Напишите, пожалуйста, в личные сообщения.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'school voting likes without pay and link from precision review',
+    text: `Поставьте лайк посту школы, это голосование без оплаты https://example.com/vote`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'marketplace buyer review complaint with help link from precision review',
+    text: `Купила товар на Wildberries, отзыв не проходит модерацию в приложении, кто сталкивался? https://example.com/help`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'client search seminar recap with materials link from precision review',
+    text: `На семинаре обсуждали поиск клиентов для мастеров красоты, материалы по ссылке https://example.com/recap`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'print copy request from recall review',
+    text: `Где сделать ксерокс документов недалеко от школы?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'tool borrowing note from recall review',
+    text: `Сосед дал перфоратор без аренды, верну завтра.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'locksmith recommendation request from recall review',
+    text: `Подскажите мастера по замкам, кто вскрывал дверь?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'well drilling discussion from recall review',
+    text: `Кто бурил скважину на воду, сколько метров получилось?`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'sewer cleaning building discussion from recall review',
+    text: `Засор канализации в подъезде, управляющая компания обещала прочистку.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

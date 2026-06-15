@@ -1453,7 +1453,12 @@ export function collectCommercialSignals(params: {
     !hasPrivateSaleContext &&
     !hasPrivateGoodsItemContext &&
     (matchedSignals.includes('service-specialty:logistics-delivery') ||
-      matchedSignals.includes('service-specialty:beauty-salon-service'))
+      matchedSignals.includes('service-specialty:beauty-salon-service') ||
+      matchedSignals.includes('service-specialty:print-copy-service') ||
+      matchedSignals.includes('service-specialty:tool-rental-service') ||
+      matchedSignals.includes('service-specialty:locksmith-service') ||
+      matchedSignals.includes('service-specialty:well-drilling-service') ||
+      matchedSignals.includes('service-specialty:sewer-cleaning-service'))
   ) {
     addPositive('transaction:structured-service-phone-offer', weights.transactionalKeyword);
     hasTransactional = true;

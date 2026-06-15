@@ -114,11 +114,15 @@ export function matchesCommercialPattern(
   pattern: RegExp,
   context: CommercialMarkerContext,
 ): boolean {
+  const shouldTestRawText =
+    context.rawLoweredTextWithoutUrls !== context.normalizedTextWithoutUrls &&
+    context.rawLoweredTextWithoutUrls !== context.normalizedConfusableTextWithoutUrls;
+
   return (
     testCommercialPattern(pattern, context.normalizedTextWithoutUrls) ||
     (context.normalizedConfusableTextWithoutUrls !== '' &&
       testCommercialPattern(pattern, context.normalizedConfusableTextWithoutUrls)) ||
-    testCommercialPattern(pattern, context.rawLoweredTextWithoutUrls)
+    (shouldTestRawText && testCommercialPattern(pattern, context.rawLoweredTextWithoutUrls))
   );
 }
 

@@ -774,6 +774,16 @@ describe('commercial pattern regressions', () => {
       ],
     },
     {
+      label: 'paid contest votes with task link',
+      text: 'Платим за голос в конкурсе, 50 рублей за реакцию, ссылка на задание https://example.com/task',
+      subtype: 'RECRUITMENT',
+      signals: [
+        'risk:paid-review-task',
+        'transaction:high-risk-offer',
+        'recruitment:paid-social-actions-work',
+      ],
+    },
+    {
       label: 'paid survey referral with payout link',
       text: 'Опросы с оплатой до 500 рублей, вывод на карту, регистрация https://example.com/opros.',
       subtype: 'GOODS',
@@ -1243,6 +1253,10 @@ describe('commercial pattern regressions', () => {
       'Поставьте лайк посту школы, это голосование без оплаты.',
     ],
     [
+      'school voting likes without pay and link stay allowed',
+      'Поставьте лайк посту школы, это голосование без оплаты https://example.com/vote',
+    ],
+    [
       'max support operator story stays allowed',
       'Оператор поддержки MAX ответил в чате, проблема решена.',
     ],
@@ -1308,8 +1322,16 @@ describe('commercial pattern regressions', () => {
       'Купила товар на Wildberries, отзыв не проходит модерацию в приложении, кто сталкивался?',
     ],
     [
+      'wildberries buyer review complaint with help link stays allowed',
+      'Купила товар на Wildberries, отзыв не проходит модерацию в приложении, кто сталкивался? https://example.com/help',
+    ],
+    [
       'local client search seminar recap stays allowed',
       'На семинаре обсуждали поиск клиентов для мастеров красоты, без продаж и ссылок.',
+    ],
+    [
+      'local client search seminar recap with materials link stays allowed',
+      'На семинаре обсуждали поиск клиентов для мастеров красоты, материалы по ссылке https://example.com/recap',
     ],
     [
       'chat bot monetization settings discussion stays allowed',
@@ -1389,6 +1411,47 @@ describe('commercial pattern regressions', () => {
     expect(beauty?.actionBand).toBe('REVIEW_ONLY');
   });
 
+  it.each([
+    [
+      'print copy',
+      'Печать фото и документов, ксерокопия, распечатка, ламинирование. Адрес: Ленина 10. Тел. +7 900 000 20 01',
+      'service-specialty:print-copy-service',
+    ],
+    [
+      'tool rental',
+      'Прокат инструмента: перфоратор, болгарка, сварочный аппарат. Залог. Телефон +7 900 000 21 01',
+      'service-specialty:tool-rental-service',
+    ],
+    [
+      'locksmith',
+      'Вскрытие замков круглосуточно, аварийное открытие дверей. Телефон +7 900 000 21 04',
+      'service-specialty:locksmith-service',
+    ],
+    [
+      'well drilling',
+      'Бурение скважин на воду, обсадные трубы, гарантия. Телефон +7 900 000 21 05',
+      'service-specialty:well-drilling-service',
+    ],
+    [
+      'sewer cleaning',
+      'Прочистка канализации, устранение засоров, выезд круглосуточно +7 900 000 21 06',
+      'service-specialty:sewer-cleaning-service',
+    ],
+  ])('keeps structured %s phone ads reviewable under soft balanced thresholds', (_label, text, signal) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.matchedSignals).toContain('transaction:structured-service-phone-offer');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
   it('keeps handmade self channel promo reviewable under soft balanced thresholds', () => {
     const result = detect(
       'Всем привет) Добро пожаловать в мой Мир страз Юлии. Уникальные и индивидуальные изделия ручной работы от магнитов и футболок, до инкрустации любой вещи. До 1 июля можно забрать портрет из страз со скидкой в 50%. Всего 3 портрета, может это твой? Буду рада всем в своем блестящем мире. МОЙ КАНАЛ',
@@ -1423,6 +1486,20 @@ describe('commercial pattern regressions', () => {
     expect(result?.matchedSignals).toContain('goods-retail:fragrance-retail-promo');
     expect(result?.negativeSignals).not.toContain('negative:для себя');
     expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('keeps personal fragrance for-yourself wording suppressed', () => {
+    const result = detect(
+      'Брала аромат для себя, но не подошел. Один флакон, отдам за 1500 руб, самовывоз.',
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('keeps ambiguous unit-price phone shorthand as a deliberate non-fix', () => {
+    const result = detect('400р.кг Т. +7 900 000 00 00');
+
+    expect(result).toBeNull();
   });
 
   it('keeps ordinary pc sale out of betting high risk', () => {
@@ -1464,6 +1541,39 @@ describe('commercial pattern regressions', () => {
     );
 
     expect(result?.matchedSignals ?? []).not.toContain('service-specialty:beauty-salon-service');
+  });
+
+  it.each([
+    [
+      'print copy question',
+      'Где сделать ксерокс документов недалеко от школы?',
+      'service-specialty:print-copy-service',
+    ],
+    [
+      'tool borrowing note',
+      'Сосед дал перфоратор без аренды, верну завтра.',
+      'service-specialty:tool-rental-service',
+    ],
+    [
+      'locksmith request',
+      'Подскажите мастера по замкам, кто вскрывал дверь?',
+      'service-specialty:locksmith-service',
+    ],
+    [
+      'well drilling discussion',
+      'Кто бурил скважину на воду, сколько метров получилось?',
+      'service-specialty:well-drilling-service',
+    ],
+    [
+      'sewer cleaning discussion',
+      'Засор канализации в подъезде, управляющая компания обещала прочистку.',
+      'service-specialty:sewer-cleaning-service',
+    ],
+  ])('does not treat %s as structured service ad', (_label, text, signal) => {
+    const result = detect(text);
+
+    expect(result?.matchedSignals ?? []).not.toContain(signal);
+    expect(result).toBeNull();
   });
 
   it('does not treat an ordinary personal channel mention as handmade channel promo', () => {

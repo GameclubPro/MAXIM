@@ -17,6 +17,22 @@ import { normalizeCommercialText } from './commercial-normalization';
 import { classifyCommercialDetection } from './commercial-subtypes';
 import type { CommercialLegacyEvidenceStrength } from './commercial.types';
 
+const COMMERCIAL_WARMUP_SETTINGS = {
+  commercialAdsSensitivity: 'BALANCED',
+  commercialAdsWarnThreshold: 57,
+  commercialAdsDeleteThreshold: 77,
+} as unknown as ChatSettings;
+
+const COMMERCIAL_WARMUP_TEXTS = [
+  'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42',
+  'Приглашаю на окрашивание, окудрение, флисинг, карвинг и реконструкцию волос. Пиши/звони +7 900 000 10 43.',
+  'Откройте для себя коллекцию селективных ароматов. Полный флакон 2400₽, мини-версия 250₽.',
+  'Всем привет. Добро пожаловать в мой Мир страз: изделия ручной работы, портреты со скидкой, мой канал.',
+] as const;
+
+let commercialDetectorWarmUpComplete = false;
+let commercialDetectorWarmUpInProgress = false;
+
 export type CommercialDetection = {
   confidenceScore: number;
   decisionBand: CommercialDecisionBand;
@@ -51,6 +67,10 @@ export type CommercialDetection = {
 export class CommercialAdDetector {
   private readonly commercialSecondStageScorer = new CommercialSecondStageScorer();
 
+  constructor() {
+    this.warmUpProcessPatterns();
+  }
+
   detect(params: {
     normalizedText: string;
     rawLoweredText: string;
@@ -63,6 +83,27 @@ export class CommercialAdDetector {
 
   hasCommercialSpamMarkers(text: string): boolean {
     return hasCommercialSpamMarkersInText(text);
+  }
+
+  private warmUpProcessPatterns(): void {
+    if (commercialDetectorWarmUpComplete || commercialDetectorWarmUpInProgress) {
+      return;
+    }
+
+    commercialDetectorWarmUpInProgress = true;
+    try {
+      for (const text of COMMERCIAL_WARMUP_TEXTS) {
+        this.detectCommercialAd({
+          normalizedText: normalizeCommercialText(text),
+          rawLoweredText: text.toLowerCase(),
+          settings: COMMERCIAL_WARMUP_SETTINGS,
+          commercialCampaignContext: null,
+        });
+      }
+      commercialDetectorWarmUpComplete = true;
+    } finally {
+      commercialDetectorWarmUpInProgress = false;
+    }
   }
 
   private detectCommercialAd(params: {
@@ -359,6 +400,8 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
       signal === 'context:quoted-ad-example' ||
       signal === 'context:commercial-review-question' ||
       signal === 'context:channel-ad-due-diligence' ||
+      signal === 'context:marketplace-review-complaint' ||
+      signal === 'context:leadgen-training-recap' ||
       signal === 'context:local-news-subscribe' ||
       signal === 'context:moderation-ad-discussion' ||
       signal === 'context:resale-pricing-discussion' ||
@@ -366,6 +409,7 @@ function hasCommercialDiscussionHardNegative(negativeSignals: readonly string[])
       signal === 'context:public-fraud-warning' ||
       signal === 'context:official-civic-instruction' ||
       signal === 'context:public-training-or-event' ||
+      signal === 'context:public-voting-contest' ||
       signal === 'context:currency-rate-news',
   );
 }

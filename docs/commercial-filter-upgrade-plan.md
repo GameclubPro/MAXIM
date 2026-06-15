@@ -104,6 +104,25 @@ Remaining hard cases should stay narrow:
 - Beauty/hair salon ads should require a procedure plus contact/address anchor,
   not a bare `salon` marker.
 
+Third hardening pass after 6-agent review added two safety layers:
+
+- precision guards for civic voting without payment, marketplace buyer
+  complaints with support/help links, and training/recap discussions about
+  client search;
+- narrow recall for structured phone-service ads: print/copy, tool rental,
+  locksmith, well drilling, and sewer cleaning. Each requires domain wording
+  plus a direct contact/address/price/work anchor and remains review-only under
+  soft balanced thresholds;
+- paid social-action tasks now include paid votes/likes/reactions, while
+  `без оплаты` civic voting stays a hard negative;
+- hot-path perf hardening: process-level commercial detector warm-up for known
+  expensive service-phone paths and skipping duplicate raw regex passes when raw
+  and normalized marker texts are identical.
+
+The remaining productless shorthand `400р.кг + phone` is intentionally pinned as
+`null` in regression tests until a product noun or repeated product context is
+available.
+
 Do not interpret every `safeContextBucket` hit as a false positive. The 24h
 audit showed wide buckets such as `news_or_analytics` and
 `private_one_off_sale` can contain true ads because the bucket classifier is a
@@ -268,7 +287,8 @@ Extraction boundaries should keep current facades:
 Longer-term options:
 
 - maintain a small curated safe-context corpus separate from broad production JSONL;
-- add perf guards for near-misses around the widest commercial regex patterns;
+- add perf guards for near-misses around the widest commercial regex patterns
+  and keep cold-start/warm-up coverage in `commercial-benchmark.spec.ts`;
 - add per-chat calibration profiles only after global suppressors stabilize;
 - add offline benchmark reports to CI artifacts;
 - consider a learned second-stage model only after deterministic explainability is stable and corpus labels are high quality.

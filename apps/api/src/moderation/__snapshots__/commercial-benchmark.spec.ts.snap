@@ -4,8 +4,8 @@ exports[`commercial deterministic benchmark meets recall, false-positive, subtyp
 {
   "byAction": {
     "DELETE": 54,
-    "DELETE_AND_ESCALATE": 13,
-    "REVIEW_ONLY": 17,
+    "DELETE_AND_ESCALATE": 14,
+    "REVIEW_ONLY": 22,
     "WARN": 61,
   },
   "bySubtype": {
@@ -17,14 +17,14 @@ exports[`commercial deterministic benchmark meets recall, false-positive, subtyp
     "INFO_PRODUCT": 2,
     "PROPERTY_AGENT": 12,
     "PROPERTY_COMMERCIAL": 6,
-    "RECRUITMENT": 19,
-    "SERVICES": 53,
+    "RECRUITMENT": 20,
+    "SERVICES": 58,
   },
   "confusionMatrix": {
     "FN": 0,
     "FP": 0,
-    "TN": 68,
-    "TP": 145,
+    "TN": 76,
+    "TP": 151,
   },
   "topFalseNegativeSignals": {},
   "topFalsePositiveSignals": {},
