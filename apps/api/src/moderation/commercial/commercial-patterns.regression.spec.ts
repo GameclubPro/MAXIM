@@ -502,6 +502,22 @@ describe('commercial pattern regressions', () => {
       signals: ['goods-retail:collectible-flower-retail'],
     },
     {
+      label: 'short flowers with unit price and phone from twenty four hour audit miss',
+      text: 'Продам цветы по 15 р шт. Кинель юг +7 900 000 10 41',
+      subtype: 'GOODS_RETAIL',
+      signals: [
+        'goods-retail:flower-herb-unit-price-retail',
+        'transaction:price',
+        'contact:phone',
+      ],
+    },
+    {
+      label: 'short herb unit price from twenty four hour audit miss',
+      text: 'Душица лист - 90руб/мешочек',
+      subtype: 'GOODS_RETAIL',
+      signals: ['goods-retail:flower-herb-unit-price-retail', 'transaction:price'],
+    },
+    {
       label: 'vehicle advertising placement from twenty four hour audit miss',
       text: 'Разместим вашу рекламу на наших авто +7 900 000 10 03',
       subtype: 'SERVICES',
@@ -709,6 +725,50 @@ describe('commercial pattern regressions', () => {
       text: 'Всем привет! Нам очень нужны отзывы на Авито. Отлично подойдет в качестве доп.заработка. Если кому-то актуально, пишите в личку.',
       subtype: 'RECRUITMENT',
       signals: ['recruitment:marketplace-review-work', 'contact:пишите в лич'],
+    },
+    {
+      label: 'debt relief leadgen with profile application',
+      text: 'Списание долгов через банкротство, консультация бесплатно, анкета для заявки в профиле.',
+      subtype: 'SERVICES',
+      signals: [
+        'risk:debt-relief-service',
+        'service-specialty:debt-relief-service',
+        'transaction:high-risk-offer',
+      ],
+    },
+    {
+      label: 'paid marketplace review task with chat link',
+      text: 'Нужно 20 человек для отзывов на Wildberries, оплата сразу после задания, ссылка на чат https://max.ru/join/reviews.',
+      subtype: 'RECRUITMENT',
+      signals: [
+        'risk:paid-review-task',
+        'recruitment:marketplace-review-work',
+        'deal-channel:link',
+      ],
+    },
+    {
+      label: 'paid survey referral with payout link',
+      text: 'Опросы с оплатой до 500 рублей, вывод на карту, регистрация https://example.com/opros.',
+      subtype: 'GOODS',
+      signals: ['business:paid-survey-referral', 'transaction:price', 'deal-channel:link'],
+    },
+    {
+      label: 'app directory promo with jobs and listings',
+      text: 'Скачай приложение Работа и квартира: свежие вакансии, объявления и авто рядом, ссылка https://example.com/app.',
+      subtype: 'RECRUITMENT',
+      signals: ['risk:app-store-directory-promo', 'recruitment:ваканси', 'deal-channel:link'],
+    },
+    {
+      label: 'bulk client leadgen with bot and warm base',
+      text: 'Теплая база клиентов для мастеров красоты, заявки ежедневно, подключение через бот https://example.com/clients.',
+      subtype: 'SERVICES',
+      signals: ['risk:bulk-client-leadgen', 'service-specialty:marketing-automation'],
+    },
+    {
+      label: 'paid channel ad placement with handle',
+      text: 'Размещение рекламы в канале 1500р, статистика живая, заявки в личку @admin.',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: ['channel-placement:paid-group-promo', 'transaction:price', 'contact:handle'],
     },
   ])('detects $label', ({ text, subtype, signals, negativeSignals = [] }) => {
     const result = detect(text);
@@ -946,6 +1006,10 @@ describe('commercial pattern regressions', () => {
     [
       'low quantity plant giveaway stays private',
       'Отдам денежное дерево по 50 руб за шт, в наличии 3 шт, есть с корнями, район Комета',
+    ],
+    [
+      'private low quantity money tree stays private with unit price wording',
+      'Отдам денежное дерево по 50 руб за шт, всего 3 шт, есть с корнями, район Комета',
     ],
     [
       'local news subscribe footer from sixteen hour audit false positive',
@@ -1203,6 +1267,30 @@ describe('commercial pattern regressions', () => {
     [
       'currency exchange rate news is not an info product',
       'Курс доллара сегодня вырос, подробности https://example.ru/news',
+    ],
+    [
+      'debt relief legal discussion stays allowed',
+      'Кто проходил банкротство физлица, сколько длится суд и какие документы нужны?',
+    ],
+    [
+      'debt relief scam warning stays allowed',
+      'Юристы предупреждают: объявления "спишем долги за неделю" часто мошеннические, не переводите предоплату.',
+    ],
+    [
+      'wildberries buyer review complaint stays allowed',
+      'Купила товар на Wildberries, отзыв не проходит модерацию в приложении, кто сталкивался?',
+    ],
+    [
+      'local client search seminar recap stays allowed',
+      'На семинаре обсуждали поиск клиентов для мастеров красоты, без продаж и ссылок.',
+    ],
+    [
+      'chat bot monetization settings discussion stays allowed',
+      'Чат-бот показывает монетизацию канала в настройках, рекламу мы не продаём.',
+    ],
+    [
+      'bank referral code due diligence stays allowed',
+      'Кто пользовался реферальным кодом банка, бонус реально начисляют или реклама?',
     ],
   ])('allows %s', (_label, text) => {
     expect(detect(text)).toBeNull();

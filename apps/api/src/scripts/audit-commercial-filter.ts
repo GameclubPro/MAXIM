@@ -201,7 +201,7 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
   const until = readDateOption(args, '--until') ?? now;
   const parsedLimit = readLimitOption(args, '--limit');
   const limit = parsedLimit === undefined ? DEFAULT_LIMIT : parsedLimit;
-  const sample = readPositiveIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
+  const sample = readNonNegativeIntOption(args, '--sample') ?? DEFAULT_SAMPLE;
   const chatId = readStringOption(args, '--chat-id');
   const exportJsonlPath = readStringOption(args, '--export-jsonl');
   const exportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
@@ -248,6 +248,20 @@ function readPositiveIntOption(args: readonly string[], name: string): number | 
   const parsed = parsePositiveInteger(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
+function readNonNegativeIntOption(args: readonly string[], name: string): number | undefined {
+  const value = readStringOption(args, name);
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = parsePositiveInteger(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
   }
 
   return parsed;

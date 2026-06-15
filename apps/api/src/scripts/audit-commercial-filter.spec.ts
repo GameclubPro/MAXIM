@@ -57,15 +57,16 @@ describe('audit-commercial-filter CLI options', () => {
     expect(() => readCliOptions(['--sample'])).toThrow('--sample requires a value');
   });
 
+  it('allows --sample 0 for aggregate-only audits', () => {
+    expect(readCliOptions(['--sample', '0']).sample).toBe(0);
+  });
+
   it('rejects non-integer sample values instead of truncating them', () => {
     expect(() => readCliOptions(['--sample', '2x'])).toThrow(
-      '--sample must be a positive integer',
+      '--sample must be a non-negative integer',
     );
     expect(() => readCliOptions(['--sample', '1e6'])).toThrow(
-      '--sample must be a positive integer',
-    );
-    expect(() => readCliOptions(['--sample', '0'])).toThrow(
-      '--sample must be a positive integer',
+      '--sample must be a non-negative integer',
     );
   });
 });

@@ -35,7 +35,7 @@ docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
   --since <iso-24h-ago> \
   --until <iso-now> \
   --limit 5000 \
-  --sample 20 \
+  --sample 0 \
   --export-jsonl /tmp/commercial-audit-24h.jsonl \
   --export-corpus-jsonl /tmp/commercial-corpus-24h.jsonl \
   --export-all-corpus
@@ -56,20 +56,25 @@ docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
 
 ## Latest 24h Audit Baseline
 
-Окно `2026-06-11T22:28:39Z..2026-06-12T22:28:39Z`, prod `api-admin`,
-`--limit all`, sanitized exports:
+Окно `2026-06-14T17:13:57Z..2026-06-15T17:13:57Z`, prod `api-admin`,
+`--limit all`, aggregate summary plus sanitized miss extraction:
 
-- candidates: `20562`;
-- evaluated after bot/admin/service skips: `15730`;
-- stable clear: `14104`;
-- stable hit: `746`;
-- current only: `876`;
-- historical only: `4`;
+- candidates: `18655`;
+- evaluated after bot/admin/service skips: `13999`;
+- stable clear: `11923`;
+- stable hit: `910`;
+- current only: `1160`;
+- historical only: `6`;
 - dangerous action counters: `delete_false_positive_candidates=0`,
   `gray_delete_candidates=0`, `campaign_only_delete_candidates=0`.
 
 This slice fixed or pinned regressions for:
 
+- short goods/plant misses: unit-price flowers and herbs are retail candidates,
+  while low-quantity private plant giveaways stay allowed;
+- new high-risk recall/precision guards: debt-relief leadgen, paid marketplace
+  reviews, survey/referral payouts, app directory promo, bulk leadgen, paid
+  channel placement, and their discussion/complaint false-positive neighbors;
 - historical-only-style misses: bulk material sale, MAX/MAH reply CTA contact,
   service/produce audit cases already covered locally;
 - false-positive suppressors: local news subscribe channel, public/library
