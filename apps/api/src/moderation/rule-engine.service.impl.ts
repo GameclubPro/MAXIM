@@ -803,6 +803,7 @@ export class RuleEngineService {
       : await this.messageLimitsDetector.detectAntiSpamBurstLimit({
           chatId,
           userId,
+          messageId,
           settings,
           hasExcludedAttachment: hasAntiSpamBurstExcludedAttachment,
           skipAntiSpamBurstLimit,
@@ -817,6 +818,7 @@ export class RuleEngineService {
       : await this.messageLimitsDetector.detectMessageCountLimit({
           chatId,
           userId,
+          messageId,
           settings,
         });
     if (messageCountViolation) {
@@ -892,6 +894,7 @@ export class RuleEngineService {
         ...(await this.messageLimitsDetector.detectMediaCooldownLimits({
           chatId,
           userId,
+          messageId,
           settings,
           hasPhotoAttachment,
           hasStickerAttachment,

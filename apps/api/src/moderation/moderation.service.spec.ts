@@ -195,6 +195,7 @@ function createMaxApiError(status: number, message: string, code?: string): Erro
 function createRedisCounterMock() {
   const stringCache = new Map<string, string>();
   const counters = new Map<string, number>();
+  const counterMembers = new Set<string>();
   const locks = new Set<string>();
 
   return {
@@ -218,6 +219,19 @@ function createRedisCounterMock() {
       const count = (counters.get(key) ?? 0) + 1;
       counters.set(key, count);
       return count;
+    }),
+    incrementOncePerMemberWithTtl: jest.fn(async (counterKey: string, memberKey: string) => {
+      if (counterMembers.has(memberKey)) {
+        return {
+          inserted: false,
+          count: counters.get(counterKey) ?? 0,
+        };
+      }
+
+      counterMembers.add(memberKey);
+      const count = (counters.get(counterKey) ?? 0) + 1;
+      counters.set(counterKey, count);
+      return { inserted: true, count };
     }),
   };
 }
@@ -13850,8 +13864,9 @@ describe('ModerationService', () => {
         await service.handleUpdate(createMediaUpdate(index));
       }
 
-      expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+      expect(redisCounter.incrementOncePerMemberWithTtl).not.toHaveBeenCalledWith(
         expect.stringContaining('message:anti-spam-burst'),
+        expect.any(String),
         expect.any(Number),
       );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -13910,8 +13925,9 @@ describe('ModerationService', () => {
       await service.handleUpdate(createStickerAttachmentUpdate(index));
     }
 
-    expect(redisCounter.incrementWithTtl).toHaveBeenCalledWith(
+    expect(redisCounter.incrementOncePerMemberWithTtl).toHaveBeenCalledWith(
       expect.stringContaining('message:anti-spam-burst'),
+      expect.any(String),
       expect.any(Number),
     );
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-sticker-6');
@@ -13979,8 +13995,9 @@ describe('ModerationService', () => {
       await service.handleUpdate(createLinkedForwardUpdate(index));
     }
 
-    expect(redisCounter.incrementWithTtl).not.toHaveBeenCalledWith(
+    expect(redisCounter.incrementOncePerMemberWithTtl).not.toHaveBeenCalledWith(
       expect.stringContaining('message:anti-spam-burst'),
+      expect.any(String),
       expect.any(Number),
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();

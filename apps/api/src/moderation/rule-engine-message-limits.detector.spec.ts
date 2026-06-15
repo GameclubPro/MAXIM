@@ -7,12 +7,32 @@ import {
 class MockRedisCounterService {
   readonly calls: Array<{ key: string; ttlSec: number }> = [];
   private readonly counters = new Map<string, number>();
+  private readonly members = new Set<string>();
 
   async incrementWithTtl(key: string, ttlSec: number): Promise<number> {
     this.calls.push({ key, ttlSec });
     const next = (this.counters.get(key) ?? 0) + 1;
     this.counters.set(key, next);
     return next;
+  }
+
+  async incrementOncePerMemberWithTtl(
+    counterKey: string,
+    memberKey: string,
+    ttlSec: number,
+  ): Promise<{ inserted: boolean; count: number }> {
+    if (this.members.has(memberKey)) {
+      return {
+        inserted: false,
+        count: this.counters.get(counterKey) ?? 0,
+      };
+    }
+
+    this.members.add(memberKey);
+    return {
+      inserted: true,
+      count: await this.incrementWithTtl(counterKey, ttlSec),
+    };
   }
 }
 
@@ -200,6 +220,69 @@ describe('RuleEngineMessageLimitsDetector', () => {
     });
   });
 
+  it('does not count repeated delivery of the same message id toward anti-spam burst', async () => {
+    const detector = new RuleEngineMessageLimitsDetector(
+      new MockRedisCounterService() as never,
+    );
+    const settings = buildSettings({ antiSpamEnabled: true });
+
+    for (let index = 0; index < 6; index += 1) {
+      await expect(
+        detector.detectAntiSpamBurstLimit({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          messageId: 'mid-1',
+          settings,
+        }),
+      ).resolves.toBeNull();
+    }
+
+    await expect(
+      detector.detectAntiSpamBurstLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-2',
+        settings,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('does not count repeated delivery of the same message id toward message count limit', async () => {
+    const detector = new RuleEngineMessageLimitsDetector(
+      new MockRedisCounterService() as never,
+    );
+    const settings = buildSettings({
+      messageCountLimitEnabled: true,
+      messageCountLimitMessages: 1,
+      messageCountLimitWindowHours: 1,
+    });
+
+    await expect(
+      detector.detectMessageCountLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-1',
+        settings,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      detector.detectMessageCountLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-1',
+        settings,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      detector.detectMessageCountLimit({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-2',
+        settings,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ ruleCode: 'MESSAGE_COUNT_LIMIT' }));
+  });
+
   it('skips the built-in anti-spam burst window when disabled', async () => {
     const redisCounter = new MockRedisCounterService();
     const detector = new RuleEngineMessageLimitsDetector(redisCounter as never);
@@ -274,6 +357,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
       detector.detectMediaCooldownLimits({
         chatId: 'chat-1',
         userId: 'user-1',
+        messageId: 'mid-1',
         settings: firstSettings,
         hasPhotoAttachment: true,
       }),
@@ -282,6 +366,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
       detector.detectMediaCooldownLimits({
         chatId: 'chat-1',
         userId: 'user-1',
+        messageId: 'mid-2',
         settings: firstSettings,
         hasPhotoAttachment: true,
       }),
@@ -291,6 +376,35 @@ describe('RuleEngineMessageLimitsDetector', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         settings: secondSettings,
+        hasPhotoAttachment: true,
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('does not count repeated delivery of the same message id toward media cooldown', async () => {
+    const detector = new RuleEngineMessageLimitsDetector(
+      new MockRedisCounterService() as never,
+    );
+    const settings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 1,
+    });
+
+    await expect(
+      detector.detectMediaCooldownLimits({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-1',
+        settings,
+        hasPhotoAttachment: true,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      detector.detectMediaCooldownLimits({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'mid-1',
+        settings,
         hasPhotoAttachment: true,
       }),
     ).resolves.toEqual([]);

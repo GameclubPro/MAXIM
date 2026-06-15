@@ -1,4 +1,5 @@
 import type { ChatSettings } from '../prisma/prisma-client';
+import { createHash } from 'node:crypto';
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import { RedisCounterService } from './redis-counter.service';
 import type { RuleViolation } from './rule-engine.contract';
@@ -21,6 +22,7 @@ export class RuleEngineMessageLimitsDetector {
   async detectAntiSpamBurstLimit(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     settings: ChatSettings;
     hasExcludedAttachment?: boolean;
     skipAntiSpamBurstLimit?: boolean;
@@ -31,15 +33,20 @@ export class RuleEngineMessageLimitsDetector {
     }
 
     const key = `message:anti-spam-burst:v1:${chatId}:${userId}:${ANTI_SPAM_BURST_LIMIT}:${ANTI_SPAM_BURST_WINDOW_SEC}`;
-    const count = await raceWithTimeout<number | null>({
-      operation: this.redisCounter.incrementWithTtl(key, ANTI_SPAM_BURST_WINDOW_SEC + 1),
+    const countResult = await raceWithTimeout<{ inserted: boolean; count: number } | null>({
+      operation: this.incrementStatefulCounter({
+        key,
+        messageId: params.messageId,
+        ttlSec: ANTI_SPAM_BURST_WINDOW_SEC + 1,
+      }),
       timeoutMs: ANTI_SPAM_STATE_LOOKUP_TIMEOUT_MS,
       onTimeout: () => null,
     });
-    if (count === null) {
+    if (countResult === null || !countResult.inserted) {
       return null;
     }
 
+    const { count } = countResult;
     if (count <= ANTI_SPAM_BURST_LIMIT) {
       return null;
     }
@@ -75,6 +82,7 @@ export class RuleEngineMessageLimitsDetector {
   async detectMessageCountLimit(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     settings: ChatSettings;
   }): Promise<RuleViolation | null> {
     const { chatId, userId, settings } = params;
@@ -85,7 +93,16 @@ export class RuleEngineMessageLimitsDetector {
     const windowHours = Math.min(24, Math.max(1, settings.messageCountLimitWindowHours));
     const maxMessages = Math.min(10, Math.max(1, settings.messageCountLimitMessages));
     const key = `message:count-limit:v1:${chatId}:${userId}:${maxMessages}:${windowHours}`;
-    const count = await this.redisCounter.incrementWithTtl(key, windowHours * 60 * 60 + 1);
+    const countResult = await this.incrementStatefulCounter({
+      key,
+      messageId: params.messageId,
+      ttlSec: windowHours * 60 * 60 + 1,
+    });
+    if (!countResult.inserted) {
+      return null;
+    }
+
+    const { count } = countResult;
     if (count <= maxMessages) {
       return null;
     }
@@ -217,6 +234,7 @@ export class RuleEngineMessageLimitsDetector {
   async detectMediaCooldownLimits(params: {
     chatId: string;
     userId: string;
+    messageId?: string;
     settings: ChatSettings;
     hasPhotoAttachment?: boolean;
     hasStickerAttachment?: boolean;
@@ -233,7 +251,14 @@ export class RuleEngineMessageLimitsDetector {
         settings.photoMessageCooldownHours,
         settings.updatedAt,
       );
-      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+      const { inserted, count } = await this.incrementStatefulCounter({
+        key,
+        messageId: params.messageId,
+        ttlSec: cooldownSec + 1,
+      });
+      if (!inserted) {
+        return violations;
+      }
       if (count > 1) {
         violations.push({
           ruleCode: 'PHOTO_RATE_LIMIT',
@@ -252,7 +277,14 @@ export class RuleEngineMessageLimitsDetector {
         settings.stickerMessageCooldownMinutes,
         settings.updatedAt,
       );
-      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+      const { inserted, count } = await this.incrementStatefulCounter({
+        key,
+        messageId: params.messageId,
+        ttlSec: cooldownSec + 1,
+      });
+      if (!inserted) {
+        return violations;
+      }
       if (count > 1) {
         violations.push({
           ruleCode: 'STICKER_RATE_LIMIT',
@@ -263,6 +295,27 @@ export class RuleEngineMessageLimitsDetector {
     }
 
     return violations;
+  }
+
+  private async incrementStatefulCounter(params: {
+    key: string;
+    messageId?: string;
+    ttlSec: number;
+  }): Promise<{ inserted: boolean; count: number }> {
+    const messageId = params.messageId?.trim();
+    if (!messageId) {
+      return {
+        inserted: true,
+        count: await this.redisCounter.incrementWithTtl(params.key, params.ttlSec),
+      };
+    }
+
+    const messageHash = createHash('sha256').update(messageId).digest('hex').slice(0, 20);
+    return this.redisCounter.incrementOncePerMemberWithTtl(
+      params.key,
+      `${params.key}:msg:${messageHash}`,
+      params.ttlSec,
+    );
   }
 }
 
