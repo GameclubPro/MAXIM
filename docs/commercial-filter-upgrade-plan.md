@@ -83,6 +83,27 @@ This slice fixed or pinned regressions for:
   while structured nursery clearance stock remains commercial;
 - second-stage cache key: include sensitivity and rounded strictness.
 
+Second post-deploy audit window
+`2026-06-14T17:39:27Z..2026-06-15T17:39:27Z`, prod `api-admin`,
+`--limit all --sample 0`, confirmed the main safety gate:
+
+- candidates: `18550`;
+- evaluated after skips: `13926`;
+- stable clear: `11850`;
+- stable hit: `915`;
+- current only: `1157`;
+- historical only: `4`;
+- delete false positives, gray deletes, and campaign-only deletes: all `0`.
+
+Remaining hard cases should stay narrow:
+
+- `400р.кг + phone` must not become a generic unit-price-plus-phone rule until
+  a product noun or repeated product context is available.
+- Short cargo service and channel self-promo coverage should be pinned with
+  regressions before adding duplicate rules.
+- Beauty/hair salon ads should require a procedure plus contact/address anchor,
+  not a bare `salon` marker.
+
 Do not interpret every `safeContextBucket` hit as a false positive. The 24h
 audit showed wide buckets such as `news_or_analytics` and
 `private_one_off_sale` can contain true ads because the bucket classifier is a
@@ -212,6 +233,8 @@ Track daily:
 - hard-negative hit rate;
 - campaign-only hit/delete rate;
 - second-stage probability bands.
+- audit detect-time p95/p99 and top slow sanitized records;
+- duplicate-precheck timing, because it can run a second commercial spam scan.
 
 Alerts:
 
@@ -245,6 +268,7 @@ Extraction boundaries should keep current facades:
 Longer-term options:
 
 - maintain a small curated safe-context corpus separate from broad production JSONL;
+- add perf guards for near-misses around the widest commercial regex patterns;
 - add per-chat calibration profiles only after global suppressors stabilize;
 - add offline benchmark reports to CI artifacts;
 - consider a learned second-stage model only after deterministic explainability is stable and corpus labels are high quality.

@@ -885,6 +885,11 @@ export function collectCommercialSignals(params: {
     hasBusinessContext = true;
     hasCallToActionContext = true;
     hasCommercialContext = true;
+    hasDealSignal = true;
+    if (marker === 'handmade-self-channel-promo') {
+      addPositive('transaction:handmade-channel-offer', weights.transactionalKeyword);
+      hasTransactional = true;
+    }
   }
 
   if (ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)) {
@@ -896,6 +901,7 @@ export function collectCommercialSignals(params: {
     hasBusinessContext = true;
     hasCallToActionContext = true;
     hasCommercialContext = true;
+    hasDealSignal = true;
   }
 
   const callToActionHits = collectFirstMarkers(ADS_CALL_TO_ACTION_MARKERS, hasMarker, 2);

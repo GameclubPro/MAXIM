@@ -518,6 +518,33 @@ describe('commercial pattern regressions', () => {
       signals: ['goods-retail:flower-herb-unit-price-retail', 'transaction:price'],
     },
     {
+      label: 'short cargo service with phone from post deploy audit miss',
+      text: 'ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42',
+      subtype: 'SERVICES',
+      signals: [
+        'service-specialty:грузоперевоз',
+        'service-specialty:logistics-delivery',
+        'contact:phone',
+      ],
+    },
+    {
+      label: 'beauty salon phone service from post deploy audit miss',
+      text: 'Приглашаю тебя красотка! На окрашивание, окудрение, флисинг, карвинг, реконструкцию волос. Я жду тебя по адресу Титова 238 салон Корона или пиши/звони +7 900 000 10 43 Наталья',
+      subtype: 'SERVICES',
+      signals: ['service-specialty:beauty-salon-service', 'contact:phone'],
+    },
+    {
+      label: 'handmade self channel promo without visible link from post deploy audit miss',
+      text: 'Всем привет) Добро пожаловать в мой Мир страз Юлии. Уникальные и индивидуальные изделия ручной работы от магнитов и футболок, до инкрустации любой вещи. До 1 июля можно забрать портрет из страз со скидкой в 50%. Всего 3 портрета, может это твой? Буду рада всем в своем блестящем мире. МОЙ КАНАЛ',
+      subtype: 'CHANNEL_PLACEMENT',
+      signals: [
+        'promo:скидк',
+        'channel-placement:handmade-self-channel-promo',
+        'transaction:handmade-channel-offer',
+      ],
+      negativeSignals: ['context:question'],
+    },
+    {
       label: 'vehicle advertising placement from twenty four hour audit miss',
       text: 'Разместим вашу рекламу на наших авто +7 900 000 10 03',
       subtype: 'SERVICES',
@@ -1366,6 +1393,24 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('DELETE');
     expect(result?.matchedSignals).not.toContain('risk:messaging-automation');
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('does not treat salon discussion without contact as a beauty service ad', () => {
+    const result = detect(
+      'Салон Корона после ремонта стал уютнее, но цены на окрашивание в городе вообще выросли.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain('service-specialty:beauty-salon-service');
+  });
+
+  it('does not treat an ordinary personal channel mention as handmade channel promo', () => {
+    const result = detect(
+      'Мой канал с заметками про ручную работу пока закрыт, скидок и заказов там нет.',
+    );
+
+    expect(result?.matchedSignals ?? []).not.toContain(
+      'channel-placement:handmade-self-channel-promo',
+    );
   });
 
   it('still escalates bank card leadgen after tightening bank word boundaries', () => {
