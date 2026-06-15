@@ -1362,6 +1362,69 @@ describe('commercial pattern regressions', () => {
     expect(result?.actionBand).toBe('REVIEW_ONLY');
   });
 
+  it('keeps short structured service phone ads reviewable under soft balanced thresholds', () => {
+    const cargo = detect('ГРУЗОПЕРЕВОЗКИ +7 900 000 10 42', {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    });
+    const beauty = detect(
+      'Приглашаю тебя красотка! На окрашивание, окудрение, флисинг, карвинг, реконструкцию волос. Я жду тебя по адресу Титова 238 салон Корона или пиши/звони +7 900 000 10 43 Наталья',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+
+    expect(cargo?.primarySubtype).toBe('SERVICES');
+    expect(cargo?.matchedSignals).toContain('transaction:structured-service-phone-offer');
+    expect(cargo?.actionBand).toBe('REVIEW_ONLY');
+    expect(beauty?.primarySubtype).toBe('SERVICES');
+    expect(beauty?.matchedSignals).toContain('transaction:structured-service-phone-offer');
+    expect(beauty?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('keeps handmade self channel promo reviewable under soft balanced thresholds', () => {
+    const result = detect(
+      'Всем привет) Добро пожаловать в мой Мир страз Юлии. Уникальные и индивидуальные изделия ручной работы от магнитов и футболок, до инкрустации любой вещи. До 1 июля можно забрать портрет из страз со скидкой в 50%. Всего 3 портрета, может это твой? Буду рада всем в своем блестящем мире. МОЙ КАНАЛ',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 55,
+          commercialAdsDeleteThreshold: 75,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(result?.matchedSignals).toContain('transaction:handmade-channel-offer');
+    expect(result?.negativeSignals).toContain('context:question');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('does not suppress retail fragrance promos on open-for-yourself wording', () => {
+    const result = detect(
+      'Откройте для себя коллекцию селективных ароматов. Доступные цены: полный флакон 2400₽, мини-версия 250₽, сет из 10 ароматов 2400₽.',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 45,
+          commercialAdsDeleteThreshold: 65,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('goods-retail:fragrance-retail-promo');
+    expect(result?.negativeSignals).not.toContain('negative:для себя');
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
   it('keeps ordinary pc sale out of betting high risk', () => {
     const result = detect(
       'Полный комплект ПК для работы и учебы, игр, тянет GTA V и прочие. 4-ядерный процессор AMD A10. Возможна доставка. Цена 10500 +7 900 000 10 13. Звоните, тут не могу ответить.',

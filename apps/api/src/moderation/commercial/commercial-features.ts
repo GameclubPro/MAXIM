@@ -1153,6 +1153,15 @@ export function collectCommercialSignals(params: {
     if (!hasMarker(marker)) {
       continue;
     }
+    if (
+      marker === 'для себя' &&
+      hasGoodsRetailContext &&
+      /(?:^|[^\p{L}\p{N}_-])(?:выбер(?:и|ите)|откро(?:й|йте)|подбер(?:и|ите))(?:[\p{L}\p{N}\s.,:;()/%+-]{0,40})для\s+себя(?=$|[^\p{L}\p{N}_-])/iu.test(
+        normalizedText,
+      )
+    ) {
+      continue;
+    }
 
     addNegative(`negative:${marker}`, weights.negativeMarker, true);
   }
@@ -1436,6 +1445,19 @@ export function collectCommercialSignals(params: {
 
   if (hasServiceContext && (hasContact || hasDealChannel || hasPrice || hasTransactional)) {
     addPositive('combo:service+deal', weights.comboServiceDeal);
+  }
+
+  if (
+    hasPhoneContact &&
+    !hasSearchRequestContext &&
+    !hasPrivateSaleContext &&
+    !hasPrivateGoodsItemContext &&
+    (matchedSignals.includes('service-specialty:logistics-delivery') ||
+      matchedSignals.includes('service-specialty:beauty-salon-service'))
+  ) {
+    addPositive('transaction:structured-service-phone-offer', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
   }
 
   if (hasContact && hasPrice) {

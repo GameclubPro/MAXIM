@@ -9,7 +9,10 @@ const PRICE_EVIDENCE_SIGNALS = new Set([
   'combo:contact+price',
 ]);
 
-const TRANSACTION_DIRECT_DEAL_SIGNALS = new Set(['transaction:buyout-deal']);
+const TRANSACTION_DIRECT_DEAL_SIGNALS = new Set([
+  'transaction:buyout-deal',
+  'transaction:handmade-channel-offer',
+]);
 
 const STRONG_CONTACT_SIGNALS = new Set([
   'contact:phone',
@@ -54,6 +57,8 @@ const BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS = new Set([
   'service-specialty:custom-handmade-order',
   'service-specialty:custom-art-order',
   'service-specialty:crane-beam-installation',
+  'service-specialty:logistics-delivery',
+  'service-specialty:beauty-salon-service',
   'service-specialty:pvc-window-door-repair',
   'service-specialty:speech-therapy-lessons',
   'service-specialty:tree-yard-repair-service',
@@ -225,6 +230,8 @@ export function resolveCommercialEvidenceProfile(params: {
       (state.hasTransactional && hasSignal('goods-retail:clearance-stock-retail'))) &&
     !state.hasSearchRequestContext &&
     !state.hasPrivateGoodsItemContext;
+  const hasStructuredChannelOfferEvidence =
+    state.hasChannelPlacementContext && hasSignal('transaction:handmade-channel-offer');
   const hasStrongCampaignEvidence = hasStrongCommercialCampaignEvidence(
     commercialCampaignContext,
     state,
@@ -238,6 +245,7 @@ export function resolveCommercialEvidenceProfile(params: {
     hasStructuredServicePhoneEvidence ||
     hasStructuredPropertyContactEvidence ||
     hasStructuredRetailTransactionalEvidence ||
+    hasStructuredChannelOfferEvidence ||
     hasStrongCampaignEvidence;
   const hasStructuredCommercialContext =
     state.hasPromoContext ||
