@@ -17462,6 +17462,88 @@ describe('AdminService admin access validation', () => {
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
   });
 
+  it('falls back to a fresh managed entity access edge when MAX reports bot denied', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+      primaryBotId: 'bot-primary',
+      botId: null,
+      botMemberships: [{ botId: 'bot-primary' }],
+    });
+    (prisma as any).managedEntityAccessEdge = {
+      findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1', botId: 'bot-primary' }]),
+    };
+    (prisma as any).chatBotMembership = {
+      findMany: jest.fn().mockResolvedValue([{ chatId: 'chat-1', botId: 'bot-primary' }]),
+    };
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'Bot is not a chat member',
+          },
+        },
+      }),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId: string | null | undefined) =>
+        botId ? { id: botId, state: 'active' } : null,
+      ),
+      getAllBots: jest.fn().mockReturnValue([{ id: 'bot-primary' }]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'bot-primary' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect((prisma as any).managedEntityAccessEdge.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'admin-1',
+          entityType: 'CHAT',
+          state: 'GRANTED',
+        }),
+      }),
+    );
+    expect((prisma as any).chatBotMembership.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: {
+          in: ['chat-1'],
+        },
+        botId: {
+          in: ['bot-primary'],
+        },
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      select: {
+        chatId: true,
+        botId: true,
+      },
+    });
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      user.userId,
+      'granted',
+    );
+    await flushAsyncTasks();
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
   it('returns 503 instead of false 403 when MAX admin check transiently fails without fallback', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();

@@ -21959,6 +21959,20 @@ export class AdminService implements OnModuleDestroy {
     );
     if (candidateBotIds.length === 0) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+      if (
+        resolution.status === 'denied' &&
+        resolution.reason === 'bot_not_admin' &&
+        options.entityType
+      ) {
+        const edgeResolution = await this.resolveFreshManagedEntityAccessEdgeFallback(
+          chatId,
+          userId,
+          options.entityType,
+        );
+        if (edgeResolution) {
+          return edgeResolution;
+        }
+      }
       await this.recordRemoteManagedEntityAccessEdge(chatId, userId, null, options, resolution);
       if (resolution.status === 'granted') {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
@@ -21984,6 +21998,20 @@ export class AdminService implements OnModuleDestroy {
 
     for (const botId of candidateBotIds) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, botId, options);
+      if (
+        resolution.status === 'denied' &&
+        resolution.reason === 'bot_not_admin' &&
+        options.entityType
+      ) {
+        const edgeResolution = await this.resolveFreshManagedEntityAccessEdgeFallback(
+          chatId,
+          userId,
+          options.entityType,
+        );
+        if (edgeResolution) {
+          return edgeResolution;
+        }
+      }
       await this.recordRemoteManagedEntityAccessEdge(chatId, userId, botId, options, resolution);
       if (resolution.status === 'granted') {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
@@ -22139,7 +22167,7 @@ export class AdminService implements OnModuleDestroy {
     if (inFlight) {
       return options.allowPersistedFallback === false
         ? inFlight
-        : this.withAllowlistFallback(chatId, userId, inFlight);
+        : this.withAllowlistFallback(chatId, userId, options.entityType, inFlight);
     }
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
@@ -22154,7 +22182,7 @@ export class AdminService implements OnModuleDestroy {
     try {
       return await (options.allowPersistedFallback === false
         ? pending
-        : this.withAllowlistFallback(chatId, userId, pending));
+        : this.withAllowlistFallback(chatId, userId, options.entityType, pending));
     } finally {
       this.adminAccessChecks.delete(key);
     }
@@ -22187,31 +22215,127 @@ export class AdminService implements OnModuleDestroy {
   private async withAllowlistFallback(
     chatId: string,
     userId: string,
+    entityType: ManagedEntityType | undefined,
     resolutionPromise: Promise<AdminAccessResolution>,
   ): Promise<AdminAccessResolution> {
     const resolution = await resolutionPromise;
-    if (resolution.status !== 'unknown' && resolution.status !== 'throttled') {
+    if (resolution.status === 'granted') {
+      return resolution;
+    }
+    if (resolution.status === 'denied') {
       return resolution;
     }
 
-    if (!(await this.hasPersistedChatAccess(chatId, userId))) {
-      return resolution;
-    }
-    if (!(await this.canUsePersistedChatAccessFallback(chatId))) {
-      return resolution;
-    }
-
-    this.logger.log(
-      {
+    if (entityType) {
+      const edgeResolution = await this.resolveFreshManagedEntityAccessEdgeFallback(
         chatId,
         userId,
-      },
-      'Using persisted admin access allowlist after transient MAX API failure',
-    );
-    return {
-      status: 'granted',
-      source: 'allowlist_fallback',
-    };
+        entityType,
+      );
+      if (edgeResolution) {
+        return edgeResolution;
+      }
+    }
+
+    if (resolution.status === 'unknown' || resolution.status === 'throttled') {
+      if (!(await this.hasPersistedChatAccess(chatId, userId))) {
+        return resolution;
+      }
+      if (!(await this.canUsePersistedChatAccessFallback(chatId))) {
+        return resolution;
+      }
+
+      this.logger.log(
+        {
+          chatId,
+          userId,
+        },
+        'Using persisted admin access allowlist after transient MAX API failure',
+      );
+      return {
+        status: 'granted',
+        source: 'allowlist_fallback',
+      };
+    }
+
+    return resolution;
+  }
+
+  private async resolveFreshManagedEntityAccessEdgeFallback(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<Extract<AdminAccessResolution, { status: 'granted' }> | null> {
+    const client = this.getManagedEntityAccessEdgeClient();
+    if (!client) {
+      return null;
+    }
+
+    try {
+      const rows = await client.findMany({
+        where: {
+          chatId,
+          userId,
+          entityType: toPrismaEntityType(entityType),
+          state: 'GRANTED',
+          OR: [
+            { expiresAt: { gt: new Date() } },
+            {
+              expiresAt: null,
+              checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+            },
+          ],
+        },
+        select: {
+          chatId: true,
+          botId: true,
+        },
+      });
+      const activeMembershipKeys = await this.readActiveManagedEntityMembershipKeys(rows, {
+        userId,
+        requestedItems: 1,
+        source: 'admin_access_edge_fallback',
+      });
+      const hasActiveGrantedEdge = rows.some((row) => {
+        const rowChatId = this.readTrimmedString(row.chatId);
+        const botId = this.normalizeManagedEntityAccessBotId(row.botId);
+        return (
+          rowChatId === chatId &&
+          Boolean(botId) &&
+          activeMembershipKeys.has(
+            this.buildManagedEntityRepairEdgeKey(rowChatId, botId ?? ''),
+          )
+        );
+      });
+      if (!hasActiveGrantedEdge) {
+        return null;
+      }
+
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+      this.logger.log(
+        {
+          chatId,
+          userId,
+          entityType,
+        },
+        'Using fresh managed entity access edge after MAX admin access denial',
+      );
+      return {
+        status: 'granted',
+        source: 'allowlist_fallback',
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          entityType,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to inspect fresh managed entity access edge fallback',
+      );
+      return null;
+    }
   }
 
   private async canUsePersistedChatAccessFallback(chatId: string): Promise<boolean> {
