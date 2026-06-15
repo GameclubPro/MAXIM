@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { migrateHashRouterLegacyPathFromWindow } from '../src/lib/hash-router-legacy-path';
 import { resolveLaunchRoute } from '../src/lib/launch-route';
 
 type MutableWindow = Window &
@@ -22,8 +23,15 @@ type MutableWindow = Window &
   };
 
 function assignWindow(url: string, overrides: Partial<MutableWindow> = {}): void {
+  const location = new URL(url) as URL & { href: string };
   const windowLike = {
-    location: new URL(url),
+    location,
+    history: {
+      state: null,
+      replaceState: (_state: unknown, _unused: string, nextUrl: string) => {
+        location.href = new URL(nextUrl, location.href).href;
+      },
+    },
     atob: globalThis.atob,
     ...overrides,
   } as MutableWindow;
@@ -79,6 +87,28 @@ test('resolves startapp from hash-route query parameters', () => {
   );
 
   assert.equal(resolveLaunchRoute(''), '/chat/-68085832859751/settings');
+});
+
+test('hash router builds keep direct legacy deep path visible through the hash route', async () => {
+  const previousMode = globalThis.__MAXIM_ROUTER_MODE__;
+
+  Object.defineProperty(globalThis, '__MAXIM_ROUTER_MODE__', {
+    configurable: true,
+    value: 'hash',
+  });
+  assignWindow('https://app2.major-maksimov.ru/app/chat/-68085832859751/settings?focus=rules');
+
+  migrateHashRouterLegacyPathFromWindow();
+
+  assert.equal(
+    window.location.href,
+    'https://app2.major-maksimov.ru/app/#/chat/-68085832859751/settings?focus=rules',
+  );
+
+  Object.defineProperty(globalThis, '__MAXIM_ROUTER_MODE__', {
+    configurable: true,
+    value: previousMode,
+  });
 });
 
 test('normalizes legacy /chats launcher route to root', () => {

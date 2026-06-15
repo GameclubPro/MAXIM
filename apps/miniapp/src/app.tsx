@@ -18,6 +18,7 @@ import commentsSpaceLightWallpaperUrl from './assets/wallpapers/comments-space-l
 import { createApiTransport } from './lib/api/transport';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
+import { migrateHashRouterLegacyPathFromWindow } from './lib/hash-router-legacy-path';
 import { getInitData, waitForInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
 import {
@@ -50,6 +51,8 @@ const HASH_ROUTER_ENABLED =
   typeof __MAXIM_ROUTER_MODE__ === 'string' && __MAXIM_ROUTER_MODE__ === 'hash';
 const AppRouter = HASH_ROUTER_ENABLED ? HashRouter : Router;
 const ROUTER_BASENAME = HASH_ROUTER_ENABLED ? '' : PUBLIC_ROUTER_BASENAME;
+
+migrateHashRouterLegacyPathFromWindow();
 
 const queryClient = new QueryClient({
   defaultOptions: {
