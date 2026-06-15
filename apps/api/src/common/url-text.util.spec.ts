@@ -19,8 +19,38 @@ describe('url-text util', () => {
     ).toEqual(['https://max.ru/channel/news', 'https://docs.max.ru/start']);
   });
 
+  it('extracts separate urls from markdown-style links', () => {
+    expect(extractUrlsFromText('жми [https://safe.example](https://casino.example/path).')).toEqual([
+      'https://safe.example',
+      'https://casino.example/path',
+    ]);
+  });
+
+  it('does not merge adjacent scheme urls across closing punctuation', () => {
+    expect(
+      extractUrlsFromText('старое https://safe.example)https://casino.example/path новое'),
+    ).toEqual(['https://safe.example', 'https://casino.example/path']);
+  });
+
+  it('keeps an outer bare url when its query contains another scheme url', () => {
+    expect(extractUrlsFromText('редирект bad.example?to=https://safe.example/path')).toEqual([
+      'bad.example?to=https://safe.example/path',
+      'https://safe.example/path',
+    ]);
+  });
+
+  it('extracts bare punycode IDN domains as complete urls', () => {
+    expect(extractUrlsFromText('сайт xn--d1acufc.xn--p1ai/about')).toEqual([
+      'xn--d1acufc.xn--p1ai/about',
+    ]);
+  });
+
   it('does not treat dotted russian text as a url', () => {
     expect(extractUrlsFromText('Продам кузов Нивы.Весь перевареный')).toEqual([]);
+  });
+
+  it('does not treat zero-width-split bare domains as suffix urls', () => {
+    expect(extractUrlsFromText('пример exa\u200bmple.com в тексте')).toEqual([]);
   });
 
   it('does not treat dotted addresses as a url', () => {

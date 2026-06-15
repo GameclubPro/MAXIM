@@ -121,7 +121,8 @@ import type {
   RuleViolation,
 } from './rule-engine.contract';
 import { RuleEngineService } from './rule-engine.service';
-import { detectBlockedLink } from './rule-engine-link-detector';
+import { createAllowlistLinkMatcher, detectBlockedLink } from './rule-engine-link-detector';
+import { MessageLimitsBlockedDomainDetector } from './rule-engine-blocked-domains.detector';
 import {
   ANTI_SPAM_BURST_LIMIT,
   ANTI_SPAM_BURST_WINDOW_SEC,
@@ -364,6 +365,7 @@ type BotSpeechMediaUploadOptions = {
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
+  private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
   private readonly chatAdminAccessCache = new Map<
     string,
@@ -15238,9 +15240,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     cachedDomainAllowlist: string[];
     violations: RuleViolation[];
   }): Promise<RuleViolation[]> {
+    const hasLinkBlockedViolation = params.violations.some(
+      (violation) => violation.ruleCode === 'LINK_BLOCKED',
+    );
+    const hasBlockedDomainViolation = params.violations.some(
+      (violation) => violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN',
+    );
     if (
-      params.settings.linkPolicy !== 'ALLOWLIST_ONLY' ||
-      !params.violations.some((violation) => violation.ruleCode === 'LINK_BLOCKED')
+      (!hasLinkBlockedViolation && !hasBlockedDomainViolation) ||
+      (params.settings.linkPolicy !== 'ALLOWLIST_ONLY' && !hasBlockedDomainViolation)
     ) {
       return params.violations;
     }
@@ -15263,13 +15271,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return params.violations;
     }
 
+    const freshAllowlistMatcher = createAllowlistLinkMatcher(freshDomainAllowlist);
     const linkViolation = detectBlockedLink(
       params.text,
       params.settings.linkPolicy,
       freshDomainAllowlist,
+      freshAllowlistMatcher,
     );
-    if (linkViolation) {
-      return params.violations;
+    const blockedDomain = this.blockedDomainDetector.detect(
+      params.text,
+      params.settings.messageLimitsBlockedDomains,
+      {
+        isLinkAllowlisted: freshAllowlistMatcher,
+      },
+    );
+    const recalculatedViolations = params.violations.flatMap((violation) => {
+      if (violation.ruleCode === 'LINK_BLOCKED') {
+        return linkViolation ? [{ ...violation, reason: linkViolation }] : [];
+      }
+
+      if (violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN') {
+        return blockedDomain
+          ? [
+              {
+                ...violation,
+                reason: `Blocked domain detected: ${blockedDomain.blockedDomain}`,
+                metadata: {
+                  ...(violation.metadata ?? {}),
+                  blockedDomain: blockedDomain.blockedDomain,
+                  matchedDomain: blockedDomain.matchedDomain,
+                  matchedLink: blockedDomain.matchedLink,
+                },
+              },
+            ]
+          : [];
+      }
+
+      return [violation];
+    });
+
+    if (
+      recalculatedViolations.some(
+        (violation) =>
+          violation.ruleCode === 'LINK_BLOCKED' ||
+          violation.ruleCode === 'MESSAGE_BLOCKED_DOMAIN',
+      )
+    ) {
+      return recalculatedViolations;
     }
 
     this.logger.debug(
@@ -15278,7 +15326,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         cachedAllowlistSize: params.cachedDomainAllowlist.length,
         freshAllowlistSize: freshDomainAllowlist.length,
       },
-      'Suppressed link violation after fresh allowlist recheck',
+      'Suppressed link-family violations after fresh allowlist recheck',
     );
     void this.chatContextCache?.invalidate(params.chatId).catch((error: unknown) => {
       this.logger.debug(
@@ -15290,7 +15338,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     });
 
-    return params.violations.filter((violation) => violation.ruleCode !== 'LINK_BLOCKED');
+    return recalculatedViolations;
   }
 
   private async loadFreshDomainAllowlistForLinkRecheck(chatId: string): Promise<string[] | null> {

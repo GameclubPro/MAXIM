@@ -156,6 +156,7 @@ export class RuleEngineMessageLimitsDetector {
       metadata: {
         blockedDomain: blockedDomain.blockedDomain,
         matchedDomain: blockedDomain.matchedDomain,
+        matchedLink: blockedDomain.matchedLink,
       },
     };
   }

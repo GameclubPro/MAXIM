@@ -125,6 +125,7 @@ describe('RuleEngineMessageLimitsDetector', () => {
         metadata: {
           blockedDomain: 'casino.example',
           matchedDomain: 'promo.casino.example',
+          matchedLink: 'https://promo.casino.example/path',
         },
       }),
     );

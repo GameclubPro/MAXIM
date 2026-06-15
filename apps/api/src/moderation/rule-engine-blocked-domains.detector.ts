@@ -4,6 +4,7 @@ import { extractUrlsFromText } from '../common/url-text.util';
 export type BlockedDomainDetection = {
   blockedDomain: string;
   matchedDomain: string;
+  matchedLink: string;
 };
 
 type ResolvedBlockedDomainIndex = {
@@ -52,6 +53,7 @@ export class MessageLimitsBlockedDomainDetector {
         return {
           blockedDomain,
           matchedDomain,
+          matchedLink: link,
         };
       }
     }
