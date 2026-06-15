@@ -21,7 +21,7 @@ function resolveBridge() {
 }
 
 function hasNativeStorageRuntime(): boolean {
-  if (window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true) {
+  if (window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true && !window.__MAXIM_VISUAL_BRIDGE__) {
     return false;
   }
 

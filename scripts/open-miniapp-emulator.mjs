@@ -4,6 +4,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
+import { assertMaxBridgeShim, installMaxBridgeShimInitScript } from './miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
@@ -17,7 +18,7 @@ const deviceProfiles = previewDevicePresets;
 
 function printUsage() {
   console.log(`Usage:
-  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--target device|native]
+  npm run emulator:miniapp -- [--device iphone|android|iphone-se] [--route '/'] [--target device|native] [--max-bridge|--no-max-bridge]
   npm run emulator:miniapp -- [--base-url http://127.0.0.1:3000/app/] [--reuse-server]
 
 Environment:
@@ -25,6 +26,7 @@ Environment:
   MINIAPP_EMULATOR_ROUTE
   MINIAPP_EMULATOR_BASE_URL
   MINIAPP_EMULATOR_TARGET=device|native
+  MINIAPP_EMULATOR_MAX_BRIDGE=1
   MINIAPP_EMULATOR_REUSE_SERVER=1
   MINIAPP_EMULATOR_HEADLESS=1
   MINIAPP_EMULATOR_TIMEOUT_MS=1500
@@ -49,6 +51,16 @@ function parseArgs(argv) {
 
     if (arg === '--headless') {
       options.headless = true;
+      continue;
+    }
+
+    if (arg === '--max-bridge') {
+      options.maxBridge = true;
+      continue;
+    }
+
+    if (arg === '--no-max-bridge') {
+      options.maxBridge = false;
       continue;
     }
 
@@ -98,6 +110,20 @@ function envFlag(name) {
   return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
+function optionalEnvFlag(name) {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+  if (value === '1' || value === 'true' || value === 'yes' || value === 'on') {
+    return true;
+  }
+  if (value === '0' || value === 'false' || value === 'no' || value === 'off') {
+    return false;
+  }
+  return null;
+}
+
 function envNumber(name) {
   const rawValue = process.env[name]?.trim();
   if (!rawValue) {
@@ -106,6 +132,11 @@ function envNumber(name) {
 
   const value = Number(rawValue);
   return Number.isFinite(value) ? value : null;
+}
+
+function envString(name) {
+  const value = process.env[name]?.trim();
+  return value || '';
 }
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice) {
@@ -252,6 +283,8 @@ async function main() {
   const target = (args.target ?? process.env.MINIAPP_EMULATOR_TARGET ?? 'device')
     .trim()
     .toLowerCase();
+  const envMaxBridge = optionalEnvFlag('MINIAPP_EMULATOR_MAX_BRIDGE');
+  const maxBridgeEnabled = args.maxBridge ?? envMaxBridge ?? target === 'native';
   const reuseServer = args.reuseServer ?? envFlag('MINIAPP_EMULATOR_REUSE_SERVER');
   const headless = args.headless ?? envFlag('MINIAPP_EMULATOR_HEADLESS');
   const timeoutMs =
@@ -323,10 +356,20 @@ async function main() {
     if (target === 'native') {
       await installNativeVisualModeInitScript(context);
     }
+    if (maxBridgeEnabled) {
+      await installMaxBridgeShimInitScript(context, profile, {
+        startParam: envString('MINIAPP_EMULATOR_START_PARAM'),
+        userId: envNumber('MINIAPP_EMULATOR_USER_ID'),
+        version: envString('MINIAPP_EMULATOR_MAX_VERSION'),
+      });
+    }
 
     const page = await context.newPage();
     await page.goto(previewUrl, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
+    if (maxBridgeEnabled) {
+      await assertMaxBridgeShim(page);
+    }
     if (target === 'native') {
       await applyNativeVisualMode(page, profile);
     }

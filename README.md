@@ -55,7 +55,9 @@ The wrapper runs repo-standard commands on the VPS without storing secrets in gi
 
 The emulator starts the Vite mini-app locally, opens `/app/?preview=1` with mock data, and applies a Playwright mobile device profile so you can inspect the mini-app in a phone-sized browser immediately.
 
-The visual audit uses the production `/app/` domains, native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
+Use `--target native` for MAX-like full-screen inspection. Native emulator and native screenshots install a safe MAX Bridge shim by default: `window.MAX.WebApp`/`window.WebApp` expose preview `initData`, platform, BackButton, haptics, share/download, and native storage while recording calls in `window.__MAXIM_VISUAL_BRIDGE_EVENTS__` instead of closing or leaving the page. Pass `--no-max-bridge` to the emulator, or set `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only when you intentionally need a bridge-free browser check.
+
+The visual audit uses the production `/app/` domains, native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, the MAX Bridge shim, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
 
 ## Role-based API runtime
 

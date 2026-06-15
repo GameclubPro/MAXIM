@@ -41,13 +41,17 @@ function hasNonEmptyObject(value: unknown): boolean {
 function hasBridgeRuntimePayload(bridge: ReturnType<typeof resolveBridge>): boolean {
   return Boolean(
     hasNonEmptyString(bridge?.initData) ||
-      hasNonEmptyString(bridge?.init_data) ||
-      hasNonEmptyObject(bridge?.initDataUnsafe) ||
-      hasNonEmptyObject(bridge?.init_data_unsafe),
+    hasNonEmptyString(bridge?.init_data) ||
+    hasNonEmptyObject(bridge?.initDataUnsafe) ||
+    hasNonEmptyObject(bridge?.init_data_unsafe),
   );
 }
 
 function shouldSkipNativeSideEffects(): boolean {
+  if (typeof window !== 'undefined' && window.__MAXIM_VISUAL_BRIDGE__) {
+    return false;
+  }
+
   if (typeof window !== 'undefined' && window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true) {
     return true;
   }

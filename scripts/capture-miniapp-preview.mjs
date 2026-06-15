@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
 import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
+import { assertMaxBridgeShim, installMaxBridgeShimInitScript } from './miniapp-max-bridge-shim.mjs';
 import {
   applyNativeVisualMode,
   installNativeVisualModeInitScript,
@@ -19,6 +20,8 @@ const deviceProfiles = previewDevicePresets;
 const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
 const colorScheme = (process.env.MINIAPP_SCREENSHOT_COLOR_SCHEME ?? 'light').trim().toLowerCase();
 const strictLayout = parseEnvFlag('MINIAPP_SCREENSHOT_STRICT_LAYOUT');
+const envMaxBridgeShim = parseOptionalEnvFlag('MINIAPP_SCREENSHOT_MAX_BRIDGE');
+const maxBridgeShimEnabled = envMaxBridgeShim ?? screenshotTarget === 'native';
 const simulateKeyboard = parseEnvFlag('MINIAPP_SCREENSHOT_SIMULATE_KEYBOARD');
 const keyboardOverlapPx = Number.parseInt(
   process.env.MINIAPP_SCREENSHOT_KEYBOARD_OVERLAP_PX ?? '320',
@@ -31,6 +34,20 @@ const normalizedKeyboardOverlapPx = Number.isFinite(keyboardOverlapPx)
 function parseEnvFlag(name) {
   const value = process.env[name]?.trim().toLowerCase();
   return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function parseOptionalEnvFlag(name) {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+  if (value === '1' || value === 'true' || value === 'yes' || value === 'on') {
+    return true;
+  }
+  if (value === '0' || value === 'false' || value === 'no' || value === 'off') {
+    return false;
+  }
+  return null;
 }
 
 const scenarios = [
@@ -1295,6 +1312,12 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   if (screenshotTarget === 'native') {
     await installNativeVisualModeInitScript(context);
   }
+  if (maxBridgeShimEnabled) {
+    await installMaxBridgeShimInitScript(context, profile, {
+      startParam: process.env.MINIAPP_SCREENSHOT_START_PARAM?.trim() || '',
+      version: process.env.MINIAPP_SCREENSHOT_MAX_VERSION?.trim() || '',
+    });
+  }
 
   const page = await context.newPage();
   const shotDir = path.join(outputDir, profile.outputDirName);
@@ -1320,6 +1343,9 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
     }
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await waitForApp(page, scenario);
+    if (maxBridgeShimEnabled) {
+      await assertMaxBridgeShim(page);
+    }
     await applyNativeScreenshotMode(page, profile);
     await simulateKeyboardViewport(page);
 

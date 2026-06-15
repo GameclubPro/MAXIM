@@ -76,6 +76,14 @@ declare global {
 
   interface Window {
     __MAXIM_FORCE_NATIVE_VISUAL_MODE__?: boolean;
+    __MAXIM_VISUAL_BRIDGE__?: MaxWebAppBridge;
+    __MAXIM_VISUAL_BRIDGE_CLOSED__?: boolean;
+    __MAXIM_VISUAL_BRIDGE_EVENTS__?: Array<{
+      type: string;
+      payload?: Record<string, unknown>;
+      at: number;
+    }>;
+    __MAXIM_VISUAL_BRIDGE_PRESS_BACK__?: () => void;
     WebApp?: MaxWebAppBridge;
     MAX?: {
       WebApp?: MaxWebAppBridge;

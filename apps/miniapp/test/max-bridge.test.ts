@@ -19,6 +19,8 @@ type MockBridge = {
 };
 
 type MockWindow = {
+  __MAXIM_FORCE_NATIVE_VISUAL_MODE__?: boolean;
+  __MAXIM_VISUAL_BRIDGE__?: MockBridge;
   location: {
     href: string;
     assign: (url: string) => void;
@@ -95,6 +97,43 @@ test('readyMaxMiniApp keeps native ready when bridge init data exists', () => {
     },
     assignedUrls,
   );
+
+  readyMaxMiniApp();
+
+  assert.equal(readyCount, 1);
+});
+
+test('readyMaxMiniApp skips forced visual mode without the visual bridge shim', () => {
+  const assignedUrls: string[] = [];
+  let readyCount = 0;
+  setMockWindow(
+    {
+      initData: 'query_id=abc&hash=def',
+      ready: () => {
+        readyCount += 1;
+      },
+    },
+    assignedUrls,
+  );
+  globalThis.window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
+
+  readyMaxMiniApp();
+
+  assert.equal(readyCount, 0);
+});
+
+test('readyMaxMiniApp allows forced visual mode when the visual bridge shim is installed', () => {
+  const assignedUrls: string[] = [];
+  let readyCount = 0;
+  const bridge = {
+    initData: 'query_id=abc&hash=def',
+    ready: () => {
+      readyCount += 1;
+    },
+  };
+  setMockWindow(bridge, assignedUrls);
+  globalThis.window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ = true;
+  globalThis.window.__MAXIM_VISUAL_BRIDGE__ = bridge;
 
   readyMaxMiniApp();
 
