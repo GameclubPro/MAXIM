@@ -196,6 +196,40 @@ test('uses the first reachable API base for idempotent requests', async () => {
   );
 });
 
+test('tries the next API base when the primary returns a retryable error response', async () => {
+  const calls: FetchCall[] = [];
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url.startsWith('https://api-cdn.flex-craft.ru')) {
+      return createResponse({
+        ok: false,
+        status: 403,
+        text: JSON.stringify({ message: 'Forbidden' }),
+      });
+    }
+
+    return createResponse({
+      ok: true,
+      status: 200,
+      text: JSON.stringify([{ id: 'chat-1' }]),
+    });
+  }) as typeof fetch;
+
+  const api = createApiTransport('auth_date=1&hash=first', {
+    apiBases: ['https://api-cdn.flex-craft.ru/api/v1', 'https://major-maksimov.ru/api/v1'],
+  });
+
+  const result = await api.request('/chats');
+
+  assert.deepEqual(result, [{ id: 'chat-1' }]);
+  assert.deepEqual(
+    calls.map((call) => String(call.input)),
+    ['https://api-cdn.flex-craft.ru/api/v1/chats', 'https://major-maksimov.ru/api/v1/chats'],
+  );
+});
+
 test('gives the primary API base a head start for idempotent requests', async () => {
   const calls: FetchCall[] = [];
 

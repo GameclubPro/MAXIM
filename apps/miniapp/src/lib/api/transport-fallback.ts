@@ -1,5 +1,19 @@
 const IDEMPOTENT_FALLBACK_HEDGE_DELAY_MS = 750;
 
+type FetchAttemptResponse = {
+  response?: {
+    ok: boolean;
+    status: number;
+  };
+};
+
+type RetryableFetchAttemptResponse = {
+  response: {
+    ok: boolean;
+    status: number;
+  };
+};
+
 export async function fetchWithApiBaseFallback<T>(
   apiBases: readonly string[],
   init: RequestInit,
@@ -75,6 +89,14 @@ function fetchWithHedgedApiBaseFallback<T>(
             return;
           }
 
+          if (isRetryableFallbackResponse(value) && nextIndex < apiBases.length) {
+            pendingCount -= 1;
+            lastError = new Error(`API base returned ${value.response.status}`);
+            clearHedgeTimer();
+            startNextAttempt();
+            return;
+          }
+
           settled = true;
           clearHedgeTimer();
           resolve(value);
@@ -100,4 +122,13 @@ function fetchWithHedgedApiBaseFallback<T>(
 
     startNextAttempt();
   });
+}
+
+function isRetryableFallbackResponse<T>(value: T): value is T & RetryableFetchAttemptResponse {
+  const response = (value as FetchAttemptResponse | null | undefined)?.response;
+  if (!response || response.ok) {
+    return false;
+  }
+
+  return response.status === 403 || response.status >= 500;
 }
