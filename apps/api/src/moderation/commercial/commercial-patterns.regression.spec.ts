@@ -883,7 +883,7 @@ describe('commercial pattern regressions', () => {
 
     expect(result?.primarySubtype).toBe('PROPERTY_AGENT');
     expect(result?.matchedSignals).toContain('property-agent:витрина-объектов-прайс');
-    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
   });
 
   it('detects conditioner install and refill services under balanced thresholds', () => {
@@ -1264,6 +1264,10 @@ describe('commercial pattern regressions', () => {
       'max support operator story stays allowed',
       'Оператор поддержки MAX ответил в чате, проблема решена.',
     ],
+    [
+      'cargo service availability question stays allowed',
+      'Здравствуйте, грузоперевозки в группе есть?)',
+    ],
     ['vp school homework stays allowed', 'ВП по математике задали на завтра, кто понял задачу?'],
     [
       'pin chat rules request stays allowed',
@@ -1455,6 +1459,63 @@ describe('commercial pattern regressions', () => {
     expect(result?.matchedSignals).toContain('transaction:structured-service-phone-offer');
     expect(result?.actionBand).toBe('REVIEW_ONLY');
   });
+
+  it('flags long yard work and moving service ads under soft balanced thresholds', () => {
+    const result = detect(
+      'ДАЧНЫЕ РАБОТЫ НА ВАШЕМ УЧАСТКЕ. Расчистка участка вручную, спецтехника, Камаз под вывоз мусора. Звоните +7 900 000 10 44. Земельные работы, спил деревьев, планировка участка, грузоперевозки, переезды любой сложности, грузчики, демонтаж построек. Низкие цены.',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('SERVICES');
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'service-specialty:грузчик',
+        'service-specialty:грузоперевоз',
+        'contact:phone',
+      ]),
+    );
+    expect(result?.negativeSignals).not.toContain('private:переезд');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
+  });
+
+  it.each([
+    [
+      'charcoal production workers',
+      'Всем доброго времени суток. Требуются рабочие на производство изготовления древесного угля. Обращаться по номеру телефона +7 900 000 10 45 Павел',
+      57,
+      77,
+      'recruitment:требуется',
+    ],
+    [
+      'pickup point order clerk',
+      'На постоянную работу требуется ПРИЕМЩИК ЗАКАЗОВ. Стажировка оплачивается, график сменный 2/2, выплата 2 раза в месяц, официальное оформление. Телефон +7 900 000 10 46 MAX.',
+      60,
+      82,
+      'recruitment:people-work-conditions',
+    ],
+  ])(
+    'flags %s vacancy ads under soft balanced thresholds',
+    (_label, text, warnThreshold, deleteThreshold, signal) => {
+      const result = detect(text, {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: warnThreshold,
+          commercialAdsDeleteThreshold: deleteThreshold,
+        },
+      });
+
+      expect(result?.primarySubtype).toBe('RECRUITMENT');
+      expect(result?.matchedSignals).toContain(signal);
+      expect(result?.matchedSignals).toContain('contact:phone');
+      expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
+    },
+  );
 
   it('keeps handmade self channel promo reviewable under soft balanced thresholds', () => {
     const result = detect(

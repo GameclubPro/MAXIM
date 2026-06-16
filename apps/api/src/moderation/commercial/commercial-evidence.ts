@@ -209,7 +209,10 @@ export function resolveCommercialEvidenceProfile(params: {
   const hasStandardCommercialEvidence =
     state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
   const hasStructuredVacancyContactEvidence =
-    state.hasContact && hasSignal('risk:structured-job-vacancy');
+    state.hasContact &&
+    !state.hasSearchRequestContext &&
+    !state.hasJobSeekingContext &&
+    (hasSignal('risk:structured-job-vacancy') || state.hasRecruitmentContext);
   const hasStructuredBuyoutPhoneEvidence =
     state.hasBuyoutContext &&
     state.hasPhoneContact &&

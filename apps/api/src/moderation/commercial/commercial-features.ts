@@ -1194,6 +1194,12 @@ export function collectCommercialSignals(params: {
     if (hasGoodsRetailContext && marker === 'самовывоз') {
       continue;
     }
+    if (
+      marker === 'переезд' &&
+      (hasServiceContext || hasServiceOfferContext || hasServiceSpecialtyContext)
+    ) {
+      continue;
+    }
 
     addNegative(`private:${marker}`, weights.privateContext, true);
     hasPrivateSaleContext = true;
