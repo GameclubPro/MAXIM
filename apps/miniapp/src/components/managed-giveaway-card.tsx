@@ -362,10 +362,6 @@ function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
   };
 }
 
-function normalizePrizeKey(value: string): string {
-  return value.trim().replace(/\s+/gu, ' ').toLowerCase().replace(/ё/gu, 'е');
-}
-
 function normalizeChannelId(value: string): string {
   return value.trim().replace(/\s+/gu, '');
 }
@@ -458,11 +454,6 @@ function validatePrizesDraft(draft: GiveawayEditorDraft): GiveawayValidationResu
   const trimmedPrizes = draft.prizes.map((item) => item.trim());
   if (trimmedPrizes.some((item) => !item)) {
     return { valid: false, message: 'Заполните все призы.' };
-  }
-
-  const normalized = trimmedPrizes.map((item) => normalizePrizeKey(item));
-  if (new Set(normalized).size !== normalized.length) {
-    return { valid: false, message: 'Названия призов не должны повторяться.' };
   }
 
   return { valid: true, message: '' };

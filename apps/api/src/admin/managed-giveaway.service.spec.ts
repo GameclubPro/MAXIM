@@ -41,6 +41,7 @@ function createConfigMock(options: { token?: string; previousToken?: string } = 
 function createPrismaMock() {
   return {
     managedGiveaway: {
+      create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -333,6 +334,74 @@ describe('ManagedGiveawayService', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('accepts repeated prize titles as separate winner slots', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T09:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      { getChannelSettings: jest.fn().mockResolvedValue({}) } as never,
+      createConfigMock() as never,
+    );
+    const prizes = Array.from({ length: 10 }, (_, index) => ({
+      id: `prize-${index + 1}`,
+      giveawayId: 'giveaway-duplicate-prizes',
+      position: index + 1,
+      title: 'Прикормка',
+      createdAt: new Date('2026-03-21T09:00:00.000Z'),
+    }));
+    const created = createGiveaway({
+      id: 'giveaway-duplicate-prizes',
+      status: ManagedGiveawayStatus.DRAFT,
+      prizes,
+    });
+
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(null);
+    prisma.managedGiveaway.create.mockResolvedValueOnce(created);
+
+    await expect(
+      service.createManagedGiveaway(
+        'source-1',
+        user as never,
+        {
+          title: 'Розыгрыш прикормки',
+          description: '',
+          imageEnabled: false,
+          startsAt: null,
+          endsAt: '2026-03-22T12:00:00.000Z',
+          claimHours: 24,
+          requiredChannelIds: [],
+          prizes: Array.from({ length: 10 }, (_, index) => ({
+            position: index + 1,
+            title: 'Прикормка',
+          })),
+        },
+        'channel',
+      ),
+    ).resolves.toMatchObject({
+      id: 'giveaway-duplicate-prizes',
+      prizes: prizes.map((prize) => ({
+        position: prize.position,
+        title: 'Прикормка',
+      })),
+    });
+
+    expect(prisma.managedGiveaway.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          prizes: {
+            create: Array.from({ length: 10 }, (_, index) => ({
+              position: index + 1,
+              title: 'Прикормка',
+            })),
+          },
+        }),
+      }),
+    );
   });
 
   it('stores exact missing channel ids when enter fails required subscription checks', async () => {

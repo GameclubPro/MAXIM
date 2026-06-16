@@ -102,7 +102,6 @@ export const updateManagedGiveawayRequestSchema = z
     }
 
     const positions = new Set<number>();
-    const normalizedTitles = new Set<string>();
     for (const [index, prize] of value.prizes.entries()) {
       if (positions.has(prize.position)) {
         ctx.addIssue({
@@ -112,16 +111,6 @@ export const updateManagedGiveawayRequestSchema = z
         });
       }
       positions.add(prize.position);
-
-      const titleKey = prize.title.trim().replace(/\s+/gu, ' ').toLowerCase().replace(/ё/gu, 'е');
-      if (normalizedTitles.has(titleKey)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['prizes', index, 'title'],
-          message: 'Названия призов не должны повторяться.',
-        });
-      }
-      normalizedTitles.add(titleKey);
     }
 
     const normalizedRequiredChannels = new Set<string>();
