@@ -336,7 +336,7 @@ describe('ManagedGiveawayService', () => {
     jest.useRealTimers();
   });
 
-  it('accepts repeated prize titles as separate winner slots', async () => {
+  it('stores repeated prize titles as unique winner slots', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T09:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -351,7 +351,7 @@ describe('ManagedGiveawayService', () => {
       id: `prize-${index + 1}`,
       giveawayId: 'giveaway-duplicate-prizes',
       position: index + 1,
-      title: 'Прикормка',
+      title: `Прикормка ${index + 1}`,
       createdAt: new Date('2026-03-21T09:00:00.000Z'),
     }));
     const created = createGiveaway({
@@ -386,7 +386,7 @@ describe('ManagedGiveawayService', () => {
       id: 'giveaway-duplicate-prizes',
       prizes: prizes.map((prize) => ({
         position: prize.position,
-        title: 'Прикормка',
+        title: prize.title,
       })),
     });
 
@@ -396,7 +396,7 @@ describe('ManagedGiveawayService', () => {
           prizes: {
             create: Array.from({ length: 10 }, (_, index) => ({
               position: index + 1,
-              title: 'Прикормка',
+              title: `Прикормка ${index + 1}`,
             })),
           },
         }),
