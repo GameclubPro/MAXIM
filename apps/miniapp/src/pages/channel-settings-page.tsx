@@ -43,7 +43,6 @@ import {
 } from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
-import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -254,6 +253,11 @@ const LazyVkParsingCard = lazy(() =>
 const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
   import('../components/managed-entity-access-diagnostics').then((module) => ({
     default: module.ManagedEntityAccessDiagnosticsBanner,
+  })),
+);
+const LazyManagedGiveawayCard = lazy(() =>
+  import('../components/managed-giveaway-card').then((module) => ({
+    default: module.ManagedGiveawayCard,
   })),
 );
 
@@ -3481,7 +3485,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             >
               {expandedSections.giveaway ? (
                 <div className="settings-section__collapse-inner">
-                  <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
+                  <Suspense fallback={null}>
+                    <LazyManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
+                  </Suspense>
                 </div>
               ) : null}
             </div>

@@ -1,5 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
+import type {
+  ManagedGiveawayParticipantState,
+  ManagedGiveawayPublic,
+  ManagedGiveawayPublicWinner,
+} from '@maxim/contracts';
 import '../styles/giveaway-page.css';
 import type { CSSProperties } from 'react';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
@@ -27,6 +31,7 @@ import {
   maxSelectionChanged,
   openMaxBotLink,
 } from '../lib/max-bridge';
+import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 
 type GiveawayTone = 'success' | 'warning' | 'muted' | 'danger';
@@ -185,12 +190,49 @@ function getGiveawayImageSource(giveaway: ManagedGiveawayPublic): string | null 
   return `data:${giveaway.imageMimeType};base64,${giveaway.imageBase64}`;
 }
 
+function formatWinnerPrizeLine(participant: ManagedGiveawayParticipantState | null): string | null {
+  if (!participant?.isWinner) {
+    return null;
+  }
+
+  const parts = [
+    participant.prizePosition ? `${participant.prizePosition} место` : '',
+    participant.prizeTitle?.trim() ?? '',
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function buildPublicWinnerStatusLabel(status: ManagedGiveawayPublicWinner['status']): string {
+  if (status === 'DELIVERED') {
+    return 'Выдан';
+  }
+  if (status === 'CLAIMED') {
+    return 'Подтверждён';
+  }
+  if (status === 'EXPIRED') {
+    return 'Истёк';
+  }
+  if (status === 'REROLLED') {
+    return 'Заменён';
+  }
+  return 'Ожидает';
+}
+
 function resolveParticipantStatusPresentation(
   params: Parameters<typeof buildModalPresentation>[0],
 ): GiveawayModalPresentation {
   const presentation = buildModalPresentation(params);
 
   if (params.participant?.isWinner) {
+    return presentation;
+  }
+
+  if (
+    params.displayPhase === 'COMPLETED' ||
+    params.displayPhase === 'DRAWING' ||
+    params.displayPhase === 'CANCELED'
+  ) {
     return presentation;
   }
 
@@ -458,6 +500,9 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     [giveawayId],
   );
   const subscriptionCheckInFlightRef = useRef(false);
+  const detailsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const detailsSheetRef = useRef<HTMLElement | null>(null);
+  const detailsReturnFocusRef = useRef<HTMLElement | null>(null);
   const [awaitingSubscriptionReturn, setAwaitingSubscriptionReturn] = useState(false);
   const [subscriptionRecheckPending, setSubscriptionRecheckPending] = useState(false);
   const [subscriptionNeedsManualRetry, setSubscriptionNeedsManualRetry] = useState(false);
@@ -655,10 +700,16 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const activeCountdown = claimCountdown ?? countdown;
   const giveawayChannels = giveaway ? buildGiveawayChannels(giveaway) : [];
   const statusPresentation = resolveStatusPresentation(displayPhase);
-  const giveawayImageSource = giveaway ? getGiveawayImageSource(giveaway) : null;
+  const giveawayImageSource = useMemo(
+    () => (giveaway ? getGiveawayImageSource(giveaway) : null),
+    [giveaway?.id, giveaway?.imageBase64, giveaway?.imageEnabled, giveaway?.imageMimeType],
+  );
   const visiblePrizes = giveaway?.prizes.slice(0, 2) ?? [];
   const hiddenPrizeCount = Math.max(0, (giveaway?.prizes.length ?? 0) - visiblePrizes.length);
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
+  const winnerPrizeLine = formatWinnerPrizeLine(participant);
+  const publicWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
+  const showPublicWinners = publicWinners.length > 0;
   const showConditionChecklist = Boolean(
     giveaway &&
     !participant?.isWinner &&
@@ -774,7 +825,15 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
 
   const toggleDetails = () => {
     maxSelectionChanged();
-    setDetailsOpen((isOpen) => !isOpen);
+    setDetailsOpen((isOpen) => {
+      if (!isOpen && typeof document !== 'undefined') {
+        detailsReturnFocusRef.current =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : detailsToggleRef.current;
+      }
+      return !isOpen;
+    });
   };
 
   const closeDetails = () => {
@@ -1009,13 +1068,17 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       return undefined;
     }
 
+    window.requestAnimationFrame(() => {
+      detailsSheetRef.current?.focus({ preventScroll: true });
+    });
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') {
         return;
       }
 
       event.preventDefault();
-      setDetailsOpen(false);
+      closeDetails();
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -1024,6 +1087,30 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [detailsOpen]);
+
+  useEffect(() => {
+    if (detailsOpen || typeof window === 'undefined') {
+      return;
+    }
+
+    const target = detailsReturnFocusRef.current;
+    detailsReturnFocusRef.current = null;
+    if (!target) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      target.focus({ preventScroll: true });
+    });
+  }, [detailsOpen]);
+
+  useNativeBackHandler(
+    () => {
+      closeDetails();
+      return true;
+    },
+    { enabled: detailsOpen, priority: 700 },
+  );
 
   return (
     <div className="giveaway-page giveaway-page--modal-only">
@@ -1035,6 +1122,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           type="button"
           className="giveaway-page__overlay-backdrop"
           aria-label="Закрыть розыгрыш"
+          tabIndex={-1}
           onClick={closePage}
         />
 
@@ -1059,6 +1147,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
 
           {giveaway ? (
             <button
+              ref={detailsToggleRef}
               type="button"
               className={cn('giveaway-page__details-toggle', detailsOpen && 'is-open')}
               aria-label={detailsOpen ? 'Скрыть детали розыгрыша' : 'Показать детали розыгрыша'}
@@ -1081,7 +1170,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                   <img
                     className="giveaway-page__main-image"
                     src={giveawayImageSource}
-                    alt=""
+                    alt={`Обложка розыгрыша: ${giveaway.title}`}
                     loading="eager"
                   />
                 ) : null}
@@ -1102,15 +1191,15 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                   </div>
                 ) : null}
                 <div className="giveaway-page__main-metrics" aria-label="Параметры">
-                  <span>
+                  <span aria-label={`Участники: ${giveaway.entriesCount}`}>
                     <strong>{formatCompactCount(giveaway.entriesCount)}</strong>
                     <small>уч.</small>
                   </span>
-                  <span>
+                  <span aria-label={`Призы: ${giveaway.prizes.length}`}>
                     <strong>{formatCompactCount(giveaway.prizes.length)}</strong>
                     <small>приз.</small>
                   </span>
-                  <span>
+                  <span aria-label={`Победители: ${giveaway.winnersCount}`}>
                     <strong>{formatCompactCount(giveaway.winnersCount)}</strong>
                     <small>поб.</small>
                   </span>
@@ -1128,6 +1217,9 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               <GiveawayGlyphIcon tone={presentation.tone} glyph={presentation.glyph} />
               <div className="giveaway-page__overlay-state-copy">
                 <strong id="giveaway-overlay-title">{presentation.title}</strong>
+                {winnerPrizeLine ? (
+                  <span className="giveaway-page__overlay-state-prize">{winnerPrizeLine}</span>
+                ) : null}
                 {presentation.description ? <p>{presentation.description}</p> : null}
               </div>
             </div>
@@ -1256,14 +1348,23 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 type="button"
                 className="giveaway-page__details-backdrop"
                 aria-label="Скрыть детали розыгрыша"
+                tabIndex={-1}
                 onClick={closeDetails}
               />
               <section
+                ref={detailsSheetRef}
                 className="giveaway-page__details-sheet"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="giveaway-details-title"
+                tabIndex={-1}
               >
+                <button
+                  type="button"
+                  className="giveaway-page__details-close"
+                  aria-label="Скрыть детали"
+                  onClick={closeDetails}
+                />
                 <div className="giveaway-page__spotlight">
                   <div className="giveaway-page__spotlight-head">
                     <div className="giveaway-page__spotlight-copy">
@@ -1307,7 +1408,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                     <img
                       className="giveaway-page__spotlight-image"
                       src={giveawayImageSource}
-                      alt=""
+                      alt={`Обложка розыгрыша: ${giveaway.title}`}
                       loading="eager"
                     />
                   ) : null}
@@ -1326,6 +1427,103 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                           <strong>{hiddenPrizeCount}</strong>
                         </span>
                       ) : null}
+                    </div>
+                  ) : null}
+
+                  {giveawayChannels.length > 0 ? (
+                    <div className="giveaway-page__details-section">
+                      <div className="giveaway-page__details-section-head">
+                        <strong>Условия</strong>
+                        <span>{giveawayChannels.length}</span>
+                      </div>
+                      <div className="giveaway-page__details-list">
+                        {giveawayChannels.map((channel, index) => {
+                          const isMissing = missingChannelIds.has(channel.id);
+                          const canOpenChannel = Boolean(channel.link);
+                          const channelContent = (
+                            <>
+                              <span className="giveaway-page__details-index">{index + 1}</span>
+                              <span className="giveaway-page__details-copy">
+                                <small>{channel.eyebrow}</small>
+                                <strong>{channel.title}</strong>
+                              </span>
+                              <span
+                                className={cn(
+                                  'giveaway-page__details-pill',
+                                  isMissing && 'is-missing',
+                                )}
+                              >
+                                {isMissing ? 'Открыть' : 'Готово'}
+                              </span>
+                            </>
+                          );
+
+                          if (canOpenChannel) {
+                            return (
+                              <button
+                                key={`giveaway-details-channel-${channel.id}`}
+                                type="button"
+                                className={cn(
+                                  'giveaway-page__details-row',
+                                  isMissing && 'is-missing',
+                                )}
+                                onClick={() => {
+                                  if (isMissing) {
+                                    openMissingChannel(channel.link ?? '');
+                                    return;
+                                  }
+
+                                  maxSelectionChanged();
+                                  openMaxBotLink(channel.link ?? '');
+                                }}
+                              >
+                                {channelContent}
+                              </button>
+                            );
+                          }
+
+                          return (
+                            <div
+                              key={`giveaway-details-channel-${channel.id}`}
+                              className={cn(
+                                'giveaway-page__details-row',
+                                'is-disabled',
+                                isMissing && 'is-missing',
+                              )}
+                            >
+                              {channelContent}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {showPublicWinners ? (
+                    <div className="giveaway-page__details-section">
+                      <div className="giveaway-page__details-section-head">
+                        <strong>Победители</strong>
+                        <span>{publicWinners.length}</span>
+                      </div>
+                      <div className="giveaway-page__details-list">
+                        {publicWinners.map((winner) => (
+                          <div
+                            key={`giveaway-public-winner-${winner.prizePosition}-${winner.prizeTitle}`}
+                            className="giveaway-page__details-row giveaway-page__details-row--winner"
+                          >
+                            <span className="giveaway-page__details-index">
+                              {winner.prizePosition}
+                            </span>
+                            <span className="giveaway-page__details-copy">
+                              <small>{winner.prizeTitle}</small>
+                              <strong>{winner.displayName?.trim() || 'Победитель'}</strong>
+                            </span>
+                            <span className="giveaway-page__details-pill">
+                              {buildPublicWinnerStatusLabel(winner.status)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : null}
                 </div>

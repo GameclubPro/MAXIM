@@ -368,6 +368,13 @@
   line-height: 1.38;
 }
 
+.giveaway-page__overlay-state-prize {
+  color: rgba(213, 242, 255, 0.86);
+  font-size: 0.78rem;
+  font-weight: 780;
+  line-height: 1.25;
+}
+
 .giveaway-page__overlay-progress {
   display: grid;
   gap: 0;
@@ -1153,6 +1160,7 @@
     0 28px 82px rgba(0, 0, 0, 0.56),
     0 1px 0 rgba(255, 255, 255, 0.08) inset;
   animation: giveaway-details-sheet-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  outline: none;
 }
 
 .giveaway-page__details-sheet::-webkit-scrollbar {
@@ -1164,6 +1172,175 @@
   border-radius: 28px;
   box-shadow: none;
   animation: none;
+}
+
+.giveaway-page__details-close {
+  position: sticky;
+  top: 10px;
+  justify-self: end;
+  z-index: 3;
+  width: 40px;
+  height: 40px;
+  margin: 10px 10px -50px 0;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.052)),
+    rgba(8, 13, 19, 0.78);
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.24),
+    0 1px 0 rgba(255, 255, 255, 0.08) inset;
+}
+
+.giveaway-page__details-close::before,
+.giveaway-page__details-close::after {
+  content: '';
+  position: absolute;
+  width: 15px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(245, 249, 255, 0.9);
+}
+
+.giveaway-page__details-close::before {
+  transform: rotate(45deg);
+}
+
+.giveaway-page__details-close::after {
+  transform: rotate(-45deg);
+}
+
+.giveaway-page__details-section {
+  display: grid;
+  gap: 8px;
+}
+
+.giveaway-page__details-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.giveaway-page__details-section-head strong {
+  color: #f7fbff;
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.giveaway-page__details-section-head span {
+  min-width: 26px;
+  min-height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(219, 235, 248, 0.82);
+  font-size: 0.68rem;
+  font-weight: 840;
+}
+
+.giveaway-page__details-list {
+  display: grid;
+  gap: 7px;
+}
+
+.giveaway-page__details-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 17px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.064), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.035);
+  color: inherit;
+  text-align: left;
+}
+
+.giveaway-page__details-row.is-missing {
+  border-color: rgba(39, 186, 255, 0.26);
+  background:
+    linear-gradient(135deg, rgba(39, 186, 255, 0.12), transparent 50%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.066), rgba(255, 255, 255, 0.032)),
+    rgba(10, 17, 25, 0.9);
+}
+
+.giveaway-page__details-row.is-disabled {
+  opacity: 0.72;
+}
+
+.giveaway-page__details-row--winner {
+  border-color: rgba(52, 225, 151, 0.14);
+}
+
+.giveaway-page__details-index {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  border: 1px solid rgba(52, 225, 151, 0.17);
+  background:
+    linear-gradient(180deg, rgba(52, 225, 151, 0.14), rgba(52, 225, 151, 0.065)),
+    rgba(255, 255, 255, 0.044);
+  color: #c9ffea;
+  font-size: 0.74rem;
+  font-weight: 840;
+}
+
+.giveaway-page__details-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.giveaway-page__details-copy small {
+  min-width: 0;
+  color: rgba(157, 176, 194, 0.78);
+  font-size: 0.64rem;
+  font-weight: 820;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.giveaway-page__details-copy strong {
+  min-width: 0;
+  color: rgba(248, 251, 255, 0.95);
+  font-size: 0.82rem;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+}
+
+.giveaway-page__details-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 221, 162, 0.18);
+  background: rgba(76, 221, 162, 0.09);
+  color: #d8fff1;
+  font-size: 0.66rem;
+  font-weight: 820;
+  white-space: nowrap;
+}
+
+.giveaway-page__details-pill.is-missing {
+  border-color: rgba(39, 186, 255, 0.26);
+  background: rgba(39, 186, 255, 0.12);
+  color: #d8f5ff;
 }
 
 .giveaway-page__overlay-state-block {

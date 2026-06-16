@@ -37,7 +37,7 @@
 }
 
 .managed-giveaway__hero-button {
-  min-height: 30px;
+  min-height: 40px;
   padding: 0 11px;
   border-radius: 999px;
   border-color: rgba(77, 109, 138, 0.14);
@@ -582,14 +582,25 @@
   width: 100%;
   justify-content: center;
   min-height: 46px;
+  pointer-events: none;
 }
 
 .managed-giveaway__file-input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 20px 0 0;
+  width: 100%;
+  height: calc(100% - 20px);
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+}
+
+.managed-giveaway__file-input:disabled {
+  cursor: default;
+}
+
+.managed-giveaway__file-field:focus-within .managed-giveaway__file-picker {
+  outline: 2px solid rgba(11, 132, 255, 0.42);
+  outline-offset: 2px;
 }
 
 .managed-giveaway .field > span {
@@ -612,6 +623,17 @@
 .managed-giveaway__prize-editor-list {
   display: grid;
   gap: 8px;
+}
+
+.managed-giveaway__prize-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.managed-giveaway__prize-presets .managed-giveaway__chip-button {
+  width: 100%;
+  justify-content: center;
 }
 
 .managed-giveaway__count-stepper {
@@ -869,8 +891,8 @@
 }
 
 .managed-giveaway__info-button {
-  width: 22px;
-  height: 22px;
+  width: 40px;
+  height: 40px;
   border-color: rgba(77, 109, 138, 0.22);
   color: #5a7489;
 }
@@ -1313,6 +1335,7 @@
   z-index: 1;
   width: min(100%, 720px);
   max-width: 100%;
+  outline: none;
 }
 
 .managed-giveaway-modal__grabber {
@@ -1394,10 +1417,22 @@
   pointer-events: none;
 }
 
+.managed-giveaway-modal__option:focus-within {
+  border-color: rgba(11, 132, 255, 0.32);
+  box-shadow:
+    0 0 0 3px rgba(11, 132, 255, 0.14),
+    0 12px 22px rgba(22, 69, 109, 0.08);
+}
+
 .managed-giveaway-modal__option.is-selected {
   border-color: rgba(11, 132, 255, 0.24);
   background: rgba(232, 243, 255, 0.96);
   box-shadow: 0 12px 22px rgba(22, 69, 109, 0.08);
+}
+
+.managed-giveaway-modal__option.is-disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .managed-giveaway-modal__checkbox {
@@ -1447,6 +1482,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  word-break: keep-all;
 }
 
 .managed-giveaway-modal__actions {
@@ -2163,7 +2199,9 @@
     background-color 0.18s ease;
 }
 
-.settings-drilldown__panel--required-subscription .required-subscription__source-search input:focus {
+.settings-drilldown__panel--required-subscription
+  .required-subscription__source-search
+  input:focus {
   border-color: rgba(29, 126, 201, 0.5);
   background: #fff;
   box-shadow:
@@ -2178,7 +2216,8 @@
   white-space: nowrap;
 }
 
-.settings-drilldown__panel--required-subscription .required-subscription__source-segments.segmented-control {
+.settings-drilldown__panel--required-subscription
+  .required-subscription__source-segments.segmented-control {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
@@ -2300,7 +2339,8 @@
     opacity 0.18s ease;
 }
 
-.settings-drilldown__panel--required-subscription .required-subscription__source-card:hover:not(:disabled) {
+.settings-drilldown__panel--required-subscription
+  .required-subscription__source-card:hover:not(:disabled) {
   border-color: rgba(29, 126, 201, 0.28);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(239, 247, 253, 0.98)),
@@ -2411,7 +2451,12 @@
 .settings-drilldown__panel--required-subscription .required-subscription__source-skeleton span {
   height: 50px;
   border-radius: 16px;
-  background: linear-gradient(90deg, rgba(232, 240, 248, 0.86), rgba(247, 250, 253, 0.96), rgba(232, 240, 248, 0.86));
+  background: linear-gradient(
+    90deg,
+    rgba(232, 240, 248, 0.86),
+    rgba(247, 250, 253, 0.96),
+    rgba(232, 240, 248, 0.86)
+  );
   background-size: 220% 100%;
   animation: settings-skeleton-shimmer 1.25s ease-in-out infinite;
 }
@@ -2478,7 +2523,8 @@
     padding-right: 0;
   }
 
-  .settings-drilldown__panel--required-subscription .required-subscription__source-card:hover:not(:disabled) {
+  .settings-drilldown__panel--required-subscription
+    .required-subscription__source-card:hover:not(:disabled) {
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 250, 254, 0.96)),
       rgba(255, 255, 255, 0.94);

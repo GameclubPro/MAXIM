@@ -1,6 +1,8 @@
 import {
+  claimManagedGiveawayResponseSchema,
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
+  type ClaimManagedGiveawayResponse,
   type ManagedGiveawayParticipantState,
   type ManagedGiveawayPublic,
 } from '@maxim/contracts';
@@ -34,8 +36,12 @@ export async function enterGiveaway(
   return managedGiveawayParticipantStateSchema.parse(response);
 }
 
-export async function claimGiveaway(api: ApiTransport, giveawayId: string): Promise<void> {
-  await api.request(`/giveaways/${giveawayId}/claim`, {
+export async function claimGiveaway(
+  api: ApiTransport,
+  giveawayId: string,
+): Promise<ClaimManagedGiveawayResponse> {
+  const response = await api.request(`/giveaways/${giveawayId}/claim`, {
     method: 'POST',
   });
+  return claimManagedGiveawayResponseSchema.parse(response);
 }

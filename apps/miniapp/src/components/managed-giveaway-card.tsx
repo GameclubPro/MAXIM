@@ -9,7 +9,14 @@ import {
   type ManagedGiveawayWinner,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { getChannels } from '../lib/api/root-client';
 import {
@@ -28,7 +35,6 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
-import { openFileInputPicker } from '../lib/file-input-picker';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import {
   canShareNativeContent,
@@ -64,6 +70,7 @@ type GiveawayHintKey =
   | 'conditionsLink'
   | 'prizes';
 type GiveawayValidationResult = { valid: boolean; message: string };
+type GiveawayValidationFocusTarget = 'title' | 'endsAt' | 'channels' | 'prizes';
 
 type GiveawayEditorDraft = {
   title: string;
@@ -486,6 +493,49 @@ function validateDraft(draft: GiveawayEditorDraft): GiveawayValidationResult {
   return validateMediaDraft(draft);
 }
 
+function resolveValidationFocusTarget(issue: {
+  step: GiveawayEditorStepId;
+  message: string;
+}): GiveawayValidationFocusTarget {
+  if (issue.step === 'conditions') {
+    return 'channels';
+  }
+
+  if (issue.step === 'prizes') {
+    return 'prizes';
+  }
+
+  if (issue.message.toLowerCase().includes('название')) {
+    return 'title';
+  }
+
+  return 'endsAt';
+}
+
+function areStringListsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((item, index) => item === right[index]);
+}
+
+function isDraftEqual(left: GiveawayEditorDraft, right: GiveawayEditorDraft): boolean {
+  return (
+    left.title === right.title &&
+    left.description === right.description &&
+    left.startsAtLocal === right.startsAtLocal &&
+    left.endsAtLocal === right.endsAtLocal &&
+    left.claimHours === right.claimHours &&
+    left.imageEnabled === right.imageEnabled &&
+    left.imageBase64 === right.imageBase64 &&
+    left.imageMimeType === right.imageMimeType &&
+    left.imageFileName === right.imageFileName &&
+    areStringListsEqual(left.requiredChannelIds, right.requiredChannelIds) &&
+    areStringListsEqual(left.prizes, right.prizes)
+  );
+}
+
 function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPayload {
   const startsAtDate = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   const endsAtDate = parseDateTimeInput(draft.endsAtLocal);
@@ -622,7 +672,12 @@ export function ManagedGiveawayCard({
   const [resolvedExternalChannels, setResolvedExternalChannels] = useState<
     Record<string, { title: string; link: string | null }>
   >({});
-  const publicationImageInputRef = useRef<HTMLInputElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const endDateInputRef = useRef<HTMLInputElement | null>(null);
+  const channelLinkInputRef = useRef<HTMLInputElement | null>(null);
+  const firstPrizeInputRef = useRef<HTMLInputElement | null>(null);
+  const channelModalPanelRef = useRef<HTMLElement | null>(null);
+  const channelModalReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const listQueryKey = useMemo(
     () => queryKeys.managedGiveaways(entityType, entityId),
@@ -781,9 +836,46 @@ export function ManagedGiveawayCard({
       return undefined;
     }
 
+    window.requestAnimationFrame(() => {
+      channelModalPanelRef.current?.focus({ preventScroll: true });
+    });
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
         setChannelModalOpen(false);
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const panel = channelModalPanelRef.current;
+      if (!panel) {
+        return;
+      }
+
+      const focusableElements = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute('aria-hidden'));
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements.at(-1);
+
+      if (!firstElement || !lastElement) {
+        event.preventDefault();
+        panel.focus({ preventScroll: true });
+        return;
+      }
+
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
       }
     };
 
@@ -793,17 +885,30 @@ export function ManagedGiveawayCard({
     };
   }, [channelModalOpen]);
 
+  useEffect(() => {
+    if (channelModalOpen || typeof window === 'undefined') {
+      return;
+    }
+
+    const target = channelModalReturnFocusRef.current;
+    channelModalReturnFocusRef.current = null;
+    if (!target) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      target.focus({ preventScroll: true });
+    });
+  }, [channelModalOpen]);
+
   const toggleHint = (hintKey: GiveawayHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   };
 
-  const draftKey = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
-  const savedKey = useMemo(
-    () => (savedSnapshot ? JSON.stringify(savedSnapshot) : ''),
-    [savedSnapshot],
-  );
   const isDirty =
-    editorMode === 'edit' ? Boolean(draft && savedSnapshot && draftKey !== savedKey) : true;
+    editorMode === 'edit'
+      ? Boolean(draft && savedSnapshot && !isDraftEqual(draft, savedSnapshot))
+      : true;
   const blankValidation = useMemo<GiveawayValidationResult>(
     () => ({ valid: false, message: 'Черновик не заполнен.' }),
     [],
@@ -1174,7 +1279,12 @@ export function ManagedGiveawayCard({
     });
   };
 
-  const openOwnedChannelsModal = () => {
+  const openOwnedChannelsModal = (event?: ReactMouseEvent<HTMLElement>) => {
+    if (typeof document !== 'undefined') {
+      channelModalReturnFocusRef.current =
+        event?.currentTarget ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    }
     setChannelModalSelection(selectedOwnedChannelIds);
     setChannelModalOpen(true);
     setValidationHint('');
@@ -1209,13 +1319,17 @@ export function ManagedGiveawayCard({
   };
 
   const addRequiredChannelById = (channelId: string) => {
+    const normalizedChannelId = normalizeChannelId(channelId);
+    if (!normalizedChannelId || normalizedChannelId === entityId) {
+      return;
+    }
+    if ((draft?.requiredChannelIds.length ?? 0) >= MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS) {
+      setValidationHint(`Доп. каналов: максимум ${MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}.`);
+      return;
+    }
+
     setDraft((current) => {
       if (!current) {
-        return current;
-      }
-
-      const normalizedChannelId = normalizeChannelId(channelId);
-      if (!normalizedChannelId || normalizedChannelId === entityId) {
         return current;
       }
 
@@ -1250,6 +1364,10 @@ export function ManagedGiveawayCard({
     const normalized = normalizeChannelLink(channelLinkValue);
     if (!normalized) {
       setValidationHint('Вставьте ссылку канала.');
+      return;
+    }
+    if ((draft?.requiredChannelIds.length ?? 0) >= MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS) {
+      setValidationHint(`Доп. каналов: максимум ${MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}.`);
       return;
     }
 
@@ -1434,6 +1552,17 @@ export function ManagedGiveawayCard({
     const checked = validateDraft(draft);
     if (!checked.valid) {
       setValidationHint(checked.message);
+      const targetStep = !basicsValidation.valid
+        ? 'basics'
+        : !conditionsValidation.valid
+          ? 'conditions'
+          : 'prizes';
+      focusEditorTarget(
+        resolveValidationFocusTarget({
+          step: targetStep,
+          message: checked.message,
+        }),
+      );
       if (!silent) {
         pushToast({
           tone: 'danger',
@@ -1484,13 +1613,7 @@ export function ManagedGiveawayCard({
     }
 
     if (firstConfigIssue) {
-      setEditorStep(firstConfigIssue.step);
-      setValidationHint(firstConfigIssue.message);
-      pushToast({
-        tone: 'danger',
-        title: 'Закончите настройку',
-        description: firstConfigIssue.message,
-      });
+      showEditorIssue(firstConfigIssue, 'Закончите настройку');
       return;
     }
 
@@ -1509,6 +1632,12 @@ export function ManagedGiveawayCard({
     const checked = validateDraft(draft);
     if (!checked.valid) {
       setValidationHint(checked.message);
+      focusEditorTarget(
+        resolveValidationFocusTarget({
+          step: 'prizes',
+          message: checked.message,
+        }),
+      );
       pushToast({
         tone: 'danger',
         title: 'Проверьте поля',
@@ -1570,7 +1699,11 @@ export function ManagedGiveawayCard({
         };
       }
 
-      const extraPrizes = Array.from({ length: normalizedCount - current.prizes.length }, () => '');
+      const lastFilledPrize = [...current.prizes].reverse().find((item) => item.trim()) ?? '';
+      const extraPrizes = Array.from(
+        { length: normalizedCount - current.prizes.length },
+        () => lastFilledPrize,
+      );
       return {
         ...current,
         prizes: [...current.prizes, ...extraPrizes],
@@ -1593,12 +1726,13 @@ export function ManagedGiveawayCard({
       return;
     }
     if (!currentStepValidation.valid) {
-      setValidationHint(currentStepValidation.message);
-      pushToast({
-        tone: 'danger',
-        title: 'Проверьте шаг',
-        description: currentStepValidation.message,
-      });
+      showEditorIssue(
+        {
+          step: editorStep,
+          message: currentStepValidation.message,
+        },
+        'Проверьте шаг',
+      );
       return;
     }
 
@@ -1608,13 +1742,7 @@ export function ManagedGiveawayCard({
 
   const handleFinalPrimaryAction = () => {
     if (firstConfigIssue) {
-      setEditorStep(firstConfigIssue.step);
-      setValidationHint(firstConfigIssue.message);
-      pushToast({
-        tone: 'danger',
-        title: 'Закончите настройку',
-        description: firstConfigIssue.message,
-      });
+      showEditorIssue(firstConfigIssue, 'Закончите настройку');
       return;
     }
 
@@ -1733,6 +1861,8 @@ export function ManagedGiveawayCard({
     !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
   const canOpenOwnedChannelsModal =
     !channelsQuery.isLoading && !channelsQuery.error && ownedSelectableChannels.length > 0;
+  const requiredChannelLimitReached =
+    (draft?.requiredChannelIds.length ?? 0) >= MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS;
   const handleStepPillClick = (stepId: GiveawayEditorStepId, stepIndex: number) => {
     if (stepIndex === activeEditorStepIndex) {
       return;
@@ -1750,6 +1880,47 @@ export function ManagedGiveawayCard({
 
     setValidationHint('');
     setEditorStep(stepId);
+  };
+
+  const focusEditorTarget = (target: GiveawayValidationFocusTarget) => {
+    if (target === 'channels') {
+      setEditorStep('conditions');
+    } else if (target === 'prizes') {
+      setEditorStep('prizes');
+    } else {
+      setEditorStep('basics');
+    }
+
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.setTimeout(() => {
+      const element =
+        target === 'title'
+          ? titleInputRef.current
+          : target === 'endsAt'
+            ? endDateInputRef.current
+            : target === 'channels'
+              ? channelLinkInputRef.current
+              : firstPrizeInputRef.current;
+
+      element?.focus({ preventScroll: true });
+      element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 80);
+  };
+
+  const showEditorIssue = (
+    issue: { step: GiveawayEditorStepId; message: string },
+    toastTitle: string,
+  ) => {
+    setValidationHint(issue.message);
+    focusEditorTarget(resolveValidationFocusTarget(issue));
+    pushToast({
+      tone: 'danger',
+      title: toastTitle,
+      description: issue.message,
+    });
   };
 
   const renderDashboardSurface = () => {
@@ -2202,6 +2373,7 @@ export function ManagedGiveawayCard({
               <label className="field">
                 <span>Название</span>
                 <input
+                  ref={titleInputRef}
                   type="text"
                   value={draft.title}
                   onChange={(event) =>
@@ -2211,6 +2383,8 @@ export function ManagedGiveawayCard({
                     }))
                   }
                   maxLength={MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
+                  aria-invalid={!basicsValidation.valid && !draft.title.trim()}
+                  aria-describedby={validationHint ? 'managed-giveaway-editor-alert' : undefined}
                   placeholder="Например: Розыгрыш на выходные"
                   disabled={isBusy}
                 />
@@ -2258,7 +2432,7 @@ export function ManagedGiveawayCard({
 
                 <div
                   className="managed-giveaway__choice-grid"
-                  role="tablist"
+                  role="group"
                   aria-label="Режим старта"
                 >
                   <button
@@ -2351,9 +2525,14 @@ export function ManagedGiveawayCard({
                   <label className="field">
                     <span>Дата финиша</span>
                     <input
+                      ref={endDateInputRef}
                       type="date"
                       value={readDateInputPart(draft.endsAtLocal)}
                       onChange={(event) => updateEndDate(event.target.value)}
+                      aria-invalid={!basicsValidation.valid}
+                      aria-describedby={
+                        validationHint ? 'managed-giveaway-editor-alert' : undefined
+                      }
                       disabled={isBusy}
                     />
                   </label>
@@ -2381,7 +2560,8 @@ export function ManagedGiveawayCard({
                 </div>
                 <div className="managed-giveaway__section-actions">
                   <span className="managed-giveaway__badge is-muted">
-                    {draft.requiredChannelIds.length}/{MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
+                    Доп. каналы {draft.requiredChannelIds.length}/
+                    {MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
                   </span>
                   <GiveawayHintAnchor
                     hintKey="conditions"
@@ -2491,6 +2671,7 @@ export function ManagedGiveawayCard({
                   <label className="field">
                     <span>Публичная ссылка</span>
                     <input
+                      ref={channelLinkInputRef}
                       type="text"
                       value={channelLinkValue}
                       onChange={(event) => {
@@ -2498,15 +2679,31 @@ export function ManagedGiveawayCard({
                         setValidationHint('');
                         setEditorError('');
                       }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') {
+                          return;
+                        }
+
+                        event.preventDefault();
+                        void addRequiredChannelByLink();
+                      }}
+                      inputMode="url"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      enterKeyHint="done"
                       placeholder="https://max.ru/..."
-                      disabled={isBusy}
+                      aria-invalid={!conditionsValidation.valid}
+                      aria-describedby={
+                        validationHint ? 'managed-giveaway-editor-alert' : undefined
+                      }
+                      disabled={isBusy || requiredChannelLimitReached}
                     />
                   </label>
                   <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
                     <button
                       type="button"
                       className="button button--ghost managed-giveaway__channel-action"
-                      disabled={isBusy}
+                      disabled={isBusy || requiredChannelLimitReached}
                       onClick={() => {
                         void addRequiredChannelByLink();
                       }}
@@ -2572,16 +2769,39 @@ export function ManagedGiveawayCard({
                 </button>
               </div>
 
+              <div className="managed-giveaway__prize-presets" aria-label="Быстрое количество мест">
+                {[3, 5, 10].map((count) => (
+                  <button
+                    key={`giveaway-prize-count-${count}`}
+                    type="button"
+                    className={cn(
+                      'managed-giveaway__chip-button',
+                      draft.prizes.length === count && 'is-active',
+                    )}
+                    onClick={() => setPrizeCount(count)}
+                    disabled={isBusy}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+
               <div className="managed-giveaway__prize-editor-list">
                 {draft.prizes.map((prizeTitle, index) => (
                   <div key={`draft-prize-${index}`} className="managed-giveaway__prize-editor-row">
                     <span className="managed-giveaway__prize-position">{index + 1}</span>
                     <label className="field">
                       <input
+                        ref={index === 0 ? firstPrizeInputRef : undefined}
                         type="text"
                         value={prizeTitle}
                         placeholder="Приз"
                         maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
+                        aria-label={`Приз за ${index + 1} место`}
+                        aria-invalid={!prizesValidation.valid}
+                        aria-describedby={
+                          validationHint ? 'managed-giveaway-editor-alert' : undefined
+                        }
                         onChange={(event) =>
                           updateDraft((current) => {
                             const nextPrizes = [...current.prizes];
@@ -2652,19 +2872,21 @@ export function ManagedGiveawayCard({
                     <button
                       type="button"
                       className="button button--ghost managed-giveaway__file-picker"
-                      onClick={() => openFileInputPicker(publicationImageInputRef.current)}
                       disabled={isBusy}
+                      tabIndex={-1}
+                      aria-hidden="true"
                     >
                       {draft.imageEnabled ? 'Заменить фото' : 'Добавить фото'}
                     </button>
                     <input
-                      ref={publicationImageInputRef}
                       className="managed-giveaway__file-input"
                       type="file"
                       accept="image/*"
                       onChange={handlePublicationImageChange}
                       disabled={isBusy}
-                      tabIndex={-1}
+                      aria-label={
+                        draft.imageEnabled ? 'Заменить фото публикации' : 'Добавить фото публикации'
+                      }
                     />
                   </div>
                   {draft.imageEnabled ? (
@@ -2693,9 +2915,20 @@ export function ManagedGiveawayCard({
         ) : null}
 
         {validationHint ? (
-          <div className="managed-giveaway__error-inline">{validationHint}</div>
+          <div
+            id="managed-giveaway-editor-alert"
+            className="managed-giveaway__error-inline"
+            role="alert"
+            aria-live="assertive"
+          >
+            {validationHint}
+          </div>
         ) : null}
-        {editorError ? <div className="managed-giveaway__error-inline">{editorError}</div> : null}
+        {editorError ? (
+          <div className="managed-giveaway__error-inline" role="alert" aria-live="assertive">
+            {editorError}
+          </div>
+        ) : null}
 
         <div
           className={cn(
@@ -2754,20 +2987,30 @@ export function ManagedGiveawayCard({
       return null;
     }
 
+    const ownedSelectionLimitRemaining = Math.max(
+      0,
+      MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS -
+        (draft.requiredChannelIds.length - selectedOwnedChannelIds.length),
+    );
+    const modalSelectionLimitReached = channelModalSelection.length >= ownedSelectionLimitRemaining;
+
     return createPortal(
       <div className="managed-giveaway-modal" aria-hidden={!channelModalOpen}>
         <button
           type="button"
           className="managed-giveaway-modal__backdrop"
           aria-label="Закрыть выбор каналов"
+          tabIndex={-1}
           onClick={() => setChannelModalOpen(false)}
         />
 
         <section
+          ref={channelModalPanelRef}
           className="managed-giveaway-modal__panel"
           role="dialog"
           aria-modal="true"
           aria-labelledby="managed-giveaway-modal-title"
+          tabIndex={-1}
         >
           <div className="managed-giveaway-modal__grabber" aria-hidden />
 
@@ -2778,7 +3021,7 @@ export function ManagedGiveawayCard({
                 <small>Отметьте каналы, которые станут дополнительным условием участия.</small>
               </div>
               <span className="managed-giveaway__badge is-muted">
-                {channelModalSelection.length}/{ownedSelectableChannels.length}
+                {channelModalSelection.length}/{ownedSelectionLimitRemaining}
               </span>
             </div>
 
@@ -2809,11 +3052,16 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway-modal__list" aria-label="Список своих каналов">
                 {ownedSelectableChannels.map((channel) => {
                   const checked = channelModalSelection.includes(channel.id);
+                  const optionDisabled = isBusy || (!checked && modalSelectionLimitReached);
 
                   return (
                     <label
                       key={`owned-channel-option-${channel.id}`}
-                      className={cn('managed-giveaway-modal__option', checked && 'is-selected')}
+                      className={cn(
+                        'managed-giveaway-modal__option',
+                        checked && 'is-selected',
+                        optionDisabled && 'is-disabled',
+                      )}
                     >
                       <input
                         type="checkbox"
@@ -2822,10 +3070,12 @@ export function ManagedGiveawayCard({
                           setChannelModalSelection((current) =>
                             current.includes(channel.id)
                               ? current.filter((item) => item !== channel.id)
-                              : [...current, channel.id],
+                              : current.length < ownedSelectionLimitRemaining
+                                ? [...current, channel.id]
+                                : current,
                           );
                         }}
-                        disabled={isBusy}
+                        disabled={optionDisabled}
                       />
                       <span className="managed-giveaway-modal__checkbox" aria-hidden>
                         {checked ? '✓' : ''}
