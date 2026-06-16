@@ -1233,6 +1233,10 @@ describe('commercial pattern regressions', () => {
       'Посоветуйте чат для мам, ссылка в профиле у соседки не открывается.',
     ],
     [
+      'third party obfuscated domain due diligence stays allowed',
+      'Кто пользовался сервисом example dot ru, стоит ли платить 3000 руб?',
+    ],
+    [
       'resale pricing discussion from twenty four hour audit false positive',
       'Если оптовик покупает по 700 р, то можно смело продавать по 1500.',
     ],
@@ -1494,6 +1498,28 @@ describe('commercial pattern regressions', () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it('detects mixed-script sale ads with obfuscated MAX links', () => {
+    const result = detect('Пpодaм айфон, скидкa, писать hxxps://max dot ru/join/sale');
+
+    expect(result?.primarySubtype).toBe('GOODS');
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining(['intent:продам', 'promo:скидк', 'deal-channel:link']),
+    );
+    expect(result?.actionBand).toBe('REVIEW_ONLY');
+  });
+
+  it('escalates obfuscated payday-loan leadgen links', () => {
+    const result = detect(
+      'Дeньги дo зapплaты oнлaйн, oдoбpим бeз oткaзa, hxxp://credit dot ru',
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS');
+    expect(result?.matchedSignals).toEqual(
+      expect.arrayContaining(['risk:loan-leadgen', 'deal-channel:link']),
+    );
+    expect(result?.actionBand).toBe('DELETE_AND_ESCALATE');
   });
 
   it('keeps ambiguous unit-price phone shorthand as a deliberate non-fix', () => {

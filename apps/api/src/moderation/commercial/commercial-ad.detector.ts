@@ -13,7 +13,7 @@ import {
 } from './commercial-features';
 import { resolveCommercialEvidenceProfile } from './commercial-evidence';
 import { CommercialSecondStageScorer } from './commercial-scorer';
-import { normalizeCommercialText } from './commercial-normalization';
+import { normalizeCommercialRawText, normalizeCommercialText } from './commercial-normalization';
 import { classifyCommercialDetection } from './commercial-subtypes';
 import type { CommercialLegacyEvidenceStrength } from './commercial.types';
 
@@ -112,7 +112,8 @@ export class CommercialAdDetector {
     settings: ChatSettings;
     commercialCampaignContext?: CommercialCampaignContext | null;
   }): CommercialDetection | null {
-    const { rawLoweredText, settings, commercialCampaignContext } = params;
+    const { settings, commercialCampaignContext } = params;
+    const rawLoweredText = normalizeCommercialRawText(params.rawLoweredText);
     const normalizedText = normalizeCommercialText(params.normalizedText);
 
     if (!normalizedText || normalizedText.length < 6) {

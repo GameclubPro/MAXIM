@@ -2,6 +2,7 @@ import { stripUrlsFromText } from '../../common/url-text.util';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import {
   normalizeCommercialConfusables,
+  normalizeCommercialRawText,
   normalizeCommercialText,
 } from './commercial-normalization';
 import { ADS_SPECIAL_TOKEN_MATCHERS } from './commercial-patterns';
@@ -56,7 +57,8 @@ export function buildCommercialMarkerContext(
   normalizedText: string,
   rawLoweredText: string,
 ): CommercialMarkerContext {
-  const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
+  const commercialRawLoweredText = normalizeCommercialRawText(rawLoweredText);
+  const rawLoweredTextWithoutUrls = stripUrlsFromText(commercialRawLoweredText);
   const rawLoweredTextWithoutUrlsNormalized =
     normalizeCommercialConfusables(rawLoweredTextWithoutUrls);
   const normalizedTextWithoutUrls =

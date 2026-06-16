@@ -1,4 +1,5 @@
 import {
+  normalizeCommercialRawText,
   normalizeCommercialConfusables,
   normalizeCommercialText,
 } from './commercial-normalization';
@@ -18,5 +19,16 @@ describe('normalizeCommercialText', () => {
     expect(normalizeCommercialConfusables('Дeньги дo зapплaты oнлaйн')).toBe(
       'деньги до зарплаты онлайн',
     );
+  });
+
+  it('restores obfuscated commercial links before rule matching', () => {
+    expect(normalizeCommercialRawText('hxxps://max dot ru/join/sale')).toBe(
+      'https://max.ru/join/sale',
+    );
+    expect(normalizeCommercialRawText('hxxp://credit точка ru')).toBe('http://credit.ru');
+  });
+
+  it('strips zero-width separators from obfuscated commercial words', () => {
+    expect(normalizeCommercialRawText('п\u200bр\u200bо\u200bд\u200bа\u200bм')).toBe('продам');
   });
 });
