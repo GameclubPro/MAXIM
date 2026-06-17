@@ -35,9 +35,16 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 6393,
+    maxLines: 6284,
     targetLines: 6000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/components/max-markdown-editor.css',
+    maxLines: 114,
+    targetLines: 90,
+    reason:
+      'MaxMarkdownEditor styles should stay component-owned and avoid leaking back into lazy route CSS.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-drilldown-core.css',

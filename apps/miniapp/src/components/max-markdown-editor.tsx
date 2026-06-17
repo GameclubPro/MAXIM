@@ -2,6 +2,7 @@ import { Link as IconoirLink } from 'iconoir-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 import { useNativeBackHandler } from '../lib/native-back';
+import './max-markdown-editor.css';
 
 export type MaxMarkdownTool =
   | 'heading'
