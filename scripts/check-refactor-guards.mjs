@@ -173,6 +173,13 @@ const guardedFiles = [
       'RequiredSubscriptionSourcePicker styles should stay component-owned instead of returning to managed-giveaway route CSS.',
   },
   {
+    path: 'apps/miniapp/src/components/broadcast-studio-header.css',
+    maxLines: 165,
+    targetLines: 130,
+    reason:
+      'BroadcastStudioChecklist styles should stay component-owned instead of returning to broadcast route CSS.',
+  },
+  {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
     maxLines: 203,
     targetLines: 180,

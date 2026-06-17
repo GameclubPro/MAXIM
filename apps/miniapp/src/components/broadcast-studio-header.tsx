@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { cn } from '../lib/cn';
+import './broadcast-studio-header.css';
 
 export type BroadcastStudioSignalTone = 'ready' | 'pending' | 'warning' | 'danger' | 'neutral';
 export type BroadcastStudioSignalIcon = 'content' | 'audience' | 'channel' | 'time' | 'button';
