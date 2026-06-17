@@ -1,6 +1,7 @@
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
 import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
 import { GlassCard } from './ui/glass-card';
+import './chat-onboarding-section.css';
 
 export function ChatOnboardingSection({
   isFetching,

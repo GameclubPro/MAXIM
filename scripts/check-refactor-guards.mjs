@@ -82,6 +82,13 @@ const guardedFiles = [
       'BroadcastSchedulePlanner base styles should stay component-owned instead of returning to lazy route CSS.',
   },
   {
+    path: 'apps/miniapp/src/components/chat-onboarding-section.css',
+    maxLines: 96,
+    targetLines: 72,
+    reason:
+      'Chat onboarding empty-state styles should stay with the lazy-loaded onboarding component.',
+  },
+  {
     path: 'apps/miniapp/src/components/max-markdown-editor.css',
     maxLines: 114,
     targetLines: 90,
@@ -118,8 +125,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1580,
-    targetLines: 1400,
+    maxLines: 1520,
+    targetLines: 1350,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
   },
