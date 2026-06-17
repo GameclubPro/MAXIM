@@ -927,15 +927,14 @@
 
 .settings-drilldown .settings-info-button,
 .settings-drilldown .settings-edit-button {
-  width: 30px;
-  height: 30px;
-  min-height: 30px;
-  border-radius: 14px;
-  border-color: rgba(188, 205, 220, 0.92);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.92)),
-    rgba(255, 255, 255, 0.92);
-  box-shadow: 0 10px 18px rgba(27, 55, 83, 0.05);
+  width: var(--settings-info-button-width, 30px);
+  height: var(--settings-info-button-height, 30px);
+  min-height: var(--settings-info-button-height, 30px);
+  border-radius: var(--settings-info-button-border-radius, 14px);
+  border-color: var(--settings-info-button-border-color, rgba(188, 205, 220, 0.92));
+  background: var(--settings-info-button-background, linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.92)), rgba(255, 255, 255, 0.92));
+  box-shadow: var(--settings-info-button-shadow, 0 10px 18px rgba(27, 55, 83, 0.05));
+  color: var(--settings-info-button-color, inherit);
 }
 
 .settings-drilldown .settings-info-button.is-open,

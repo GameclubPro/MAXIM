@@ -134,6 +134,11 @@
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
+.design-preview__device-screen .settings-drilldown {
+  --app-viewport-height: 100%;
+  position: absolute;
+}
+
 .design-preview .compact-page-header {
   width: 100%;
   max-width: 100%;

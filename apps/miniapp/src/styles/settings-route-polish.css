@@ -2089,11 +2089,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   }
 }
 
-.design-preview__device-screen .settings-drilldown {
-  --app-viewport-height: 100%;
-  position: absolute;
-}
-
 body.channel-settings-page-open {
   background:
     linear-gradient(180deg, rgba(250, 253, 255, 0.99) 0%, rgba(238, 246, 250, 0.98) 56%),
