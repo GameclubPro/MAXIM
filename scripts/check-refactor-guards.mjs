@@ -166,6 +166,13 @@ const guardedFiles = [
       'DashboardHero styles should stay component-owned instead of returning to dashboard-events.css.',
   },
   {
+    path: 'apps/miniapp/src/components/required-subscription-source-picker.css',
+    maxLines: 370,
+    targetLines: 300,
+    reason:
+      'RequiredSubscriptionSourcePicker styles should stay component-owned instead of returning to managed-giveaway route CSS.',
+  },
+  {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
     maxLines: 203,
     targetLines: 180,

@@ -14,6 +14,7 @@ import { cn } from '../lib/cn';
 import { resolveVirtualListRange } from '../lib/virtual-list';
 import { EntityAvatar } from './ui/entity-avatar';
 import { SegmentedControl, type SegmentedOption } from './ui/segmented-control';
+import './required-subscription-source-picker.css';
 
 type RequiredSubscriptionSourceFilter = 'all' | 'channel' | 'chat';
 
