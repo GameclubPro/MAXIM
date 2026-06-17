@@ -45,6 +45,7 @@ const managedGiveawayPrizeTitleSchema = z
 export const managedGiveawayPrizeDraftSchema = z.object({
   position: z.number().int().min(1).max(MANAGED_GIVEAWAY_MAX_PRIZES),
   title: managedGiveawayPrizeTitleSchema,
+  displayTitle: managedGiveawayPrizeTitleSchema.optional(),
 });
 export type ManagedGiveawayPrizeDraft = z.infer<typeof managedGiveawayPrizeDraftSchema>;
 
@@ -132,6 +133,7 @@ export const managedGiveawayPrizeSchema = z.object({
   id: z.string(),
   position: z.number().int().min(1),
   title: managedGiveawayPrizeTitleSchema,
+  displayTitle: managedGiveawayPrizeTitleSchema,
 });
 export type ManagedGiveawayPrize = z.infer<typeof managedGiveawayPrizeSchema>;
 
@@ -140,6 +142,7 @@ export const managedGiveawayWinnerSchema = z.object({
   prizeId: z.string(),
   prizePosition: z.number().int().min(1),
   prizeTitle: managedGiveawayPrizeTitleSchema,
+  prizeDisplayTitle: managedGiveawayPrizeTitleSchema,
   entryId: z.string(),
   userId: z.string(),
   displayName: z.string().nullable(),
@@ -200,6 +203,7 @@ export type ManagedGiveawayPublicChannel = z.infer<typeof managedGiveawayPublicC
 export const managedGiveawayPublicWinnerSchema = z.object({
   prizePosition: z.number().int().min(1),
   prizeTitle: managedGiveawayPrizeTitleSchema,
+  prizeDisplayTitle: managedGiveawayPrizeTitleSchema,
   displayName: z.string().nullable(),
   status: managedGiveawayWinnerStatusSchema,
 });
@@ -247,6 +251,7 @@ export const managedGiveawayParticipantStateSchema = z.object({
   claimDeadlineAt: z.string().datetime().nullable(),
   prizePosition: z.number().int().min(1).nullable(),
   prizeTitle: z.string().nullable(),
+  prizeDisplayTitle: z.string().nullable(),
   canClaim: z.boolean(),
   claimBotUrl: z.string().nullable(),
 });

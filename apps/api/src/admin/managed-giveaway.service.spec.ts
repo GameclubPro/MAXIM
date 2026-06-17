@@ -352,6 +352,7 @@ describe('ManagedGiveawayService', () => {
       giveawayId: 'giveaway-duplicate-prizes',
       position: index + 1,
       title: `Прикормка ${index + 1}`,
+      displayTitle: 'Прикормка',
       createdAt: new Date('2026-03-21T09:00:00.000Z'),
     }));
     const created = createGiveaway({
@@ -387,6 +388,7 @@ describe('ManagedGiveawayService', () => {
       prizes: prizes.map((prize) => ({
         position: prize.position,
         title: prize.title,
+        displayTitle: 'Прикормка',
       })),
     });
 
@@ -397,6 +399,7 @@ describe('ManagedGiveawayService', () => {
             create: Array.from({ length: 10 }, (_, index) => ({
               position: index + 1,
               title: `Прикормка ${index + 1}`,
+              displayTitle: 'Прикормка',
             })),
           },
         }),

@@ -61,6 +61,22 @@ type GiveawayStatusPresentation = {
   tone: GiveawayTone;
 };
 
+type GiveawayPrizeItem = ManagedGiveawayPublic['prizes'][number];
+
+type GiveawayPrizeDisplayGroup = {
+  id: string;
+  title: string;
+  count: number;
+  positions: number[];
+};
+
+type GiveawayPrizeDisplay = {
+  groups: GiveawayPrizeDisplayGroup[];
+  displayTitleByPosition: Map<number, string>;
+  hasGroupedRepeats: boolean;
+  totalCount: number;
+};
+
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Не удалось выполнить действие.';
@@ -182,6 +198,68 @@ function formatCompactCount(value: number): string {
   return String(value);
 }
 
+function normalizePrizeTitle(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ');
+}
+
+function buildPrizeDisplay(prizes: GiveawayPrizeItem[]): GiveawayPrizeDisplay {
+  const sortedPrizes = [...prizes].sort((left, right) => left.position - right.position);
+  const displayTitleByPosition = new Map<number, string>();
+
+  for (const prize of sortedPrizes) {
+    const displayTitle = normalizePrizeTitle(prize.displayTitle || prize.title);
+    displayTitleByPosition.set(prize.position, displayTitle);
+  }
+
+  const normalizedTitles = sortedPrizes.map(
+    (prize) => displayTitleByPosition.get(prize.position) ?? normalizePrizeTitle(prize.title),
+  );
+  const repeatedTitle = normalizedTitles[0] ?? '';
+  const shouldCollapseToOnePrize =
+    sortedPrizes.length > 1 &&
+    repeatedTitle.length > 0 &&
+    normalizedTitles.every((title) => title === repeatedTitle);
+  const groups = shouldCollapseToOnePrize
+    ? [
+        {
+          id: 'prize-group-same',
+          title: repeatedTitle,
+          count: sortedPrizes.length,
+          positions: sortedPrizes.map((prize) => prize.position),
+        },
+      ]
+    : sortedPrizes.map((prize) => ({
+        id: `prize-position-${prize.position}`,
+        title: displayTitleByPosition.get(prize.position) ?? normalizePrizeTitle(prize.title),
+        count: 1,
+        positions: [prize.position],
+      }));
+
+  return {
+    groups,
+    displayTitleByPosition,
+    hasGroupedRepeats: shouldCollapseToOnePrize,
+    totalCount: sortedPrizes.length,
+  };
+}
+
+function formatPrizePositionsLabel(positions: number[]): string {
+  if (positions.length === 0) {
+    return '';
+  }
+
+  const sortedPositions = [...positions].sort((left, right) => left - right);
+  const first = sortedPositions[0] ?? 0;
+  const last = sortedPositions[sortedPositions.length - 1] ?? first;
+  const isContiguous = sortedPositions.every((position, index) => position === first + index);
+
+  if (sortedPositions.length > 2 && isContiguous) {
+    return `${first}-${last}`;
+  }
+
+  return sortedPositions.join(', ');
+}
+
 function getGiveawayImageSource(giveaway: ManagedGiveawayPublic): string | null {
   if (!giveaway.imageEnabled || !giveaway.imageBase64 || !giveaway.imageMimeType) {
     return null;
@@ -190,17 +268,77 @@ function getGiveawayImageSource(giveaway: ManagedGiveawayPublic): string | null 
   return `data:${giveaway.imageMimeType};base64,${giveaway.imageBase64}`;
 }
 
-function formatWinnerPrizeLine(participant: ManagedGiveawayParticipantState | null): string | null {
+function formatWinnerPrizeLine(
+  participant: ManagedGiveawayParticipantState | null,
+  prizeDisplay: GiveawayPrizeDisplay | null,
+): string | null {
   if (!participant?.isWinner) {
     return null;
   }
 
+  const displayPrizeTitle =
+    participant.prizeDisplayTitle?.trim() ||
+    (participant.prizePosition && prizeDisplay
+      ? prizeDisplay.displayTitleByPosition.get(participant.prizePosition)
+      : null);
   const parts = [
     participant.prizePosition ? `${participant.prizePosition} место` : '',
-    participant.prizeTitle?.trim() ?? '',
+    displayPrizeTitle ?? participant.prizeTitle?.trim() ?? '',
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function GiveawayPrizeShowcase({
+  prizeDisplay,
+  variant = 'main',
+}: {
+  prizeDisplay: GiveawayPrizeDisplay;
+  variant?: 'main' | 'details';
+}) {
+  if (prizeDisplay.totalCount === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        'giveaway-page__prize-showcase',
+        prizeDisplay.hasGroupedRepeats ? 'is-grouped' : 'is-list',
+        variant === 'details' && 'is-details',
+      )}
+      aria-label={`Призы: ${prizeDisplay.totalCount}`}
+    >
+      <div className="giveaway-page__prize-showcase-head">
+        <span>Призы</span>
+        <strong>{prizeDisplay.totalCount} мест</strong>
+      </div>
+      <div className="giveaway-page__prize-showcase-grid">
+        {prizeDisplay.groups.map((group) => (
+          <div
+            key={group.id}
+            className={cn(
+              'giveaway-page__prize-showcase-item',
+              group.count > 1 && 'is-repeat',
+            )}
+          >
+            <span className="giveaway-page__prize-showcase-badge">
+              {group.count > 1 ? group.count : group.positions[0]}
+            </span>
+            <strong>
+              <span>{group.title}</span>
+              {group.count > 1 ? <em>×{group.count}</em> : null}
+            </strong>
+            {group.count > 1 && variant === 'details' ? (
+              <span className="giveaway-page__prize-showcase-range">
+                {formatPrizePositionsLabel(group.positions)}
+              </span>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function buildPublicWinnerStatusLabel(status: ManagedGiveawayPublicWinner['status']): string {
@@ -704,10 +842,12 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     () => (giveaway ? getGiveawayImageSource(giveaway) : null),
     [giveaway?.id, giveaway?.imageBase64, giveaway?.imageEnabled, giveaway?.imageMimeType],
   );
-  const visiblePrizes = giveaway?.prizes.slice(0, 2) ?? [];
-  const hiddenPrizeCount = Math.max(0, (giveaway?.prizes.length ?? 0) - visiblePrizes.length);
+  const prizeDisplay = useMemo(
+    () => (giveaway ? buildPrizeDisplay(giveaway.prizes) : null),
+    [giveaway?.prizes],
+  );
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
-  const winnerPrizeLine = formatWinnerPrizeLine(participant);
+  const winnerPrizeLine = formatWinnerPrizeLine(participant, prizeDisplay);
   const publicWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
   const showPublicWinners = publicWinners.length > 0;
   const showConditionChecklist = Boolean(
@@ -1174,22 +1314,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                     loading="eager"
                   />
                 ) : null}
-                {visiblePrizes.length > 0 ? (
-                  <div className="giveaway-page__main-prizes" aria-label="Призы">
-                    {visiblePrizes.map((prize) => (
-                      <span key={`giveaway-main-prize-${prize.id}`}>
-                        <small>{prize.position}</small>
-                        <strong>{prize.title}</strong>
-                      </span>
-                    ))}
-                    {hiddenPrizeCount > 0 ? (
-                      <span className="giveaway-page__main-prizes-more">
-                        <small>+</small>
-                        <strong>{hiddenPrizeCount}</strong>
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
+                {prizeDisplay ? <GiveawayPrizeShowcase prizeDisplay={prizeDisplay} /> : null}
                 <div className="giveaway-page__main-metrics" aria-label="Параметры">
                   <span aria-label={`Участники: ${giveaway.entriesCount}`}>
                     <strong>{formatCompactCount(giveaway.entriesCount)}</strong>
@@ -1413,21 +1538,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                     />
                   ) : null}
 
-                  {visiblePrizes.length > 0 ? (
-                    <div className="giveaway-page__spotlight-prizes" aria-label="Призы">
-                      {visiblePrizes.map((prize) => (
-                        <span key={prize.id} className="giveaway-page__spotlight-prize">
-                          <small>{prize.position}</small>
-                          <strong>{prize.title}</strong>
-                        </span>
-                      ))}
-                      {hiddenPrizeCount > 0 ? (
-                        <span className="giveaway-page__spotlight-prize giveaway-page__spotlight-prize--more">
-                          <small>+</small>
-                          <strong>{hiddenPrizeCount}</strong>
-                        </span>
-                      ) : null}
-                    </div>
+                  {prizeDisplay ? (
+                    <GiveawayPrizeShowcase prizeDisplay={prizeDisplay} variant="details" />
                   ) : null}
 
                   {giveawayChannels.length > 0 ? (
@@ -1515,7 +1627,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                               {winner.prizePosition}
                             </span>
                             <span className="giveaway-page__details-copy">
-                              <small>{winner.prizeTitle}</small>
+                              <small>
+                                {winner.prizeDisplayTitle ||
+                                  prizeDisplay?.displayTitleByPosition.get(winner.prizePosition) ||
+                                  winner.prizeTitle}
+                              </small>
                               <strong>{winner.displayName?.trim() || 'Победитель'}</strong>
                             </span>
                             <span className="giveaway-page__details-pill">

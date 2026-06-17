@@ -36,12 +36,13 @@ function uniquifyManagedGiveawayPrizeTitles(
 
   return prizes.map((prize) => {
     const title = prize.title.trim();
+    const displayTitle = prize.displayTitle?.trim() || title;
     const titleKey = normalizePrizeTitleKey(title);
     const duplicateCount = titleCounts.get(titleKey) ?? 0;
 
     if (duplicateCount <= 1 && !usedTitleKeys.has(titleKey)) {
       usedTitleKeys.add(titleKey);
-      return { ...prize, title };
+      return { ...prize, title, displayTitle };
     }
 
     let suffixNumber = (duplicateOrdinals.get(titleKey) ?? 0) + 1;
@@ -56,7 +57,7 @@ function uniquifyManagedGiveawayPrizeTitles(
     }
 
     usedTitleKeys.add(nextTitleKey);
-    return { ...prize, title: nextTitle };
+    return { ...prize, title: nextTitle, displayTitle };
   });
 }
 
@@ -80,6 +81,7 @@ export function normalizeManagedGiveawayDraft(
         .map((prize) => ({
           position: Math.max(1, Math.trunc(prize.position)),
           title: prize.title.trim(),
+          displayTitle: prize.displayTitle?.trim() || prize.title.trim(),
         }))
         .sort((left, right) => left.position - right.position),
     ),
@@ -94,10 +96,11 @@ export function formatManagedGiveawayPrizeList(
   prizes: Array<{
     position: number;
     title: string;
+    displayTitle?: string | null;
   }>,
 ): string[] {
   return prizes
     .slice()
     .sort((left, right) => left.position - right.position)
-    .map((prize) => `${prize.position}. ${prize.title.trim()}`);
+    .map((prize) => `${prize.position}. ${(prize.displayTitle?.trim() || prize.title.trim())}`);
 }

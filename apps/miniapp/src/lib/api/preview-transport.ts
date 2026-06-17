@@ -2043,6 +2043,12 @@ function buildPreviewPublicGiveaway(
   const now = new Date();
   const sourceChannel = state.channels.find((item) => item.id === PREVIEW_CHANNEL_ID);
   const extraChannel = state.channels.find((item) => item.id === 'preview-channel-2');
+  const baitPrizes = Array.from({ length: 10 }, (_, index) => ({
+    id: `public-prize-${index + 1}`,
+    position: index + 1,
+    title: `Прикормка ${index + 1}`,
+    displayTitle: 'Прикормка',
+  }));
 
   return managedGiveawayPublicSchema.parse({
     id: giveawayId,
@@ -2050,10 +2056,7 @@ function buildPreviewPublicGiveaway(
     sourceTitle: sourceChannel?.title ?? PREVIEW_CHANNEL_TITLE,
     sourceLink: sourceChannel?.link ?? null,
     entityType: 'channel',
-    title:
-      variant === 'completed'
-        ? 'Большой весенний розыгрыш'
-        : 'Розыгрыш подарочного бокса для подписчиков',
+    title: variant === 'completed' ? 'Итоги розыгрыша прикормок' : 'Прикормка',
     description:
       'Подпишитесь на канал, отметьте участие и дождитесь итогов. Победителей определим автоматически, а подтверждение приза пройдёт прямо внутри MAX.',
     status: variant === 'completed' ? 'COMPLETED' : 'ACTIVE',
@@ -2076,31 +2079,33 @@ function buildPreviewPublicGiveaway(
         ]
       : [],
     entriesCount: variant === 'completed' ? 912 : 684,
-    winnersCount: 2,
+    winnersCount: 10,
     publishedAt: addHours(now, -19.5).toISOString(),
     completedAt: variant === 'completed' ? addHours(now, -1.5).toISOString() : null,
     publicationUrl: 'https://max.ru/giveaway/public-preview',
     resultsUrl: variant === 'completed' ? 'https://max.ru/giveaway/public-preview/results' : null,
-    prizes: [
-      { id: 'public-prize-1', position: 1, title: 'Подарочный бокс MAX' },
-      { id: 'public-prize-2', position: 2, title: 'Премиум-подписка на 3 месяца' },
-    ],
+    prizes: baitPrizes,
     winners:
       variant === 'completed'
-        ? [
-            {
-              prizePosition: 1,
-              prizeTitle: 'Подарочный бокс MAX',
-              displayName: 'Марина Орлова',
-              status: 'CLAIMED',
-            },
-            {
-              prizePosition: 2,
-              prizeTitle: 'Премиум-подписка на 3 месяца',
-              displayName: 'Дмитрий Ковалёв',
-              status: 'DELIVERED',
-            },
-          ]
+        ? baitPrizes.map((prize, index) => ({
+            prizePosition: prize.position,
+            prizeTitle: prize.title,
+            prizeDisplayTitle: prize.displayTitle,
+            displayName:
+              [
+                'Марина Орлова',
+                'Дмитрий Ковалёв',
+                'Анна Соколова',
+                'Илья Романов',
+                'Елена Миронова',
+                'Павел Андреев',
+                'Ольга Белова',
+                'Артём Волков',
+                'Наталья Ким',
+                'Сергей Морозов',
+              ][index] ?? 'Победитель',
+            status: index % 3 === 0 ? 'CLAIMED' : 'DELIVERED',
+          }))
         : [],
   });
 }
@@ -2125,7 +2130,8 @@ function buildPreviewGiveawayParticipantState(
       winnerStatus: isClaimed ? 'CLAIMED' : 'SELECTED',
       claimDeadlineAt: isClaimed ? null : claimDeadlineAt,
       prizePosition: 1,
-      prizeTitle: 'Подарочный бокс MAX',
+      prizeTitle: 'Прикормка 1',
+      prizeDisplayTitle: 'Прикормка',
       canClaim: !isClaimed,
       claimBotUrl: isClaimed ? null : 'https://max.ru/777000_bot?start=preview-claim',
     });
@@ -2145,6 +2151,7 @@ function buildPreviewGiveawayParticipantState(
       claimDeadlineAt: null,
       prizePosition: null,
       prizeTitle: null,
+      prizeDisplayTitle: null,
       canClaim: false,
       claimBotUrl: null,
     });
@@ -2164,6 +2171,7 @@ function buildPreviewGiveawayParticipantState(
       claimDeadlineAt: null,
       prizePosition: null,
       prizeTitle: null,
+      prizeDisplayTitle: null,
       canClaim: false,
       claimBotUrl: null,
     });
@@ -2183,6 +2191,7 @@ function buildPreviewGiveawayParticipantState(
       claimDeadlineAt: null,
       prizePosition: null,
       prizeTitle: null,
+      prizeDisplayTitle: null,
       canClaim: false,
       claimBotUrl: null,
     });
@@ -2201,6 +2210,7 @@ function buildPreviewGiveawayParticipantState(
     claimDeadlineAt: null,
     prizePosition: null,
     prizeTitle: null,
+    prizeDisplayTitle: null,
     canClaim: false,
     claimBotUrl: null,
   });
@@ -2923,7 +2933,7 @@ function createInitialState(): PreviewState {
       entriesCount: 0,
       verifiedEntriesCount: 0,
       pendingEntriesCount: 0,
-      winnersCount: 0,
+      winnersCount: 10,
       startsAt: null,
       endsAt: addHours(now, 30).toISOString(),
       publishedAt: null,
@@ -2944,10 +2954,12 @@ function createInitialState(): PreviewState {
       requiredChannelIds: [PREVIEW_CHANNEL_ID],
       publicationMessageId: null,
       resultsMessageId: null,
-      prizes: [
-        { id: 'prize-chat-1', position: 1, title: 'Набор перчаток' },
-        { id: 'prize-chat-2', position: 2, title: 'Секатор' },
-      ],
+      prizes: Array.from({ length: 10 }, (_, index) => ({
+        id: `prize-chat-${index + 1}`,
+        position: index + 1,
+        title: `Прикормка ${index + 1}`,
+        displayTitle: 'Прикормка',
+      })),
       winners: [],
     }),
   ];
@@ -3008,7 +3020,14 @@ function createInitialState(): PreviewState {
       requiredChannelIds: [PREVIEW_CHANNEL_ID],
       publicationMessageId: null,
       resultsMessageId: null,
-      prizes: [{ id: 'prize-channel-1', position: 1, title: 'Фирменная кружка' }],
+      prizes: [
+        {
+          id: 'prize-channel-1',
+          position: 1,
+          title: 'Фирменная кружка',
+          displayTitle: 'Фирменная кружка',
+        },
+      ],
       winners: [],
     }),
   ];
@@ -4100,8 +4119,46 @@ function createDraftGiveaway(
     requiredChannelIds: entityType === 'chat' ? [PREVIEW_CHANNEL_ID] : [entityId],
     publicationMessageId: null,
     resultsMessageId: null,
-    prizes: [{ id: `prize-${Date.now()}`, position: 1, title: 'Приз 1' }],
+    prizes: [
+      {
+        id: `prize-${Date.now()}`,
+        position: 1,
+        title: 'Приз 1',
+        displayTitle: 'Приз 1',
+      },
+    ],
     winners: [],
+  });
+}
+
+function normalizePreviewGiveawayPrizes(value: unknown): ManagedGiveawayDetails['prizes'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item, index) => {
+    const prize = item as {
+      id?: unknown;
+      position?: unknown;
+      title?: unknown;
+      displayTitle?: unknown;
+    };
+    const position = typeof prize.position === 'number' ? prize.position : index + 1;
+    const title =
+      typeof prize.title === 'string' && prize.title.trim()
+        ? prize.title.trim()
+        : `Приз ${position}`;
+    const displayTitle =
+      typeof prize.displayTitle === 'string' && prize.displayTitle.trim()
+        ? prize.displayTitle.trim()
+        : title;
+
+    return {
+      id: typeof prize.id === 'string' && prize.id.trim() ? prize.id : `prize-${position}`,
+      position,
+      title,
+      displayTitle,
+    };
   });
 }
 
@@ -5311,6 +5368,7 @@ async function handleChatRequest(
       const created = managedGiveawayDetailsSchema.parse({
         ...draft,
         ...(payload ?? {}),
+        prizes: normalizePreviewGiveawayPrizes((payload ?? draft).prizes),
         sourceChatId: chatId,
         updatedAt: new Date().toISOString(),
       });
@@ -5369,6 +5427,7 @@ async function handleChatRequest(
       const updated = managedGiveawayDetailsSchema.parse({
         ...details,
         ...(payload ?? {}),
+        prizes: normalizePreviewGiveawayPrizes((payload ?? details).prizes),
         sourceChatId: chatId,
         updatedAt: new Date().toISOString(),
       });
@@ -5938,6 +5997,7 @@ async function handleChannelRequest(
       const created = managedGiveawayDetailsSchema.parse({
         ...draft,
         ...(payload ?? {}),
+        prizes: normalizePreviewGiveawayPrizes((payload ?? draft).prizes),
         sourceChatId: channelId,
         entityType: 'channel',
         updatedAt: new Date().toISOString(),
@@ -5997,6 +6057,7 @@ async function handleChannelRequest(
       const updated = managedGiveawayDetailsSchema.parse({
         ...details,
         ...(payload ?? {}),
+        prizes: normalizePreviewGiveawayPrizes((payload ?? details).prizes),
         sourceChatId: channelId,
         entityType: 'channel',
         updatedAt: new Date().toISOString(),

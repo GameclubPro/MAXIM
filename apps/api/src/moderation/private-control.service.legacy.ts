@@ -6645,6 +6645,7 @@ export class PrivateControlService {
       prizes: giveaway.prizes.map((prize) => ({
         position: prize.position,
         title: prize.title,
+        displayTitle: prize.displayTitle,
       })),
     };
   }
@@ -8275,7 +8276,7 @@ export class PrivateControlService {
       this.markdownTitle('Розыгрыш'),
       '',
       this.escapeMarkdown(giveaway.title),
-      `${winner.prizePosition}. ${this.escapeMarkdown(winner.prizeTitle)}`,
+      `${winner.prizePosition}. ${this.escapeMarkdown(winner.prizeDisplayTitle)}`,
       `Статус: ${statusLabel}`,
       `Победитель: ${this.escapeMarkdown(winner.displayName ?? winner.userId)}`,
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),

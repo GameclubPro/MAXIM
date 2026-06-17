@@ -2552,3 +2552,83 @@
     background-position: -120% 0;
   }
 }
+
+.managed-giveaway__prize-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.managed-giveaway__prize-count-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.managed-giveaway__same-prize-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border-radius: 18px;
+  border: 1px solid rgba(89, 117, 145, 0.1);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 253, 0.94)),
+    rgba(247, 249, 252, 0.96);
+  padding: 10px;
+}
+
+.managed-giveaway__same-prize-card .field {
+  margin: 0;
+}
+
+.managed-giveaway__same-prize-preview {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(89, 117, 145, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+}
+
+.managed-giveaway__same-prize-preview strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 850;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.managed-giveaway__same-prize-preview span,
+.managed-giveaway__dashboard-prize-chip em {
+  display: inline-grid;
+  place-items: center;
+  min-width: 42px;
+  min-height: 32px;
+  border-radius: 12px;
+  border: 1px solid rgba(11, 132, 255, 0.2);
+  background: rgba(231, 243, 255, 0.94);
+  color: #0b66b6;
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.managed-giveaway__dashboard-prize-chip.is-repeat {
+  flex-basis: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.managed-giveaway__dashboard-prize-chip.is-repeat span,
+.managed-giveaway__dashboard-prize-chip.is-repeat strong {
+  grid-column: 1;
+}
+
+.managed-giveaway__dashboard-prize-chip.is-repeat em {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}

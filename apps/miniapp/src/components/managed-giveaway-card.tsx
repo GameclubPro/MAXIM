@@ -58,6 +58,7 @@ const FINISH_PRESETS = [
 
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
 type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
+type GiveawayPrizeMode = 'same' | 'different';
 type GiveawayHintKey =
   | 'dashboard'
   | 'title'
@@ -79,6 +80,8 @@ type GiveawayEditorDraft = {
   endsAtLocal: string;
   claimHours: number;
   requiredChannelIds: string[];
+  prizeMode: GiveawayPrizeMode;
+  samePrizeTitle: string;
   prizes: string[];
   imageEnabled: boolean;
   imageBase64: string;
@@ -340,6 +343,8 @@ function createDefaultEditorDraft(): GiveawayEditorDraft {
     endsAtLocal: formatDateTimeInputValue(defaultEnd),
     claimHours: 24,
     requiredChannelIds: [],
+    prizeMode: 'same',
+    samePrizeTitle: '',
     prizes: [''],
     imageEnabled: false,
     imageBase64: '',
@@ -348,7 +353,61 @@ function createDefaultEditorDraft(): GiveawayEditorDraft {
   };
 }
 
+function normalizePrizeTitle(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ');
+}
+
+function resolveRepeatedPrizeTitle(prizes: string[]): string | null {
+  if (prizes.length === 0) {
+    return null;
+  }
+
+  const normalizedTitles = prizes.map((item) => normalizePrizeTitle(item));
+  const firstTitle = normalizedTitles[0] ?? '';
+  if (firstTitle && normalizedTitles.every((item) => item === firstTitle)) {
+    return firstTitle;
+  }
+
+  return null;
+}
+
+function buildPrizeRowsFromSameTitle(title: string, count: number): string[] {
+  return Array.from({ length: count }, () => title);
+}
+
+function buildDashboardPrizeGroups(
+  prizes: ManagedGiveawayDetails['prizes'],
+): Array<{ id: string; label: string; title: string; count: number }> {
+  const sortedPrizes = [...prizes].sort((left, right) => left.position - right.position);
+  const repeatedTitle = resolveRepeatedPrizeTitle(
+    sortedPrizes.map((prize) => prize.displayTitle || prize.title),
+  );
+  if (repeatedTitle) {
+    return [
+      {
+        id: 'same-prize',
+        label: `${sortedPrizes.length} мест`,
+        title: repeatedTitle,
+        count: sortedPrizes.length,
+      },
+    ];
+  }
+
+  return sortedPrizes.map((prize) => ({
+    id: prize.id,
+    label: `${prize.position} место`,
+    title: prize.displayTitle || prize.title,
+    count: 1,
+  }));
+}
+
 function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
+  const displayPrizeTitles = giveaway.prizes
+    .slice()
+    .sort((left, right) => left.position - right.position)
+    .map((prize) => prize.displayTitle || prize.title);
+  const repeatedPrizeTitle = resolveRepeatedPrizeTitle(displayPrizeTitles);
+
   return {
     title: giveaway.title,
     description: giveaway.description,
@@ -358,10 +417,11 @@ function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
     requiredChannelIds: giveaway.requiredChannelIds.filter(
       (item) => item !== giveaway.sourceChatId,
     ),
-    prizes: giveaway.prizes
-      .slice()
-      .sort((left, right) => left.position - right.position)
-      .map((prize) => prize.title),
+    prizeMode: repeatedPrizeTitle ? 'same' : 'different',
+    samePrizeTitle: repeatedPrizeTitle ?? '',
+    prizes: repeatedPrizeTitle
+      ? buildPrizeRowsFromSameTitle(repeatedPrizeTitle, displayPrizeTitles.length)
+      : displayPrizeTitles,
     imageEnabled: giveaway.imageEnabled,
     imageBase64: giveaway.imageBase64,
     imageMimeType: giveaway.imageMimeType,
@@ -458,6 +518,10 @@ function validatePrizesDraft(draft: GiveawayEditorDraft): GiveawayValidationResu
     return { valid: false, message: `Количество мест: от 1 до ${MANAGED_GIVEAWAY_MAX_PRIZES}.` };
   }
 
+  if (draft.prizeMode === 'same' && !draft.samePrizeTitle.trim()) {
+    return { valid: false, message: 'Введите приз для всех мест.' };
+  }
+
   const trimmedPrizes = draft.prizes.map((item) => item.trim());
   if (trimmedPrizes.some((item) => !item)) {
     return { valid: false, message: 'Заполните все призы.' };
@@ -527,6 +591,8 @@ function isDraftEqual(left: GiveawayEditorDraft, right: GiveawayEditorDraft): bo
     left.startsAtLocal === right.startsAtLocal &&
     left.endsAtLocal === right.endsAtLocal &&
     left.claimHours === right.claimHours &&
+    left.prizeMode === right.prizeMode &&
+    left.samePrizeTitle === right.samePrizeTitle &&
     left.imageEnabled === right.imageEnabled &&
     left.imageBase64 === right.imageBase64 &&
     left.imageMimeType === right.imageMimeType &&
@@ -563,9 +629,13 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
           .filter((item) => item.length > 0),
       ),
     ),
-    prizes: draft.prizes.map((title, index) => ({
+    prizes: (draft.prizeMode === 'same'
+      ? buildPrizeRowsFromSameTitle(draft.samePrizeTitle, draft.prizes.length)
+      : draft.prizes
+    ).map((title, index) => ({
       position: index + 1,
       title: title.trim(),
+      displayTitle: title.trim(),
     })),
   };
 }
@@ -1699,7 +1769,10 @@ export function ManagedGiveawayCard({
         };
       }
 
-      const lastFilledPrize = [...current.prizes].reverse().find((item) => item.trim()) ?? '';
+      const lastFilledPrize =
+        current.prizeMode === 'same'
+          ? current.samePrizeTitle
+          : [...current.prizes].reverse().find((item) => item.trim()) ?? '';
       const extraPrizes = Array.from(
         { length: normalizedCount - current.prizes.length },
         () => lastFilledPrize,
@@ -1711,6 +1784,36 @@ export function ManagedGiveawayCard({
     });
     setValidationHint('');
     setEditorError('');
+  };
+
+  const setPrizeMode = (nextMode: GiveawayPrizeMode) => {
+    updateDraft((current) => {
+      if (current.prizeMode === nextMode) {
+        return current;
+      }
+
+      const repeatedTitle =
+        current.samePrizeTitle.trim() ||
+        resolveRepeatedPrizeTitle(current.prizes) ||
+        current.prizes.find((item) => item.trim())?.trim() ||
+        '';
+
+      if (nextMode === 'same') {
+        return {
+          ...current,
+          prizeMode: 'same',
+          samePrizeTitle: repeatedTitle,
+          prizes: buildPrizeRowsFromSameTitle(repeatedTitle, current.prizes.length),
+        };
+      }
+
+      return {
+        ...current,
+        prizeMode: 'different',
+        samePrizeTitle: repeatedTitle,
+        prizes: current.prizes.map((item) => item || repeatedTitle),
+      };
+    });
   };
 
   const goToPreviousStep = () => {
@@ -1945,6 +2048,19 @@ export function ManagedGiveawayCard({
       const currentIsDraft = featuredItem.status === 'DRAFT';
       const dashboardDetails = featuredDetailsQuery.data ?? null;
       const featuredPrizes = dashboardDetails?.prizes ?? [];
+      const featuredPrizeGroups = buildDashboardPrizeGroups(featuredPrizes);
+      const displayPrizeTitleByPosition = new Map<number, string>();
+      const repeatedFeaturedPrizeTitle = resolveRepeatedPrizeTitle(
+        [...featuredPrizes]
+          .sort((left, right) => left.position - right.position)
+          .map((prize) => prize.displayTitle || prize.title),
+      );
+      for (const prize of featuredPrizes) {
+        displayPrizeTitleByPosition.set(
+          prize.position,
+          repeatedFeaturedPrizeTitle ?? prize.displayTitle ?? prize.title,
+        );
+      }
       const featuredWinners =
         dashboardDetails?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
       const requiredChannelsCount = dashboardDetails?.requiredChannelIds.length ?? 0;
@@ -2033,23 +2149,21 @@ export function ManagedGiveawayCard({
             </div>
           ) : null}
 
-          {featuredPrizes.length > 0 ? (
+          {featuredPrizeGroups.length > 0 ? (
             <div className="managed-giveaway__dashboard-prize-rail">
-              {featuredPrizes.slice(0, 3).map((prize) => (
+              {featuredPrizeGroups.map((prize) => (
                 <div
                   key={`featured-prize-${prize.id}`}
-                  className="managed-giveaway__dashboard-prize-chip"
+                  className={cn(
+                    'managed-giveaway__dashboard-prize-chip',
+                    prize.count > 1 && 'is-repeat',
+                  )}
                 >
-                  <span>{prize.position} место</span>
+                  <span>{prize.label}</span>
                   <strong>{prize.title}</strong>
+                  {prize.count > 1 ? <em>×{prize.count}</em> : null}
                 </div>
               ))}
-              {featuredPrizes.length > 3 ? (
-                <div className="managed-giveaway__dashboard-prize-chip is-muted">
-                  <span>Ещё</span>
-                  <strong>+{featuredPrizes.length - 3}</strong>
-                </div>
-              ) : null}
             </div>
           ) : null}
 
@@ -2163,7 +2277,11 @@ export function ManagedGiveawayCard({
                       </div>
                       <div className="managed-giveaway__dashboard-winner-copy">
                         <strong>{winner.displayName?.trim() || 'Победитель определён'}</strong>
-                        <span>{winner.prizeTitle}</span>
+                        <span>
+                          {displayPrizeTitleByPosition.get(winner.prizePosition) ??
+                            winner.prizeDisplayTitle ??
+                            winner.prizeTitle}
+                        </span>
                       </div>
                       <div className="managed-giveaway__dashboard-winner-side">
                         <span
@@ -2731,7 +2849,9 @@ export function ManagedGiveawayCard({
                   <strong>Что получают победители</strong>
                 </div>
                 <div className="managed-giveaway__section-actions">
-                  <span className="managed-giveaway__chip">{draft.prizes.length} места</span>
+                  <span className="managed-giveaway__chip">
+                    {draft.prizes.length} {draft.prizes.length === 1 ? 'место' : 'мест'}
+                  </span>
                   <GiveawayHintAnchor
                     hintKey="prizes"
                     openHintKey={openHintKey}
@@ -2744,96 +2864,174 @@ export function ManagedGiveawayCard({
                 </div>
               </div>
 
-              <div className="managed-giveaway__count-stepper">
+              <div
+                className="managed-giveaway__prize-mode"
+                role="group"
+                aria-label="Тип призов"
+              >
                 <button
                   type="button"
-                  className="managed-giveaway__count-stepper-button"
-                  disabled={isBusy || draft.prizes.length <= 1}
-                  onClick={() => setPrizeCount(draft.prizes.length - 1)}
-                  aria-label="Уменьшить количество мест"
+                  className={cn(
+                    'managed-giveaway__choice-card',
+                    draft.prizeMode === 'same' && 'is-active',
+                  )}
+                  aria-pressed={draft.prizeMode === 'same'}
+                  disabled={isBusy}
+                  onClick={() => setPrizeMode('same')}
                 >
-                  −
+                  <span className="managed-giveaway__choice-copy">
+                    <strong>Одинаковые</strong>
+                  </span>
                 </button>
-                <div className="managed-giveaway__count-stepper-value">
-                  <span>Места</span>
-                  <strong>{draft.prizes.length}</strong>
-                </div>
                 <button
                   type="button"
-                  className="managed-giveaway__count-stepper-button"
-                  disabled={isBusy || draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
-                  onClick={() => setPrizeCount(draft.prizes.length + 1)}
-                  aria-label="Увеличить количество мест"
+                  className={cn(
+                    'managed-giveaway__choice-card',
+                    draft.prizeMode === 'different' && 'is-active',
+                  )}
+                  aria-pressed={draft.prizeMode === 'different'}
+                  disabled={isBusy}
+                  onClick={() => setPrizeMode('different')}
                 >
-                  +
+                  <span className="managed-giveaway__choice-copy">
+                    <strong>Разные</strong>
+                  </span>
                 </button>
               </div>
 
-              <div className="managed-giveaway__prize-presets" aria-label="Быстрое количество мест">
-                {[3, 5, 10].map((count) => (
+              <div className="managed-giveaway__prize-count-panel">
+                <div className="managed-giveaway__count-stepper">
                   <button
-                    key={`giveaway-prize-count-${count}`}
                     type="button"
-                    className={cn(
-                      'managed-giveaway__chip-button',
-                      draft.prizes.length === count && 'is-active',
-                    )}
-                    onClick={() => setPrizeCount(count)}
-                    disabled={isBusy}
+                    className="managed-giveaway__count-stepper-button"
+                    disabled={isBusy || draft.prizes.length <= 1}
+                    onClick={() => setPrizeCount(draft.prizes.length - 1)}
+                    aria-label="Уменьшить количество мест"
                   >
-                    {count}
+                    −
                   </button>
-                ))}
+                  <div className="managed-giveaway__count-stepper-value">
+                    <span>Места</span>
+                    <strong>{draft.prizes.length}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    className="managed-giveaway__count-stepper-button"
+                    disabled={isBusy || draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
+                    onClick={() => setPrizeCount(draft.prizes.length + 1)}
+                    aria-label="Увеличить количество мест"
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div
+                  className="managed-giveaway__prize-presets"
+                  aria-label="Быстрое количество мест"
+                >
+                  {[3, 5, 10].map((count) => (
+                    <button
+                      key={`giveaway-prize-count-${count}`}
+                      type="button"
+                      className={cn(
+                        'managed-giveaway__chip-button',
+                        draft.prizes.length === count && 'is-active',
+                      )}
+                      onClick={() => setPrizeCount(count)}
+                      disabled={isBusy}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="managed-giveaway__prize-editor-list">
-                {draft.prizes.map((prizeTitle, index) => (
-                  <div key={`draft-prize-${index}`} className="managed-giveaway__prize-editor-row">
-                    <span className="managed-giveaway__prize-position">{index + 1}</span>
-                    <label className="field">
-                      <input
-                        ref={index === 0 ? firstPrizeInputRef : undefined}
-                        type="text"
-                        value={prizeTitle}
-                        placeholder="Приз"
-                        maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
-                        aria-label={`Приз за ${index + 1} место`}
-                        aria-invalid={!prizesValidation.valid}
-                        aria-describedby={
-                          validationHint ? 'managed-giveaway-editor-alert' : undefined
-                        }
-                        onChange={(event) =>
-                          updateDraft((current) => {
-                            const nextPrizes = [...current.prizes];
-                            nextPrizes[index] = event.target.value;
-                            return {
-                              ...current,
-                              prizes: nextPrizes,
-                            };
-                          })
-                        }
-                        disabled={isBusy}
-                      />
-                    </label>
-                    {draft.prizes.length > 1 ? (
-                      <button
-                        type="button"
-                        className="managed-giveaway__prize-remove"
-                        onClick={() =>
-                          updateDraft((current) => ({
-                            ...current,
-                            prizes: current.prizes.filter((_, prizeIndex) => prizeIndex !== index),
-                          }))
-                        }
-                        disabled={isBusy}
-                        aria-label={`Удалить приз ${index + 1}`}
-                      >
-                        ×
-                      </button>
-                    ) : null}
+              {draft.prizeMode === 'same' ? (
+                <div className="managed-giveaway__same-prize-card">
+                  <label className="field">
+                    <span>Приз</span>
+                    <input
+                      ref={firstPrizeInputRef}
+                      type="text"
+                      value={draft.samePrizeTitle}
+                      placeholder="Прикормка"
+                      maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
+                      aria-label="Одинаковый приз для всех мест"
+                      aria-invalid={!prizesValidation.valid}
+                      aria-describedby={validationHint ? 'managed-giveaway-editor-alert' : undefined}
+                      onChange={(event) =>
+                        updateDraft((current) => ({
+                          ...current,
+                          samePrizeTitle: event.target.value,
+                          prizes: buildPrizeRowsFromSameTitle(
+                            event.target.value,
+                            current.prizes.length,
+                          ),
+                        }))
+                      }
+                      disabled={isBusy}
+                    />
+                  </label>
+                  <div className="managed-giveaway__same-prize-preview">
+                    <strong>{draft.samePrizeTitle.trim() || 'Приз'}</strong>
+                    <span>×{draft.prizes.length}</span>
                   </div>
-                ))}
-              </div>
+                </div>
+              ) : (
+                <div className="managed-giveaway__prize-editor-list">
+                  {draft.prizes.map((prizeTitle, index) => (
+                    <div
+                      key={`draft-prize-${index}`}
+                      className="managed-giveaway__prize-editor-row"
+                    >
+                      <span className="managed-giveaway__prize-position">{index + 1}</span>
+                      <label className="field">
+                        <input
+                          ref={index === 0 ? firstPrizeInputRef : undefined}
+                          type="text"
+                          value={prizeTitle}
+                          placeholder="Приз"
+                          maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
+                          aria-label={`Приз за ${index + 1} место`}
+                          aria-invalid={!prizesValidation.valid}
+                          aria-describedby={
+                            validationHint ? 'managed-giveaway-editor-alert' : undefined
+                          }
+                          onChange={(event) =>
+                            updateDraft((current) => {
+                              const nextPrizes = [...current.prizes];
+                              nextPrizes[index] = event.target.value;
+                              return {
+                                ...current,
+                                prizes: nextPrizes,
+                              };
+                            })
+                          }
+                          disabled={isBusy}
+                        />
+                      </label>
+                      {draft.prizes.length > 1 ? (
+                        <button
+                          type="button"
+                          className="managed-giveaway__prize-remove"
+                          onClick={() =>
+                            updateDraft((current) => ({
+                              ...current,
+                              prizes: current.prizes.filter(
+                                (_, prizeIndex) => prizeIndex !== index,
+                              ),
+                            }))
+                          }
+                          disabled={isBusy}
+                          aria-label={`Удалить приз ${index + 1}`}
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="managed-giveaway__subsection">
                 <div className="managed-giveaway__subsection-row">

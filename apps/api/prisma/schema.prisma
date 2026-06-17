@@ -1487,11 +1487,12 @@ model ManagedGiveaway {
 }
 
 model ManagedGiveawayPrize {
-  id         String   @id @default(cuid())
-  giveawayId String   @map("giveaway_id")
-  position   Int
-  title      String
-  createdAt  DateTime @default(now()) @map("created_at")
+  id           String   @id @default(cuid())
+  giveawayId   String   @map("giveaway_id")
+  position     Int
+  title        String
+  displayTitle String @default("") @map("display_title")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   giveaway ManagedGiveaway         @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
   winners  ManagedGiveawayWinner[]

@@ -509,6 +509,7 @@ function createGiveawayWinner(
     prizeId: 'prize-1',
     prizePosition: 1,
     prizeTitle: 'Подписка MAX',
+    prizeDisplayTitle: 'Подписка MAX',
     entryId: 'entry-1',
     userId: 'user-1',
     displayName: 'Тестовый пользователь',
@@ -557,6 +558,7 @@ function createGiveaway(overrides: Partial<ManagedGiveawayDetails> = {}): Manage
         id: 'prize-1',
         position: 1,
         title: 'Подписка MAX',
+        displayTitle: 'Подписка MAX',
       },
     ],
     winners: [],
@@ -898,10 +900,11 @@ function createHarness(
         claimHours: payload.claimHours,
         startsAt: payload.startsAt,
         endsAt: payload.endsAt,
-        prizes: payload.prizes.map((prize: { position: number; title: string }) => ({
+        prizes: payload.prizes.map((prize: { position: number; title: string; displayTitle?: string }) => ({
           id: `prize-${prize.position}`,
           position: prize.position,
           title: prize.title,
+          displayTitle: prize.displayTitle ?? prize.title,
         })),
         status: 'DRAFT',
         publicationMessageId: null,
@@ -932,10 +935,11 @@ function createHarness(
           startsAt: payload.startsAt,
           endsAt: payload.endsAt,
           hasImage: payload.imageEnabled,
-          prizes: payload.prizes.map((prize: { position: number; title: string }) => ({
+          prizes: payload.prizes.map((prize: { position: number; title: string; displayTitle?: string }) => ({
             id: `prize-${prize.position}`,
             position: prize.position,
             title: prize.title,
+            displayTitle: prize.displayTitle ?? prize.title,
           })),
           status: 'DRAFT',
           updatedAt: new Date().toISOString(),

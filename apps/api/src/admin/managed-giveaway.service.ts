@@ -258,6 +258,7 @@ export class ManagedGiveawayService {
           create: payload.prizes.map((prize) => ({
             position: prize.position,
             title: prize.title,
+            displayTitle: prize.displayTitle,
           })),
         },
       },
@@ -330,6 +331,7 @@ export class ManagedGiveawayService {
           giveawayId: existing.id,
           position: prize.position,
           title: prize.title,
+          displayTitle: prize.displayTitle,
         })),
       });
 
@@ -777,9 +779,10 @@ export class ManagedGiveawayService {
       throw new NotFoundException('Для вас нет актуального приза.');
     }
     if (winner.status === ManagedGiveawayWinnerStatus.CLAIMED) {
+      const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(giveaway.prizes);
       return claimManagedGiveawayResponseSchema.parse({
         ok: true,
-        winner: this.mapGiveawayWinner(winner),
+        winner: this.mapGiveawayWinner(winner, prizeDisplayTitleById),
       });
     }
     if (winner.status !== ManagedGiveawayWinnerStatus.SELECTED) {
@@ -833,10 +836,11 @@ export class ManagedGiveawayService {
 
     await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED);
     await this.republishGiveawayResults(refreshed);
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(refreshed.prizes);
 
     return claimManagedGiveawayResponseSchema.parse({
       ok: true,
-      winner: this.mapGiveawayWinner(updated),
+      winner: this.mapGiveawayWinner(updated, prizeDisplayTitleById),
     });
   }
 
@@ -1105,7 +1109,9 @@ export class ManagedGiveawayService {
 
     return {
       giveaway: managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(giveaway)),
-      winner: managedGiveawayWinnerSchema.parse(this.mapGiveawayWinner(winner)),
+      winner: managedGiveawayWinnerSchema.parse(
+        this.mapGiveawayWinner(winner, this.buildPrizeDisplayTitleById(giveaway.prizes)),
+      ),
     };
   }
 
@@ -1308,6 +1314,7 @@ export class ManagedGiveawayService {
         (winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED,
       ),
     });
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(row.prizes);
 
     return {
       ...summary,
@@ -1326,12 +1333,88 @@ export class ManagedGiveawayService {
         id: prize.id,
         position: prize.position,
         title: prize.title,
+        displayTitle: prizeDisplayTitleById.get(prize.id) ?? this.resolvePrizeDisplayTitle(prize),
       })),
       winners: row.winners
         .filter((winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED)
         .sort((left, right) => left.prize.position - right.prize.position)
-        .map((winner) => this.mapGiveawayWinner(winner)),
+        .map((winner) => this.mapGiveawayWinner(winner, prizeDisplayTitleById)),
     };
+  }
+
+  private resolvePrizeDisplayTitle(prize: PersistedManagedGiveawayPrize): string {
+    const displayTitle =
+      typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
+    if (displayTitle) {
+      return displayTitle;
+    }
+
+    const title = prize.title.trim();
+    return title || `${prize.position} место`;
+  }
+
+  private parseLegacyNumberedPrizeTitle(value: string): { base: string; ordinal: number } | null {
+    const normalized = value.trim().replace(/\s+/gu, ' ');
+    const match = /^(.+?)\s+(\d{1,3})$/u.exec(normalized);
+    if (!match) {
+      return null;
+    }
+
+    const base = (match[1] ?? '').trim().replace(/\s+/gu, ' ');
+    const ordinal = Number(match[2]);
+    if (!base || !Number.isInteger(ordinal) || ordinal < 1) {
+      return null;
+    }
+
+    return { base, ordinal };
+  }
+
+  private buildPrizeDisplayTitleById(
+    prizes: PersistedManagedGiveawayPrize[],
+  ): Map<string, string> {
+    const sortedPrizes = [...prizes].sort((left, right) => left.position - right.position);
+    const titlesById = new Map<string, string>();
+    const legacyGroups = new Map<string, { ids: string[]; ordinals: number[] }>();
+
+    for (const prize of sortedPrizes) {
+      const explicitTitle =
+        typeof prize.displayTitle === 'string' ? prize.displayTitle.trim() : '';
+      if (explicitTitle) {
+        titlesById.set(prize.id, explicitTitle);
+        continue;
+      }
+
+      const parsed = this.parseLegacyNumberedPrizeTitle(prize.title);
+      if (!parsed) {
+        titlesById.set(prize.id, this.resolvePrizeDisplayTitle(prize));
+        continue;
+      }
+
+      const group = legacyGroups.get(parsed.base) ?? { ids: [], ordinals: [] };
+      group.ids.push(prize.id);
+      group.ordinals.push(parsed.ordinal);
+      legacyGroups.set(parsed.base, group);
+    }
+
+    for (const [base, group] of legacyGroups.entries()) {
+      const uniqueOrdinals = new Set(group.ordinals);
+      const canTreatAsRepeatedPrize =
+        group.ids.length > 1 &&
+        uniqueOrdinals.size === group.ids.length &&
+        group.ordinals.every((ordinal) => ordinal >= 1 && ordinal <= group.ids.length);
+
+      for (const id of group.ids) {
+        if (!titlesById.has(id)) {
+          const prize = sortedPrizes.find((item) => item.id === id);
+          titlesById.set(
+            id,
+            canTreatAsRepeatedPrize ? base : this.resolvePrizeDisplayTitle(prize!),
+          );
+        }
+      }
+    }
+
+    return titlesById;
   }
 
   private async mapPublicGiveaway(
@@ -1351,6 +1434,7 @@ export class ManagedGiveawayService {
         })),
       ),
     ]);
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(row.prizes);
 
     return {
       id: row.id,
@@ -1382,6 +1466,7 @@ export class ManagedGiveawayService {
         id: prize.id,
         position: prize.position,
         title: prize.title,
+        displayTitle: prizeDisplayTitleById.get(prize.id) ?? this.resolvePrizeDisplayTitle(prize),
       })),
       winners:
         row.status === ManagedGiveawayStatus.COMPLETED
@@ -1391,6 +1476,9 @@ export class ManagedGiveawayService {
               .map((winner) => ({
                 prizePosition: winner.prize.position,
                 prizeTitle: winner.prize.title,
+                prizeDisplayTitle:
+                  prizeDisplayTitleById.get(winner.prize.id) ??
+                  this.resolvePrizeDisplayTitle(winner.prize),
                 displayName: this.resolvePublicWinnerDisplayName(winner),
                 status: this.resolveEffectiveWinnerStatus(winner),
               }))
@@ -1402,6 +1490,7 @@ export class ManagedGiveawayService {
     row: PersistedGiveawayWithRelations,
     userId: string,
   ): ManagedGiveawayParticipantState {
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(row.prizes);
     const entry = row.entries.find((item) => item.userId === userId) ?? null;
     const winner = entry
       ? (row.winners.find(
@@ -1435,6 +1524,9 @@ export class ManagedGiveawayService {
       claimDeadlineAt: winner?.claimDeadlineAt?.toISOString() ?? null,
       prizePosition: winner?.prize.position ?? null,
       prizeTitle: winner?.prize.title ?? null,
+      prizeDisplayTitle: winner
+        ? (prizeDisplayTitleById.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize))
+        : null,
       canClaim,
       claimBotUrl:
         canClaim && winner ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id) : null,
@@ -1446,12 +1538,15 @@ export class ManagedGiveawayService {
       prize: PersistedManagedGiveawayPrize;
       entry: PersistedManagedGiveawayEntry;
     },
+    prizeDisplayTitleById?: Map<string, string>,
   ): ManagedGiveawayWinner {
     return {
       id: winner.id,
       prizeId: winner.prizeId,
       prizePosition: winner.prize.position,
       prizeTitle: winner.prize.title,
+      prizeDisplayTitle:
+        prizeDisplayTitleById?.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize),
       entryId: winner.entryId,
       userId: winner.entry.userId,
       displayName: winner.entry.displayName ?? null,
@@ -1701,6 +1796,7 @@ export class ManagedGiveawayService {
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {
     const lines: string[] = ['🎉 Результаты розыгрыша:'];
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(giveaway.prizes);
     const currentWinners = giveaway.winners
       .filter((winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED)
       .sort((left, right) => left.prize.position - right.prize.position);
@@ -1711,7 +1807,10 @@ export class ManagedGiveawayService {
     const shouldShowPrizeTitle =
       currentWinners.length > 1 &&
       currentWinners.some((winner) => {
-        const title = winner.prize.title.trim();
+        const title = (
+          prizeDisplayTitleById.get(winner.prize.id) ??
+          this.resolvePrizeDisplayTitle(winner.prize)
+        ).trim();
         return title.length > 0 && title !== `${winner.prize.position} место`;
       });
 
@@ -1740,7 +1839,10 @@ export class ManagedGiveawayService {
         continue;
       }
 
-      const prizeTitle = winner.prize.title.trim();
+      const prizeTitle = (
+        prizeDisplayTitleById.get(winner.prize.id) ??
+        this.resolvePrizeDisplayTitle(winner.prize)
+      ).trim();
       const prizeSuffix = shouldShowPrizeTitle
         ? ` — ${useRichText ? this.escapeMarkdown(prizeTitle) : prizeTitle}`
         : '';
@@ -1804,7 +1906,10 @@ export class ManagedGiveawayService {
   ): string {
     const lines = ['🎉 Вы выиграли в розыгрыше!'];
     const title = giveaway.title.trim();
-    const prizeTitle = winner.prize.title.trim();
+    const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(giveaway.prizes);
+    const prizeTitle = (
+      prizeDisplayTitleById.get(winner.prize.id) ?? this.resolvePrizeDisplayTitle(winner.prize)
+    ).trim();
 
     if (title) {
       lines.push('', title);
