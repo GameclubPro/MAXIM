@@ -1,0 +1,46 @@
+@layer components {
+.segmented-control {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.segmented-control__item {
+  min-height: 44px;
+  border: 1px solid rgba(62, 96, 127, 0.2);
+  border-radius: 999px;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.84), rgba(240, 248, 255, 0.72)),
+    rgba(255, 255, 255, 0.72);
+  padding: 10px 14px;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-weight: 700;
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.segmented-control__item small {
+  font-size: 0.72rem;
+  opacity: 0.78;
+}
+
+.segmented-control__item.is-active {
+  color: #0a5fa8;
+  border-color: rgba(11, 132, 255, 0.42);
+  background:
+    linear-gradient(154deg, rgba(11, 132, 255, 0.2), rgba(255, 255, 255, 0.9)),
+    rgba(255, 255, 255, 0.76);
+  box-shadow: 0 8px 18px rgba(11, 132, 255, 0.14);
+}
+}

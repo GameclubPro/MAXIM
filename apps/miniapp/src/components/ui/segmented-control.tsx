@@ -1,4 +1,5 @@
 import { cn } from '../../lib/cn';
+import './segmented-control.css';
 
 export type SegmentedOption<T extends string> = {
   value: T;

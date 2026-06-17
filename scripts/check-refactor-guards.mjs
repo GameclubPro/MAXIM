@@ -35,9 +35,37 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 5818,
-    targetLines: 5600,
+    maxLines: 5342,
+    targetLines: 5000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/components/ui/segmented-control.css',
+    maxLines: 48,
+    targetLines: 40,
+    reason:
+      'SegmentedControl base styles should stay component-owned while route-specific sizing stays scoped.',
+  },
+  {
+    path: 'apps/miniapp/src/components/managed-broadcast-history-card.css',
+    maxLines: 242,
+    targetLines: 190,
+    reason:
+      'ManagedBroadcastHistoryCard styles should stay component-owned while route density overrides stay scoped.',
+  },
+  {
+    path: 'apps/miniapp/src/components/managed-broadcast-delivery-meter.css',
+    maxLines: 76,
+    targetLines: 60,
+    reason:
+      'ManagedBroadcastDeliveryMeter styles should stay component-owned instead of returning to broadcast route CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/components/managed-poll-card.css',
+    maxLines: 190,
+    targetLines: 160,
+    reason:
+      'ManagedPollCard styles should stay component-owned while settings route overrides stay scoped.',
   },
   {
     path: 'apps/miniapp/src/components/max-markdown-editor.css',
@@ -118,7 +146,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio.css',
-    maxLines: 5167,
+    maxLines: 5086,
     targetLines: 3660,
     reason:
       'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',

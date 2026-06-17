@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import { cn } from '../lib/cn';
+import './managed-broadcast-delivery-meter.css';
 
 type ManagedBroadcastDeliveryMeterProps = {
   broadcast: Pick<

@@ -37,6 +37,7 @@ import {
 import { useNativeBackHandler } from '../lib/native-back';
 import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
+import './managed-poll-card.css';
 
 const AUTOSAVE_DELAY_MS = 650;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;

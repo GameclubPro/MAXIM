@@ -8,6 +8,7 @@ import {
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { ManagedBroadcastDeliveryMeter } from './managed-broadcast-delivery-meter';
 import { cn } from '../lib/cn';
+import './managed-broadcast-history-card.css';
 
 type ManagedBroadcastHistoryTone = 'active' | 'warning' | 'danger' | 'muted';
 
