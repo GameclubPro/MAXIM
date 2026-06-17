@@ -21,6 +21,7 @@
 
 - For runtime-affecting changes in `apps/api`, `apps/miniapp`, `packages/contracts`, Prisma, Docker, or MAX integration, the default finish is: local validation plus VPS deploy, unless the user explicitly says not to deploy.
 - Docs, `AGENTS.md`, `README.md`, test-only changes, and cleanup changes do not require VPS deploy unless the user asks for it.
+- CDN/app2 mini app delivery is paused as the default path. For routine mini app work, deploy and verify the direct VPS/origin path at `https://maxim.play-team.ru/app/`; publish or smoke `app2.major-maksimov.ru` only when the user explicitly asks for CDN/restricted-LTE work.
 - After every completed task, do a short self-learning pass before handoff:
   - fix small issues revealed by the work while the context is still fresh, if they are clearly in scope and low risk
   - add or update `AGENTS.md` only with durable, repo-verified knowledge that will speed future work or prevent repeated mistakes
@@ -84,7 +85,7 @@
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
 - For MAX mini app top safe-area fixes, do not apply `safeTop`/CSS safe-area values as a blanket content offset; some MAX WebViews already account for system UI. Prefer `visualViewport` plus actual element measurements for guards around floating top controls.
 - Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
-- `npm run screenshots:miniapp` defaults to `https://major-maksimov.ru/app/`; for local UI checks, set `MINIAPP_SCREENSHOT_BASE_URL` to the local Vite `/app/` URL.
+- `npm run screenshots:miniapp` defaults to `https://major-maksimov.ru/app/`; for current production-origin UI checks, set `MINIAPP_SCREENSHOT_BASE_URL=https://maxim.play-team.ru/app/`; for local UI checks, set it to the local Vite `/app/` URL.
 - For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
 - Native mini app emulator/screenshots (`--target native`) install the safe MAX Bridge visual shim by default; use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for browser-without-bridge checks.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
@@ -119,8 +120,9 @@
 - If plain SSH stalls before the banner or times out, treat that as a Yandex Cloud access issue first. Prefer `yc compute ssh` as the recovery path and verify that the VM security group allows `22/tcp` from the current public IP.
 - Keep Yandex Cloud service-account keys only in local ignored files or configured `yc` profiles, never in git.
 - `maxim.play-team.ru` enters through the Yandex edge VM `maxim-site-edge-1` (`84.201.186.244`, `maxim-vps-edge`), where HAProxy TCP-proxies `80/443` to the backend VM private IP `10.130.0.29`; deploy and runtime rollback still run on the backend host (`maxim-vps`), not on edge. The edge public IP uses Yandex DDoS Protection/Qrator, so keep edge `eth0` MTU at `1450` (TCP MSS 1410 expectation) when touching network config.
+- Use `https://maxim.play-team.ru/app/` as the primary direct mini app URL while CDN/app2 delivery is paused. Do not publish Object Storage or run `app2.major-maksimov.ru` CDN smokes for routine mini app changes unless the user explicitly resumes CDN/restricted-LTE work.
 - `major-maksimov.ru`, `www.major-maksimov.ru`, and `app.major-maksimov.ru` currently enter through the Yandex edge IP `84.201.186.244`; `app.major-maksimov.ru` should redirect to the canonical `major-maksimov.ru`. Keep `/app/` as the direct/origin mini app path and keep the root page clear of internal infrastructure details. Do not assume this edge is reachable on every restricted LTE operator: it can work on Megafon/Wi-Fi and still fail on MTS/Beeline before HTML, JS, redirects, TLS app logic, or nginx routing are usable.
-- `app2.major-maksimov.ru/app/` is the operator-reachable production mini app shell for restricted LTE. It is served by Yandex CDN in front of the Object Storage website endpoint `flex-craft-canary-20260608.website.yandexcloud.net`, bucket `flex-craft-canary-20260608`, prefix `app/`; verify it with a cache-busting query and expect `x-major-app-cdn-canary: yandex-cdn-prod-app2`. Use this URL for MAX mini app settings when restricted-LTE reachability matters; direct Object Storage URLs are diagnostic/provider fallbacks, and `major-maksimov.ru/app/` remains the origin/direct path for already-reachable networks.
+- `app2.major-maksimov.ru/app/` is the operator-reachable production mini app shell for restricted LTE, but it is not the default deployment/smoke target while CDN work is paused. It is served by Yandex CDN in front of the Object Storage website endpoint `flex-craft-canary-20260608.website.yandexcloud.net`, bucket `flex-craft-canary-20260608`, prefix `app/`; verify it with a cache-busting query and expect `x-major-app-cdn-canary: yandex-cdn-prod-app2` only during explicit CDN/restricted-LTE work. Direct Object Storage URLs are diagnostic/provider fallbacks.
 - The Object Storage build published to `app2` must keep `VITE_PUBLIC_BASE_PATH=/app/`, `VITE_ROUTER_MODE=hash`, `VITE_API_BASE=https://api-cdn.flex-craft.ru/api/v1`, and `VITE_API_FALLBACK_BASES=https://major-maksimov.ru/api/v1`. The VPS `miniapp-major-static` origin remains browser-router and should prefer the direct API first: `VITE_API_BASE=https://major-maksimov.ru/api/v1`, `VITE_API_FALLBACK_BASES=https://api-cdn.flex-craft.ru/api/v1`. Object Storage has no SPA fallback for arbitrary `/app/chat/...` paths; if app2/browser-router deep links leak, users can see XML `NoSuchKey` before JS starts. Keep app2 routes as `/app/#/...` or MAX `startapp`, not direct `/app/<route>` URLs.
 - `api-cdn.flex-craft.ru` is a Yandex CDN API front door and only supports GET/HEAD/OPTIONS at the CDN layer. Mini app POST/PUT/PATCH/DELETE calls are expected to use the GET mutation tunnel (`apps/api/src/system/miniapp-mutation-tunnel.controller.ts`, `apps/miniapp/src/lib/api/transport-mutation-tunnel.ts`). When adding or changing a mini app write endpoint, update the tunnel allowlist and tests; otherwise it can work on direct `major-maksimov.ru` but fail through the restricted-LTE CDN path.
 - CDN-shell auth uses `Authorization: InitData <initData>` and CORS must allow `authorization, content-type`. Keep this aligned in API guards, transport tests, and CDN static headers.
@@ -150,8 +152,8 @@
   - rebuild only changed services
   - recreate containers with `--force-recreate`
   - check `/api/health/live` and `/api/health/ready` locally and publicly
-  - check `https://major-maksimov.ru/app/` when mini app flows were touched
-  - check `https://app2.major-maksimov.ru/app/?v=<stamp>` after publishing the restricted-LTE CDN shell
+  - check `https://maxim.play-team.ru/app/` when mini app flows were touched
+  - check `https://app2.major-maksimov.ru/app/?v=<stamp>` only after explicitly publishing the restricted-LTE CDN shell
 - During API deploys, `ready` can recover later than `live` while queues drain. Treat that as a recovery window first, not an instant regression.
 - If `/app/` returns `502`, check `docker compose ps miniapp-static` first.
 
