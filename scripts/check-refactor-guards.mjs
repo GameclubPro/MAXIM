@@ -35,8 +35,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 9127,
-    targetLines: 7000,
+    maxLines: 6514,
+    targetLines: 6000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
@@ -237,14 +237,14 @@ const runtimeEntrypointBoundaryGuards = [
 const miniappCssMetricGuards = [
   {
     name: 'hardcoded color references outside tokens.css',
-    max: 7208,
+    max: 6291,
     count: countMiniappCssHardcodedColorReferences,
     reason:
       'New colors should be introduced through semantic design tokens instead of component-local literals.',
   },
   {
     name: '!important declarations',
-    max: 10,
+    max: 8,
     count: countMiniappCssImportantDeclarations,
     reason:
       'New cascade fixes should use layers, scopes, and tokens instead of adding specificity escapes.',

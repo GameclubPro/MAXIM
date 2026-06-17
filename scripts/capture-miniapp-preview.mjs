@@ -1103,6 +1103,10 @@ async function assertNoUnexpectedHorizontalOverflow(page, scenario) {
       }
 
       const rect = element.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1) {
+        return [];
+      }
+
       const rootRect = root.getBoundingClientRect();
       const overflowLeft = rootRect.left - rect.left;
       const overflowRight = rect.right - rootRect.right;

@@ -2,6 +2,7 @@
   /* Public giveaway route styles split from lazy-pages.css. */
 
   .giveaway-page {
+    display: grid;
     width: min(100%, 960px);
     margin: 0 auto;
     gap: 16px;
@@ -14,6 +15,11 @@
   margin: 0;
   padding: 0;
   gap: 0;
+}
+
+.design-preview__device-screen .giveaway-page--modal-only {
+  min-height: 100%;
+  height: 100%;
 }
 
 .giveaway-page__state-icon {
@@ -166,6 +172,10 @@
   justify-content: center;
   padding: max(12px, calc(env(safe-area-inset-top, 0px) + 12px)) 10px
     max(12px, calc(env(safe-area-inset-bottom, 0px) + 12px));
+}
+
+.design-preview__device-screen .giveaway-page__overlay {
+  position: absolute;
 }
 
 .giveaway-page__overlay-backdrop {

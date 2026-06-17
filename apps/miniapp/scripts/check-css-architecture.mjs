@@ -12,14 +12,14 @@ const importStatementPattern =
 const metricGuards = [
   {
     name: 'hardcoded color references outside tokens.css',
-    max: 7208,
+    max: 6291,
     count: countHardcodedColorReferences,
     reason:
       'New colors should be introduced through semantic design tokens instead of component-local literals.',
   },
   {
     name: '!important declarations',
-    max: 10,
+    max: 8,
     count: countImportantDeclarations,
     reason:
       'New cascade fixes should use layers, scopes, and tokens instead of adding specificity escapes.',
