@@ -1,0 +1,65 @@
+@layer components {
+.toast-stack {
+  --toast-bottom-offset: 98px;
+
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--app-safe-bottom) + var(--toast-bottom-offset));
+  transform: translateX(-50%);
+  width: min(92vw, 520px);
+  display: grid;
+  gap: var(--space-2);
+  z-index: 1700;
+  pointer-events: none;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: #fff;
+  pointer-events: auto;
+  box-shadow: 0 10px 24px rgba(24, 38, 52, 0.2);
+}
+
+.toast--info {
+  background: linear-gradient(140deg, #2b4d67, #203d53);
+}
+
+.toast--success {
+  background: linear-gradient(140deg, #1f9f7b, #17775d);
+}
+
+.toast--danger {
+  background: linear-gradient(140deg, #da5767, #b83d4d);
+}
+
+.toast__body {
+  display: grid;
+  gap: 3px;
+}
+
+.toast__body h4 {
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+}
+
+.toast__body p {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.8rem;
+}
+
+.toast__close {
+  border: 0;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+}
+}

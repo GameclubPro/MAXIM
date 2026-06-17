@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { cn } from '../../lib/cn';
 import type { ToastTone } from './ui-types';
+import './toast.css';
 
 type ToastInput = {
   title: string;

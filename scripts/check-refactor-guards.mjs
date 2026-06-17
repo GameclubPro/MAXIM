@@ -35,8 +35,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 5342,
-    targetLines: 5000,
+    maxLines: 3490,
+    targetLines: 3000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
@@ -45,6 +45,13 @@ const guardedFiles = [
     targetLines: 40,
     reason:
       'SegmentedControl base styles should stay component-owned while route-specific sizing stays scoped.',
+  },
+  {
+    path: 'apps/miniapp/src/components/ui/toast.css',
+    maxLines: 66,
+    targetLines: 52,
+    reason:
+      'Toast portal styles should stay component-owned while route-specific placement overrides stay scoped.',
   },
   {
     path: 'apps/miniapp/src/components/managed-broadcast-history-card.css',
@@ -66,6 +73,13 @@ const guardedFiles = [
     targetLines: 160,
     reason:
       'ManagedPollCard styles should stay component-owned while settings route overrides stay scoped.',
+  },
+  {
+    path: 'apps/miniapp/src/components/broadcast-schedule-planner.css',
+    maxLines: 1860,
+    targetLines: 1500,
+    reason:
+      'BroadcastSchedulePlanner base styles should stay component-owned instead of returning to lazy route CSS.',
   },
   {
     path: 'apps/miniapp/src/components/max-markdown-editor.css',
@@ -104,8 +118,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1655,
-    targetLines: 1500,
+    maxLines: 1600,
+    targetLines: 1450,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
   },

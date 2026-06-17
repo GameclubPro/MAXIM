@@ -56,6 +56,7 @@ import {
 } from '../lib/broadcast-schedule';
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
 import { useNativeBackHandler } from '../lib/native-back';
+import './broadcast-schedule-planner.css';
 
 type BroadcastSchedulePlannerProps = {
   value: string[];
