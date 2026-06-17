@@ -35,16 +35,30 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 9561,
+    maxLines: 9127,
     targetLines: 7000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1657,
+    maxLines: 1655,
     targetLines: 1500,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/settings-duration-editor.css',
+    maxLines: 198,
+    targetLines: 160,
+    reason:
+      'Settings duration editor CSS should stay focused and avoid returning to the lazy route bundle.',
+  },
+  {
+    path: 'apps/miniapp/src/components/dashboard/membership-activity-feed.css',
+    maxLines: 18,
+    targetLines: 18,
+    reason:
+      'Membership activity feed badge primitives should stay component-owned instead of leaking into shared startup CSS.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
@@ -76,10 +90,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/dashboard-events.css',
-    maxLines: 5110,
+    maxLines: 5112,
     targetLines: 3600,
     reason:
-      'Dashboard feed, participant sheet, and stats primitives should keep moving to scoped component CSS.',
+      'Dashboard feed, participant sheet, and stats primitives should keep moving to scoped component CSS; owner CSS may carry local bases removed from shared bundles.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-comments.css',

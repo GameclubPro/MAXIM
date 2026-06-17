@@ -32,6 +32,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
 import '../styles/lazy-pages.css';
 import '../styles/settings-drilldown-polish.css';
+import '../styles/settings-duration-editor.css';
 import '../styles/settings-route-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
@@ -3555,7 +3556,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const value = Number(draft[key]);
 
     return (
-      <div id={`mute-duration-${key}`} className="logs-violation-item__ban-config">
+      <div id={`mute-duration-${key}`} className="settings-duration-editor">
         <div className="settings-native-toggle__row">
           <div className="settings-native-toggle__title-wrap">
             <ClockIcon />
@@ -3566,12 +3567,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </output>
         </div>
 
-        <div className="logs-violation-item__ban-presets">
+        <div className="settings-duration-editor__presets">
           {AUTO_MUTE_DURATION_PRESET_HOURS.map((hours) => (
             <button
               key={hours}
               type="button"
-              className={cn('logs-violation-item__ban-preset', value === hours && 'is-active')}
+              className={cn('settings-duration-editor__preset', value === hours && 'is-active')}
               onClick={() => setMuteDurationValue(key, hours)}
             >
               {formatMuteDurationCompact(hours)}
@@ -3579,7 +3580,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ))}
         </div>
 
-        <div className="logs-violation-item__ban-config-controls">
+        <div className="settings-duration-editor__controls">
           <div className="ban-duration-stepper">
             <button
               type="button"
@@ -3602,7 +3603,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </button>
           </div>
 
-          <label className="logs-violation-item__hours-input">
+          <label className="settings-duration-editor__hours-input">
             <span>Часы</span>
             <input
               type="number"
@@ -3657,7 +3658,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <div className="settings-native-toggle__title-actions">
               <button
                 type="button"
-                className={cn('logs-violation-item__ban-preset', isOpen && 'is-active')}
+                className={cn(
+                  'settings-duration-editor__preset settings-duration-editor__preset--trigger',
+                  isOpen && 'is-active',
+                )}
                 onClick={() => toggleMuteDurationEditor(params.durationKey)}
               >
                 <ClockIcon />
@@ -8110,7 +8114,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <button
                                     type="button"
                                     className={cn(
-                                      'logs-violation-item__ban-preset',
+                                      'settings-duration-editor__preset settings-duration-editor__preset--trigger',
                                       openMuteDurationKey === 'duplicateMuteDurationHours' &&
                                         'is-active',
                                     )}

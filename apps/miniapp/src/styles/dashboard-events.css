@@ -3396,6 +3396,7 @@
 }
 
 .logs-violation-item {
+  display: grid;
   position: relative;
   border: 1px solid rgba(255, 255, 255, 0.8);
   background:
@@ -3702,6 +3703,7 @@ body.events-page-open .app-shell {
 }
 
 .events-stage__entity-avatar {
+  font-size: 0.74rem;
   width: 34px;
   min-width: 34px;
   height: 34px;

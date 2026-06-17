@@ -263,8 +263,7 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 .chat-card,
-.settings-section,
-.logs-violation-item {
+.settings-section {
   display: grid;
   gap: var(--space-3);
 }

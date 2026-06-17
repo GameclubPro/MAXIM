@@ -3,6 +3,7 @@ import { type MouseEvent, useMemo } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Spinner } from '../ui/spinner';
+import './membership-activity-feed.css';
 
 type MembershipActivityFeedProps = {
   title?: string | null;
