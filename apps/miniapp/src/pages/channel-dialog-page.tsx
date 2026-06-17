@@ -89,6 +89,7 @@ import { useNativeBackHandler } from '../lib/native-back';
 import { queryKeys } from '../lib/query-keys';
 import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
+import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
 
 const COMMENT_REACTION_OPTIONS = [

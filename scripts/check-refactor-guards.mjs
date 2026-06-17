@@ -41,10 +41,17 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1857,
-    targetLines: 1600,
+    maxLines: 1657,
+    targetLines: 1500,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
+    maxLines: 203,
+    targetLines: 180,
+    reason:
+      'Channel dialog image viewer CSS should remain a focused route-owned lightbox slice.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-stats.css',
