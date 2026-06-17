@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 import { useNativeBackHandler } from '../../lib/native-back';
+import './action-confirm-sheet.css';
 
 type ActionConfirmSheetProps = {
   id: string;

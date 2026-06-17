@@ -35,7 +35,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 6284,
+    maxLines: 6138,
     targetLines: 6000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
@@ -45,6 +45,13 @@ const guardedFiles = [
     targetLines: 90,
     reason:
       'MaxMarkdownEditor styles should stay component-owned and avoid leaking back into lazy route CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/components/ui/action-confirm-sheet.css',
+    maxLines: 190,
+    targetLines: 150,
+    reason:
+      'ActionConfirmSheet is a portal component; its sheet styles should stay component-owned.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-drilldown-core.css',
