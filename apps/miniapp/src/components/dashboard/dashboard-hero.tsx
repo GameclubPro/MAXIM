@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../ui/glass-card';
+import './dashboard-hero.css';
 
 type DashboardHeroChip = {
   label: string;

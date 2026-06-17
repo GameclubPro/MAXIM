@@ -159,6 +159,13 @@ const guardedFiles = [
       'Chat participant sheet styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
+    path: 'apps/miniapp/src/components/dashboard/dashboard-hero.css',
+    maxLines: 150,
+    targetLines: 120,
+    reason:
+      'DashboardHero styles should stay component-owned instead of returning to dashboard-events.css.',
+  },
+  {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
     maxLines: 203,
     targetLines: 180,
