@@ -35,16 +35,23 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 10894,
+    maxLines: 9561,
     targetLines: 7000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 4288,
-    targetLines: 3400,
+    maxLines: 1857,
+    targetLines: 1600,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/channel-stats.css',
+    maxLines: 3031,
+    targetLines: 2400,
+    reason:
+      'Channel stats owner CSS should stay scoped and avoid becoming another compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-route-polish.css',
