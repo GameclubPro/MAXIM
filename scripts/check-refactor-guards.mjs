@@ -35,9 +35,16 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 6514,
+    maxLines: 6393,
     targetLines: 6000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/settings-drilldown-core.css',
+    maxLines: 1323,
+    targetLines: 1100,
+    reason:
+      'Settings drilldown core CSS should own shell-scoped overrides without becoming another route dump.',
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
