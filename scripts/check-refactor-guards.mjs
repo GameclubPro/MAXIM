@@ -47,6 +47,13 @@ const guardedFiles = [
       'MaxMarkdownEditor styles should stay component-owned and avoid leaking back into lazy route CSS.',
   },
   {
+    path: 'apps/miniapp/src/components/max-rich-text-editor.css',
+    maxLines: 148,
+    targetLines: 115,
+    reason:
+      'MaxRichTextEditor base styles should stay component-owned and route overrides should stay scoped.',
+  },
+  {
     path: 'apps/miniapp/src/components/ui/action-confirm-sheet.css',
     maxLines: 190,
     targetLines: 150,
@@ -111,8 +118,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio.css',
-    maxLines: 5303,
-    targetLines: 3800,
+    maxLines: 5167,
+    targetLines: 3660,
     reason:
       'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',
   },

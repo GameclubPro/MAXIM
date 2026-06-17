@@ -12,6 +12,7 @@ import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markd
 import { cn } from '../lib/cn';
 import { renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
 import { useNativeBackHandler } from '../lib/native-back';
+import './max-rich-text-editor.css';
 
 export type MaxRichTextEditorHandle = {
   focus: () => void;
