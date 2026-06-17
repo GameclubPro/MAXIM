@@ -1016,21 +1016,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .managed-poll-card__head,
-  .managed-poll-card__meta-line,
-  .managed-poll-option-card__head {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .managed-poll-card__chips,
-  .managed-poll-option-card__meta {
-    justify-content: flex-start;
-  }
-
-  .managed-poll-card__footer-copy {
-    align-items: flex-start;
-  }
 }
 
 @media (min-width: 720px) {

@@ -69,8 +69,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/managed-poll-card.css',
-    maxLines: 190,
-    targetLines: 160,
+    maxLines: 206,
+    targetLines: 180,
     reason:
       'ManagedPollCard styles should stay component-owned while settings route overrides stay scoped.',
   },
@@ -118,8 +118,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/components.css',
-    maxLines: 1600,
-    targetLines: 1450,
+    maxLines: 1580,
+    targetLines: 1400,
     reason:
       'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
   },
