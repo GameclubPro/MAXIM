@@ -1,3 +1,4 @@
+@layer pages {
 /* Dashboard events styles. Consolidated to avoid layered route overrides. */
 
 .events-screen {
@@ -5105,4 +5106,5 @@ body.events-page-open .app-shell {
   .events-dashboard__activity {
     grid-template-columns: minmax(68px, 0.64fr) minmax(0, 1.36fr);
   }
+}
 }

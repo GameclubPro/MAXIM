@@ -6,7 +6,6 @@
     margin: 0 auto;
     gap: 16px;
   }
-}
 
 .giveaway-page--modal-only {
   width: 100%;
@@ -2284,4 +2283,5 @@
   .giveaway-page__prize-showcase.is-details .giveaway-page__prize-showcase-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
 }

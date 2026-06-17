@@ -16,7 +16,6 @@
       max(10px, calc(var(--safe-bottom) + 6px)) clamp(10px, 2vw, 16px);
     background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
   }
-}
 
 .channel-dialog-screen--suggest {
   color-scheme: light;
@@ -5475,4 +5474,5 @@ button.channel-dialog-message__avatar {
     height: 36px;
     min-height: 36px;
   }
+}
 }

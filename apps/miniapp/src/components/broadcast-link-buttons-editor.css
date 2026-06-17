@@ -1,3 +1,4 @@
+@layer components {
 .broadcast-link-editor {
   display: grid;
   gap: 12px;
@@ -466,4 +467,5 @@
     gap: 10px;
     padding: 11px;
   }
+}
 }

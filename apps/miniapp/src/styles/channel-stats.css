@@ -1,3 +1,4 @@
+@layer pages {
 /* Channel stats styles. Consolidated to avoid layered route overrides. */
 
 body.channel-stats-page-open {
@@ -3026,4 +3027,5 @@ body.channel-stats-page-open .channel-insights__body {
     padding-inline: 3px;
     font-size: 0.6rem;
   }
+}
 }

@@ -35,9 +35,44 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 11449,
-    targetLines: 9500,
+    maxLines: 10894,
+    targetLines: 7000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/components.css',
+    maxLines: 4288,
+    targetLines: 3400,
+    reason:
+      'Startup shared styles should stay focused on primitives; route-specific home styles should move to route/component CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/settings-route-polish.css',
+    maxLines: 5259,
+    targetLines: 3600,
+    reason:
+      'Settings route polish should keep shrinking into scoped route sections and component-owned styles.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/broadcast-studio.css',
+    maxLines: 5303,
+    targetLines: 3800,
+    reason:
+      'Broadcast composer/planner/history styles should keep moving to component-owned CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/dashboard-events.css',
+    maxLines: 5110,
+    targetLines: 3600,
+    reason:
+      'Dashboard feed, participant sheet, and stats primitives should keep moving to scoped component CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/channel-dialog-comments.css',
+    maxLines: 5478,
+    targetLines: 4200,
+    reason:
+      'Channel dialog route CSS should stay scoped and continue shrinking into focused dialog components.',
   },
   {
     path: 'packages/contracts/src/core.ts',
@@ -171,6 +206,23 @@ const runtimeEntrypointBoundaryGuards = [
   },
 ];
 
+const miniappCssMetricGuards = [
+  {
+    name: 'hardcoded color references outside tokens.css',
+    max: 7208,
+    count: countMiniappCssHardcodedColorReferences,
+    reason:
+      'New colors should be introduced through semantic design tokens instead of component-local literals.',
+  },
+  {
+    name: '!important declarations',
+    max: 10,
+    count: countMiniappCssImportantDeclarations,
+    reason:
+      'New cascade fixes should use layers, scopes, and tokens instead of adding specificity escapes.',
+  },
+];
+
 let failed = false;
 
 for (const guard of guardedFiles) {
@@ -220,6 +272,34 @@ for (const violation of findImportCycleViolations(root)) {
       `Import cycle detected: ${violation.cycle.join(' -> ')}`,
       'Production modules should stay acyclic so extraction work can move code behind stable boundaries.',
       `Allowed temporary facade cycles: ${allowedImportCycles.map((cycle) => cycle.name).join(', ')}`,
+    ].join('\n'),
+  );
+}
+
+for (const violation of findMiniappDirectCssLayerViolations(root)) {
+  failed = true;
+  console.error(
+    [
+      `${violation.importer} imports ${violation.cssPath} without full CSS cascade-layer coverage.`,
+      violation.reason,
+      'Every miniapp CSS file imported directly from TS/TSX/JS must be fully wrapped in an @layer block.',
+      'Keep globally imported base files routed through apps/miniapp/src/styles.css with @import ... layer(...).',
+    ].join('\n'),
+  );
+}
+
+for (const guard of miniappCssMetricGuards) {
+  const actual = guard.count(root);
+  if (actual <= guard.max) {
+    continue;
+  }
+
+  failed = true;
+  console.error(
+    [
+      `Miniapp CSS has ${actual} ${guard.name}, over the ${guard.max} refactor guard.`,
+      guard.reason,
+      'If this growth is intentional, update the guard in the same change with the architectural reason.',
     ].join('\n'),
   );
 }
@@ -340,6 +420,197 @@ function findImportCycleViolations(directory) {
   }
 }
 
+function findMiniappDirectCssLayerViolations(directory) {
+  const miniappSourceRoot = resolve(directory, 'apps/miniapp/src');
+  const violations = [];
+
+  for (const filePath of walkSourceFiles(miniappSourceRoot)) {
+    const contents = readFileSync(filePath, 'utf8');
+    for (const match of contents.matchAll(importStatementPattern)) {
+      const specifier = match[1] ?? match[2] ?? '';
+      if (!specifier.startsWith('.') || !specifier.endsWith('.css')) {
+        continue;
+      }
+
+      const cssPath = resolve(dirname(filePath), specifier);
+      const cssContents = readFileSync(cssPath, 'utf8');
+      if (toRepoPath(cssPath) === 'apps/miniapp/src/styles.css') {
+        const entrypointViolationReason = getCssEntrypointViolationReason(cssContents);
+        if (!entrypointViolationReason) {
+          continue;
+        }
+
+        violations.push({
+          importer: toRepoPath(filePath),
+          cssPath: toRepoPath(cssPath),
+          reason: entrypointViolationReason,
+        });
+        continue;
+      }
+
+      const layerViolationReason = getCssLayerViolationReason(cssContents);
+      if (!layerViolationReason) {
+        continue;
+      }
+
+      violations.push({
+        importer: toRepoPath(filePath),
+        cssPath: toRepoPath(cssPath),
+        reason: layerViolationReason,
+      });
+    }
+  }
+
+  return violations;
+}
+
+function countMiniappCssHardcodedColorReferences(directory) {
+  const cssFiles = walkFilesByExtension(resolve(directory, 'apps/miniapp/src'), new Set(['.css']));
+  const colorPattern =
+    /#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(|\bhwb\(|\bcolor-mix\(/gu;
+
+  let count = 0;
+  for (const filePath of cssFiles) {
+    if (toRepoPath(filePath) === 'apps/miniapp/src/styles/tokens.css') {
+      continue;
+    }
+
+    count += stripCssComments(readFileSync(filePath, 'utf8')).match(colorPattern)?.length ?? 0;
+  }
+
+  return count;
+}
+
+function countMiniappCssImportantDeclarations(directory) {
+  const cssFiles = walkFilesByExtension(resolve(directory, 'apps/miniapp/src'), new Set(['.css']));
+  let count = 0;
+
+  for (const filePath of cssFiles) {
+    count += stripCssComments(readFileSync(filePath, 'utf8')).match(/!important\b/gu)?.length ?? 0;
+  }
+
+  return count;
+}
+
+function getCssLayerViolationReason(contents) {
+  const withoutComments = stripCssComments(contents);
+  const trimmed = withoutComments.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const importViolation = findUnlayeredCssImport(trimmed);
+  if (importViolation) {
+    return `CSS @import must include layer(...): ${importViolation}`;
+  }
+
+  if (!/^@layer\s+[-\w.]+(?:\s*,\s*[-\w.]+)*\s*\{/u.test(trimmed)) {
+    return 'The file must start with a wrapping @layer <name> { ... } block.';
+  }
+
+  const endIndex = findMatchingBlockEnd(trimmed, trimmed.indexOf('{'));
+  if (endIndex < 0) {
+    return 'The opening @layer block is not balanced.';
+  }
+
+  const trailing = trimmed.slice(endIndex + 1).trim();
+  if (trailing) {
+    return 'Top-level CSS remains after the opening @layer block; keep the whole file inside the layer.';
+  }
+
+  return null;
+}
+
+function getCssEntrypointViolationReason(contents) {
+  const withoutComments = stripCssComments(contents);
+  const trimmed = withoutComments.trim();
+  if (!trimmed) {
+    return 'The global CSS entrypoint must declare cascade layers and import layered CSS files.';
+  }
+
+  const importViolation = findUnlayeredCssImport(trimmed);
+  if (importViolation) {
+    return `CSS @import must include layer(...): ${importViolation}`;
+  }
+
+  const withoutLayerList = trimmed.replace(
+    /^@layer\s+[-\w.]+(?:\s*,\s*[-\w.]+)*\s*;\s*/u,
+    '',
+  );
+  const withoutLayeredImports = withoutLayerList
+    .replace(/@import\s+(?:url\()?['"][^'"]+\.css['"]\)?\s+layer\([-\w.]+\)\s*;\s*/gu, '')
+    .trim();
+
+  if (withoutLayeredImports) {
+    return 'The global CSS entrypoint may only declare layer order and import CSS with layer(...).';
+  }
+
+  return null;
+}
+
+function findUnlayeredCssImport(contents) {
+  const importPattern = /@import\s+(?:url\()?['"][^'"]+\.css['"]\)?[^;]*;/gu;
+  for (const match of contents.matchAll(importPattern)) {
+    if (!/\blayer\s*\(/u.test(match[0])) {
+      return match[0];
+    }
+  }
+
+  return null;
+}
+
+function findMatchingBlockEnd(contents, openBraceIndex) {
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+
+  for (let index = openBraceIndex; index < contents.length; index += 1) {
+    const char = contents[index];
+
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = '';
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function stripLeadingCssTrivia(contents) {
+  return contents.replace(/^(?:\s|\/\*[\s\S]*?\*\/)*/u, '');
+}
+
+function stripCssComments(contents) {
+  return contents.replace(/\/\*[\s\S]*?\*\//gu, '');
+}
+
 function findRuntimeImportSpecifiers(contents) {
   const specifiers = [];
   for (const match of contents.matchAll(importStatementPattern)) {
@@ -414,6 +685,29 @@ function walkSourceFiles(directory) {
     }
 
     if (stats.isFile() && sourceExtensions.has(readExtension(entry))) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
+function walkFilesByExtension(directory, extensions) {
+  const entries = readdirSync(directory);
+  const files = [];
+
+  for (const entry of entries) {
+    const entryPath = resolve(directory, entry);
+    const stats = statSync(entryPath);
+    if (stats.isDirectory()) {
+      if (ignoredDirectoryNames.has(entry)) {
+        continue;
+      }
+      files.push(...walkFilesByExtension(entryPath, extensions));
+      continue;
+    }
+
+    if (stats.isFile() && extensions.has(readExtension(entry))) {
       files.push(entryPath);
     }
   }

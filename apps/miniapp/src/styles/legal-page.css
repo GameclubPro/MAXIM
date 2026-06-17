@@ -1,3 +1,4 @@
+@layer pages {
 .legal-page {
   width: min(100%, var(--app-shell-max-width));
   min-height: var(--app-viewport-height);
@@ -155,4 +156,5 @@
   .legal-footer {
     padding: 18px;
   }
+}
 }

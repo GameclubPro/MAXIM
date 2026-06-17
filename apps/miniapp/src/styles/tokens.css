@@ -12,15 +12,56 @@
   --warning: #f0a42b;
   --danger: #e45363;
 
+  --color-ink: var(--text-primary);
+  --color-ink-muted: var(--text-secondary);
+  --color-ink-subtle: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-surface: #ffffff;
+  --color-surface-raised: rgba(255, 255, 255, 0.94);
+  --color-surface-muted: #f5f9fc;
+  --color-surface-tint: rgba(239, 247, 255, 0.94);
+  --color-border: rgba(218, 229, 240, 0.82);
+  --color-border-strong: rgba(190, 205, 220, 0.86);
+  --color-scrim: rgba(17, 31, 45, 0.38);
+  --favorite-important-text: #9a6200;
+  --favorite-important-bg: #fff0bd;
+  --favorite-watch-text: #9a2f3f;
+  --favorite-watch-bg: #ffe0e5;
+  --favorite-broadcast-text: #145e91;
+  --favorite-broadcast-bg: #dff2ff;
+  --favorite-test-text: #566120;
+  --favorite-test-bg: #eef8c2;
+  --favorite-partner-text: #6c3d8d;
+  --favorite-partner-bg: #efe3ff;
+  --favorite-service-text: #285f54;
+  --favorite-service-bg: #dff6ef;
+
   --glass-bg: rgba(255, 255, 255, 0.78);
   --glass-border: rgba(218, 229, 240, 0.82);
   --glass-shadow: 0 14px 30px rgba(42, 78, 110, 0.1);
   --glass-blur: 14px;
 
+  --surface-page: var(--color-surface-muted);
+  --surface-card: var(--color-surface-raised);
+  --surface-card-muted: var(--color-surface-tint);
+  --surface-overlay: var(--color-surface-raised);
+  --border-subtle: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --shadow-xs: 0 6px 14px rgba(36, 73, 102, 0.06);
+  --shadow-sm: 0 10px 24px rgba(36, 73, 102, 0.08);
+  --shadow-md: 0 18px 38px rgba(32, 76, 110, 0.12);
+  --shadow-lg: 0 24px 58px rgba(20, 43, 64, 0.18);
+
   --radius-xs: 10px;
   --radius-sm: 14px;
   --radius-md: 16px;
   --radius-lg: 22px;
+  --radius-xl: 28px;
+  --radius-pill: 999px;
 
   --space-1: 6px;
   --space-2: 10px;
@@ -44,6 +85,17 @@
   --app-topbar-radius: 22px;
   --app-bottom-nav-radius: 24px;
   --app-bottom-nav-height: 68px;
+  --z-bottom-nav: 20;
+  --z-sticky: 40;
+  --z-header: 60;
+  --z-sheet: 900;
+  --z-modal: 1200;
+  --z-toast: 1600;
+  --motion-duration-fast: 0.16s;
+  --motion-duration-base: 0.24s;
+  --motion-duration-slow: 0.38s;
+  --motion-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @supports (height: 100dvh) {

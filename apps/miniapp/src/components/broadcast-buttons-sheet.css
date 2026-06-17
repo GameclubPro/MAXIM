@@ -1,3 +1,4 @@
+@layer components {
 .broadcast-buttons-sheet {
   position: fixed;
   inset: 0;
@@ -159,4 +160,5 @@
   .broadcast-buttons-sheet__panel {
     border-radius: 14px 14px 0 0;
   }
+}
 }

@@ -88,6 +88,7 @@
 - For focused screenshot checks, set `MINIAPP_SCREENSHOT_SCENARIOS`, `MINIAPP_SCREENSHOT_DEVICE`, and `MINIAPP_SCREENSHOT_BASE_URL` instead of running every preview scenario.
 - Native mini app emulator/screenshots (`--target native`) install the safe MAX Bridge visual shim by default; use `--no-max-bridge` or `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only for browser-without-bridge checks.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
+- Direct mini app CSS imports from TS/TSX must be fully wrapped in an explicit `@layer` block; `apps/miniapp/src/styles.css` is the only global CSS entrypoint and must keep imports as `@import ... layer(...)`. Use `npm run check:miniapp-css` for the focused guard.
 - For Android MAX WebView file pickers, use a real transparent `<input type="file">` overlay on the tapped control; hidden 1px inputs plus programmatic `click()`/`showPicker()` can fail to open the picker.
 - For time-only mini app inputs, use shared `TimeField` instead of native `<input type="time">`; Android MAX WebViews can hide native picker action buttons.
 - Chat and channel broadcast/autoposting compose screens share components but keep page-level footer/validation copy in `apps/miniapp/src/pages/settings-page.legacy.tsx` and `apps/miniapp/src/pages/channel-settings-page.tsx`; keep those labels synchronized.

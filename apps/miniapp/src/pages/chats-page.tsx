@@ -85,6 +85,7 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './page-preloads';
+import './chats-page.css';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';

@@ -19,6 +19,7 @@ import { getInitDataUserId } from '../../lib/init-data';
 import { useNativeBackHandler } from '../../lib/native-back';
 import type { ApplySectionKey } from '../settings-page-state';
 import { APPLY_TARGET_FAVORITE_ICONS, SECTION_LABELS } from './settings-page-helpers';
+import './settings-apply-target-sheet.css';
 
 type ApplyTargetSheetState = {
   section: ApplySectionKey;

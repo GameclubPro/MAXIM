@@ -1,3 +1,4 @@
+@layer pages {
 /* Settings route density and channel settings polish split from lazy-pages.css. */
 
 body.settings-home-page-open {
@@ -5254,4 +5255,5 @@ body.channel-settings-page-open .app-shell {
   .settings-drilldown__panel--post-suggestions-screen .field textarea {
     min-height: 64px;
   }
+}
 }

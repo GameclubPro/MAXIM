@@ -1,3 +1,4 @@
+@layer pages {
 /* Settings drilldown route polish split from lazy-pages.css. */
 
 .settings-drilldown__panel--board {
@@ -519,4 +520,5 @@
     flex-direction: column;
     align-items: flex-start;
   }
+}
 }

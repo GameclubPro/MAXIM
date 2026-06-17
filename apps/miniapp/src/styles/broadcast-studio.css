@@ -1,3 +1,4 @@
+@layer pages {
 /* Broadcast studio route styles split from lazy-pages.css. */
 
 .settings-drilldown__panel--mailing,
@@ -5298,4 +5299,5 @@
 .settings-drilldown__panel--broadcast-screen .broadcast-studio-screen__nav {
   position: static;
   top: auto;
+}
 }

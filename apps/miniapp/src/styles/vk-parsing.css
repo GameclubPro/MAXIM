@@ -1,3 +1,4 @@
+@layer pages {
 /* VK parsing: compact operational layout. */
 .settings-drilldown__panel--vk-parsing {
   --settings-panel-accent: #0a7cff;
@@ -1696,4 +1697,5 @@
     padding-inline: 6px;
     font-size: 10px;
   }
+}
 }

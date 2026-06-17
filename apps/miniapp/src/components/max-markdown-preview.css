@@ -1,3 +1,4 @@
+@layer components {
 .max-markdown-preview {
   display: block;
   min-width: 0;
@@ -61,4 +62,5 @@
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
 }

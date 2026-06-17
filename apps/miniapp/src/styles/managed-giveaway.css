@@ -1,3 +1,4 @@
+@layer pages {
 /* Managed giveaway and broadcast audience sheet styles split from lazy-pages.css. */
 
 .managed-giveaway__hero-head {
@@ -2631,4 +2632,5 @@
 .managed-giveaway__dashboard-prize-chip.is-repeat em {
   grid-column: 2;
   grid-row: 1 / span 2;
+}
 }

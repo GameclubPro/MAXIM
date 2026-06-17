@@ -6,6 +6,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { queryKeys } from '../lib/query-keys';
 import { preloadSystemPage } from '../pages/page-preloads';
 import { GlassCard } from './ui/glass-card';
+import './system-entry-card.css';
 
 export function SystemEntryCard({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();

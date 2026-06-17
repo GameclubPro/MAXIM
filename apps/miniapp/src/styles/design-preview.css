@@ -1,3 +1,4 @@
+@layer pages {
 /* Design preview scaffold styles split from lazy-pages.css. */
 
 .design-preview {
@@ -167,4 +168,5 @@
   .design-preview__dock {
     position: static;
   }
+}
 }

@@ -1,3 +1,4 @@
+@layer pages {
 .channel-dialog-screen--comments {
   color-scheme: light;
   --comments-native-bg: #eaf6f8;
@@ -850,4 +851,5 @@
       0 14px 30px var(--comments-native-shadow-soft),
       inset 0 1px 0 rgba(255, 255, 255, 0.055);
   }
+}
 }

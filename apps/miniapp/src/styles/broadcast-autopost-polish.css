@@ -1,3 +1,4 @@
+@layer pages {
 /* Compact autopost workspace. */
 
 body.settings-drilldown-open .toast-stack {
@@ -2017,4 +2018,5 @@ body.settings-drilldown-open .toast__close {
   .settings-drilldown__panel--broadcast-screen .broadcast-planner__compact-action {
     min-width: 76px;
   }
+}
 }

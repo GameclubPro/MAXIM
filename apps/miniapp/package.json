@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit && vite build && node scripts/check-budgets.mjs",
     "budget": "node scripts/check-budgets.mjs",
+    "check:css": "node scripts/check-css-architecture.mjs",
     "preview": "vite preview",
     "typecheck": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit",
     "test": "tsx --test ./test/*.test.ts"

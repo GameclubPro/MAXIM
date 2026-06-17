@@ -1,3 +1,4 @@
+@layer pages {
 /* Lazy route styles: loaded only with non-startup mini app screens. */
 
 .settings-policy {
@@ -10889,4 +10890,5 @@ body.channel-stats-page-open .channel-insights__body {
     min-width: 96px;
     max-width: min(136px, calc(100% - 16px));
   }
+}
 }

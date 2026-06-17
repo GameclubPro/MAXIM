@@ -1,4 +1,4 @@
-@layer pages {
+@layer components {
   .settings-handoff-card {
     position: relative;
     overflow: hidden;
@@ -18,7 +18,6 @@
       0 22px 46px rgba(32, 66, 96, 0.12),
       inset 0 1px 0 rgba(255, 255, 255, 0.74);
   }
-}
 
 .settings-handoff-card::before {
   content: '';
@@ -270,4 +269,5 @@
   .settings-handoff__actions {
     grid-template-columns: minmax(0, 1fr);
   }
+}
 }
