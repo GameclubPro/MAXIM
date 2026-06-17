@@ -35,8 +35,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 6138,
-    targetLines: 6000,
+    maxLines: 5818,
+    targetLines: 5600,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
@@ -52,6 +52,13 @@ const guardedFiles = [
     targetLines: 150,
     reason:
       'ActionConfirmSheet is a portal component; its sheet styles should stay component-owned.',
+  },
+  {
+    path: 'apps/miniapp/src/components/bot-speech-message-editor-sheet.css',
+    maxLines: 320,
+    targetLines: 260,
+    reason:
+      'Bot speech editor sheet styles should stay with the lazy-loaded sheet component.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-drilldown-core.css',

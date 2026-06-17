@@ -7,6 +7,7 @@ import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text
 import { cn } from '../lib/cn';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { useNativeBackHandler } from '../lib/native-back';
+import './bot-speech-message-editor-sheet.css';
 
 type BotSpeechMessageEditorSheetProps = {
   title: string;
