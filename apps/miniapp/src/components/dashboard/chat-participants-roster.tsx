@@ -2,6 +2,7 @@ import type { ChatParticipantItem } from '@maxim/contracts';
 import { useEffect, useRef } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
+import './chat-participants-roster.css';
 
 type ChatParticipantsRosterProps = {
   items: ChatParticipantItem[];

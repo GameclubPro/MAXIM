@@ -145,6 +145,13 @@ const guardedFiles = [
       'Membership activity feed styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
+    path: 'apps/miniapp/src/components/dashboard/chat-participants-roster.css',
+    maxLines: 560,
+    targetLines: 500,
+    reason:
+      'Chat participants roster styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
+  },
+  {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',
     maxLines: 203,
     targetLines: 180,
