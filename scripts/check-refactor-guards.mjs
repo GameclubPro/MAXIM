@@ -35,7 +35,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 3490,
+    maxLines: 3290,
     targetLines: 3000,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
@@ -178,6 +178,13 @@ const guardedFiles = [
     targetLines: 130,
     reason:
       'BroadcastStudioChecklist styles should stay component-owned instead of returning to broadcast route CSS.',
+  },
+  {
+    path: 'apps/miniapp/src/components/message-limits-blocked-word-presets.css',
+    maxLines: 220,
+    targetLines: 170,
+    reason:
+      'MessageLimitsBlockedWordPresets styles should stay component-owned instead of returning to lazy route CSS.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { cn } from '../lib/cn';
+import './message-limits-blocked-word-presets.css';
 import {
   mergeMessageLimitsBlockedWords,
   normalizeMessageLimitsBlockedWords,
