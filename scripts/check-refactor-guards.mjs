@@ -139,10 +139,10 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/components/dashboard/membership-activity-feed.css',
-    maxLines: 18,
-    targetLines: 18,
+    maxLines: 600,
+    targetLines: 520,
     reason:
-      'Membership activity feed badge primitives should stay component-owned instead of leaking into shared startup CSS.',
+      'Membership activity feed styles should stay component-owned after moving its base and responsive rules out of dashboard-events.css.',
   },
   {
     path: 'apps/miniapp/src/styles/channel-dialog-image-viewer.css',

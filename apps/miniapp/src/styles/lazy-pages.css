@@ -3344,10 +3344,6 @@
   width: min(100%, 680px);
 }
 
-.membership-feed {
-  gap: 8px;
-}
-
 @media (max-width: 700px) {
   .settings-home-sticky-header .compact-page-header__bar,
   .channel-settings-screen__sticky-header .compact-page-header__bar {
