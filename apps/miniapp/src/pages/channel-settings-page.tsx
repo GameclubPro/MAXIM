@@ -18,7 +18,6 @@ import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-route-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
-import '../components/broadcast-content-composer.css';
 import '../styles/broadcast-autopost-polish.css';
 import {
   Suspense,

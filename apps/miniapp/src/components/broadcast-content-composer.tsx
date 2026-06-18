@@ -1,6 +1,7 @@
 import { type BroadcastImage, type BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useRef, useState } from 'react';
+import './broadcast-content-composer.css';
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
