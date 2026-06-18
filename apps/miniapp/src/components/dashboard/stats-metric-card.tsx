@@ -1,4 +1,5 @@
 import { GlassCard } from '../ui/glass-card';
+import './stats-metric-card.css';
 
 type StatsMetricCardProps = {
   label: string;

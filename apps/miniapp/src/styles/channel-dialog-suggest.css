@@ -357,6 +357,23 @@
   animation: channelSuggestImagePulse 1.35s ease-in-out infinite;
 }
 
+@keyframes channelSuggestImageSweep {
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes channelSuggestImagePulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(0.92);
+  }
+}
+
 .channel-suggest-composer__image-remove {
   position: absolute;
   top: 7px;

@@ -2622,23 +2622,6 @@ button.channel-dialog-message__avatar {
   }
 }
 
-@keyframes channelSuggestImageSweep {
-  to {
-    transform: translateX(120%);
-  }
-}
-
-@keyframes channelSuggestImagePulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-
-  50% {
-    transform: scale(0.92);
-  }
-}
-
 @keyframes dialogSubmitSpin {
   to {
     transform: rotate(360deg);
