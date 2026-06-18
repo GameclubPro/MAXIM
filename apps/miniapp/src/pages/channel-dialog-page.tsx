@@ -91,6 +91,7 @@ import { tokenizeTextLinks } from '../lib/text-links';
 import '../styles/channel-dialog-comments.css';
 import '../styles/channel-dialog-image-viewer.css';
 import '../styles/channel-dialog-native-comments.css';
+import '../styles/channel-dialog-suggest.css';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
