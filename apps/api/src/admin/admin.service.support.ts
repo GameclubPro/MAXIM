@@ -814,9 +814,7 @@ export const CHANNEL_STATS_ACTIVITY_ACTIONS = [
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
 ] as const;
-export const CHANNEL_STATS_MISSING_METRICS = ['uniqueViews'] as const;
 export const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
-export type ChannelStatsViewMode = 'observedDelta' | 'latestTotal';
 export type ChannelStatsPostRow = {
   id: string;
   messageId: string;
@@ -844,15 +842,16 @@ export type ChannelStatsSummaryWindowRow = {
 export type ChannelStatsPostViewMetric = {
   post: ChannelStatsPostRow;
   viewsDelta: number;
-  viewsCurrent: number;
-  hasObservedDelta: boolean;
 };
 export type ChannelStatsContentBucketPoint = {
   at: string;
   posts: number;
   viewsDelta: number;
-  viewsTotal: number;
   reactions: number;
+};
+export type ChannelStatsViewsBucketPoint = {
+  at: string;
+  views: number;
 };
 export type ChannelStatsPeriodTotals = {
   joined: number;
@@ -860,7 +859,6 @@ export type ChannelStatsPeriodTotals = {
   net: number;
   posts: number;
   views: number;
-  viewsTotal: number;
   averageViewsPerPost: number;
   reactions: number;
 };
@@ -872,8 +870,6 @@ export type ChannelStatsPreviousPeriodSnapshot = {
   series: ChannelStatsComparisonSeries;
 };
 export type ChannelStatsDeltaMetric = ChannelStatsResponse['comparison']['deltas']['views'];
-export type ChannelStatsSignalTone = ChannelStatsResponse['signals']['insights'][number]['tone'];
-export type ChannelStatsSignal = ChannelStatsResponse['signals']['insights'][number];
 export type ChannelStatsGraphMarker = ChannelStatsResponse['signals']['markers'][number];
 export type ChannelStatsBestWindow = ChannelStatsResponse['signals']['bestWindows'][number];
 export const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;

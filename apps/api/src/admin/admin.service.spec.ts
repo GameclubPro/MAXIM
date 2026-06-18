@@ -17742,7 +17742,7 @@ describe('AdminService.getChannelStats', () => {
     jest.useRealTimers();
   });
 
-  it('uses observed view deltas for period charts when latest totals are larger', () => {
+  it('builds period views chart from observed deltas only', () => {
     const service = new AdminService(
       createPrismaMock() as never,
       {} as never,
@@ -17750,65 +17750,94 @@ describe('AdminService.getChannelStats', () => {
       createConfigMock() as never,
     );
     const statsHelpers = service as unknown as {
-      resolveChannelStatsViewsMode: (totals: {
-        viewsDelta: number;
-        viewsTotal: number;
-      }) => 'observedDelta' | 'latestTotal';
-      buildViewsSeriesFromContentSeries: (
-        contentSeries: Array<{
-          at: string;
-          posts: number;
+      buildAverageViewsSeriesFromPostMetrics: (
+        bucketStarts: Date[],
+        postViewMetrics: Array<{
+          post: {
+            publishedAt: Date;
+          };
           viewsDelta: number;
-          viewsTotal: number;
-          reactions: number;
         }>,
-        mode: 'observedDelta' | 'latestTotal',
-      ) => Array<{ at: string; views: number; cumulativeViews: number }>;
+        bucket: 'hour' | 'day',
+      ) => Array<{ at: string; views: number }>;
     };
 
-    const mode = statsHelpers.resolveChannelStatsViewsMode({
-      viewsDelta: 120,
-      viewsTotal: 1_000,
-    });
-    const series = statsHelpers.buildViewsSeriesFromContentSeries(
+    const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
+      [new Date('2026-03-07T09:00:00.000Z'), new Date('2026-03-07T10:00:00.000Z')],
       [
         {
-          at: '2026-03-07T09:00:00.000Z',
-          posts: 1,
+          post: {
+            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+          },
           viewsDelta: 45,
-          viewsTotal: 500,
-          reactions: 0,
         },
         {
-          at: '2026-03-07T10:00:00.000Z',
-          posts: 0,
+          post: {
+            publishedAt: new Date('2026-03-07T10:15:00.000Z'),
+          },
           viewsDelta: 75,
-          viewsTotal: 500,
-          reactions: 0,
         },
       ],
-      mode,
+      'hour',
     );
 
-    expect(mode).toBe('observedDelta');
     expect(series).toEqual([
       {
         at: '2026-03-07T09:00:00.000Z',
         views: 45,
-        cumulativeViews: 45,
       },
       {
         at: '2026-03-07T10:00:00.000Z',
         views: 75,
-        cumulativeViews: 120,
       },
     ]);
-    expect(
-      statsHelpers.resolveChannelStatsViewsMode({
-        viewsDelta: 0,
-        viewsTotal: 1_000,
-      }),
-    ).toBe('observedDelta');
+  });
+
+  it('builds the views chart as average views per post, not a summed bucket total', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildAverageViewsSeriesFromPostMetrics: (
+        bucketStarts: Date[],
+        postViewMetrics: Array<{
+          post: {
+            publishedAt: Date;
+          };
+          viewsDelta: number;
+        }>,
+        bucket: 'hour' | 'day',
+      ) => Array<{ at: string; views: number }>;
+    };
+
+    const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
+      [new Date('2026-03-07T00:00:00.000Z')],
+      [
+        {
+          post: {
+            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+          },
+          viewsDelta: 100,
+        },
+        {
+          post: {
+            publishedAt: new Date('2026-03-07T10:15:00.000Z'),
+          },
+          viewsDelta: 300,
+        },
+      ],
+      'day',
+    );
+
+    expect(series).toEqual([
+      {
+        at: '2026-03-07T00:00:00.000Z',
+        views: 200,
+      },
+    ]);
   });
 
   it('returns official-first channel stats without reading channel settings', async () => {
@@ -17855,38 +17884,13 @@ describe('AdminService.getChannelStats', () => {
           bucket_start: new Date('2026-03-03T00:00:00.000Z'),
           posts: createDecimalLike(1),
           views_delta: createDecimalLike(150),
-          views_total: createDecimalLike(150),
           reactions: createDecimalLike(5),
         },
         {
           bucket_start: new Date('2026-03-06T00:00:00.000Z'),
           posts: createDecimalLike(1),
           views_delta: createDecimalLike(260),
-          views_total: createDecimalLike(260),
           reactions: createDecimalLike(7),
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 'wh-ch-int-1',
-          created_at: new Date('2026-03-03T09:00:00.000Z'),
-          event_type: 'user_added',
-          user_id: 'user-10',
-          sender_name: 'Андрей',
-        },
-        {
-          id: 'wh-ch-int-2',
-          created_at: new Date('2026-03-04T09:00:00.000Z'),
-          event_type: 'user_added',
-          user_id: 'user-12',
-          sender_name: 'Ольга',
-        },
-        {
-          id: 'wh-ch-int-3',
-          created_at: new Date('2026-03-05T09:00:00.000Z'),
-          event_type: 'user_removed',
-          user_id: 'user-11',
-          sender_name: 'Елена',
         },
       ])
       .mockResolvedValueOnce([
@@ -18026,9 +18030,7 @@ describe('AdminService.getChannelStats', () => {
         latestSnapshotAt: new Date('2026-03-07T11:00:00.000Z'),
       },
     ];
-    prisma.channelPost.findMany
-      .mockResolvedValueOnce(channelPosts)
-      .mockResolvedValueOnce([...channelPosts].reverse());
+    prisma.channelPost.findMany.mockResolvedValueOnce(channelPosts);
     prisma.channelPostViewSnapshot.findMany.mockResolvedValue([
       {
         channelPostId: 'post-1',
@@ -18127,8 +18129,6 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.content).toEqual({
       posts: 2,
       views: 410,
-      viewsTotal: 410,
-      viewsMode: 'observedDelta',
       reactions: 12,
       topReactions: [
         { emoji: '🔥', count: 7 },
@@ -18140,7 +18140,6 @@ describe('AdminService.getChannelStats', () => {
           messageId: 'mid-2',
           publishedAt: '2026-03-06T14:00:00.000Z',
           url: 'https://max.ru/news/post-2',
-          views: 260,
           viewsDelta: 260,
           reactions: 7,
         },
@@ -18148,7 +18147,6 @@ describe('AdminService.getChannelStats', () => {
           messageId: 'mid-1',
           publishedAt: '2026-03-03T07:00:00.000Z',
           url: 'https://max.ru/news/post-1',
-          views: 150,
           viewsDelta: 150,
           reactions: 5,
         },
@@ -18185,7 +18183,6 @@ describe('AdminService.getChannelStats', () => {
       viewsAvailable: true,
       churnAvailable: true,
       officialCoverageFrom: '2026-02-28T08:00:00.000Z',
-      missingOfficialMetrics: ['uniqueViews'],
       refreshQueued: false,
     });
     expect(result.activityFeed).toEqual({
@@ -18242,7 +18239,6 @@ describe('AdminService.getChannelStats', () => {
     expect(membershipSqlText).toContain('ORDER BY bucket_start ASC');
     const contentSqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]);
     expect(contentSqlText).toContain('channel_stats_bucket_rollups');
-    expect(contentSqlText).toContain('views_total');
     expect(contentSqlText).toContain("date_trunc('day', bucket_start)");
     expect(contentSqlText).toContain('channel_post_view_snapshots');
     expect(contentSqlText).toContain('ORDER BY first_snapshot.captured_at ASC');
@@ -18336,7 +18332,7 @@ describe('AdminService.getChannelStats', () => {
           displayName: null,
           chatTitle: null,
         },
-        { range: '7d', includeActivityPreview: false, includeIntelligence: false },
+        { range: '7d', includeActivityPreview: false },
       )
       .then((result) => {
         resolvedResult = result;
@@ -18450,7 +18446,7 @@ describe('AdminService.getChannelStats', () => {
           displayName: null,
           chatTitle: null,
         },
-        { range, includeActivityPreview: false, includeIntelligence: false },
+        { range, includeActivityPreview: false },
       );
 
       expect(result.period.range).toBe(range);
@@ -18498,7 +18494,6 @@ describe('AdminService.getChannelStats', () => {
           bucket_start: new Date('2026-03-07T09:00:00.000Z'),
           posts: '1',
           views_delta: '0',
-          views_total: '44',
           reactions: '0',
         },
       ])
@@ -18580,7 +18575,7 @@ describe('AdminService.getChannelStats', () => {
         displayName: null,
         chatTitle: null,
       },
-      { range: '24h', includeIntelligence: false },
+      { range: '24h' },
     );
 
     expect(result.channel).toEqual({
@@ -18601,8 +18596,6 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.content).toEqual({
       posts: 1,
       views: 0,
-      viewsTotal: 44,
-      viewsMode: 'observedDelta',
       reactions: 0,
       topReactions: [],
       topPosts: [
@@ -18610,7 +18603,6 @@ describe('AdminService.getChannelStats', () => {
           messageId: 'mid-1',
           publishedAt: '2026-03-07T09:00:00.000Z',
           url: null,
-          views: 44,
           viewsDelta: 0,
           reactions: 0,
         },

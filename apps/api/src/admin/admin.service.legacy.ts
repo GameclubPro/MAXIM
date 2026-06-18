@@ -141,7 +141,6 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { buildChannelStatsIntelligence } from './channel-stats-intelligence';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -396,7 +395,6 @@ import {
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
   CHANNEL_STATS_POST_ACTIONS,
   CHANNEL_STATS_ACTIVITY_ACTIONS,
-  CHANNEL_STATS_MISSING_METRICS,
   CHANNEL_STATS_REFRESH_STALE_MS,
   CHANNEL_COMMENT_DUPLICATE_WINDOW_MS,
   CHANNEL_COMMENT_MAX_CONSECUTIVE,
@@ -467,18 +465,16 @@ import {
   type ChannelSuggestionDeliveryInput,
   type ModerationViolationRow,
   type MembershipEventRow,
-  type ChannelStatsViewMode,
   type ChannelStatsPostRow,
   type ChannelStatsViewSnapshotRow,
   type ChannelStatsSummaryWindowRow,
   type ChannelStatsPostViewMetric,
   type ChannelStatsContentBucketPoint,
+  type ChannelStatsViewsBucketPoint,
   type ChannelStatsPeriodTotals,
   type ChannelStatsComparisonSeries,
   type ChannelStatsPreviousPeriodSnapshot,
   type ChannelStatsDeltaMetric,
-  type ChannelStatsSignalTone,
-  type ChannelStatsSignal,
   type ChannelStatsGraphMarker,
   type ChannelStatsBestWindow,
   type ChannelDialogMessageSource,
@@ -6625,7 +6621,6 @@ export class AdminService implements OnModuleDestroy {
           totalMs,
           range: parsed.data.range,
           includeActivityPreview: parsed.data.includeActivityPreview,
-          includeIntelligence: parsed.data.includeIntelligence,
           cacheHit: false,
           refreshQueued: response.meta.refreshQueued,
         },
@@ -6658,11 +6653,9 @@ export class AdminService implements OnModuleDestroy {
       audienceSnapshots,
       syncState,
       periodPosts,
-      recentPosts,
       anyPost,
       membershipBucketRows,
       contentBucketRows,
-      membershipRows,
       summaryAudienceSnapshots,
       summaryWindowRows,
     ] = await Promise.all([
@@ -6769,35 +6762,12 @@ export class AdminService implements OnModuleDestroy {
           latestSnapshotAt: true,
         },
       }),
-      this.prisma.channelPost.findMany({
-        where: {
-          chatId,
-          latestViews: { gt: 0 },
-        },
-        orderBy: { publishedAt: 'desc' },
-        take: 20,
-        select: {
-          id: true,
-          messageId: true,
-          publishedAt: true,
-          url: true,
-          latestViews: true,
-          latestReactions: true,
-          latestReactionsTotal: true,
-          latestSnapshotAt: true,
-        },
-      }),
       this.prisma.channelPost.findFirst({
         where: { chatId },
         select: { id: true },
       }),
       selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to: now, bucket }),
       selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to: now, bucket }),
-      statsQuery.includeIntelligence
-        ? this.getMembershipEventRows(chatId, from, now, ['user_added', 'user_removed'], {
-            order: 'asc',
-          })
-        : Promise.resolve([]),
       this.prisma.channelAudienceSnapshot.findMany({
         where: {
           chatId,
@@ -6937,17 +6907,20 @@ export class AdminService implements OnModuleDestroy {
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
     const contentTotals = this.buildContentTotals(contentSeries);
     const postViewMetrics = this.buildPostViewMetrics(periodPosts, viewSnapshots, from);
+    const periodViews = this.sumChannelPostMetricViews(postViewMetrics);
+    const viewsSeries = this.buildAverageViewsSeriesFromPostMetrics(
+      bucketStarts,
+      postViewMetrics,
+      bucket,
+    );
     const summary = this.buildChannelStatsSummary({
       participantsCount,
       audienceSnapshots: summaryAudienceSnapshots,
-      recentPosts,
       summaryWindowRows,
       now,
+      periodAverageViewsPerPost:
+        contentTotals.posts > 0 ? Math.round(periodViews / contentTotals.posts) : null,
     });
-    const viewsMode = this.resolveChannelStatsViewsMode(contentTotals);
-    const viewsSeries = this.buildViewsSeriesFromContentSeries(contentSeries, viewsMode);
-    const periodViews = viewsSeries.reduce((total, item) => total + item.views, 0);
-    const periodViewsTotal = contentTotals.viewsTotal;
     const topReactions = this.buildTopReactions(periodPosts);
     const topPosts = this.buildTopPosts(postViewMetrics);
     const participantSeries = this.buildParticipantSeries(
@@ -6982,7 +6955,6 @@ export class AdminService implements OnModuleDestroy {
       net: joined - left,
       posts: contentTotals.posts,
       views: periodViews,
-      viewsTotal: periodViewsTotal,
       averageViewsPerPost:
         contentTotals.posts > 0 ? Math.round(periodViews / contentTotals.posts) : 0,
       reactions: contentTotals.reactions,
@@ -6996,26 +6968,11 @@ export class AdminService implements OnModuleDestroy {
       },
       previousPeriod.series,
     );
-    const health = this.buildChannelStatsHealth({
-      totals: currentTotals,
-      comparison,
-      maxSnapshotAvailable,
-      viewsAvailable: Boolean(anyPost),
-      churnAvailable,
-      suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
-      suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
-    });
     const signals = this.buildChannelStatsSignals({
-      totals: currentTotals,
-      comparison,
       topPosts,
       membershipSeries,
       viewsSeries,
       postViewMetrics,
-      range: statsQuery.range,
-      maxSnapshotAvailable,
-      suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
-      suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
     });
     const response: ChannelStatsResponse = {
       channel: {
@@ -7043,8 +7000,6 @@ export class AdminService implements OnModuleDestroy {
         content: {
           posts: contentTotals.posts,
           views: periodViews,
-          viewsTotal: periodViewsTotal,
-          viewsMode,
           reactions: contentTotals.reactions,
           topReactions,
           topPosts,
@@ -7078,34 +7033,12 @@ export class AdminService implements OnModuleDestroy {
           syncState,
           earliestAudienceSnapshot?.capturedAt ?? null,
         ),
-        missingOfficialMetrics: [...CHANNEL_STATS_MISSING_METRICS],
         refreshQueued,
       },
       comparison,
-      health,
       signals,
       activityFeed,
     };
-    if (statsQuery.includeIntelligence) {
-      response.intelligence = buildChannelStatsIntelligence({
-        totals: currentTotals,
-        previousTotals,
-        comparison,
-        signals,
-        membershipRows,
-        participantSeries,
-        postViewMetrics,
-        secondary: {
-          commentAuthors: this.toSafeInteger(secondary.comment_authors),
-          suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
-          comments: this.toSafeInteger(secondary.comments),
-          suggestions: this.toSafeInteger(secondary.suggestions),
-          postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
-        },
-        maxSnapshotAvailable,
-        range: statsQuery.range,
-      });
-    }
 
     return channelStatsResponseSchema.parse(response);
   }
@@ -7120,7 +7053,6 @@ export class AdminService implements OnModuleDestroy {
       userId,
       query.range,
       `activity=${query.includeActivityPreview ? 1 : 0}`,
-      `intelligence=${query.includeIntelligence ? 1 : 0}`,
     ].join(':');
   }
 
@@ -15853,8 +15785,13 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     bucket: ChannelStatsBucket,
   ): Promise<ChannelStatsPreviousPeriodSnapshot> {
-    const [membershipBucketRows, contentBucketRows, previousAudienceSnapshot, audienceSnapshots] =
-      await Promise.all([
+    const [
+      membershipBucketRows,
+      contentBucketRows,
+      previousAudienceSnapshot,
+      audienceSnapshots,
+      periodPosts,
+    ] = await Promise.all([
         selectChannelStatsMembershipBucketRows(this.prisma, { chatId, from, to, bucket }),
         selectChannelStatsContentBucketRows(this.prisma, { chatId, from, to, bucket }),
         this.prisma.channelAudienceSnapshot.findFirst({
@@ -15878,14 +15815,53 @@ export class AdminService implements OnModuleDestroy {
             participantsCount: true,
           },
         }),
+        this.prisma.channelPost.findMany({
+          where: {
+            chatId,
+            publishedAt: { gte: from, lte: to },
+          },
+          orderBy: { publishedAt: 'asc' },
+          select: {
+            id: true,
+            messageId: true,
+            publishedAt: true,
+            url: true,
+            latestViews: true,
+            latestReactions: true,
+            latestReactionsTotal: true,
+            latestSnapshotAt: true,
+          },
+        }),
       ]);
 
+    const viewSnapshots =
+      periodPosts.length > 0
+        ? await this.prisma.channelPostViewSnapshot.findMany({
+            where: {
+              channelPostId: {
+                in: periodPosts.map((post) => post.id),
+              },
+              capturedAt: { gte: from, lte: to },
+            },
+            orderBy: [{ channelPostId: 'asc' }, { capturedAt: 'asc' }],
+            select: {
+              channelPostId: true,
+              views: true,
+              reactionsTotal: true,
+              capturedAt: true,
+            },
+          })
+        : [];
     const bucketStarts = this.buildChannelStatsBucketStarts(from, to, bucket);
     const contentSeries = this.buildContentSeriesFromBucketRows(bucketStarts, contentBucketRows);
     const contentTotals = this.buildContentTotals(contentSeries);
-    const viewsMode = this.resolveChannelStatsViewsMode(contentTotals);
-    const viewsSeries = this.buildViewsSeriesFromContentSeries(contentSeries, viewsMode);
-    const views = viewsSeries.reduce((total, item) => total + item.views, 0);
+    const postViewMetrics = this.buildPostViewMetrics(periodPosts, viewSnapshots, from);
+    const viewsSeries = this.buildAverageViewsSeriesFromPostMetrics(
+      bucketStarts,
+      postViewMetrics,
+      bucket,
+    );
+    const views = this.sumChannelPostMetricViews(postViewMetrics);
 
     const membershipSeries = this.buildMembershipSeriesFromBucketRows(
       bucketStarts,
@@ -15907,7 +15883,6 @@ export class AdminService implements OnModuleDestroy {
         net: joined - left,
         posts: contentTotals.posts,
         views,
-        viewsTotal: contentTotals.viewsTotal,
         averageViewsPerPost: contentTotals.posts > 0 ? Math.round(views / contentTotals.posts) : 0,
         reactions: contentTotals.reactions,
       },
@@ -15965,166 +15940,18 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private buildChannelStatsHealth(params: {
-    totals: ChannelStatsPeriodTotals;
-    comparison: ChannelStatsResponse['comparison'];
-    maxSnapshotAvailable: boolean;
-    viewsAvailable: boolean;
-    churnAvailable: boolean;
-    suggestionsDelivered: number;
-    suggestionsFailed: number;
-  }): ChannelStatsResponse['health'] {
-    let score = 72;
-    const factors: ChannelStatsResponse['health']['factors'] = [];
-    const addFactor = (
-      code: string,
-      label: string,
-      tone: ChannelStatsSignalTone,
-      impact: number,
-    ) => {
-      score += impact;
-      factors.push({ code, label, tone, impact });
-    };
-
-    if (params.totals.net > 0) {
-      addFactor('growth', 'Рост', 'success', Math.min(12, 4 + Math.round(params.totals.net / 12)));
-    } else if (params.totals.net < 0) {
-      addFactor(
-        'negative-growth',
-        'Отток',
-        'danger',
-        -Math.min(18, 6 + Math.round(Math.abs(params.totals.net) / 10)),
-      );
-    }
-
-    if (params.churnAvailable && params.totals.left > Math.max(2, params.totals.joined)) {
-      addFactor('churn', 'Отток', 'warning', -10);
-    }
-
-    const viewsDelta = params.comparison.deltas.views;
-    if (params.viewsAvailable && viewsDelta.previous > 0) {
-      if (typeof viewsDelta.percent === 'number' && viewsDelta.percent >= 20) {
-        addFactor('views-up', 'Просмотры', 'success', 8);
-      } else if (typeof viewsDelta.percent === 'number' && viewsDelta.percent <= -20) {
-        addFactor('views-down', 'Просмотры', 'warning', -10);
-      }
-    }
-
-    const engagementRate =
-      params.totals.views > 0 ? (params.totals.reactions / params.totals.views) * 100 : null;
-    if (engagementRate !== null) {
-      if (engagementRate >= 4) {
-        addFactor('engagement', 'Реакции', 'success', 7);
-      } else if (engagementRate < 0.4) {
-        addFactor('low-engagement', 'Реакции', 'warning', -6);
-      }
-    }
-
-    if (params.viewsAvailable && params.totals.posts === 0) {
-      addFactor('no-posts', 'Пауза', 'warning', -8);
-    }
-
-    const deliveryTotal = params.suggestionsDelivered + params.suggestionsFailed;
-    if (deliveryTotal > 0 && params.suggestionsFailed / deliveryTotal >= 0.25) {
-      addFactor('delivery', 'Доставка', 'warning', -6);
-    }
-
-    if (!params.maxSnapshotAvailable) {
-      addFactor('max-snapshot', 'MAX', 'warning', -8);
-    }
-
-    const normalizedScore = Math.max(0, Math.min(100, Math.round(score)));
-    return {
-      score: normalizedScore,
-      tone: this.resolveChannelStatsScoreTone(normalizedScore),
-      factors: factors
-        .sort((left, right) => Math.abs(right.impact) - Math.abs(left.impact))
-        .slice(0, 4),
-    };
-  }
-
-  private resolveChannelStatsScoreTone(score: number): ChannelStatsSignalTone {
-    if (score >= 85) {
-      return 'success';
-    }
-
-    if (score >= 70) {
-      return 'accent';
-    }
-
-    if (score >= 50) {
-      return 'warning';
-    }
-
-    return 'danger';
-  }
-
   private buildChannelStatsSignals(params: {
-    totals: ChannelStatsPeriodTotals;
-    comparison: ChannelStatsResponse['comparison'];
     topPosts: ChannelStatsResponse['official']['content']['topPosts'];
     membershipSeries: ChannelStatsResponse['official']['series']['membership'];
     viewsSeries: ChannelStatsResponse['official']['series']['views'];
     postViewMetrics: ChannelStatsPostViewMetric[];
-    range: ChannelStatsRange;
-    maxSnapshotAvailable: boolean;
-    suggestionsDelivered: number;
-    suggestionsFailed: number;
   }): ChannelStatsResponse['signals'] {
-    const insights: ChannelStatsSignal[] = [];
-    const alerts: ChannelStatsSignal[] = [];
     const markers: ChannelStatsGraphMarker[] = [];
     const bestWindows = this.buildChannelStatsBestWindows(params.postViewMetrics);
 
-    const addInsight = (
-      code: string,
-      label: string,
-      value: string,
-      tone: ChannelStatsSignalTone,
-      at: string | null = null,
-    ) => {
-      insights.push({ code, label, value, tone, at });
-    };
-    const addAlert = (
-      code: string,
-      label: string,
-      value: string,
-      tone: ChannelStatsSignalTone,
-      at: string | null = null,
-    ) => {
-      alerts.push({ code, label, value, tone, at });
-    };
-
-    const viewsDelta = params.comparison.deltas.views;
-    if (viewsDelta.current > 0 || viewsDelta.previous > 0) {
-      addInsight(
-        'views-delta',
-        'Просмотры',
-        this.formatChannelStatsDeltaValue(viewsDelta),
-        this.resolveChannelStatsDeltaTone(viewsDelta, false),
-      );
-    }
-
-    const audienceDelta = params.comparison.deltas.audienceNet;
-    if (params.totals.net !== 0 || audienceDelta.previous !== 0) {
-      addInsight(
-        params.totals.net >= 0 ? 'audience-growth' : 'audience-loss',
-        params.totals.net >= 0 ? 'Рост' : 'Отток',
-        this.formatChannelStatsSignedInteger(params.totals.net),
-        params.totals.net >= 0 ? 'success' : 'danger',
-      );
-    }
-
     const topPost = params.topPosts[0] ?? null;
     if (topPost) {
-      const topPostValue = topPost.viewsDelta || topPost.views;
-      addInsight(
-        'top-post',
-        'Лучший пост',
-        this.formatChannelStatsCompactCount(topPostValue),
-        'accent',
-        topPost.publishedAt,
-      );
+      const topPostValue = topPost.viewsDelta;
       markers.push({
         code: 'top-post',
         type: 'post',
@@ -16133,11 +15960,6 @@ export class AdminService implements OnModuleDestroy {
         tone: 'accent',
         at: topPost.publishedAt,
       });
-    }
-
-    const bestWindow = bestWindows[0] ?? null;
-    if (bestWindow) {
-      addInsight('best-window', 'Окно', this.formatChannelStatsWindowValue(bestWindow), 'success');
     }
 
     const peakView = params.viewsSeries.reduce<(typeof params.viewsSeries)[number] | null>(
@@ -16169,39 +15991,7 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    if (
-      typeof viewsDelta.percent === 'number' &&
-      viewsDelta.previous >= 100 &&
-      viewsDelta.percent <= -25
-    ) {
-      addAlert('views-drop', 'Просмотры', this.formatChannelStatsDeltaValue(viewsDelta), 'warning');
-    }
-
-    if (params.totals.net < 0) {
-      addAlert(
-        'audience-drop',
-        'Отток',
-        this.formatChannelStatsSignedInteger(params.totals.net),
-        'danger',
-      );
-    }
-
-    if (params.range !== '24h' && params.totals.posts === 0) {
-      addAlert('no-posts', 'Пауза', '0 постов', 'warning');
-    }
-
-    const deliveryTotal = params.suggestionsDelivered + params.suggestionsFailed;
-    if (deliveryTotal > 0 && params.suggestionsFailed / deliveryTotal >= 0.25) {
-      addAlert('delivery-errors', 'Доставка', `${params.suggestionsFailed}`, 'warning');
-    }
-
-    if (!params.maxSnapshotAvailable) {
-      addAlert('max-snapshot', 'MAX', 'нет снимка', 'warning');
-    }
-
     return {
-      insights: insights.slice(0, 4),
-      alerts: alerts.slice(0, 4),
       markers: markers.slice(0, 8),
       bestWindows,
     };
@@ -16222,7 +16012,7 @@ export class AdminService implements OnModuleDestroy {
     >();
 
     for (const metric of postViewMetrics) {
-      const views = Math.max(0, metric.viewsDelta || metric.viewsCurrent);
+      const views = Math.max(0, metric.viewsDelta);
       if (views <= 0) {
         continue;
       }
@@ -16273,31 +16063,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private resolveChannelStatsDeltaTone(
-    metric: ChannelStatsDeltaMetric,
-    inverse: boolean,
-  ): ChannelStatsSignalTone {
-    if (metric.absolute === 0) {
-      return 'neutral';
-    }
-
-    const positive = inverse ? metric.absolute < 0 : metric.absolute > 0;
-    return positive ? 'success' : 'warning';
-  }
-
-  private formatChannelStatsDeltaValue(metric: ChannelStatsDeltaMetric): string {
-    if (typeof metric.percent === 'number' && Math.abs(metric.percent) >= 1) {
-      const rounded = Math.round(metric.percent);
-      return `${rounded > 0 ? '+' : ''}${rounded}%`;
-    }
-
-    if (metric.absolute !== 0) {
-      return this.formatChannelStatsSignedInteger(metric.absolute);
-    }
-
-    return '0';
-  }
-
   private formatChannelStatsSignedInteger(value: number): string {
     const normalized = this.toSafeInteger(value);
     return normalized > 0 ? `+${normalized}` : String(normalized);
@@ -16308,12 +16073,6 @@ export class AdminService implements OnModuleDestroy {
       notation: 'compact',
       maximumFractionDigits: 1,
     }).format(Math.max(0, this.toSafeInteger(value)));
-  }
-
-  private formatChannelStatsWindowValue(window: ChannelStatsBestWindow): string {
-    const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-    const day = days[window.dayOfWeek] ?? '';
-    return `${day} ${String(window.hour).padStart(2, '0')}:00`;
   }
 
   private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
@@ -16433,16 +16192,13 @@ export class AdminService implements OnModuleDestroy {
         previousViews = currentViews;
       }
 
-      const viewsCurrent = Math.max(0, this.toSafeInteger(post.latestViews));
-      const hasObservedDelta =
+      const hasPeriodDelta =
         Boolean(postSnapshots && postSnapshots.length > 0) &&
         (post.publishedAt.getTime() >= from.getTime() || (postSnapshots?.length ?? 0) >= 2);
 
       return {
         post,
-        viewsDelta: hasObservedDelta ? viewsDelta : 0,
-        viewsCurrent,
-        hasObservedDelta,
+        viewsDelta: hasPeriodDelta ? viewsDelta : 0,
       };
     });
   }
@@ -16450,9 +16206,9 @@ export class AdminService implements OnModuleDestroy {
   private buildChannelStatsSummary(params: {
     participantsCount: number | null;
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
-    recentPosts: ChannelStatsPostRow[];
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
     now: Date;
+    periodAverageViewsPerPost: number | null;
   }): ChannelStatsResponse['summary'] {
     const sortedAudienceSnapshots = params.audienceSnapshots
       .slice()
@@ -16481,7 +16237,6 @@ export class AdminService implements OnModuleDestroy {
       params.summaryWindowRows,
       params.now,
     );
-    const perPost = this.resolveRecentMedianViewsPerPost(params.recentPosts);
     const er24 =
       viewWindows.last24h > 0 && viewWindows.reactions24h > 0
         ? Math.round((viewWindows.reactions24h / viewWindows.last24h) * 10_000) / 100
@@ -16495,7 +16250,7 @@ export class AdminService implements OnModuleDestroy {
         sixteenDaysDelta: resolveDelta(16 * TWENTY_FOUR_HOURS_MS),
       },
       views: {
-        perPost,
+        perPost: params.periodAverageViewsPerPost,
         last24h: viewWindows.last24h,
         last48h: viewWindows.last48h,
         er24,
@@ -16624,23 +16379,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private resolveRecentMedianViewsPerPost(posts: ChannelStatsPostRow[]): number | null {
-    const values = posts
-      .map((post) => Math.max(0, this.toSafeInteger(post.latestViews)))
-      .filter((value) => value > 0)
-      .sort((left, right) => left - right);
-    if (values.length === 0) {
-      return null;
-    }
-
-    const middle = Math.floor(values.length / 2);
-    if (values.length % 2 === 1) {
-      return values[middle] ?? null;
-    }
-
-    return Math.round(((values[middle - 1] ?? 0) + (values[middle] ?? 0)) / 2);
-  }
-
   private resolveLastAudienceCountAt(
     snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     at: Date,
@@ -16693,12 +16431,10 @@ export class AdminService implements OnModuleDestroy {
       const current = grouped.get(key) ?? {
         posts: 0,
         viewsDelta: 0,
-        viewsTotal: 0,
         reactions: 0,
       };
       current.posts += this.toSafeInteger(row.posts);
       current.viewsDelta += this.toSafeInteger(row.views_delta);
-      current.viewsTotal += this.toSafeInteger(row.views_total);
       current.reactions += this.toSafeInteger(row.reactions);
       grouped.set(key, current);
     }
@@ -16707,14 +16443,12 @@ export class AdminService implements OnModuleDestroy {
       const current = grouped.get(bucketStart.toISOString()) ?? {
         posts: 0,
         viewsDelta: 0,
-        viewsTotal: 0,
         reactions: 0,
       };
       return {
         at: bucketStart.toISOString(),
         posts: current.posts,
         viewsDelta: current.viewsDelta,
-        viewsTotal: current.viewsTotal,
         reactions: current.reactions,
       };
     });
@@ -16725,61 +16459,65 @@ export class AdminService implements OnModuleDestroy {
       (totals, item) => ({
         posts: totals.posts + item.posts,
         viewsDelta: totals.viewsDelta + item.viewsDelta,
-        viewsTotal: totals.viewsTotal + item.viewsTotal,
         reactions: totals.reactions + item.reactions,
       }),
       {
         posts: 0,
         viewsDelta: 0,
-        viewsTotal: 0,
         reactions: 0,
       },
     );
   }
 
-  private resolveChannelStatsViewsMode(totals: {
-    viewsDelta: number;
-    viewsTotal: number;
-  }): ChannelStatsViewMode {
-    void totals;
-    return 'observedDelta';
+  private sumChannelPostMetricViews(postViewMetrics: ChannelStatsPostViewMetric[]): number {
+    return postViewMetrics.reduce(
+      (total, metric) => total + Math.max(0, this.toSafeInteger(metric.viewsDelta)),
+      0,
+    );
   }
 
-  private buildViewsSeriesFromContentSeries(
-    contentSeries: ChannelStatsContentBucketPoint[],
-    mode: ChannelStatsViewMode,
-  ) {
-    let cumulativeViews = 0;
-    return contentSeries.map((bucket) => {
-      void mode;
-      const views = bucket.viewsDelta;
-      cumulativeViews += views;
+  private buildAverageViewsSeriesFromPostMetrics(
+    bucketStarts: Date[],
+    postViewMetrics: ChannelStatsPostViewMetric[],
+    bucket: ChannelStatsBucket,
+  ): ChannelStatsViewsBucketPoint[] {
+    const grouped = new Map<string, { posts: number; views: number }>();
+
+    for (const metric of postViewMetrics) {
+      const bucketStart = this.floorChannelStatsBucket(metric.post.publishedAt, bucket);
+      const key = bucketStart.toISOString();
+      const current = grouped.get(key) ?? { posts: 0, views: 0 };
+      current.posts += 1;
+      current.views += Math.max(0, metric.viewsDelta);
+      grouped.set(key, current);
+    }
+
+    return bucketStarts.map((bucketStart) => {
+      const current = grouped.get(bucketStart.toISOString()) ?? { posts: 0, views: 0 };
       return {
-        at: bucket.at,
-        views,
-        cumulativeViews,
+        at: bucketStart.toISOString(),
+        views: current.posts > 0 ? Math.round(current.views / current.posts) : 0,
       };
     });
   }
 
   private buildTopPosts(postViewMetrics: ChannelStatsPostViewMetric[]) {
     return postViewMetrics
+      .sort(
+        (left, right) =>
+          right.viewsDelta - left.viewsDelta ||
+          this.toSafeInteger(right.post.latestReactionsTotal) -
+            this.toSafeInteger(left.post.latestReactionsTotal) ||
+          left.post.publishedAt.getTime() - right.post.publishedAt.getTime(),
+      )
+      .slice(0, 5)
       .map((metric) => ({
         messageId: metric.post.messageId,
         publishedAt: metric.post.publishedAt.toISOString(),
         url: metric.post.url,
-        views: metric.viewsCurrent,
         viewsDelta: metric.viewsDelta,
         reactions: this.toSafeInteger(metric.post.latestReactionsTotal),
-      }))
-      .sort(
-        (left, right) =>
-          right.viewsDelta - left.viewsDelta ||
-          right.views - left.views ||
-          right.reactions - left.reactions ||
-          left.publishedAt.localeCompare(right.publishedAt),
-      )
-      .slice(0, 5);
+      }));
   }
 
   private buildTopReactions(

@@ -165,7 +165,6 @@ import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
   resolveAdminContactMentionTarget,
 } from '../common/admin-contact-link.util';
-import { buildChannelStatsIntelligence } from './channel-stats-intelligence';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -436,7 +435,6 @@ import {
   CONTRACT_FAVORITE_TYPE_BY_PRISMA,
   CHANNEL_STATS_POST_ACTIONS,
   CHANNEL_STATS_ACTIVITY_ACTIONS,
-  CHANNEL_STATS_MISSING_METRICS,
   CHANNEL_STATS_REFRESH_STALE_MS,
   CHANNEL_COMMENT_DUPLICATE_WINDOW_MS,
   CHANNEL_COMMENT_MAX_CONSECUTIVE,
@@ -519,7 +517,6 @@ import {
   type ManagedBroadcastTargetPreviewBundle,
   type ManagedBroadcastFailureBreakdown,
   type MembershipEventRow,
-  type ChannelStatsViewMode,
   type ChannelStatsPostRow,
   type ChannelStatsViewSnapshotRow,
   type ChannelStatsPostViewMetric,
@@ -528,8 +525,6 @@ import {
   type ChannelStatsComparisonSeries,
   type ChannelStatsPreviousPeriodSnapshot,
   type ChannelStatsDeltaMetric,
-  type ChannelStatsSignalTone,
-  type ChannelStatsSignal,
   type ChannelStatsGraphMarker,
   type ChannelStatsBestWindow,
   type ChannelDialogMessageSource,

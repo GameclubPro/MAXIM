@@ -983,7 +983,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             { signal },
             {
               includeActivityPreview: false,
-              includeIntelligence: false,
             },
           );
         },

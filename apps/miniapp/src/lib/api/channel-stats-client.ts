@@ -56,7 +56,6 @@ export async function getChannelStats(
   request: Pick<RequestInit, 'signal'> = {},
   options: Partial<{
     includeActivityPreview: boolean;
-    includeIntelligence: boolean;
   }> = {},
 ): Promise<ChannelStatsResponse> {
   const query = parseChannelStatsRange(range);
@@ -65,9 +64,6 @@ export async function getChannelStats(
   });
   if (options.includeActivityPreview === false) {
     params.set('includeActivityPreview', 'false');
-  }
-  if (options.includeIntelligence === false) {
-    params.set('includeIntelligence', 'false');
   }
 
   const response = await api.request(`/channels/${chatId}/stats?${params.toString()}`, request);

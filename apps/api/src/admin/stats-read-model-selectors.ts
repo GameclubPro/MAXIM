@@ -27,7 +27,6 @@ export type ChannelStatsContentBucketRow = {
   bucket_start: Date | string;
   posts: unknown;
   views_delta: unknown;
-  views_total: unknown;
   reactions: unknown;
 };
 
@@ -180,7 +179,6 @@ export async function selectChannelStatsContentBucketRows(
           date_trunc(${bucketSql}, bucket_start)::TIMESTAMP(3) AS bucket_start,
           COALESCE(SUM(posts), 0) AS posts,
           COALESCE(SUM(views_delta), 0) AS views_delta,
-          COALESCE(SUM(views_total), 0) AS views_total,
           COALESCE(SUM(reactions), 0) AS reactions
         FROM channel_stats_bucket_rollups
         WHERE chat_id = ${params.chatId}
@@ -193,7 +191,6 @@ export async function selectChannelStatsContentBucketRows(
           NULL::TIMESTAMP(3) AS bucket_start,
           0::BIGINT AS posts,
           0::BIGINT AS views_delta,
-          0::BIGINT AS views_total,
           0::BIGINT AS reactions
         WHERE FALSE
       `;
@@ -217,7 +214,6 @@ export async function selectChannelStatsContentBucketRows(
         date_trunc(${bucketSql}, published_at)::TIMESTAMP(3) AS bucket_start,
         COUNT(*) AS posts,
         0::BIGINT AS views_delta,
-        COALESCE(SUM(GREATEST(latest_views, 0)), 0) AS views_total,
         COALESCE(SUM(GREATEST(latest_reactions_total, 0)), 0) AS reactions
       FROM channel_posts
       WHERE chat_id = ${params.chatId}
@@ -243,7 +239,6 @@ export async function selectChannelStatsContentBucketRows(
           ),
           0
         ) AS views_delta,
-        0::BIGINT AS views_total,
         0::BIGINT AS reactions
       FROM channel_post_view_snapshots snapshots
       JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
@@ -275,7 +270,6 @@ export async function selectChannelStatsContentBucketRows(
         date_trunc(${bucketSql}, snapshots.captured_at)::TIMESTAMP(3) AS bucket_start,
         0::BIGINT AS posts,
         COALESCE(SUM(GREATEST(snapshots.views, 0)), 0) AS views_delta,
-        0::BIGINT AS views_total,
         0::BIGINT AS reactions
       FROM channel_posts posts
       JOIN LATERAL (
@@ -297,7 +291,6 @@ export async function selectChannelStatsContentBucketRows(
       bucket_start,
       COALESCE(SUM(posts), 0) AS posts,
       COALESCE(SUM(views_delta), 0) AS views_delta,
-      COALESCE(SUM(views_total), 0) AS views_total,
       COALESCE(SUM(reactions), 0) AS reactions
     FROM content_bucket_rows
     GROUP BY bucket_start

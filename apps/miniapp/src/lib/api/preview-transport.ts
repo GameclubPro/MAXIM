@@ -3599,7 +3599,6 @@ function buildChannelStats(
   range: ChannelStatsRange,
   options: Partial<{
     includeActivityPreview: boolean;
-    includeIntelligence: boolean;
   }> = {},
 ) {
   const now = new Date();
@@ -3694,7 +3693,6 @@ function buildChannelStats(
   });
   const posts = range === '24h' ? 3 : range === '7d' ? 14 : 42;
   const views = viewsSeries.reduce((sum, item) => sum + item.views, 0);
-  let cumulativeViews = 0;
   const reactions = Math.round(views * 0.06);
   const previousFrom = new Date(from.getTime() - (to.getTime() - from.getTime()));
   const previousTo = new Date(from.getTime() - 1);
@@ -3727,15 +3725,12 @@ function buildChannelStats(
       participantsCount: previousRunningParticipants,
     };
   });
-  let previousCumulativeViews = 0;
   const previousViewsSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(previousFrom.getTime() + stepMs * index);
     const value = previousViewsDistribution[index] ?? 0;
-    previousCumulativeViews += value;
     return {
       at: at.toISOString(),
       views: value,
-      cumulativeViews: previousCumulativeViews,
     };
   });
   const currentAverageViewsPerPost = Math.round((views * 1.24) / Math.max(1, posts));
@@ -3760,7 +3755,6 @@ function buildChannelStats(
       messageId: `preview-channel-post-${index + 1}`,
       publishedAt: addHours(now, -4 - index * 11).toISOString(),
       url: `https://max.ru/channels/yuzhnoe-news/${index + 1}`,
-      views: postViews,
       viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
       reactions: Math.round(postViews * 0.055),
     };
@@ -3776,15 +3770,6 @@ function buildChannelStats(
           : null
         : Math.round(((current - previous) / previous) * 1000) / 10,
   });
-  const buildBenchmark = (current: number, baseline: number) => ({
-    current: Math.round(current * 10) / 10,
-    baseline: Math.round(baseline * 10) / 10,
-    deltaPercent: baseline > 0 ? Math.round(((current - baseline) / baseline) * 1000) / 10 : null,
-  });
-  const currentReactionsPerPost = posts > 0 ? reactions / posts : 0;
-  const previousReactionsPerPost = previousPosts > 0 ? previousReactions / previousPosts : 0;
-  const currentEngagementRate = views > 0 ? (reactions / views) * 100 : 0;
-  const previousEngagementRate = previousViews > 0 ? (previousReactions / previousViews) * 100 : 0;
   const hotWindows = [
     { dayOfWeek: 4, hour: 18, posts: 3, averageViews: 5800, averageReactions: 310 },
     { dayOfWeek: 2, hour: 12, posts: 2, averageViews: 4900, averageReactions: 250 },
@@ -3795,37 +3780,6 @@ function buildChannelStats(
     ...item,
     score: item.averageViews + item.averageReactions * 12 + item.posts * 4,
   }));
-  const hotWindowByKey = new Map(
-    hotWindows.map((item) => [`${item.dayOfWeek}:${item.hour}`, item]),
-  );
-  const maxWindowScore = Math.max(...hotWindows.map((item) => item.score), 0);
-  const publishingHeatmap = Array.from({ length: 7 * 24 }, (_, index) => {
-    const dayOfWeek = Math.floor(index / 24);
-    const hour = index % 24;
-    const window = hotWindowByKey.get(`${dayOfWeek}:${hour}`);
-    const ratio = maxWindowScore > 0 && window ? window.score / maxWindowScore : 0;
-    const tone: ChannelStatsResponse['signals']['insights'][number]['tone'] =
-      ratio >= 0.72 ? 'success' : ratio >= 0.42 ? 'accent' : ratio >= 0.18 ? 'warning' : 'neutral';
-    return {
-      dayOfWeek,
-      hour,
-      score: window?.score ?? 0,
-      posts: window?.posts ?? 0,
-      averageViews: window?.averageViews ?? 0,
-      averageReactions: window?.averageReactions ?? 0,
-      tone,
-    };
-  });
-  const cohortJoined = Math.max(0, joined);
-  const cohortRetained = Math.max(0, joined - left);
-  const cohortParticipated = Math.min(
-    cohortJoined,
-    range === '24h' ? 18 : range === '7d' ? 52 : 140,
-  );
-  const forecastNet = Math.round(
-    (joined - left) * (range === '24h' ? 18 : range === '7d' ? 4.2 : 1),
-  );
-  const forecastParticipants = Math.max(0, state.channelHeaderParticipantsCount + forecastNet);
 
   const response: ChannelStatsResponse = {
     channel: {
@@ -3853,8 +3807,6 @@ function buildChannelStats(
       content: {
         posts,
         views,
-        viewsTotal: Math.round(views * 1.24),
-        viewsMode: 'observedDelta',
         reactions,
         topReactions: [
           { emoji: '🔥', count: 182 },
@@ -3867,13 +3819,7 @@ function buildChannelStats(
       series: {
         participants: participantsSeries,
         membership: membershipSeries,
-        views: viewsSeries.map((item) => {
-          cumulativeViews += item.views;
-          return {
-            ...item,
-            cumulativeViews,
-          };
-        }),
+        views: viewsSeries,
       },
     },
     summary: {
@@ -3906,7 +3852,6 @@ function buildChannelStats(
       viewsAvailable: true,
       churnAvailable: true,
       officialCoverageFrom: addDays(now, -30).toISOString(),
-      missingOfficialMetrics: [],
       refreshQueued: false,
     },
     comparison: {
@@ -3929,27 +3874,7 @@ function buildChannelStats(
         views: previousViewsSeries,
       },
     },
-    health: {
-      score: 88,
-      tone: 'success',
-      factors: [
-        { code: 'growth', label: 'Рост', tone: 'success', impact: 10 },
-        { code: 'views-up', label: 'Просмотры', tone: 'success', impact: 8 },
-      ],
-    },
     signals: {
-      insights: [
-        { code: 'views-delta', label: 'Просмотры', value: '+19%', tone: 'success', at: null },
-        {
-          code: 'top-post',
-          label: 'Лучший пост',
-          value: '4,8 тыс.',
-          tone: 'accent',
-          at: topPosts[0]?.publishedAt ?? null,
-        },
-        { code: 'best-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
-      ],
-      alerts: [],
       markers: [
         {
           code: 'top-post',
@@ -4000,55 +3925,6 @@ function buildChannelStats(
         ? { items: [], hasMore: false, nextCursor: null }
         : buildActivityPage(state.channelActivity, { range, limit: 50 }, now),
   };
-
-  if (options.includeIntelligence !== false) {
-    response.intelligence = {
-      headline: {
-        primary: {
-          code: 'headline-growth',
-          label: 'Рост',
-          value: `+${joined - left}`,
-          tone: 'success',
-          at: null,
-        },
-        secondary: [
-          { code: 'headline-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
-          { code: 'headline-views', label: 'Посты', value: '+34%', tone: 'accent', at: null },
-        ],
-      },
-      benchmarks: {
-        viewsPerPost: buildBenchmark(currentAverageViewsPerPost, previousAverageViewsPerPost),
-        reactionsPerPost: buildBenchmark(currentReactionsPerPost, previousReactionsPerPost),
-        engagementRate: buildBenchmark(currentEngagementRate, previousEngagementRate),
-      },
-      forecast: {
-        horizonDays: 30,
-        participants: forecastParticipants,
-        net: forecastNet,
-        confidence: range === '24h' ? 'medium' : 'high',
-      },
-      cohort: {
-        joined: cohortJoined,
-        retained: cohortRetained,
-        participated: cohortParticipated,
-        reactions,
-        retentionRate:
-          cohortJoined > 0 ? Math.round((cohortRetained / cohortJoined) * 1000) / 10 : null,
-        participationRate:
-          cohortJoined > 0 ? Math.round((cohortParticipated / cohortJoined) * 1000) / 10 : null,
-        reactionsPerJoined:
-          cohortJoined > 0 ? Math.round((reactions / cohortJoined) * 10) / 10 : null,
-        sampleSize: cohortJoined,
-      },
-      publishingHeatmap,
-      patterns: [
-        { code: 'best-window', label: 'Окно', value: 'Чт 18:00', tone: 'success', at: null },
-        { code: 'views-norm-up', label: 'Посты', value: '+34%', tone: 'success', at: null },
-        { code: 'buttons-app-actions', label: 'Кнопки', value: '+298', tone: 'accent', at: null },
-        { code: 'forecast', label: 'Прогноз', value: `+${forecastNet}`, tone: 'success', at: null },
-      ],
-    };
-  }
 
   return channelStatsResponseSchema.parse(response);
 }
@@ -6180,7 +6056,6 @@ async function handleChannelRequest(
     return cloneJson(
       buildChannelStats(state, channelId, range, {
         includeActivityPreview: url.searchParams.get('includeActivityPreview') !== 'false',
-        includeIntelligence: url.searchParams.get('includeIntelligence') !== 'false',
       }),
     );
   }
