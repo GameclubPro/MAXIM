@@ -8,10 +8,6 @@ import type {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity as IconActivity,
-  Community as IconCommunity,
-  Eye as IconEye,
-  GraphUp as IconGraphUp,
-  PercentageCircle as IconPercentageCircle,
   UserPlus as IconUserPlus,
   UserXmark as IconUserXmark,
 } from 'iconoir-react';
@@ -41,11 +37,8 @@ import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
   resolveChannelStatsAverageViews,
-  resolveChannelStatsDisplayViews,
-  resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
-  shouldUseChannelStatsPeriodViews,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
@@ -87,11 +80,9 @@ type PreviousAudienceChartPoint = {
 type ViewChartPoint = {
   at: string;
   views: number;
-  cumulativeViews: number;
   x: number;
   y: number;
   height: number;
-  cumulativeY: number;
 };
 
 type PreviousViewChartPoint = ViewChartPoint;
@@ -249,6 +240,18 @@ function formatPercent(value: number | null): string {
   }).format(value)}%`;
 }
 
+function formatRangeLabel(range: ChannelStatsRange): string {
+  if (range === '24h') {
+    return '24 часа';
+  }
+
+  if (range === '7d') {
+    return '7 дней';
+  }
+
+  return '30 дней';
+}
+
 function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSummary {
   const maybeSummary = (stats as Partial<ChannelStatsResponse>).summary;
   if (maybeSummary) {
@@ -259,7 +262,7 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
   const joined = stats.official.audience.joined ?? 0;
   const left = stats.official.audience.left ?? 0;
   const weekDelta = stats.official.audience.net ?? joined - left;
-  const displayViews = resolveChannelStatsDisplayViews(stats);
+  const displayViews = stats.official.content.views;
   const perPost =
     stats.official.content.posts > 0
       ? Math.round(displayViews / stats.official.content.posts)
@@ -268,24 +271,47 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     displayViews > 0
       ? Math.round((stats.official.content.reactions / displayViews) * 10_000) / 100
       : null;
-  const daily = stats.official.series.participants.slice(-16).map((point, index, rows) => {
-    const previous = index > 0 ? rows[index - 1]?.participantsCount : null;
-    const delta =
-      point.participantsCount === null || previous === null || previous === undefined
-        ? null
-        : point.participantsCount - previous;
+  const lastParticipantPoint = stats.official.series.participants.at(-1) ?? null;
+  const previousParticipantPoint = stats.official.series.participants.at(-2) ?? null;
+  const todayDelta =
+    typeof lastParticipantPoint?.participantsCount === 'number' &&
+    typeof previousParticipantPoint?.participantsCount === 'number'
+      ? lastParticipantPoint.participantsCount - previousParticipantPoint.participantsCount
+      : null;
+  const dailyByDate = new Map<string, number | null>();
+  stats.official.series.participants
+    .slice()
+    .sort((leftPoint, rightPoint) => leftPoint.at.localeCompare(rightPoint.at))
+    .forEach((point) => {
+      const date = point.at.slice(0, 10);
+      if (date) {
+        dailyByDate.set(date, point.participantsCount);
+      }
+    });
+  const todayDate = stats.period.to.slice(0, 10);
+  if (todayDate && typeof currentSubscribers === 'number') {
+    dailyByDate.set(todayDate, currentSubscribers);
+  }
+  const dailySource = Array.from(dailyByDate.entries())
+    .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
+    .slice(-16);
+  const daily = dailySource.map(([date, subscribers], index, rows) => {
+    const previous = index > 0 ? rows[index - 1]?.[1] : null;
 
     return {
-      date: point.at.slice(0, 10),
-      subscribers: point.participantsCount,
-      delta,
+      date,
+      subscribers,
+      delta:
+        subscribers === null || previous === null || previous === undefined
+          ? null
+          : subscribers - previous,
     };
   });
 
   return {
     subscribers: {
       current: currentSubscribers,
-      todayDelta: daily[daily.length - 1]?.delta ?? null,
+      todayDelta,
       weekDelta,
       sixteenDaysDelta: weekDelta,
     },
@@ -345,6 +371,22 @@ function formatDateOnly(value: string | null): string {
 
 function formatPeriodRange(from: string, to: string): string {
   return `${formatDateOnly(from)} — ${formatDateOnly(to)}`;
+}
+
+function getSignedTone(value: number | null): 'positive' | 'negative' | 'neutral' {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'neutral';
+  }
+
+  if (value > 0) {
+    return 'positive';
+  }
+
+  if (value < 0) {
+    return 'negative';
+  }
+
+  return 'neutral';
 }
 
 function ChannelBestWindowsPanel({ stats }: { stats: ChannelStatsResponse }) {
@@ -478,7 +520,6 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
 function resolvePostPinPositions(
   posts: ChannelStatsResponse['official']['content']['topPosts'],
   anchors: Array<{ at: string; x: number }>,
-  usePeriodViews: boolean,
 ): ChartPostPin[] {
   if (anchors.length === 0 || posts.length === 0) {
     return [];
@@ -502,7 +543,7 @@ function resolvePostPinPositions(
       }
     }
 
-    const views = usePeriodViews ? post.viewsDelta : post.views;
+    const views = post.viewsDelta;
     return {
       messageId: post.messageId,
       label: `#${index + 1}`,
@@ -823,10 +864,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   previousBars: PreviousViewChartPoint[];
   aggregateBar: ViewChartAggregateBar | null;
   maxViews: number;
-  cumulativeMax: number;
-  cumulativeLinePath: string;
-  cumulativeAreaPath: string;
-  previousCumulativeLinePath: string;
   guideYs: number[];
   leftPad: number;
   rightPad: number;
@@ -842,10 +879,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       previousBars: [],
       aggregateBar: null,
       maxViews: 0,
-      cumulativeMax: 0,
-      cumulativeLinePath: '',
-      cumulativeAreaPath: '',
-      previousCumulativeLinePath: '',
       guideYs: [],
       leftPad: 10,
       rightPad: 8,
@@ -871,17 +904,7 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const aggregateViews = averageViews;
   const maxViews =
     currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
-  const cumulativeMax = Math.max(
-    ...series.map((item) => item.cumulativeViews),
-    maxBucketViews > 0 ? 0 : aggregateViews,
-    0,
-  );
   const scale = maxViews > 0 ? usableHeight / maxViews : 0;
-  const cumulativeRange = Math.max(1, cumulativeMax);
-  const resolveCumulativeY = (value: number) =>
-    cumulativeMax > 0
-      ? topPad + ((cumulativeMax - clamp(value, 0, cumulativeMax)) / cumulativeRange) * usableHeight
-      : baselineY;
 
   const bars = series.map((item, index) => {
     const x =
@@ -889,16 +912,13 @@ function buildViewsChart(stats: ChannelStatsResponse): {
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
     const views = Math.max(0, item.views);
-    const cumulativeViews = Math.max(0, item.cumulativeViews);
     const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
       views,
-      cumulativeViews,
       x,
       y: baselineY - barHeight,
       height: barHeight,
-      cumulativeY: resolveCumulativeY(cumulativeViews),
     };
   });
   const previousBars = previousSeries.map((item, index) => {
@@ -907,22 +927,15 @@ function buildViewsChart(stats: ChannelStatsResponse): {
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
     const views = Math.max(0, item.views);
-    const cumulativeViews = Math.max(0, item.cumulativeViews);
     const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
       views,
-      cumulativeViews,
       x,
       y: baselineY - barHeight,
       height: barHeight,
-      cumulativeY: resolveCumulativeY(cumulativeViews),
     };
   });
-  const cumulativePoints = bars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
-  const cumulativeLinePath = buildAudiencePath(cumulativePoints);
-  const previousCumulativePoints = previousBars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
-  const previousCumulativeLinePath = buildAudiencePath(previousCumulativePoints);
   const aggregateBar =
     maxBucketViews === 0 && aggregateViews > 0
       ? {
@@ -939,10 +952,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
     previousBars,
     aggregateBar,
     maxViews,
-    cumulativeMax,
-    cumulativeLinePath,
-    cumulativeAreaPath: buildAudienceAreaPath(cumulativeLinePath, cumulativePoints, baselineY),
-    previousCumulativeLinePath,
     guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
     leftPad,
     rightPad,
@@ -1018,7 +1027,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const postPins = resolvePostPinPositions(
     stats.official.content.topPosts,
     chart.points.map((point) => ({ at: point.at, x: point.x })),
-    shouldUseChannelStatsPeriodViews(stats),
   );
   const activePostPin = resolveActivePostPin(postPins, activePoint?.x ?? null, slotWidth);
   const activeGuideLabel = activePoint
@@ -1487,8 +1495,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   }, [
     chart.bars.length,
     stats.official.content.views,
-    stats.official.content.viewsTotal,
-    stats.official.content.viewsMode,
     stats.official.content.lastPublishedAt,
     stats.period.from,
     stats.period.to,
@@ -1514,7 +1520,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const postPins = resolvePostPinPositions(
     stats.official.content.topPosts,
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
-    shouldUseChannelStatsPeriodViews(stats),
   );
   const slotWidth =
     chart.bars.length > 1
@@ -1525,14 +1530,14 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
   const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
   const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
-  const chartPeriodLabel = stats.period.range === '24h' ? '24 часа' : stats.period.range;
+  const chartPeriodLabel = formatRangeLabel(stats.period.range);
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
   const activeGuideLabel = activeBar
-    ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
+    ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ср. ${formatCount(
         activeBar.views,
-      )} просмотров, среднее ${formatCount(averageViews)} просмотров`
+      )} просмотров, период ${formatCount(averageViews)} просмотров`
     : 'Данные по просмотрам недоступны';
   return (
     <div className="channel-stats-graph">
@@ -1550,7 +1555,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                Пик {formatCompactCount(chart.maxViews)}
+                Пик ср. {formatCompactCount(chart.maxViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 Постов {formatCompactCount(stats.official.content.posts)}
@@ -1605,10 +1610,10 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activeBar && isTooltipVisible ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
-                <strong>{activeViewsCompactLabel} просмотров</strong>
-                <span>Среднее {averageViewsCompactLabel}</span>
+                <strong>{activeViewsCompactLabel} ср. просмотров</strong>
+                <span>Период {averageViewsCompactLabel}</span>
                 {activePreviousBar ? (
-                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}</em>
+                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)} ср.</em>
                 ) : null}
                 {activePostPin ? (
                   <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
@@ -1707,17 +1712,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   </text>
                 </g>
               ) : null}
-              {chart.previousBars.map((bar, index) => (
-                <rect
-                  key={`previous-${bar.at}-${index}`}
-                  x={bar.x - previousBarWidth / 2}
-                  y={bar.y}
-                  width={previousBarWidth}
-                  height={bar.views > 0 ? Math.max(3, bar.height) : 0}
-                  rx="5"
-                  className="channel-stats-graph__bar channel-stats-graph__bar--previous"
-                />
-              ))}
               {chart.bars.map((bar, index) => (
                 <rect
                   key={labels[index]?.at ?? index}
@@ -1729,6 +1723,17 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
                     safeActiveIndex === index ? 'is-active' : ''
                   }`}
+                />
+              ))}
+              {chart.previousBars.map((bar, index) => (
+                <rect
+                  key={`previous-${bar.at}-${index}`}
+                  x={bar.x - previousBarWidth / 2}
+                  y={bar.y}
+                  width={previousBarWidth}
+                  height={bar.views > 0 ? Math.max(3, bar.height) : 0}
+                  rx="5"
+                  className="channel-stats-graph__bar channel-stats-graph__bar--previous"
                 />
               ))}
               {graphMarkers.map((marker) => (
@@ -1794,10 +1799,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
 function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const posts = stats.official.content.topPosts;
-  const isPeriodViews = shouldUseChannelStatsPeriodViews(stats);
   const resolvePostViews = (
     post: ChannelStatsResponse['official']['content']['topPosts'][number],
-  ) => (isPeriodViews ? post.viewsDelta : post.views);
+  ) => post.viewsDelta;
   const maxViews = Math.max(...posts.map(resolvePostViews), 0);
 
   if (posts.length === 0) {
@@ -1815,15 +1819,8 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
           const value = resolvePostViews(post);
           const width = maxViews > 0 && value > 0 ? Math.max(5, (value / maxViews) * 100) : 0;
           const valueLabel = formatCompactCount(value);
-          const detailParts = [
-            `${formatCount(value)} просмотров ${isPeriodViews ? 'за период' : 'всего'}`,
-          ];
+          const detailParts = [`${formatCount(value)} просмотров за период`];
           const metaParts = [`${formatCount(post.reactions)} реакц.`];
-
-          if (isPeriodViews && post.views > value) {
-            detailParts.push(`${formatCount(post.views)} всего`);
-            metaParts.push(`${formatCompactCount(post.views)} всего`);
-          }
 
           const row = (
             <>
@@ -1899,104 +1896,96 @@ function ChannelStatsOverview({
       ? chartTab
       : 'audience';
   const summary = resolveChannelStatsSummary(stats);
-  const todayTone =
-    (summary.subscribers.todayDelta ?? 0) > 0
-      ? 'success'
-      : (summary.subscribers.todayDelta ?? 0) < 0
-        ? 'danger'
-        : 'neutral';
-  const chartTitle = 'Аналитика';
+  const chartTitle = effectiveChartTab === 'audience' ? 'Подписчики' : 'Просмотры';
 
   return (
     <section
       className="channel-insights__summary channel-insights__summary--command stagger-in"
       aria-label="Сводка по каналу"
     >
-      <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-        <header className="channel-insights__chart-header">
-          <strong className="channel-insights__chart-title">{chartTitle}</strong>
+      <div className="channel-insights__overview-top">
+        <div className="channel-insights__primary-stack">
+          <div className="channel-insights__summary-metrics">
+            <article className="channel-summary-card channel-summary-card--subscribers">
+              <header>
+                <small>Подписчики</small>
+                <strong>{formatCount(summary.subscribers.current)}</strong>
+              </header>
+              <div className="channel-summary-card__rows">
+                <span>
+                  <small>Сегодня</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
+                    {formatSignedCount(summary.subscribers.todayDelta)}
+                  </b>
+                </span>
+                <span>
+                  <small>Неделя</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
+                    {formatSignedCount(summary.subscribers.weekDelta)}
+                  </b>
+                </span>
+                <span>
+                  <small>16 дней</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
+                    {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
+                  </b>
+                </span>
+              </div>
+            </article>
 
-          <div className="channel-insights__chart-controls">
-            {chartTabs.length > 1 ? (
-              <SegmentedControl
-                value={effectiveChartTab}
-                options={chartTabs}
-                onChange={(next) => onChartTabChange(next as ChartTab)}
-                className="channel-insights__switch"
-              />
-            ) : null}
-            <SegmentedControl
-              value={range}
-              options={periodOptions}
-              onChange={(next) => onRangeChange(next as ChannelStatsRange)}
-              className="channel-insights__range"
-            />
+            <article className="channel-summary-card channel-summary-card--views">
+              <header>
+                <small>Просмотров на пост</small>
+                <strong>{formatCount(summary.views.perPost)}</strong>
+              </header>
+              <div className="channel-summary-card__rows">
+                <span>
+                  <small>24ч</small>
+                  <b>{formatCompactCount(summary.views.last24h)}</b>
+                </span>
+                <span>
+                  <small>48ч</small>
+                  <b>{formatCompactCount(summary.views.last48h)}</b>
+                </span>
+                <span>
+                  <small>ER24</small>
+                  <b>{formatPercent(summary.views.er24)}</b>
+                </span>
+              </div>
+            </article>
+
           </div>
-        </header>
 
-        {effectiveChartTab === 'audience' ? (
-          <AudienceChart stats={stats} />
-        ) : (
-          <ViewsChart stats={stats} />
-        )}
-      </article>
+          <article className="channel-insights__chart-card channel-insights__chart-card--executive">
+            <header className="channel-insights__chart-header">
+              <strong className="channel-insights__chart-title">{chartTitle}</strong>
 
-      <div className="channel-insights__kpi-grid">
-        <article className="channel-insights__kpi-card channel-insights__kpi-card--live">
-          <div className="channel-insights__kpi-top">
-            <small>Подписчики</small>
-            <span className="channel-insights__kpi-icon" aria-hidden="true">
-              <IconCommunity width={17} height={17} strokeWidth={2.05} />
-            </span>
-          </div>
-          <strong>{formatCompactCount(summary.subscribers.current)}</strong>
-          <span>
-            Сегодня {formatSignedCount(summary.subscribers.todayDelta)}
-            <b>Неделя {formatSignedCount(summary.subscribers.weekDelta)}</b>
-          </span>
-        </article>
+              <div className="channel-insights__chart-controls">
+                {chartTabs.length > 1 ? (
+                  <SegmentedControl
+                    value={effectiveChartTab}
+                    options={chartTabs}
+                    onChange={(next) => onChartTabChange(next as ChartTab)}
+                    className="channel-insights__switch"
+                  />
+                ) : null}
+                <SegmentedControl
+                  value={range}
+                  options={periodOptions}
+                  onChange={(next) => onRangeChange(next as ChannelStatsRange)}
+                  className="channel-insights__range"
+                />
+              </div>
+            </header>
 
-        <article className={`channel-insights__kpi-card channel-insights__kpi-card--${todayTone}`}>
-          <div className="channel-insights__kpi-top">
-            <small>За 16 дней</small>
-            <span className="channel-insights__kpi-icon" aria-hidden="true">
-              <IconGraphUp width={17} height={17} strokeWidth={2.05} />
-            </span>
-          </div>
-          <strong>{formatSignedCount(summary.subscribers.sixteenDaysDelta)}</strong>
-          <span>
-            Сегодня {formatSignedCount(summary.subscribers.todayDelta)}
-            <b>Неделя {formatSignedCount(summary.subscribers.weekDelta)}</b>
-          </span>
-        </article>
+            {effectiveChartTab === 'audience' ? (
+              <AudienceChart stats={stats} />
+            ) : (
+              <ViewsChart stats={stats} />
+            )}
+          </article>
+        </div>
 
-        <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
-          <div className="channel-insights__kpi-top">
-            <small>Просм./пост</small>
-            <span className="channel-insights__kpi-icon" aria-hidden="true">
-              <IconEye width={17} height={17} strokeWidth={2.05} />
-            </span>
-          </div>
-          <strong>{formatCompactCount(summary.views.perPost)}</strong>
-          <span>
-            24ч {formatCompactCount(summary.views.last24h)}
-            <b>48ч {formatCompactCount(summary.views.last48h)}</b>
-          </span>
-        </article>
-
-        <article className="channel-insights__kpi-card channel-insights__kpi-card--reactions">
-          <div className="channel-insights__kpi-top">
-            <small>ER24</small>
-            <span className="channel-insights__kpi-icon" aria-hidden="true">
-              <IconPercentageCircle width={17} height={17} strokeWidth={2.05} />
-            </span>
-          </div>
-          <strong>{formatPercent(summary.views.er24)}</strong>
-          <span>
-            24ч {formatCompactCount(summary.views.last24h)}
-            <b>Реакции {formatCompactCount(stats.official.content.reactions)}</b>
-          </span>
-        </article>
       </div>
 
       <article className="channel-fact-panel channel-top-posts-panel">
@@ -2041,7 +2030,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         { signal },
         {
           includeActivityPreview: false,
-          includeIntelligence: false,
         },
       ),
     enabled: Boolean(chatId),
