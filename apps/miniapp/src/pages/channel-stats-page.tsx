@@ -193,6 +193,23 @@ function formatShortDate(value: string | null, bucket: ChannelStatsBucket): stri
   }).format(parsed);
 }
 
+function formatSummaryTableDate(value: string): string {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/u.exec(value);
+  if (dateOnly) {
+    return `${dateOnly[3]}.${dateOnly[2]}`;
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '—';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+  }).format(parsed);
+}
+
 function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket): string {
   if (!value) {
     return 'Нет данных';
@@ -1996,6 +2013,7 @@ function ChannelStatsOverview({
       ? chartTab
       : 'audience';
   const summary = resolveChannelStatsSummary(stats);
+  const summaryDailyRows = summary.daily.slice(-9).reverse();
   const chartTitle = effectiveChartTab === 'audience' ? 'Подписчики' : 'Просмотры';
 
   return (
@@ -2005,6 +2023,56 @@ function ChannelStatsOverview({
     >
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
+          <div className="channel-insights__summary-metrics">
+            <article className="channel-summary-card channel-summary-card--subscribers">
+              <header>
+                <small>Подписчиков</small>
+                <strong>{formatCount(summary.subscribers.current)}</strong>
+              </header>
+              <div className="channel-summary-card__rows">
+                <span>
+                  <small>Сегодня</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
+                    {formatSignedCount(summary.subscribers.todayDelta)}
+                  </b>
+                </span>
+                <span>
+                  <small>За неделю</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
+                    {formatSignedCount(summary.subscribers.weekDelta)}
+                  </b>
+                </span>
+                <span>
+                  <small>За 16 дней</small>
+                  <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
+                    {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
+                  </b>
+                </span>
+              </div>
+            </article>
+
+            <article className="channel-summary-card channel-summary-card--views">
+              <header>
+                <small>Просмотров на пост</small>
+                <strong>{formatCount(summary.views.perPost)}</strong>
+              </header>
+              <div className="channel-summary-card__rows">
+                <span>
+                  <small>Просмотров за 24ч</small>
+                  <b>{formatCompactCount(summary.views.last24h)}</b>
+                </span>
+                <span>
+                  <small>Просмотров за 48ч</small>
+                  <b>{formatCompactCount(summary.views.last48h)}</b>
+                </span>
+                <span>
+                  <small>ER24</small>
+                  <b>{formatPercent(summary.views.er24)}</b>
+                </span>
+              </div>
+            </article>
+          </div>
+
           <article
             className={`channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--${effectiveChartTab}`}
           >
@@ -2039,55 +2107,34 @@ function ChannelStatsOverview({
           </article>
         </div>
 
-        <div className="channel-insights__summary-metrics">
-          <article className="channel-summary-card channel-summary-card--subscribers">
-            <header>
-              <small>Подписчики</small>
-              <strong>{formatCount(summary.subscribers.current)}</strong>
-            </header>
-            <div className="channel-summary-card__rows">
-              <span>
-                <small>Сегодня</small>
-                <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
-                  {formatSignedCount(summary.subscribers.todayDelta)}
-                </b>
-              </span>
-              <span>
-                <small>Неделя</small>
-                <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
-                  {formatSignedCount(summary.subscribers.weekDelta)}
-                </b>
-              </span>
-              <span>
-                <small>16 дней</small>
-                <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
-                  {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
-                </b>
-              </span>
-            </div>
+        {summaryDailyRows.length > 0 ? (
+          <article className="channel-summary-table-card" aria-label="Динамика подписчиков">
+            <table className="channel-summary-table">
+              <thead>
+                <tr>
+                  <th>Итого</th>
+                  <th>Подписчиков</th>
+                  <th>Прирост</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summaryDailyRows.map((row) => (
+                  <tr key={row.date}>
+                    <td>
+                      <time dateTime={row.date}>{formatSummaryTableDate(row.date)}</time>
+                    </td>
+                    <td className="channel-summary-table__total">
+                      {formatCount(row.subscribers)}
+                    </td>
+                    <td className={`channel-summary-table__delta is-${getSignedTone(row.delta)}`}>
+                      {formatSignedCount(row.delta)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </article>
-
-          <article className="channel-summary-card channel-summary-card--views">
-            <header>
-              <small>Просмотров на пост</small>
-              <strong>{formatCount(summary.views.perPost)}</strong>
-            </header>
-            <div className="channel-summary-card__rows">
-              <span>
-                <small>24ч</small>
-                <b>{formatCompactCount(summary.views.last24h)}</b>
-              </span>
-              <span>
-                <small>48ч</small>
-                <b>{formatCompactCount(summary.views.last48h)}</b>
-              </span>
-              <span>
-                <small>ER 24ч</small>
-                <b>{formatPercent(summary.views.er24)}</b>
-              </span>
-            </div>
-          </article>
-        </div>
+        ) : null}
       </div>
 
       <div className="channel-insights__detail-grid">

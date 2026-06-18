@@ -762,4 +762,312 @@ body.channel-stats-page-open .channel-insights__body {
 body.channel-stats-page-open .bottom-nav::after {
   display: none;
 }
+
+/* Reference-style summary board: dense cards, right-aligned figures, clean daily table. */
+.channel-insights__summary--command {
+  --channel-chart-min-height: clamp(210px, 36vw, 318px);
+}
+
+.channel-insights__overview-top {
+  align-items: start;
+}
+
+.channel-insights__summary-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  height: auto;
+}
+
+.channel-summary-card,
+.channel-summary-table-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow:
+    var(--shadow-sm),
+    0 1px 0 var(--color-surface) inset;
+}
+
+.channel-summary-card {
+  min-height: 0;
+  gap: 12px;
+  padding: clamp(13px, 2vw, 18px);
+  background: var(--color-surface);
+}
+
+.channel-summary-card--subscribers,
+.channel-summary-card--views {
+  background: var(--color-surface);
+}
+
+.channel-summary-card header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.channel-summary-card header small {
+  color: var(--text-secondary);
+  font-size: clamp(1rem, 1.9vw, 1.2rem);
+  font-weight: 860;
+  line-height: 1.05;
+}
+
+.channel-summary-card header strong {
+  color: var(--accent);
+  font-size: clamp(1.48rem, 3vw, 2.06rem);
+  font-weight: 900;
+  line-height: 0.96;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-summary-card--subscribers header strong {
+  color: var(--accent);
+}
+
+.channel-summary-card__rows {
+  gap: 9px;
+}
+
+.channel-summary-card__rows span {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.channel-summary-card__rows small {
+  color: var(--text-muted);
+  font-size: clamp(0.91rem, 1.55vw, 1.05rem);
+  font-weight: 640;
+  letter-spacing: 0;
+}
+
+.channel-summary-card__rows b {
+  color: var(--success);
+  font-size: clamp(1.1rem, 2.25vw, 1.54rem);
+  font-weight: 880;
+  line-height: 1;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-summary-card__rows b:not([class]) {
+  color: var(--success);
+}
+
+.channel-summary-card__rows .is-negative,
+.channel-summary-table__delta.is-negative {
+  color: var(--danger);
+}
+
+.channel-summary-card__rows .is-neutral,
+.channel-summary-table__delta.is-neutral {
+  color: var(--text-muted);
+}
+
+.channel-summary-table-card {
+  min-width: 0;
+  overflow: hidden;
+  padding: clamp(11px, 1.8vw, 16px);
+}
+
+.channel-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.channel-summary-table th,
+.channel-summary-table td {
+  padding: 9px 7px;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-summary-table th:nth-child(1),
+.channel-summary-table td:nth-child(1) {
+  width: 30%;
+}
+
+.channel-summary-table th:nth-child(2),
+.channel-summary-table td:nth-child(2) {
+  width: 38%;
+}
+
+.channel-summary-table th:nth-child(3),
+.channel-summary-table td:nth-child(3) {
+  width: 32%;
+  text-align: right;
+}
+
+.channel-summary-table th {
+  color: var(--text-primary);
+  font-size: clamp(0.84rem, 1.45vw, 1rem);
+  font-weight: 860;
+  line-height: 1;
+}
+
+.channel-summary-table td {
+  color: var(--text-primary);
+  font-size: clamp(0.9rem, 1.6vw, 1.08rem);
+  font-weight: 650;
+  line-height: 1.05;
+}
+
+.channel-summary-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.channel-summary-table__total {
+  color: var(--accent);
+  font-weight: 860;
+}
+
+.channel-summary-table__delta {
+  color: var(--success);
+  font-weight: 860;
+}
+
+@media (min-width: 760px) {
+  .channel-insights__overview-top {
+    grid-template-columns: minmax(0, 1fr) minmax(286px, 0.48fr);
+    gap: 12px;
+  }
+
+  .channel-insights__primary-stack {
+    gap: 12px;
+    height: auto;
+  }
+
+  .channel-summary-table-card {
+    align-self: stretch;
+  }
+
+  .channel-summary-table th,
+  .channel-summary-table td {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+}
+
+@media (max-width: 759px) {
+  .channel-insights__overview-top {
+    gap: 9px;
+  }
+
+  .channel-insights__summary-metrics {
+    gap: 8px;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-insights__summary--command {
+    --channel-chart-min-height: 158px;
+  }
+
+  .channel-insights__summary-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-summary-card {
+    min-height: 0;
+    gap: 10px;
+    padding: 13px 14px;
+    border-radius: 9px;
+  }
+
+  .channel-summary-card header {
+    gap: 12px;
+  }
+
+  .channel-summary-card header small {
+    font-size: 1rem;
+    white-space: nowrap;
+  }
+
+  .channel-summary-card header strong {
+    font-size: clamp(1.52rem, 8vw, 2rem);
+  }
+
+  .channel-summary-card__rows {
+    gap: 6px;
+  }
+
+  .channel-summary-card__rows span {
+    gap: 8px;
+  }
+
+  .channel-summary-card__rows small {
+    font-size: 0.88rem;
+    white-space: nowrap;
+  }
+
+  .channel-summary-card__rows b {
+    font-size: clamp(1rem, 4.8vw, 1.28rem);
+  }
+
+  .channel-summary-table-card {
+    padding: 9px 11px;
+    border-radius: 9px;
+  }
+
+  .channel-summary-table th,
+  .channel-summary-table td {
+    padding: 8px 4px;
+  }
+
+  .channel-summary-table th {
+    font-size: 0.72rem;
+  }
+
+  .channel-summary-table td {
+    font-size: 0.86rem;
+  }
+}
+
+@media (max-width: 370px) {
+  .channel-insights__summary-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-summary-card header small {
+    font-size: 0.88rem;
+  }
+}
+
+.design-preview__device-screen .channel-insights__overview-top {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+}
+
+.design-preview__device-screen .channel-insights__summary-metrics {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.design-preview__device-screen .channel-summary-card {
+  gap: 10px;
+  padding: 13px 14px;
+}
+
+.design-preview__device-screen .channel-summary-card header small {
+  font-size: 1rem;
+  white-space: nowrap;
+}
+
+.design-preview__device-screen .channel-summary-card header strong {
+  font-size: clamp(1.52rem, 8vw, 2rem);
+}
+
+.design-preview__device-screen .channel-summary-card__rows small {
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.design-preview__device-screen .channel-summary-card__rows b {
+  font-size: clamp(1rem, 4.8vw, 1.28rem);
+}
 }
