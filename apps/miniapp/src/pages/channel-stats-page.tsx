@@ -2206,7 +2206,6 @@ function ChannelStatsOverview({
                             <em className={joined === null ? 'is-neutral' : 'is-positive'}>
                               {formatPositiveCount(joined)}
                             </em>
-                            <span aria-hidden="true">/</span>
                             <em className={left === null ? 'is-neutral' : 'is-negative'}>
                               {formatNegativeCount(left)}
                             </em>

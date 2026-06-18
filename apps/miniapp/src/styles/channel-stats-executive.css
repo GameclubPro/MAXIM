@@ -897,18 +897,18 @@ body.channel-stats-page-open .bottom-nav::after {
 
 .channel-summary-table th:nth-child(1),
 .channel-summary-table td:nth-child(1) {
-  width: 24%;
+  width: 20%;
 }
 
 .channel-summary-table th:nth-child(2),
 .channel-summary-table td:nth-child(2) {
-  width: 36%;
+  width: 35%;
   text-align: right;
 }
 
 .channel-summary-table th:nth-child(3),
 .channel-summary-table td:nth-child(3) {
-  width: 40%;
+  width: 45%;
   text-align: right;
 }
 
@@ -956,7 +956,7 @@ body.channel-stats-page-open .bottom-nav::after {
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 0;
   color: var(--success);
   white-space: nowrap;
 }
@@ -992,7 +992,7 @@ body.channel-stats-page-open .bottom-nav::after {
   display: inline-flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 3px;
+  gap: 0;
   color: var(--text-muted);
   font-size: clamp(0.66rem, 1.18vw, 0.76rem);
   font-weight: 780;
@@ -1106,14 +1106,8 @@ body.channel-stats-page-open .bottom-nav::after {
   }
 
   .channel-summary-table__growth-flow {
-    gap: 3px;
+    gap: 0;
     font-size: 0.65rem;
-  }
-
-  .channel-summary-table__growth {
-    display: grid;
-    justify-items: end;
-    gap: 2px;
   }
 }
 
