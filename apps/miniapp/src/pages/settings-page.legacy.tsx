@@ -33,6 +33,7 @@ import '../styles/settings-drilldown-core.css';
 import '../styles/settings-policy-controls.css';
 import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
+import '../styles/settings-home-route-polish.css';
 import '../styles/broadcast-studio-base.css';
 import '../styles/settings-rules-studio.css';
 import '../styles/settings-link-allowlist.css';

@@ -48,6 +48,13 @@ const guardedFiles = [
       'Compact settings home and channel card styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
+    path: 'apps/miniapp/src/styles/settings-home-route-polish.css',
+    maxLines: 560,
+    targetLines: 430,
+    reason:
+      'Settings home shell polish should stay route-owned instead of returning to broad settings route CSS.',
+  },
+  {
     path: 'apps/miniapp/src/styles/settings-rules-studio.css',
     maxLines: 270,
     targetLines: 220,
@@ -252,8 +259,8 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/settings-route-polish.css',
-    maxLines: 5259,
-    targetLines: 3600,
+    maxLines: 4710,
+    targetLines: 3300,
     reason:
       'Settings route polish should keep shrinking into scoped route sections and component-owned styles.',
   },
