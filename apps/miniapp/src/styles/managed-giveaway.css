@@ -1,6 +1,45 @@
 @layer pages {
 /* Managed giveaway and broadcast audience sheet styles split from lazy-pages.css. */
 
+.managed-giveaway {
+  display: grid;
+  gap: 12px;
+}
+
+.managed-giveaway {
+  --managed-giveaway-line: rgba(74, 108, 141, 0.12);
+  gap: 10px;
+  align-items: start;
+  align-content: start;
+}
+
+.managed-giveaway--dashboard {
+  min-height: 100%;
+}
+
+.managed-giveaway__surface {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 26px;
+  border: 1px solid rgba(79, 108, 137, 0.12);
+  background:
+    radial-gradient(140% 120% at 0% 0%, rgba(11, 132, 255, 0.14), transparent 54%),
+    radial-gradient(120% 120% at 100% 0%, rgba(76, 186, 157, 0.12), transparent 46%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(246, 250, 255, 0.97));
+  box-shadow:
+    0 20px 40px rgba(17, 42, 66, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.managed-giveaway__surface--editor {
+  gap: 14px;
+  border-color: rgba(44, 122, 197, 0.14);
+  background:
+    radial-gradient(145% 120% at 0% 0%, rgba(11, 132, 255, 0.14), transparent 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.992), rgba(247, 251, 255, 0.974));
+}
+
 .managed-giveaway__hero-head {
   display: flex;
   align-items: flex-start;
@@ -2023,6 +2062,11 @@
 
   .managed-giveaway__choice-grid,
   .managed-giveaway__split-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .managed-giveaway__primary-actions--dashboard,
+  .managed-giveaway__dashboard-stat-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
