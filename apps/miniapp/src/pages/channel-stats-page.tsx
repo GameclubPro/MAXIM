@@ -269,21 +269,29 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     stats.official.content.posts > 0
       ? Math.round(displayViews / stats.official.content.posts)
       : null;
-  const last24hAverage =
-    stats.official.content.posts > 0
-      ? Math.round(displayViews / stats.official.content.posts)
-      : null;
-  const last48hAverage = last24hAverage;
+  const resolveTopPostsAverageSince = (hours: number) => {
+    const toMs = new Date(stats.period.to).getTime();
+    if (!Number.isFinite(toMs)) {
+      return null;
+    }
+
+    const fromMs = toMs - hours * 60 * 60 * 1000;
+    const posts = stats.official.content.topPosts.filter((post) => {
+      const publishedAtMs = new Date(post.publishedAt).getTime();
+      return Number.isFinite(publishedAtMs) && publishedAtMs >= fromMs && publishedAtMs <= toMs;
+    });
+    if (posts.length === 0) {
+      return null;
+    }
+
+    const views = posts.reduce((total, post) => total + Math.max(0, post.viewsDelta), 0);
+    return Math.round(views / posts.length);
+  };
+  const last24hAverage = resolveTopPostsAverageSince(24) ?? perPost;
+  const last48hAverage = resolveTopPostsAverageSince(48) ?? last24hAverage;
   const er24 =
     displayViews > 0
       ? Math.round((stats.official.content.reactions / displayViews) * 10_000) / 100
-      : null;
-  const lastParticipantPoint = stats.official.series.participants.at(-1) ?? null;
-  const previousParticipantPoint = stats.official.series.participants.at(-2) ?? null;
-  const todayDelta =
-    typeof lastParticipantPoint?.participantsCount === 'number' &&
-    typeof previousParticipantPoint?.participantsCount === 'number'
-      ? lastParticipantPoint.participantsCount - previousParticipantPoint.participantsCount
       : null;
   const dailyByDate = new Map<string, number | null>();
   stats.official.series.participants
@@ -318,7 +326,7 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
   return {
     subscribers: {
       current: currentSubscribers,
-      todayDelta,
+      todayDelta: daily.at(-1)?.delta ?? null,
       weekDelta,
       sixteenDaysDelta: weekDelta,
     },

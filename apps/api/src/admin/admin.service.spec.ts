@@ -17895,28 +17895,41 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
-          channel_post_id: 'post-1',
-          published_at: new Date('2026-03-03T07:00:00.000Z'),
-          captured_at: new Date('2026-03-05T11:00:00.000Z'),
-          snapshot_id: 'snap-0',
-          views: '100',
-          reactions_total: '3',
-        },
-        {
-          channel_post_id: 'post-1',
-          published_at: new Date('2026-03-03T07:00:00.000Z'),
-          captured_at: new Date('2026-03-07T11:00:00.000Z'),
-          snapshot_id: 'snap-1',
-          views: '150',
-          reactions_total: '5',
-        },
-        {
           channel_post_id: 'post-2',
           published_at: new Date('2026-03-06T14:00:00.000Z'),
           captured_at: new Date('2026-03-07T11:00:00.000Z'),
           snapshot_id: 'snap-2',
           views: '260',
           reactions_total: '7',
+        },
+        {
+          channel_post_id: 'post-3',
+          published_at: new Date('2026-03-06T10:00:00.000Z'),
+          captured_at: new Date('2026-03-06T11:00:00.000Z'),
+          snapshot_id: 'snap-3',
+          views: '140',
+          reactions_total: '2',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
+          joined_users: createDecimalLike(1),
+          left_users: createDecimalLike(1),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
+          joined_users: createDecimalLike(2),
+          left_users: createDecimalLike(1),
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
+          joined_users: createDecimalLike(2),
+          left_users: createDecimalLike(1),
         },
       ])
       .mockResolvedValueOnce([
@@ -18030,7 +18043,22 @@ describe('AdminService.getChannelStats', () => {
         latestSnapshotAt: new Date('2026-03-07T11:00:00.000Z'),
       },
     ];
-    prisma.channelPost.findMany.mockResolvedValueOnce(channelPosts);
+    const summaryPosts = [
+      channelPosts[1]!,
+      {
+        id: 'post-3',
+        messageId: 'mid-3',
+        publishedAt: new Date('2026-03-06T10:00:00.000Z'),
+        url: 'https://max.ru/news/post-3',
+        latestViews: 140,
+        latestReactionsTotal: 2,
+        latestReactions: [{ emoji: '👍', count: 2 }],
+        latestSnapshotAt: new Date('2026-03-06T11:00:00.000Z'),
+      },
+    ];
+    prisma.channelPost.findMany
+      .mockResolvedValueOnce(channelPosts)
+      .mockResolvedValueOnce(summaryPosts);
     prisma.channelPostViewSnapshot.findMany.mockResolvedValue([
       {
         channelPostId: 'post-1',
@@ -18156,15 +18184,15 @@ describe('AdminService.getChannelStats', () => {
     expect(result.summary).toEqual({
       subscribers: {
         current: 1240,
-        todayDelta: 10,
-        weekDelta: 25,
+        todayDelta: 0,
+        weekDelta: 1,
         sixteenDaysDelta: 40,
       },
       views: {
-        perPost: 205,
-        last24h: 155,
-        last48h: 155,
-        er24: 2.9,
+        perPost: 260,
+        last24h: 260,
+        last48h: 200,
+        er24: 2.69,
       },
       daily: expect.any(Array),
     });
@@ -18497,6 +18525,9 @@ describe('AdminService.getChannelStats', () => {
           reactions: '0',
         },
       ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         {

@@ -6641,6 +6641,9 @@ export class AdminService implements OnModuleDestroy {
     const previousFrom = new Date(from.getTime() - (now.getTime() - from.getTime()));
     const previousTo = new Date(Math.max(previousFrom.getTime(), from.getTime() - 1));
     const summaryAudienceFrom = new Date(now.getTime() - 17 * TWENTY_FOUR_HOURS_MS);
+    const summaryTodayFrom = this.floorChannelStatsMoscowDay(now);
+    const summaryWeekFrom = new Date(now.getTime() - 7 * TWENTY_FOUR_HOURS_MS);
+    const summarySixteenDaysFrom = new Date(now.getTime() - 16 * TWENTY_FOUR_HOURS_MS);
     const summaryViewsFrom = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
 
     const [
@@ -6653,11 +6656,15 @@ export class AdminService implements OnModuleDestroy {
       audienceSnapshots,
       syncState,
       periodPosts,
+      summaryPosts,
       anyPost,
       membershipBucketRows,
       contentBucketRows,
       summaryAudienceSnapshots,
       summaryWindowRows,
+      todayMembershipRows,
+      weekMembershipRows,
+      sixteenDaysMembershipRows,
     ] = await Promise.all([
       this.prisma.chat.findUnique({
         where: { id: chatId },
@@ -6762,6 +6769,23 @@ export class AdminService implements OnModuleDestroy {
           latestSnapshotAt: true,
         },
       }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          publishedAt: { gte: summaryViewsFrom, lte: now },
+        },
+        orderBy: { publishedAt: 'asc' },
+        select: {
+          id: true,
+          messageId: true,
+          publishedAt: true,
+          url: true,
+          latestViews: true,
+          latestReactions: true,
+          latestReactionsTotal: true,
+          latestSnapshotAt: true,
+        },
+      }),
       this.prisma.channelPost.findFirst({
         where: { chatId },
         select: { id: true },
@@ -6791,6 +6815,7 @@ export class AdminService implements OnModuleDestroy {
           FROM channel_post_view_snapshots snapshots
           JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
           WHERE posts.chat_id = ${chatId}
+            AND posts.published_at >= ${summaryViewsFrom}
             AND snapshots.captured_at >= ${summaryViewsFrom}
             AND snapshots.captured_at <= ${now}
         ),
@@ -6805,6 +6830,7 @@ export class AdminService implements OnModuleDestroy {
           FROM channel_post_view_snapshots snapshots
           JOIN channel_posts posts ON posts.id = snapshots.channel_post_id
           WHERE posts.chat_id = ${chatId}
+            AND posts.published_at >= ${summaryViewsFrom}
             AND snapshots.captured_at < ${summaryViewsFrom}
             AND EXISTS (
               SELECT 1
@@ -6820,11 +6846,34 @@ export class AdminService implements OnModuleDestroy {
         FROM window_snapshots
         ORDER BY channel_post_id ASC, captured_at ASC, snapshot_id ASC
       `,
+      selectChannelStatsMembershipBucketRows(this.prisma, {
+        chatId,
+        from: summaryTodayFrom,
+        to: now,
+        bucket: 'hour',
+      }),
+      selectChannelStatsMembershipBucketRows(this.prisma, {
+        chatId,
+        from: summaryWeekFrom,
+        to: now,
+        bucket: 'hour',
+      }),
+      selectChannelStatsMembershipBucketRows(this.prisma, {
+        chatId,
+        from: summarySixteenDaysFrom,
+        to: now,
+        bucket: 'hour',
+      }),
     ]);
 
     const refreshQueued = this.shouldRefreshChannelStats(latestAudienceSnapshot, syncState)
       ? this.scheduleChannelStatsRefresh(chatId)
       : false;
+    const hasMembershipCoverageFrom = (windowFrom: Date) =>
+      Boolean(
+        syncState?.membershipCoverageFrom &&
+          syncState.membershipCoverageFrom.getTime() <= windowFrom.getTime(),
+      );
 
     const viewSnapshots =
       periodPosts.length > 0
@@ -6916,10 +6965,23 @@ export class AdminService implements OnModuleDestroy {
     const summary = this.buildChannelStatsSummary({
       participantsCount,
       audienceSnapshots: summaryAudienceSnapshots,
+      summaryPosts,
       summaryWindowRows,
+      membershipDeltas: {
+        today: this.buildChannelStatsMembershipDelta(
+          todayMembershipRows,
+          hasMembershipCoverageFrom(summaryTodayFrom),
+        ),
+        week: this.buildChannelStatsMembershipDelta(
+          weekMembershipRows,
+          hasMembershipCoverageFrom(summaryWeekFrom),
+        ),
+        sixteenDays: this.buildChannelStatsMembershipDelta(
+          sixteenDaysMembershipRows,
+          hasMembershipCoverageFrom(summarySixteenDaysFrom),
+        ),
+      },
       now,
-      periodAverageViewsPerPost:
-        contentTotals.posts > 0 ? Math.round(periodViews / contentTotals.posts) : null,
     });
     const topReactions = this.buildTopReactions(periodPosts);
     const topPosts = this.buildTopPosts(postViewMetrics);
@@ -16206,9 +16268,14 @@ export class AdminService implements OnModuleDestroy {
   private buildChannelStatsSummary(params: {
     participantsCount: number | null;
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
+    summaryPosts?: ChannelStatsPostRow[];
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
+    membershipDeltas?: {
+      today: number | null;
+      week: number | null;
+      sixteenDays: number | null;
+    };
     now: Date;
-    periodAverageViewsPerPost: number | null;
   }): ChannelStatsResponse['summary'] {
     const sortedAudienceSnapshots = params.audienceSnapshots
       .slice()
@@ -16234,6 +16301,7 @@ export class AdminService implements OnModuleDestroy {
       return baseline === null ? null : currentParticipants - baseline;
     };
     const viewWindows = this.buildChannelStatsViewWindowSummary(
+      params.summaryPosts ?? [],
       params.summaryWindowRows,
       params.now,
     );
@@ -16245,18 +16313,34 @@ export class AdminService implements OnModuleDestroy {
     return {
       subscribers: {
         current: currentParticipants,
-        todayDelta: resolveDelta(TWENTY_FOUR_HOURS_MS),
-        weekDelta: resolveDelta(7 * TWENTY_FOUR_HOURS_MS),
-        sixteenDaysDelta: resolveDelta(16 * TWENTY_FOUR_HOURS_MS),
+        todayDelta: params.membershipDeltas?.today ?? resolveDelta(TWENTY_FOUR_HOURS_MS),
+        weekDelta: params.membershipDeltas?.week ?? resolveDelta(7 * TWENTY_FOUR_HOURS_MS),
+        sixteenDaysDelta:
+          params.membershipDeltas?.sixteenDays ?? resolveDelta(16 * TWENTY_FOUR_HOURS_MS),
       },
       views: {
-        perPost: params.periodAverageViewsPerPost,
+        perPost: viewWindows.last24h,
         last24h: viewWindows.last24h,
         last48h: viewWindows.last48h,
         er24,
       },
       daily,
     };
+  }
+
+  private buildChannelStatsMembershipDelta(
+    rows: ChannelStatsMembershipBucketRow[],
+    hasCoverage: boolean,
+  ): number | null {
+    if (!hasCoverage) {
+      return null;
+    }
+
+    return rows.reduce(
+      (total, row) =>
+        total + this.toSafeInteger(row.joined_users) - this.toSafeInteger(row.left_users),
+      0,
+    );
   }
 
   private buildChannelStatsDailySummary(
@@ -16297,6 +16381,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private buildChannelStatsViewWindowSummary(
+    posts: ChannelStatsPostRow[],
     rows: ChannelStatsSummaryWindowRow[],
     now: Date,
   ): {
@@ -16306,6 +16391,8 @@ export class AdminService implements OnModuleDestroy {
     totalLast48h: number;
     reactions24h: number;
   } {
+    const postsById = new Map(posts.map((post) => [post.id, post]));
+    const postIds = new Set(postsById.keys());
     const rowsByPostId = new Map<
       string,
       Array<{
@@ -16324,6 +16411,7 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
+      postIds.add(row.channel_post_id);
       const current = rowsByPostId.get(row.channel_post_id) ?? [];
       current.push({
         publishedAt,
@@ -16343,7 +16431,9 @@ export class AdminService implements OnModuleDestroy {
     let last48hPostCount = 0;
     let reactions24h = 0;
 
-    for (const postRows of rowsByPostId.values()) {
+    for (const postId of postIds) {
+      const post = postsById.get(postId) ?? null;
+      const postRows = rowsByPostId.get(postId) ?? [];
       const sorted = postRows.sort(
         (left, right) =>
           left.capturedAt.getTime() - right.capturedAt.getTime() ||
@@ -16351,11 +16441,16 @@ export class AdminService implements OnModuleDestroy {
       );
       let previousViews: number | null = null;
       let previousReactions: number | null = null;
-      let postLast24h = 0;
-      let postLast48h = 0;
+      const publishedAt = post?.publishedAt ?? sorted[0]?.publishedAt ?? null;
+      if (!publishedAt) {
+        continue;
+      }
+
+      const isLast48hPost = publishedAt >= last48hFrom;
+      const isLast24hPost = publishedAt >= last24hFrom;
+      let latestViews = Math.max(0, this.toSafeInteger(post?.latestViews ?? 0));
+      let latestReactionsTotal = Math.max(0, this.toSafeInteger(post?.latestReactionsTotal ?? 0));
       let postReactions24h = 0;
-      let hasLast24hSample = false;
-      let hasLast48hSample = false;
 
       for (const row of sorted) {
         const seededFromPublication = previousViews === null && row.publishedAt >= last48hFrom;
@@ -16372,27 +16467,23 @@ export class AdminService implements OnModuleDestroy {
               : 0
             : Math.max(0, row.reactionsTotal - previousReactions);
 
-        if (row.capturedAt >= last48hFrom) {
-          postLast48h += viewsDelta;
-          hasLast48hSample = true;
-        }
         if (row.capturedAt >= last24hFrom) {
-          postLast24h += viewsDelta;
           postReactions24h += reactionsDelta;
-          hasLast24hSample = true;
         }
 
+        latestViews = Math.max(latestViews, row.views);
+        latestReactionsTotal = Math.max(latestReactionsTotal, row.reactionsTotal);
         previousViews = row.views;
         previousReactions = row.reactionsTotal;
       }
 
-      if (hasLast48hSample) {
-        totalLast48h += postLast48h;
+      if (isLast48hPost) {
+        totalLast48h += latestViews;
         last48hPostCount += 1;
       }
-      if (hasLast24hSample) {
-        totalLast24h += postLast24h;
-        reactions24h += postReactions24h;
+      if (isLast24hPost) {
+        totalLast24h += latestViews;
+        reactions24h += latestReactionsTotal || postReactions24h;
         last24hPostCount += 1;
       }
     }
@@ -16428,6 +16519,12 @@ export class AdminService implements OnModuleDestroy {
     const result = new Date(date);
     result.setUTCHours(0, 0, 0, 0);
     return result;
+  }
+
+  private floorChannelStatsMoscowDay(date: Date): Date {
+    const moscowDate = new Date(date.getTime() + 3 * ONE_HOUR_MS);
+    moscowDate.setUTCHours(0, 0, 0, 0);
+    return new Date(moscowDate.getTime() - 3 * ONE_HOUR_MS);
   }
 
   private toDateOrNull(value: Date | string | null): Date | null {

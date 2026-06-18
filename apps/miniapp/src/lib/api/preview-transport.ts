@@ -3733,7 +3733,6 @@ function buildChannelStats(
       views: value,
     };
   });
-  const currentAverageViewsPerPost = Math.round((views * 1.24) / Math.max(1, posts));
   const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);
   const dailySummary = Array.from({ length: 16 }, (_, index) => {
     const dayOffset = 15 - index;
@@ -3751,6 +3750,15 @@ function buildChannelStats(
   const summaryLast48hPerPost = Math.round(summaryLast48h / Math.max(1, posts));
   const summaryEr24 =
     summaryLast24h > 0 ? Math.round((reactions / summaryLast24h) * 10_000) / 100 : null;
+  const todayFrom = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+  todayFrom.setUTCHours(0, 0, 0, 0);
+  todayFrom.setUTCHours(todayFrom.getUTCHours() - 3);
+  const todayActivityItems = state.channelActivity.filter(
+    (item) => new Date(item.createdAt).getTime() >= todayFrom.getTime(),
+  );
+  const todayDelta =
+    todayActivityItems.filter((item) => item.type === 'joined').length -
+    todayActivityItems.filter((item) => item.type === 'left').length;
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
     return {
@@ -3827,12 +3835,12 @@ function buildChannelStats(
     summary: {
       subscribers: {
         current: state.channelHeaderParticipantsCount,
-        todayDelta: dailySummary[dailySummary.length - 1]?.delta ?? null,
+        todayDelta,
         weekDelta: dailySummary.slice(-7).reduce((sum, item) => sum + (item.delta ?? 0), 0),
         sixteenDaysDelta: dailySummary.reduce((sum, item) => sum + (item.delta ?? 0), 0),
       },
       views: {
-        perPost: currentAverageViewsPerPost,
+        perPost: summaryLast24hPerPost,
         last24h: summaryLast24hPerPost,
         last48h: summaryLast48hPerPost,
         er24: summaryEr24,
@@ -3867,7 +3875,7 @@ function buildChannelStats(
         left: buildDelta(left, previousLeft),
         posts: buildDelta(posts, previousPosts),
         views: buildDelta(views, previousViews),
-        averageViewsPerPost: buildDelta(currentAverageViewsPerPost, previousAverageViewsPerPost),
+        averageViewsPerPost: buildDelta(summaryLast24hPerPost, previousAverageViewsPerPost),
         reactions: buildDelta(reactions, previousReactions),
       },
       series: {
