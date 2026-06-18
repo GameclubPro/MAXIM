@@ -3969,6 +3969,11 @@ body.channel-settings-page-open .bottom-nav__item.is-active::after {
   --compact-page-header-radius: 18px;
 }
 
+html[data-max-platform='android'] .settings-home-sticky-header.compact-page-header,
+html[data-max-platform='android'] .channel-settings-screen__sticky-header {
+  --compact-page-header-safe-top: 0px;
+}
+
 .settings-home-sticky-header .compact-page-header__bar,
 .channel-settings-screen__sticky-header .compact-page-header__bar {
   gap: 8px;

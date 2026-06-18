@@ -36,6 +36,10 @@ body.channel-stats-page-open .bottom-nav__item {
   margin-bottom: 8px;
 }
 
+html[data-max-platform='android'] .channel-insights__sticky-header.compact-page-header {
+  --compact-page-header-safe-top: 0px;
+}
+
 .channel-insights__sticky-header .compact-page-header__bar {
   gap: 8px;
   padding-right: 10px;
