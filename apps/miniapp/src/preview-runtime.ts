@@ -6,6 +6,7 @@ import './styles/broadcast-studio-base.css';
 import './styles/settings-rules-studio.css';
 import './styles/design-preview.css';
 import './styles/broadcast-studio.css';
+import './components/broadcast-content-composer.css';
 import './styles/broadcast-autopost-polish.css';
 import './styles/managed-giveaway.css';
 import './styles/giveaway-page.css';
