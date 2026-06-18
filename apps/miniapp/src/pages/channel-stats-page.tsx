@@ -220,18 +220,6 @@ function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket)
   }).format(parsed);
 }
 
-function formatDailySummaryDate(value: string): string {
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  if (!Number.isFinite(parsed.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-  }).format(parsed);
-}
-
 function formatSignedCount(value: number | null): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
@@ -1978,7 +1966,6 @@ function ChannelStatsOverview({
         ? 'danger'
         : 'neutral';
   const chartTitle = 'Аналитика';
-  const dailyRows = summary.daily.slice(-7);
 
   return (
     <section
@@ -2071,25 +2058,6 @@ function ChannelStatsOverview({
           </span>
         </article>
       </div>
-
-      <article className="channel-fact-panel channel-daily-summary-panel">
-        <div className="channel-insights__panel-head">
-          <div className="channel-insights__panel-copy">
-            <strong>Дни</strong>
-          </div>
-        </div>
-        <div className="channel-daily-summary__list" aria-label="Динамика подписчиков по дням">
-          {dailyRows.map((row) => (
-            <div className="channel-daily-summary__item" key={row.date}>
-              <div className="channel-daily-summary__copy">
-                <strong>{formatDailySummaryDate(row.date)}</strong>
-                <span>Подписчиков {formatCount(row.subscribers)}</span>
-              </div>
-              <b>{formatSignedCount(row.delta)}</b>
-            </div>
-          ))}
-        </div>
-      </article>
 
       <article className="channel-fact-panel channel-top-posts-panel">
         <div className="channel-insights__panel-head">
