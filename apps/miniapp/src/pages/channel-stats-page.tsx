@@ -160,6 +160,10 @@ function formatCompactCount(value: number | null): string {
     return '—';
   }
 
+  if (Math.abs(value) < 100_000) {
+    return formatCount(value);
+  }
+
   return new Intl.NumberFormat('ru-RU', {
     notation: 'compact',
     maximumFractionDigits: 1,

@@ -16131,10 +16131,15 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private formatChannelStatsCompactCount(value: number): string {
+    const normalized = Math.max(0, this.toSafeInteger(value));
+    if (normalized < 100_000) {
+      return new Intl.NumberFormat('ru-RU').format(normalized);
+    }
+
     return new Intl.NumberFormat('ru-RU', {
       notation: 'compact',
       maximumFractionDigits: 1,
-    }).format(Math.max(0, this.toSafeInteger(value)));
+    }).format(normalized);
   }
 
   private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
