@@ -1,3 +1,4 @@
+import './styles/settings-policy-controls.css';
 import './styles/lazy-pages.css';
 import './styles/design-preview.css';
 import './styles/broadcast-studio.css';

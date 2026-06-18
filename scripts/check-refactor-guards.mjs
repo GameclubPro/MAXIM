@@ -35,9 +35,16 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 2420,
-    targetLines: 2100,
+    maxLines: 2130,
+    targetLines: 1850,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/settings-policy-controls.css',
+    maxLines: 320,
+    targetLines: 250,
+    reason:
+      'Settings policy/control island styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-link-allowlist.css',
