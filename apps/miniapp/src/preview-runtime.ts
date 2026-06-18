@@ -1,5 +1,6 @@
 import './styles/settings-policy-controls.css';
 import './styles/lazy-pages.css';
+import './styles/settings-home-compact.css';
 import './styles/broadcast-studio-base.css';
 import './styles/settings-rules-studio.css';
 import './styles/design-preview.css';

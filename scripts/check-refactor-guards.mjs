@@ -35,9 +35,16 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 730,
-    targetLines: 560,
+    maxLines: 420,
+    targetLines: 320,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/settings-home-compact.css',
+    maxLines: 320,
+    targetLines: 250,
+    reason:
+      'Compact settings home and channel card styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-rules-studio.css',
