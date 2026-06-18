@@ -1,0 +1,127 @@
+@layer pages {
+.duplicate-stage-list {
+  display: grid;
+  gap: 8px;
+}
+
+.duplicate-stage-list__caption {
+  margin: 0 2px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.duplicate-stage {
+  border-radius: 12px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background: rgba(255, 255, 255, 0.45);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.duplicate-stage.is-disabled {
+  opacity: 0.78;
+}
+
+.duplicate-stage__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.duplicate-stage__title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-stage__controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px;
+}
+
+.duplicate-stage__field {
+  display: grid;
+  gap: 5px;
+  position: relative;
+  min-width: 0;
+}
+
+.duplicate-stage__field input {
+  width: 100%;
+  min-height: 34px;
+  height: 34px;
+  border-radius: 10px;
+  text-align: left;
+  font-size: 0.84rem;
+  font-weight: 700;
+  padding: 6px 84px 6px 10px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.duplicate-stage__input-wrap {
+  position: relative;
+}
+
+.duplicate-stage__field-label {
+  font-size: 0.66rem;
+  line-height: 1;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.duplicate-stage__suffix {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.duplicate-stage__errors {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+}
+
+.duplicate-stage input:disabled {
+  opacity: 0.66;
+  cursor: not-allowed;
+}
+
+@media (max-width: 520px) {
+  .duplicate-stage {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px;
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  .duplicate-stage__controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .duplicate-stage__field input {
+    padding-right: 86px;
+  }
+
+  .duplicate-stage__field-label {
+    font-size: 0.64rem;
+  }
+}
+}

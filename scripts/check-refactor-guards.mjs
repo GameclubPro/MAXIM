@@ -41,10 +41,17 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.css',
-    maxLines: 530,
-    targetLines: 430,
+    maxLines: 420,
+    targetLines: 330,
     reason:
       'Settings route-owned CSS should stay focused while legacy settings page markup is extracted.',
+  },
+  {
+    path: 'apps/miniapp/src/pages/settings/settings-duplicate-stage.css',
+    maxLines: 130,
+    targetLines: 95,
+    reason:
+      'Duplicate moderation stage styles should stay with the settings duplicate panel owner.',
   },
   {
     path: 'apps/miniapp/src/components/ui/segmented-control.css',
