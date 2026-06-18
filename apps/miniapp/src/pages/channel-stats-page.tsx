@@ -170,6 +170,19 @@ function formatCompactCount(value: number | null): string {
   }).format(value);
 }
 
+function formatDenseCount(value: number): string {
+  const absolute = Math.abs(value);
+
+  if (absolute < 100_000) {
+    return new Intl.NumberFormat('ru-RU', { useGrouping: false }).format(value);
+  }
+
+  return new Intl.NumberFormat('ru-RU', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 function formatShortDate(value: string | null, bucket: ChannelStatsBucket): string {
   if (!value) {
     return '';
@@ -266,7 +279,7 @@ function formatPositiveCount(value: number | null): string {
     return '—';
   }
 
-  return `+${new Intl.NumberFormat('ru-RU').format(Math.max(0, value))}`;
+  return `+${formatDenseCount(Math.max(0, value))}`;
 }
 
 function formatNegativeCount(value: number | null): string {
@@ -274,7 +287,23 @@ function formatNegativeCount(value: number | null): string {
     return '—';
   }
 
-  return `-${new Intl.NumberFormat('ru-RU').format(Math.max(0, value))}`;
+  return `-${formatDenseCount(Math.max(0, value))}`;
+}
+
+function formatDenseSignedCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  if (value > 0) {
+    return `+${formatDenseCount(value)}`;
+  }
+
+  if (value < 0) {
+    return `-${formatDenseCount(Math.abs(value))}`;
+  }
+
+  return '0';
 }
 
 function formatPercent(value: number | null): string {
@@ -2183,6 +2212,8 @@ function ChannelStatsOverview({
                   const joined = row.joined ?? null;
                   const left = row.left ?? null;
                   const hasFlow = joined !== null || left !== null;
+                  const joinedFlow = joined ?? 0;
+                  const leftFlow = left ?? 0;
 
                   return (
                     <tr key={row.date}>
@@ -2198,16 +2229,16 @@ function ChannelStatsOverview({
                         className={`channel-summary-table__growth is-${getSignedTone(row.delta)}`}
                       >
                         <span className="channel-summary-table__growth-value">
-                          {formatSignedCount(row.delta)}
+                          {formatDenseSignedCount(row.delta)}
                         </span>
                         {hasFlow ? (
                           <span className="channel-summary-table__growth-flow">
                             <span aria-hidden="true">(</span>
                             <em className={joined === null ? 'is-neutral' : 'is-positive'}>
-                              {formatPositiveCount(joined)}
+                              {formatPositiveCount(joinedFlow)}
                             </em>
                             <em className={left === null ? 'is-neutral' : 'is-negative'}>
-                              {formatNegativeCount(left)}
+                              {formatNegativeCount(leftFlow)}
                             </em>
                             <span aria-hidden="true">)</span>
                           </span>
