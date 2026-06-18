@@ -13,8 +13,6 @@ import { Shell } from './components/shell';
 import { GlassCard } from './components/ui/glass-card';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
-import commentsSpaceDarkWallpaperUrl from './assets/wallpapers/comments-space-dark.webp';
-import commentsSpaceLightWallpaperUrl from './assets/wallpapers/comments-space-light.webp';
 import { createApiTransport } from './lib/api/transport';
 import { traceMiniappBoot, traceMiniappLaunchRoute } from './lib/boot-trace';
 import { getPreviewBootstrap } from './lib/design-preview';
@@ -38,13 +36,6 @@ import {
   LazyPrivacyPolicyPage,
   LazySettingsPage,
   LazySystemPage,
-  preloadChannelDialogPage,
-  preloadChannelSettingsPage,
-  preloadChannelStatsPage,
-  preloadEventsPage,
-  preloadGiveawayPage,
-  preloadSettingsPage,
-  preloadSystemPage,
 } from './pages/lazy-pages';
 
 const HASH_ROUTER_ENABLED =
@@ -163,36 +154,6 @@ function isPublicLegalPathname(): boolean {
   return /^\/legal\/(?:agreement|privacy)\/?$/u.test(resolveRouterPathnameFromWindow());
 }
 
-function preloadImageAsset(href: string, key: string): void {
-  if (typeof document === 'undefined') {
-    return;
-  }
-
-  if (document.head.querySelector(`link[data-maxim-preload="${key}"]`)) {
-    return;
-  }
-
-  const link = document.createElement('link');
-  link.rel = 'preload';
-  link.as = 'image';
-  link.href = href;
-  link.type = 'image/webp';
-  link.dataset.maximPreload = key;
-  document.head.appendChild(link);
-}
-
-function preloadCommentsWallpaper(): void {
-  const prefersDark =
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const variant = prefersDark ? 'dark' : 'light';
-  preloadImageAsset(
-    prefersDark ? commentsSpaceDarkWallpaperUrl : commentsSpaceLightWallpaperUrl,
-    `comments-wallpaper-${variant}`,
-  );
-}
-
 function applyInitialLaunchRoute(targetRoute: string): void {
   if (typeof window === 'undefined') {
     return;
@@ -227,54 +188,6 @@ function applyInitialLaunchRoute(targetRoute: string): void {
   window.history.replaceState(window.history.state, '', nextUrl);
 }
 
-function preloadLaunchRouteModule(route: string): void {
-  const parsedRoute = parseRoute(route);
-  if (!parsedRoute) {
-    return;
-  }
-
-  const pathname = parsedRoute.pathname;
-  if (/^\/(?:chat|channel)\/[^/]+\/dialog\/comments$/u.test(pathname)) {
-    preloadCommentsWallpaper();
-    void preloadChannelDialogPage();
-    return;
-  }
-
-  if (/^\/channel\/[^/]+\/dialog\/suggest$/u.test(pathname)) {
-    void preloadChannelDialogPage();
-    return;
-  }
-
-  if (/^\/chat\/[^/]+\/settings$/u.test(pathname)) {
-    void preloadSettingsPage();
-    return;
-  }
-
-  if (/^\/channel\/[^/]+\/settings$/u.test(pathname)) {
-    void preloadChannelSettingsPage();
-    return;
-  }
-
-  if (/^\/channel\/[^/]+\/stats$/u.test(pathname)) {
-    void preloadChannelStatsPage();
-    return;
-  }
-
-  if (/^\/chat\/[^/]+\/events$/u.test(pathname)) {
-    void preloadEventsPage();
-    return;
-  }
-
-  if (/^\/giveaways\/[^/]+$/u.test(pathname)) {
-    void preloadGiveawayPage();
-    return;
-  }
-
-  if (pathname === '/system') {
-    void preloadSystemPage();
-  }
-}
-
 function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -287,7 +200,6 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
       return;
     }
 
-    preloadLaunchRouteModule(targetRoute);
     appliedRouteRef.current = targetRoute;
     if (!isLaunchRouteApplied(location.pathname, location.search, targetRoute)) {
       navigate(buildMergedLaunchRoute(targetRoute, location.search), { replace: true });
@@ -461,7 +373,6 @@ export function App() {
     const launchRoute = resolveLaunchRoute(initData);
     traceMiniappLaunchRoute(launchRoute, 'initial');
     if (launchRoute && preparedLaunchRouteRef.current !== launchRoute) {
-      preloadLaunchRouteModule(launchRoute);
       applyInitialLaunchRoute(launchRoute);
       preparedLaunchRouteRef.current = launchRoute;
     }
