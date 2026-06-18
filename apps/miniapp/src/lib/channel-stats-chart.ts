@@ -20,6 +20,9 @@ export type ViewsDisplayStats = {
       viewsTotal: number;
       viewsMode: ChannelStatsViewMode;
     };
+    series?: {
+      views?: readonly ViewsChartActivePoint[];
+    };
   };
   comparison?: {
     deltas?: {
@@ -34,10 +37,10 @@ export function resolveChannelStatsDisplayViews(stats: ViewsDisplayStats): numbe
   return stats.official.content.views;
 }
 
-export function resolveChannelStatsAverageViewsPerPost(stats: ViewsDisplayStats): number {
-  const contractAverage = stats.comparison?.deltas?.averageViewsPerPost?.current;
-  if (typeof contractAverage === 'number' && Number.isFinite(contractAverage)) {
-    return Math.max(0, Math.round(contractAverage));
+export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): number {
+  const seriesAverage = resolveAverageViewsFromSeries(stats.official.series?.views ?? []);
+  if (seriesAverage !== null) {
+    return seriesAverage;
   }
 
   const posts = Math.max(0, Math.round(stats.official.content.posts));
@@ -46,6 +49,20 @@ export function resolveChannelStatsAverageViewsPerPost(stats: ViewsDisplayStats)
   }
 
   return Math.round(resolveChannelStatsDisplayViews(stats) / posts);
+}
+
+export function resolveAverageViewsFromSeries(
+  points: readonly ViewsChartActivePoint[],
+): number | null {
+  const values = points
+    .map((point) => point.views)
+    .filter((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+  if (values.length === 0) {
+    return null;
+  }
+
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Math.round(total / values.length);
 }
 
 export function shouldUseChannelStatsPeriodViews(stats: ViewsDisplayStats): boolean {

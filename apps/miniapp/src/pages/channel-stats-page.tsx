@@ -40,7 +40,7 @@ import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
-  resolveChannelStatsAverageViewsPerPost,
+  resolveChannelStatsAverageViews,
   resolveChannelStatsDisplayViews,
   resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
@@ -864,25 +864,15 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
   const baselineY = height - bottomPad;
-  const averageViewsPerPost = resolveChannelStatsAverageViewsPerPost(stats);
-  const currentPosts = Math.max(0, stats.official.content.posts);
-  const previousPosts = Math.max(0, stats.comparison.deltas.posts.previous);
-  const toAverageViews = (views: number, posts: number) =>
-    posts > 0 ? Math.round(Math.max(0, views) / posts) : 0;
-  const currentMaxViews = Math.max(
-    ...series.map((item) => toAverageViews(item.views, currentPosts)),
-    0,
-  );
-  const previousMaxViews = Math.max(
-    ...previousSeries.map((item) => toAverageViews(item.views, previousPosts)),
-    0,
-  );
+  const averageViews = resolveChannelStatsAverageViews(stats);
+  const currentMaxViews = Math.max(...series.map((item) => item.views), 0);
+  const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
   const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
-  const aggregateViews = averageViewsPerPost;
+  const aggregateViews = averageViews;
   const maxViews =
     currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
   const cumulativeMax = Math.max(
-    ...series.map((item) => toAverageViews(item.cumulativeViews, currentPosts)),
+    ...series.map((item) => item.cumulativeViews),
     maxBucketViews > 0 ? 0 : aggregateViews,
     0,
   );
@@ -898,8 +888,8 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       series.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-    const views = toAverageViews(item.views, currentPosts);
-    const cumulativeViews = toAverageViews(item.cumulativeViews, currentPosts);
+    const views = Math.max(0, item.views);
+    const cumulativeViews = Math.max(0, item.cumulativeViews);
     const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
@@ -916,8 +906,8 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       previousSeries.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
-    const views = toAverageViews(item.views, previousPosts);
-    const cumulativeViews = toAverageViews(item.cumulativeViews, previousPosts);
+    const views = Math.max(0, item.views);
+    const cumulativeViews = Math.max(0, item.cumulativeViews);
     const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
@@ -1514,8 +1504,8 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activePreviousBar = chart.previousBars[previousIndex] ?? null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
-  const averageViewsPerPost = resolveChannelStatsAverageViewsPerPost(stats);
-  const averageViewsCompactLabel = formatCompactCount(averageViewsPerPost);
+  const averageViews = resolveChannelStatsAverageViews(stats);
+  const averageViewsCompactLabel = formatCompactCount(averageViews);
   const graphMarkers = resolveGraphMarkerPositions(
     stats.signals.markers,
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
@@ -1535,7 +1525,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
   const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
   const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
-  const viewsModeLabel = resolveChannelStatsViewsModeLabel(stats);
   const chartPeriodLabel = stats.period.range === '24h' ? '24 часа' : stats.period.range;
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
@@ -1543,7 +1532,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
         activeBar.views,
-      )} просмотров/пост в точке, ${formatCount(averageViewsPerPost)} просмотров/пост`
+      )} просмотров, среднее ${formatCount(averageViews)} просмотров`
     : 'Данные по просмотрам недоступны';
   return (
     <div className="channel-stats-graph">
@@ -1553,15 +1542,15 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <>
           <header className="channel-stats-graph__summary">
             <small className="channel-stats-graph__summary-date">
-              Просм./пост {viewsModeLabel} · {chartPeriodLabel}
+              Среднее просмотров · {chartPeriodLabel}
             </small>
             <strong className="channel-stats-graph__summary-value">
-              {averageViewsCompactLabel} просмотров/пост
+              {averageViewsCompactLabel} просмотров
             </strong>
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                Пик {formatCompactCount(chart.maxViews)}/пост
+                Пик {formatCompactCount(chart.maxViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 Постов {formatCompactCount(stats.official.content.posts)}
@@ -1616,10 +1605,10 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activeBar && isTooltipVisible ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
-                <strong>{activeViewsCompactLabel} просмотров/пост</strong>
-                <span>Среднее {averageViewsCompactLabel}/пост</span>
+                <strong>{activeViewsCompactLabel} просмотров</strong>
+                <span>Среднее {averageViewsCompactLabel}</span>
                 {activePreviousBar ? (
-                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}/пост</em>
+                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}</em>
                 ) : null}
                 {activePostPin ? (
                   <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
@@ -1707,7 +1696,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                     y={chart.aggregateBar.y + 27}
                     className="channel-stats-graph__aggregate-text"
                   >
-                    {averageViewsCompactLabel} просмотров/пост
+                    {averageViewsCompactLabel} просмотров
                   </text>
                   <text
                     x={chart.aggregateBar.x + 14}
@@ -1794,7 +1783,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activePreviousBar
               ? `${activeGuideLabel}. Прошлый период: ${formatCount(
                   activePreviousBar.views,
-                )} просмотров/пост.`
+                )} просмотров.`
               : activeGuideLabel}
           </output>
         </>

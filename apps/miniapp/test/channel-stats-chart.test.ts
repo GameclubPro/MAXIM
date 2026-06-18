@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  resolveChannelStatsAverageViewsPerPost,
+  resolveAverageViewsFromSeries,
+  resolveChannelStatsAverageViews,
   resolveChannelStatsDisplayViews,
   resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
@@ -73,7 +74,7 @@ test('does not use post lifetime totals when observed view deltas are not availa
   };
 
   assert.equal(resolveChannelStatsDisplayViews(stats), 0);
-  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 0);
+  assert.equal(resolveChannelStatsAverageViews(stats), 0);
   assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
   assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
 });
@@ -91,12 +92,50 @@ test('keeps period views primary when observed deltas exist', () => {
   };
 
   assert.equal(resolveChannelStatsDisplayViews(stats), 3_200);
-  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 400);
+  assert.equal(resolveChannelStatsAverageViews(stats), 400);
   assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
   assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
 });
 
-test('uses average views per post as the primary views number', () => {
+test('derives average views from daily graph points', () => {
+  const stats = {
+    official: {
+      content: {
+        views: 10_500,
+        viewsTotal: 20_000,
+        viewsMode: 'observedDelta' as const,
+        posts: 8,
+      },
+      series: {
+        views: [
+          { views: 1_000, cumulativeViews: 1_000 },
+          { views: 1_000, cumulativeViews: 2_000 },
+          { views: 2_000, cumulativeViews: 4_000 },
+          { views: 2_000, cumulativeViews: 6_000 },
+          { views: 1_000, cumulativeViews: 7_000 },
+          { views: 2_000, cumulativeViews: 9_000 },
+          { views: 1_500, cumulativeViews: 10_500 },
+        ],
+      },
+    },
+  };
+
+  assert.equal(resolveAverageViewsFromSeries(stats.official.series.views), 1_500);
+  assert.equal(resolveChannelStatsAverageViews(stats), 1_500);
+});
+
+test('keeps displayed zero buckets in average views', () => {
+  assert.equal(
+    resolveAverageViewsFromSeries([
+      { views: 1_000, cumulativeViews: 1_000 },
+      { views: 0, cumulativeViews: 1_000 },
+      { views: 2_000, cumulativeViews: 3_000 },
+    ]),
+    1_000,
+  );
+});
+
+test('prefers graph point average over period views per post', () => {
   const stats = {
     official: {
       content: {
@@ -104,6 +143,13 @@ test('uses average views per post as the primary views number', () => {
         views: 1_250,
         viewsTotal: 9_000,
         viewsMode: 'observedDelta' as const,
+      },
+      series: {
+        views: [
+          { views: 1_000, cumulativeViews: 1_000 },
+          { views: 2_000, cumulativeViews: 3_000 },
+          { views: 1_500, cumulativeViews: 4_500 },
+        ],
       },
     },
     comparison: {
@@ -116,5 +162,5 @@ test('uses average views per post as the primary views number', () => {
   };
 
   assert.equal(resolveChannelStatsDisplayViews(stats), 1_250);
-  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 260);
+  assert.equal(resolveChannelStatsAverageViews(stats), 1_500);
 });
