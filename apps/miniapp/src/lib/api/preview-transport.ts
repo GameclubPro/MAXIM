@@ -772,6 +772,10 @@ function addDays(value: Date, days: number): Date {
   return addHours(value, days * 24);
 }
 
+function formatMoscowDateKey(value: Date): string {
+  return new Date(value.getTime() + 3 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+}
+
 function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
   const createdAt = addDays(now, -18).toISOString();
   const syncedAt = addHours(now, -1.2).toISOString();
@@ -3736,7 +3740,7 @@ function buildChannelStats(
   const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);
   const dailySummary = Array.from({ length: 16 }, (_, index) => {
     const dayOffset = 15 - index;
-    const date = addDays(now, -dayOffset).toISOString().slice(0, 10);
+    const date = formatMoscowDateKey(addDays(now, -dayOffset));
     const delta = Math.round((joined - left) / 16 + Math.sin(index / 2) * 2);
     return {
       date,
@@ -3759,6 +3763,11 @@ function buildChannelStats(
   const todayJoined = todayActivityItems.filter((item) => item.type === 'joined').length;
   const todayLeft = todayActivityItems.filter((item) => item.type === 'left').length;
   const todayDelta = todayJoined - todayLeft;
+  const todaySummary = dailySummary.at(-1);
+  if (todaySummary) {
+    todaySummary.subscribers = state.channelHeaderParticipantsCount;
+    todaySummary.delta = todayDelta;
+  }
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
     return {

@@ -6971,6 +6971,8 @@ export class AdminService implements OnModuleDestroy {
       audienceSnapshots: summaryAudienceSnapshots,
       summaryPosts,
       summaryWindowRows,
+      summaryMembershipRows: sixteenDaysMembershipRows,
+      summaryMembershipCoverageFrom: syncState?.membershipCoverageFrom ?? null,
       membershipDeltas: {
         today: todayMembershipFlow.net,
         todayJoined: todayMembershipFlow.joined,
@@ -16278,6 +16280,8 @@ export class AdminService implements OnModuleDestroy {
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
     summaryPosts?: ChannelStatsPostRow[];
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
+    summaryMembershipRows?: ChannelStatsMembershipBucketRow[];
+    summaryMembershipCoverageFrom?: Date | null;
     membershipDeltas?: {
       today: number | null;
       todayJoined?: number | null;
@@ -16298,6 +16302,8 @@ export class AdminService implements OnModuleDestroy {
       sortedAudienceSnapshots,
       currentParticipants,
       params.now,
+      params.summaryMembershipRows,
+      params.summaryMembershipCoverageFrom,
     );
     const resolveDelta = (lookbackMs: number) => {
       if (currentParticipants === null) {
@@ -16381,16 +16387,20 @@ export class AdminService implements OnModuleDestroy {
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     currentParticipants: number | null,
     now: Date,
+    membershipRows?: ChannelStatsMembershipBucketRow[],
+    membershipCoverageFrom?: Date | null,
   ): ChannelStatsResponse['summary']['daily'] {
+    const firstDay = this.floorChannelStatsMoscowDay(
+      new Date(now.getTime() - 15 * TWENTY_FOUR_HOURS_MS),
+    );
     const days: ChannelStatsResponse['summary']['daily'] = [];
-    const firstDay = this.floorChannelStatsDay(new Date(now.getTime() - 15 * TWENTY_FOUR_HOURS_MS));
     let previousCount = this.resolveLastAudienceCountAt(
       audienceSnapshots,
       new Date(firstDay.getTime() - 1),
     );
 
     for (let offset = 15; offset >= 0; offset -= 1) {
-      const day = this.floorChannelStatsDay(
+      const day = this.floorChannelStatsMoscowDay(
         new Date(now.getTime() - offset * TWENTY_FOUR_HOURS_MS),
       );
       const dayEnd = new Date(day.getTime() + TWENTY_FOUR_HOURS_MS - 1);
@@ -16401,7 +16411,7 @@ export class AdminService implements OnModuleDestroy {
       const delta =
         subscribers === null || previousCount === null ? null : subscribers - previousCount;
       days.push({
-        date: day.toISOString().slice(0, 10),
+        date: this.formatChannelStatsMoscowDate(day),
         subscribers,
         delta,
       });
@@ -16411,7 +16421,69 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
+    const dailyMembershipDeltas =
+      membershipRows && membershipCoverageFrom
+        ? this.buildChannelStatsDailyMembershipDeltas(
+            firstDay,
+            membershipRows,
+            membershipCoverageFrom,
+          )
+        : null;
+    if (dailyMembershipDeltas && currentParticipants !== null) {
+      let runningSubscribers = currentParticipants;
+      for (let index = 15; index >= 0; index -= 1) {
+        const delta = dailyMembershipDeltas[index];
+        if (delta === null || delta === undefined) {
+          break;
+        }
+
+        days[index] = {
+          date: this.formatChannelStatsMoscowDate(
+            new Date(firstDay.getTime() + index * TWENTY_FOUR_HOURS_MS),
+          ),
+          subscribers: runningSubscribers,
+          delta,
+        };
+        runningSubscribers -= delta;
+      }
+    }
+
     return days;
+  }
+
+  private buildChannelStatsDailyMembershipDeltas(
+    firstDay: Date,
+    rows: ChannelStatsMembershipBucketRow[],
+    membershipCoverageFrom: Date,
+  ): Array<number | null> {
+    const firstDayMs = firstDay.getTime();
+    const deltas = Array.from({ length: 16 }, (_, index) =>
+      membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS ? 0 : null,
+    );
+    const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
+
+    for (const row of rows) {
+      const bucketStart = this.toIsoString(row.bucket_start);
+      if (!bucketStart) {
+        continue;
+      }
+
+      const bucketStartMs = new Date(bucketStart).getTime();
+      if (
+        !Number.isFinite(bucketStartMs) ||
+        bucketStartMs < firstDayMs ||
+        bucketStartMs >= lastDayExclusiveMs
+      ) {
+        continue;
+      }
+
+      const index = Math.floor((bucketStartMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
+      if (deltas[index] !== null) {
+        deltas[index] += this.toSafeInteger(row.joined_users) - this.toSafeInteger(row.left_users);
+      }
+    }
+
+    return deltas;
   }
 
   private buildChannelStatsViewWindowSummary(
@@ -16559,6 +16631,10 @@ export class AdminService implements OnModuleDestroy {
     const moscowDate = new Date(date.getTime() + 3 * ONE_HOUR_MS);
     moscowDate.setUTCHours(0, 0, 0, 0);
     return new Date(moscowDate.getTime() - 3 * ONE_HOUR_MS);
+  }
+
+  private formatChannelStatsMoscowDate(date: Date): string {
+    return new Date(date.getTime() + 3 * ONE_HOUR_MS).toISOString().slice(0, 10);
   }
 
   private toDateOrNull(value: Date | string | null): Date | null {

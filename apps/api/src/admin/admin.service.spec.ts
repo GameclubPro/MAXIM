@@ -18198,6 +18198,11 @@ describe('AdminService.getChannelStats', () => {
       },
       daily: expect.any(Array),
     });
+    expect(result.summary.daily.at(-1)).toEqual({
+      date: '2026-03-07',
+      subscribers: 1240,
+      delta: 1,
+    });
     expect(result.secondary).toEqual({
       postsWithButtons: 2,
       comments: 4,

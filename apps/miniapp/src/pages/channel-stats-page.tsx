@@ -210,6 +210,15 @@ function formatSummaryTableDate(value: string): string {
   }).format(parsed);
 }
 
+function formatMoscowDateKey(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '';
+  }
+
+  return new Date(parsed.getTime() + 3 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+}
+
 function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket): string {
   if (!value) {
     return 'Нет данных';
@@ -343,12 +352,12 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     .slice()
     .sort((leftPoint, rightPoint) => leftPoint.at.localeCompare(rightPoint.at))
     .forEach((point) => {
-      const date = point.at.slice(0, 10);
+      const date = formatMoscowDateKey(point.at);
       if (date) {
         dailyByDate.set(date, point.participantsCount);
       }
     });
-  const todayDate = stats.period.to.slice(0, 10);
+  const todayDate = formatMoscowDateKey(stats.period.to);
   if (todayDate && typeof currentSubscribers === 'number') {
     dailyByDate.set(todayDate, currentSubscribers);
   }
