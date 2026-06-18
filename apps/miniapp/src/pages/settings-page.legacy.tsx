@@ -31,6 +31,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
 import '../styles/lazy-pages.css';
+import '../styles/settings-link-allowlist.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
 import '../styles/settings-route-polish.css';

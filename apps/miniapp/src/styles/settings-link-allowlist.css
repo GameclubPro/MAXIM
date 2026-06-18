@@ -1,0 +1,513 @@
+@layer pages {
+/* Link allowlist styles split from lazy-pages.css. */
+
+.allowlist-workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.allowlist-panel {
+  display: grid;
+  gap: 14px;
+  border-radius: 24px;
+  border: 1px solid rgba(11, 132, 255, 0.16);
+  background:
+    radial-gradient(140% 130% at 0% 0%, rgba(11, 132, 255, 0.12), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 247, 255, 0.9));
+  padding: 14px;
+  box-shadow: 0 18px 38px rgba(29, 73, 109, 0.14);
+  backdrop-filter: blur(10px);
+}
+
+.allowlist-panel--error {
+  border-color: rgba(228, 83, 99, 0.32);
+}
+
+.allowlist-panel--error .allowlist-add-row input {
+  border-color: rgba(228, 83, 99, 0.45);
+}
+
+.allowlist-panel--error .field__hint {
+  color: var(--danger);
+}
+
+.allowlist-panel__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.allowlist-panel__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-drilldown .allowlist-panel {
+  border-radius: 26px;
+  border-color: var(--settings-panel-accent-border);
+  background:
+    radial-gradient(140% 130% at 0% 0%, var(--settings-panel-accent-soft-strong), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(243, 248, 254, 0.94));
+  box-shadow:
+    0 18px 38px rgba(29, 73, 109, 0.12),
+    0 10px 26px var(--settings-panel-glow);
+}
+
+.settings-drilldown .allowlist-composer {
+  border-radius: 22px;
+  border-color: rgba(188, 205, 220, 0.88);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 254, 0.94)),
+    rgba(255, 255, 255, 0.94);
+}
+
+.settings-drilldown .allowlist-composer__label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6f8396;
+}
+
+.settings-drilldown .allowlist-add-row input {
+  border-color: rgba(188, 205, 220, 0.88);
+}
+
+.settings-drilldown .allowlist-composer {
+  padding: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 12px 24px rgba(24, 55, 83, 0.04);
+}
+
+.settings-drilldown .allowlist-composer__head {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.settings-drilldown .allowlist-add-row__button {
+  min-height: 48px;
+  border-radius: 16px;
+}
+
+.settings-drilldown .allowlist-composer__example {
+  border-color: rgba(188, 205, 220, 0.88);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.settings-drilldown .allowlist-item {
+  position: relative;
+  overflow: hidden;
+  border-radius: 22px;
+  border-color: rgba(188, 205, 220, 0.86);
+  background:
+    radial-gradient(140% 130% at 0% 0%, var(--settings-panel-accent-soft), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 254, 0.94)),
+    rgba(255, 255, 255, 0.92);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 14px 28px rgba(24, 55, 83, 0.05);
+}
+
+.settings-drilldown .allowlist-item::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: linear-gradient(90deg, var(--settings-panel-accent-soft-strong), transparent 72%);
+}
+
+.settings-drilldown .allowlist-item__action {
+  min-height: 42px;
+  border-radius: 14px;
+}
+
+.settings-drilldown .allowlist-item__schedule-editor {
+  border-radius: 18px;
+  border-color: var(--settings-panel-accent-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), var(--settings-panel-accent-soft)),
+    rgba(255, 255, 255, 0.9);
+}
+
+.allowlist-composer {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 250, 255, 0.82)),
+    rgba(255, 255, 255, 0.78);
+}
+
+.allowlist-composer__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.allowlist-composer__label {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.allowlist-composer__mode .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 42px;
+  padding: 9px 12px;
+}
+
+.allowlist-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.allowlist-add-row input {
+  min-height: 48px;
+  height: 48px;
+  width: 100%;
+  border-radius: 16px;
+  border: 1.5px solid rgba(62, 96, 127, 0.15);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.94)),
+    rgba(255, 255, 255, 0.96);
+  padding: 0 14px;
+  font-size: 0.96rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.allowlist-add-row input::placeholder {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.allowlist-add-row input:focus {
+  outline: none;
+  border-color: rgba(11, 132, 255, 0.38);
+  box-shadow: 0 0 0 4px rgba(11, 132, 255, 0.12);
+}
+
+.allowlist-add-row__button {
+  min-width: 108px;
+  min-height: 48px;
+  white-space: nowrap;
+}
+
+.allowlist-composer__examples {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.allowlist-composer__examples::-webkit-scrollbar {
+  display: none;
+}
+
+.allowlist-composer__example {
+  min-height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background: rgba(255, 255, 255, 0.74);
+  padding: 0 12px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.allowlist-composer__example:hover {
+  border-color: rgba(11, 132, 255, 0.28);
+  background: rgba(11, 132, 255, 0.08);
+  color: #0a5fa8;
+}
+
+.allowlist-results {
+  display: grid;
+  gap: 10px;
+}
+
+.allowlist-results__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.allowlist-results__title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.allowlist-results__head small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.allowlist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.allowlist-item {
+  border-radius: 18px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 249, 255, 0.88)),
+    rgba(255, 255, 255, 0.84);
+  padding: 12px;
+  box-shadow: 0 10px 22px rgba(31, 67, 98, 0.06);
+}
+
+.allowlist-item--domain {
+  display: block;
+}
+
+.allowlist-item__stack {
+  display: grid;
+  gap: 10px;
+}
+
+.allowlist-item__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.allowlist-item__lead {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.allowlist-item__domain {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.allowlist-item__type {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.allowlist-item__status {
+  justify-self: end;
+}
+
+.allowlist-item__meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.allowlist-item__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.allowlist-item__action {
+  border-radius: 12px;
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.allowlist-item__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.allowlist-item__action:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.allowlist-item__action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.allowlist-item__action--schedule {
+  border: 1px solid rgba(11, 132, 255, 0.2);
+  color: #0c5da6;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.94), rgba(226, 241, 255, 0.8)),
+    rgba(255, 255, 255, 0.86);
+}
+
+.allowlist-item__action--schedule:hover:not(:disabled) {
+  border-color: rgba(11, 132, 255, 0.34);
+}
+
+.allowlist-item__action--schedule.is-open {
+  border-color: rgba(11, 132, 255, 0.44);
+  background: rgba(11, 132, 255, 0.14);
+  color: #085ea3;
+}
+
+.allowlist-item__action--remove {
+  border: 1px solid rgba(228, 83, 99, 0.22);
+  color: #a22f3f;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(251, 232, 235, 0.7)),
+    rgba(228, 83, 99, 0.12);
+}
+
+.allowlist-item__action--remove:hover:not(:disabled) {
+  border-color: rgba(228, 83, 99, 0.36);
+}
+
+.allowlist-item__schedule-editor {
+  border-radius: 14px;
+  border: 1px solid rgba(11, 132, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(249, 252, 255, 0.92), rgba(238, 247, 255, 0.86)),
+    rgba(246, 251, 255, 0.78);
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.allowlist-item__schedule-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.allowlist-item__schedule-field {
+  min-width: 0;
+}
+
+.allowlist-item__schedule-field input {
+  min-height: 44px;
+  height: 44px;
+}
+
+.allowlist-item__schedule-field .time-field__button {
+  min-height: 52px;
+}
+
+.allowlist-item__schedule-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.allowlist-item__schedule-actions .button {
+  min-height: 42px;
+}
+
+.allowlist-empty {
+  margin: 0;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px dashed rgba(62, 96, 127, 0.22);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.allowlist-empty--error {
+  color: var(--danger);
+  border-color: rgba(228, 83, 99, 0.26);
+  background: rgba(255, 245, 246, 0.78);
+}
+
+@media (max-width: 560px) {
+  .allowlist-item__header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .allowlist-item__status {
+    justify-self: start;
+  }
+
+  .allowlist-item__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .allowlist-panel {
+    padding: 12px;
+    border-radius: 22px;
+  }
+
+  .allowlist-item__schedule-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .allowlist-item__schedule-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .allowlist-item__schedule-actions .button {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 390px) {
+  .allowlist-composer {
+    gap: 10px;
+    padding: 9px;
+  }
+
+  .allowlist-composer__head {
+    align-items: flex-start;
+  }
+
+  .allowlist-add-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .allowlist-add-row__button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .allowlist-add-row input {
+    min-height: 46px;
+    height: 46px;
+  }
+}
+}
