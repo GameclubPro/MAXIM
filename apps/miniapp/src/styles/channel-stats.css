@@ -392,11 +392,17 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-posts-chart__rank {
+  display: inline-grid;
+  place-items: center;
   background: rgba(23, 50, 74, 0.96);
-  min-width: 27px;
-  min-height: 24px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   border-radius: 9px;
   font-size: 0.66rem;
+  font-weight: 850;
+  line-height: 1;
 }
 
 .channel-posts-chart__row:first-child .channel-posts-chart__rank {
@@ -3746,14 +3752,14 @@ body.channel-stats-page-open .bottom-nav {
 }
 
 body.channel-stats-page-open .bottom-nav::after {
-  left: -9px;
-  right: -9px;
+  left: 0;
+  right: 0;
   bottom: calc(-1 * (var(--app-safe-bottom) + var(--bottom-nav-offset) + 22px));
-  height: calc(100% + var(--app-safe-bottom) + var(--bottom-nav-offset) + 58px);
+  height: calc(100% + var(--app-safe-bottom) + var(--bottom-nav-offset) + 118px);
   background: linear-gradient(
     180deg,
-    transparent 0%,
-    var(--surface-page) 20%,
+    var(--surface-page) 0%,
+    var(--surface-page) 6%,
     var(--surface-page) 100%
   );
 }
@@ -3818,6 +3824,10 @@ body.channel-stats-page-open .bottom-nav::after {
 @media (max-width: 370px) {
   .channel-insights__chart-controls {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-insights__chart-controls .channel-insights__range:only-child {
+    grid-column: 1 / -1;
   }
 }
 }
