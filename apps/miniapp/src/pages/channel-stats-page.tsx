@@ -40,6 +40,7 @@ import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
+  resolveChannelStatsAverageViewsPerPost,
   resolveChannelStatsDisplayViews,
   resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
@@ -863,21 +864,25 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
   const baselineY = height - bottomPad;
-  const displayViews = resolveChannelStatsDisplayViews(stats);
-  const topPostMaxViews = Math.max(
-    ...stats.official.content.topPosts.map((post) =>
-      shouldUseChannelStatsPeriodViews(stats) ? post.viewsDelta : post.views || post.viewsDelta,
-    ),
+  const averageViewsPerPost = resolveChannelStatsAverageViewsPerPost(stats);
+  const currentPosts = Math.max(0, stats.official.content.posts);
+  const previousPosts = Math.max(0, stats.comparison.deltas.posts.previous);
+  const toAverageViews = (views: number, posts: number) =>
+    posts > 0 ? Math.round(Math.max(0, views) / posts) : 0;
+  const currentMaxViews = Math.max(
+    ...series.map((item) => toAverageViews(item.views, currentPosts)),
     0,
   );
-  const currentMaxViews = Math.max(...series.map((item) => item.views), 0);
-  const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
+  const previousMaxViews = Math.max(
+    ...previousSeries.map((item) => toAverageViews(item.views, previousPosts)),
+    0,
+  );
   const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
-  const aggregateViews = Math.max(displayViews, topPostMaxViews);
+  const aggregateViews = averageViewsPerPost;
   const maxViews =
     currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
   const cumulativeMax = Math.max(
-    ...series.map((item) => item.cumulativeViews),
+    ...series.map((item) => toAverageViews(item.cumulativeViews, currentPosts)),
     maxBucketViews > 0 ? 0 : aggregateViews,
     0,
   );
@@ -893,15 +898,17 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       series.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-    const barHeight = Math.min(item.views * scale, usableHeight);
+    const views = toAverageViews(item.views, currentPosts);
+    const cumulativeViews = toAverageViews(item.cumulativeViews, currentPosts);
+    const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
-      views: item.views,
-      cumulativeViews: item.cumulativeViews,
+      views,
+      cumulativeViews,
       x,
       y: baselineY - barHeight,
       height: barHeight,
-      cumulativeY: resolveCumulativeY(item.cumulativeViews),
+      cumulativeY: resolveCumulativeY(cumulativeViews),
     };
   });
   const previousBars = previousSeries.map((item, index) => {
@@ -909,15 +916,17 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       previousSeries.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
-    const barHeight = Math.min(item.views * scale, usableHeight);
+    const views = toAverageViews(item.views, previousPosts);
+    const cumulativeViews = toAverageViews(item.cumulativeViews, previousPosts);
+    const barHeight = Math.min(views * scale, usableHeight);
     return {
       at: item.at,
-      views: item.views,
-      cumulativeViews: item.cumulativeViews,
+      views,
+      cumulativeViews,
       x,
       y: baselineY - barHeight,
       height: barHeight,
-      cumulativeY: resolveCumulativeY(item.cumulativeViews),
+      cumulativeY: resolveCumulativeY(cumulativeViews),
     };
   });
   const cumulativePoints = bars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
@@ -1505,13 +1514,8 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activePreviousBar = chart.previousBars[previousIndex] ?? null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
-  const displayViews = resolveChannelStatsDisplayViews(stats);
-  const displayViewsCompactLabel = formatCompactCount(displayViews);
-  const averageViewsPerPost =
-    stats.comparison.deltas.averageViewsPerPost.current ||
-    (stats.official.content.posts > 0
-      ? Math.round(displayViews / stats.official.content.posts)
-      : 0);
+  const averageViewsPerPost = resolveChannelStatsAverageViewsPerPost(stats);
+  const averageViewsCompactLabel = formatCompactCount(averageViewsPerPost);
   const graphMarkers = resolveGraphMarkerPositions(
     stats.signals.markers,
     chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
@@ -1531,12 +1535,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
   const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
   const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
-  const activeCumulativeCompactLabel = formatCompactCount(
-    activeBar?.cumulativeViews ?? chart.cumulativeMax,
-  );
   const viewsModeLabel = resolveChannelStatsViewsModeLabel(stats);
-  const viewsCumulativeLabel = 'Итого';
-  const viewsCumulativeChipLabel = 'Итого';
   const chartPeriodLabel = stats.period.range === '24h' ? '24 часа' : stats.period.range;
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
@@ -1544,7 +1543,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
         activeBar.views,
-      )} просмотров в точке, ${formatCount(displayViews)} просмотров ${viewsModeLabel}`
+      )} просмотров/пост в точке, ${formatCount(averageViewsPerPost)} просмотров/пост`
     : 'Данные по просмотрам недоступны';
   return (
     <div className="channel-stats-graph">
@@ -1554,24 +1553,19 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <>
           <header className="channel-stats-graph__summary">
             <small className="channel-stats-graph__summary-date">
-              Просмотры {viewsModeLabel} · {chartPeriodLabel}
+              Просм./пост {viewsModeLabel} · {chartPeriodLabel}
             </small>
             <strong className="channel-stats-graph__summary-value">
-              {displayViewsCompactLabel} просмотров
+              {averageViewsCompactLabel} просмотров/пост
             </strong>
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                Пик {formatCompactCount(chart.maxViews)}
+                Пик {formatCompactCount(chart.maxViews)}/пост
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                Ср./пост {formatCompactCount(averageViewsPerPost)}
+                Постов {formatCompactCount(stats.official.content.posts)}
               </span>
-              {hasBucketViews ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--cumulative">
-                  {viewsCumulativeChipLabel} {activeCumulativeCompactLabel}
-                </span>
-              ) : null}
             </div>
           </header>
 
@@ -1579,7 +1573,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             className="channel-stats-graph__canvas"
             tabIndex={0}
             role="slider"
-            aria-label="Просмотры публикаций"
+            aria-label="Средние просмотры публикаций"
             aria-valuemin={1}
             aria-valuemax={chart.bars.length}
             aria-valuenow={safeActiveIndex + 1}
@@ -1622,13 +1616,10 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activeBar && isTooltipVisible ? (
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
-                <strong>{activeViewsCompactLabel} просмотров</strong>
-                <span>
-                  {viewsModeLabel} · {viewsCumulativeLabel.toLocaleLowerCase('ru-RU')}{' '}
-                  {activeCumulativeCompactLabel}
-                </span>
+                <strong>{activeViewsCompactLabel} просмотров/пост</strong>
+                <span>Среднее {averageViewsCompactLabel}/пост</span>
                 {activePreviousBar ? (
-                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}</em>
+                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)}/пост</em>
                 ) : null}
                 {activePostPin ? (
                   <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
@@ -1692,24 +1683,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.baselineY}
                 className="channel-stats-graph__baseline"
               />
-              {hasBucketViews && chart.cumulativeAreaPath ? (
-                <path
-                  d={chart.cumulativeAreaPath}
-                  className="channel-stats-graph__area channel-stats-graph__area--views-cumulative"
-                />
-              ) : null}
-              {hasBucketViews && chart.previousCumulativeLinePath ? (
-                <path
-                  d={chart.previousCumulativeLinePath}
-                  className="channel-stats-graph__line channel-stats-graph__line--previous"
-                />
-              ) : null}
-              {hasBucketViews && chart.cumulativeLinePath ? (
-                <path
-                  d={chart.cumulativeLinePath}
-                  className="channel-stats-graph__line-glow channel-stats-graph__line-glow--views"
-                />
-              ) : null}
               {activeBar && hasBucketViews ? (
                 <line
                   x1={activeBar.x}
@@ -1734,14 +1707,14 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                     y={chart.aggregateBar.y + 27}
                     className="channel-stats-graph__aggregate-text"
                   >
-                    {displayViewsCompactLabel} просмотров
+                    {averageViewsCompactLabel} просмотров/пост
                   </text>
                   <text
                     x={chart.aggregateBar.x + 14}
                     y={chart.aggregateBar.y + 45}
                     className="channel-stats-graph__aggregate-caption"
                   >
-                    {viewsModeLabel}
+                    среднее за период
                   </text>
                 </g>
               ) : null}
@@ -1769,28 +1742,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   }`}
                 />
               ))}
-              {hasBucketViews && chart.cumulativeLinePath ? (
-                <path
-                  d={chart.cumulativeLinePath}
-                  className="channel-stats-graph__line channel-stats-graph__line--views-cumulative"
-                />
-              ) : null}
-              {activeBar && hasBucketViews ? (
-                <circle
-                  cx={activeBar.x}
-                  cy={activeBar.cumulativeY}
-                  r="8"
-                  className="channel-stats-graph__dot-pulse channel-stats-graph__dot-pulse--views"
-                />
-              ) : null}
-              {activeBar && hasBucketViews ? (
-                <circle
-                  cx={activeBar.x}
-                  cy={activeBar.cumulativeY}
-                  r="4.3"
-                  className="channel-stats-graph__dot channel-stats-graph__dot--views is-active"
-                />
-              ) : null}
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path
@@ -1843,7 +1794,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             {activePreviousBar
               ? `${activeGuideLabel}. Прошлый период: ${formatCount(
                   activePreviousBar.views,
-                )} просмотров.`
+                )} просмотров/пост.`
               : activeGuideLabel}
           </output>
         </>

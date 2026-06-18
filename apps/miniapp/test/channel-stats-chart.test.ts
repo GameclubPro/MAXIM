@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  resolveChannelStatsAverageViewsPerPost,
   resolveChannelStatsDisplayViews,
   resolveChannelStatsViewsModeLabel,
   resolveInitialAudienceChartIndex,
@@ -66,11 +67,13 @@ test('does not use post lifetime totals when observed view deltas are not availa
         views: 0,
         viewsTotal: 12_400,
         viewsMode: 'observedDelta' as const,
+        posts: 4,
       },
     },
   };
 
   assert.equal(resolveChannelStatsDisplayViews(stats), 0);
+  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 0);
   assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
   assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
 });
@@ -82,11 +85,36 @@ test('keeps period views primary when observed deltas exist', () => {
         views: 3_200,
         viewsTotal: 15_000,
         viewsMode: 'observedDelta' as const,
+        posts: 8,
       },
     },
   };
 
   assert.equal(resolveChannelStatsDisplayViews(stats), 3_200);
+  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 400);
   assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
   assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
+});
+
+test('uses average views per post as the primary views number', () => {
+  const stats = {
+    official: {
+      content: {
+        posts: 5,
+        views: 1_250,
+        viewsTotal: 9_000,
+        viewsMode: 'observedDelta' as const,
+      },
+    },
+    comparison: {
+      deltas: {
+        averageViewsPerPost: {
+          current: 260,
+        },
+      },
+    },
+  };
+
+  assert.equal(resolveChannelStatsDisplayViews(stats), 1_250);
+  assert.equal(resolveChannelStatsAverageViewsPerPost(stats), 260);
 });

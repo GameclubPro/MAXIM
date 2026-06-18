@@ -15,15 +15,37 @@ export type ViewsChartActivePoint = {
 export type ViewsDisplayStats = {
   official: {
     content: {
+      posts: number;
       views: number;
       viewsTotal: number;
       viewsMode: ChannelStatsViewMode;
+    };
+  };
+  comparison?: {
+    deltas?: {
+      averageViewsPerPost?: {
+        current: number;
+      };
     };
   };
 };
 
 export function resolveChannelStatsDisplayViews(stats: ViewsDisplayStats): number {
   return stats.official.content.views;
+}
+
+export function resolveChannelStatsAverageViewsPerPost(stats: ViewsDisplayStats): number {
+  const contractAverage = stats.comparison?.deltas?.averageViewsPerPost?.current;
+  if (typeof contractAverage === 'number' && Number.isFinite(contractAverage)) {
+    return Math.max(0, Math.round(contractAverage));
+  }
+
+  const posts = Math.max(0, Math.round(stats.official.content.posts));
+  if (posts === 0) {
+    return 0;
+  }
+
+  return Math.round(resolveChannelStatsDisplayViews(stats) / posts);
 }
 
 export function shouldUseChannelStatsPeriodViews(stats: ViewsDisplayStats): boolean {
