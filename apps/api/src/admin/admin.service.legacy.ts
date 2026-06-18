@@ -16383,18 +16383,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private buildEmptyChannelStatsDailyFlow(): {
-    joined: number | null;
-    left: number | null;
-    net: number | null;
-  } {
-    return {
-      joined: null,
-      left: null,
-      net: null,
-    };
-  }
-
   private buildChannelStatsDailySummary(
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     currentParticipants: number | null,
@@ -16435,14 +16423,28 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const dailyMembershipFlows =
-      membershipRows && membershipCoverageFrom
-        ? this.buildChannelStatsDailyMembershipFlows(
-            firstDay,
-            membershipRows,
-            membershipCoverageFrom,
-          )
-        : null;
+    const dailyMembershipFlows = membershipRows
+      ? this.buildChannelStatsDailyMembershipFlows(
+          firstDay,
+          membershipRows,
+          membershipCoverageFrom ?? null,
+        )
+      : null;
+    if (dailyMembershipFlows) {
+      days.forEach((day, index) => {
+        const flow = dailyMembershipFlows[index];
+        if (!flow) {
+          return;
+        }
+
+        days[index] = {
+          ...day,
+          joined: flow.joined,
+          left: flow.left,
+        };
+      });
+    }
+
     if (dailyMembershipFlows && currentParticipants !== null) {
       let runningSubscribers = currentParticipants;
       for (let index = 15; index >= 0; index -= 1) {
@@ -16470,14 +16472,19 @@ export class AdminService implements OnModuleDestroy {
   private buildChannelStatsDailyMembershipFlows(
     firstDay: Date,
     rows: ChannelStatsMembershipBucketRow[],
-    membershipCoverageFrom: Date,
+    membershipCoverageFrom: Date | null,
   ): Array<{ joined: number | null; left: number | null; net: number | null }> {
     const firstDayMs = firstDay.getTime();
-    const flows = Array.from({ length: 16 }, (_, index) =>
-      membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS
-        ? { joined: 0, left: 0, net: 0 }
-        : this.buildEmptyChannelStatsDailyFlow(),
-    );
+    const flows: Array<{ joined: number | null; left: number | null; net: number | null }> =
+      Array.from({ length: 16 }, (_, index) => ({
+        joined: null,
+        left: null,
+        net:
+          membershipCoverageFrom &&
+          membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS
+            ? 0
+            : null,
+      }));
     const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
 
     for (const row of rows) {
@@ -16497,12 +16504,14 @@ export class AdminService implements OnModuleDestroy {
 
       const index = Math.floor((bucketStartMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
       const flow = flows[index];
-      if (flow && flow.net !== null) {
+      if (flow) {
         const joined = this.toSafeInteger(row.joined_users);
         const left = this.toSafeInteger(row.left_users);
         flow.joined = (flow.joined ?? 0) + joined;
         flow.left = (flow.left ?? 0) + left;
-        flow.net = (flow.net ?? 0) + joined - left;
+        if (flow.net !== null) {
+          flow.net += joined - left;
+        }
       }
     }
 

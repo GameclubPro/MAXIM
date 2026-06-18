@@ -17882,6 +17882,11 @@ describe('AdminService.getChannelStats', () => {
       new Date('2026-03-07T12:00:00.000Z'),
       [
         {
+          bucket_start: new Date('2026-03-06T10:00:00.000Z'),
+          joined_users: '4',
+          left_users: '2',
+        },
+        {
           bucket_start: new Date('2026-03-07T10:00:00.000Z'),
           joined_users: '3',
           left_users: '1',
@@ -17894,8 +17899,8 @@ describe('AdminService.getChannelStats', () => {
       date: '2026-03-06',
       subscribers: 101,
       delta: 1,
-      joined: null,
-      left: null,
+      joined: 4,
+      left: 2,
     });
     expect(daily.at(-1)).toEqual({
       date: '2026-03-07',
