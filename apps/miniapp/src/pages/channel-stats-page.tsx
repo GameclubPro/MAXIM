@@ -2205,6 +2205,7 @@ function ChannelStatsOverview({
                   <th>День</th>
                   <th>Подписчиков</th>
                   <th>Прирост</th>
+                  <th>Движение</th>
                 </tr>
               </thead>
               <tbody>
@@ -2231,18 +2232,30 @@ function ChannelStatsOverview({
                         <span className="channel-summary-table__growth-value">
                           {formatDenseSignedCount(row.delta)}
                         </span>
+                      </td>
+                      <td className="channel-summary-table__movement">
                         {hasFlow ? (
-                          <span className="channel-summary-table__growth-flow">
-                            <span aria-hidden="true">(</span>
-                            <em className={joined === null ? 'is-neutral' : 'is-positive'}>
-                              {formatPositiveCount(joinedFlow)}
-                            </em>
-                            <em className={left === null ? 'is-neutral' : 'is-negative'}>
-                              {formatNegativeCount(leftFlow)}
-                            </em>
-                            <span aria-hidden="true">)</span>
+                          <span className="channel-summary-table__movement-pair">
+                            <span
+                              className={`channel-summary-table__movement-pill ${
+                                joined === null ? 'is-neutral' : 'is-positive'
+                              }`}
+                            >
+                              <span aria-hidden="true">↗</span>
+                              <em>{formatDenseCount(joinedFlow)}</em>
+                            </span>
+                            <span
+                              className={`channel-summary-table__movement-pill ${
+                                left === null ? 'is-neutral' : 'is-negative'
+                              }`}
+                            >
+                              <span aria-hidden="true">↘</span>
+                              <em>{formatDenseCount(leftFlow)}</em>
+                            </span>
                           </span>
-                        ) : null}
+                        ) : (
+                          <span className="channel-summary-table__movement-empty">—</span>
+                        )}
                       </td>
                     </tr>
                   );
