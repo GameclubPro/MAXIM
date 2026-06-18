@@ -1948,7 +1948,7 @@ function ChannelStatsOverview({
                   <b>{formatCompactCount(summary.views.last48h)}</b>
                 </span>
                 <span>
-                  <small>ER24</small>
+                  <small>ER 24ч</small>
                   <b>{formatPercent(summary.views.er24)}</b>
                 </span>
               </div>
