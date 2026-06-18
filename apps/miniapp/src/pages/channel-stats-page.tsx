@@ -870,6 +870,10 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   bars: ViewChartPoint[];
   previousBars: PreviousViewChartPoint[];
   aggregateBar: ViewChartAggregateBar | null;
+  trendLinePath: string;
+  trendAreaPath: string;
+  previousTrendLinePath: string;
+  averageY: number | null;
   maxViews: number;
   guideYs: number[];
   leftPad: number;
@@ -885,6 +889,10 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       bars: [],
       previousBars: [],
       aggregateBar: null,
+      trendLinePath: '',
+      trendAreaPath: '',
+      previousTrendLinePath: '',
+      averageY: null,
       maxViews: 0,
       guideYs: [],
       leftPad: 10,
@@ -953,11 +961,28 @@ function buildViewsChart(stats: ChannelStatsResponse): {
           views: aggregateViews,
         }
       : null;
+  const trendLinePath = buildAudiencePath(bars.map((bar) => ({ x: bar.x, y: bar.y })));
+  const previousTrendLinePath = buildAudiencePath(
+    previousBars.map((bar) => ({ x: bar.x, y: bar.y })),
+  );
+  const trendAreaPath = buildAudienceAreaPath(
+    trendLinePath,
+    bars.map((bar) => ({ x: bar.x, y: bar.y })),
+    baselineY,
+  );
+  const averageY =
+    averageViews > 0 && maxViews > 0
+      ? baselineY - Math.min(averageViews * scale, usableHeight)
+      : null;
 
   return {
     bars,
     previousBars,
     aggregateBar,
+    trendLinePath,
+    trendAreaPath,
+    previousTrendLinePath,
+    averageY,
     maxViews,
     guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
     leftPad,
@@ -1148,15 +1173,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                     : `Баланс ${activeCumulativeNetLabel}`}
                 </strong>
                 <span>
-                  Баланс {activeCumulativeNetLabel} · {activeBucketLabel.toLocaleLowerCase('ru-RU')}{' '}
-                  {activeNetLabel} · +{formatCount(activePoint.joined)} / -
+                  {activeBucketLabel} {activeNetLabel} · +{formatCount(activePoint.joined)} / -
                   {formatCount(activePoint.left)}
                 </span>
-                {activePoint.participantsCount !== null ? (
-                  <em>Всего: {activeParticipantsLabel} участников</em>
-                ) : null}
                 {activePreviousPoint ? (
-                  <em>Прошлый период: {formatSignedCount(activePreviousPoint.cumulativeNet)}</em>
+                  <em>Предыдущий: {formatSignedCount(activePreviousPoint.cumulativeNet)}</em>
                 ) : null}
                 {activePostPin ? (
                   <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
@@ -1674,6 +1695,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   <stop offset="0.74" stopColor="#9f7aea" stopOpacity="0.05" />
                   <stop offset="1" stopColor="#9f7aea" stopOpacity="0" />
                 </linearGradient>
+                <linearGradient id="channel-views-trend-area" x1="0" x2="0" y1="16" y2="176">
+                  <stop offset="0" stopColor="#0b84ff" stopOpacity="0.2" />
+                  <stop offset="0.66" stopColor="#35c59f" stopOpacity="0.08" />
+                  <stop offset="1" stopColor="#35c59f" stopOpacity="0" />
+                </linearGradient>
               </defs>
               {activeBar && hasBucketViews ? (
                 <rect
@@ -1702,6 +1728,15 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.baselineY}
                 className="channel-stats-graph__baseline"
               />
+              {chart.averageY !== null ? (
+                <line
+                  x1={chart.leftPad}
+                  y1={chart.averageY}
+                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
+                  y2={chart.averageY}
+                  className="channel-stats-graph__average-line"
+                />
+              ) : null}
               {activeBar && hasBucketViews ? (
                 <line
                   x1={activeBar.x}
@@ -1737,6 +1772,12 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   </text>
                 </g>
               ) : null}
+              {chart.trendAreaPath ? (
+                <path
+                  d={chart.trendAreaPath}
+                  className="channel-stats-graph__area channel-stats-graph__area--views"
+                />
+              ) : null}
               {chart.bars.map((bar, index) => (
                 <rect
                   key={labels[index]?.at ?? index}
@@ -1761,6 +1802,26 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__bar channel-stats-graph__bar--previous"
                 />
               ))}
+              {chart.previousTrendLinePath ? (
+                <path
+                  d={chart.previousTrendLinePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--previous channel-stats-graph__line--views-previous"
+                />
+              ) : null}
+              {chart.trendLinePath ? (
+                <path
+                  d={chart.trendLinePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--views"
+                />
+              ) : null}
+              {activeBar && hasBucketViews ? (
+                <circle
+                  cx={activeBar.x}
+                  cy={activeBar.y}
+                  r="4.8"
+                  className="channel-stats-graph__view-focus-dot"
+                />
+              ) : null}
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path
@@ -1964,70 +2025,71 @@ function ChannelStatsOverview({
               <ViewsChart stats={stats} />
             )}
           </article>
-
-          <div className="channel-insights__summary-metrics">
-            <article className="channel-summary-card channel-summary-card--subscribers">
-              <header>
-                <small>Подписчики</small>
-                <strong>{formatCount(summary.subscribers.current)}</strong>
-              </header>
-              <div className="channel-summary-card__rows">
-                <span>
-                  <small>Сегодня</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
-                    {formatSignedCount(summary.subscribers.todayDelta)}
-                  </b>
-                </span>
-                <span>
-                  <small>Неделя</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
-                    {formatSignedCount(summary.subscribers.weekDelta)}
-                  </b>
-                </span>
-                <span>
-                  <small>16 дней</small>
-                  <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
-                    {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
-                  </b>
-                </span>
-              </div>
-            </article>
-
-            <article className="channel-summary-card channel-summary-card--views">
-              <header>
-                <small>Просмотров на пост</small>
-                <strong>{formatCount(summary.views.perPost)}</strong>
-              </header>
-              <div className="channel-summary-card__rows">
-                <span>
-                  <small>24ч</small>
-                  <b>{formatCompactCount(summary.views.last24h)}</b>
-                </span>
-                <span>
-                  <small>48ч</small>
-                  <b>{formatCompactCount(summary.views.last48h)}</b>
-                </span>
-                <span>
-                  <small>ER 24ч</small>
-                  <b>{formatPercent(summary.views.er24)}</b>
-                </span>
-              </div>
-            </article>
-          </div>
         </div>
 
+        <div className="channel-insights__summary-metrics">
+          <article className="channel-summary-card channel-summary-card--subscribers">
+            <header>
+              <small>Подписчики</small>
+              <strong>{formatCount(summary.subscribers.current)}</strong>
+            </header>
+            <div className="channel-summary-card__rows">
+              <span>
+                <small>Сегодня</small>
+                <b className={`is-${getSignedTone(summary.subscribers.todayDelta)}`}>
+                  {formatSignedCount(summary.subscribers.todayDelta)}
+                </b>
+              </span>
+              <span>
+                <small>Неделя</small>
+                <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
+                  {formatSignedCount(summary.subscribers.weekDelta)}
+                </b>
+              </span>
+              <span>
+                <small>16 дней</small>
+                <b className={`is-${getSignedTone(summary.subscribers.sixteenDaysDelta)}`}>
+                  {formatSignedCount(summary.subscribers.sixteenDaysDelta)}
+                </b>
+              </span>
+            </div>
+          </article>
+
+          <article className="channel-summary-card channel-summary-card--views">
+            <header>
+              <small>Просмотров на пост</small>
+              <strong>{formatCount(summary.views.perPost)}</strong>
+            </header>
+            <div className="channel-summary-card__rows">
+              <span>
+                <small>24ч</small>
+                <b>{formatCompactCount(summary.views.last24h)}</b>
+              </span>
+              <span>
+                <small>48ч</small>
+                <b>{formatCompactCount(summary.views.last48h)}</b>
+              </span>
+              <span>
+                <small>ER 24ч</small>
+                <b>{formatPercent(summary.views.er24)}</b>
+              </span>
+            </div>
+          </article>
+        </div>
       </div>
 
-      <article className="channel-fact-panel channel-top-posts-panel">
-        <div className="channel-insights__panel-head">
-          <div className="channel-insights__panel-copy">
-            <strong>Топ публикаций</strong>
+      <div className="channel-insights__detail-grid">
+        <article className="channel-fact-panel channel-top-posts-panel">
+          <div className="channel-insights__panel-head">
+            <div className="channel-insights__panel-copy">
+              <strong>Топ публикаций</strong>
+            </div>
           </div>
-        </div>
-        <TopPostsChart stats={stats} />
-      </article>
+          <TopPostsChart stats={stats} />
+        </article>
 
-      <ChannelBestWindowsPanel stats={stats} />
+        <ChannelBestWindowsPanel stats={stats} />
+      </div>
     </section>
   );
 }
