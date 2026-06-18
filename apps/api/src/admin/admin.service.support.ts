@@ -814,7 +814,7 @@ export const CHANNEL_STATS_ACTIVITY_ACTIONS = [
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
 ] as const;
-export const CHANNEL_STATS_MISSING_METRICS = ['reach', 'uniqueViews'] as const;
+export const CHANNEL_STATS_MISSING_METRICS = ['uniqueViews'] as const;
 export const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
 export type ChannelStatsViewMode = 'observedDelta' | 'latestTotal';
 export type ChannelStatsPostRow = {

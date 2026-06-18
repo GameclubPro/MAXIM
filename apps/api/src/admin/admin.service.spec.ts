@@ -18185,7 +18185,7 @@ describe('AdminService.getChannelStats', () => {
       viewsAvailable: true,
       churnAvailable: true,
       officialCoverageFrom: '2026-02-28T08:00:00.000Z',
-      missingOfficialMetrics: ['reach', 'uniqueViews'],
+      missingOfficialMetrics: ['uniqueViews'],
       refreshQueued: false,
     });
     expect(result.activityFeed).toEqual({

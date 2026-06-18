@@ -15,7 +15,7 @@ export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
 export const channelStatsBucketSchema = z.enum(['hour', 'day']);
 export type ChannelStatsBucket = z.infer<typeof channelStatsBucketSchema>;
 
-export const channelStatsMissingMetricSchema = z.enum(['reach', 'uniqueViews']);
+export const channelStatsMissingMetricSchema = z.enum(['uniqueViews']);
 export type ChannelStatsMissingMetric = z.infer<typeof channelStatsMissingMetricSchema>;
 
 export const channelStatsReactionSchema = z.object({
