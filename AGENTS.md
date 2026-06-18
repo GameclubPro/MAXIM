@@ -21,7 +21,7 @@
 
 - For runtime-affecting changes in `apps/api`, `apps/miniapp`, `packages/contracts`, Prisma, Docker, or MAX integration, the default finish is: local validation plus VPS deploy, unless the user explicitly says not to deploy.
 - Docs, `AGENTS.md`, `README.md`, test-only changes, and cleanup changes do not require VPS deploy unless the user asks for it.
-- CDN/app2 mini app delivery is paused. Treat `https://maxim.play-team.ru/` as the active user-facing host and `https://maxim.play-team.ru/app/` as the only routine mini app deploy/smoke target. Do not change, publish, or smoke Object Storage, Yandex CDN, `app2.major-maksimov.ru`, or restricted-LTE delivery unless the user explicitly resumes CDN work.
+- CDN/app2 mini app delivery is paused. Treat `https://maxim.play-team.ru/` as the active user-facing host and `https://maxim.play-team.ru/app/` as the only routine mini app deploy/smoke target. Leave CDN/app2/Object Storage logic dormant and unchanged for routine work: do not change, publish, or smoke Object Storage, Yandex CDN, `app2.major-maksimov.ru`, or restricted-LTE delivery unless the user explicitly resumes CDN work.
 - After every completed task, do a short self-learning pass before handoff:
   - fix small issues revealed by the work while the context is still fresh, if they are clearly in scope and low risk
   - add or update `AGENTS.md` only with durable, repo-verified knowledge that will speed future work or prevent repeated mistakes
