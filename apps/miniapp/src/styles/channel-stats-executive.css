@@ -750,4 +750,16 @@ body.channel-stats-page-open .channel-insights__body {
     min-height: 0;
   }
 }
+
+body.channel-stats-page-open .app-shell {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 24px);
+}
+
+body.channel-stats-page-open .channel-insights__body {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 28px);
+}
+
+body.channel-stats-page-open .bottom-nav::after {
+  display: none;
+}
 }
