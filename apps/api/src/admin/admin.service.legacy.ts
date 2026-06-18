@@ -16350,7 +16350,7 @@ export class AdminService implements OnModuleDestroy {
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): number | null {
-    if (!hasCoverage) {
+    if (!hasCoverage && rows.length === 0) {
       return null;
     }
 
@@ -16365,7 +16365,7 @@ export class AdminService implements OnModuleDestroy {
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): { joined: number | null; left: number | null; net: number | null } {
-    if (!hasCoverage) {
+    if (!hasCoverage && rows.length === 0) {
       return {
         joined: null,
         left: null,
@@ -16486,6 +16486,7 @@ export class AdminService implements OnModuleDestroy {
             : null,
       }));
     const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
+    let firstObservedFlowIndex: number | null = null;
 
     for (const row of rows) {
       const bucketStart = this.toIsoString(row.bucket_start);
@@ -16505,13 +16506,19 @@ export class AdminService implements OnModuleDestroy {
       const index = Math.floor((bucketStartMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
       const flow = flows[index];
       if (flow) {
+        firstObservedFlowIndex =
+          firstObservedFlowIndex === null ? index : Math.min(firstObservedFlowIndex, index);
         const joined = this.toSafeInteger(row.joined_users);
         const left = this.toSafeInteger(row.left_users);
         flow.joined = (flow.joined ?? 0) + joined;
         flow.left = (flow.left ?? 0) + left;
-        if (flow.net !== null) {
-          flow.net += joined - left;
-        }
+        flow.net = (flow.net ?? 0) + joined - left;
+      }
+    }
+
+    if (firstObservedFlowIndex !== null) {
+      for (let index = firstObservedFlowIndex; index < flows.length; index += 1) {
+        flows[index]!.net ??= 0;
       }
     }
 
