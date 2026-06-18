@@ -3742,10 +3742,15 @@ function buildChannelStats(
     const dayOffset = 15 - index;
     const date = formatMoscowDateKey(addDays(now, -dayOffset));
     const delta = Math.round((joined - left) / 16 + Math.sin(index / 2) * 2);
+    const churn = range === '24h' ? 1 : 2 + (index % 3);
+    const joinedValue = Math.max(0, delta) + churn;
+    const leftValue = Math.max(0, -delta) + Math.max(0, churn - 1);
     return {
       date,
       subscribers: Math.max(0, state.channelHeaderParticipantsCount - dayOffset * 3 + delta),
       delta,
+      joined: joinedValue,
+      left: leftValue,
     };
   });
   const summaryLast24h = range === '24h' ? views : Math.round(views * 0.28);
@@ -3767,6 +3772,8 @@ function buildChannelStats(
   if (todaySummary) {
     todaySummary.subscribers = state.channelHeaderParticipantsCount;
     todaySummary.delta = todayDelta;
+    todaySummary.joined = todayJoined;
+    todaySummary.left = todayLeft;
   }
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));

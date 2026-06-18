@@ -47,6 +47,8 @@ describe('channel stats contract exports', () => {
           date: '2026-03-07',
           subscribers: 1240,
           delta: 3,
+          joined: 5,
+          left: 2,
         },
       ],
     });
@@ -55,6 +57,11 @@ describe('channel stats contract exports', () => {
       todayDelta: 3,
       todayJoined: 5,
       todayLeft: 2,
+    });
+    expect(result.daily[0]).toMatchObject({
+      delta: 3,
+      joined: 5,
+      left: 2,
     });
   });
 });

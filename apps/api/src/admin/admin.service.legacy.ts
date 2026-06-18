@@ -16383,6 +16383,18 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private buildEmptyChannelStatsDailyFlow(): {
+    joined: number | null;
+    left: number | null;
+    net: number | null;
+  } {
+    return {
+      joined: null,
+      left: null,
+      net: null,
+    };
+  }
+
   private buildChannelStatsDailySummary(
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     currentParticipants: number | null,
@@ -16414,6 +16426,8 @@ export class AdminService implements OnModuleDestroy {
         date: this.formatChannelStatsMoscowDate(day),
         subscribers,
         delta,
+        joined: null,
+        left: null,
       });
 
       if (subscribers !== null) {
@@ -16421,19 +16435,19 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const dailyMembershipDeltas =
+    const dailyMembershipFlows =
       membershipRows && membershipCoverageFrom
-        ? this.buildChannelStatsDailyMembershipDeltas(
+        ? this.buildChannelStatsDailyMembershipFlows(
             firstDay,
             membershipRows,
             membershipCoverageFrom,
           )
         : null;
-    if (dailyMembershipDeltas && currentParticipants !== null) {
+    if (dailyMembershipFlows && currentParticipants !== null) {
       let runningSubscribers = currentParticipants;
       for (let index = 15; index >= 0; index -= 1) {
-        const delta = dailyMembershipDeltas[index];
-        if (delta === null || delta === undefined) {
+        const flow = dailyMembershipFlows[index];
+        if (!flow || flow.net === null) {
           break;
         }
 
@@ -16442,23 +16456,27 @@ export class AdminService implements OnModuleDestroy {
             new Date(firstDay.getTime() + index * TWENTY_FOUR_HOURS_MS),
           ),
           subscribers: runningSubscribers,
-          delta,
+          delta: flow.net,
+          joined: flow.joined,
+          left: flow.left,
         };
-        runningSubscribers -= delta;
+        runningSubscribers -= flow.net;
       }
     }
 
     return days;
   }
 
-  private buildChannelStatsDailyMembershipDeltas(
+  private buildChannelStatsDailyMembershipFlows(
     firstDay: Date,
     rows: ChannelStatsMembershipBucketRow[],
     membershipCoverageFrom: Date,
-  ): Array<number | null> {
+  ): Array<{ joined: number | null; left: number | null; net: number | null }> {
     const firstDayMs = firstDay.getTime();
-    const deltas = Array.from({ length: 16 }, (_, index) =>
-      membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS ? 0 : null,
+    const flows = Array.from({ length: 16 }, (_, index) =>
+      membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS
+        ? { joined: 0, left: 0, net: 0 }
+        : this.buildEmptyChannelStatsDailyFlow(),
     );
     const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
 
@@ -16478,12 +16496,17 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const index = Math.floor((bucketStartMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
-      if (deltas[index] !== null) {
-        deltas[index] += this.toSafeInteger(row.joined_users) - this.toSafeInteger(row.left_users);
+      const flow = flows[index];
+      if (flow && flow.net !== null) {
+        const joined = this.toSafeInteger(row.joined_users);
+        const left = this.toSafeInteger(row.left_users);
+        flow.joined = (flow.joined ?? 0) + joined;
+        flow.left = (flow.left ?? 0) + left;
+        flow.net = (flow.net ?? 0) + joined - left;
       }
     }
 
-    return deltas;
+    return flows;
   }
 
   private buildChannelStatsViewWindowSummary(

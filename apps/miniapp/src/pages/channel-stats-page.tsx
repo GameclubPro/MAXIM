@@ -300,6 +300,10 @@ function formatRangeLabel(range: ChannelStatsRange): string {
   return '30 дней';
 }
 
+function readNullableCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSummary {
   const maybeSummary = (stats as Partial<ChannelStatsResponse>).summary;
   if (maybeSummary) {
@@ -311,6 +315,13 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
         todayJoined: subscribers.todayJoined ?? null,
         todayLeft: subscribers.todayLeft ?? null,
       },
+      daily: maybeSummary.daily.map((row) => {
+        return {
+          ...row,
+          joined: readNullableCount(row.joined),
+          left: readNullableCount(row.left),
+        };
+      }),
     };
   }
 
@@ -364,8 +375,21 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
   const dailySource = Array.from(dailyByDate.entries())
     .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
     .slice(-16);
+  const membershipByDate = new Map<string, { joined: number; left: number }>();
+  stats.official.series.membership.forEach((point) => {
+    const date = formatMoscowDateKey(point.at);
+    if (!date) {
+      return;
+    }
+
+    const current = membershipByDate.get(date) ?? { joined: 0, left: 0 };
+    current.joined += point.joined;
+    current.left += point.left ?? 0;
+    membershipByDate.set(date, current);
+  });
   const daily = dailySource.map(([date, subscribers], index, rows) => {
     const previous = index > 0 ? rows[index - 1]?.[1] : null;
+    const flow = membershipByDate.get(date) ?? null;
 
     return {
       date,
@@ -374,6 +398,8 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
         subscribers === null || previous === null || previous === undefined
           ? null
           : subscribers - previous,
+      joined: flow?.joined ?? null,
+      left: flow?.left ?? null,
     };
   });
 
@@ -2072,25 +2098,6 @@ function ChannelStatsOverview({
                   </b>
                 </span>
                 <span>
-                  <small>Вход/выход</small>
-                  <b className="channel-summary-card__flow">
-                    <em
-                      className={
-                        summary.subscribers.todayJoined === null ? 'is-neutral' : 'is-positive'
-                      }
-                    >
-                      {formatPositiveCount(summary.subscribers.todayJoined ?? null)}
-                    </em>
-                    <em
-                      className={
-                        summary.subscribers.todayLeft === null ? 'is-neutral' : 'is-negative'
-                      }
-                    >
-                      {formatNegativeCount(summary.subscribers.todayLeft ?? null)}
-                    </em>
-                  </b>
-                </span>
-                <span>
                   <small>За неделю</small>
                   <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
                     {formatSignedCount(summary.subscribers.weekDelta)}
@@ -2166,25 +2173,50 @@ function ChannelStatsOverview({
             <table className="channel-summary-table">
               <thead>
                 <tr>
-                  <th>Итого</th>
+                  <th>День</th>
                   <th>Подписчиков</th>
                   <th>Прирост</th>
                 </tr>
               </thead>
               <tbody>
-                {summaryDailyRows.map((row) => (
-                  <tr key={row.date}>
-                    <td>
-                      <time dateTime={row.date}>{formatSummaryTableDate(row.date)}</time>
-                    </td>
-                    <td className="channel-summary-table__total">
-                      {formatCount(row.subscribers)}
-                    </td>
-                    <td className={`channel-summary-table__delta is-${getSignedTone(row.delta)}`}>
-                      {formatSignedCount(row.delta)}
-                    </td>
-                  </tr>
-                ))}
+                {summaryDailyRows.map((row) => {
+                  const joined = row.joined ?? null;
+                  const left = row.left ?? null;
+                  const hasFlow = joined !== null || left !== null;
+
+                  return (
+                    <tr key={row.date}>
+                      <td className="channel-summary-table__date">
+                        <time dateTime={row.date}>{formatSummaryTableDate(row.date)}</time>
+                      </td>
+                      <td className="channel-summary-table__total">
+                        <span className="channel-summary-table__total-value">
+                          {formatCount(row.subscribers)}
+                        </span>
+                      </td>
+                      <td
+                        className={`channel-summary-table__growth is-${getSignedTone(row.delta)}`}
+                      >
+                        <span className="channel-summary-table__growth-value">
+                          {formatSignedCount(row.delta)}
+                        </span>
+                        {hasFlow ? (
+                          <span className="channel-summary-table__growth-flow">
+                            <span aria-hidden="true">(</span>
+                            <em className={joined === null ? 'is-neutral' : 'is-positive'}>
+                              {formatPositiveCount(joined)}
+                            </em>
+                            <span aria-hidden="true">/</span>
+                            <em className={left === null ? 'is-neutral' : 'is-negative'}>
+                              {formatNegativeCount(left)}
+                            </em>
+                            <span aria-hidden="true">)</span>
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </article>

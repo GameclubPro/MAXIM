@@ -86,6 +86,8 @@ export const channelStatsSummarySchema = z.object({
       date: z.string().min(1),
       subscribers: z.number().int().min(0).nullable(),
       delta: z.number().int().nullable(),
+      joined: z.number().int().min(0).nullable().optional(),
+      left: z.number().int().min(0).nullable().optional(),
     }),
   ),
 });

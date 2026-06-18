@@ -17840,6 +17840,72 @@ describe('AdminService.getChannelStats', () => {
     ]);
   });
 
+  it('derives daily subscriber flow from covered membership rows and preserves snapshot fallback', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildChannelStatsDailySummary: (
+        audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+        currentParticipants: number | null,
+        now: Date,
+        membershipRows?: Array<{
+          bucket_start: Date | string;
+          joined_users: unknown;
+          left_users: unknown;
+        }>,
+        membershipCoverageFrom?: Date | null,
+      ) => Array<{
+        date: string;
+        subscribers: number | null;
+        delta: number | null;
+        joined?: number | null;
+        left?: number | null;
+      }>;
+    };
+
+    const daily = statsHelpers.buildChannelStatsDailySummary(
+      [
+        {
+          capturedAt: new Date('2026-03-05T10:00:00.000Z'),
+          participantsCount: 100,
+        },
+        {
+          capturedAt: new Date('2026-03-06T10:00:00.000Z'),
+          participantsCount: 101,
+        },
+      ],
+      104,
+      new Date('2026-03-07T12:00:00.000Z'),
+      [
+        {
+          bucket_start: new Date('2026-03-07T10:00:00.000Z'),
+          joined_users: '3',
+          left_users: '1',
+        },
+      ],
+      new Date('2026-03-06T21:00:00.000Z'),
+    );
+
+    expect(daily.find((row) => row.date === '2026-03-06')).toEqual({
+      date: '2026-03-06',
+      subscribers: 101,
+      delta: 1,
+      joined: null,
+      left: null,
+    });
+    expect(daily.at(-1)).toEqual({
+      date: '2026-03-07',
+      subscribers: 104,
+      delta: 2,
+      joined: 3,
+      left: 1,
+    });
+  });
+
   it('returns official-first channel stats without reading channel settings', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 
@@ -18202,6 +18268,8 @@ describe('AdminService.getChannelStats', () => {
       date: '2026-03-07',
       subscribers: 1240,
       delta: 1,
+      joined: 2,
+      left: 1,
     });
     expect(result.secondary).toEqual({
       postsWithButtons: 2,
