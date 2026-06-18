@@ -927,13 +927,13 @@ async function ensureDir(dir) {
 async function waitForApp(page, scenario) {
   if (scenario.preview === false) {
     await page.waitForSelector('.app-shell', { timeout: 20_000 });
-    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(500);
     return;
   }
 
   await page.waitForSelector('.design-preview__device', { timeout: 20_000 });
   await page.waitForSelector('.app-shell', { timeout: 20_000 });
-  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(500);
 }
 
 async function applyNativeScreenshotMode(page, profile) {
