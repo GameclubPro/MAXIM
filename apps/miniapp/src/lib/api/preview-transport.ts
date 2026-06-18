@@ -3756,9 +3756,9 @@ function buildChannelStats(
   const todayActivityItems = state.channelActivity.filter(
     (item) => new Date(item.createdAt).getTime() >= todayFrom.getTime(),
   );
-  const todayDelta =
-    todayActivityItems.filter((item) => item.type === 'joined').length -
-    todayActivityItems.filter((item) => item.type === 'left').length;
+  const todayJoined = todayActivityItems.filter((item) => item.type === 'joined').length;
+  const todayLeft = todayActivityItems.filter((item) => item.type === 'left').length;
+  const todayDelta = todayJoined - todayLeft;
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
     return {
@@ -3836,6 +3836,8 @@ function buildChannelStats(
       subscribers: {
         current: state.channelHeaderParticipantsCount,
         todayDelta,
+        todayJoined,
+        todayLeft,
         weekDelta: dailySummary.slice(-7).reduce((sum, item) => sum + (item.delta ?? 0), 0),
         sixteenDaysDelta: dailySummary.reduce((sum, item) => sum + (item.delta ?? 0), 0),
       },

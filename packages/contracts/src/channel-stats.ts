@@ -70,6 +70,8 @@ export const channelStatsSummarySchema = z.object({
   subscribers: z.object({
     current: z.number().int().min(0).nullable(),
     todayDelta: z.number().int().nullable(),
+    todayJoined: z.number().int().min(0).nullable().optional(),
+    todayLeft: z.number().int().min(0).nullable().optional(),
     weekDelta: z.number().int().nullable(),
     sixteenDaysDelta: z.number().int().nullable(),
   }),

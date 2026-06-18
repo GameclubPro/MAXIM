@@ -252,6 +252,22 @@ function formatSignedCount(value: number | null): string {
   return '0';
 }
 
+function formatPositiveCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  return `+${new Intl.NumberFormat('ru-RU').format(Math.max(0, value))}`;
+}
+
+function formatNegativeCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  return `-${new Intl.NumberFormat('ru-RU').format(Math.max(0, value))}`;
+}
+
 function formatPercent(value: number | null): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
@@ -278,7 +294,15 @@ function formatRangeLabel(range: ChannelStatsRange): string {
 function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSummary {
   const maybeSummary = (stats as Partial<ChannelStatsResponse>).summary;
   if (maybeSummary) {
-    return maybeSummary;
+    const subscribers = maybeSummary.subscribers;
+    return {
+      ...maybeSummary,
+      subscribers: {
+        ...subscribers,
+        todayJoined: subscribers.todayJoined ?? null,
+        todayLeft: subscribers.todayLeft ?? null,
+      },
+    };
   }
 
   const currentSubscribers = stats.channel.participantsCount;
@@ -348,6 +372,8 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     subscribers: {
       current: currentSubscribers,
       todayDelta: daily.at(-1)?.delta ?? null,
+      todayJoined: null,
+      todayLeft: null,
       weekDelta,
       sixteenDaysDelta: weekDelta,
     },
@@ -2037,6 +2063,25 @@ function ChannelStatsOverview({
                   </b>
                 </span>
                 <span>
+                  <small>Вход/выход</small>
+                  <b className="channel-summary-card__flow">
+                    <em
+                      className={
+                        summary.subscribers.todayJoined === null ? 'is-neutral' : 'is-positive'
+                      }
+                    >
+                      {formatPositiveCount(summary.subscribers.todayJoined ?? null)}
+                    </em>
+                    <em
+                      className={
+                        summary.subscribers.todayLeft === null ? 'is-neutral' : 'is-negative'
+                      }
+                    >
+                      {formatNegativeCount(summary.subscribers.todayLeft ?? null)}
+                    </em>
+                  </b>
+                </span>
+                <span>
                   <small>За неделю</small>
                   <b className={`is-${getSignedTone(summary.subscribers.weekDelta)}`}>
                     {formatSignedCount(summary.subscribers.weekDelta)}
@@ -2058,11 +2103,11 @@ function ChannelStatsOverview({
               </header>
               <div className="channel-summary-card__rows">
                 <span>
-                  <small>Просмотров за 24ч</small>
+                  <small>За 24ч</small>
                   <b>{formatCompactCount(summary.views.last24h)}</b>
                 </span>
                 <span>
-                  <small>Просмотров за 48ч</small>
+                  <small>За 48ч</small>
                   <b>{formatCompactCount(summary.views.last48h)}</b>
                 </span>
                 <span>

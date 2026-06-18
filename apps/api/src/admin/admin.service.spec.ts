@@ -18185,6 +18185,8 @@ describe('AdminService.getChannelStats', () => {
       subscribers: {
         current: 1240,
         todayDelta: 0,
+        todayJoined: 1,
+        todayLeft: 1,
         weekDelta: 1,
         sixteenDaysDelta: 40,
       },

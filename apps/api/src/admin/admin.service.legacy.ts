@@ -6962,16 +6962,19 @@ export class AdminService implements OnModuleDestroy {
       postViewMetrics,
       bucket,
     );
+    const todayMembershipFlow = this.buildChannelStatsMembershipFlow(
+      todayMembershipRows,
+      hasMembershipCoverageFrom(summaryTodayFrom),
+    );
     const summary = this.buildChannelStatsSummary({
       participantsCount,
       audienceSnapshots: summaryAudienceSnapshots,
       summaryPosts,
       summaryWindowRows,
       membershipDeltas: {
-        today: this.buildChannelStatsMembershipDelta(
-          todayMembershipRows,
-          hasMembershipCoverageFrom(summaryTodayFrom),
-        ),
+        today: todayMembershipFlow.net,
+        todayJoined: todayMembershipFlow.joined,
+        todayLeft: todayMembershipFlow.left,
         week: this.buildChannelStatsMembershipDelta(
           weekMembershipRows,
           hasMembershipCoverageFrom(summaryWeekFrom),
@@ -16277,6 +16280,8 @@ export class AdminService implements OnModuleDestroy {
     summaryWindowRows: ChannelStatsSummaryWindowRow[];
     membershipDeltas?: {
       today: number | null;
+      todayJoined?: number | null;
+      todayLeft?: number | null;
       week: number | null;
       sixteenDays: number | null;
     };
@@ -16319,6 +16324,8 @@ export class AdminService implements OnModuleDestroy {
       subscribers: {
         current: currentParticipants,
         todayDelta: params.membershipDeltas?.today ?? resolveDelta(TWENTY_FOUR_HOURS_MS),
+        todayJoined: params.membershipDeltas?.todayJoined ?? null,
+        todayLeft: params.membershipDeltas?.todayLeft ?? null,
         weekDelta: params.membershipDeltas?.week ?? resolveDelta(7 * TWENTY_FOUR_HOURS_MS),
         sixteenDaysDelta:
           params.membershipDeltas?.sixteenDays ?? resolveDelta(16 * TWENTY_FOUR_HOURS_MS),
@@ -16346,6 +16353,28 @@ export class AdminService implements OnModuleDestroy {
         total + this.toSafeInteger(row.joined_users) - this.toSafeInteger(row.left_users),
       0,
     );
+  }
+
+  private buildChannelStatsMembershipFlow(
+    rows: ChannelStatsMembershipBucketRow[],
+    hasCoverage: boolean,
+  ): { joined: number | null; left: number | null; net: number | null } {
+    if (!hasCoverage) {
+      return {
+        joined: null,
+        left: null,
+        net: null,
+      };
+    }
+
+    const joined = rows.reduce((total, row) => total + this.toSafeInteger(row.joined_users), 0);
+    const left = rows.reduce((total, row) => total + this.toSafeInteger(row.left_users), 0);
+
+    return {
+      joined,
+      left,
+      net: joined - left,
+    };
   }
 
   private buildChannelStatsDailySummary(
