@@ -7,10 +7,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity as IconActivity,
-  Calendar as IconCalendar,
-  ClockRotateRight as IconClockRotateRight,
   Community as IconCommunity,
-  DatabaseStats as IconDatabaseStats,
   Eye as IconEye,
   GraphUp as IconGraphUp,
   PercentageCircle as IconPercentageCircle,
@@ -234,22 +231,6 @@ function formatSignedCount(value: number | null): string {
   return String(value);
 }
 
-function formatSignedCompactCount(value: number | null): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '—';
-  }
-
-  if (value > 0) {
-    return `+${formatCompactCount(value)}`;
-  }
-
-  if (value < 0) {
-    return `-${formatCompactCount(Math.abs(value))}`;
-  }
-
-  return '0';
-}
-
 function formatPercent(value: number | null): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
@@ -334,24 +315,6 @@ function formatBestWindowStats(window: ChannelStatsResponse['signals']['bestWind
     : `${views} просм. · ${reactions} реакц.`;
 }
 
-function formatDateTime(value: string | null): string {
-  if (!value) {
-    return '—';
-  }
-
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    return '—';
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
-}
-
 function formatDateOnly(value: string | null): string {
   if (!value) {
     return '—';
@@ -370,46 +333,6 @@ function formatDateOnly(value: string | null): string {
 
 function formatPeriodRange(from: string, to: string): string {
   return `${formatDateOnly(from)} — ${formatDateOnly(to)}`;
-}
-
-function ChannelSourceStrip({ stats }: { stats: ChannelStatsResponse }) {
-  const coverageLabel = stats.meta.officialCoverageFrom
-    ? `с ${formatDateOnly(stats.meta.officialCoverageFrom)}`
-    : stats.meta.maxSnapshotAvailable
-      ? 'текущий снимок'
-      : 'нет снимка';
-
-  return (
-    <div className="channel-fact-strip" aria-label="Источник и свежесть данных">
-      <span>
-        <i className="channel-fact-strip__icon" aria-hidden="true">
-          <IconClockRotateRight width={16} height={16} strokeWidth={2.1} />
-        </i>
-        <div className="channel-fact-strip__copy">
-          <small>Срез</small>
-          <strong>{formatDateTime(stats.period.to)}</strong>
-        </div>
-      </span>
-      <span>
-        <i className="channel-fact-strip__icon" aria-hidden="true">
-          <IconCalendar width={16} height={16} strokeWidth={2.1} />
-        </i>
-        <div className="channel-fact-strip__copy">
-          <small>Период</small>
-          <strong>{formatPeriodRange(stats.period.from, stats.period.to)}</strong>
-        </div>
-      </span>
-      <span>
-        <i className="channel-fact-strip__icon" aria-hidden="true">
-          <IconDatabaseStats width={16} height={16} strokeWidth={2.1} />
-        </i>
-        <div className="channel-fact-strip__copy">
-          <small>Покрытие</small>
-          <strong>{coverageLabel}</strong>
-        </div>
-      </span>
-    </div>
-  );
 }
 
 function ChannelBestWindowsPanel({ stats }: { stats: ChannelStatsResponse }) {
@@ -1125,16 +1048,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   Вышли {formatCompactCount(activePoint?.left ?? 0)}
                 </span>
               ) : null}
-              {activePreviousPoint ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
-                  Пред. {formatSignedCompactCount(activePreviousPoint.cumulativeNet)}
-                </span>
-              ) : null}
-              {hasActiveParticipantsCount ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--audience-total">
-                  Всего {activeParticipantsCompactLabel}
-                </span>
-              ) : null}
             </div>
           </header>
 
@@ -1581,8 +1494,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
   const displayViews = resolveChannelStatsDisplayViews(stats);
   const displayViewsCompactLabel = formatCompactCount(displayViews);
-  const periodViews = stats.official.content.views;
-  const totalPostViews = stats.official.content.viewsTotal;
   const averageViewsPerPost =
     stats.comparison.deltas.averageViewsPerPost.current ||
     (stats.official.content.posts > 0
@@ -1643,29 +1554,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 Ср./пост {formatCompactCount(averageViewsPerPost)}
               </span>
-              {shouldUseChannelStatsPeriodViews(stats) && totalPostViews > displayViews ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--total">
-                  Всего {formatCompactCount(totalPostViews)}
-                </span>
-              ) : null}
-              {!shouldUseChannelStatsPeriodViews(stats) && periodViews > 0 ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                  Период {formatCompactCount(periodViews)}
-                </span>
-              ) : null}
               {hasBucketViews ? (
                 <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--cumulative">
                   {viewsCumulativeChipLabel} {activeCumulativeCompactLabel}
-                </span>
-              ) : null}
-              {activeBar ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--muted channel-stats-graph__chip--point">
-                  Точка {activeViewsCompactLabel}
-                </span>
-              ) : null}
-              {activePreviousBar ? (
-                <span className="channel-stats-graph__chip channel-stats-graph__chip--previous">
-                  Пред. {formatCompactCount(activePreviousBar.views)}
                 </span>
               ) : null}
             </div>
@@ -2179,8 +2070,6 @@ function ChannelStatsOverview({
           </span>
         </article>
       </div>
-
-      <ChannelSourceStrip stats={stats} />
 
       <article className="channel-fact-panel channel-top-posts-panel">
         <div className="channel-insights__panel-head">
