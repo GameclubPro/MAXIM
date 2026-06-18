@@ -35,14 +35,14 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 3105,
-    targetLines: 3000,
+    maxLines: 2985,
+    targetLines: 2700,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
   },
   {
     path: 'apps/miniapp/src/pages/settings-page.css',
-    maxLines: 410,
-    targetLines: 330,
+    maxLines: 530,
+    targetLines: 430,
     reason:
       'Settings route-owned CSS should stay focused while legacy settings page markup is extracted.',
   },
