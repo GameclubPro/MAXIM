@@ -33,6 +33,7 @@ import '../styles/settings-drilldown-core.css';
 import '../styles/settings-policy-controls.css';
 import '../styles/lazy-pages.css';
 import '../styles/broadcast-studio-base.css';
+import '../styles/settings-rules-studio.css';
 import '../styles/settings-link-allowlist.css';
 import '../styles/settings-drilldown-polish.css';
 import '../styles/settings-duration-editor.css';
