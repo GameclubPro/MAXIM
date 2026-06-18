@@ -267,6 +267,11 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     stats.official.content.posts > 0
       ? Math.round(displayViews / stats.official.content.posts)
       : null;
+  const last24hAverage =
+    stats.official.content.posts > 0
+      ? Math.round(displayViews / stats.official.content.posts)
+      : null;
+  const last48hAverage = last24hAverage;
   const er24 =
     displayViews > 0
       ? Math.round((stats.official.content.reactions / displayViews) * 10_000) / 100
@@ -317,8 +322,8 @@ function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSu
     },
     views: {
       perPost,
-      last24h: displayViews,
-      last48h: displayViews,
+      last24h: last24hAverage,
+      last48h: last48hAverage,
       er24,
     },
     daily,

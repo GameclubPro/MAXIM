@@ -18162,8 +18162,8 @@ describe('AdminService.getChannelStats', () => {
       },
       views: {
         perPost: 205,
-        last24h: 310,
-        last48h: 310,
+        last24h: 155,
+        last48h: 155,
         er24: 2.9,
       },
       daily: expect.any(Array),

@@ -3747,6 +3747,8 @@ function buildChannelStats(
   });
   const summaryLast24h = range === '24h' ? views : Math.round(views * 0.28);
   const summaryLast48h = range === '24h' ? views : Math.round(views * 0.44);
+  const summaryLast24hPerPost = Math.round(summaryLast24h / Math.max(1, posts));
+  const summaryLast48hPerPost = Math.round(summaryLast48h / Math.max(1, posts));
   const summaryEr24 =
     summaryLast24h > 0 ? Math.round((reactions / summaryLast24h) * 10_000) / 100 : null;
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
@@ -3831,8 +3833,8 @@ function buildChannelStats(
       },
       views: {
         perPost: currentAverageViewsPerPost,
-        last24h: summaryLast24h,
-        last48h: summaryLast48h,
+        last24h: summaryLast24hPerPost,
+        last48h: summaryLast48hPerPost,
         er24: summaryEr24,
       },
       daily: dailySummary,

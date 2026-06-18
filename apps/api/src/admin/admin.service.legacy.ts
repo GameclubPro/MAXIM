@@ -16238,8 +16238,8 @@ export class AdminService implements OnModuleDestroy {
       params.now,
     );
     const er24 =
-      viewWindows.last24h > 0 && viewWindows.reactions24h > 0
-        ? Math.round((viewWindows.reactions24h / viewWindows.last24h) * 10_000) / 100
+      viewWindows.totalLast24h > 0 && viewWindows.reactions24h > 0
+        ? Math.round((viewWindows.reactions24h / viewWindows.totalLast24h) * 10_000) / 100
         : null;
 
     return {
@@ -16299,7 +16299,13 @@ export class AdminService implements OnModuleDestroy {
   private buildChannelStatsViewWindowSummary(
     rows: ChannelStatsSummaryWindowRow[],
     now: Date,
-  ): { last24h: number; last48h: number; reactions24h: number } {
+  ): {
+    last24h: number | null;
+    last48h: number | null;
+    totalLast24h: number;
+    totalLast48h: number;
+    reactions24h: number;
+  } {
     const rowsByPostId = new Map<
       string,
       Array<{
@@ -16331,8 +16337,10 @@ export class AdminService implements OnModuleDestroy {
 
     const last24hFrom = new Date(now.getTime() - TWENTY_FOUR_HOURS_MS);
     const last48hFrom = new Date(now.getTime() - 2 * TWENTY_FOUR_HOURS_MS);
-    let last24h = 0;
-    let last48h = 0;
+    let totalLast24h = 0;
+    let totalLast48h = 0;
+    let last24hPostCount = 0;
+    let last48hPostCount = 0;
     let reactions24h = 0;
 
     for (const postRows of rowsByPostId.values()) {
@@ -16343,6 +16351,11 @@ export class AdminService implements OnModuleDestroy {
       );
       let previousViews: number | null = null;
       let previousReactions: number | null = null;
+      let postLast24h = 0;
+      let postLast48h = 0;
+      let postReactions24h = 0;
+      let hasLast24hSample = false;
+      let hasLast48hSample = false;
 
       for (const row of sorted) {
         const seededFromPublication = previousViews === null && row.publishedAt >= last48hFrom;
@@ -16360,21 +16373,35 @@ export class AdminService implements OnModuleDestroy {
             : Math.max(0, row.reactionsTotal - previousReactions);
 
         if (row.capturedAt >= last48hFrom) {
-          last48h += viewsDelta;
+          postLast48h += viewsDelta;
+          hasLast48hSample = true;
         }
         if (row.capturedAt >= last24hFrom) {
-          last24h += viewsDelta;
-          reactions24h += reactionsDelta;
+          postLast24h += viewsDelta;
+          postReactions24h += reactionsDelta;
+          hasLast24hSample = true;
         }
 
         previousViews = row.views;
         previousReactions = row.reactionsTotal;
       }
+
+      if (hasLast48hSample) {
+        totalLast48h += postLast48h;
+        last48hPostCount += 1;
+      }
+      if (hasLast24hSample) {
+        totalLast24h += postLast24h;
+        reactions24h += postReactions24h;
+        last24hPostCount += 1;
+      }
     }
 
     return {
-      last24h,
-      last48h,
+      last24h: last24hPostCount > 0 ? Math.round(totalLast24h / last24hPostCount) : null,
+      last48h: last48hPostCount > 0 ? Math.round(totalLast48h / last48hPostCount) : null,
+      totalLast24h,
+      totalLast48h,
       reactions24h,
     };
   }
