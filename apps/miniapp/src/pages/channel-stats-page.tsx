@@ -12,6 +12,7 @@ import {
   UserXmark as IconUserXmark,
 } from 'iconoir-react';
 import '../styles/channel-stats.css';
+import '../styles/channel-stats-executive.css';
 import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
@@ -39,6 +40,7 @@ import {
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
@@ -996,6 +998,13 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const activePreviousPoint = chart.previousPoints[previousIndex] ?? null;
   const hasLeftFlow = chart.hasLeftFlow;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const renderPointMarkers = shouldRenderChannelStatsPointMarkers(
+    stats.period.range,
+    chart.points.length,
+  );
+  const graphClassName = `channel-stats-graph ${
+    renderPointMarkers ? '' : 'channel-stats-graph--continuous'
+  }`.trim();
   const slotWidth =
     chart.points.length > 1
       ? (CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad) /
@@ -1046,7 +1055,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
 
   return (
-    <div className="channel-stats-graph">
+    <div className={graphClassName}>
       {chart.points.length === 0 ? (
         <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
       ) : (
@@ -1335,7 +1344,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__flow-edge channel-stats-graph__flow-edge--left"
                 />
               ) : null}
-              {activePoint ? (
+              {activePoint && renderPointMarkers ? (
                 <g className="channel-stats-graph__flow-focus">
                   <ellipse
                     cx={activePoint.x}
@@ -1384,30 +1393,32 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__line channel-stats-graph__line--previous"
                 />
               ) : null}
-              {chart.points.map((point, index) => {
-                const activity = point.joined + point.left;
-                const tone =
-                  point.left > point.joined ? 'left' : point.joined > 0 ? 'joined' : 'neutral';
-                const opacity =
-                  safeActiveIndex === index
-                    ? 0.96
-                    : maxMembershipActivity > 0
-                      ? clamp(activity / maxMembershipActivity, 0.16, 0.58)
-                      : 0.16;
+              {renderPointMarkers
+                ? chart.points.map((point, index) => {
+                    const activity = point.joined + point.left;
+                    const tone =
+                      point.left > point.joined ? 'left' : point.joined > 0 ? 'joined' : 'neutral';
+                    const opacity =
+                      safeActiveIndex === index
+                        ? 0.96
+                        : maxMembershipActivity > 0
+                          ? clamp(activity / maxMembershipActivity, 0.16, 0.58)
+                          : 0.16;
 
-                return (
-                  <circle
-                    key={`event-${labels[index]?.at ?? index}`}
-                    cx={point.x}
-                    cy={chart.eventRailY}
-                    r={safeActiveIndex === index ? 4.4 : 2.8}
-                    style={{ opacity }}
-                    className={`channel-stats-graph__event-dot channel-stats-graph__event-dot--${tone} ${
-                      safeActiveIndex === index ? 'is-active' : ''
-                    }`}
-                  />
-                );
-              })}
+                    return (
+                      <circle
+                        key={`event-${labels[index]?.at ?? index}`}
+                        cx={point.x}
+                        cy={chart.eventRailY}
+                        r={safeActiveIndex === index ? 4.4 : 2.8}
+                        style={{ opacity }}
+                        className={`channel-stats-graph__event-dot channel-stats-graph__event-dot--${tone} ${
+                          safeActiveIndex === index ? 'is-active' : ''
+                        }`}
+                      />
+                    );
+                  })
+                : null}
               {postPins.map((pin) => (
                 <g
                   key={pin.messageId}
@@ -1439,7 +1450,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__line channel-stats-graph__line--audience"
                 />
               ) : null}
-              {chart.hasLine && activePoint ? (
+              {chart.hasLine && activePoint && renderPointMarkers ? (
                 <circle
                   cx={activePoint.x}
                   cy={activePoint.y}
@@ -1447,7 +1458,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__dot-pulse"
                 />
               ) : null}
-              {chart.hasLine
+              {chart.hasLine && renderPointMarkers
                 ? chart.points.map((point, index) => (
                     <circle
                       key={labels[index]?.at ?? index}
@@ -1463,18 +1474,20 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             </svg>
           </div>
 
-          <div className="channel-stats-graph__labels">
-            {labels.map((item, index) => (
-              <small
-                key={`${item.at}-${index}`}
-                className={safeActiveIndex === index ? 'is-active' : ''}
-              >
-                {visibleLabelIndices.has(index)
-                  ? formatShortDate(item.at, stats.period.bucket)
-                  : '\u00a0'}
-              </small>
-            ))}
-          </div>
+          {renderPointMarkers ? (
+            <div className="channel-stats-graph__labels">
+              {labels.map((item, index) => (
+                <small
+                  key={`${item.at}-${index}`}
+                  className={safeActiveIndex === index ? 'is-active' : ''}
+                >
+                  {visibleLabelIndices.has(index)
+                    ? formatShortDate(item.at, stats.period.bucket)
+                    : '\u00a0'}
+                </small>
+              ))}
+            </div>
+          ) : null}
 
           <output className="channel-stats-graph__sr" aria-live="polite">
             {activePreviousPoint
@@ -1514,6 +1527,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   );
   const activePreviousBar = chart.previousBars[previousIndex] ?? null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const renderPointMarkers = shouldRenderChannelStatsPointMarkers(
+    stats.period.range,
+    chart.bars.length,
+  );
+  const graphClassName = `channel-stats-graph ${
+    renderPointMarkers ? '' : 'channel-stats-graph--continuous'
+  }`.trim();
   const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
   const averageViews = resolveChannelStatsAverageViews(stats);
   const averageViewsCompactLabel = formatCompactCount(averageViews);
@@ -1545,7 +1565,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
       )} просмотров, период ${formatCount(averageViews)} просмотров`
     : 'Данные по просмотрам недоступны';
   return (
-    <div className="channel-stats-graph">
+    <div className={graphClassName}>
       {chart.bars.length === 0 ? (
         <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
@@ -1776,18 +1796,20 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             </svg>
           </div>
 
-          <div className="channel-stats-graph__labels">
-            {labels.map((item, index) => (
-              <small
-                key={`${item.at}-${index}`}
-                className={safeActiveIndex === index ? 'is-active' : ''}
-              >
-                {visibleLabelIndices.has(index)
-                  ? formatShortDate(item.at, stats.period.bucket)
-                  : '\u00a0'}
-              </small>
-            ))}
-          </div>
+          {renderPointMarkers ? (
+            <div className="channel-stats-graph__labels">
+              {labels.map((item, index) => (
+                <small
+                  key={`${item.at}-${index}`}
+                  className={safeActiveIndex === index ? 'is-active' : ''}
+                >
+                  {visibleLabelIndices.has(index)
+                    ? formatShortDate(item.at, stats.period.bucket)
+                    : '\u00a0'}
+                </small>
+              ))}
+            </div>
+          ) : null}
 
           <output className="channel-stats-graph__sr" aria-live="polite">
             {activePreviousBar
@@ -1910,6 +1932,39 @@ function ChannelStatsOverview({
     >
       <div className="channel-insights__overview-top">
         <div className="channel-insights__primary-stack">
+          <article
+            className={`channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--${effectiveChartTab}`}
+          >
+            <header className="channel-insights__chart-header">
+              <strong className="channel-insights__chart-title">{chartTitle}</strong>
+
+              <div className="channel-insights__chart-controls">
+                {chartTabs.length > 1 ? (
+                  <SegmentedControl
+                    value={effectiveChartTab}
+                    options={chartTabs}
+                    onChange={(next) => onChartTabChange(next as ChartTab)}
+                    className="channel-insights__switch"
+                    ariaLabel="Метрика графика"
+                  />
+                ) : null}
+                <SegmentedControl
+                  value={range}
+                  options={periodOptions}
+                  onChange={(next) => onRangeChange(next as ChannelStatsRange)}
+                  className="channel-insights__range"
+                  ariaLabel="Период графика"
+                />
+              </div>
+            </header>
+
+            {effectiveChartTab === 'audience' ? (
+              <AudienceChart stats={stats} />
+            ) : (
+              <ViewsChart stats={stats} />
+            )}
+          </article>
+
           <div className="channel-insights__summary-metrics">
             <article className="channel-summary-card channel-summary-card--subscribers">
               <header>
@@ -1958,37 +2013,7 @@ function ChannelStatsOverview({
                 </span>
               </div>
             </article>
-
           </div>
-
-          <article className="channel-insights__chart-card channel-insights__chart-card--executive">
-            <header className="channel-insights__chart-header">
-              <strong className="channel-insights__chart-title">{chartTitle}</strong>
-
-              <div className="channel-insights__chart-controls">
-                {chartTabs.length > 1 ? (
-                  <SegmentedControl
-                    value={effectiveChartTab}
-                    options={chartTabs}
-                    onChange={(next) => onChartTabChange(next as ChartTab)}
-                    className="channel-insights__switch"
-                  />
-                ) : null}
-                <SegmentedControl
-                  value={range}
-                  options={periodOptions}
-                  onChange={(next) => onRangeChange(next as ChannelStatsRange)}
-                  className="channel-insights__range"
-                />
-              </div>
-            </header>
-
-            {effectiveChartTab === 'audience' ? (
-              <AudienceChart stats={stats} />
-            ) : (
-              <ViewsChart stats={stats} />
-            )}
-          </article>
         </div>
 
       </div>

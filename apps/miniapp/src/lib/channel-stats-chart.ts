@@ -98,6 +98,14 @@ export function resolveInitialViewsChartIndex(points: readonly ViewsChartActiveP
   return activeViewsIndex >= 0 ? activeViewsIndex : points.length - 1;
 }
 
+export function shouldRenderChannelStatsPointMarkers(range: string, pointCount: number): boolean {
+  if (pointCount <= 0 || range === '24h') {
+    return false;
+  }
+
+  return pointCount <= 16;
+}
+
 function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (predicate(items[index]!)) {

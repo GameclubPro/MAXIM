@@ -3606,7 +3606,7 @@ function buildChannelStats(
   const joined = activityItems.filter((item) => item.type === 'joined').length;
   const left = activityItems.filter((item) => item.type === 'left').length;
   const { from, to } = resolveRangeWindow(range, now);
-  const points = range === '24h' ? 12 : range === '7d' ? 8 : 10;
+  const points = range === '24h' ? 24 : range === '7d' ? 8 : 10;
   const stepMs = Math.max(1, (to.getTime() - from.getTime()) / Math.max(1, points - 1));
 
   function distributeTotal(total: number, weights: number[]): number[] {

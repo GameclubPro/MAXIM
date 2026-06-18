@@ -530,6 +530,19 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
   },
   {
+    name: 'channel-stats-24h',
+    path: '/channel/preview-channel/stats',
+    beforeShot: async (page) => {
+      await page
+        .locator('.channel-insights__chart-controls .channel-insights__range .segmented-control__item')
+        .filter({ hasText: /24ч/u })
+        .click();
+      await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
+      await assertChannelStatsContinuousChart(page);
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'channel-stats-views',
     path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
@@ -538,6 +551,24 @@ const scenarios = [
         .filter({ hasText: /Просм\./u })
         .click();
       await page.locator('.channel-stats-graph__bar--views').first().waitFor({ state: 'visible' });
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'channel-stats-views-24h',
+    path: '/channel/preview-channel/stats',
+    beforeShot: async (page) => {
+      await page
+        .locator('.channel-insights__switch .segmented-control__item')
+        .filter({ hasText: /Просм\./u })
+        .click();
+      await page
+        .locator('.channel-insights__chart-controls .channel-insights__range .segmented-control__item')
+        .filter({ hasText: /24ч/u })
+        .click();
+      await page.locator('.channel-stats-graph__bar--views').first().waitFor({ state: 'visible' });
+      await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
+      await assertChannelStatsContinuousChart(page);
       await page.waitForTimeout(350);
     },
   },
@@ -1247,6 +1278,32 @@ async function assertChartsPainted(page, scenario) {
 
   if (!painted) {
     throw new Error(`Scenario ${scenario.name} did not render a visible chart/graph element.`);
+  }
+}
+
+async function assertChannelStatsContinuousChart(page) {
+  const result = await page.evaluate(() => {
+    const chart = document.querySelector('.channel-stats-graph--continuous');
+    if (!chart) {
+      return { ok: false, reason: 'continuous chart class is missing' };
+    }
+
+    const lineDots = chart.querySelectorAll('.channel-stats-graph__dot').length;
+    const eventDots = chart.querySelectorAll('.channel-stats-graph__event-dot').length;
+    const flowDots = chart.querySelectorAll('.channel-stats-graph__flow-knot').length;
+    const labels = chart.querySelectorAll('.channel-stats-graph__labels small').length;
+    if (lineDots > 0 || eventDots > 0 || flowDots > 0 || labels > 0) {
+      return {
+        ok: false,
+        reason: `unexpected hourly markers: line=${lineDots}, event=${eventDots}, flow=${flowDots}, labels=${labels}`,
+      };
+    }
+
+    return { ok: true, reason: '' };
+  });
+
+  if (!result.ok) {
+    throw new Error(`24h channel stats chart marker assertion failed: ${result.reason}`);
   }
 }
 

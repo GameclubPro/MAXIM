@@ -5,6 +5,7 @@ import {
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  shouldRenderChannelStatsPointMarkers,
 } from '../src/lib/channel-stats-chart';
 
 test('selects the latest informative audience bucket instead of a trailing zero bucket', () => {
@@ -122,4 +123,11 @@ test('prefers response per-post average over graph points', () => {
   };
 
   assert.equal(resolveChannelStatsAverageViews(stats), 260);
+});
+
+test('does not render point markers for the 24 hour channel stats range', () => {
+  assert.equal(shouldRenderChannelStatsPointMarkers('24h', 24), false);
+  assert.equal(shouldRenderChannelStatsPointMarkers('24h', 25), false);
+  assert.equal(shouldRenderChannelStatsPointMarkers('7d', 7), true);
+  assert.equal(shouldRenderChannelStatsPointMarkers('30d', 30), false);
 });
