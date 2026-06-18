@@ -157,6 +157,29 @@ export const channelStatsTopPostSchema = z.object({
 });
 export type ChannelStatsTopPost = z.infer<typeof channelStatsTopPostSchema>;
 
+export const channelStatsSummarySchema = z.object({
+  subscribers: z.object({
+    current: z.number().int().min(0).nullable(),
+    todayDelta: z.number().int().nullable(),
+    weekDelta: z.number().int().nullable(),
+    sixteenDaysDelta: z.number().int().nullable(),
+  }),
+  views: z.object({
+    perPost: z.number().int().min(0).nullable(),
+    last24h: z.number().int().min(0).nullable(),
+    last48h: z.number().int().min(0).nullable(),
+    er24: z.number().nullable(),
+  }),
+  daily: z.array(
+    z.object({
+      date: z.string().min(1),
+      subscribers: z.number().int().min(0).nullable(),
+      delta: z.number().int().nullable(),
+    }),
+  ),
+});
+export type ChannelStatsSummary = z.infer<typeof channelStatsSummarySchema>;
+
 export const channelStatsResponseSchema = z.object({
   channel: z.object({
     id: z.string(),
@@ -213,6 +236,7 @@ export const channelStatsResponseSchema = z.object({
       ),
     }),
   }),
+  summary: channelStatsSummarySchema,
   secondary: z.object({
     postsWithButtons: z.number().int().min(0),
     comments: z.number().int().min(0),

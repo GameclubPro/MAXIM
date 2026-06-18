@@ -830,7 +830,16 @@ export type ChannelStatsPostRow = {
 export type ChannelStatsViewSnapshotRow = {
   channelPostId: string;
   views: number;
+  reactionsTotal: number;
   capturedAt: Date;
+};
+export type ChannelStatsSummaryWindowRow = {
+  channel_post_id: string;
+  published_at: Date | string;
+  captured_at: Date | string;
+  snapshot_id: string;
+  views: unknown;
+  reactions_total: unknown;
 };
 export type ChannelStatsPostViewMetric = {
   post: ChannelStatsPostRow;

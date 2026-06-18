@@ -23,20 +23,17 @@ export type ViewsDisplayStats = {
 };
 
 export function resolveChannelStatsDisplayViews(stats: ViewsDisplayStats): number {
-  const periodViews = stats.official.content.views;
-  if (periodViews > 0) {
-    return periodViews;
-  }
-
-  return stats.official.content.viewsTotal;
+  return stats.official.content.views;
 }
 
 export function shouldUseChannelStatsPeriodViews(stats: ViewsDisplayStats): boolean {
-  return stats.official.content.viewsMode === 'observedDelta' && stats.official.content.views > 0;
+  void stats;
+  return true;
 }
 
 export function resolveChannelStatsViewsModeLabel(stats: ViewsDisplayStats): string {
-  return shouldUseChannelStatsPeriodViews(stats) ? 'за период' : 'всего у постов';
+  void stats;
+  return 'за период';
 }
 
 export function resolveInitialAudienceChartIndex(

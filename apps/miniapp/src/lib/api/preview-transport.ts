@@ -3740,6 +3740,20 @@ function buildChannelStats(
   });
   const currentAverageViewsPerPost = Math.round((views * 1.24) / Math.max(1, posts));
   const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);
+  const dailySummary = Array.from({ length: 16 }, (_, index) => {
+    const dayOffset = 15 - index;
+    const date = addDays(now, -dayOffset).toISOString().slice(0, 10);
+    const delta = Math.round((joined - left) / 16 + Math.sin(index / 2) * 2);
+    return {
+      date,
+      subscribers: Math.max(0, state.channelHeaderParticipantsCount - dayOffset * 3 + delta),
+      delta,
+    };
+  });
+  const summaryLast24h = range === '24h' ? views : Math.round(views * 0.28);
+  const summaryLast48h = range === '24h' ? views : Math.round(views * 0.44);
+  const summaryEr24 =
+    summaryLast24h > 0 ? Math.round((reactions / summaryLast24h) * 10_000) / 100 : null;
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
     return {
@@ -3861,6 +3875,21 @@ function buildChannelStats(
           };
         }),
       },
+    },
+    summary: {
+      subscribers: {
+        current: state.channelHeaderParticipantsCount,
+        todayDelta: dailySummary[dailySummary.length - 1]?.delta ?? null,
+        weekDelta: dailySummary.slice(-7).reduce((sum, item) => sum + (item.delta ?? 0), 0),
+        sixteenDaysDelta: dailySummary.reduce((sum, item) => sum + (item.delta ?? 0), 0),
+      },
+      views: {
+        perPost: currentAverageViewsPerPost,
+        last24h: summaryLast24h,
+        last48h: summaryLast48h,
+        er24: summaryEr24,
+      },
+      daily: dailySummary,
     },
     secondary: {
       postsWithButtons: range === '24h' ? 1 : range === '7d' ? 5 : 12,
@@ -4440,7 +4469,9 @@ function buildPreviewSpammerDiagnostics(
       userId,
       chatId,
       displayName: includeProfile ? displayName : null,
-      avatarUrl: includeProfile ? buildPreviewAvatarDataUrl(displayName, '#7db8ff', '#4d89ff') : null,
+      avatarUrl: includeProfile
+        ? buildPreviewAvatarDataUrl(displayName, '#7db8ff', '#4d89ff')
+        : null,
       profileUrl: includeProfile ? buildPreviewProfileUrl('oleg-repeat') : null,
       profileHandoffUrl: includeProfile ? buildPreviewProfileHandoffUrl('oleg-repeat') : null,
       policy: {

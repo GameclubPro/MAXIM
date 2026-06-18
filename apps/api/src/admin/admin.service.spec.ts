@@ -9088,9 +9088,7 @@ describe('AdminService.listChannels', () => {
       ]);
       prisma.channelSettings.findMany.mockResolvedValue([]);
       (prisma as any).chatBotMembership = {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([{ chatId: 'channel-active', botId: '777000_bot' }]),
+        findMany: jest.fn().mockResolvedValue([{ chatId: 'channel-active', botId: '777000_bot' }]),
       };
       (prisma as any).managedEntityAccessEdge = {
         findMany: jest.fn().mockResolvedValue([
@@ -17535,11 +17533,7 @@ describe('AdminService admin access validation', () => {
         botId: true,
       },
     });
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      'chat-1',
-      user.userId,
-      'granted',
-    );
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', user.userId, 'granted');
     await flushAsyncTasks();
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
   });
@@ -17814,7 +17808,7 @@ describe('AdminService.getChannelStats', () => {
         viewsDelta: 0,
         viewsTotal: 1_000,
       }),
-    ).toBe('latestTotal');
+    ).toBe('observedDelta');
   });
 
   it('returns official-first channel stats without reading channel settings', async () => {
@@ -17897,6 +17891,32 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
+          channel_post_id: 'post-1',
+          published_at: new Date('2026-03-03T07:00:00.000Z'),
+          captured_at: new Date('2026-03-05T11:00:00.000Z'),
+          snapshot_id: 'snap-0',
+          views: '100',
+          reactions_total: '3',
+        },
+        {
+          channel_post_id: 'post-1',
+          published_at: new Date('2026-03-03T07:00:00.000Z'),
+          captured_at: new Date('2026-03-07T11:00:00.000Z'),
+          snapshot_id: 'snap-1',
+          views: '150',
+          reactions_total: '5',
+        },
+        {
+          channel_post_id: 'post-2',
+          published_at: new Date('2026-03-06T14:00:00.000Z'),
+          captured_at: new Date('2026-03-07T11:00:00.000Z'),
+          snapshot_id: 'snap-2',
+          views: '260',
+          reactions_total: '7',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           id: 'wh-ch-3',
           created_at: new Date('2026-03-07T11:40:00.000Z'),
           event_type: 'user_added',
@@ -17945,6 +17965,20 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         {
+          capturedAt: new Date('2026-02-19T10:00:00.000Z'),
+          participantsCount: 1200,
+        },
+        {
+          capturedAt: new Date('2026-02-28T10:00:00.000Z'),
+          participantsCount: 1215,
+        },
+        {
+          capturedAt: new Date('2026-03-06T10:00:00.000Z'),
+          participantsCount: 1230,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           capturedAt: new Date('2026-02-24T10:00:00.000Z'),
           participantsCount: 1190,
         },
@@ -17964,7 +17998,7 @@ describe('AdminService.getChannelStats', () => {
       createdAt: new Date('2026-02-28T08:00:00.000Z'),
       updatedAt: new Date('2026-03-07T11:56:00.000Z'),
     });
-    prisma.channelPost.findMany.mockResolvedValue([
+    const channelPosts = [
       {
         id: 'post-1',
         messageId: 'mid-1',
@@ -17991,21 +18025,27 @@ describe('AdminService.getChannelStats', () => {
         ],
         latestSnapshotAt: new Date('2026-03-07T11:00:00.000Z'),
       },
-    ]);
+    ];
+    prisma.channelPost.findMany
+      .mockResolvedValueOnce(channelPosts)
+      .mockResolvedValueOnce([...channelPosts].reverse());
     prisma.channelPostViewSnapshot.findMany.mockResolvedValue([
       {
         channelPostId: 'post-1',
         views: 100,
+        reactionsTotal: 3,
         capturedAt: new Date('2026-03-03T08:00:00.000Z'),
       },
       {
         channelPostId: 'post-1',
         views: 150,
+        reactionsTotal: 5,
         capturedAt: new Date('2026-03-07T11:00:00.000Z'),
       },
       {
         channelPostId: 'post-2',
         views: 260,
+        reactionsTotal: 7,
         capturedAt: new Date('2026-03-07T11:00:00.000Z'),
       },
     ]);
@@ -18114,6 +18154,21 @@ describe('AdminService.getChannelStats', () => {
         },
       ],
       lastPublishedAt: '2026-03-06T14:00:00.000Z',
+    });
+    expect(result.summary).toEqual({
+      subscribers: {
+        current: 1240,
+        todayDelta: 10,
+        weekDelta: 25,
+        sixteenDaysDelta: 40,
+      },
+      views: {
+        perPost: 205,
+        last24h: 310,
+        last48h: 310,
+        er24: 2.9,
+      },
+      daily: expect.any(Array),
     });
     expect(result.secondary).toEqual({
       postsWithButtons: 2,
@@ -18447,6 +18502,7 @@ describe('AdminService.getChannelStats', () => {
           reactions: '0',
         },
       ])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
         {
           id: 'wh-missing-1',
@@ -18544,9 +18600,9 @@ describe('AdminService.getChannelStats', () => {
     });
     expect(result.official.content).toEqual({
       posts: 1,
-      views: 44,
+      views: 0,
       viewsTotal: 44,
-      viewsMode: 'latestTotal',
+      viewsMode: 'observedDelta',
       reactions: 0,
       topReactions: [],
       topPosts: [
@@ -18555,7 +18611,7 @@ describe('AdminService.getChannelStats', () => {
           publishedAt: '2026-03-07T09:00:00.000Z',
           url: null,
           views: 44,
-          viewsDelta: 44,
+          viewsDelta: 0,
           reactions: 0,
         },
       ],

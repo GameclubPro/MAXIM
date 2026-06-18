@@ -1593,6 +1593,7 @@ model ChannelPostViewSnapshot {
   id            String   @id @default(cuid())
   channelPostId String   @map("channel_post_id")
   views         Int
+  reactionsTotal Int     @default(0) @map("reactions_total")
   capturedAt    DateTime @default(now()) @map("captured_at")
 
   channelPost ChannelPost @relation(fields: [channelPostId], references: [id], onDelete: Cascade)

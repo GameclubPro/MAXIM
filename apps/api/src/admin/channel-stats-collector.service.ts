@@ -501,6 +501,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         data: {
           channelPostId: post.id,
           views,
+          reactionsTotal,
           capturedAt,
         },
       });

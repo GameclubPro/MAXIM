@@ -3,6 +3,7 @@ import type {
   ChannelStatsBucket,
   ChannelStatsRange,
   ChannelStatsResponse,
+  ChannelStatsSummary,
 } from '@maxim/contracts/channel-stats';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -219,16 +220,33 @@ function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket)
   }).format(parsed);
 }
 
+function formatDailySummaryDate(value: string): string {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  }).format(parsed);
+}
+
 function formatSignedCount(value: number | null): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
   }
 
+  const formatted = new Intl.NumberFormat('ru-RU').format(Math.abs(value));
   if (value > 0) {
-    return `+${value}`;
+    return `+${formatted}`;
   }
 
-  return String(value);
+  if (value < 0) {
+    return `-${formatted}`;
+  }
+
+  return '0';
 }
 
 function formatPercent(value: number | null): string {
@@ -242,33 +260,54 @@ function formatPercent(value: number | null): string {
   }).format(value)}%`;
 }
 
-function formatDeltaMetric(
-  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined,
-): string {
-  if (!metric) {
-    return '0';
+function resolveChannelStatsSummary(stats: ChannelStatsResponse): ChannelStatsSummary {
+  const maybeSummary = (stats as Partial<ChannelStatsResponse>).summary;
+  if (maybeSummary) {
+    return maybeSummary;
   }
 
-  if (typeof metric.percent === 'number' && Number.isFinite(metric.percent)) {
-    const rounded = Math.round(metric.percent);
-    if (rounded !== 0) {
-      return `${rounded > 0 ? '+' : ''}${rounded}%`;
-    }
-  }
+  const currentSubscribers = stats.channel.participantsCount;
+  const joined = stats.official.audience.joined ?? 0;
+  const left = stats.official.audience.left ?? 0;
+  const weekDelta = stats.official.audience.net ?? joined - left;
+  const displayViews = resolveChannelStatsDisplayViews(stats);
+  const perPost =
+    stats.official.content.posts > 0
+      ? Math.round(displayViews / stats.official.content.posts)
+      : null;
+  const er24 =
+    displayViews > 0
+      ? Math.round((stats.official.content.reactions / displayViews) * 10_000) / 100
+      : null;
+  const daily = stats.official.series.participants.slice(-16).map((point, index, rows) => {
+    const previous = index > 0 ? rows[index - 1]?.participantsCount : null;
+    const delta =
+      point.participantsCount === null || previous === null || previous === undefined
+        ? null
+        : point.participantsCount - previous;
 
-  return formatSignedCount(metric.absolute);
-}
+    return {
+      date: point.at.slice(0, 10),
+      subscribers: point.participantsCount,
+      delta,
+    };
+  });
 
-function resolveDeltaTone(
-  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined,
-  inverse = false,
-): ChartInsightTone {
-  if (!metric || metric.absolute === 0) {
-    return 'neutral';
-  }
-
-  const positive = inverse ? metric.absolute < 0 : metric.absolute > 0;
-  return positive ? 'success' : 'warning';
+  return {
+    subscribers: {
+      current: currentSubscribers,
+      todayDelta: daily[daily.length - 1]?.delta ?? null,
+      weekDelta,
+      sixteenDaysDelta: weekDelta,
+    },
+    views: {
+      perPost,
+      last24h: displayViews,
+      last48h: displayViews,
+      er24,
+    },
+    daily,
+  };
 }
 
 function formatPostDateTime(value: string): string {
@@ -283,22 +322,6 @@ function formatPostDateTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
-}
-
-function DeltaBadge({
-  metric,
-  inverse = false,
-}: {
-  metric: ChannelStatsResponse['comparison']['deltas']['views'] | undefined;
-  inverse?: boolean;
-}) {
-  const tone = resolveDeltaTone(metric, inverse);
-
-  return (
-    <span className={`channel-insights__delta channel-insights__delta--${tone}`}>
-      {formatDeltaMetric(metric)}
-    </span>
-  );
 }
 
 function formatBestWindowValue(window: ChannelStatsResponse['signals']['bestWindows'][number]) {
@@ -396,7 +419,8 @@ function resolveChartIndexFromClientX(
   }
 
   const plotLeft = rect.left + (rect.width * leftPad) / CHART_VIEWBOX_WIDTH;
-  const plotRight = rect.left + (rect.width * (CHART_VIEWBOX_WIDTH - rightPad)) / CHART_VIEWBOX_WIDTH;
+  const plotRight =
+    rect.left + (rect.width * (CHART_VIEWBOX_WIDTH - rightPad)) / CHART_VIEWBOX_WIDTH;
   const ratio = clamp((clientX - plotLeft) / Math.max(plotRight - plotLeft, 1), 0, 1);
   return Math.round(ratio * (pointsLength - 1));
 }
@@ -862,7 +886,8 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
   const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
   const aggregateViews = Math.max(displayViews, topPostMaxViews);
-  const maxViews = currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
+  const maxViews =
+    currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
   const cumulativeMax = Math.max(
     ...series.map((item) => item.cumulativeViews),
     maxBucketViews > 0 ? 0 : aggregateViews,
@@ -1257,7 +1282,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.dividerY}
                 className="channel-stats-graph__divider"
               />
-              {(chart.hasJoinedFlow || chart.hasLeftFlow) ? (
+              {chart.hasJoinedFlow || chart.hasLeftFlow ? (
                 <rect
                   x={chart.leftPad}
                   y={chart.activityRailY - 24}
@@ -1522,8 +1547,8 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
     activeBar?.cumulativeViews ?? chart.cumulativeMax,
   );
   const viewsModeLabel = resolveChannelStatsViewsModeLabel(stats);
-  const viewsCumulativeLabel = shouldUseChannelStatsPeriodViews(stats) ? 'Накоплено' : 'Сумма';
-  const viewsCumulativeChipLabel = shouldUseChannelStatsPeriodViews(stats) ? 'Итог' : 'Сумма';
+  const viewsCumulativeLabel = 'Итого';
+  const viewsCumulativeChipLabel = 'Итого';
   const chartPeriodLabel = stats.period.range === '24h' ? '24 часа' : stats.period.range;
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
   const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
@@ -1566,7 +1591,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             className="channel-stats-graph__canvas"
             tabIndex={0}
             role="slider"
-            aria-label="Охват публикаций"
+            aria-label="Просмотры публикаций"
             aria-valuemin={1}
             aria-valuemax={chart.bars.length}
             aria-valuenow={safeActiveIndex + 1}
@@ -1945,20 +1970,15 @@ function ChannelStatsOverview({
     stats.meta.viewsAvailable && chartTabs.some((option) => option.value === chartTab)
       ? chartTab
       : 'audience';
-  const audienceJoined = stats.official.audience.joined ?? 0;
-  const audienceLeft = stats.official.audience.left ?? 0;
-  const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
-  const netTone = audienceNet > 0 ? 'success' : audienceNet < 0 ? 'danger' : 'neutral';
-  const engagementRate =
-    stats.meta.viewsAvailable && resolveChannelStatsDisplayViews(stats) > 0
-      ? (stats.official.content.reactions / resolveChannelStatsDisplayViews(stats)) * 100
-      : null;
-  const viewsPerPost =
-    stats.meta.viewsAvailable && stats.official.content.posts > 0
-      ? Math.round(resolveChannelStatsDisplayViews(stats) / stats.official.content.posts)
-      : null;
-  const viewsMetricSuffix = resolveChannelStatsViewsModeLabel(stats);
+  const summary = resolveChannelStatsSummary(stats);
+  const todayTone =
+    (summary.subscribers.todayDelta ?? 0) > 0
+      ? 'success'
+      : (summary.subscribers.todayDelta ?? 0) < 0
+        ? 'danger'
+        : 'neutral';
   const chartTitle = 'Аналитика';
+  const dailyRows = summary.daily.slice(-7);
 
   return (
     <section
@@ -2002,74 +2022,74 @@ function ChannelStatsOverview({
               <IconCommunity width={17} height={17} strokeWidth={2.05} />
             </span>
           </div>
-          <strong>{formatCompactCount(stats.channel.participantsCount)}</strong>
-          <span>{formatCount(stats.channel.participantsCount)}</span>
+          <strong>{formatCompactCount(summary.subscribers.current)}</strong>
+          <span>
+            Сегодня {formatSignedCount(summary.subscribers.todayDelta)}
+            <b>Неделя {formatSignedCount(summary.subscribers.weekDelta)}</b>
+          </span>
         </article>
 
-        <article className={`channel-insights__kpi-card channel-insights__kpi-card--${netTone}`}>
+        <article className={`channel-insights__kpi-card channel-insights__kpi-card--${todayTone}`}>
           <div className="channel-insights__kpi-top">
-            <small>Прирост</small>
+            <small>За 16 дней</small>
             <span className="channel-insights__kpi-icon" aria-hidden="true">
               <IconGraphUp width={17} height={17} strokeWidth={2.05} />
             </span>
           </div>
-          <strong>{formatSignedCount(audienceNet)}</strong>
+          <strong>{formatSignedCount(summary.subscribers.sixteenDaysDelta)}</strong>
           <span>
-            <DeltaBadge metric={stats.comparison.deltas.audienceNet} />
-            <b>
-              +{formatCount(audienceJoined)} / -{formatCount(audienceLeft)}
-            </b>
+            Сегодня {formatSignedCount(summary.subscribers.todayDelta)}
+            <b>Неделя {formatSignedCount(summary.subscribers.weekDelta)}</b>
           </span>
         </article>
 
         <article className="channel-insights__kpi-card channel-insights__kpi-card--views">
           <div className="channel-insights__kpi-top">
-            <small>{stats.meta.viewsAvailable ? 'Просм./пост' : 'Посты'}</small>
+            <small>Просм./пост</small>
             <span className="channel-insights__kpi-icon" aria-hidden="true">
               <IconEye width={17} height={17} strokeWidth={2.05} />
             </span>
           </div>
-          <strong>
-            {stats.meta.viewsAvailable
-              ? formatCompactCount(viewsPerPost)
-              : formatCount(stats.official.content.posts)}
-          </strong>
+          <strong>{formatCompactCount(summary.views.perPost)}</strong>
           <span>
-            {stats.meta.viewsAvailable ? (
-              <>
-                <DeltaBadge metric={stats.comparison.deltas.averageViewsPerPost} />
-                <b>
-                  {formatCompactCount(resolveChannelStatsDisplayViews(stats))} {viewsMetricSuffix}
-                </b>
-              </>
-            ) : (
-              <DeltaBadge metric={stats.comparison.deltas.posts} />
-            )}
+            24ч {formatCompactCount(summary.views.last24h)}
+            <b>48ч {formatCompactCount(summary.views.last48h)}</b>
           </span>
         </article>
 
         <article className="channel-insights__kpi-card channel-insights__kpi-card--reactions">
           <div className="channel-insights__kpi-top">
-            <small>{stats.meta.viewsAvailable ? 'ER' : 'Реакции'}</small>
+            <small>ER24</small>
             <span className="channel-insights__kpi-icon" aria-hidden="true">
               <IconPercentageCircle width={17} height={17} strokeWidth={2.05} />
             </span>
           </div>
-          <strong>
-            {engagementRate !== null
-              ? formatPercent(engagementRate)
-              : formatCompactCount(stats.official.content.reactions)}
-          </strong>
+          <strong>{formatPercent(summary.views.er24)}</strong>
           <span>
-            <DeltaBadge metric={stats.comparison.deltas.reactions} />
-            <b>
-              {stats.meta.viewsAvailable
-                ? formatCompactCount(stats.official.content.reactions)
-                : `${formatCount(stats.official.content.posts)} постов`}
-            </b>
+            24ч {formatCompactCount(summary.views.last24h)}
+            <b>Реакции {formatCompactCount(stats.official.content.reactions)}</b>
           </span>
         </article>
       </div>
+
+      <article className="channel-fact-panel channel-daily-summary-panel">
+        <div className="channel-insights__panel-head">
+          <div className="channel-insights__panel-copy">
+            <strong>Дни</strong>
+          </div>
+        </div>
+        <div className="channel-daily-summary__list" aria-label="Динамика подписчиков по дням">
+          {dailyRows.map((row) => (
+            <div className="channel-daily-summary__item" key={row.date}>
+              <div className="channel-daily-summary__copy">
+                <strong>{formatDailySummaryDate(row.date)}</strong>
+                <span>Подписчиков {formatCount(row.subscribers)}</span>
+              </div>
+              <b>{formatSignedCount(row.delta)}</b>
+            </div>
+          ))}
+        </div>
+      </article>
 
       <article className="channel-fact-panel channel-top-posts-panel">
         <div className="channel-insights__panel-head">

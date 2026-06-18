@@ -196,6 +196,15 @@ describe('ChannelStatsCollectorService', () => {
       }),
     );
     expect(prisma.channelPostViewSnapshot.create).toHaveBeenCalledTimes(2);
+    expect(prisma.channelPostViewSnapshot.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          views: 120,
+          reactionsTotal: 6,
+        }),
+      }),
+    );
     expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
       create: expect.objectContaining({

@@ -59,7 +59,7 @@ test('selects the latest non-zero views bucket before the current empty bucket',
   );
 });
 
-test('uses post totals when observed view deltas are not available for the period', () => {
+test('does not use post lifetime totals when observed view deltas are not available', () => {
   const stats = {
     official: {
       content: {
@@ -70,9 +70,9 @@ test('uses post totals when observed view deltas are not available for the perio
     },
   };
 
-  assert.equal(resolveChannelStatsDisplayViews(stats), 12_400);
-  assert.equal(shouldUseChannelStatsPeriodViews(stats), false);
-  assert.equal(resolveChannelStatsViewsModeLabel(stats), 'всего у постов');
+  assert.equal(resolveChannelStatsDisplayViews(stats), 0);
+  assert.equal(shouldUseChannelStatsPeriodViews(stats), true);
+  assert.equal(resolveChannelStatsViewsModeLabel(stats), 'за период');
 });
 
 test('keeps period views primary when observed deltas exist', () => {
