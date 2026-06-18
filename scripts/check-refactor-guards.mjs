@@ -35,9 +35,16 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 2130,
-    targetLines: 1850,
+    maxLines: 980,
+    targetLines: 760,
     reason: 'Route/component styles should leave the compatibility bundle over time.',
+  },
+  {
+    path: 'apps/miniapp/src/styles/broadcast-studio-base.css',
+    maxLines: 1130,
+    targetLines: 900,
+    reason:
+      'Broadcast studio base styles should stay route-owned instead of returning to the lazy compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-policy-controls.css',
