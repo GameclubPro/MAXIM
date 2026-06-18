@@ -1454,7 +1454,7 @@ export class ManagedGiveawayService {
       claimHours: row.claimHours,
       requiredChannelIds,
       requiredChannels,
-      entriesCount: row.entries.length,
+      entriesCount: this.countPublicGiveawayEntries(row.entries),
       winnersCount: row.winners.filter(
         (winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED,
       ).length,

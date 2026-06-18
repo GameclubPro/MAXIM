@@ -854,6 +854,42 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('exposes only non-rejected entries in the public giveaway count', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const giveaway = createGiveaway({
+      publicationMessageId: 'publication-1',
+      requiredChannelIds: [],
+      prizes: [createPrize()],
+      entries: [
+        createEntry({
+          id: 'entry-verified-1',
+          userId: 'verified-1',
+          eligibilityState: GiveawayEligibilityState.VERIFIED,
+          eligibilityReason: null,
+          missingChannelIds: [],
+        }),
+        createEntry({
+          id: 'entry-rejected-1',
+          userId: 'rejected-1',
+          eligibilityState: GiveawayEligibilityState.REJECTED,
+        }),
+      ],
+    });
+    prisma.managedGiveaway.findUnique.mockResolvedValue(giveaway);
+
+    await expect(service.getPublicGiveaway('giveaway-1', user)).resolves.toMatchObject({
+      entriesCount: 1,
+    });
+  });
+
   it('rejects participation for an unpublished giveaway id', async () => {
     const prisma = createPrismaMock();
     const service = new ManagedGiveawayService(
