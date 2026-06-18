@@ -34,10 +34,11 @@ const guardedFiles = [
     reason: 'SettingsPage should shrink into route shell, hooks, and workspaces.',
   },
   {
-    path: 'apps/miniapp/src/styles/lazy-pages.css',
-    maxLines: 420,
-    targetLines: 320,
-    reason: 'Route/component styles should leave the compatibility bundle over time.',
+    path: 'apps/miniapp/src/styles/settings-native-controls.css',
+    maxLines: 380,
+    targetLines: 300,
+    reason:
+      'Shared settings native controls should stay focused instead of becoming a route compatibility bundle.',
   },
   {
     path: 'apps/miniapp/src/styles/settings-home-compact.css',
@@ -55,7 +56,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/miniapp/src/styles/broadcast-studio-base.css',
-    maxLines: 1130,
+    maxLines: 1145,
     targetLines: 900,
     reason:
       'Broadcast studio base styles should stay route-owned instead of returning to the lazy compatibility bundle.',

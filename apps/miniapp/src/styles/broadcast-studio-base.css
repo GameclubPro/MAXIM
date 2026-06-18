@@ -1011,6 +1011,20 @@
   gap: 10px;
 }
 
+@media (max-width: 420px) {
+  .mailing-message-field__meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}
+
+@media (min-width: 720px) {
+  .mailing-options-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .mailing-option-card {
   border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.14);

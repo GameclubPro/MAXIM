@@ -1,5 +1,5 @@
 @layer pages {
-/* Lazy route styles: loaded only with non-startup mini app screens. */
+/* Shared settings native controls used by lazy settings routes. */
 
 @media (max-width: 520px) {
   .settings-native-toggle__row {
@@ -242,20 +242,6 @@
 .settings-button-fields {
   display: grid;
   gap: 8px;
-}
-
-@media (max-width: 420px) {
-  .mailing-message-field__meta {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-  }
-}
-
-@media (min-width: 720px) {
-  .mailing-options-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 .settings-native-toggle.field--error {

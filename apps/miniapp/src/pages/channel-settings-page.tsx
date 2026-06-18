@@ -10,7 +10,7 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/settings-drilldown-core.css';
-import '../styles/lazy-pages.css';
+import '../styles/settings-native-controls.css';
 import '../styles/settings-home-compact.css';
 import '../styles/broadcast-studio-base.css';
 import '../styles/settings-drilldown-polish.css';
