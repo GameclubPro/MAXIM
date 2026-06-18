@@ -3972,6 +3972,7 @@ body.channel-settings-page-open .bottom-nav__item.is-active::after {
 html[data-max-platform='android'] .settings-home-sticky-header.compact-page-header,
 html[data-max-platform='android'] .channel-settings-screen__sticky-header {
   --compact-page-header-safe-top: 0px;
+  --compact-page-header-offset-top: calc(var(--app-safe-top) + 10px);
 }
 
 .settings-home-sticky-header .compact-page-header__bar,
@@ -4118,6 +4119,11 @@ html[data-max-platform='android'] .channel-settings-screen__sticky-header {
     gap: 7px;
     padding-right: 9px;
     padding-left: 9px;
+  }
+
+  html[data-max-platform='android'] .settings-home-sticky-header.compact-page-header,
+  html[data-max-platform='android'] .channel-settings-screen__sticky-header {
+    --compact-page-header-offset-top: calc(var(--app-safe-top) + 8px);
   }
 
   .settings-home-sticky-header .compact-page-header__back,
