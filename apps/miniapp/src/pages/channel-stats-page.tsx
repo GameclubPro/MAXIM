@@ -1153,7 +1153,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const averageViews = resolveChannelStatsAverageViews(stats);
   const currentMaxViews = Math.max(...series.map((item) => item.views), 0);
   const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
-  const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
   const aggregateViews = averageViews;
   const maxViews =
     currentMaxViews > 0
@@ -1191,13 +1190,19 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       height: barHeight,
     };
   });
+  const aggregateBarHeight =
+    currentMaxViews === 0 && aggregateViews > 0
+      ? previousMaxViews > 0
+        ? Math.max(4, Math.min(aggregateViews * scale, usableHeight))
+        : usableHeight * 0.72
+      : 0;
   const aggregateBar =
-    maxBucketViews === 0 && aggregateViews > 0
+    aggregateBarHeight > 0
       ? {
           x: leftPad,
-          y: baselineY - usableHeight * 0.72,
+          y: baselineY - aggregateBarHeight,
           width: plotWidth,
-          height: usableHeight * 0.72,
+          height: aggregateBarHeight,
           views: aggregateViews,
         }
       : null;

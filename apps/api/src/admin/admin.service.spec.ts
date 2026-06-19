@@ -17754,6 +17754,7 @@ describe('AdminService.getChannelStats', () => {
         bucketStarts: Date[],
         postViewMetrics: Array<{
           post: {
+            id: string;
             publishedAt: Date;
           };
           viewsDelta: number;
@@ -17771,6 +17772,7 @@ describe('AdminService.getChannelStats', () => {
       [
         {
           post: {
+            id: 'post-1',
             publishedAt: new Date('2026-03-07T08:20:00.000Z'),
           },
           viewsDelta: 45,
@@ -17783,6 +17785,7 @@ describe('AdminService.getChannelStats', () => {
         },
         {
           post: {
+            id: 'post-2',
             publishedAt: new Date('2026-03-07T08:40:00.000Z'),
           },
           viewsDelta: 75,
@@ -17821,6 +17824,7 @@ describe('AdminService.getChannelStats', () => {
         bucketStarts: Date[],
         postViewMetrics: Array<{
           post: {
+            id: string;
             publishedAt: Date;
           };
           viewsDelta: number;
@@ -17838,6 +17842,7 @@ describe('AdminService.getChannelStats', () => {
       [
         {
           post: {
+            id: 'post-1',
             publishedAt: new Date('2026-03-07T09:20:00.000Z'),
           },
           viewsDelta: 100,
@@ -17850,6 +17855,7 @@ describe('AdminService.getChannelStats', () => {
         },
         {
           post: {
+            id: 'post-2',
             publishedAt: new Date('2026-03-07T10:15:00.000Z'),
           },
           viewsDelta: 300,
@@ -17872,6 +17878,76 @@ describe('AdminService.getChannelStats', () => {
     ]);
   });
 
+  it('counts each post once per views chart bucket', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildAverageViewsSeriesFromPostMetrics: (
+        bucketStarts: Date[],
+        postViewMetrics: Array<{
+          post: {
+            id: string;
+            publishedAt: Date;
+          };
+          viewsDelta: number;
+          viewDeltas: Array<{
+            capturedAt: Date;
+            viewsDelta: number;
+          }>;
+        }>,
+        bucket: 'hour' | 'day',
+      ) => Array<{ at: string; views: number }>;
+    };
+
+    const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
+      [new Date('2026-03-07T10:00:00.000Z')],
+      [
+        {
+          post: {
+            id: 'post-1',
+            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+          },
+          viewsDelta: 150,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T10:05:00.000Z'),
+              viewsDelta: 100,
+            },
+            {
+              capturedAt: new Date('2026-03-07T10:40:00.000Z'),
+              viewsDelta: 50,
+            },
+          ],
+        },
+        {
+          post: {
+            id: 'post-2',
+            publishedAt: new Date('2026-03-07T09:45:00.000Z'),
+          },
+          viewsDelta: 50,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T10:20:00.000Z'),
+              viewsDelta: 50,
+            },
+          ],
+        },
+      ],
+      'hour',
+    );
+
+    expect(series).toEqual([
+      {
+        at: '2026-03-07T10:00:00.000Z',
+        views: 100,
+      },
+    ]);
+  });
+
   it('places view chart points in the bucket where views were observed', () => {
     const service = new AdminService(
       createPrismaMock() as never,
@@ -17884,6 +17960,7 @@ describe('AdminService.getChannelStats', () => {
         bucketStarts: Date[],
         postViewMetrics: Array<{
           post: {
+            id: string;
             publishedAt: Date;
           };
           viewsDelta: number;
@@ -17901,6 +17978,7 @@ describe('AdminService.getChannelStats', () => {
       [
         {
           post: {
+            id: 'post-1',
             publishedAt: new Date('2026-06-12T09:20:00.000Z'),
           },
           viewsDelta: 900,

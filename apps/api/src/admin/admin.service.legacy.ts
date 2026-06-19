@@ -16763,7 +16763,7 @@ export class AdminService implements OnModuleDestroy {
     postViewMetrics: ChannelStatsPostViewMetric[],
     bucket: ChannelStatsBucket,
   ): ChannelStatsViewsBucketPoint[] {
-    const grouped = new Map<string, { posts: number; views: number }>();
+    const grouped = new Map<string, Map<string, number>>();
 
     for (const metric of postViewMetrics) {
       const deltas =
@@ -16775,18 +16775,22 @@ export class AdminService implements OnModuleDestroy {
       for (const delta of deltas) {
         const bucketStart = this.floorChannelStatsBucket(delta.capturedAt, bucket);
         const key = bucketStart.toISOString();
-        const current = grouped.get(key) ?? { posts: 0, views: 0 };
-        current.posts += 1;
-        current.views += Math.max(0, delta.viewsDelta);
+        const current = grouped.get(key) ?? new Map<string, number>();
+        current.set(
+          metric.post.id,
+          (current.get(metric.post.id) ?? 0) + Math.max(0, delta.viewsDelta),
+        );
         grouped.set(key, current);
       }
     }
 
     return bucketStarts.map((bucketStart) => {
-      const current = grouped.get(bucketStart.toISOString()) ?? { posts: 0, views: 0 };
+      const current = grouped.get(bucketStart.toISOString());
+      const postViews = current ? Array.from(current.values()) : [];
+      const views = postViews.reduce((total, value) => total + value, 0);
       return {
         at: bucketStart.toISOString(),
-        views: current.posts > 0 ? Math.round(current.views / current.posts) : 0,
+        views: postViews.length > 0 ? Math.round(views / postViews.length) : 0,
       };
     });
   }
