@@ -42,7 +42,9 @@ export type MaxChannelMessageSnapshot = {
   publishedAt: string;
   publishedAtMs: number;
   url: string | null;
+  previewUrl: string | null;
   views: number | null;
+  reactionsTotal: number | null;
   reactions: MaxChannelMessageReaction[];
 };
 
@@ -2541,9 +2543,44 @@ export class MaxClientService implements OnModuleDestroy {
       publishedAt: publishedAt.toISOString(),
       publishedAtMs: timestampMs,
       url: this.parseChatLink(row),
+      previewUrl: this.extractMessageImagePreviewUrl(row),
       views: this.readNullableInteger(stat?.views),
+      reactionsTotal: this.parseMessageReactionsTotal(row),
       reactions: this.parseMessageReactions(row),
     };
+  }
+
+  private parseMessageReactionsTotal(row: Record<string, unknown>): number | null {
+    const body = this.asRecord(row.body);
+    const stat = this.asRecord(row.stat);
+    const candidates = [
+      stat?.reactions_total,
+      stat?.reactionsTotal,
+      stat?.reaction_count,
+      stat?.reactionCount,
+      stat?.reactions_count,
+      stat?.reactionsCount,
+      stat?.reactions,
+      stat?.reaction_counts,
+      stat?.emoji_reactions,
+      row.reactions_total,
+      row.reactionsTotal,
+      row.reaction_count,
+      row.reactionCount,
+      row.reactions_count,
+      row.reactionsCount,
+      row.reactions,
+      body?.reactions,
+    ];
+
+    for (const candidate of candidates) {
+      const total = this.readMessageReactionTotal(candidate);
+      if (total !== null) {
+        return total;
+      }
+    }
+
+    return null;
   }
 
   private parseMessageReactions(row: Record<string, unknown>): MaxChannelMessageReaction[] {
@@ -2567,6 +2604,36 @@ export class MaxClientService implements OnModuleDestroy {
     return [];
   }
 
+  private readMessageReactionTotal(value: unknown): number | null {
+    const count = this.readNullableInteger(value);
+    if (count !== null) {
+      return count;
+    }
+
+    const row = this.asRecord(value);
+    const directCount = row
+      ? this.readNullableInteger(
+          row.count ??
+            row.total ??
+            row.value_count ??
+            row.votes ??
+            row.times ??
+            row.reactions_total ??
+            row.reactionsTotal,
+        )
+      : null;
+    if (directCount !== null) {
+      return directCount;
+    }
+
+    const normalized = this.normalizeMessageReactionSource(value);
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    return normalized.reduce((total, item) => total + item.count, 0);
+  }
+
   private normalizeMessageReactionSource(value: unknown): MaxChannelMessageReaction[] {
     if (Array.isArray(value)) {
       const normalized = value
@@ -2588,9 +2655,30 @@ export class MaxClientService implements OnModuleDestroy {
 
     return this.mergeMessageReactions(
       Object.entries(row)
+        .filter(([emoji]) => this.isMessageReactionEmojiKey(emoji))
         .map(([emoji, count]) => this.parseMessageReaction(count, emoji))
         .filter((item): item is MaxChannelMessageReaction => item !== null),
     );
+  }
+
+  private isMessageReactionEmojiKey(value: string): boolean {
+    const normalized = value.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    return ![
+      'count',
+      'total',
+      'value_count',
+      'votes',
+      'times',
+      'value',
+      'reactions',
+      'reactions_total',
+      'reactions_count',
+      'reaction_count',
+    ].includes(normalized.toLowerCase());
   }
 
   private parseMessageReaction(
@@ -2638,6 +2726,97 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  private extractMessageImagePreviewUrl(row: Record<string, unknown>): string | null {
+    const body = this.asRecord(row.body);
+    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+
+    for (const attachment of attachments) {
+      const previewUrl = this.extractAttachmentImageUrl(attachment);
+      if (previewUrl) {
+        return previewUrl;
+      }
+    }
+
+    return null;
+  }
+
+  private extractAttachmentImageUrl(value: unknown): string | null {
+    const attachment = this.asRecord(value);
+    if (!attachment) {
+      return null;
+    }
+
+    const type = this.readLowerString(attachment.type);
+    if (type && type !== 'image' && type !== 'photo') {
+      return null;
+    }
+
+    const payload =
+      this.asRecord(attachment.payload) ??
+      this.asRecord(attachment.photo) ??
+      this.asRecord(attachment.image) ??
+      attachment;
+    const directUrl = this.readHttpUrl(
+      payload.url ??
+        payload.preview_url ??
+        payload.previewUrl ??
+        payload.thumbnail_url ??
+        payload.thumbnailUrl ??
+        payload.src ??
+        payload.href,
+    );
+    if (directUrl) {
+      return directUrl;
+    }
+
+    const photos = this.asRecord(payload.photos);
+    if (photos) {
+      const photoUrl = this.pickLargestPhotoUrl(photos);
+      if (photoUrl) {
+        return photoUrl;
+      }
+    }
+
+    const sizes = Array.isArray(payload.sizes) ? payload.sizes : [];
+    return this.pickLargestImageSizeUrl(sizes);
+  }
+
+  private pickLargestPhotoUrl(photos: Record<string, unknown>): string | null {
+    const candidates = Object.entries(photos)
+      .map(([key, value]) => {
+        const row = this.asRecord(value);
+        const width =
+          this.readNullableInteger(row?.width ?? row?.w) ?? this.readNullableInteger(key) ?? 0;
+        const height = this.readNullableInteger(row?.height ?? row?.h) ?? 0;
+        const url = row
+          ? this.readHttpUrl(row.url ?? row.preview_url ?? row.previewUrl ?? row.src)
+          : this.readHttpUrl(value);
+        return url ? { url, score: width * Math.max(1, height) || width } : null;
+      })
+      .filter((item): item is { url: string; score: number } => item !== null);
+
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0]?.url ?? null;
+  }
+
+  private pickLargestImageSizeUrl(values: unknown[]): string | null {
+    const candidates = values
+      .map((value) => {
+        const row = this.asRecord(value);
+        if (!row) {
+          return null;
+        }
+        const width = this.readNullableInteger(row.width ?? row.w) ?? 0;
+        const height = this.readNullableInteger(row.height ?? row.h) ?? 0;
+        const url = this.readHttpUrl(row.url ?? row.src ?? row.href);
+        return url ? { url, area: width * height } : null;
+      })
+      .filter((item): item is { url: string; area: number } => item !== null);
+
+    candidates.sort((left, right) => right.area - left.area);
+    return candidates[0]?.url ?? null;
+  }
+
   private mergeMessageReactions(
     reactions: MaxChannelMessageReaction[],
   ): MaxChannelMessageReaction[] {
@@ -2663,7 +2842,9 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       ...incoming,
       url: incoming.url ?? current.url,
+      previewUrl: incoming.previewUrl ?? current.previewUrl,
       views: Math.max(current.views ?? 0, incoming.views ?? 0),
+      reactionsTotal: Math.max(current.reactionsTotal ?? 0, incoming.reactionsTotal ?? 0),
       reactions: this.mergeMessageReactions([...current.reactions, ...incoming.reactions]),
     };
   }
@@ -4797,6 +4978,15 @@ export class MaxClientService implements OnModuleDestroy {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private readHttpUrl(value: unknown): string | null {
+    const normalized = this.readTrimmedString(value);
+    if (!normalized) {
+      return null;
+    }
+
+    return /^https?:\/\//iu.test(normalized) ? normalized : null;
   }
 
   private readBoolean(value: unknown): boolean | null {

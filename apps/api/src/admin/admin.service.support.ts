@@ -820,6 +820,7 @@ export type ChannelStatsPostRow = {
   messageId: string;
   publishedAt: Date;
   url: string | null;
+  previewUrl: string | null;
   latestViews: number;
   latestReactions: Prisma.JsonValue | null;
   latestReactionsTotal: number;

@@ -1573,6 +1573,7 @@ model ChannelPost {
   messageId            String    @map("message_id")
   publishedAt          DateTime  @map("published_at")
   url                  String?
+  previewUrl           String?   @map("preview_url")
   latestViews          Int       @default(0) @map("latest_views")
   latestReactions      Json?     @map("latest_reactions")
   latestReactionsTotal Int       @default(0) @map("latest_reactions_total")

@@ -420,7 +420,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-posts-chart__row-head strong {
-  color: #075fae;
+  color: var(--accent);
   font-size: 0.88rem;
 }
 
@@ -430,7 +430,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-posts-chart__bar span {
-  background: linear-gradient(90deg, #0b84ff, #35c59f);
+  background: linear-gradient(90deg, var(--accent), var(--success));
   box-shadow: none;
 }
 
@@ -439,7 +439,7 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 .channel-posts-chart__row-meta small {
-  color: #668198;
+  color: var(--text-muted);
   font-size: 0.62rem;
   font-weight: 720;
 }

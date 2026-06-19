@@ -557,6 +557,8 @@ body.settings-drilldown-open .bottom-nav {
   }
 
   .bottom-nav__label {
-    font-size: 0.63rem;
+    font-size: 0.6rem;
+    overflow-wrap: normal;
+    white-space: nowrap;
   }
 }

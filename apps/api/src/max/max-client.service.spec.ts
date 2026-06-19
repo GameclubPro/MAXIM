@@ -2008,7 +2008,20 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   timestamp: latestTs,
-                  body: { mid: 'mid-2' },
+                  body: {
+                    mid: 'mid-2',
+                    attachments: [
+                      {
+                        type: 'image',
+                        payload: {
+                          photos: {
+                            128: 'https://cdn.max.ru/news/post-2-small.jpg',
+                            1024: 'https://cdn.max.ru/news/post-2.jpg',
+                          },
+                        },
+                      },
+                    ],
+                  },
                   stat: {
                     views: 260,
                     reactions: [
@@ -2021,7 +2034,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 {
                   timestamp: previousTs,
                   body: { mid: 'mid-1' },
-                  stat: { views: 120, reactions: { '👍': 2 } },
+                  stat: { views: 120, reactions: { count: 12 } },
                   url: 'https://max.ru/news/post-1',
                 },
               ],
@@ -2059,7 +2072,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
         publishedAt: '2026-03-07T09:00:00.000Z',
         publishedAtMs: latestTs,
         url: 'https://max.ru/news/post-2',
+        previewUrl: 'https://cdn.max.ru/news/post-2.jpg',
         views: 260,
+        reactionsTotal: 8,
         reactions: [
           { emoji: '🔥', count: 5 },
           { emoji: '❤️', count: 3 },
@@ -2071,8 +2086,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
         publishedAt: '2026-03-06T09:00:00.000Z',
         publishedAtMs: previousTs,
         url: 'https://max.ru/news/post-1',
+        previewUrl: null,
         views: 120,
-        reactions: [{ emoji: '👍', count: 2 }],
+        reactionsTotal: 12,
+        reactions: [],
       },
     ]);
     expect(httpService.request).toHaveBeenCalledTimes(2);

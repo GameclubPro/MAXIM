@@ -3792,11 +3792,15 @@ function buildChannelStats(
   }
   const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
     const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
+    const previewUrls = [
+      'https://major-maksimov.ru/app/favicon.png',
+      'https://major-maksimov.ru/app/apple-touch-icon.png',
+    ];
     return {
       messageId: `preview-channel-post-${index + 1}`,
       publishedAt: addHours(now, -4 - index * 11).toISOString(),
       url: `https://max.ru/channels/yuzhnoe-news/${index + 1}`,
-      previewUrl: null,
+      previewUrl: previewUrls[index] ?? null,
       viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
       reactions: Math.round(postViews * 0.055),
     };

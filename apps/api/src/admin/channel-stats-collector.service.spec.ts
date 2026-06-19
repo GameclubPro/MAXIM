@@ -103,7 +103,9 @@ describe('ChannelStatsCollectorService', () => {
           publishedAt: '2026-03-06T09:00:00.000Z',
           publishedAtMs: 1772749200000,
           url: 'https://max.ru/news/post-1',
+          previewUrl: null,
           views: 120,
+          reactionsTotal: 6,
           reactions: [
             { emoji: '🔥', count: 4 },
             { emoji: '👍', count: 2 },
@@ -115,7 +117,9 @@ describe('ChannelStatsCollectorService', () => {
           publishedAt: '2026-03-07T09:00:00.000Z',
           publishedAtMs: 1772835600000,
           url: 'https://max.ru/news/post-2',
+          previewUrl: 'https://cdn.max.ru/news/post-2.jpg',
           views: 260,
+          reactionsTotal: null,
           reactions: [{ emoji: '❤️', count: 6 }],
         },
       ]),
@@ -181,6 +185,7 @@ describe('ChannelStatsCollectorService', () => {
       expect.objectContaining({
         create: expect.objectContaining({
           latestReactionsTotal: 6,
+          previewUrl: null,
           latestReactions: [
             { emoji: '🔥', count: 4 },
             { emoji: '👍', count: 2 },
@@ -188,6 +193,7 @@ describe('ChannelStatsCollectorService', () => {
         }),
         update: expect.objectContaining({
           latestReactionsTotal: 6,
+          previewUrl: null,
           latestReactions: [
             { emoji: '🔥', count: 4 },
             { emoji: '👍', count: 2 },

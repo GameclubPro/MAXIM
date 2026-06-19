@@ -464,7 +464,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           emoji: item.emoji,
           count: item.count,
         }));
-      const reactionsTotal = reactions.reduce((total, item) => total + item.count, 0);
+      const reactionsTotal = Math.max(
+        message.reactionsTotal ?? 0,
+        reactions.reduce((total, item) => total + item.count, 0),
+      );
       const post = await this.prisma.channelPost.upsert({
         where: {
           chatId_messageId: {
@@ -477,6 +480,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           messageId: message.messageId,
           publishedAt: new Date(message.publishedAt),
           url: message.url,
+          previewUrl: message.previewUrl,
           latestViews: views,
           latestReactions:
             reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
@@ -486,6 +490,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         update: {
           publishedAt: new Date(message.publishedAt),
           url: message.url,
+          previewUrl: message.previewUrl,
           latestViews: views,
           latestReactions:
             reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,

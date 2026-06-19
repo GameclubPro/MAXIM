@@ -61,6 +61,7 @@ export const channelStatsTopPostSchema = z.object({
   messageId: z.string(),
   publishedAt: z.string().datetime(),
   url: z.string().trim().max(2_048).nullable(),
+  previewUrl: z.string().trim().url().max(2_048).nullable().default(null),
   viewsDelta: z.number().int().min(0),
   reactions: z.number().int().min(0),
 });

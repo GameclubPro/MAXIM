@@ -2201,24 +2201,47 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
           const width = maxViews > 0 && value > 0 ? Math.max(5, (value / maxViews) * 100) : 0;
           const valueLabel = formatCompactCount(value);
           const detailParts = [`${formatCount(value)} просмотров за период`];
-          const metaParts = [`${formatCount(post.reactions)} реакц.`];
+          const reactionLabel = `${formatCount(post.reactions)} реакц.`;
+          const hasPreview = Boolean(post.previewUrl);
 
           const row = (
             <>
-              <div className="channel-posts-chart__row-head">
-                <span className="channel-posts-chart__rank">#{index + 1}</span>
-                <span className="channel-posts-chart__title">
-                  {formatPostDateTime(post.publishedAt)}
-                </span>
-                <strong>{valueLabel}</strong>
+              <div
+                className={`channel-posts-chart__preview ${
+                  hasPreview ? 'channel-posts-chart__preview--image' : ''
+                }`}
+                aria-hidden="true"
+              >
+                {post.previewUrl ? (
+                  <img src={post.previewUrl} alt="" loading="lazy" decoding="async" />
+                ) : (
+                  <span>#{index + 1}</span>
+                )}
               </div>
-              <div className="channel-posts-chart__bar" aria-hidden="true">
-                <span style={{ width: `${width}%` }} />
-              </div>
-              <div className="channel-posts-chart__row-meta">
-                {metaParts.map((part) => (
-                  <small key={part}>{part}</small>
-                ))}
+              <div className="channel-posts-chart__content">
+                <div className="channel-posts-chart__row-head">
+                  <span className="channel-posts-chart__rank">#{index + 1}</span>
+                  <span className="channel-posts-chart__title">
+                    {formatPostDateTime(post.publishedAt)}
+                  </span>
+                </div>
+                <div className="channel-posts-chart__metrics" aria-hidden="true">
+                  <span>
+                    <small>Просмотры</small>
+                    <strong>{valueLabel}</strong>
+                  </span>
+                  <span>
+                    <small>Реакции</small>
+                    <b>{formatCompactCount(post.reactions)}</b>
+                  </span>
+                </div>
+                <div className="channel-posts-chart__bar" aria-hidden="true">
+                  <span style={{ width: `${width}%` }} />
+                </div>
+                <div className="channel-posts-chart__row-meta">
+                  <small>{detailParts[0]}</small>
+                  <small>{reactionLabel}</small>
+                </div>
               </div>
             </>
           );
