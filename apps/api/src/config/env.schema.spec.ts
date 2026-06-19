@@ -22,6 +22,7 @@ describe('validateEnv boolean parsing', () => {
         BOT_OWNERSHIP_FOUNDATION_ENABLED: 'no',
         MODERATION_BACKGROUND_TASKS_ENABLED: 'off',
         CHANNEL_STATS_STARTUP_SYNC_ENABLED: 'false',
+        BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: '0',
       }),
     );
 
@@ -30,6 +31,7 @@ describe('validateEnv boolean parsing', () => {
     expect(env.BOT_OWNERSHIP_FOUNDATION_ENABLED).toBe(false);
     expect(env.MODERATION_BACKGROUND_TASKS_ENABLED).toBe(false);
     expect(env.CHANNEL_STATS_STARTUP_SYNC_ENABLED).toBe(false);
+    expect(env.BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED).toBe(false);
   });
 
   it('parses string true values as true', () => {
@@ -40,6 +42,7 @@ describe('validateEnv boolean parsing', () => {
         BOT_OWNERSHIP_FOUNDATION_ENABLED: 'yes',
         MODERATION_BACKGROUND_TASKS_ENABLED: 'on',
         CHANNEL_STATS_STARTUP_SYNC_ENABLED: 'true',
+        BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: 'yes',
       }),
     );
 
@@ -48,6 +51,7 @@ describe('validateEnv boolean parsing', () => {
     expect(env.BOT_OWNERSHIP_FOUNDATION_ENABLED).toBe(true);
     expect(env.MODERATION_BACKGROUND_TASKS_ENABLED).toBe(true);
     expect(env.CHANNEL_STATS_STARTUP_SYNC_ENABLED).toBe(true);
+    expect(env.BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED).toBe(true);
   });
 
   it('keeps defaults for missing and empty string values', () => {

@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { cpus, loadavg } from 'node:os';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { QueueMetricsService, type QueueMetricsSnapshot } from './queue-metrics.service';
@@ -22,6 +24,7 @@ type BackgroundPressureSnapshot = {
   mode: SystemModeSnapshot;
   queues: QueueMetricsSnapshot;
   backgroundShare: number;
+  systemPressure: BackgroundSystemPressureSnapshot;
   botLoad: BackgroundBotLoadSnapshot;
   topSources: Array<{
     sourceTag: string;
@@ -34,6 +37,21 @@ type BackgroundPressureSnapshot = {
     pressure: number;
     totalPressure: number;
     share: number;
+  };
+};
+
+type BackgroundSystemPressureSnapshot = {
+  enabled: boolean;
+  loadAverage1m: number | null;
+  loadRatio1m: number | null;
+  cpuCount: number;
+  ioWaitRatio: number | null;
+  sampleWindowMs: number | null;
+  thresholds: {
+    loadSlow: number;
+    loadPause: number;
+    ioWaitSlow: number;
+    ioWaitPause: number;
   };
 };
 
@@ -70,6 +88,12 @@ export type BackgroundRuntimeBudgetSummary = {
   botLoad: BackgroundBotLoadSnapshot;
 };
 
+type CpuStatSample = {
+  sampledAtMs: number;
+  total: number;
+  ioWait: number;
+};
+
 const DEFAULT_SOURCE_WINDOW_SEC = 10 * 60;
 const DEFAULT_CACHE_TTL_MS = 5_000;
 const DEFAULT_SOFT_QUEUE_LAG_SEC = 3;
@@ -80,6 +104,15 @@ const DEFAULT_SLOW_RETRY_AFTER_MS = 20_000;
 const DEFAULT_PAUSE_RETRY_AFTER_MS = 60_000;
 const DEFAULT_BOT_LOAD_SLOW_THRESHOLD = 0.35;
 const DEFAULT_BOT_LOAD_PAUSE_THRESHOLD = 0.7;
+const DEFAULT_SYSTEM_PRESSURE_ENABLED = true;
+const DEFAULT_SYSTEM_LOAD_SLOW_THRESHOLD = 0.85;
+const DEFAULT_SYSTEM_LOAD_PAUSE_THRESHOLD = 1.25;
+const DEFAULT_IOWAIT_SLOW_THRESHOLD = 0.15;
+const DEFAULT_IOWAIT_PAUSE_THRESHOLD = 0.35;
+const MIN_SYSTEM_PRESSURE_SAMPLE_WINDOW_MS = 250;
+
+const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 @Injectable()
 export class BackgroundRuntimeGovernorService {
@@ -94,9 +127,16 @@ export class BackgroundRuntimeGovernorService {
   private readonly pauseRetryAfterMs: number;
   private readonly botLoadSlowThreshold: number;
   private readonly botLoadPauseThreshold: number;
+  private readonly systemPressureEnabled: boolean;
+  private readonly systemLoadSlowThreshold: number;
+  private readonly systemLoadPauseThreshold: number;
+  private readonly ioWaitSlowThreshold: number;
+  private readonly ioWaitPauseThreshold: number;
+  private readonly cpuCount = Math.max(1, cpus().length);
   private cachedSnapshot: BackgroundPressureSnapshot | null = null;
   private cachedSnapshotAtMs = 0;
   private pendingSnapshot: Promise<BackgroundPressureSnapshot> | null = null;
+  private lastCpuStatSample: CpuStatSample | null = null;
 
   constructor(
     private readonly queueMetricsService: QueueMetricsService,
@@ -147,6 +187,32 @@ export class BackgroundRuntimeGovernorService {
       this.readFraction(
         configService.get('BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD'),
         DEFAULT_BOT_LOAD_PAUSE_THRESHOLD,
+      ),
+    );
+    this.systemPressureEnabled = this.readBoolean(
+      configService.get('BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED'),
+      DEFAULT_SYSTEM_PRESSURE_ENABLED,
+    );
+    this.systemLoadSlowThreshold = this.readPositiveNumber(
+      configService.get('BACKGROUND_GOVERNOR_SYSTEM_LOAD_SLOW_THRESHOLD'),
+      DEFAULT_SYSTEM_LOAD_SLOW_THRESHOLD,
+    );
+    this.systemLoadPauseThreshold = Math.max(
+      this.systemLoadSlowThreshold,
+      this.readPositiveNumber(
+        configService.get('BACKGROUND_GOVERNOR_SYSTEM_LOAD_PAUSE_THRESHOLD'),
+        DEFAULT_SYSTEM_LOAD_PAUSE_THRESHOLD,
+      ),
+    );
+    this.ioWaitSlowThreshold = this.readFraction(
+      configService.get('BACKGROUND_GOVERNOR_IOWAIT_SLOW_THRESHOLD'),
+      DEFAULT_IOWAIT_SLOW_THRESHOLD,
+    );
+    this.ioWaitPauseThreshold = Math.max(
+      this.ioWaitSlowThreshold,
+      this.readFraction(
+        configService.get('BACKGROUND_GOVERNOR_IOWAIT_PAUSE_THRESHOLD'),
+        DEFAULT_IOWAIT_PAUSE_THRESHOLD,
       ),
     );
   }
@@ -246,10 +312,11 @@ export class BackgroundRuntimeGovernorService {
   }
 
   private async buildPressureSnapshot(): Promise<BackgroundPressureSnapshot> {
-    const [mode, queues, maxApi] = await Promise.all([
+    const [mode, queues, maxApi, systemPressure] = await Promise.all([
       this.systemModeService.getEffectiveSnapshot(),
       this.queueMetricsService.getSnapshot({ maxAgeMs: 2_000 }),
       this.maxApiMetricsService.getSourceSnapshot({ windowSec: this.sourceWindowSec }),
+      this.buildSystemPressureSnapshot(),
     ]);
     const totalRequests = maxApi.overall.totalRequests;
     const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
@@ -289,6 +356,7 @@ export class BackgroundRuntimeGovernorService {
       mode,
       queues,
       backgroundShare,
+      systemPressure,
       botLoad,
       topSources,
       workerSkew: {
@@ -349,6 +417,11 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
+    const systemPressureDecision = this.buildSystemPressureDecision(snapshot.systemPressure);
+    if (systemPressureDecision) {
+      return systemPressureDecision;
+    }
+
     if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
       return {
         action: 'pause',
@@ -388,6 +461,135 @@ export class BackgroundRuntimeGovernorService {
       action: 'run',
       retryAfterMs: 0,
       reason: 'background headroom available',
+    };
+  }
+
+  private buildSystemPressureDecision(
+    snapshot: BackgroundSystemPressureSnapshot,
+  ): BackgroundRuntimeGovernorDecision | null {
+    if (!snapshot.enabled) {
+      return null;
+    }
+
+    if (snapshot.ioWaitRatio !== null && snapshot.ioWaitRatio >= snapshot.thresholds.ioWaitPause) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: `system iowait ${(snapshot.ioWaitRatio * 100).toFixed(1)}%`,
+      };
+    }
+
+    if (snapshot.loadRatio1m !== null && snapshot.loadRatio1m >= snapshot.thresholds.loadPause) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: `system load ${(snapshot.loadRatio1m * 100).toFixed(1)}% of ${snapshot.cpuCount} CPUs`,
+      };
+    }
+
+    if (snapshot.ioWaitRatio !== null && snapshot.ioWaitRatio >= snapshot.thresholds.ioWaitSlow) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `system iowait ${(snapshot.ioWaitRatio * 100).toFixed(1)}%`,
+      };
+    }
+
+    if (snapshot.loadRatio1m !== null && snapshot.loadRatio1m >= snapshot.thresholds.loadSlow) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `system load ${(snapshot.loadRatio1m * 100).toFixed(1)}% of ${snapshot.cpuCount} CPUs`,
+      };
+    }
+
+    return null;
+  }
+
+  private async buildSystemPressureSnapshot(): Promise<BackgroundSystemPressureSnapshot> {
+    const base = {
+      enabled: this.systemPressureEnabled,
+      loadAverage1m: null as number | null,
+      loadRatio1m: null as number | null,
+      cpuCount: this.cpuCount,
+      ioWaitRatio: null as number | null,
+      sampleWindowMs: null as number | null,
+      thresholds: {
+        loadSlow: this.systemLoadSlowThreshold,
+        loadPause: this.systemLoadPauseThreshold,
+        ioWaitSlow: this.ioWaitSlowThreshold,
+        ioWaitPause: this.ioWaitPauseThreshold,
+      },
+    };
+
+    if (!this.systemPressureEnabled) {
+      return base;
+    }
+
+    const [loadAverage1m = null] = loadavg();
+    const normalizedLoadAverage1m =
+      typeof loadAverage1m === 'number' && Number.isFinite(loadAverage1m)
+        ? loadAverage1m
+        : null;
+
+    let cpuSample: CpuStatSample | null = null;
+    try {
+      cpuSample = await this.readCpuStatSample();
+    } catch (error: unknown) {
+      this.logger.debug(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to read CPU pressure sample',
+      );
+    }
+
+    let ioWaitRatio: number | null = null;
+    let sampleWindowMs: number | null = null;
+    if (cpuSample && this.lastCpuStatSample) {
+      const elapsedMs = cpuSample.sampledAtMs - this.lastCpuStatSample.sampledAtMs;
+      const totalDelta = cpuSample.total - this.lastCpuStatSample.total;
+      const ioWaitDelta = cpuSample.ioWait - this.lastCpuStatSample.ioWait;
+      if (elapsedMs >= MIN_SYSTEM_PRESSURE_SAMPLE_WINDOW_MS && totalDelta > 0) {
+        sampleWindowMs = elapsedMs;
+        ioWaitRatio = Math.max(0, Math.min(1, ioWaitDelta / totalDelta));
+      }
+    }
+    if (cpuSample) {
+      this.lastCpuStatSample = cpuSample;
+    }
+
+    return {
+      ...base,
+      loadAverage1m: normalizedLoadAverage1m,
+      loadRatio1m:
+        normalizedLoadAverage1m !== null ? normalizedLoadAverage1m / this.cpuCount : null,
+      ioWaitRatio,
+      sampleWindowMs,
+    };
+  }
+
+  private async readCpuStatSample(): Promise<CpuStatSample | null> {
+    const contents = await readFile('/proc/stat', 'utf8');
+    const cpuLine = contents
+      .split('\n')
+      .find((line) => line.startsWith('cpu ') || line.startsWith('cpu\t'));
+    if (!cpuLine) {
+      return null;
+    }
+
+    const values = cpuLine
+      .trim()
+      .split(/\s+/u)
+      .slice(1)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 0);
+    if (values.length < 5) {
+      return null;
+    }
+
+    return {
+      sampledAtMs: Date.now(),
+      total: values.reduce((sum, value) => sum + value, 0),
+      ioWait: values[4] ?? 0,
     };
   }
 
@@ -446,6 +648,28 @@ export class BackgroundRuntimeGovernorService {
       return fallback;
     }
     return numericValue;
+  }
+
+  private readBoolean(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return fallback;
+    }
+    if (BOOLEAN_TRUE_VALUES.has(normalized)) {
+      return true;
+    }
+    if (BOOLEAN_FALSE_VALUES.has(normalized)) {
+      return false;
+    }
+
+    return fallback;
   }
 
   private readFraction(value: unknown, fallback: number): number {

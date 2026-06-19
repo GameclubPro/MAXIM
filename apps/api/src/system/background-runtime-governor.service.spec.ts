@@ -1,15 +1,60 @@
 import type { ConfigService } from '@nestjs/config';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 
-function createConfigMock(values: Partial<Record<string, number>> = {}): ConfigService {
+type ConfigValue = boolean | number | string;
+
+type SystemPressureSnapshotForTest = {
+  enabled: boolean;
+  loadAverage1m: number | null;
+  loadRatio1m: number | null;
+  cpuCount: number;
+  ioWaitRatio: number | null;
+  sampleWindowMs: number | null;
+  thresholds: {
+    loadSlow: number;
+    loadPause: number;
+    ioWaitSlow: number;
+    ioWaitPause: number;
+  };
+};
+
+function createConfigMock(values: Partial<Record<string, ConfigValue>> = {}): ConfigService {
   return {
-    get: jest.fn((key: string, fallback?: number) => {
+    get: jest.fn((key: string, fallback?: unknown) => {
       if (key in values) {
         return values[key];
       }
       return fallback;
     }),
   } as unknown as ConfigService;
+}
+
+function mockSystemPressure(
+  service: BackgroundRuntimeGovernorService,
+  overrides: Partial<SystemPressureSnapshotForTest> = {},
+): void {
+  jest
+    .spyOn(
+      service as unknown as {
+        buildSystemPressureSnapshot: () => Promise<SystemPressureSnapshotForTest>;
+      },
+      'buildSystemPressureSnapshot',
+    )
+    .mockResolvedValue({
+      enabled: true,
+      loadAverage1m: 1,
+      loadRatio1m: 0.1,
+      cpuCount: 10,
+      ioWaitRatio: 0,
+      sampleWindowMs: 1_000,
+      thresholds: {
+        loadSlow: 0.85,
+        loadPause: 1.25,
+        ioWaitSlow: 0.15,
+        ioWaitPause: 0.35,
+      },
+      ...overrides,
+    });
 }
 
 describe('BackgroundRuntimeGovernorService', () => {
@@ -59,6 +104,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
       } as never,
     );
+    mockSystemPressure(service);
 
     await expect(
       service.decide({ component: 'admin-managed-refresh', sourceTag: 'managed_refresh' }),
@@ -113,6 +159,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
       } as never,
     );
+    mockSystemPressure(service);
 
     await expect(
       service.decide({
@@ -171,6 +218,7 @@ describe('BackgroundRuntimeGovernorService', () => {
         recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
       } as never,
     );
+    mockSystemPressure(service);
 
     await expect(
       service.decide({
@@ -245,11 +293,137 @@ describe('BackgroundRuntimeGovernorService', () => {
         recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
       } as never,
     );
+    mockSystemPressure(service);
 
     await expect(
       service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
     ).resolves.toMatchObject({
       action: 'slow',
+    });
+  });
+
+  it('pauses background work when host iowait crosses the pause threshold', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 0,
+            trafficClasses: {
+              critical: { totalRequests: 0 },
+              interactive: { totalRequests: 0 },
+              background: { totalRequests: 0 },
+            },
+          },
+          sources: {},
+        }),
+        getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
+      } as never,
+      createConfigMock({
+        BACKGROUND_GOVERNOR_IOWAIT_SLOW_THRESHOLD: 0.15,
+        BACKGROUND_GOVERNOR_IOWAIT_PAUSE_THRESHOLD: 0.35,
+      }),
+      {
+        recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
+    mockSystemPressure(service, {
+      ioWaitRatio: 0.42,
+    });
+
+    await expect(
+      service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
+    ).resolves.toMatchObject({
+      action: 'pause',
+      reason: 'system iowait 42.0%',
+    });
+  });
+
+  it('ignores host pressure when the system pressure guard is disabled', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 0,
+            trafficClasses: {
+              critical: { totalRequests: 0 },
+              interactive: { totalRequests: 0 },
+              background: { totalRequests: 0 },
+            },
+          },
+          sources: {},
+        }),
+        getBotRateLimitSnapshot: jest.fn().mockResolvedValue({}),
+      } as never,
+      createConfigMock({
+        BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: false,
+      }),
+      {
+        recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
+    mockSystemPressure(service, {
+      enabled: false,
+      loadAverage1m: 12,
+      loadRatio1m: 2,
+      ioWaitRatio: 0.75,
+    });
+
+    await expect(
+      service.decide({ component: 'channel-stats', sourceTag: 'channel_stats_sync' }),
+    ).resolves.toMatchObject({
+      action: 'run',
     });
   });
 });
