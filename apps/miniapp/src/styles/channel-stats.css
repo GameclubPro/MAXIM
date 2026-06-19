@@ -8,7 +8,7 @@ body.channel-stats-page-open {
 body.channel-stats-page-open .app-shell {
   --bottom-nav-height: 64px;
   --bottom-nav-offset: 6px;
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 56px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 56px);
 }
 
 body.channel-stats-page-open .bottom-nav {
@@ -83,7 +83,7 @@ html[data-max-platform='android'] .channel-insights__sticky-header.compact-page-
 }
 
 body.channel-stats-page-open .channel-insights__body {
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 64px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 64px);
 }
 
 .channel-insights__section-tabs {
@@ -1820,7 +1820,7 @@ body.channel-stats-page-open .channel-insights__body {
   }
 
   body.channel-stats-page-open .app-shell {
-    padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 68px);
+    padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 68px);
   }
 
   .channel-insights__body {
@@ -3045,12 +3045,12 @@ body.channel-stats-page-open {
 }
 
 body.channel-stats-page-open .app-shell {
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 116px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 116px);
 }
 
 body.channel-stats-page-open .channel-insights__body {
   gap: 10px;
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 124px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 124px);
 }
 
 .channel-insights__summary--command {
@@ -3354,7 +3354,7 @@ body.channel-stats-page-open .channel-insights__body {
 
 @media (max-width: 380px) {
   body.channel-stats-page-open .app-shell {
-    padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 120px);
+    padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 120px);
   }
 
   .channel-insights__chart-controls {
@@ -3388,7 +3388,7 @@ body.channel-stats-page-open {
 body.channel-stats-page-open .channel-insights__body {
   width: min(100%, 880px);
   gap: 10px;
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 92px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 92px);
   padding-inline: clamp(8px, 2.6vw, 14px);
 }
 
@@ -3754,8 +3754,8 @@ body.channel-stats-page-open .bottom-nav {
 body.channel-stats-page-open .bottom-nav::after {
   left: 0;
   right: 0;
-  bottom: calc(-1 * (var(--app-safe-bottom) + var(--bottom-nav-offset) + 22px));
-  height: calc(100% + var(--app-safe-bottom) + var(--bottom-nav-offset) + 118px);
+  bottom: calc(-1 * (var(--bottom-nav-edge-inset) + var(--bottom-nav-offset) + 22px));
+  height: calc(100% + var(--bottom-nav-edge-inset) + var(--bottom-nav-offset) + 118px);
   background: linear-gradient(
     180deg,
     var(--surface-page) 0%,

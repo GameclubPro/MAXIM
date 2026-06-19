@@ -17,6 +17,7 @@ const LEGACY_ANDROID_MAJOR_MAX = 9;
 const LEGACY_ANDROID_CHROMIUM_MAJOR_MAX = 99;
 const KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX = 120;
 const NATIVE_HAPTIC_DEDUPLICATE_MS = 80;
+const VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX = 96;
 
 function resolveBridge() {
   if (typeof window === 'undefined') {
@@ -73,11 +74,26 @@ function resolveNativeSideEffectBridge() {
   return bridge;
 }
 
-function resolveViewportSize() {
+function clampPx(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resolveViewportMetrics() {
   const viewport = window.visualViewport;
+  const height = Math.round(viewport?.height ?? window.innerHeight);
+  const top = Math.round(viewport?.offsetTop ?? 0);
+  const rawBottomInset = Math.max(0, Math.round(window.innerHeight - (height + top)));
+  const keyboardOverlap = rawBottomInset;
+
   return {
     width: Math.round(viewport?.width ?? window.innerWidth),
-    height: Math.round(viewport?.height ?? window.innerHeight),
+    height,
+    top,
+    left: Math.round(viewport?.offsetLeft ?? 0),
+    bottom: keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX
+      ? 0
+      : clampPx(rawBottomInset, 0, VISUAL_VIEWPORT_BOTTOM_INSET_MAX_PX),
+    keyboardOverlap,
   };
 }
 
@@ -210,11 +226,14 @@ function normalizePlatform(
 function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } = {}) {
   const root = document.documentElement;
   const bridge = resolveBridge();
-  const viewport = window.visualViewport;
-  const { width, height } = resolveViewportSize();
-  const viewportTop = Math.round(viewport?.offsetTop ?? 0);
-  const viewportLeft = Math.round(viewport?.offsetLeft ?? 0);
-  const keyboardOverlap = Math.max(0, Math.round(window.innerHeight - (height + viewportTop)));
+  const {
+    width,
+    height,
+    top: viewportTop,
+    left: viewportLeft,
+    bottom: viewportBottom,
+    keyboardOverlap,
+  } = resolveViewportMetrics();
   const previewPreset = options.previewDevice
     ? getPreviewDevicePreset(options.previewDevice)
     : null;
@@ -263,6 +282,7 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
   root.style.setProperty('--app-viewport-width', `${width}px`);
   root.style.setProperty('--app-visual-viewport-top', `${viewportTop}px`);
   root.style.setProperty('--app-visual-viewport-left', `${viewportLeft}px`);
+  root.style.setProperty('--app-visual-viewport-bottom', `${viewportBottom}px`);
   root.style.setProperty('--app-keyboard-overlap', `${keyboardOverlap}px`);
 
   if (keyboardOverlap >= KEYBOARD_OPEN_OVERLAP_THRESHOLD_PX) {

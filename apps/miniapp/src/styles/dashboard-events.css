@@ -2218,7 +2218,7 @@ body.events-page-open {
 }
 
 body.events-page-open .app-shell {
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 56px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 56px);
 }
 
 .events-stage__entity-avatar {
@@ -2787,7 +2787,7 @@ body.events-page-open .app-shell {
 body.events-page-open .app-shell {
   --bottom-nav-height: 62px;
   --bottom-nav-offset: 5px;
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 42px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 42px);
 }
 
 .events-screen {

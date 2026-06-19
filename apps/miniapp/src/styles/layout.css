@@ -1,6 +1,8 @@
 .app-shell {
   --bottom-nav-height: var(--app-bottom-nav-height);
   --bottom-nav-offset: 8px;
+  --bottom-nav-edge-inset: var(--app-bottom-nav-edge-inset);
+  --bottom-nav-content-inset: var(--app-bottom-nav-content-inset);
   width: min(100%, var(--app-shell-max-width));
   min-height: var(--app-viewport-height);
   display: grid;
@@ -9,7 +11,8 @@
   margin-inline: auto;
   padding: calc(var(--app-safe-top) + 10px) var(--app-page-gutter) 0;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) +
+      12px
   );
 }
 
@@ -107,7 +110,7 @@
 .bottom-nav {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+  bottom: calc(var(--bottom-nav-edge-inset) + var(--bottom-nav-offset));
   transform: translate(-50%, 0);
   width: min(calc(100% - 24px), var(--app-shell-max-width));
   padding: 4px;
@@ -140,8 +143,8 @@
   z-index: -1;
   left: 0;
   right: 0;
-  bottom: calc(-1 * (var(--app-safe-bottom) + var(--bottom-nav-offset) + 16px));
-  height: calc(100% + var(--app-safe-bottom) + var(--bottom-nav-offset) + 28px);
+  bottom: calc(-1 * (var(--bottom-nav-edge-inset) + var(--bottom-nav-offset) + 16px));
+  height: calc(100% + var(--bottom-nav-edge-inset) + var(--bottom-nav-offset) + 28px);
   background: linear-gradient(180deg, rgba(244, 249, 253, 0), rgba(244, 249, 253, 0.98) 32%);
   pointer-events: none;
 }
@@ -440,11 +443,11 @@ body.settings-drilldown-open .bottom-nav {
     max-width: 960px;
     margin: 0 auto;
     padding: calc(var(--app-safe-top) + 16px) var(--space-5)
-      calc(var(--bottom-nav-height) + var(--safe-bottom) + 20px);
+      calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 20px);
   }
 
   .bottom-nav {
-    bottom: calc(var(--safe-bottom) + var(--space-3));
+    bottom: calc(var(--bottom-nav-edge-inset) + var(--space-3));
     width: min(calc(100% - (var(--space-5) * 2)), 520px);
   }
 

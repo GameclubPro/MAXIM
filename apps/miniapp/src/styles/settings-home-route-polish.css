@@ -23,7 +23,7 @@ body.settings-home-page-open .app-shell {
   --bottom-nav-height: 76px;
   --bottom-nav-offset: 7px;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
   );
 }
 
@@ -377,7 +377,7 @@ body.settings-home-page-open .app-shell {
 }
 
 body.settings-home-page-open .bottom-nav {
-  bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+  bottom: calc(var(--bottom-nav-edge-inset) + var(--bottom-nav-offset));
   width: min(calc(100% - 14px), calc(var(--app-shell-max-width) + 10px));
   padding: 6px;
   border-radius: 28px;
@@ -475,7 +475,7 @@ body.settings-home-page-open .bottom-nav__item.is-active::after {
     --bottom-nav-height: 70px;
     --bottom-nav-offset: 5px;
     padding-bottom: calc(
-      var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 10px
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 10px
     );
   }
 

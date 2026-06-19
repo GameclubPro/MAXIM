@@ -122,12 +122,12 @@ body.chats-home-page-open .app-shell {
   --bottom-nav-offset: 7px;
   padding-top: 0;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
   );
 }
 
 body.chats-home-page-open .bottom-nav {
-  bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+  bottom: calc(var(--bottom-nav-edge-inset) + var(--bottom-nav-offset));
   width: min(calc(100% - 14px), calc(var(--app-shell-max-width) + 10px));
   padding: 6px;
   border-width: 1px;
@@ -1051,12 +1051,12 @@ body.chats-home-page-open .bottom-nav__label {
     --bottom-nav-height: 70px;
     --bottom-nav-offset: 5px;
     padding-bottom: calc(
-      var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 10px
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 10px
     );
   }
 
   body.chats-home-page-open .bottom-nav {
-    bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+    bottom: calc(var(--bottom-nav-edge-inset) + var(--bottom-nav-offset));
     width: min(calc(100% - 10px), calc(var(--app-shell-max-width) + 10px));
     padding: 5px;
     border-radius: 24px;
@@ -2016,7 +2016,7 @@ body.chats-home-page-open .app-shell {
   --bottom-nav-height: 64px;
   --bottom-nav-offset: 6px;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 10px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 10px
   );
 }
 

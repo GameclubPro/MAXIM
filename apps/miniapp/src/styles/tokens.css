@@ -79,12 +79,15 @@
   --app-viewport-width: 100vw;
   --app-visual-viewport-top: 0px;
   --app-visual-viewport-left: 0px;
+  --app-visual-viewport-bottom: 0px;
   --app-keyboard-overlap: 0px;
   --app-shell-max-width: 540px;
   --app-page-gutter: clamp(12px, 3.8vw, 18px);
   --app-topbar-radius: 22px;
   --app-bottom-nav-radius: 24px;
   --app-bottom-nav-height: 68px;
+  --app-bottom-nav-edge-inset: var(--app-safe-bottom);
+  --app-bottom-nav-content-inset: var(--app-safe-bottom);
   --z-bottom-nav: 20;
   --z-sticky: 40;
   --z-header: 60;
@@ -96,6 +99,14 @@
   --motion-duration-slow: 0.38s;
   --motion-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html[data-max-client='native'] {
+  --app-bottom-nav-edge-inset: max(
+    0px,
+    calc(var(--app-safe-bottom) - var(--app-visual-viewport-bottom))
+  );
+  --app-bottom-nav-content-inset: var(--app-bottom-nav-edge-inset);
 }
 
 @supports (height: 100dvh) {

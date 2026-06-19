@@ -1553,7 +1553,7 @@ body.channel-settings-page-open .app-shell {
   --bottom-nav-height: 76px;
   --bottom-nav-offset: 7px;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 12px
   );
 }
 
@@ -3915,7 +3915,7 @@ body.channel-settings-page-open .app-shell {
   --bottom-nav-height: 64px;
   --bottom-nav-offset: 6px;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 10px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 10px
   );
 }
 
@@ -4187,7 +4187,7 @@ body.channel-settings-page-open .app-shell {
   --bottom-nav-height: 68px;
   --bottom-nav-offset: 8px;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 28px
+    var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 28px
   );
 }
 
@@ -4475,7 +4475,7 @@ body.channel-settings-page-open .app-shell {
   body.channel-settings-page-open .app-shell {
     --bottom-nav-height: 60px;
     padding-bottom: calc(
-      var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 22px
+      var(--bottom-nav-height) + var(--bottom-nav-content-inset) + var(--bottom-nav-offset) + 22px
     );
   }
 

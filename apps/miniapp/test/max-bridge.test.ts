@@ -5,6 +5,7 @@ import {
   openMaxBotLink,
   openMaxBotLinkAndClose,
   readyMaxMiniApp,
+  syncMaxNativeEnvironment,
 } from '../src/lib/max-bridge';
 
 type MockBridge = {
@@ -21,6 +22,18 @@ type MockBridge = {
 type MockWindow = {
   __MAXIM_FORCE_NATIVE_VISUAL_MODE__?: boolean;
   __MAXIM_VISUAL_BRIDGE__?: MockBridge;
+  addEventListener?: (type: string, listener: () => void, options?: unknown) => void;
+  removeEventListener?: (type: string, listener: () => void) => void;
+  innerHeight?: number;
+  innerWidth?: number;
+  visualViewport?: {
+    width: number;
+    height: number;
+    offsetTop: number;
+    offsetLeft: number;
+    addEventListener: (type: string, listener: () => void) => void;
+    removeEventListener: (type: string, listener: () => void) => void;
+  };
   location: {
     href: string;
     assign: (url: string) => void;
@@ -34,6 +47,18 @@ type MockWindow = {
 };
 
 const originalWindow = globalThis.window;
+const originalDocument = globalThis.document;
+
+function createMockStyle() {
+  const values = new Map<string, string>();
+
+  return {
+    values,
+    setProperty: (name: string, value: string) => {
+      values.set(name, value);
+    },
+  };
+}
 
 function setMockWindow(bridge: MockBridge | null, assignedUrls: string[]): void {
   const location = {
@@ -63,6 +88,7 @@ function setMockWindow(bridge: MockBridge | null, assignedUrls: string[]): void 
 test.afterEach(() => {
   Object.assign(globalThis, {
     window: originalWindow,
+    document: originalDocument,
   });
 });
 
@@ -138,6 +164,47 @@ test('readyMaxMiniApp allows forced visual mode when the visual bridge shim is i
   readyMaxMiniApp();
 
   assert.equal(readyCount, 1);
+});
+
+test('syncMaxNativeEnvironment avoids double bottom safe area when native viewport is already inset', () => {
+  const assignedUrls: string[] = [];
+  setMockWindow(
+    {
+      platform: 'ios',
+      initData: 'query_id=abc&hash=def',
+    },
+    assignedUrls,
+  );
+
+  const style = createMockStyle();
+  Object.assign(globalThis, {
+    document: {
+      documentElement: {
+        dataset: {},
+        style,
+      },
+    },
+  });
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  globalThis.window.addEventListener = () => undefined;
+  globalThis.window.removeEventListener = () => undefined;
+  globalThis.window.visualViewport = {
+    width: 390,
+    height: 810,
+    offsetTop: 0,
+    offsetLeft: 0,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+
+  const cleanup = syncMaxNativeEnvironment();
+  cleanup();
+
+  assert.equal(style.values.get('--app-viewport-height'), '810px');
+  assert.equal(style.values.get('--app-visual-viewport-bottom'), '34px');
+  assert.equal(style.values.get('--app-keyboard-overlap'), '34px');
+  assert.equal((globalThis.document.documentElement.dataset as Record<string, string>).maxClient, 'native');
 });
 
 test('openMaxBotLink falls back to location assign when bridge is unavailable', () => {
