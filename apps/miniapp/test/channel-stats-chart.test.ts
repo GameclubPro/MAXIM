@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  isChannelStatsResponseForRange,
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
@@ -72,7 +73,7 @@ test('returns zero average views per post when period views are absent', () => {
   assert.equal(resolveChannelStatsAverageViews(stats), 0);
 });
 
-test('derives average views from daily graph points', () => {
+test('derives average views from period content totals before graph points', () => {
   const stats = {
     official: {
       content: {
@@ -94,7 +95,7 @@ test('derives average views from daily graph points', () => {
   };
 
   assert.equal(resolveAverageViewsFromSeries(stats.official.series.views), 1_500);
-  assert.equal(resolveChannelStatsAverageViews(stats), 1_500);
+  assert.equal(resolveChannelStatsAverageViews(stats), 1_313);
 });
 
 test('keeps displayed zero buckets in average views', () => {
@@ -104,12 +105,12 @@ test('keeps displayed zero buckets in average views', () => {
   );
 });
 
-test('prefers response per-post average over graph points', () => {
+test('prefers selected-period average over last-day summary average', () => {
   const stats = {
     official: {
       content: {
         posts: 5,
-        views: 1_250,
+        views: 1_025,
       },
       series: {
         views: [{ views: 1_000 }, { views: 2_000 }, { views: 1_500 }],
@@ -120,9 +121,38 @@ test('prefers response per-post average over graph points', () => {
         perPost: 260,
       },
     },
+    comparison: {
+      deltas: {
+        averageViewsPerPost: {
+          current: 205,
+        },
+      },
+    },
   };
 
-  assert.equal(resolveChannelStatsAverageViews(stats), 260);
+  assert.equal(resolveChannelStatsAverageViews(stats), 205);
+});
+
+test('accepts cached channel stats only for the requested channel and range', () => {
+  const stats = {
+    channel: {
+      id: 'channel-1',
+    },
+    period: {
+      range: '7d',
+    },
+    official: {
+      content: {
+        posts: 1,
+        views: 100,
+      },
+    },
+  };
+
+  assert.equal(isChannelStatsResponseForRange(stats, 'channel-1', '7d'), true);
+  assert.equal(isChannelStatsResponseForRange(stats, 'channel-1', '24h'), false);
+  assert.equal(isChannelStatsResponseForRange(stats, 'channel-2', '7d'), false);
+  assert.equal(isChannelStatsResponseForRange(null, 'channel-1', '7d'), false);
 });
 
 test('does not render point markers for the 24 hour channel stats range', () => {

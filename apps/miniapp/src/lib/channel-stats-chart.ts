@@ -10,6 +10,12 @@ export type ViewsChartActivePoint = {
 };
 
 export type ViewsDisplayStats = {
+  channel?: {
+    id?: string;
+  };
+  period?: {
+    range?: string;
+  };
   official: {
     content: {
       posts: number;
@@ -34,9 +40,14 @@ export type ViewsDisplayStats = {
 };
 
 export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): number {
-  const perPost = stats.summary?.views?.perPost;
-  if (typeof perPost === 'number' && Number.isFinite(perPost) && perPost >= 0) {
-    return Math.round(perPost);
+  const periodAverage = stats.comparison?.deltas?.averageViewsPerPost?.current;
+  if (typeof periodAverage === 'number' && Number.isFinite(periodAverage) && periodAverage >= 0) {
+    return Math.round(periodAverage);
+  }
+
+  const posts = Math.max(0, Math.round(stats.official.content.posts));
+  if (posts > 0) {
+    return Math.round(stats.official.content.views / posts);
   }
 
   const seriesAverage = resolveAverageViewsFromSeries(stats.official.series?.views ?? []);
@@ -44,12 +55,20 @@ export function resolveChannelStatsAverageViews(stats: ViewsDisplayStats): numbe
     return seriesAverage;
   }
 
-  const posts = Math.max(0, Math.round(stats.official.content.posts));
-  if (posts === 0) {
-    return 0;
+  const perPost = stats.summary?.views?.perPost;
+  if (typeof perPost === 'number' && Number.isFinite(perPost) && perPost >= 0) {
+    return Math.round(perPost);
   }
 
-  return Math.round(stats.official.content.views / posts);
+  return 0;
+}
+
+export function isChannelStatsResponseForRange<T extends ViewsDisplayStats>(
+  stats: T | null | undefined,
+  chatId: string,
+  range: string,
+): stats is T {
+  return Boolean(stats && stats.channel?.id === chatId && stats.period?.range === range);
 }
 
 export function resolveAverageViewsFromSeries(

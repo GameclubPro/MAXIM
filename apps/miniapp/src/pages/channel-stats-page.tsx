@@ -41,6 +41,7 @@ import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
+  isChannelStatsResponseForRange,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
@@ -1148,7 +1149,9 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const maxBucketViews = Math.max(currentMaxViews, previousMaxViews);
   const aggregateViews = averageViews;
   const maxViews =
-    currentMaxViews > 0 ? currentMaxViews : Math.max(previousMaxViews, aggregateViews);
+    currentMaxViews > 0
+      ? Math.max(currentMaxViews, previousMaxViews)
+      : Math.max(previousMaxViews, aggregateViews);
   const scale = maxViews > 0 ? usableHeight / maxViews : 0;
 
   const bars = series.map((item, index) => {
@@ -2307,7 +2310,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
     let cancelled = false;
     void readStatsSnapshot<ChannelStatsResponse>('channel', [chatId, range]).then((snapshot) => {
-      if (cancelled || !snapshot) {
+      if (cancelled || !isChannelStatsResponseForRange(snapshot, chatId, range)) {
         return;
       }
 
@@ -2323,7 +2326,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [chatId, queryClient, range, section]);
 
   useEffect(() => {
-    if (!chatId || !statsQuery.data) {
+    if (!isChannelStatsResponseForRange(statsQuery.data, chatId, range)) {
       return;
     }
 
@@ -2351,6 +2354,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       statsQuery.data?.channel.title || routeState.chatTitle || readChatTitle(chatId) || 'Канал'
     );
   }, [chatId, routeState.chatTitle, statsQuery.data?.channel.title]);
+  const stats = isChannelStatsResponseForRange(statsQuery.data, chatId, range)
+    ? statsQuery.data
+    : null;
 
   useEffect(() => {
     if (!chatId || !resolvedTitle) {
@@ -2361,12 +2367,11 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   }, [chatId, resolvedTitle]);
 
   useEffect(() => {
-    if (!statsQuery.data?.meta.viewsAvailable && chartTab === 'views') {
+    if (stats && !stats.meta.viewsAvailable && chartTab === 'views') {
       setChartTab('audience');
     }
-  }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
+  }, [chartTab, stats]);
 
-  const stats = statsQuery.data ?? null;
   const loadedActivitySummary = useMemo(() => {
     const joined = activityFeed.items.reduce(
       (count, item) => count + (item.type === 'joined' ? 1 : 0),
@@ -2467,7 +2472,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (section === 'overview' && statsQuery.isLoading && !stats) {
+  if (section === 'overview' && !stats && (statsQuery.isLoading || statsQuery.isFetching)) {
     return (
       <div className="page-stack page-enter">
         <GlassCard className="settings-section">
