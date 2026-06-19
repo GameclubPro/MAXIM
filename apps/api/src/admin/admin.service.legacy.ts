@@ -7116,6 +7116,7 @@ export class AdminService implements OnModuleDestroy {
     query: ChannelStatsQuery,
   ): string {
     return [
+      'views-posts-v1',
       chatId,
       userId,
       query.range,
@@ -16359,7 +16360,7 @@ export class AdminService implements OnModuleDestroy {
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): number | null {
-    if (!hasCoverage && rows.length === 0) {
+    if (!hasCoverage) {
       return null;
     }
 
@@ -16374,11 +16375,11 @@ export class AdminService implements OnModuleDestroy {
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): { joined: number | null; left: number | null; net: number | null } {
-    if (!hasCoverage && rows.length === 0) {
+    if (rows.length === 0) {
       return {
-        joined: null,
-        left: null,
-        net: null,
+        joined: hasCoverage ? 0 : null,
+        left: hasCoverage ? 0 : null,
+        net: hasCoverage ? 0 : null,
       };
     }
 
@@ -16388,7 +16389,7 @@ export class AdminService implements OnModuleDestroy {
     return {
       joined,
       left,
-      net: joined - left,
+      net: hasCoverage ? joined - left : null,
     };
   }
 
@@ -16495,8 +16496,6 @@ export class AdminService implements OnModuleDestroy {
             : null,
       }));
     const lastDayExclusiveMs = firstDayMs + 16 * TWENTY_FOUR_HOURS_MS;
-    let firstObservedFlowIndex: number | null = null;
-
     for (const row of rows) {
       const bucketStart = this.toIsoString(row.bucket_start);
       if (!bucketStart) {
@@ -16515,19 +16514,15 @@ export class AdminService implements OnModuleDestroy {
       const index = Math.floor((bucketStartMs - firstDayMs) / TWENTY_FOUR_HOURS_MS);
       const flow = flows[index];
       if (flow) {
-        firstObservedFlowIndex =
-          firstObservedFlowIndex === null ? index : Math.min(firstObservedFlowIndex, index);
+        const hasDayCoverage = Boolean(
+          membershipCoverageFrom &&
+            membershipCoverageFrom.getTime() <= firstDayMs + index * TWENTY_FOUR_HOURS_MS,
+        );
         const joined = this.toSafeInteger(row.joined_users);
         const left = this.toSafeInteger(row.left_users);
         flow.joined = (flow.joined ?? 0) + joined;
         flow.left = (flow.left ?? 0) + left;
-        flow.net = (flow.net ?? 0) + joined - left;
-      }
-    }
-
-    if (firstObservedFlowIndex !== null) {
-      for (let index = firstObservedFlowIndex; index < flows.length; index += 1) {
-        flows[index]!.net ??= 0;
+        flow.net = hasDayCoverage ? (flow.net ?? 0) + joined - left : null;
       }
     }
 
@@ -16778,6 +16773,7 @@ export class AdminService implements OnModuleDestroy {
       const current = grouped.get(bucketStart.toISOString()) ?? { posts: 0, views: 0 };
       return {
         at: bucketStart.toISOString(),
+        posts: current.posts,
         views: current.posts > 0 ? Math.round(current.views / current.posts) : 0,
       };
     });

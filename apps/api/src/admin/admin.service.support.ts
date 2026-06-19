@@ -855,6 +855,7 @@ export type ChannelStatsContentBucketPoint = {
 };
 export type ChannelStatsViewsBucketPoint = {
   at: string;
+  posts: number;
   views: number;
 };
 export type ChannelStatsPeriodTotals = {

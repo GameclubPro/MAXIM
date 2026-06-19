@@ -141,6 +141,7 @@ export const channelStatsResponseSchema = z.object({
       views: z.array(
         z.object({
           at: z.string().datetime(),
+          posts: z.number().int().min(0),
           views: z.number().int().min(0),
         }),
       ),
@@ -196,6 +197,7 @@ export const channelStatsResponseSchema = z.object({
         views: z.array(
           z.object({
             at: z.string().datetime(),
+            posts: z.number().int().min(0),
             views: z.number().int().min(0),
           }),
         ),

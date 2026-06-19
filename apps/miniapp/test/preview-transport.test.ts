@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ChannelStatsResponse } from '@maxim/contracts/channel-stats';
 import { createPreviewApiTransport } from '../src/lib/api/preview-transport';
 
 test('preview channel comment threads stay isolated per token', async () => {
@@ -94,4 +95,19 @@ test('preview settings include schema-complete managed broadcast summaries', asy
     quarantined: 0,
     unknown: 0,
   });
+});
+
+test('preview channel stats marks empty view buckets with zero posts', async () => {
+  const api = createPreviewApiTransport();
+
+  const stats = (await api.request('/channels/preview-channel/stats?range=24h')) as
+    ChannelStatsResponse;
+  const currentViews = stats.official.series.views;
+  const previousViews = stats.comparison.series?.views ?? [];
+
+  assert.equal(currentViews.length > 0, true);
+  assert.equal(previousViews.length > 0, true);
+  assert.equal(currentViews.some((point) => point.posts > 0), true);
+  assert.equal(currentViews.some((point) => point.posts === 0 && point.views === 0), true);
+  assert.equal(previousViews.every((point) => Number.isInteger(point.posts)), true);
 });

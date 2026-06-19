@@ -7,6 +7,7 @@ import {
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  resolveNearestViewsChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../src/lib/channel-stats-chart';
 
@@ -50,6 +51,16 @@ test('audience chart prefers membership flow over stale carried participant snap
     points.map((point) => resolveAudienceChartDisplayValue(point, 3_721, 157, false)),
     [3_567, 3_567, 3_567, 3_567, 3_567, 3_567, 3_718, 3_721],
   );
+
+  assert.equal(
+    resolveAudienceChartDisplayValue(
+      { participantsCount: null, joined: 150, left: 0, cumulativeNet: 150 },
+      3_721,
+      150,
+      false,
+    ),
+    3_721,
+  );
 });
 
 test('falls back to known audience and view totals when per-bucket activity is absent', () => {
@@ -64,22 +75,34 @@ test('falls back to known audience and view totals when per-bucket activity is a
 
   assert.equal(
     resolveInitialViewsChartIndex([
-      { views: 0 },
-      { views: 0 },
-      { views: 0 },
+      { posts: 0, views: 0 },
+      { posts: 0, views: 0 },
+      { posts: 0, views: 0 },
     ]),
-    2,
+    0,
   );
 });
 
-test('selects the latest non-zero views bucket before the current empty bucket', () => {
+test('selects the latest views bucket with posts before the current empty bucket', () => {
   assert.equal(
     resolveInitialViewsChartIndex([
-      { views: 80 },
-      { views: 160 },
-      { views: 0 },
+      { posts: 1, views: 0 },
+      { posts: 2, views: 160 },
+      { posts: 0, views: 0 },
     ]),
     1,
+  );
+
+  assert.equal(
+    resolveNearestViewsChartIndex(
+      [
+        { posts: 1, views: 500 },
+        { posts: 0, views: 0 },
+        { posts: 1, views: 650 },
+      ],
+      1,
+    ),
+    0,
   );
 });
 
@@ -105,13 +128,13 @@ test('derives average views from period content totals before graph points', () 
       },
       series: {
         views: [
-          { views: 1_000 },
-          { views: 1_000 },
-          { views: 2_000 },
-          { views: 2_000 },
-          { views: 1_000 },
-          { views: 2_000 },
-          { views: 1_500 },
+          { posts: 1, views: 1_000 },
+          { posts: 1, views: 1_000 },
+          { posts: 1, views: 2_000 },
+          { posts: 1, views: 2_000 },
+          { posts: 1, views: 1_000 },
+          { posts: 1, views: 2_000 },
+          { posts: 1, views: 1_500 },
         ],
       },
     },
@@ -121,10 +144,24 @@ test('derives average views from period content totals before graph points', () 
   assert.equal(resolveChannelStatsAverageViews(stats), 1_313);
 });
 
-test('keeps displayed zero buckets in average views', () => {
+test('keeps real zero-view post buckets but skips empty view gaps', () => {
   assert.equal(
-    resolveAverageViewsFromSeries([{ views: 1_000 }, { views: 0 }, { views: 2_000 }]),
+    resolveAverageViewsFromSeries([
+      { posts: 1, views: 1_000 },
+      { posts: 1, views: 0 },
+      { posts: 0, views: 0 },
+      { posts: 1, views: 2_000 },
+    ]),
     1_000,
+  );
+
+  assert.equal(
+    resolveAverageViewsFromSeries([
+      { posts: 1, views: 500 },
+      { posts: 0, views: 0 },
+      { posts: 2, views: 650 },
+    ]),
+    600,
   );
 });
 
@@ -136,7 +173,11 @@ test('prefers selected-period average over last-day summary average', () => {
         views: 1_025,
       },
       series: {
-        views: [{ views: 1_000 }, { views: 2_000 }, { views: 1_500 }],
+        views: [
+          { posts: 1, views: 1_000 },
+          { posts: 1, views: 2_000 },
+          { posts: 1, views: 1_500 },
+        ],
       },
     },
     summary: {

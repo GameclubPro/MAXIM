@@ -17765,7 +17765,7 @@ describe('AdminService.getChannelStats', () => {
           }>;
         }>,
         bucket: 'hour' | 'day',
-      ) => Array<{ at: string; views: number }>;
+      ) => Array<{ at: string; posts: number; views: number }>;
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
@@ -17806,10 +17806,12 @@ describe('AdminService.getChannelStats', () => {
     expect(series).toEqual([
       {
         at: '2026-03-07T09:00:00.000Z',
+        posts: 1,
         views: 45,
       },
       {
         at: '2026-03-07T10:00:00.000Z',
+        posts: 1,
         views: 75,
       },
     ]);
@@ -17838,7 +17840,7 @@ describe('AdminService.getChannelStats', () => {
           }>;
         }>,
         bucket: 'hour' | 'day',
-      ) => Array<{ at: string; views: number }>;
+      ) => Array<{ at: string; posts: number; views: number }>;
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
@@ -17879,6 +17881,7 @@ describe('AdminService.getChannelStats', () => {
     expect(series).toEqual([
       {
         at: '2026-03-07T00:00:00.000Z',
+        posts: 2,
         views: 200,
       },
     ]);
@@ -17907,7 +17910,7 @@ describe('AdminService.getChannelStats', () => {
           }>;
         }>,
         bucket: 'hour' | 'day',
-      ) => Array<{ at: string; views: number }>;
+      ) => Array<{ at: string; posts: number; views: number }>;
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
@@ -17952,6 +17955,7 @@ describe('AdminService.getChannelStats', () => {
     expect(series).toEqual([
       {
         at: '2026-03-07T10:00:00.000Z',
+        posts: 2,
         views: 100,
       },
     ]);
@@ -17980,7 +17984,7 @@ describe('AdminService.getChannelStats', () => {
           }>;
         }>,
         bucket: 'hour' | 'day',
-      ) => Array<{ at: string; views: number }>;
+      ) => Array<{ at: string; posts: number; views: number }>;
     };
 
     const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
@@ -18007,11 +18011,87 @@ describe('AdminService.getChannelStats', () => {
     expect(series).toEqual([
       {
         at: '2026-06-12T00:00:00.000Z',
+        posts: 1,
         views: 900,
       },
       {
         at: '2026-06-18T00:00:00.000Z',
+        posts: 0,
         views: 0,
+      },
+    ]);
+  });
+
+  it('marks empty hourly views buckets as gaps instead of real zero-view posts', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildAverageViewsSeriesFromPostMetrics: (
+        bucketStarts: Date[],
+        postViewMetrics: Array<{
+          post: {
+            id: string;
+            publishedAt: Date;
+            latestViews: number;
+          };
+          viewsDelta: number;
+          viewDeltas: Array<{
+            capturedAt: Date;
+            viewsDelta: number;
+          }>;
+        }>,
+        bucket: 'hour' | 'day',
+      ) => Array<{ at: string; posts: number; views: number }>;
+    };
+
+    const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
+      [
+        new Date('2026-06-19T10:00:00.000Z'),
+        new Date('2026-06-19T11:00:00.000Z'),
+        new Date('2026-06-19T12:00:00.000Z'),
+      ],
+      [
+        {
+          post: {
+            id: 'post-1',
+            publishedAt: new Date('2026-06-19T10:10:00.000Z'),
+            latestViews: 500,
+          },
+          viewsDelta: 500,
+          viewDeltas: [],
+        },
+        {
+          post: {
+            id: 'post-2',
+            publishedAt: new Date('2026-06-19T12:20:00.000Z'),
+            latestViews: 650,
+          },
+          viewsDelta: 650,
+          viewDeltas: [],
+        },
+      ],
+      'hour',
+    );
+
+    expect(series).toEqual([
+      {
+        at: '2026-06-19T10:00:00.000Z',
+        posts: 1,
+        views: 500,
+      },
+      {
+        at: '2026-06-19T11:00:00.000Z',
+        posts: 0,
+        views: 0,
+      },
+      {
+        at: '2026-06-19T12:00:00.000Z',
+        posts: 1,
+        views: 650,
       },
     ]);
   });
@@ -18068,7 +18148,7 @@ describe('AdminService.getChannelStats', () => {
           left_users: '1',
         },
       ],
-      null,
+      new Date('2026-02-20T00:00:00.000Z'),
     );
 
     expect(daily.find((row) => row.date === '2026-03-06')).toEqual({
@@ -18084,6 +18164,65 @@ describe('AdminService.getChannelStats', () => {
       delta: 2,
       joined: 3,
       left: 1,
+    });
+  });
+
+  it('keeps snapshot daily growth when membership flow coverage is incomplete', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildChannelStatsDailySummary: (
+        audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+        currentParticipants: number | null,
+        now: Date,
+        membershipRows?: Array<{
+          bucket_start: Date | string;
+          joined_users: unknown;
+          left_users: unknown;
+        }>,
+        membershipCoverageFrom?: Date | null,
+      ) => Array<{
+        date: string;
+        subscribers: number | null;
+        delta: number | null;
+        joined?: number | null;
+        left?: number | null;
+      }>;
+    };
+
+    const daily = statsHelpers.buildChannelStatsDailySummary(
+      [
+        {
+          capturedAt: new Date('2026-03-05T10:00:00.000Z'),
+          participantsCount: 100,
+        },
+        {
+          capturedAt: new Date('2026-03-06T10:00:00.000Z'),
+          participantsCount: 101,
+        },
+      ],
+      104,
+      new Date('2026-03-07T12:00:00.000Z'),
+      [
+        {
+          bucket_start: new Date('2026-03-06T10:00:00.000Z'),
+          joined_users: '150',
+          left_users: '0',
+        },
+      ],
+      null,
+    );
+
+    expect(daily.find((row) => row.date === '2026-03-06')).toEqual({
+      date: '2026-03-06',
+      subscribers: 101,
+      delta: 1,
+      joined: 150,
+      left: 0,
     });
   });
 
@@ -18495,7 +18634,7 @@ describe('AdminService.getChannelStats', () => {
         todayJoined: 1,
         todayLeft: 1,
         weekDelta: 1,
-        sixteenDaysDelta: 1,
+        sixteenDaysDelta: 40,
       },
       views: {
         perPost: 260,

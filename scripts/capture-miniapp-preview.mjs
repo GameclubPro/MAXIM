@@ -550,7 +550,7 @@ const scenarios = [
         .locator('.channel-insights__switch .segmented-control__item')
         .filter({ hasText: /Просм\./u })
         .click();
-      await page.locator('.channel-stats-graph__bar--views').first().waitFor({ state: 'visible' });
+      await waitForVisibleChannelStatsViewsBar(page);
       await page.waitForTimeout(350);
     },
   },
@@ -566,7 +566,7 @@ const scenarios = [
         .locator('.channel-insights__chart-controls .channel-insights__range .segmented-control__item')
         .filter({ hasText: /24ч/u })
         .click();
-      await page.locator('.channel-stats-graph__bar--views').first().waitFor({ state: 'visible' });
+      await waitForVisibleChannelStatsViewsBar(page);
       await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
       await assertChannelStatsContinuousChart(page);
       await page.waitForTimeout(350);
@@ -1305,6 +1305,21 @@ async function assertChannelStatsContinuousChart(page) {
   if (!result.ok) {
     throw new Error(`24h channel stats chart marker assertion failed: ${result.reason}`);
   }
+}
+
+async function waitForVisibleChannelStatsViewsBar(page) {
+  await page.waitForFunction(() => {
+    const bars = Array.from(document.querySelectorAll('.channel-stats-graph__bar--views'));
+    return bars.some((bar) => {
+      if (!(bar instanceof SVGGraphicsElement)) {
+        return false;
+      }
+
+      const rect = bar.getBoundingClientRect();
+      const height = Number.parseFloat(bar.getAttribute('height') ?? '0');
+      return rect.width > 0 && rect.height > 0 && height > 0;
+    });
+  });
 }
 
 async function assertKeyboardState(page, scenario) {

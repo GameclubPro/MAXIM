@@ -64,4 +64,134 @@ describe('channel stats contract exports', () => {
       left: 2,
     });
   });
+
+  it('requires post counts on average views series buckets', () => {
+    const result = channelStatsResponseSchema.parse({
+      channel: {
+        id: '-100',
+        title: 'Канал',
+        participantsCount: 1200,
+        status: null,
+        isPublic: true,
+        link: null,
+        lastEventAt: null,
+        avatarUrl: null,
+      },
+      period: {
+        range: '24h',
+        from: '2026-03-07T00:00:00.000Z',
+        to: '2026-03-08T00:00:00.000Z',
+        bucket: 'hour',
+      },
+      official: {
+        audience: {
+          joined: 0,
+          left: 0,
+          net: 0,
+        },
+        content: {
+          posts: 1,
+          views: 500,
+          reactions: 0,
+          topReactions: [],
+          topPosts: [],
+          lastPublishedAt: '2026-03-07T10:00:00.000Z',
+        },
+        series: {
+          participants: [],
+          membership: [],
+          views: [
+            {
+              at: '2026-03-07T10:00:00.000Z',
+              posts: 1,
+              views: 500,
+            },
+            {
+              at: '2026-03-07T11:00:00.000Z',
+              posts: 0,
+              views: 0,
+            },
+          ],
+        },
+      },
+      summary: {
+        subscribers: {
+          current: 1200,
+          todayDelta: 0,
+          todayJoined: 0,
+          todayLeft: 0,
+          weekDelta: 0,
+          sixteenDaysDelta: 0,
+        },
+        views: {
+          perPost: 500,
+          last24h: 500,
+          last48h: 500,
+          er24: null,
+        },
+        daily: [],
+      },
+      secondary: {
+        postsWithButtons: 0,
+        comments: 0,
+        suggestions: 0,
+        commentAuthors: 0,
+        suggestionAuthors: 0,
+        suggestionsDelivered: 0,
+        suggestionsFailed: 0,
+        lastBotActivityAt: null,
+      },
+      meta: {
+        maxSnapshotAvailable: true,
+        viewsAvailable: true,
+        churnAvailable: true,
+        officialCoverageFrom: null,
+        refreshQueued: false,
+      },
+      comparison: {
+        period: {
+          from: '2026-03-06T00:00:00.000Z',
+          to: '2026-03-07T00:00:00.000Z',
+        },
+        deltas: {
+          audienceNet: { current: 0, previous: 0, absolute: 0, percent: 0 },
+          joined: { current: 0, previous: 0, absolute: 0, percent: 0 },
+          left: { current: 0, previous: 0, absolute: 0, percent: 0 },
+          posts: { current: 1, previous: 0, absolute: 1, percent: null },
+          views: { current: 500, previous: 0, absolute: 500, percent: null },
+          averageViewsPerPost: { current: 500, previous: 0, absolute: 500, percent: null },
+          reactions: { current: 0, previous: 0, absolute: 0, percent: 0 },
+        },
+        series: {
+          participants: [],
+          membership: [],
+          views: [
+            {
+              at: '2026-03-06T10:00:00.000Z',
+              posts: 0,
+              views: 0,
+            },
+          ],
+        },
+      },
+      signals: {
+        markers: [],
+        bestWindows: [],
+      },
+      activityFeed: {
+        items: [],
+        hasMore: false,
+        nextCursor: null,
+      },
+    });
+
+    expect(result.official.series.views[0]).toMatchObject({
+      posts: 1,
+      views: 500,
+    });
+    expect(result.comparison.series?.views[0]).toMatchObject({
+      posts: 0,
+      views: 0,
+    });
+  });
 });

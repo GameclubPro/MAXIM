@@ -6,6 +6,7 @@ export type AudienceChartActivePoint = {
 };
 
 export type ViewsChartActivePoint = {
+  posts: number;
   views: number;
 };
 
@@ -84,21 +85,38 @@ export function resolveAudienceChartDisplayValue(
     return flowValue;
   }
 
-  return point.participantsCount ?? flowValue ?? point.cumulativeNet;
+  return point.participantsCount ?? currentParticipants ?? point.cumulativeNet;
 }
 
 export function resolveAverageViewsFromSeries(
   points: readonly ViewsChartActivePoint[],
 ): number | null {
-  const values = points
-    .map((point) => point.views)
-    .filter((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0);
-  if (values.length === 0) {
+  const totals = points.reduce(
+    (result, point) => {
+      const posts =
+        typeof point.posts === 'number' && Number.isFinite(point.posts)
+          ? Math.max(0, Math.round(point.posts))
+          : 0;
+      const views =
+        typeof point.views === 'number' && Number.isFinite(point.views)
+          ? Math.max(0, Math.round(point.views))
+          : 0;
+      if (posts <= 0) {
+        return result;
+      }
+
+      return {
+        posts: result.posts + posts,
+        views: result.views + views * posts,
+      };
+    },
+    { posts: 0, views: 0 },
+  );
+  if (totals.posts === 0) {
     return null;
   }
 
-  const total = values.reduce((sum, value) => sum + value, 0);
-  return Math.round(total / values.length);
+  return Math.round(totals.views / totals.posts);
 }
 
 export function resolveInitialAudienceChartIndex(
@@ -129,8 +147,38 @@ export function resolveInitialViewsChartIndex(points: readonly ViewsChartActiveP
     return 0;
   }
 
-  const activeViewsIndex = findLastIndex(points, (point) => point.views > 0);
-  return activeViewsIndex >= 0 ? activeViewsIndex : points.length - 1;
+  const activeViewsIndex = findLastIndex(points, hasViewsChartPosts);
+  return activeViewsIndex >= 0 ? activeViewsIndex : 0;
+}
+
+export function resolveNearestViewsChartIndex(
+  points: readonly ViewsChartActivePoint[],
+  targetIndex: number,
+): number {
+  if (points.length === 0) {
+    return 0;
+  }
+
+  const safeIndex = Math.min(points.length - 1, Math.max(0, Math.round(targetIndex)));
+  if (hasViewsChartPosts(points[safeIndex]!)) {
+    return safeIndex;
+  }
+
+  let nearestIndex = -1;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < points.length; index += 1) {
+    if (!hasViewsChartPosts(points[index]!)) {
+      continue;
+    }
+
+    const distance = Math.abs(index - safeIndex);
+    if (distance < nearestDistance) {
+      nearestIndex = index;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearestIndex >= 0 ? nearestIndex : safeIndex;
 }
 
 export function shouldRenderChannelStatsPointMarkers(range: string, pointCount: number): boolean {
@@ -149,4 +197,8 @@ function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean):
   }
 
   return -1;
+}
+
+function hasViewsChartPosts(point: ViewsChartActivePoint): boolean {
+  return typeof point.posts === 'number' && Number.isFinite(point.posts) && point.posts > 0;
 }

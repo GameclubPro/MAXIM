@@ -3686,17 +3686,24 @@ function buildChannelStats(
     const latePulse = index >= points - 2 ? 0.9 : 0;
     return 1 + progress * 0.9 + campaignLift + latePulse;
   });
+  const posts = range === '24h' ? 3 : range === '7d' ? 14 : 42;
+  const postDistribution = distributeTotal(posts, viewWeights);
   const targetViews = range === '24h' ? 38_400 : range === '7d' ? 78_000 : 248_000;
-  const viewsDistribution = distributeTotal(targetViews, viewWeights);
+  const viewsDistribution = distributeTotal(
+    targetViews,
+    postDistribution.map((postCount, index) => (postCount > 0 ? viewWeights[index]! * postCount : 0)),
+  );
   const viewsSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(from.getTime() + stepMs * index);
+    const postCount = postDistribution[index] ?? 0;
+    const viewCount = viewsDistribution[index] ?? 0;
     return {
       at: at.toISOString(),
-      views: viewsDistribution[index] ?? 0,
+      posts: postCount,
+      views: postCount > 0 ? Math.round(viewCount / postCount) : 0,
     };
   });
-  const posts = range === '24h' ? 3 : range === '7d' ? 14 : 42;
-  const views = viewsSeries.reduce((sum, item) => sum + item.views, 0);
+  const views = viewsDistribution.reduce((sum, item) => sum + item, 0);
   const reactions = Math.round(views * 0.06);
   const previousFrom = new Date(from.getTime() - (to.getTime() - from.getTime()));
   const previousTo = new Date(from.getTime() - 1);
@@ -3708,7 +3715,13 @@ function buildChannelStats(
   const previousLeft = Math.round(left * 1.18);
   const previousJoinedDistribution = distributeTotal(previousJoined, joinedWeights);
   const previousLeftDistribution = distributeTotal(previousLeft, leftWeights);
-  const previousViewsDistribution = distributeTotal(previousViews, viewWeights);
+  const previousPostDistribution = distributeTotal(previousPosts, viewWeights);
+  const previousViewsDistribution = distributeTotal(
+    previousViews,
+    previousPostDistribution.map((postCount, index) =>
+      postCount > 0 ? viewWeights[index]! * postCount : 0,
+    ),
+  );
   const previousMembershipSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(previousFrom.getTime() + stepMs * index);
     return {
@@ -3731,10 +3744,12 @@ function buildChannelStats(
   });
   const previousViewsSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(previousFrom.getTime() + stepMs * index);
+    const postCount = previousPostDistribution[index] ?? 0;
     const value = previousViewsDistribution[index] ?? 0;
     return {
       at: at.toISOString(),
-      views: value,
+      posts: postCount,
+      views: postCount > 0 ? Math.round(value / postCount) : 0,
     };
   });
   const previousAverageViewsPerPost = Math.round(previousViews / previousPosts);

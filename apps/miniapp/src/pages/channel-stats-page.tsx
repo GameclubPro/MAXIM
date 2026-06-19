@@ -46,6 +46,7 @@ import {
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
+  resolveNearestViewsChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -91,7 +92,9 @@ type PreviousAudienceChartPoint = {
 
 type ViewChartPoint = {
   at: string;
+  posts: number;
   views: number;
+  hasPosts: boolean;
   x: number;
   y: number;
   height: number;
@@ -722,6 +725,77 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   return path;
 }
 
+function buildSegmentedLinePath(points: Array<{ x: number; y: number } | null>): string {
+  const paths: string[] = [];
+  let segment: Array<{ x: number; y: number }> = [];
+
+  const flushSegment = () => {
+    if (segment.length > 0) {
+      paths.push(buildAudiencePath(segment));
+      segment = [];
+    }
+  };
+
+  for (const point of points) {
+    if (point) {
+      segment.push(point);
+    } else {
+      flushSegment();
+    }
+  }
+  flushSegment();
+
+  return paths.filter(Boolean).join(' ');
+}
+
+function buildSegmentedAreaPath(
+  points: Array<{ x: number; y: number } | null>,
+  floorY: number,
+): string {
+  const paths: string[] = [];
+  let segment: Array<{ x: number; y: number }> = [];
+
+  const flushSegment = () => {
+    if (segment.length > 0) {
+      const linePath = buildAudiencePath(segment);
+      const areaPath = buildAudienceAreaPath(linePath, segment, floorY);
+      if (areaPath) {
+        paths.push(areaPath);
+      }
+      segment = [];
+    }
+  };
+
+  for (const point of points) {
+    if (point) {
+      segment.push(point);
+    } else {
+      flushSegment();
+    }
+  }
+  flushSegment();
+
+  return paths.join(' ');
+}
+
+function resolveAdjacentPostedViewsIndex(
+  points: readonly ViewChartPoint[],
+  currentIndex: number,
+  direction: -1 | 1,
+): number {
+  for (
+    let index = currentIndex + direction;
+    index >= 0 && index < points.length;
+    index += direction
+  ) {
+    if (points[index]?.hasPosts) {
+      return index;
+    }
+  }
+
+  return currentIndex;
+}
+
 function resolvePostPinPositions(
   posts: ChannelStatsResponse['official']['content']['topPosts'],
   anchors: Array<{ at: string; x: number }>,
@@ -944,9 +1018,10 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     };
   });
   const totalNet = basePoints.at(-1)?.cumulativeNet ?? 0;
-  const preferMembershipFlow = currentParticipants !== null && membershipSeries.some(
-    (point) => point.joined > 0 || (point.left ?? 0) > 0,
-  );
+  const preferMembershipFlow =
+    stats.meta.churnAvailable &&
+    currentParticipants !== null &&
+    membershipSeries.some((point) => point.joined > 0 || (point.left ?? 0) > 0);
   const rawPoints = basePoints.map((point, index, points) => {
     const displayValue = resolveAudienceChartDisplayValue(
       point,
@@ -1008,15 +1083,12 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       y: lineBottom,
     };
   });
-  const previousTotalNet = previousBasePoints.at(-1)?.cumulativeNet ?? 0;
   const previousCurrentParticipants = previousParticipantSeries.at(-1)?.participantsCount ?? null;
   const rawPreviousPoints = previousBasePoints.map((point) => ({
     ...point,
     displayValue:
       point.participantsCount ??
-      (previousCurrentParticipants !== null
-        ? previousCurrentParticipants - (previousTotalNet - point.cumulativeNet)
-        : null) ??
+      previousCurrentParticipants ??
       point.cumulativeNet,
   }));
   const hasPreviousDisplayValues = rawPreviousPoints.some(
@@ -1151,8 +1223,14 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const usableHeight = height - topPad - bottomPad;
   const baselineY = height - bottomPad;
   const averageViews = resolveChannelStatsAverageViews(stats);
-  const currentMaxViews = Math.max(...series.map((item) => item.views), 0);
-  const previousMaxViews = Math.max(...previousSeries.map((item) => item.views), 0);
+  const currentMaxViews = Math.max(
+    ...series.filter((item) => item.posts > 0).map((item) => item.views),
+    0,
+  );
+  const previousMaxViews = Math.max(
+    ...previousSeries.filter((item) => item.posts > 0).map((item) => item.views),
+    0,
+  );
   const aggregateViews = averageViews;
   const maxViews =
     currentMaxViews > 0
@@ -1165,11 +1243,15 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       series.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-    const views = Math.max(0, item.views);
-    const barHeight = Math.min(views * scale, usableHeight);
+    const posts = Math.max(0, item.posts);
+    const hasPosts = posts > 0;
+    const views = hasPosts ? Math.max(0, item.views) : 0;
+    const barHeight = hasPosts ? Math.min(views * scale, usableHeight) : 0;
     return {
       at: item.at,
+      posts,
       views,
+      hasPosts,
       x,
       y: baselineY - barHeight,
       height: barHeight,
@@ -1180,11 +1262,15 @@ function buildViewsChart(stats: ChannelStatsResponse): {
       previousSeries.length === 1
         ? width / 2
         : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
-    const views = Math.max(0, item.views);
-    const barHeight = Math.min(views * scale, usableHeight);
+    const posts = Math.max(0, item.posts);
+    const hasPosts = posts > 0;
+    const views = hasPosts ? Math.max(0, item.views) : 0;
+    const barHeight = hasPosts ? Math.min(views * scale, usableHeight) : 0;
     return {
       at: item.at,
+      posts,
       views,
+      hasPosts,
       x,
       y: baselineY - barHeight,
       height: barHeight,
@@ -1206,15 +1292,13 @@ function buildViewsChart(stats: ChannelStatsResponse): {
           views: aggregateViews,
         }
       : null;
-  const trendLinePath = buildAudiencePath(bars.map((bar) => ({ x: bar.x, y: bar.y })));
-  const previousTrendLinePath = buildAudiencePath(
-    previousBars.map((bar) => ({ x: bar.x, y: bar.y })),
+  const trendLinePoints = bars.map((bar) => (bar.hasPosts ? { x: bar.x, y: bar.y } : null));
+  const previousTrendLinePoints = previousBars.map((bar) =>
+    bar.hasPosts ? { x: bar.x, y: bar.y } : null,
   );
-  const trendAreaPath = buildAudienceAreaPath(
-    trendLinePath,
-    bars.map((bar) => ({ x: bar.x, y: bar.y })),
-    baselineY,
-  );
+  const trendLinePath = buildSegmentedLinePath(trendLinePoints);
+  const previousTrendLinePath = buildSegmentedLinePath(previousTrendLinePoints);
+  const trendAreaPath = buildSegmentedAreaPath(trendLinePoints, baselineY);
   const averageY =
     averageViews > 0 && maxViews > 0
       ? baselineY - Math.min(averageViews * scale, usableHeight)
@@ -1254,6 +1338,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     stats.official.audience.joined,
     stats.official.audience.left,
     stats.official.audience.net,
+    stats.meta.churnAvailable,
     stats.period.from,
     stats.period.to,
   ]);
@@ -1648,14 +1733,17 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
     stats.period.to,
   ]);
 
-  const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
-  const activeBar = chart.bars[safeActiveIndex] ?? null;
+  const rawActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
+  const safeActiveIndex = resolveNearestViewsChartIndex(chart.bars, rawActiveIndex);
+  const hasBucketViews = chart.bars.some((bar) => bar.hasPosts);
+  const activeBar = hasBucketViews ? (chart.bars[safeActiveIndex] ?? null) : null;
   const previousIndex = resolveAlignedIndex(
     chart.previousBars.length,
     safeActiveIndex,
     chart.bars.length,
   );
-  const activePreviousBar = chart.previousBars[previousIndex] ?? null;
+  const candidatePreviousBar = chart.previousBars[previousIndex] ?? null;
+  const activePreviousBar = candidatePreviousBar?.hasPosts ? candidatePreviousBar : null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const renderPointMarkers = shouldRenderChannelStatsPointMarkers(
     stats.period.range,
@@ -1664,7 +1752,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const graphClassName = `channel-stats-graph ${
     renderPointMarkers ? '' : 'channel-stats-graph--continuous'
   }`.trim();
-  const hasBucketViews = chart.bars.some((bar) => bar.views > 0);
   const averageViews = resolveChannelStatsAverageViews(stats);
   const averageViewsCompactLabel = formatCompactCount(averageViews);
   const graphMarkers = resolveGraphMarkerPositions(
@@ -1692,11 +1779,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ср. ${formatCount(
         activeBar.views,
-      )} просмотров, период ${formatCount(averageViews)} просмотров`
+      )} просмотров, постов ${formatCount(activeBar.posts)}, период ${formatCount(
+        averageViews,
+      )} просмотров`
     : 'Данные по просмотрам недоступны';
   return (
     <div className={graphClassName}>
-      {chart.bars.length === 0 ? (
+      {!hasBucketViews ? (
         <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
         <>
@@ -1730,9 +1819,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             onPointerDown={(event) => {
               captureChartPointer(event);
               setIsTooltipVisible(true);
-              setActiveIndex(
-                readChartIndexFromPointer(event, chart.bars.length, chart.leftPad, chart.rightPad),
+              const pointerIndex = readChartIndexFromPointer(
+                event,
+                chart.bars.length,
+                chart.leftPad,
+                chart.rightPad,
               );
+              setActiveIndex(resolveNearestViewsChartIndex(chart.bars, pointerIndex));
             }}
             onPointerMove={(event) => {
               if (event.buttons !== 1) {
@@ -1740,9 +1833,13 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               }
 
               setIsTooltipVisible(true);
-              setActiveIndex(
-                readChartIndexFromPointer(event, chart.bars.length, chart.leftPad, chart.rightPad),
+              const pointerIndex = readChartIndexFromPointer(
+                event,
+                chart.bars.length,
+                chart.leftPad,
+                chart.rightPad,
               );
+              setActiveIndex(resolveNearestViewsChartIndex(chart.bars, pointerIndex));
             }}
             onPointerUp={() => setIsTooltipVisible(false)}
             onPointerCancel={() => setIsTooltipVisible(false)}
@@ -1752,13 +1849,25 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               if (event.key === 'ArrowLeft') {
                 event.preventDefault();
                 setIsTooltipVisible(true);
-                setActiveIndex((current) => clamp(current - 1, 0, chart.bars.length - 1));
+                setActiveIndex((current) =>
+                  resolveAdjacentPostedViewsIndex(
+                    chart.bars,
+                    resolveNearestViewsChartIndex(chart.bars, current),
+                    -1,
+                  ),
+                );
               }
 
               if (event.key === 'ArrowRight') {
                 event.preventDefault();
                 setIsTooltipVisible(true);
-                setActiveIndex((current) => clamp(current + 1, 0, chart.bars.length - 1));
+                setActiveIndex((current) =>
+                  resolveAdjacentPostedViewsIndex(
+                    chart.bars,
+                    resolveNearestViewsChartIndex(chart.bars, current),
+                    1,
+                  ),
+                );
               }
             }}
           >
@@ -1766,6 +1875,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
                 <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
                 <strong>{activeViewsCompactLabel} ср. просмотров</strong>
+                <span>Постов {formatCompactCount(activeBar.posts)}</span>
                 <span>Период {averageViewsCompactLabel}</span>
                 {activePreviousBar ? (
                   <em>Прошлый: {formatCompactCount(activePreviousBar.views)} ср.</em>
@@ -1887,30 +1997,37 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__area channel-stats-graph__area--views"
                 />
               ) : null}
-              {chart.bars.map((bar, index) => (
-                <rect
-                  key={labels[index]?.at ?? index}
-                  x={bar.x - (safeActiveIndex === index ? activeViewBarWidth : viewBarWidth) / 2}
-                  y={bar.y}
-                  width={safeActiveIndex === index ? activeViewBarWidth : viewBarWidth}
-                  height={bar.views > 0 ? Math.max(4, bar.height) : 0}
-                  rx="6"
-                  className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
-                    safeActiveIndex === index ? 'is-active' : ''
-                  }`}
-                />
-              ))}
-              {chart.previousBars.map((bar, index) => (
-                <rect
-                  key={`previous-${bar.at}-${index}`}
-                  x={bar.x - previousBarWidth / 2}
-                  y={bar.y}
-                  width={previousBarWidth}
-                  height={bar.views > 0 ? Math.max(3, bar.height) : 0}
-                  rx="5"
-                  className="channel-stats-graph__bar channel-stats-graph__bar--previous"
-                />
-              ))}
+              {chart.bars.map((bar, index) => {
+                const width = safeActiveIndex === index ? activeViewBarWidth : viewBarWidth;
+                const height = bar.hasPosts ? Math.max(4, bar.height) : 0;
+                return (
+                  <rect
+                    key={labels[index]?.at ?? index}
+                    x={bar.x - width / 2}
+                    y={height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY}
+                    width={width}
+                    height={height}
+                    rx="6"
+                    className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
+                      safeActiveIndex === index ? 'is-active' : ''
+                    }`}
+                  />
+                );
+              })}
+              {chart.previousBars.map((bar, index) => {
+                const height = bar.hasPosts ? Math.max(3, bar.height) : 0;
+                return (
+                  <rect
+                    key={`previous-${bar.at}-${index}`}
+                    x={bar.x - previousBarWidth / 2}
+                    y={height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY}
+                    width={previousBarWidth}
+                    height={height}
+                    rx="5"
+                    className="channel-stats-graph__bar channel-stats-graph__bar--previous"
+                  />
+                );
+              })}
               {chart.previousTrendLinePath ? (
                 <path
                   d={chart.previousTrendLinePath}
