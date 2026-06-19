@@ -3796,6 +3796,7 @@ function buildChannelStats(
       messageId: `preview-channel-post-${index + 1}`,
       publishedAt: addHours(now, -4 - index * 11).toISOString(),
       url: `https://max.ru/channels/yuzhnoe-news/${index + 1}`,
+      previewUrl: null,
       viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
       reactions: Math.round(postViews * 0.055),
     };

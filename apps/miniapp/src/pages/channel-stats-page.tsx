@@ -1743,15 +1743,24 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
     chart.bars.length,
   );
   const candidatePreviousBar = chart.previousBars[previousIndex] ?? null;
-  const activePreviousBar = candidatePreviousBar?.hasPosts ? candidatePreviousBar : null;
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const renderPointMarkers = shouldRenderChannelStatsPointMarkers(
     stats.period.range,
     chart.bars.length,
   );
-  const graphClassName = `channel-stats-graph ${
-    renderPointMarkers ? '' : 'channel-stats-graph--continuous'
-  }`.trim();
+  const postedBars = chart.bars.filter((bar) => bar.hasPosts);
+  const postedBucketCount = postedBars.length;
+  const isSparseViews =
+    postedBucketCount > 0 && postedBucketCount < chart.bars.length && postedBucketCount <= 8;
+  const activePreviousBar =
+    !isSparseViews && candidatePreviousBar?.hasPosts ? candidatePreviousBar : null;
+  const graphClassName = [
+    'channel-stats-graph',
+    renderPointMarkers ? '' : 'channel-stats-graph--continuous',
+    isSparseViews ? 'channel-stats-graph--sparse-views' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   const averageViews = resolveChannelStatsAverageViews(stats);
   const averageViewsCompactLabel = formatCompactCount(averageViews);
   const graphMarkers = resolveGraphMarkerPositions(
@@ -1768,9 +1777,25 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
       ? (CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
-  const previousBarWidth = clamp(slotWidth * 0.54, 4, 15);
-  const viewBarWidth = clamp(slotWidth * 0.68, 5, 18);
-  const activeViewBarWidth = clamp(slotWidth * 0.82, 7, 22);
+  const previousBarWidth = isSparseViews ? 0 : clamp(slotWidth * 0.54, 4, 15);
+  const viewBarWidth = isSparseViews
+    ? clamp(slotWidth * 0.34, 3, 7)
+    : clamp(slotWidth * 0.68, 5, 18);
+  const activeViewBarWidth = isSparseViews
+    ? clamp(slotWidth * 0.42, 4, 8)
+    : clamp(slotWidth * 0.82, 7, 22);
+  const sparseViewDotRadius = isTooltipVisible ? 4.2 : 3.7;
+  const sparsePostedLabels = postedBars.map((bar, index) => {
+    const previous = postedBars[index - 1] ?? null;
+    const isCloseToPrevious = previous ? bar.x - previous.x < 34 : false;
+    return {
+      bar,
+      x: clamp(bar.x, 20, CHART_VIEWBOX_WIDTH - 20),
+      y: isCloseToPrevious ? 190 : 202,
+    };
+  });
+  const sparsePostedBucketLabel =
+    stats.period.bucket === 'hour' ? 'Часов с постами' : 'Дней с постами';
   const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
   const chartPeriodLabel = formatRangeLabel(stats.period.range);
   const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
@@ -1799,7 +1824,9 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 
             <div className="channel-stats-graph__summary-chips">
               <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                Пик ср. {formatCompactCount(chart.maxViews)}
+                {isSparseViews
+                  ? `${sparsePostedBucketLabel} ${formatCompactCount(postedBucketCount)}`
+                  : `Пик ср. ${formatCompactCount(chart.maxViews)}`}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 Постов {formatCompactCount(stats.official.content.posts)}
@@ -1920,7 +1947,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   <stop offset="1" stopColor="#35c59f" stopOpacity="0" />
                 </linearGradient>
               </defs>
-              {activeBar && hasBucketViews ? (
+              {activeBar && hasBucketViews && isTooltipVisible ? (
                 <rect
                   x={activeBar.x - activeBandWidth / 2}
                   y={chart.guideYs[0]! - 10}
@@ -1956,7 +1983,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   className="channel-stats-graph__average-line"
                 />
               ) : null}
-              {activeBar && hasBucketViews ? (
+              {activeBar && hasBucketViews && isTooltipVisible ? (
                 <line
                   x1={activeBar.x}
                   y1={chart.guideYs[0]!}
@@ -1991,14 +2018,20 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   </text>
                 </g>
               ) : null}
-              {chart.trendAreaPath ? (
+              {chart.trendAreaPath && !isSparseViews ? (
                 <path
                   d={chart.trendAreaPath}
                   className="channel-stats-graph__area channel-stats-graph__area--views"
                 />
               ) : null}
               {chart.bars.map((bar, index) => {
-                const width = safeActiveIndex === index ? activeViewBarWidth : viewBarWidth;
+                if (isSparseViews) {
+                  return null;
+                }
+
+                const isVisuallyActive =
+                  safeActiveIndex === index && (!isSparseViews || isTooltipVisible);
+                const width = isVisuallyActive ? activeViewBarWidth : viewBarWidth;
                 const height = bar.hasPosts ? Math.max(4, bar.height) : 0;
                 return (
                   <rect
@@ -2009,45 +2042,79 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                     height={height}
                     rx="6"
                     className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
-                      safeActiveIndex === index ? 'is-active' : ''
+                      isVisuallyActive ? 'is-active' : ''
                     }`}
                   />
                 );
               })}
-              {chart.previousBars.map((bar, index) => {
-                const height = bar.hasPosts ? Math.max(3, bar.height) : 0;
-                return (
-                  <rect
-                    key={`previous-${bar.at}-${index}`}
-                    x={bar.x - previousBarWidth / 2}
-                    y={height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY}
-                    width={previousBarWidth}
-                    height={height}
-                    rx="5"
-                    className="channel-stats-graph__bar channel-stats-graph__bar--previous"
-                  />
-                );
-              })}
-              {chart.previousTrendLinePath ? (
+              {!isSparseViews
+                ? chart.previousBars.map((bar, index) => {
+                    const height = bar.hasPosts ? Math.max(3, bar.height) : 0;
+                    return (
+                      <rect
+                        key={`previous-${bar.at}-${index}`}
+                        x={bar.x - previousBarWidth / 2}
+                        y={
+                          height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY
+                        }
+                        width={previousBarWidth}
+                        height={height}
+                        rx="5"
+                        className="channel-stats-graph__bar channel-stats-graph__bar--previous"
+                      />
+                    );
+                  })
+                : null}
+              {!isSparseViews && chart.previousTrendLinePath ? (
                 <path
                   d={chart.previousTrendLinePath}
                   className="channel-stats-graph__line channel-stats-graph__line--previous channel-stats-graph__line--views-previous"
                 />
               ) : null}
-              {chart.trendLinePath ? (
+              {chart.trendLinePath && !isSparseViews ? (
                 <path
                   d={chart.trendLinePath}
                   className="channel-stats-graph__line channel-stats-graph__line--views"
                 />
               ) : null}
-              {activeBar && hasBucketViews ? (
+              {isSparseViews
+                ? postedBars.map((bar) => (
+                    <circle
+                      key={`posted-dot-${bar.at}`}
+                      cx={bar.x}
+                      cy={bar.y}
+                      r={
+                        isTooltipVisible && activeBar?.at === bar.at
+                          ? sparseViewDotRadius + 1
+                          : sparseViewDotRadius
+                      }
+                      className={`channel-stats-graph__view-dot ${
+                        isTooltipVisible && activeBar?.at === bar.at ? 'is-active' : ''
+                      }`}
+                    />
+                  ))
+                : null}
+              {activeBar && hasBucketViews && (!isSparseViews || isTooltipVisible) ? (
                 <circle
                   cx={activeBar.x}
                   cy={activeBar.y}
-                  r="4.8"
+                  r={isTooltipVisible ? '4.8' : '3.8'}
                   className="channel-stats-graph__view-focus-dot"
                 />
               ) : null}
+              {isSparseViews
+                ? sparsePostedLabels.map(({ bar, x, y }) => (
+                    <text
+                      key={`posted-hour-${bar.at}`}
+                      x={x}
+                      y={y}
+                      textAnchor="middle"
+                      className="channel-stats-graph__x-label channel-stats-graph__x-label--views"
+                    >
+                      {formatShortDate(bar.at, stats.period.bucket)}
+                    </text>
+                  ))
+                : null}
               {graphMarkers.map((marker) => (
                 <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
                   <path

@@ -3815,6 +3815,84 @@ body.channel-stats-page-open .bottom-nav::after {
   stroke-dasharray: none;
 }
 
+.channel-stats-graph--sparse-views .channel-stats-graph__grid,
+.channel-stats-graph--sparse-views .channel-stats-graph__area--views,
+.channel-stats-graph--sparse-views .channel-stats-graph__line--views,
+.channel-stats-graph--sparse-views .channel-stats-graph__aggregate {
+  display: none;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__baseline {
+  stroke: rgba(95, 116, 135, 0.2);
+  stroke-dasharray: 2 8;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__average-line {
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 7;
+  opacity: 0.26;
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__bar--views {
+  fill: var(--accent);
+  opacity: 0.24;
+  filter: none;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__bar--views.is-active {
+  opacity: 0.38;
+  filter: none;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__view-dot,
+.channel-stats-graph--sparse-views .channel-stats-graph__view-focus-dot {
+  fill: var(--color-surface);
+  stroke: var(--accent);
+  stroke-width: 2.2;
+  filter: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__view-dot.is-active,
+.channel-stats-graph--sparse-views .channel-stats-graph__view-focus-dot {
+  fill: var(--accent);
+  stroke: var(--color-surface);
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__x-label--views {
+  fill: var(--text-muted);
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__event-rail,
+.channel-stats-graph--sparse-views .channel-stats-graph__marker,
+.channel-stats-graph--sparse-views .channel-stats-graph__post-marker {
+  display: inline;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__event-rail {
+  stroke: rgba(95, 116, 135, 0.14);
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__marker {
+  opacity: 0.42;
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__post-marker line {
+  stroke: rgba(95, 116, 135, 0.18);
+}
+
+.channel-stats-graph--sparse-views .channel-stats-graph__post-marker circle {
+  fill: var(--color-surface);
+  stroke: rgba(11, 132, 255, 0.54);
+  stroke-width: 1.5;
+  filter: none;
+}
+
 @media (max-width: 430px) {
   .channel-insights__chart-controls {
     grid-template-columns: minmax(0, 1fr) 124px;
