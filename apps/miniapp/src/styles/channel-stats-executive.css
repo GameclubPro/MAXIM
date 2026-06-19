@@ -752,11 +752,11 @@ body.channel-stats-page-open .channel-insights__body {
 }
 
 body.channel-stats-page-open .app-shell {
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 24px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 24px);
 }
 
 body.channel-stats-page-open .channel-insights__body {
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 28px);
+  padding-bottom: calc(var(--bottom-nav-height) + var(--bottom-nav-content-inset) + 28px);
 }
 
 body.channel-stats-page-open .bottom-nav::after {
@@ -1276,6 +1276,494 @@ body.channel-stats-page-open .bottom-nav::after {
 
   .design-preview__device-screen .channel-summary-card__rows b {
     font-size: clamp(1rem, 4.8vw, 1.28rem);
+  }
+}
+
+/* Audience chart reference board. */
+.channel-insights__chart-card--audience .channel-insights__chart-title {
+  display: none;
+}
+
+.channel-stats-graph--audience-reference {
+  --audience-board-ink: var(--text-primary);
+  --audience-board-muted: var(--text-muted);
+  --audience-board-success: var(--success);
+  --audience-board-success-strong: var(--success);
+  --audience-board-danger: var(--danger);
+  --audience-board-neutral: var(--text-muted);
+  --audience-board-surface: var(--color-surface);
+  --audience-board-raised: var(--color-surface-raised);
+  --audience-board-soft: var(--surface-card-muted);
+  --audience-board-border: var(--border-subtle);
+  --audience-board-shadow: var(--shadow-sm);
+  gap: 0;
+}
+
+.channel-insights__chart-card--executive
+  .channel-stats-graph--audience-reference
+  .channel-stats-graph__canvas--audience {
+  display: grid;
+  grid-template-rows: auto auto minmax(188px, 1fr) auto;
+  gap: clamp(10px, 1.8vw, 16px);
+  min-height: auto;
+  margin-inline: 0;
+  padding: clamp(12px, 2.1vw, 18px);
+  overflow: hidden;
+  border: 1px solid var(--audience-board-border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 50% 0%, var(--accent-soft), transparent 36%),
+    linear-gradient(180deg, var(--color-surface) 0%, var(--audience-board-soft) 55%, var(--color-surface) 100%);
+  box-shadow:
+    var(--audience-board-shadow),
+    0 1px 0 var(--color-surface) inset;
+  cursor: crosshair;
+}
+
+.channel-audience-board__heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  gap: 8px;
+  color: var(--audience-board-ink);
+}
+
+.channel-audience-board__heading span {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    var(--success),
+    var(--success)
+  );
+  box-shadow: var(--shadow-xs);
+}
+
+.channel-audience-board__heading strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: clamp(1.24rem, 3vw, 1.76rem);
+  font-weight: 930;
+  line-height: 1;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-audience-board__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: clamp(8px, 1.6vw, 12px);
+  min-width: 0;
+}
+
+.channel-audience-metric {
+  min-width: 0;
+  min-height: 82px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-areas:
+    'icon value'
+    'icon date'
+    'label label';
+  align-content: center;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--audience-board-border);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  box-shadow:
+    var(--shadow-xs),
+    0 1px 0 var(--color-surface) inset;
+  color: var(--audience-board-success);
+}
+
+.channel-audience-metric svg {
+  grid-area: icon;
+  width: 28px;
+  height: 28px;
+  color: var(--audience-board-success);
+}
+
+.channel-audience-metric b {
+  grid-area: value;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--audience-board-success-strong);
+  font-size: clamp(1.08rem, 2.4vw, 1.46rem);
+  font-weight: 930;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-audience-metric small {
+  grid-area: date;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 760;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-audience-metric em {
+  grid-area: label;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--audience-board-muted);
+  font-size: clamp(0.72rem, 1.35vw, 0.84rem);
+  font-style: normal;
+  font-weight: 720;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-audience-metric--negative,
+.channel-audience-metric--negative svg,
+.channel-audience-metric--negative b {
+  color: var(--audience-board-danger);
+}
+
+.channel-audience-metric--neutral,
+.channel-audience-metric--neutral svg,
+.channel-audience-metric--neutral b {
+  color: var(--audience-board-neutral);
+}
+
+.channel-audience-board__plot {
+  position: relative;
+  min-width: 0;
+  min-height: 208px;
+  overflow: visible;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__svg {
+  width: 100%;
+  height: 100%;
+  min-height: 208px;
+  aspect-ratio: 390 / 210;
+  overflow: visible;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__tooltip {
+  top: 4px;
+  z-index: 3;
+  width: min(210px, calc(100% - 18px));
+  border-color: var(--border-subtle);
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__grid,
+.channel-stats-graph--audience-reference .channel-stats-graph__grid--vertical {
+  display: initial;
+  stroke: var(--border-subtle);
+  stroke-width: 0.8;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__grid--vertical {
+  opacity: 0.58;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__axis-text {
+  display: initial;
+  fill: var(--text-secondary);
+  font-size: 7.2px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__baseline {
+  display: initial;
+  stroke: var(--border-strong);
+  stroke-width: 0.9;
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__area--audience {
+  fill: url(#channel-audience-area);
+  opacity: 1;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__line--audience {
+  stroke: url(#channel-audience-line);
+  stroke-width: 4;
+  filter: drop-shadow(0 7px 10px var(--accent-soft));
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__line-glow--audience {
+  display: initial;
+  stroke: var(--success);
+  stroke-width: 11;
+  opacity: 0.16;
+  filter: drop-shadow(0 10px 16px var(--accent-soft));
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__line--previous {
+  display: initial;
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 7;
+  opacity: 0.34;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__active-guide {
+  display: initial;
+  stroke: var(--success);
+  stroke-width: 1.1;
+  stroke-dasharray: 5 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__dot {
+  fill: var(--color-surface);
+  stroke: var(--success);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 4px 7px var(--accent-soft));
+  vector-effect: non-scaling-stroke;
+}
+
+.channel-stats-graph--audience-reference .channel-stats-graph__dot.is-active {
+  fill: var(--surface-card-muted);
+  stroke: var(--audience-board-success-strong);
+  stroke-width: 2.8;
+  filter: drop-shadow(0 0 8px var(--accent-soft));
+}
+
+.channel-stats-graph__point-value,
+.channel-stats-graph__point-delta,
+.channel-stats-graph__point-percent,
+.channel-stats-graph__x-label {
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 2.4px;
+  stroke-linejoin: round;
+}
+
+.channel-stats-graph__point-value {
+  fill: var(--audience-board-success-strong);
+  font-size: 8.4px;
+  font-weight: 920;
+}
+
+.channel-stats-graph__point-delta {
+  fill: var(--audience-board-success-strong);
+  font-size: 7.2px;
+  font-weight: 860;
+}
+
+.channel-stats-graph__point-percent {
+  fill: var(--audience-board-success-strong);
+  font-size: 6.6px;
+  font-weight: 760;
+}
+
+.channel-stats-graph__point-delta.is-negative,
+.channel-stats-graph__point-percent.is-negative {
+  fill: var(--audience-board-danger);
+}
+
+.channel-stats-graph__point-delta.is-neutral,
+.channel-stats-graph__point-percent.is-neutral {
+  fill: var(--audience-board-neutral);
+}
+
+.channel-stats-graph__x-label {
+  fill: var(--text-secondary);
+  font-size: 7.2px;
+  font-weight: 780;
+}
+
+.channel-audience-board__legend {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--audience-board-border);
+  border-radius: 8px;
+  background: var(--surface-card-muted);
+  box-shadow: 0 1px 0 var(--color-surface) inset;
+}
+
+.channel-audience-board__legend span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 10px;
+  color: var(--text-secondary);
+  background: var(--color-surface-raised);
+  font-size: clamp(0.72rem, 1.28vw, 0.86rem);
+  font-weight: 720;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.channel-audience-board__legend svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+
+.channel-audience-board__legend b,
+.channel-audience-board__legend em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-audience-board__legend b {
+  font-weight: 760;
+}
+
+.channel-audience-board__legend em {
+  color: var(--audience-board-success-strong);
+  font-style: normal;
+  font-weight: 850;
+}
+
+@media (min-width: 720px) {
+  .channel-insights__chart-card--audience .channel-insights__chart-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .channel-insights__chart-card--executive
+    .channel-stats-graph--audience-reference
+    .channel-stats-graph__canvas--audience {
+    padding: clamp(16px, 2.2vw, 22px);
+  }
+
+  .channel-audience-board__plot {
+    min-height: clamp(250px, 28vw, 342px);
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__svg {
+    min-height: clamp(250px, 28vw, 342px);
+  }
+}
+
+@media (max-width: 640px) {
+  .channel-audience-board__metrics {
+    display: flex;
+    gap: 8px;
+    margin-inline: -2px;
+    padding: 2px 2px 4px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .channel-audience-board__metrics::-webkit-scrollbar {
+    display: none;
+  }
+
+  .channel-audience-metric {
+    flex: 0 0 min(178px, 58vw);
+    scroll-snap-align: start;
+  }
+
+  .channel-audience-board__legend span {
+    gap: 5px;
+    padding-inline: 6px;
+    font-size: 0.64rem;
+  }
+}
+
+@media (max-width: 430px) {
+  .channel-insights__chart-card--audience .channel-insights__chart-title {
+    display: none;
+  }
+
+  .channel-insights__chart-card--executive
+    .channel-stats-graph--audience-reference
+    .channel-stats-graph__canvas--audience {
+    grid-template-rows: auto auto auto auto;
+    gap: 9px;
+    padding: 11px;
+    border-radius: 12px;
+  }
+
+  .channel-audience-board__heading strong {
+    font-size: 1.24rem;
+  }
+
+  .channel-audience-metric {
+    min-height: 64px;
+    grid-template-columns: 28px minmax(0, 1fr);
+    column-gap: 7px;
+    padding: 7px 8px;
+  }
+
+  .channel-audience-metric svg {
+    width: 23px;
+    height: 23px;
+  }
+
+  .channel-audience-metric b {
+    font-size: clamp(0.98rem, 4.4vw, 1.22rem);
+  }
+
+  .channel-audience-metric small {
+    font-size: 0.68rem;
+  }
+
+  .channel-audience-metric em {
+    font-size: 0.64rem;
+  }
+
+  .channel-audience-board__plot {
+    min-height: 182px;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__svg {
+    min-height: 182px;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__axis-text,
+  .channel-stats-graph--audience-reference .channel-stats-graph__x-label {
+    font-size: 6.4px;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__point-value {
+    font-size: 7.4px;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__point-delta {
+    font-size: 6.5px;
+  }
+
+  .channel-stats-graph--audience-reference .channel-stats-graph__point-percent {
+    font-size: 5.9px;
+  }
+
+  .channel-audience-board__legend span {
+    padding: 7px 5px;
+    font-size: 0.6rem;
+  }
+
+  .channel-audience-board__legend span:first-child b {
+    max-width: 76px;
+  }
+}
+
+@media (max-width: 340px) {
+  .channel-audience-board__metrics {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 }
