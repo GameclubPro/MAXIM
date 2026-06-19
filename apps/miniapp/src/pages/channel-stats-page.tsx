@@ -134,6 +134,8 @@ const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
 const dayShortLabels = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
 const CHART_VIEWBOX_WIDTH = 390;
 const CHART_VIEWBOX_HEIGHT = 210;
+const AUDIENCE_CHART_LEFT_PAD = 26;
+const AUDIENCE_CHART_RIGHT_PAD = 6;
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
@@ -894,8 +896,8 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       eventRailY: 158,
       zeroY: 132,
       height: CHART_VIEWBOX_HEIGHT,
-      leftPad: 38,
-      rightPad: 14,
+      leftPad: AUDIENCE_CHART_LEFT_PAD,
+      rightPad: AUDIENCE_CHART_RIGHT_PAD,
       plotTop: 30,
       plotBottom: 164,
       floorY: 176,
@@ -905,8 +907,8 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 
   const width = CHART_VIEWBOX_WIDTH;
   const height = CHART_VIEWBOX_HEIGHT;
-  const leftPad = 38;
-  const rightPad = 14;
+  const leftPad = AUDIENCE_CHART_LEFT_PAD;
+  const rightPad = AUDIENCE_CHART_RIGHT_PAD;
   const lineTop = 28;
   const lineBottom = 158;
   const lineFloor = 174;
@@ -1054,7 +1056,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     const value = maxValue - ratio * valueRange;
     return {
       y: y + 4,
-      label: formatCompactCount(Math.round(value)),
+      label: formatDenseCount(Math.round(value)),
     };
   }).filter((label, index, labels) => {
     const duplicateIndex = labels.findIndex((item) => item.label === label.label);
@@ -1314,6 +1316,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
     : 'Данные по аудитории недоступны';
   const tooltipX = activePoint ? clamp((activePoint.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
   const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
+  const axisLabelX = Math.max(16, chart.leftPad - 5);
   const periodLabel =
     firstPoint && lastPoint
       ? `${formatChartDayMonth(firstPoint.at)} — ${formatChartDayMonth(lastPoint.at)}`
@@ -1449,12 +1452,24 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 aria-hidden
               >
                 <defs>
-                  <linearGradient id="channel-audience-line" x1="38" x2="376" y1="28" y2="158">
+                  <linearGradient
+                    id="channel-audience-line"
+                    x1={chart.leftPad}
+                    x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
+                    y1={chart.plotTop}
+                    y2={chart.plotBottom}
+                  >
                     <stop offset="0" stopColor="#24b767" />
                     <stop offset="0.48" stopColor="#139b48" />
                     <stop offset="1" stopColor="#0c8d3f" />
                   </linearGradient>
-                  <linearGradient id="channel-audience-area" x1="0" x2="0" y1="28" y2="176">
+                  <linearGradient
+                    id="channel-audience-area"
+                    x1="0"
+                    x2="0"
+                    y1={chart.plotTop}
+                    y2={chart.floorY}
+                  >
                     <stop offset="0" stopColor="#16a34a" stopOpacity="0.28" />
                     <stop offset="0.58" stopColor="#16a34a" stopOpacity="0.12" />
                     <stop offset="1" stopColor="#16a34a" stopOpacity="0" />
@@ -1463,7 +1478,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 {chart.axisLabels.map((label) => (
                   <text
                     key={`${label.label}-${label.y}`}
-                    x={chart.leftPad - 8}
+                    x={axisLabelX}
                     y={label.y}
                     className="channel-stats-graph__axis-text"
                     textAnchor="end"
@@ -1540,6 +1555,13 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   const showDate = xAxisLabelIndices.has(index);
                   const labelY = Math.max(12, point.y - 13);
                   const deltaY = Math.min(chart.floorY - 13, point.y + 21);
+                  const detailLabelX = clamp(
+                    point.x,
+                    chart.leftPad + 10,
+                    CHART_VIEWBOX_WIDTH - chart.rightPad - 10,
+                  );
+                  const dateTextAnchor =
+                    index === 0 ? 'start' : index === chart.points.length - 1 ? 'end' : 'middle';
                   const deltaTone = getSignedTone(point.deltaFromPrevious);
 
                   return (
@@ -1552,7 +1574,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                       {showDetails ? (
                         <>
                           <text
-                            x={point.x}
+                            x={detailLabelX}
                             y={labelY}
                             textAnchor="middle"
                             className="channel-stats-graph__point-value"
@@ -1562,7 +1584,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                           {point.deltaFromPrevious !== null ? (
                             <>
                               <text
-                                x={point.x}
+                                x={detailLabelX}
                                 y={deltaY}
                                 textAnchor="middle"
                                 className={`channel-stats-graph__point-delta is-${deltaTone}`}
@@ -1570,7 +1592,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                                 {formatSignedCount(point.deltaFromPrevious)}
                               </text>
                               <text
-                                x={point.x}
+                                x={detailLabelX}
                                 y={deltaY + 11}
                                 textAnchor="middle"
                                 className={`channel-stats-graph__point-percent is-${deltaTone}`}
@@ -1595,7 +1617,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                         <text
                           x={point.x}
                           y="202"
-                          textAnchor="middle"
+                          textAnchor={dateTextAnchor}
                           className="channel-stats-graph__x-label"
                         >
                           {formatChartDayMonth(point.at)}
@@ -1610,17 +1632,16 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             <div className="channel-audience-board__legend">
               <span>
                 <IconGraphUp aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
-                <b>{stableGrowth ? 'Устойчивый рост' : 'Рост с просадками'}</b>
+                <b>Тренд</b>
+                <em>{stableGrowth ? 'ровно' : 'волна'}</em>
               </span>
               <span>
                 <IconRocket aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
-                <b>Макс. прирост</b>
+                <b>Пик</b>
                 <em>
                   {maxGrowthPoint?.deltaFromPrevious !== null &&
                   maxGrowthPoint?.deltaFromPrevious !== undefined
-                    ? `${formatSignedCount(maxGrowthPoint.deltaFromPrevious)} (${formatChartDayMonth(
-                        maxGrowthPoint.at,
-                      )})`
+                    ? formatSignedCount(maxGrowthPoint.deltaFromPrevious)
                     : '—'}
                 </em>
               </span>
@@ -1632,7 +1653,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   height={18}
                   strokeWidth={2}
                 />
-                <b>Общий рост</b>
+                <b>Рост</b>
                 <em>{formatSignedPercent(growthPercent)}</em>
               </span>
             </div>

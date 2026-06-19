@@ -1280,6 +1280,14 @@ body.channel-stats-page-open .bottom-nav::after {
 }
 
 /* Audience chart reference board. */
+.channel-insights__chart-card--audience {
+  padding-inline: clamp(5px, 1.1vw, 10px);
+}
+
+.channel-insights__chart-card--audience > .channel-insights__chart-header {
+  padding-inline: clamp(2px, 0.8vw, 6px);
+}
+
 .channel-insights__chart-card--audience .channel-insights__chart-title {
   display: none;
 }
@@ -1297,17 +1305,18 @@ body.channel-stats-page-open .bottom-nav::after {
   --audience-board-border: var(--border-subtle);
   --audience-board-shadow: var(--shadow-sm);
   gap: 0;
+  min-width: 0;
 }
 
 .channel-insights__chart-card--executive
   .channel-stats-graph--audience-reference
   .channel-stats-graph__canvas--audience {
   display: grid;
-  grid-template-rows: auto auto minmax(188px, 1fr) auto;
-  gap: clamp(10px, 1.8vw, 16px);
+  grid-template-rows: auto auto minmax(204px, 1fr) auto;
+  gap: clamp(9px, 1.6vw, 14px);
   min-height: auto;
-  margin-inline: 0;
-  padding: clamp(12px, 2.1vw, 18px);
+  margin-inline: clamp(-7px, -0.8vw, -2px);
+  padding: clamp(10px, 1.7vw, 15px) clamp(7px, 1.1vw, 11px);
   overflow: hidden;
   border: 1px solid var(--audience-board-border);
   border-radius: 14px;
@@ -1362,7 +1371,7 @@ body.channel-stats-page-open .bottom-nav::after {
 
 .channel-audience-metric {
   min-width: 0;
-  min-height: 82px;
+  min-height: 74px;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   grid-template-areas:
@@ -1444,14 +1453,15 @@ body.channel-stats-page-open .bottom-nav::after {
 .channel-audience-board__plot {
   position: relative;
   min-width: 0;
-  min-height: 208px;
+  min-height: 224px;
+  margin-inline: clamp(-8px, -0.9vw, -3px);
   overflow: visible;
 }
 
 .channel-stats-graph--audience-reference .channel-stats-graph__svg {
   width: 100%;
   height: 100%;
-  min-height: 208px;
+  min-height: 224px;
   aspect-ratio: 390 / 210;
   overflow: visible;
 }
@@ -1592,6 +1602,7 @@ body.channel-stats-page-open .bottom-nav::after {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
+  margin-inline: clamp(-4px, -0.45vw, -1px);
   overflow: hidden;
   border: 1px solid var(--audience-board-border);
   border-radius: 8px;
@@ -1644,15 +1655,15 @@ body.channel-stats-page-open .bottom-nav::after {
   .channel-insights__chart-card--executive
     .channel-stats-graph--audience-reference
     .channel-stats-graph__canvas--audience {
-    padding: clamp(16px, 2.2vw, 22px);
+    padding: clamp(13px, 1.9vw, 18px) clamp(8px, 1.4vw, 12px);
   }
 
   .channel-audience-board__plot {
-    min-height: clamp(250px, 28vw, 342px);
+    min-height: clamp(280px, 31vw, 360px);
   }
 
   .channel-stats-graph--audience-reference .channel-stats-graph__svg {
-    min-height: clamp(250px, 28vw, 342px);
+    min-height: clamp(280px, 31vw, 360px);
   }
 }
 
@@ -1660,7 +1671,7 @@ body.channel-stats-page-open .bottom-nav::after {
   .channel-audience-board__metrics {
     display: flex;
     gap: 8px;
-    margin-inline: -2px;
+    margin-inline: clamp(-5px, -0.8vw, -2px);
     padding: 2px 2px 4px;
     overflow-x: auto;
     overscroll-behavior-x: contain;
@@ -1673,14 +1684,34 @@ body.channel-stats-page-open .bottom-nav::after {
   }
 
   .channel-audience-metric {
-    flex: 0 0 min(178px, 58vw);
+    flex: 0 0 min(164px, 52vw);
     scroll-snap-align: start;
   }
 
   .channel-audience-board__legend span {
-    gap: 5px;
-    padding-inline: 6px;
-    font-size: 0.64rem;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    grid-template-areas:
+      'icon label'
+      'icon value';
+    justify-content: start;
+    gap: 1px 5px;
+    padding: 7px 6px;
+    font-size: 0.62rem;
+    text-align: left;
+  }
+
+  .channel-audience-board__legend svg {
+    grid-area: icon;
+    align-self: center;
+  }
+
+  .channel-audience-board__legend b {
+    grid-area: label;
+  }
+
+  .channel-audience-board__legend em {
+    grid-area: value;
   }
 }
 
@@ -1693,8 +1724,8 @@ body.channel-stats-page-open .bottom-nav::after {
     .channel-stats-graph--audience-reference
     .channel-stats-graph__canvas--audience {
     grid-template-rows: auto auto auto auto;
-    gap: 9px;
-    padding: 11px;
+    gap: 8px;
+    padding: 10px 7px 9px;
     border-radius: 12px;
   }
 
@@ -1727,11 +1758,11 @@ body.channel-stats-page-open .bottom-nav::after {
   }
 
   .channel-audience-board__plot {
-    min-height: 182px;
+    min-height: 194px;
   }
 
   .channel-stats-graph--audience-reference .channel-stats-graph__svg {
-    min-height: 182px;
+    min-height: 194px;
   }
 
   .channel-stats-graph--audience-reference .channel-stats-graph__axis-text,
@@ -1752,12 +1783,10 @@ body.channel-stats-page-open .bottom-nav::after {
   }
 
   .channel-audience-board__legend span {
-    padding: 7px 5px;
-    font-size: 0.6rem;
-  }
-
-  .channel-audience-board__legend span:first-child b {
-    max-width: 76px;
+    grid-template-columns: 16px minmax(0, 1fr);
+    gap: 1px 4px;
+    padding: 7px 4px;
+    font-size: 0.58rem;
   }
 }
 
