@@ -2121,6 +2121,74 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('loads a single official message snapshot with a MAX image payload URL', async () => {
+    const publishedAtMs = Date.parse('2026-06-08T17:56:14.328Z');
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            messages: [
+              {
+                timestamp: publishedAtMs,
+                body: {
+                  mid: 'mid.ffffbb80bddbf2f4019ea860c3782a5a',
+                  attachments: [
+                    {
+                      payload: {
+                        photo_id: 24149085858,
+                        token: 'photo-token',
+                        url: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
+                      },
+                      type: 'image',
+                    },
+                  ],
+                },
+                stat: {
+                  views: 5926,
+                },
+                url: 'https://max.ru/id613002203036_biz/AZ7gWKGdJ-o',
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageSnapshot(
+      '-75313361194252',
+      'mid.ffffbb80bddbf2f4019ea860c3782a5a',
+      {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+        botId: '777000_bot',
+      },
+    );
+
+    expect(result).toEqual({
+      chatId: '-75313361194252',
+      messageId: 'mid.ffffbb80bddbf2f4019ea860c3782a5a',
+      publishedAt: '2026-06-08T17:56:14.328Z',
+      publishedAtMs,
+      url: 'https://max.ru/id613002203036_biz/AZ7gWKGdJ-o',
+      previewUrl: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
+      views: 5926,
+      reactionsTotal: null,
+      reactions: [],
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          message_ids: 'mid.ffffbb80bddbf2f4019ea860c3782a5a',
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns current bot member access with granular permissions', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

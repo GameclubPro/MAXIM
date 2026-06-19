@@ -6991,7 +6991,10 @@ export class AdminService implements OnModuleDestroy {
       now,
     });
     const topReactions = this.buildTopReactions(periodPosts);
-    const topPosts = this.buildTopPosts(postViewMetrics);
+    const topPosts = await this.hydrateTopPostPreviews(
+      chatId,
+      this.buildTopPosts(postViewMetrics),
+    );
     const participantSeries = this.buildParticipantSeries(
       bucketStarts,
       bucket,
@@ -16800,6 +16803,67 @@ export class AdminService implements OnModuleDestroy {
         viewsDelta: this.toSafeInteger(metric.post.latestViews),
         reactions: this.toSafeInteger(metric.post.latestReactionsTotal),
       }));
+  }
+
+  private async hydrateTopPostPreviews(
+    chatId: string,
+    topPosts: ChannelStatsResponse['official']['content']['topPosts'],
+  ): Promise<ChannelStatsResponse['official']['content']['topPosts']> {
+    const missingPreviewPosts = topPosts.filter((post) => !this.readTrimmedString(post.previewUrl));
+    if (missingPreviewPosts.length === 0) {
+      return topPosts;
+    }
+
+    const botId = await this.resolveAssistBotAssignment(chatId, 'channel_stats');
+    const previewByMessageId = new Map<string, string>();
+    await mapWithConcurrencyLimit(missingPreviewPosts, 2, async (post) => {
+      try {
+        const snapshot = await this.maxClient.getMessageSnapshot(chatId, post.messageId, {
+          trafficClass: 'background',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+          ...(botId ? { botId } : {}),
+        });
+        const previewUrl = this.readTrimmedString(snapshot?.previewUrl);
+        if (previewUrl) {
+          previewByMessageId.set(post.messageId, previewUrl);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            messageId: post.messageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to hydrate channel stats top post preview',
+        );
+      }
+    });
+
+    if (previewByMessageId.size === 0) {
+      return topPosts;
+    }
+
+    await Promise.all(
+      Array.from(previewByMessageId.entries()).map(([messageId, previewUrl]) =>
+        this.prisma.channelPost.updateMany({
+          where: {
+            chatId,
+            messageId,
+            previewUrl: null,
+          },
+          data: {
+            previewUrl,
+          },
+        }),
+      ),
+    );
+    this.invalidateChannelStatsResponseCache(chatId);
+
+    return topPosts.map((post) => ({
+      ...post,
+      previewUrl: post.previewUrl ?? previewByMessageId.get(post.messageId) ?? null,
+    }));
   }
 
   private buildTopReactions(

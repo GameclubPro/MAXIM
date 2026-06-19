@@ -1014,6 +1014,25 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  async getMessageSnapshot(
+    chatId: string,
+    messageId: string,
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
+  ): Promise<MaxChannelMessageSnapshot | null> {
+    const normalizedChatId = chatId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedChatId || !normalizedMessageId) {
+      return null;
+    }
+
+    const message = await this.getMessageById(normalizedMessageId, options);
+    if (!message) {
+      return null;
+    }
+
+    return this.parseMessageSnapshot(normalizedChatId, message);
+  }
+
   async listWebhookSubscriptions(
     options: MaxApiRequestOptions = {},
   ): Promise<MaxWebhookSubscription[]> {

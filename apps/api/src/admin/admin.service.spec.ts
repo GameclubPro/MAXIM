@@ -18,6 +18,7 @@ import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildDeveloperForcedGlobalSpammerCacheKey } from '../moderation/developer-forced-global-spammer-cache';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { buildCompactProfileMentionStartPayload } from '../max/max-deep-link.util';
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { AdminService } from './admin.service';
 import { selectLogsDashboardMembershipSummary } from './logs-dashboard-rollups';
 
@@ -384,6 +385,7 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       findFirst: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue({ id: 'post-1' }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     channelPostViewSnapshot: {
       create: jest.fn().mockResolvedValue(undefined),
@@ -17740,6 +17742,84 @@ describe('AdminService admin access validation', () => {
 describe('AdminService.getChannelStats', () => {
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('hydrates missing previews for selected top posts from MAX message snapshots', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getMessageSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        messageId: 'mid-top-1',
+        publishedAt: '2026-06-08T17:56:14.328Z',
+        publishedAtMs: 1780941374328,
+        url: 'https://max.ru/news/top-1',
+        previewUrl: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
+        views: 5926,
+        reactionsTotal: null,
+        reactions: [],
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      hydrateTopPostPreviews: (
+        chatId: string,
+        topPosts: Array<{
+          messageId: string;
+          publishedAt: string;
+          url: string | null;
+          previewUrl: string | null;
+          viewsDelta: number;
+          reactions: number;
+        }>,
+      ) => Promise<
+        Array<{
+          messageId: string;
+          publishedAt: string;
+          url: string | null;
+          previewUrl: string | null;
+          viewsDelta: number;
+          reactions: number;
+        }>
+      >;
+    };
+
+    const result = await statsHelpers.hydrateTopPostPreviews('channel-1', [
+      {
+        messageId: 'mid-top-1',
+        publishedAt: '2026-06-08T17:56:14.328Z',
+        url: 'https://max.ru/news/top-1',
+        previewUrl: null,
+        viewsDelta: 5926,
+        reactions: 0,
+      },
+    ]);
+
+    expect(result[0]?.previewUrl).toBe(
+      'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
+    );
+    expect(maxClient.getMessageSnapshot).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-top-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+    expect(prisma.channelPost.updateMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'channel-1',
+        messageId: 'mid-top-1',
+        previewUrl: null,
+      },
+      data: {
+        previewUrl: 'https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8VstQjUx',
+      },
+    });
   });
 
   it('places views chart points by publication bucket', () => {
