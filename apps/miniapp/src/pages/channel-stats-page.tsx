@@ -11,7 +11,6 @@ import {
   ArrowUpCircle as IconArrowUpCircle,
   GraphUp as IconGraphUp,
   Group as IconGroup,
-  Rocket as IconRocket,
   StatsUpSquare as IconStatsUpSquare,
   UserPlus as IconUserPlus,
   UserXmark as IconUserXmark,
@@ -1265,28 +1264,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const lastPoint = chart.points.at(-1) ?? null;
   const totalGrowth =
     firstPoint && lastPoint ? Math.round(lastPoint.displayValue - firstPoint.displayValue) : null;
-  const growthPercent =
-    firstPoint && firstPoint.displayValue > 0 && totalGrowth !== null
-      ? (totalGrowth / firstPoint.displayValue) * 100
-      : null;
   const averageGrowth =
     totalGrowth !== null ? totalGrowth / Math.max(1, chart.points.length - 1) : null;
-  const maxGrowthPoint = chart.points
-    .slice(1)
-    .reduce<AudienceChartPoint | null>((best, point) => {
-      if (point.deltaFromPrevious === null) {
-        return best;
-      }
-
-      if (!best || point.deltaFromPrevious > (best.deltaFromPrevious ?? Number.NEGATIVE_INFINITY)) {
-        return point;
-      }
-
-      return best;
-    }, null);
-  const stableGrowth = chart.points
-    .slice(1)
-    .every((point) => (point.deltaFromPrevious ?? 0) >= 0);
   const detailLabelIndices =
     !renderPointMarkers
       ? new Set<number>()
@@ -1393,30 +1372,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 <b>{formatCount(firstPoint?.displayValue ?? null)}</b>
                 <small>{firstPoint ? formatChartDayMonth(firstPoint.at) : '—'}</small>
                 <em>Начало периода</em>
-              </span>
-              <span
-                className={`channel-audience-metric channel-audience-metric--${getSignedTone(
-                  totalGrowth,
-                )}`}
-              >
-                <IconGraphUp aria-hidden focusable="false" width={25} height={25} strokeWidth={2} />
-                <b>{formatSignedCount(totalGrowth)}</b>
-                <em>Прирост</em>
-              </span>
-              <span
-                className={`channel-audience-metric channel-audience-metric--${getSignedTone(
-                  averageGrowth,
-                )}`}
-              >
-                <IconStatsUpSquare
-                  aria-hidden
-                  focusable="false"
-                  width={25}
-                  height={25}
-                  strokeWidth={2}
-                />
-                <b>{formatSignedDecimalCount(averageGrowth)}</b>
-                <em>Средний прирост в день</em>
               </span>
               <span className="channel-audience-metric">
                 <IconArrowUpCircle
@@ -1630,22 +1585,12 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             </div>
 
             <div className="channel-audience-board__legend">
-              <span>
+              <span className={`is-${getSignedTone(totalGrowth)}`}>
                 <IconGraphUp aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
-                <b>Тренд</b>
-                <em>{stableGrowth ? 'ровно' : 'волна'}</em>
+                <b>{formatSignedCount(totalGrowth)}</b>
+                <em>Прирост</em>
               </span>
-              <span>
-                <IconRocket aria-hidden focusable="false" width={18} height={18} strokeWidth={2} />
-                <b>Пик</b>
-                <em>
-                  {maxGrowthPoint?.deltaFromPrevious !== null &&
-                  maxGrowthPoint?.deltaFromPrevious !== undefined
-                    ? formatSignedCount(maxGrowthPoint.deltaFromPrevious)
-                    : '—'}
-                </em>
-              </span>
-              <span>
+              <span className={`is-${getSignedTone(averageGrowth)}`}>
                 <IconStatsUpSquare
                   aria-hidden
                   focusable="false"
@@ -1653,8 +1598,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   height={18}
                   strokeWidth={2}
                 />
-                <b>Рост</b>
-                <em>{formatSignedPercent(growthPercent)}</em>
+                <b>{formatSignedDecimalCount(averageGrowth)}</b>
+                <em>В день</em>
               </span>
             </div>
           </div>

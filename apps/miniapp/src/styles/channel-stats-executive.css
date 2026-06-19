@@ -1364,7 +1364,7 @@ body.channel-stats-page-open .bottom-nav::after {
 
 .channel-audience-board__metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(8px, 1.6vw, 12px);
   min-width: 0;
 }
@@ -1600,34 +1600,42 @@ body.channel-stats-page-open .bottom-nav::after {
 .channel-audience-board__legend {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(7px, 1.2vw, 10px);
   margin-inline: clamp(-4px, -0.45vw, -1px);
-  overflow: hidden;
-  border: 1px solid var(--audience-board-border);
-  border-radius: 8px;
-  background: var(--surface-card-muted);
-  box-shadow: 0 1px 0 var(--color-surface) inset;
+  overflow: visible;
 }
 
 .channel-audience-board__legend span {
   min-width: 0;
-  display: flex;
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-areas:
+    'icon value'
+    'icon label';
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 9px 10px;
-  color: var(--text-secondary);
+  column-gap: 9px;
+  row-gap: 2px;
+  padding: 9px 11px;
+  overflow: hidden;
+  border: 1px solid var(--audience-board-border);
+  border-radius: 8px;
   background: var(--color-surface-raised);
+  box-shadow:
+    var(--shadow-xs),
+    0 1px 0 var(--color-surface) inset;
+  color: var(--audience-board-success);
   font-size: clamp(0.72rem, 1.28vw, 0.86rem);
   font-weight: 720;
   line-height: 1.1;
-  white-space: nowrap;
 }
 
 .channel-audience-board__legend svg {
-  flex: 0 0 auto;
-  color: var(--success);
+  grid-area: icon;
+  width: 28px;
+  height: 28px;
+  color: currentColor;
 }
 
 .channel-audience-board__legend b,
@@ -1638,13 +1646,34 @@ body.channel-stats-page-open .bottom-nav::after {
 }
 
 .channel-audience-board__legend b {
-  font-weight: 760;
+  grid-area: value;
+  color: currentColor;
+  font-size: clamp(1.02rem, 2.3vw, 1.36rem);
+  font-weight: 930;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .channel-audience-board__legend em {
-  color: var(--audience-board-success-strong);
+  grid-area: label;
+  color: var(--text-secondary);
   font-style: normal;
-  font-weight: 850;
+  font-weight: 760;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+.channel-audience-board__legend .is-negative,
+.channel-audience-board__legend .is-negative svg,
+.channel-audience-board__legend .is-negative b {
+  color: var(--audience-board-danger);
+}
+
+.channel-audience-board__legend .is-neutral,
+.channel-audience-board__legend .is-neutral svg,
+.channel-audience-board__legend .is-neutral b {
+  color: var(--audience-board-neutral);
 }
 
 @media (min-width: 720px) {
@@ -1669,49 +1698,34 @@ body.channel-stats-page-open .bottom-nav::after {
 
 @media (max-width: 640px) {
   .channel-audience-board__metrics {
-    display: flex;
     gap: 8px;
-    margin-inline: clamp(-5px, -0.8vw, -2px);
-    padding: 2px 2px 4px;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scroll-snap-type: x proximity;
-    scrollbar-width: none;
-  }
-
-  .channel-audience-board__metrics::-webkit-scrollbar {
-    display: none;
+    margin-inline: 0;
+    padding: 0;
+    overflow: visible;
   }
 
   .channel-audience-metric {
-    flex: 0 0 min(164px, 52vw);
-    scroll-snap-align: start;
+    min-width: 0;
   }
 
   .channel-audience-board__legend span {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    grid-template-areas:
-      'icon label'
-      'icon value';
-    justify-content: start;
-    gap: 1px 5px;
-    padding: 7px 6px;
-    font-size: 0.62rem;
-    text-align: left;
+    grid-template-columns: 26px minmax(0, 1fr);
+    min-height: 56px;
+    column-gap: 7px;
+    padding: 8px;
   }
 
   .channel-audience-board__legend svg {
-    grid-area: icon;
-    align-self: center;
+    width: 23px;
+    height: 23px;
   }
 
   .channel-audience-board__legend b {
-    grid-area: label;
+    font-size: clamp(0.98rem, 4.2vw, 1.18rem);
   }
 
   .channel-audience-board__legend em {
-    grid-area: value;
+    font-size: 0.66rem;
   }
 }
 
@@ -1783,16 +1797,10 @@ body.channel-stats-page-open .bottom-nav::after {
   }
 
   .channel-audience-board__legend span {
-    grid-template-columns: 16px minmax(0, 1fr);
-    gap: 1px 4px;
-    padding: 7px 4px;
-    font-size: 0.58rem;
+    grid-template-columns: 23px minmax(0, 1fr);
+    column-gap: 6px;
+    padding: 7px 6px;
   }
 }
 
-@media (max-width: 340px) {
-  .channel-audience-board__metrics {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 }
