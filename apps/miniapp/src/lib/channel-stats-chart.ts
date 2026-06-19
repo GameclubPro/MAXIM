@@ -71,6 +71,22 @@ export function isChannelStatsResponseForRange<T extends ViewsDisplayStats>(
   return Boolean(stats && stats.channel?.id === chatId && stats.period?.range === range);
 }
 
+export function resolveAudienceChartDisplayValue(
+  point: AudienceChartActivePoint,
+  currentParticipants: number | null,
+  totalNet: number,
+  preferMembershipFlow: boolean,
+): number {
+  const flowValue =
+    currentParticipants !== null ? currentParticipants - (totalNet - point.cumulativeNet) : null;
+
+  if (preferMembershipFlow && flowValue !== null) {
+    return flowValue;
+  }
+
+  return point.participantsCount ?? flowValue ?? point.cumulativeNet;
+}
+
 export function resolveAverageViewsFromSeries(
   points: readonly ViewsChartActivePoint[],
 ): number | null {

@@ -42,6 +42,7 @@ import { queryKeys } from '../lib/query-keys';
 import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cache';
 import {
   isChannelStatsResponseForRange,
+  resolveAudienceChartDisplayValue,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
   resolveInitialViewsChartIndex,
@@ -943,18 +944,24 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     };
   });
   const totalNet = basePoints.at(-1)?.cumulativeNet ?? 0;
+  const preferMembershipFlow = currentParticipants !== null && membershipSeries.some(
+    (point) => point.joined > 0 || (point.left ?? 0) > 0,
+  );
   const rawPoints = basePoints.map((point, index, points) => {
-    const displayValue =
-      point.participantsCount ??
-      (currentParticipants !== null ? currentParticipants - (totalNet - point.cumulativeNet) : null) ??
-      point.cumulativeNet;
+    const displayValue = resolveAudienceChartDisplayValue(
+      point,
+      currentParticipants,
+      totalNet,
+      preferMembershipFlow,
+    );
     const previousDisplayValue =
       index > 0
-        ? (points[index - 1]!.participantsCount ??
-          (currentParticipants !== null
-            ? currentParticipants - (totalNet - points[index - 1]!.cumulativeNet)
-            : null) ??
-          points[index - 1]!.cumulativeNet)
+        ? resolveAudienceChartDisplayValue(
+            points[index - 1]!,
+            currentParticipants,
+            totalNet,
+            preferMembershipFlow,
+          )
         : null;
     const deltaFromPrevious =
       previousDisplayValue === null ? null : Math.round(displayValue - previousDisplayValue);

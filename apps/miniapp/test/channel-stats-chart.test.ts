@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isChannelStatsResponseForRange,
+  resolveAudienceChartDisplayValue,
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
@@ -26,6 +27,28 @@ test('selects the latest informative audience bucket instead of a trailing zero 
       { participantsCount: 119, joined: 0, left: 0, cumulativeNet: 0 },
     ]),
     1,
+  );
+});
+
+test('audience chart prefers membership flow over stale carried participant snapshots', () => {
+  const points = [
+    { participantsCount: 3_567, joined: 0, left: 0, cumulativeNet: 0 },
+    { participantsCount: 3_567, joined: 32, left: 21, cumulativeNet: 11 },
+    { participantsCount: 3_567, joined: 42, left: 17, cumulativeNet: 36 },
+    { participantsCount: 3_567, joined: 38, left: 19, cumulativeNet: 55 },
+    { participantsCount: 3_567, joined: 44, left: 11, cumulativeNet: 88 },
+    { participantsCount: 3_567, joined: 44, left: 22, cumulativeNet: 110 },
+    { participantsCount: 3_718, joined: 52, left: 10, cumulativeNet: 152 },
+    { participantsCount: 3_721, joined: 8, left: 3, cumulativeNet: 157 },
+  ];
+
+  assert.deepEqual(
+    points.map((point) => resolveAudienceChartDisplayValue(point, 3_721, 157, true)),
+    [3_564, 3_575, 3_600, 3_619, 3_652, 3_674, 3_716, 3_721],
+  );
+  assert.deepEqual(
+    points.map((point) => resolveAudienceChartDisplayValue(point, 3_721, 157, false)),
+    [3_567, 3_567, 3_567, 3_567, 3_567, 3_567, 3_718, 3_721],
   );
 });
 
