@@ -5,7 +5,7 @@ type StatsSnapshotEnvelope<T> = {
   value: T;
 };
 
-const STATS_SNAPSHOT_VERSION = 'v3';
+const STATS_SNAPSHOT_VERSION = 'v4';
 const STATS_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 function buildStatsSnapshotKey(scope: string, parts: readonly string[]): string {

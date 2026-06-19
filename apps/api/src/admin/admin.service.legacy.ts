@@ -7020,10 +7020,10 @@ export class AdminService implements OnModuleDestroy {
       joined,
       left,
       net: joined - left,
-      posts: contentTotals.posts,
+      posts: periodPosts.length,
       views: periodViews,
       averageViewsPerPost:
-        contentTotals.posts > 0 ? Math.round(periodViews / contentTotals.posts) : 0,
+        periodPosts.length > 0 ? Math.round(periodViews / periodPosts.length) : 0,
       reactions: contentTotals.reactions,
     };
     const comparison = this.buildChannelStatsComparison(
@@ -7065,7 +7065,7 @@ export class AdminService implements OnModuleDestroy {
           net: joined - left,
         },
         content: {
-          posts: contentTotals.posts,
+          posts: periodPosts.length,
           views: periodViews,
           reactions: contentTotals.reactions,
           topReactions,
@@ -15948,9 +15948,9 @@ export class AdminService implements OnModuleDestroy {
         joined,
         left,
         net: joined - left,
-        posts: contentTotals.posts,
+        posts: periodPosts.length,
         views,
-        averageViewsPerPost: contentTotals.posts > 0 ? Math.round(views / contentTotals.posts) : 0,
+        averageViewsPerPost: periodPosts.length > 0 ? Math.round(views / periodPosts.length) : 0,
         reactions: contentTotals.reactions,
       },
       series: {
@@ -16079,7 +16079,7 @@ export class AdminService implements OnModuleDestroy {
     >();
 
     for (const metric of postViewMetrics) {
-      const views = Math.max(0, metric.viewsDelta);
+      const views = Math.max(0, this.toSafeInteger(metric.post.latestViews));
       if (views <= 0) {
         continue;
       }
@@ -16753,7 +16753,7 @@ export class AdminService implements OnModuleDestroy {
 
   private sumChannelPostMetricViews(postViewMetrics: ChannelStatsPostViewMetric[]): number {
     return postViewMetrics.reduce(
-      (total, metric) => total + Math.max(0, this.toSafeInteger(metric.viewsDelta)),
+      (total, metric) => total + Math.max(0, this.toSafeInteger(metric.post.latestViews)),
       0,
     );
   }
@@ -16763,34 +16763,22 @@ export class AdminService implements OnModuleDestroy {
     postViewMetrics: ChannelStatsPostViewMetric[],
     bucket: ChannelStatsBucket,
   ): ChannelStatsViewsBucketPoint[] {
-    const grouped = new Map<string, Map<string, number>>();
+    const grouped = new Map<string, { posts: number; views: number }>();
 
     for (const metric of postViewMetrics) {
-      const deltas =
-        metric.viewDeltas.length > 0
-          ? metric.viewDeltas
-          : metric.viewsDelta > 0
-            ? [{ capturedAt: metric.post.publishedAt, viewsDelta: metric.viewsDelta }]
-            : [];
-      for (const delta of deltas) {
-        const bucketStart = this.floorChannelStatsBucket(delta.capturedAt, bucket);
-        const key = bucketStart.toISOString();
-        const current = grouped.get(key) ?? new Map<string, number>();
-        current.set(
-          metric.post.id,
-          (current.get(metric.post.id) ?? 0) + Math.max(0, delta.viewsDelta),
-        );
-        grouped.set(key, current);
-      }
+      const bucketStart = this.floorChannelStatsBucket(metric.post.publishedAt, bucket);
+      const key = bucketStart.toISOString();
+      const current = grouped.get(key) ?? { posts: 0, views: 0 };
+      current.posts += 1;
+      current.views += Math.max(0, this.toSafeInteger(metric.post.latestViews));
+      grouped.set(key, current);
     }
 
     return bucketStarts.map((bucketStart) => {
-      const current = grouped.get(bucketStart.toISOString());
-      const postViews = current ? Array.from(current.values()) : [];
-      const views = postViews.reduce((total, value) => total + value, 0);
+      const current = grouped.get(bucketStart.toISOString()) ?? { posts: 0, views: 0 };
       return {
         at: bucketStart.toISOString(),
-        views: postViews.length > 0 ? Math.round(views / postViews.length) : 0,
+        views: current.posts > 0 ? Math.round(current.views / current.posts) : 0,
       };
     });
   }
@@ -16799,7 +16787,7 @@ export class AdminService implements OnModuleDestroy {
     return postViewMetrics
       .sort(
         (left, right) =>
-          right.viewsDelta - left.viewsDelta ||
+          this.toSafeInteger(right.post.latestViews) - this.toSafeInteger(left.post.latestViews) ||
           this.toSafeInteger(right.post.latestReactionsTotal) -
             this.toSafeInteger(left.post.latestReactionsTotal) ||
           left.post.publishedAt.getTime() - right.post.publishedAt.getTime(),
@@ -16809,7 +16797,7 @@ export class AdminService implements OnModuleDestroy {
         messageId: metric.post.messageId,
         publishedAt: metric.post.publishedAt.toISOString(),
         url: metric.post.url,
-        viewsDelta: metric.viewsDelta,
+        viewsDelta: this.toSafeInteger(metric.post.latestViews),
         reactions: this.toSafeInteger(metric.post.latestReactionsTotal),
       }));
   }

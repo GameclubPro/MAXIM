@@ -17742,7 +17742,7 @@ describe('AdminService.getChannelStats', () => {
     jest.useRealTimers();
   });
 
-  it('builds period views chart from observed deltas only', () => {
+  it('places views chart points by publication bucket', () => {
     const service = new AdminService(
       createPrismaMock() as never,
       {} as never,
@@ -17756,6 +17756,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: string;
             publishedAt: Date;
+            latestViews: number;
           };
           viewsDelta: number;
           viewDeltas: Array<{
@@ -17773,7 +17774,8 @@ describe('AdminService.getChannelStats', () => {
         {
           post: {
             id: 'post-1',
-            publishedAt: new Date('2026-03-07T08:20:00.000Z'),
+            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+            latestViews: 45,
           },
           viewsDelta: 45,
           viewDeltas: [
@@ -17786,7 +17788,8 @@ describe('AdminService.getChannelStats', () => {
         {
           post: {
             id: 'post-2',
-            publishedAt: new Date('2026-03-07T08:40:00.000Z'),
+            publishedAt: new Date('2026-03-07T10:40:00.000Z'),
+            latestViews: 75,
           },
           viewsDelta: 75,
           viewDeltas: [
@@ -17826,6 +17829,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: string;
             publishedAt: Date;
+            latestViews: number;
           };
           viewsDelta: number;
           viewDeltas: Array<{
@@ -17844,6 +17848,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: 'post-1',
             publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+            latestViews: 100,
           },
           viewsDelta: 100,
           viewDeltas: [
@@ -17857,6 +17862,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: 'post-2',
             publishedAt: new Date('2026-03-07T10:15:00.000Z'),
+            latestViews: 300,
           },
           viewsDelta: 300,
           viewDeltas: [
@@ -17892,6 +17898,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: string;
             publishedAt: Date;
+            latestViews: number;
           };
           viewsDelta: number;
           viewDeltas: Array<{
@@ -17909,7 +17916,8 @@ describe('AdminService.getChannelStats', () => {
         {
           post: {
             id: 'post-1',
-            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+            publishedAt: new Date('2026-03-07T10:20:00.000Z'),
+            latestViews: 150,
           },
           viewsDelta: 150,
           viewDeltas: [
@@ -17926,7 +17934,8 @@ describe('AdminService.getChannelStats', () => {
         {
           post: {
             id: 'post-2',
-            publishedAt: new Date('2026-03-07T09:45:00.000Z'),
+            publishedAt: new Date('2026-03-07T10:45:00.000Z'),
+            latestViews: 50,
           },
           viewsDelta: 50,
           viewDeltas: [
@@ -17948,7 +17957,7 @@ describe('AdminService.getChannelStats', () => {
     ]);
   });
 
-  it('places view chart points in the bucket where views were observed', () => {
+  it('keeps view chart points in the publication bucket when views are observed later', () => {
     const service = new AdminService(
       createPrismaMock() as never,
       {} as never,
@@ -17962,6 +17971,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: string;
             publishedAt: Date;
+            latestViews: number;
           };
           viewsDelta: number;
           viewDeltas: Array<{
@@ -17980,6 +17990,7 @@ describe('AdminService.getChannelStats', () => {
           post: {
             id: 'post-1',
             publishedAt: new Date('2026-06-12T09:20:00.000Z'),
+            latestViews: 900,
           },
           viewsDelta: 900,
           viewDeltas: [
@@ -17996,11 +18007,11 @@ describe('AdminService.getChannelStats', () => {
     expect(series).toEqual([
       {
         at: '2026-06-12T00:00:00.000Z',
-        views: 0,
+        views: 900,
       },
       {
         at: '2026-06-18T00:00:00.000Z',
-        views: 900,
+        views: 0,
       },
     ]);
   });
@@ -18931,7 +18942,7 @@ describe('AdminService.getChannelStats', () => {
     });
     expect(result.official.content).toEqual({
       posts: 1,
-      views: 0,
+      views: 44,
       reactions: 0,
       topReactions: [],
       topPosts: [
@@ -18939,7 +18950,7 @@ describe('AdminService.getChannelStats', () => {
           messageId: 'mid-1',
           publishedAt: '2026-03-07T09:00:00.000Z',
           url: null,
-          viewsDelta: 0,
+          viewsDelta: 44,
           reactions: 0,
         },
       ],
