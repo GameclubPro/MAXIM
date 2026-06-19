@@ -428,7 +428,6 @@ body.channel-stats-page-open .channel-insights__body {
   gap: 7px;
 }
 
-.channel-insights__chart-controls .channel-insights__switch,
 .channel-insights__chart-controls .channel-insights__range {
   width: 100%;
   min-width: 0;
@@ -564,8 +563,7 @@ body.channel-stats-page-open .channel-insights__body {
   vector-effect: non-scaling-stroke;
 }
 
-.channel-stats-graph__active-band,
-.channel-stats-graph__active-band--views {
+.channel-stats-graph__active-band {
   fill: var(--accent-soft);
   opacity: 1;
 }
@@ -581,31 +579,9 @@ body.channel-stats-page-open .channel-insights__body {
   opacity: 0.78;
 }
 
-.channel-stats-graph__area--views {
-  fill: url(#channel-views-trend-area);
-  opacity: 0.84;
-}
-
 .channel-stats-graph__line--audience {
   stroke: url(#channel-audience-line);
   stroke-width: 3.4;
-}
-
-.channel-stats-graph__line--views {
-  fill: none;
-  stroke: url(#channel-views-cumulative-line);
-  stroke-width: 3.1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.channel-stats-graph__line--views-previous {
-  display: block;
-  stroke: var(--text-muted);
-  stroke-width: 1.8;
-  stroke-dasharray: 5 7;
-  opacity: 0.5;
 }
 
 .channel-stats-graph__line-glow--audience {
@@ -613,23 +589,12 @@ body.channel-stats-page-open .channel-insights__body {
   opacity: 0.18;
 }
 
-.channel-stats-graph__bar--views {
-  fill: url(#channel-views-bar);
-  opacity: 0.72;
-}
-
-.channel-stats-graph__bar--views.is-active {
-  opacity: 0.98;
-}
-
 .channel-stats-graph__bar--previous {
   display: block;
   fill: var(--border-strong);
 }
 
-.channel-stats-graph__dot,
-.channel-stats-graph__dot--views,
-.channel-stats-graph__view-focus-dot {
+.channel-stats-graph__dot {
   fill: var(--color-surface);
   stroke: var(--accent);
   stroke-width: 2.4;

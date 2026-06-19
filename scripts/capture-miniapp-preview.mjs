@@ -543,36 +543,6 @@ const scenarios = [
     },
   },
   {
-    name: 'channel-stats-views',
-    path: '/channel/preview-channel/stats',
-    beforeShot: async (page) => {
-      await page
-        .locator('.channel-insights__switch .segmented-control__item')
-        .filter({ hasText: /Просм\./u })
-        .click();
-      await waitForVisibleChannelStatsViewsBar(page);
-      await page.waitForTimeout(350);
-    },
-  },
-  {
-    name: 'channel-stats-views-24h',
-    path: '/channel/preview-channel/stats',
-    beforeShot: async (page) => {
-      await page
-        .locator('.channel-insights__switch .segmented-control__item')
-        .filter({ hasText: /Просм\./u })
-        .click();
-      await page
-        .locator('.channel-insights__chart-controls .channel-insights__range .segmented-control__item')
-        .filter({ hasText: /24ч/u })
-        .click();
-      await waitForVisibleChannelStatsViewsBar(page);
-      await page.locator('.channel-stats-graph--continuous').first().waitFor({ state: 'visible' });
-      await assertChannelStatsSparseViewsChart(page);
-      await page.waitForTimeout(350);
-    },
-  },
-  {
     name: 'channel-stats-top-posts',
     path: '/channel/preview-channel/stats',
     beforeShot: async (page) => {
@@ -1305,73 +1275,6 @@ async function assertChannelStatsContinuousChart(page) {
   if (!result.ok) {
     throw new Error(`24h channel stats chart marker assertion failed: ${result.reason}`);
   }
-}
-
-async function assertChannelStatsSparseViewsChart(page) {
-  const result = await page.evaluate(() => {
-    const chart = document.querySelector('.channel-stats-graph--sparse-views');
-    if (!chart) {
-      return { ok: false, reason: 'sparse views chart class is missing' };
-    }
-
-    const overlays = chart.querySelectorAll(
-      '.channel-stats-graph__active-band, .channel-stats-graph__active-guide, .channel-stats-graph__tooltip',
-    ).length;
-    const trendPieces = chart.querySelectorAll(
-      '.channel-stats-graph__area--views, .channel-stats-graph__line--views, .channel-stats-graph__bar--previous',
-    ).length;
-    const dots = Array.from(chart.querySelectorAll('.channel-stats-graph__view-dot'));
-    const labels = Array.from(chart.querySelectorAll('.channel-stats-graph__x-label--views'));
-    const bars = Array.from(chart.querySelectorAll('.channel-stats-graph__bar--views'));
-
-    if (overlays > 0) {
-      return { ok: false, reason: `unexpected persistent overlays: ${overlays}` };
-    }
-
-    if (trendPieces > 0) {
-      return { ok: false, reason: `unexpected continuous trend pieces: ${trendPieces}` };
-    }
-
-    if (dots.length === 0 || labels.length === 0) {
-      return {
-        ok: false,
-        reason: `missing sparse marks: dots=${dots.length}, labels=${labels.length}`,
-      };
-    }
-
-    if (bars.length > 0 || dots.length !== labels.length) {
-      return {
-        ok: false,
-        reason: `mismatched sparse marks: bars=${bars.length}, dots=${dots.length}, labels=${labels.length}`,
-      };
-    }
-
-    return { ok: true, reason: '' };
-  });
-
-  if (!result.ok) {
-    throw new Error(`24h channel stats sparse views assertion failed: ${result.reason}`);
-  }
-}
-
-async function waitForVisibleChannelStatsViewsBar(page) {
-  await page.waitForFunction(() => {
-    const marks = Array.from(
-      document.querySelectorAll('.channel-stats-graph__bar--views, .channel-stats-graph__view-dot'),
-    );
-    return marks.some((mark) => {
-      if (!(mark instanceof SVGGraphicsElement)) {
-        return false;
-      }
-
-      const rect = mark.getBoundingClientRect();
-      const height =
-        mark instanceof SVGRectElement
-          ? Number.parseFloat(mark.getAttribute('height') ?? '0')
-          : rect.height;
-      return rect.width > 0 && rect.height > 0 && height > 0;
-    });
-  });
 }
 
 async function assertKeyboardState(page, scenario) {

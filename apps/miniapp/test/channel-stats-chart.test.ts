@@ -6,8 +6,6 @@ import {
   resolveAverageViewsFromSeries,
   resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
-  resolveInitialViewsChartIndex,
-  resolveNearestViewsChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../src/lib/channel-stats-chart';
 
@@ -63,7 +61,7 @@ test('audience chart prefers membership flow over stale carried participant snap
   );
 });
 
-test('falls back to known audience and view totals when per-bucket activity is absent', () => {
+test('falls back to known audience totals when per-bucket activity is absent', () => {
   assert.equal(
     resolveInitialAudienceChartIndex([
       { participantsCount: null, joined: 0, left: 0, cumulativeNet: 0 },
@@ -71,38 +69,6 @@ test('falls back to known audience and view totals when per-bucket activity is a
       { participantsCount: 240, joined: 0, left: 0, cumulativeNet: 0 },
     ]),
     2,
-  );
-
-  assert.equal(
-    resolveInitialViewsChartIndex([
-      { posts: 0, views: 0 },
-      { posts: 0, views: 0 },
-      { posts: 0, views: 0 },
-    ]),
-    0,
-  );
-});
-
-test('selects the latest views bucket with posts before the current empty bucket', () => {
-  assert.equal(
-    resolveInitialViewsChartIndex([
-      { posts: 1, views: 0 },
-      { posts: 2, views: 160 },
-      { posts: 0, views: 0 },
-    ]),
-    1,
-  );
-
-  assert.equal(
-    resolveNearestViewsChartIndex(
-      [
-        { posts: 1, views: 500 },
-        { posts: 0, views: 0 },
-        { posts: 1, views: 650 },
-      ],
-      1,
-    ),
-    0,
   );
 });
 

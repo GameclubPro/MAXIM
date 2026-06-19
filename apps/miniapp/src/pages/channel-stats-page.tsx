@@ -43,10 +43,7 @@ import { readStatsSnapshot, saveStatsSnapshot } from '../lib/stats-snapshot-cach
 import {
   isChannelStatsResponseForRange,
   resolveAudienceChartDisplayValue,
-  resolveChannelStatsAverageViews,
   resolveInitialAudienceChartIndex,
-  resolveInitialViewsChartIndex,
-  resolveNearestViewsChartIndex,
   shouldRenderChannelStatsPointMarkers,
 } from '../lib/channel-stats-chart';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
@@ -57,10 +54,7 @@ type ChannelStatsRouteState = {
   avatarUrl: string | null;
 };
 
-type ChartTab = 'audience' | 'views';
 type ChannelStatsSection = 'overview' | 'events';
-
-type ChartInsightTone = 'accent' | 'success' | 'danger' | 'warning' | 'neutral';
 
 type AudienceChartPoint = {
   at: string;
@@ -90,44 +84,10 @@ type PreviousAudienceChartPoint = {
   y: number;
 };
 
-type ViewChartPoint = {
-  at: string;
-  posts: number;
-  views: number;
-  hasPosts: boolean;
-  x: number;
-  y: number;
-  height: number;
-};
-
-type PreviousViewChartPoint = ViewChartPoint;
-
-type ViewChartAggregateBar = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  views: number;
-};
-
-type ChartPostPin = {
-  messageId: string;
-  label: string;
-  value: string;
-  detail: string;
-  x: number;
-  tone: ChartInsightTone;
-};
-
 const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
   { value: '24h', label: '24ч' },
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
-];
-
-const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
-  { value: 'audience', label: 'Ауд.' },
-  { value: 'views', label: 'Просм.' },
 ];
 
 const sectionOptions: Array<{ value: ChannelStatsSection; label: string }> = [
@@ -196,29 +156,6 @@ function formatDenseCount(value: number): string {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function formatShortDate(value: string | null, bucket: ChannelStatsBucket): string {
-  if (!value) {
-    return '';
-  }
-
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    return '';
-  }
-
-  if (bucket === 'hour') {
-    return new Intl.DateTimeFormat('ru-RU', {
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(parsed);
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-  }).format(parsed);
 }
 
 function formatSummaryTableDate(value: string): string {
@@ -397,18 +334,6 @@ function formatSignedDecimalCount(value: number | null, maximumFractionDigits = 
   }
 
   return formatted;
-}
-
-function formatRangeLabel(range: ChannelStatsRange): string {
-  if (range === '24h') {
-    return '24 часа';
-  }
-
-  if (range === '7d') {
-    return '7 дней';
-  }
-
-  return '30 дней';
 }
 
 function readNullableCount(value: unknown): number | null {
@@ -725,139 +650,6 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   return path;
 }
 
-function buildSegmentedLinePath(points: Array<{ x: number; y: number } | null>): string {
-  const paths: string[] = [];
-  let segment: Array<{ x: number; y: number }> = [];
-
-  const flushSegment = () => {
-    if (segment.length > 0) {
-      paths.push(buildAudiencePath(segment));
-      segment = [];
-    }
-  };
-
-  for (const point of points) {
-    if (point) {
-      segment.push(point);
-    } else {
-      flushSegment();
-    }
-  }
-  flushSegment();
-
-  return paths.filter(Boolean).join(' ');
-}
-
-function buildSegmentedAreaPath(
-  points: Array<{ x: number; y: number } | null>,
-  floorY: number,
-): string {
-  const paths: string[] = [];
-  let segment: Array<{ x: number; y: number }> = [];
-
-  const flushSegment = () => {
-    if (segment.length > 0) {
-      const linePath = buildAudiencePath(segment);
-      const areaPath = buildAudienceAreaPath(linePath, segment, floorY);
-      if (areaPath) {
-        paths.push(areaPath);
-      }
-      segment = [];
-    }
-  };
-
-  for (const point of points) {
-    if (point) {
-      segment.push(point);
-    } else {
-      flushSegment();
-    }
-  }
-  flushSegment();
-
-  return paths.join(' ');
-}
-
-function resolveAdjacentPostedViewsIndex(
-  points: readonly ViewChartPoint[],
-  currentIndex: number,
-  direction: -1 | 1,
-): number {
-  for (
-    let index = currentIndex + direction;
-    index >= 0 && index < points.length;
-    index += direction
-  ) {
-    if (points[index]?.hasPosts) {
-      return index;
-    }
-  }
-
-  return currentIndex;
-}
-
-function resolvePostPinPositions(
-  posts: ChannelStatsResponse['official']['content']['topPosts'],
-  anchors: Array<{ at: string; x: number }>,
-): ChartPostPin[] {
-  if (anchors.length === 0 || posts.length === 0) {
-    return [];
-  }
-
-  return posts.slice(0, 5).map((post, index) => {
-    const postTime = new Date(post.publishedAt).getTime();
-    let bestAnchor = anchors[0]!;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    if (Number.isFinite(postTime)) {
-      for (const anchor of anchors) {
-        const anchorTime = new Date(anchor.at).getTime();
-        const distance = Number.isFinite(anchorTime)
-          ? Math.abs(anchorTime - postTime)
-          : Number.POSITIVE_INFINITY;
-        if (distance < bestDistance) {
-          bestAnchor = anchor;
-          bestDistance = distance;
-        }
-      }
-    }
-
-    const views = post.viewsDelta;
-    return {
-      messageId: post.messageId,
-      label: `#${index + 1}`,
-      value: formatCompactCount(views),
-      detail: `${formatCompactCount(views)} просм. · ${formatCompactCount(post.reactions)} р.`,
-      x: bestAnchor.x,
-      tone: index === 0 ? 'accent' : 'neutral',
-    };
-  });
-}
-
-function resolveActivePostPin(
-  pins: ChartPostPin[],
-  activeX: number | null,
-  slotWidth: number,
-): ChartPostPin | null {
-  if (pins.length === 0 || activeX === null) {
-    return null;
-  }
-
-  const threshold = clamp(slotWidth * 0.52, 12, 28);
-  let closestPin: ChartPostPin | null = null;
-  let closestDistance = Number.POSITIVE_INFINITY;
-
-  for (const pin of pins) {
-    const distance = Math.abs(pin.x - activeX);
-    if (distance < closestDistance) {
-      closestPin = pin;
-      closestDistance = distance;
-    }
-  }
-
-  return closestPin && closestDistance <= threshold ? closestPin : null;
-}
-
 function buildAudienceAreaPath(
   linePath: string,
   points: Array<{ x: number; y: number }>,
@@ -872,45 +664,6 @@ function buildAudienceAreaPath(
   return `${linePath} L ${lastPoint.x.toFixed(2)} ${floorY.toFixed(2)} L ${firstPoint.x.toFixed(
     2,
   )} ${floorY.toFixed(2)} Z`;
-}
-
-function resolveGraphMarkerPositions(
-  markers: ChannelStatsResponse['signals']['markers'],
-  anchors: Array<{ at: string; x: number }>,
-  filter: (marker: ChannelStatsResponse['signals']['markers'][number]) => boolean,
-) {
-  if (anchors.length === 0) {
-    return [];
-  }
-
-  return markers
-    .filter(filter)
-    .map((marker) => {
-      const markerTime = new Date(marker.at).getTime();
-      if (!Number.isFinite(markerTime)) {
-        return null;
-      }
-
-      let bestAnchor = anchors[0]!;
-      let bestDistance = Math.abs(new Date(bestAnchor.at).getTime() - markerTime);
-      for (const anchor of anchors.slice(1)) {
-        const distance = Math.abs(new Date(anchor.at).getTime() - markerTime);
-        if (distance < bestDistance) {
-          bestAnchor = anchor;
-          bestDistance = distance;
-        }
-      }
-
-      return {
-        ...marker,
-        x: bestAnchor.x,
-      };
-    })
-    .filter(
-      (marker): marker is ChannelStatsResponse['signals']['markers'][number] & { x: number } =>
-        marker !== null,
-    )
-    .slice(0, 5);
 }
 
 function buildAudienceChart(stats: ChannelStatsResponse): {
@@ -1173,152 +926,6 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     plotBottom: lineBottom,
     floorY: lineFloor,
     axisLabels,
-  };
-}
-
-function buildViewsChart(stats: ChannelStatsResponse): {
-  bars: ViewChartPoint[];
-  previousBars: PreviousViewChartPoint[];
-  aggregateBar: ViewChartAggregateBar | null;
-  trendLinePath: string;
-  trendAreaPath: string;
-  previousTrendLinePath: string;
-  averageY: number | null;
-  maxViews: number;
-  guideYs: number[];
-  leftPad: number;
-  rightPad: number;
-  baselineY: number;
-  eventRailY: number;
-  height: number;
-} {
-  const series = stats.official.series.views;
-  const previousSeries = stats.comparison.series?.views ?? [];
-  if (series.length === 0) {
-    return {
-      bars: [],
-      previousBars: [],
-      aggregateBar: null,
-      trendLinePath: '',
-      trendAreaPath: '',
-      previousTrendLinePath: '',
-      averageY: null,
-      maxViews: 0,
-      guideYs: [],
-      leftPad: 10,
-      rightPad: 8,
-      baselineY: 176,
-      eventRailY: 196,
-      height: CHART_VIEWBOX_HEIGHT,
-    };
-  }
-
-  const width = CHART_VIEWBOX_WIDTH;
-  const height = CHART_VIEWBOX_HEIGHT;
-  const leftPad = 10;
-  const rightPad = 8;
-  const topPad = 16;
-  const bottomPad = 34;
-  const plotWidth = width - leftPad - rightPad;
-  const usableHeight = height - topPad - bottomPad;
-  const baselineY = height - bottomPad;
-  const averageViews = resolveChannelStatsAverageViews(stats);
-  const currentMaxViews = Math.max(
-    ...series.filter((item) => item.posts > 0).map((item) => item.views),
-    0,
-  );
-  const previousMaxViews = Math.max(
-    ...previousSeries.filter((item) => item.posts > 0).map((item) => item.views),
-    0,
-  );
-  const aggregateViews = averageViews;
-  const maxViews =
-    currentMaxViews > 0
-      ? Math.max(currentMaxViews, previousMaxViews)
-      : Math.max(previousMaxViews, aggregateViews);
-  const scale = maxViews > 0 ? usableHeight / maxViews : 0;
-
-  const bars = series.map((item, index) => {
-    const x =
-      series.length === 1
-        ? width / 2
-        : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-    const posts = Math.max(0, item.posts);
-    const hasPosts = posts > 0;
-    const views = hasPosts ? Math.max(0, item.views) : 0;
-    const barHeight = hasPosts ? Math.min(views * scale, usableHeight) : 0;
-    return {
-      at: item.at,
-      posts,
-      views,
-      hasPosts,
-      x,
-      y: baselineY - barHeight,
-      height: barHeight,
-    };
-  });
-  const previousBars = previousSeries.map((item, index) => {
-    const x =
-      previousSeries.length === 1
-        ? width / 2
-        : leftPad + (plotWidth * index) / Math.max(1, previousSeries.length - 1);
-    const posts = Math.max(0, item.posts);
-    const hasPosts = posts > 0;
-    const views = hasPosts ? Math.max(0, item.views) : 0;
-    const barHeight = hasPosts ? Math.min(views * scale, usableHeight) : 0;
-    return {
-      at: item.at,
-      posts,
-      views,
-      hasPosts,
-      x,
-      y: baselineY - barHeight,
-      height: barHeight,
-    };
-  });
-  const aggregateBarHeight =
-    currentMaxViews === 0 && aggregateViews > 0
-      ? previousMaxViews > 0
-        ? Math.max(4, Math.min(aggregateViews * scale, usableHeight))
-        : usableHeight * 0.72
-      : 0;
-  const aggregateBar =
-    aggregateBarHeight > 0
-      ? {
-          x: leftPad,
-          y: baselineY - aggregateBarHeight,
-          width: plotWidth,
-          height: aggregateBarHeight,
-          views: aggregateViews,
-        }
-      : null;
-  const trendLinePoints = bars.map((bar) => (bar.hasPosts ? { x: bar.x, y: bar.y } : null));
-  const previousTrendLinePoints = previousBars.map((bar) =>
-    bar.hasPosts ? { x: bar.x, y: bar.y } : null,
-  );
-  const trendLinePath = buildSegmentedLinePath(trendLinePoints);
-  const previousTrendLinePath = buildSegmentedLinePath(previousTrendLinePoints);
-  const trendAreaPath = buildSegmentedAreaPath(trendLinePoints, baselineY);
-  const averageY =
-    averageViews > 0 && maxViews > 0
-      ? baselineY - Math.min(averageViews * scale, usableHeight)
-      : null;
-
-  return {
-    bars,
-    previousBars,
-    aggregateBar,
-    trendLinePath,
-    trendAreaPath,
-    previousTrendLinePath,
-    averageY,
-    maxViews,
-    guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
-    leftPad,
-    rightPad,
-    baselineY,
-    eventRailY: 196,
-    height,
   };
 }
 
@@ -1717,467 +1324,6 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   );
 }
 
-function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
-  const chart = buildViewsChart(stats);
-  const labels = stats.official.series.views;
-  const [activeIndex, setActiveIndex] = useState(() => resolveInitialViewsChartIndex(chart.bars));
-  const [isTooltipVisible, setIsTooltipVisible] = useState(false);
-
-  useEffect(() => {
-    setActiveIndex(resolveInitialViewsChartIndex(chart.bars));
-  }, [
-    chart.bars.length,
-    stats.official.content.views,
-    stats.official.content.lastPublishedAt,
-    stats.period.from,
-    stats.period.to,
-  ]);
-
-  const rawActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
-  const safeActiveIndex = resolveNearestViewsChartIndex(chart.bars, rawActiveIndex);
-  const hasBucketViews = chart.bars.some((bar) => bar.hasPosts);
-  const activeBar = hasBucketViews ? (chart.bars[safeActiveIndex] ?? null) : null;
-  const previousIndex = resolveAlignedIndex(
-    chart.previousBars.length,
-    safeActiveIndex,
-    chart.bars.length,
-  );
-  const candidatePreviousBar = chart.previousBars[previousIndex] ?? null;
-  const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
-  const renderPointMarkers = shouldRenderChannelStatsPointMarkers(
-    stats.period.range,
-    chart.bars.length,
-  );
-  const postedBars = chart.bars.filter((bar) => bar.hasPosts);
-  const postedBucketCount = postedBars.length;
-  const isSparseViews =
-    postedBucketCount > 0 && postedBucketCount < chart.bars.length && postedBucketCount <= 8;
-  const activePreviousBar =
-    !isSparseViews && candidatePreviousBar?.hasPosts ? candidatePreviousBar : null;
-  const graphClassName = [
-    'channel-stats-graph',
-    renderPointMarkers ? '' : 'channel-stats-graph--continuous',
-    isSparseViews ? 'channel-stats-graph--sparse-views' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  const averageViews = resolveChannelStatsAverageViews(stats);
-  const averageViewsCompactLabel = formatCompactCount(averageViews);
-  const graphMarkers = resolveGraphMarkerPositions(
-    stats.signals.markers,
-    chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
-    (marker) => marker.type === 'post' || marker.type === 'peak',
-  );
-  const postPins = resolvePostPinPositions(
-    stats.official.content.topPosts,
-    chart.bars.map((bar) => ({ at: bar.at, x: bar.x })),
-  );
-  const slotWidth =
-    chart.bars.length > 1
-      ? (CHART_VIEWBOX_WIDTH - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
-      : 44;
-  const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
-  const previousBarWidth = isSparseViews ? 0 : clamp(slotWidth * 0.54, 4, 15);
-  const viewBarWidth = isSparseViews
-    ? clamp(slotWidth * 0.34, 3, 7)
-    : clamp(slotWidth * 0.68, 5, 18);
-  const activeViewBarWidth = isSparseViews
-    ? clamp(slotWidth * 0.42, 4, 8)
-    : clamp(slotWidth * 0.82, 7, 22);
-  const sparseViewDotRadius = isTooltipVisible ? 4.2 : 3.7;
-  const sparsePostedLabels = postedBars.map((bar, index) => {
-    const previous = postedBars[index - 1] ?? null;
-    const isCloseToPrevious = previous ? bar.x - previous.x < 34 : false;
-    return {
-      bar,
-      x: clamp(bar.x, 20, CHART_VIEWBOX_WIDTH - 20),
-      y: isCloseToPrevious ? 190 : 202,
-    };
-  });
-  const sparsePostedBucketLabel =
-    stats.period.bucket === 'hour' ? 'Часов с постами' : 'Дней с постами';
-  const activeViewsCompactLabel = formatCompactCount(activeBar?.views ?? null);
-  const chartPeriodLabel = formatRangeLabel(stats.period.range);
-  const activePostPin = resolveActivePostPin(postPins, activeBar?.x ?? null, slotWidth);
-  const tooltipX = activeBar ? clamp((activeBar.x / CHART_VIEWBOX_WIDTH) * 100, 15, 85) : 50;
-  const tooltipStyle = { '--tooltip-x': `${tooltipX}%` } as CSSProperties;
-  const activeGuideLabel = activeBar
-    ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ср. ${formatCount(
-        activeBar.views,
-      )} просмотров, постов ${formatCount(activeBar.posts)}, период ${formatCount(
-        averageViews,
-      )} просмотров`
-    : 'Данные по просмотрам недоступны';
-  return (
-    <div className={graphClassName}>
-      {!hasBucketViews ? (
-        <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
-      ) : (
-        <>
-          <header className="channel-stats-graph__summary">
-            <small className="channel-stats-graph__summary-date">
-              Среднее просмотров · {chartPeriodLabel}
-            </small>
-            <strong className="channel-stats-graph__summary-value">
-              {averageViewsCompactLabel} просмотров
-            </strong>
-
-            <div className="channel-stats-graph__summary-chips">
-              <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
-                {isSparseViews
-                  ? `${sparsePostedBucketLabel} ${formatCompactCount(postedBucketCount)}`
-                  : `Пик ср. ${formatCompactCount(chart.maxViews)}`}
-              </span>
-              <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
-                Постов {formatCompactCount(stats.official.content.posts)}
-              </span>
-            </div>
-          </header>
-
-          <div
-            className="channel-stats-graph__canvas"
-            tabIndex={0}
-            role="slider"
-            aria-label="Средние просмотры публикаций"
-            aria-valuemin={1}
-            aria-valuemax={chart.bars.length}
-            aria-valuenow={safeActiveIndex + 1}
-            aria-valuetext={activeGuideLabel}
-            onPointerDown={(event) => {
-              captureChartPointer(event);
-              setIsTooltipVisible(true);
-              const pointerIndex = readChartIndexFromPointer(
-                event,
-                chart.bars.length,
-                chart.leftPad,
-                chart.rightPad,
-              );
-              setActiveIndex(resolveNearestViewsChartIndex(chart.bars, pointerIndex));
-            }}
-            onPointerMove={(event) => {
-              if (event.buttons !== 1) {
-                return;
-              }
-
-              setIsTooltipVisible(true);
-              const pointerIndex = readChartIndexFromPointer(
-                event,
-                chart.bars.length,
-                chart.leftPad,
-                chart.rightPad,
-              );
-              setActiveIndex(resolveNearestViewsChartIndex(chart.bars, pointerIndex));
-            }}
-            onPointerUp={() => setIsTooltipVisible(false)}
-            onPointerCancel={() => setIsTooltipVisible(false)}
-            onPointerLeave={() => setIsTooltipVisible(false)}
-            onBlur={() => setIsTooltipVisible(false)}
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowLeft') {
-                event.preventDefault();
-                setIsTooltipVisible(true);
-                setActiveIndex((current) =>
-                  resolveAdjacentPostedViewsIndex(
-                    chart.bars,
-                    resolveNearestViewsChartIndex(chart.bars, current),
-                    -1,
-                  ),
-                );
-              }
-
-              if (event.key === 'ArrowRight') {
-                event.preventDefault();
-                setIsTooltipVisible(true);
-                setActiveIndex((current) =>
-                  resolveAdjacentPostedViewsIndex(
-                    chart.bars,
-                    resolveNearestViewsChartIndex(chart.bars, current),
-                    1,
-                  ),
-                );
-              }
-            }}
-          >
-            {activeBar && isTooltipVisible ? (
-              <div className="channel-stats-graph__tooltip" style={tooltipStyle}>
-                <small>{formatChartDetailDate(activeBar.at, stats.period.bucket)}</small>
-                <strong>{activeViewsCompactLabel} ср. просмотров</strong>
-                <span>Постов {formatCompactCount(activeBar.posts)}</span>
-                <span>Период {averageViewsCompactLabel}</span>
-                {activePreviousBar ? (
-                  <em>Прошлый: {formatCompactCount(activePreviousBar.views)} ср.</em>
-                ) : null}
-                {activePostPin ? (
-                  <em title={`${activePostPin.label} · ${activePostPin.detail}`}>
-                    {activePostPin.label} · {activePostPin.detail}
-                  </em>
-                ) : null}
-              </div>
-            ) : null}
-
-            <svg
-              viewBox={`0 0 ${CHART_VIEWBOX_WIDTH} ${chart.height}`}
-              className="channel-stats-graph__svg"
-              aria-hidden
-            >
-              <defs>
-                <linearGradient id="channel-views-bar" x1="0" x2="0" y1="18" y2="162">
-                  <stop offset="0" stopColor="#58a6ff" />
-                  <stop offset="1" stopColor="#0b84ff" />
-                </linearGradient>
-                <linearGradient
-                  id="channel-views-cumulative-line"
-                  x1="18"
-                  x2="306"
-                  y1="18"
-                  y2="162"
-                >
-                  <stop offset="0" stopColor="#9f7aea" />
-                  <stop offset="0.58" stopColor="#0b84ff" />
-                  <stop offset="1" stopColor="#35c59f" />
-                </linearGradient>
-                <linearGradient id="channel-views-cumulative-area" x1="0" x2="0" y1="16" y2="162">
-                  <stop offset="0" stopColor="#0b84ff" stopOpacity="0.16" />
-                  <stop offset="0.74" stopColor="#9f7aea" stopOpacity="0.05" />
-                  <stop offset="1" stopColor="#9f7aea" stopOpacity="0" />
-                </linearGradient>
-                <linearGradient id="channel-views-trend-area" x1="0" x2="0" y1="16" y2="176">
-                  <stop offset="0" stopColor="#0b84ff" stopOpacity="0.2" />
-                  <stop offset="0.66" stopColor="#35c59f" stopOpacity="0.08" />
-                  <stop offset="1" stopColor="#35c59f" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              {activeBar && hasBucketViews && isTooltipVisible ? (
-                <rect
-                  x={activeBar.x - activeBandWidth / 2}
-                  y={chart.guideYs[0]! - 10}
-                  width={activeBandWidth}
-                  height={chart.baselineY - chart.guideYs[0]! + 14}
-                  rx={activeBandWidth / 2}
-                  className="channel-stats-graph__active-band channel-stats-graph__active-band--views"
-                />
-              ) : null}
-              {chart.guideYs.map((y) => (
-                <line
-                  key={`views-guide-${y}`}
-                  x1={chart.leftPad}
-                  y1={y}
-                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
-                  y2={y}
-                  className="channel-stats-graph__grid"
-                />
-              ))}
-              <line
-                x1={chart.leftPad}
-                y1={chart.baselineY}
-                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
-                y2={chart.baselineY}
-                className="channel-stats-graph__baseline"
-              />
-              {chart.averageY !== null ? (
-                <line
-                  x1={chart.leftPad}
-                  y1={chart.averageY}
-                  x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
-                  y2={chart.averageY}
-                  className="channel-stats-graph__average-line"
-                />
-              ) : null}
-              {activeBar && hasBucketViews && isTooltipVisible ? (
-                <line
-                  x1={activeBar.x}
-                  y1={chart.guideYs[0]!}
-                  x2={activeBar.x}
-                  y2={chart.baselineY}
-                  className="channel-stats-graph__active-guide channel-stats-graph__active-guide--views"
-                />
-              ) : null}
-              {chart.aggregateBar ? (
-                <g className="channel-stats-graph__aggregate">
-                  <rect
-                    x={chart.aggregateBar.x}
-                    y={chart.aggregateBar.y}
-                    width={chart.aggregateBar.width}
-                    height={chart.aggregateBar.height}
-                    rx="16"
-                    className="channel-stats-graph__aggregate-bar"
-                  />
-                  <text
-                    x={chart.aggregateBar.x + 14}
-                    y={chart.aggregateBar.y + 27}
-                    className="channel-stats-graph__aggregate-text"
-                  >
-                    {averageViewsCompactLabel} просмотров
-                  </text>
-                  <text
-                    x={chart.aggregateBar.x + 14}
-                    y={chart.aggregateBar.y + 45}
-                    className="channel-stats-graph__aggregate-caption"
-                  >
-                    среднее за период
-                  </text>
-                </g>
-              ) : null}
-              {chart.trendAreaPath && !isSparseViews ? (
-                <path
-                  d={chart.trendAreaPath}
-                  className="channel-stats-graph__area channel-stats-graph__area--views"
-                />
-              ) : null}
-              {chart.bars.map((bar, index) => {
-                if (isSparseViews) {
-                  return null;
-                }
-
-                const isVisuallyActive =
-                  safeActiveIndex === index && (!isSparseViews || isTooltipVisible);
-                const width = isVisuallyActive ? activeViewBarWidth : viewBarWidth;
-                const height = bar.hasPosts ? Math.max(4, bar.height) : 0;
-                return (
-                  <rect
-                    key={labels[index]?.at ?? index}
-                    x={bar.x - width / 2}
-                    y={height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY}
-                    width={width}
-                    height={height}
-                    rx="6"
-                    className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
-                      isVisuallyActive ? 'is-active' : ''
-                    }`}
-                  />
-                );
-              })}
-              {!isSparseViews
-                ? chart.previousBars.map((bar, index) => {
-                    const height = bar.hasPosts ? Math.max(3, bar.height) : 0;
-                    return (
-                      <rect
-                        key={`previous-${bar.at}-${index}`}
-                        x={bar.x - previousBarWidth / 2}
-                        y={
-                          height > 0 ? Math.min(bar.y, chart.baselineY - height) : chart.baselineY
-                        }
-                        width={previousBarWidth}
-                        height={height}
-                        rx="5"
-                        className="channel-stats-graph__bar channel-stats-graph__bar--previous"
-                      />
-                    );
-                  })
-                : null}
-              {!isSparseViews && chart.previousTrendLinePath ? (
-                <path
-                  d={chart.previousTrendLinePath}
-                  className="channel-stats-graph__line channel-stats-graph__line--previous channel-stats-graph__line--views-previous"
-                />
-              ) : null}
-              {chart.trendLinePath && !isSparseViews ? (
-                <path
-                  d={chart.trendLinePath}
-                  className="channel-stats-graph__line channel-stats-graph__line--views"
-                />
-              ) : null}
-              {isSparseViews
-                ? postedBars.map((bar) => (
-                    <circle
-                      key={`posted-dot-${bar.at}`}
-                      cx={bar.x}
-                      cy={bar.y}
-                      r={
-                        isTooltipVisible && activeBar?.at === bar.at
-                          ? sparseViewDotRadius + 1
-                          : sparseViewDotRadius
-                      }
-                      className={`channel-stats-graph__view-dot ${
-                        isTooltipVisible && activeBar?.at === bar.at ? 'is-active' : ''
-                      }`}
-                    />
-                  ))
-                : null}
-              {activeBar && hasBucketViews && (!isSparseViews || isTooltipVisible) ? (
-                <circle
-                  cx={activeBar.x}
-                  cy={activeBar.y}
-                  r={isTooltipVisible ? '4.8' : '3.8'}
-                  className="channel-stats-graph__view-focus-dot"
-                />
-              ) : null}
-              {isSparseViews
-                ? sparsePostedLabels.map(({ bar, x, y }) => (
-                    <text
-                      key={`posted-hour-${bar.at}`}
-                      x={x}
-                      y={y}
-                      textAnchor="middle"
-                      className="channel-stats-graph__x-label channel-stats-graph__x-label--views"
-                    >
-                      {formatShortDate(bar.at, stats.period.bucket)}
-                    </text>
-                  ))
-                : null}
-              {graphMarkers.map((marker) => (
-                <g key={`${marker.code}-${marker.at}`} aria-hidden="true">
-                  <path
-                    d={`M ${marker.x.toFixed(2)} ${(chart.baselineY + 17).toFixed(
-                      2,
-                    )} l 4.8 -8.4 l 4.8 8.4 Z`}
-                    className={`channel-stats-graph__marker channel-stats-graph__marker--${marker.tone}`}
-                  >
-                    <title>{`${marker.label} ${marker.value}`}</title>
-                  </path>
-                </g>
-              ))}
-              <line
-                x1={chart.leftPad}
-                y1={chart.eventRailY}
-                x2={CHART_VIEWBOX_WIDTH - chart.rightPad}
-                y2={chart.eventRailY}
-                className="channel-stats-graph__event-rail"
-              />
-              {postPins.map((pin) => (
-                <g
-                  key={pin.messageId}
-                  className={`channel-stats-graph__post-marker channel-stats-graph__post-marker--${
-                    pin.tone
-                  } ${activePostPin?.messageId === pin.messageId ? 'is-active' : ''}`}
-                  transform={`translate(${pin.x.toFixed(2)} ${chart.eventRailY - 17})`}
-                >
-                  <title>{`${pin.label} · ${pin.detail}`}</title>
-                  <line x1="0" y1="9" x2="0" y2="17" />
-                  <circle cx="0" cy="5" r="4.5" />
-                </g>
-              ))}
-            </svg>
-          </div>
-
-          {renderPointMarkers ? (
-            <div className="channel-stats-graph__labels">
-              {labels.map((item, index) => (
-                <small
-                  key={`${item.at}-${index}`}
-                  className={safeActiveIndex === index ? 'is-active' : ''}
-                >
-                  {visibleLabelIndices.has(index)
-                    ? formatShortDate(item.at, stats.period.bucket)
-                    : '\u00a0'}
-                </small>
-              ))}
-            </div>
-          ) : null}
-
-          <output className="channel-stats-graph__sr" aria-live="polite">
-            {activePreviousBar
-              ? `${activeGuideLabel}. Прошлый период: ${formatCount(
-                  activePreviousBar.views,
-                )} просмотров.`
-              : activeGuideLabel}
-          </output>
-        </>
-      )}
-    </div>
-  );
-}
-
 function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const posts = stats.official.content.topPosts;
   const resolvePostViews = (
@@ -2278,30 +1424,14 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
 function ChannelStatsOverview({
   stats,
   range,
-  chartTab,
   onRangeChange,
-  onChartTabChange,
 }: {
   stats: ChannelStatsResponse;
   range: ChannelStatsRange;
-  chartTab: ChartTab;
   onRangeChange: (range: ChannelStatsRange) => void;
-  onChartTabChange: (tab: ChartTab) => void;
 }) {
-  const chartTabs = audienceTabOptions.filter((option) => {
-    if (option.value === 'views') {
-      return stats.meta.viewsAvailable;
-    }
-
-    return true;
-  });
-  const effectiveChartTab: ChartTab =
-    stats.meta.viewsAvailable && chartTabs.some((option) => option.value === chartTab)
-      ? chartTab
-      : 'audience';
   const summary = resolveChannelStatsSummary(stats);
   const summaryDailyRows = summary.daily.slice(-9).reverse();
-  const chartTitle = effectiveChartTab === 'audience' ? 'Подписчики' : 'Просмотры';
 
   return (
     <section
@@ -2361,21 +1491,12 @@ function ChannelStatsOverview({
           </div>
 
           <article
-            className={`channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--${effectiveChartTab}`}
+            className="channel-insights__chart-card channel-insights__chart-card--executive channel-insights__chart-card--audience"
           >
             <header className="channel-insights__chart-header">
-              <strong className="channel-insights__chart-title">{chartTitle}</strong>
+              <strong className="channel-insights__chart-title">Подписчики</strong>
 
               <div className="channel-insights__chart-controls">
-                {chartTabs.length > 1 ? (
-                  <SegmentedControl
-                    value={effectiveChartTab}
-                    options={chartTabs}
-                    onChange={(next) => onChartTabChange(next as ChartTab)}
-                    className="channel-insights__switch"
-                    ariaLabel="Метрика графика"
-                  />
-                ) : null}
                 <SegmentedControl
                   value={range}
                   options={periodOptions}
@@ -2386,11 +1507,7 @@ function ChannelStatsOverview({
               </div>
             </header>
 
-            {effectiveChartTab === 'audience' ? (
-              <AudienceChart stats={stats} />
-            ) : (
-              <ViewsChart stats={stats} />
-            )}
+            <AudienceChart stats={stats} />
           </article>
         </div>
 
@@ -2489,7 +1606,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<ChannelStatsSection>(() =>
     getInitialSection(location.search),
   );
-  const [chartTab, setChartTab] = useState<ChartTab>('audience');
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader({
     compactAfter: 12,
     hideAfter: 72,
@@ -2584,12 +1700,6 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
     saveChatTitle(chatId, resolvedTitle);
   }, [chatId, resolvedTitle]);
-
-  useEffect(() => {
-    if (stats && !stats.meta.viewsAvailable && chartTab === 'views') {
-      setChartTab('audience');
-    }
-  }, [chartTab, stats]);
 
   const loadedActivitySummary = useMemo(() => {
     const joined = activityFeed.items.reduce(
@@ -2859,9 +1969,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <ChannelStatsOverview
             stats={stats}
             range={range}
-            chartTab={chartTab}
             onRangeChange={setRange}
-            onChartTabChange={setChartTab}
           />
         ) : null}
       </div>

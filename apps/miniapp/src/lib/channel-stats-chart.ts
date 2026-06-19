@@ -5,7 +5,7 @@ export type AudienceChartActivePoint = {
   cumulativeNet: number;
 };
 
-export type ViewsChartActivePoint = {
+export type ViewsSeriesPoint = {
   posts: number;
   views: number;
 };
@@ -23,7 +23,7 @@ export type ViewsDisplayStats = {
       views: number;
     };
     series?: {
-      views?: readonly ViewsChartActivePoint[];
+      views?: readonly ViewsSeriesPoint[];
     };
   };
   summary?: {
@@ -89,7 +89,7 @@ export function resolveAudienceChartDisplayValue(
 }
 
 export function resolveAverageViewsFromSeries(
-  points: readonly ViewsChartActivePoint[],
+  points: readonly ViewsSeriesPoint[],
 ): number | null {
   const totals = points.reduce(
     (result, point) => {
@@ -142,45 +142,6 @@ export function resolveInitialAudienceChartIndex(
   return knownAudienceIndex >= 0 ? knownAudienceIndex : points.length - 1;
 }
 
-export function resolveInitialViewsChartIndex(points: readonly ViewsChartActivePoint[]): number {
-  if (points.length === 0) {
-    return 0;
-  }
-
-  const activeViewsIndex = findLastIndex(points, hasViewsChartPosts);
-  return activeViewsIndex >= 0 ? activeViewsIndex : 0;
-}
-
-export function resolveNearestViewsChartIndex(
-  points: readonly ViewsChartActivePoint[],
-  targetIndex: number,
-): number {
-  if (points.length === 0) {
-    return 0;
-  }
-
-  const safeIndex = Math.min(points.length - 1, Math.max(0, Math.round(targetIndex)));
-  if (hasViewsChartPosts(points[safeIndex]!)) {
-    return safeIndex;
-  }
-
-  let nearestIndex = -1;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-  for (let index = 0; index < points.length; index += 1) {
-    if (!hasViewsChartPosts(points[index]!)) {
-      continue;
-    }
-
-    const distance = Math.abs(index - safeIndex);
-    if (distance < nearestDistance) {
-      nearestIndex = index;
-      nearestDistance = distance;
-    }
-  }
-
-  return nearestIndex >= 0 ? nearestIndex : safeIndex;
-}
-
 export function shouldRenderChannelStatsPointMarkers(range: string, pointCount: number): boolean {
   if (pointCount <= 0 || range === '24h') {
     return false;
@@ -197,8 +158,4 @@ function findLastIndex<T>(items: readonly T[], predicate: (item: T) => boolean):
   }
 
   return -1;
-}
-
-function hasViewsChartPosts(point: ViewsChartActivePoint): boolean {
-  return typeof point.posts === 'number' && Number.isFinite(point.posts) && point.posts > 0;
 }
