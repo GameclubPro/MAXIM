@@ -64,5 +64,6 @@ describe('validateEnv boolean parsing', () => {
 
     expect(env.MODERATION_BACKGROUND_TASKS_ENABLED).toBe(true);
     expect(env.CHANNEL_STATS_STARTUP_SYNC_ENABLED).toBe(false);
+    expect(env.BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED).toBe(false);
   });
 });

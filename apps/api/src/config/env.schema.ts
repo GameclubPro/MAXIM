@@ -165,7 +165,7 @@ const envSchema = z.object({
   BACKGROUND_GOVERNOR_PAUSE_RETRY_AFTER_MS: z.coerce.number().int().positive().default(120_000),
   BACKGROUND_GOVERNOR_BOT_LOAD_SLOW_THRESHOLD: z.coerce.number().min(0.05).max(1).default(0.35),
   BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD: z.coerce.number().min(0.05).max(1).default(0.7),
-  BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: envBoolean(true),
+  BACKGROUND_GOVERNOR_SYSTEM_PRESSURE_ENABLED: envBoolean(false),
   BACKGROUND_GOVERNOR_SYSTEM_LOAD_SLOW_THRESHOLD: z.coerce.number().positive().default(0.85),
   BACKGROUND_GOVERNOR_SYSTEM_LOAD_PAUSE_THRESHOLD: z.coerce.number().positive().default(1.25),
   BACKGROUND_GOVERNOR_IOWAIT_SLOW_THRESHOLD: z.coerce.number().min(0.01).max(1).default(0.15),
