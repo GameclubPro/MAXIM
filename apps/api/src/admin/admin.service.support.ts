@@ -842,6 +842,10 @@ export type ChannelStatsSummaryWindowRow = {
 export type ChannelStatsPostViewMetric = {
   post: ChannelStatsPostRow;
   viewsDelta: number;
+  viewDeltas: Array<{
+    capturedAt: Date;
+    viewsDelta: number;
+  }>;
 };
 export type ChannelStatsContentBucketPoint = {
   at: string;

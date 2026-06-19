@@ -16252,6 +16252,7 @@ export class AdminService implements OnModuleDestroy {
         .sort((left, right) => left.capturedAt.getTime() - right.capturedAt.getTime());
       let previousViews: number | null = post.publishedAt.getTime() >= from.getTime() ? 0 : null;
       let viewsDelta = 0;
+      const viewDeltas: ChannelStatsPostViewMetric['viewDeltas'] = [];
 
       for (const snapshot of postSnapshots ?? []) {
         const currentViews = Math.max(0, this.toSafeInteger(snapshot.views));
@@ -16260,7 +16261,14 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        viewsDelta += Math.max(0, currentViews - previousViews);
+        const snapshotViewsDelta = Math.max(0, currentViews - previousViews);
+        viewsDelta += snapshotViewsDelta;
+        if (snapshotViewsDelta > 0) {
+          viewDeltas.push({
+            capturedAt: snapshot.capturedAt,
+            viewsDelta: snapshotViewsDelta,
+          });
+        }
         previousViews = currentViews;
       }
 
@@ -16271,6 +16279,7 @@ export class AdminService implements OnModuleDestroy {
       return {
         post,
         viewsDelta: hasPeriodDelta ? viewsDelta : 0,
+        viewDeltas: hasPeriodDelta ? viewDeltas : [],
       };
     });
   }
@@ -16757,12 +16766,20 @@ export class AdminService implements OnModuleDestroy {
     const grouped = new Map<string, { posts: number; views: number }>();
 
     for (const metric of postViewMetrics) {
-      const bucketStart = this.floorChannelStatsBucket(metric.post.publishedAt, bucket);
-      const key = bucketStart.toISOString();
-      const current = grouped.get(key) ?? { posts: 0, views: 0 };
-      current.posts += 1;
-      current.views += Math.max(0, metric.viewsDelta);
-      grouped.set(key, current);
+      const deltas =
+        metric.viewDeltas.length > 0
+          ? metric.viewDeltas
+          : metric.viewsDelta > 0
+            ? [{ capturedAt: metric.post.publishedAt, viewsDelta: metric.viewsDelta }]
+            : [];
+      for (const delta of deltas) {
+        const bucketStart = this.floorChannelStatsBucket(delta.capturedAt, bucket);
+        const key = bucketStart.toISOString();
+        const current = grouped.get(key) ?? { posts: 0, views: 0 };
+        current.posts += 1;
+        current.views += Math.max(0, delta.viewsDelta);
+        grouped.set(key, current);
+      }
     }
 
     return bucketStarts.map((bucketStart) => {

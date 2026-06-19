@@ -17757,6 +17757,10 @@ describe('AdminService.getChannelStats', () => {
             publishedAt: Date;
           };
           viewsDelta: number;
+          viewDeltas: Array<{
+            capturedAt: Date;
+            viewsDelta: number;
+          }>;
         }>,
         bucket: 'hour' | 'day',
       ) => Array<{ at: string; views: number }>;
@@ -17767,15 +17771,27 @@ describe('AdminService.getChannelStats', () => {
       [
         {
           post: {
-            publishedAt: new Date('2026-03-07T09:20:00.000Z'),
+            publishedAt: new Date('2026-03-07T08:20:00.000Z'),
           },
           viewsDelta: 45,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T09:10:00.000Z'),
+              viewsDelta: 45,
+            },
+          ],
         },
         {
           post: {
-            publishedAt: new Date('2026-03-07T10:15:00.000Z'),
+            publishedAt: new Date('2026-03-07T08:40:00.000Z'),
           },
           viewsDelta: 75,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T10:05:00.000Z'),
+              viewsDelta: 75,
+            },
+          ],
         },
       ],
       'hour',
@@ -17808,6 +17824,10 @@ describe('AdminService.getChannelStats', () => {
             publishedAt: Date;
           };
           viewsDelta: number;
+          viewDeltas: Array<{
+            capturedAt: Date;
+            viewsDelta: number;
+          }>;
         }>,
         bucket: 'hour' | 'day',
       ) => Array<{ at: string; views: number }>;
@@ -17821,12 +17841,24 @@ describe('AdminService.getChannelStats', () => {
             publishedAt: new Date('2026-03-07T09:20:00.000Z'),
           },
           viewsDelta: 100,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T11:20:00.000Z'),
+              viewsDelta: 100,
+            },
+          ],
         },
         {
           post: {
             publishedAt: new Date('2026-03-07T10:15:00.000Z'),
           },
           viewsDelta: 300,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-03-07T11:25:00.000Z'),
+              viewsDelta: 300,
+            },
+          ],
         },
       ],
       'day',
@@ -17836,6 +17868,61 @@ describe('AdminService.getChannelStats', () => {
       {
         at: '2026-03-07T00:00:00.000Z',
         views: 200,
+      },
+    ]);
+  });
+
+  it('places view chart points in the bucket where views were observed', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const statsHelpers = service as unknown as {
+      buildAverageViewsSeriesFromPostMetrics: (
+        bucketStarts: Date[],
+        postViewMetrics: Array<{
+          post: {
+            publishedAt: Date;
+          };
+          viewsDelta: number;
+          viewDeltas: Array<{
+            capturedAt: Date;
+            viewsDelta: number;
+          }>;
+        }>,
+        bucket: 'hour' | 'day',
+      ) => Array<{ at: string; views: number }>;
+    };
+
+    const series = statsHelpers.buildAverageViewsSeriesFromPostMetrics(
+      [new Date('2026-06-12T00:00:00.000Z'), new Date('2026-06-18T00:00:00.000Z')],
+      [
+        {
+          post: {
+            publishedAt: new Date('2026-06-12T09:20:00.000Z'),
+          },
+          viewsDelta: 900,
+          viewDeltas: [
+            {
+              capturedAt: new Date('2026-06-18T11:00:00.000Z'),
+              viewsDelta: 900,
+            },
+          ],
+        },
+      ],
+      'day',
+    );
+
+    expect(series).toEqual([
+      {
+        at: '2026-06-12T00:00:00.000Z',
+        views: 0,
+      },
+      {
+        at: '2026-06-18T00:00:00.000Z',
+        views: 900,
       },
     ]);
   });
