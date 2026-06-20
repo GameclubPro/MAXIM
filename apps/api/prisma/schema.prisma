@@ -934,6 +934,28 @@ model GlobalSpammerShadowScore {
   @@map("global_spammer_shadow_scores")
 }
 
+model GlobalSpammerRuntimeProfile {
+  userId            String    @id @map("user_id")
+  registryStatus    String    @map("registry_status")
+  action            String
+  confidenceScore   Float?    @map("confidence_score")
+  shadowScore       Float?    @map("shadow_score")
+  policyBand        String    @default("LOW") @map("policy_band")
+  reason            String
+  expiresAt         DateTime? @map("expires_at")
+  suppressedUntil   DateTime? @map("suppressed_until")
+  sourceBreakdown   Json?     @map("source_breakdown")
+  campaignBreakdown Json?     @map("campaign_breakdown")
+  sourceVersion     Int       @default(2) @map("source_version")
+  staleAfter        DateTime? @map("stale_after")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([registryStatus, updatedAt(sort: Desc)], map: "spammer_runtime_profiles_status_updated_idx")
+  @@index([staleAfter], map: "spammer_runtime_profiles_stale_after_idx")
+  @@map("spammer_user_runtime_profiles")
+}
+
 model GlobalSpammerReviewFeedback {
   id                    String   @id @default(cuid())
   userId                String   @map("user_id")

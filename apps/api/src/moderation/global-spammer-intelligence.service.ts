@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { type RuleViolation } from './rule-engine.contract';
 import { maskText } from './text-mask.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { RedisCounterService } from './redis-counter.service';
 
 export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'FANOUT_HIGH',
@@ -336,6 +337,9 @@ type PolicyDecisionRiskContext = {
 type GlobalSpammerRow = Prisma.GlobalSpammerGetPayload<Record<string, never>>;
 type GlobalSpammerCandidateRow = Prisma.GlobalSpammerCandidateGetPayload<Record<string, never>>;
 type GlobalSpammerSuppressionRow = Prisma.GlobalSpammerSuppressionGetPayload<Record<string, never>>;
+type GlobalSpammerRuntimeProfileRow = Prisma.GlobalSpammerRuntimeProfileGetPayload<
+  Record<string, never>
+>;
 
 type PolicyDecisionLookupContext = {
   now?: Date;
@@ -363,6 +367,23 @@ type ReviewMetricsObservationRow = {
   source: string;
   observedCount: unknown;
   suppressedCount: unknown;
+};
+
+type RuntimeProfileSnapshot = {
+  userId: string;
+  registryStatus: GlobalSpammerRegistryStatus;
+  action: GlobalSpammerPolicyAction;
+  confidenceScore: number | null;
+  shadowScore: number | null;
+  policyBand: GlobalSpammerPolicyBand;
+  reason: string;
+  expiresAt: string | null;
+  suppressedUntil: string | null;
+  sourceBreakdown: Prisma.InputJsonValue | null;
+  campaignBreakdown: Prisma.InputJsonValue | null;
+  sourceVersion: number;
+  staleAfter: string | null;
+  updatedAt: string;
 };
 
 type LocalAdminDecisionRow = {
@@ -439,6 +460,11 @@ const SOURCE_BASE_REPUTATION_WEIGHTS: Record<GlobalSpammerObservationSource, num
 
 const SOURCE_REPUTATION_WINDOW_DAYS = 30;
 const SOURCE_REPUTATION_CACHE_TTL_MS = 30_000;
+const RUNTIME_PROFILE_SOURCE_VERSION = 2;
+const RUNTIME_PROFILE_L1_TTL_MS = 5_000;
+const RUNTIME_PROFILE_REDIS_TTL_SEC = 60;
+const RUNTIME_PROFILE_REDIS_NEGATIVE_TTL_SEC = 120;
+const RUNTIME_PROFILE_DEFAULT_STALE_MS = 5 * 60 * 1000;
 const RECENT_SUPPRESSION_MEMORY_DAYS = 30;
 const GRAPH_SIGNAL_TTL_DAYS = 14;
 const GRAPH_OBSERVATION_TTL_DAYS = 14;
@@ -466,6 +492,13 @@ const PROMOTION_BEHAVIOR_SOURCES = new Set<GlobalSpammerObservationSource>([
 export class GlobalSpammerIntelligenceService {
   private readonly logger = new Logger(GlobalSpammerIntelligenceService.name);
   private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
+  private readonly runtimeProfileCacheEnabled: boolean;
+  private readonly runtimeProfileReadModelEnabled: boolean;
+  private readonly runtimeProfileAsyncWriteEnabled: boolean;
+  private readonly runtimeProfileL1Cache = new Map<
+    string,
+    { snapshot: RuntimeProfileSnapshot | null; expiresAtMs: number }
+  >();
   private sourceReputationCache: {
     expiresAtMs: number;
     rows: SourceReputation[];
@@ -475,8 +508,21 @@ export class GlobalSpammerIntelligenceService {
     private readonly prisma: PrismaService,
     @Optional() configService?: ConfigService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
+    @Optional() private readonly redisCounter?: RedisCounterService,
   ) {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
+    this.runtimeProfileCacheEnabled = this.readBooleanConfig(
+      configService?.get<boolean | string>('SPAMMER_PROFILE_CACHE_ENABLED'),
+      false,
+    );
+    this.runtimeProfileReadModelEnabled = this.readBooleanConfig(
+      configService?.get<boolean | string>('SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED'),
+      false,
+    );
+    this.runtimeProfileAsyncWriteEnabled = this.readBooleanConfig(
+      configService?.get<boolean | string>('SPAMMER_DENORM_ASYNC_ENABLED'),
+      true,
+    );
   }
 
   async recordCommercialObservations(params: {
@@ -625,12 +671,8 @@ export class GlobalSpammerIntelligenceService {
     }
 
     const reason =
-      this.normalizeText(params.reason) ||
-      'По решению разработчика бота за нарушение правил';
-    const ttlDays = Math.max(
-      1,
-      Math.trunc(params.ttlDays ?? DEVELOPER_FORCED_REGISTRY_TTL_DAYS),
-    );
+      this.normalizeText(params.reason) || 'По решению разработчика бота за нарушение правил';
+    const ttlDays = Math.max(1, Math.trunc(params.ttlDays ?? DEVELOPER_FORCED_REGISTRY_TTL_DAYS));
 
     return this.recordObservation({
       userId,
@@ -698,6 +740,7 @@ export class GlobalSpammerIntelligenceService {
         reason,
       },
     });
+    await this.invalidateRuntimeProfileCaches(userId);
 
     if (decision === 'BLOCK' || decision === 'ALLOW') {
       await this.recordObservation({
@@ -806,6 +849,7 @@ export class GlobalSpammerIntelligenceService {
       },
     });
     this.invalidateSourceReputationCache();
+    await this.invalidateRuntimeProfileCaches(userId);
 
     const campaignSummaries = await this.recordCampaignClustersForObservation({
       userId,
@@ -850,6 +894,7 @@ export class GlobalSpammerIntelligenceService {
         reviewReason: activeSuppression.reason,
         falsePositive: true,
       });
+      await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
 
       return {
         outcome: 'suppressed',
@@ -882,6 +927,7 @@ export class GlobalSpammerIntelligenceService {
         reviewReason: null,
         registryTtlDays: input.registryTtlDays ?? null,
       });
+      await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
       return {
         outcome: 'registry',
         userId,
@@ -907,6 +953,7 @@ export class GlobalSpammerIntelligenceService {
         reviewReason: null,
         falsePositive: false,
       });
+      await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
       return {
         outcome: 'candidate',
         userId,
@@ -1000,6 +1047,12 @@ export class GlobalSpammerIntelligenceService {
       }),
     ]);
     this.invalidateSourceReputationCache();
+    await this.invalidateRuntimeProfileCaches(userId);
+    await this.scheduleRuntimeProfileRefresh(
+      userId,
+      input.sourceChatId ?? null,
+      'record-suppression',
+    );
 
     return { ok: true };
   }
@@ -1060,6 +1113,8 @@ export class GlobalSpammerIntelligenceService {
         action: params.action,
         reviewerUserId: params.reviewerUserId,
       });
+      await this.invalidateRuntimeProfileCaches(userId);
+      await this.scheduleRuntimeProfileRefresh(userId, params.chatId, 'review-candidate');
       return { ok: true, status: 'SUPPRESSED', userId };
     }
 
@@ -1087,6 +1142,8 @@ export class GlobalSpammerIntelligenceService {
       action: params.action,
       reviewerUserId: params.reviewerUserId,
     });
+    await this.invalidateRuntimeProfileCaches(userId);
+    await this.scheduleRuntimeProfileRefresh(userId, params.chatId, 'review-candidate');
 
     return { ok: true, status: 'APPROVED', userId };
   }
@@ -1541,11 +1598,29 @@ export class GlobalSpammerIntelligenceService {
       });
     }
 
+    const runtimeProfileDecision = await this.evaluatePolicyFromRuntimeProfile({
+      chatId,
+      userId,
+      trigger: params.trigger,
+      deleteSpammersEnabled: params.deleteSpammersEnabled,
+      adminExempt,
+      enforcementMode,
+      recordDecision: Boolean(params.recordDecision),
+      messageId: params.messageId ?? null,
+      enforced: params.enforced,
+      now,
+      lookupContextProvided: params.lookupContext !== undefined,
+    });
+    if (runtimeProfileDecision) {
+      return runtimeProfileDecision;
+    }
+
     const activeSuppression =
       params.lookupContext?.activeSuppression !== undefined
         ? params.lookupContext.activeSuppression
         : await this.findActiveSuppression(userId, now);
     let decision: GlobalSpammerPolicyDecision;
+    let candidate: GlobalSpammerCandidateRow | null = null;
     const registry =
       params.lookupContext?.registry !== undefined
         ? params.lookupContext.registry
@@ -1559,8 +1634,7 @@ export class GlobalSpammerIntelligenceService {
       this.hasDeveloperForcedSource(registry?.sourceBreakdown);
 
     if (developerForcedRegistryActive && registry) {
-      const action =
-        enforcementMode === 'shadow' ? 'SHADOW_DELETE_AND_KICK' : 'DELETE_AND_KICK';
+      const action = enforcementMode === 'shadow' ? 'SHADOW_DELETE_AND_KICK' : 'DELETE_AND_KICK';
       decision = this.buildPolicyDecision({
         userId,
         chatId,
@@ -1651,7 +1725,7 @@ export class GlobalSpammerIntelligenceService {
           enforced: false,
         });
       } else {
-        const candidate =
+        candidate =
           params.lookupContext?.candidate !== undefined
             ? params.lookupContext.candidate
             : await this.prisma.globalSpammerCandidate.findUnique({
@@ -1694,6 +1768,15 @@ export class GlobalSpammerIntelligenceService {
         messageId: params.messageId ?? null,
       });
     }
+    await this.scheduleRuntimeProfileWriteFromDecision({
+      decision,
+      activeSuppression,
+      registry,
+      candidate,
+      now,
+      source: 'evaluate-policy-fallback',
+      lookupContextProvided: params.lookupContext !== undefined,
+    });
     return decision;
   }
 
@@ -2307,6 +2390,305 @@ export class GlobalSpammerIntelligenceService {
     };
   }
 
+  private async evaluatePolicyFromRuntimeProfile(params: {
+    chatId: string | null;
+    userId: string;
+    trigger: string;
+    deleteSpammersEnabled: boolean;
+    adminExempt: boolean;
+    enforcementMode: GlobalSpammerEnforcementMode;
+    recordDecision: boolean;
+    messageId: string | null;
+    enforced?: boolean;
+    now: Date;
+    lookupContextProvided: boolean;
+  }): Promise<GlobalSpammerPolicyDecision | null> {
+    if (
+      !this.runtimeProfileCacheEnabled ||
+      !this.runtimeProfileReadModelEnabled ||
+      params.lookupContextProvided
+    ) {
+      return null;
+    }
+
+    const snapshot = await this.readRuntimeProfileSnapshot(params.userId, params.now);
+    if (!snapshot) {
+      return null;
+    }
+
+    const developerForcedProfileActive =
+      snapshot.registryStatus === 'ACTIVE_CONFIRMED' &&
+      this.hasDeveloperForcedSource(snapshot.sourceBreakdown);
+    const adminExempt = params.adminExempt && !developerForcedProfileActive;
+    const baseAction = this.resolveRuntimeProfileAction({
+      snapshot,
+      deleteSpammersEnabled: params.deleteSpammersEnabled,
+      enforcementMode: params.enforcementMode,
+      developerForced: developerForcedProfileActive,
+    });
+    const decision = this.attachPolicyRiskContext(
+      this.buildPolicyDecision({
+        userId: params.userId,
+        chatId: params.chatId,
+        trigger: params.trigger,
+        registryStatus: adminExempt ? 'ADMIN_EXEMPT' : snapshot.registryStatus,
+        action: adminExempt ? 'NONE' : baseAction,
+        enforcementMode: params.enforcementMode,
+        deleteSpammersEnabled: params.deleteSpammersEnabled,
+        adminExempt: params.adminExempt,
+        confidenceScore: snapshot.confidenceScore,
+        reason: adminExempt ? 'ADMIN_EXEMPT' : snapshot.reason,
+        expiresAt: adminExempt ? null : (snapshot.expiresAt ?? snapshot.suppressedUntil),
+        sourceBreakdown: adminExempt ? null : snapshot.sourceBreakdown,
+        enforced: Boolean(
+          (params.enforced ?? params.recordDecision) &&
+          !adminExempt &&
+          baseAction === 'DELETE_AND_KICK',
+        ),
+      }),
+      {
+        shadowScore: snapshot.shadowScore,
+        campaignBreakdown: snapshot.campaignBreakdown,
+      },
+    );
+
+    if (params.recordDecision) {
+      await this.recordPolicyDecision({
+        decision,
+        messageId: params.messageId,
+      });
+    }
+
+    this.logSpammerIntelligenceTiming('evaluatePolicyRuntimeProfileHit', {
+      userId: params.userId,
+      chatId: params.chatId,
+      registryStatus: snapshot.registryStatus,
+      action: decision.action,
+    });
+    return decision;
+  }
+
+  private resolveRuntimeProfileAction(params: {
+    snapshot: RuntimeProfileSnapshot;
+    deleteSpammersEnabled: boolean;
+    enforcementMode: GlobalSpammerEnforcementMode;
+    developerForced: boolean;
+  }): GlobalSpammerPolicyAction {
+    if (
+      params.snapshot.registryStatus !== 'ACTIVE_CONFIRMED' ||
+      params.snapshot.action === 'NONE' ||
+      (!params.deleteSpammersEnabled && !params.developerForced)
+    ) {
+      return 'NONE';
+    }
+    return params.enforcementMode === 'shadow' ? 'SHADOW_DELETE_AND_KICK' : 'DELETE_AND_KICK';
+  }
+
+  private async readRuntimeProfileSnapshot(
+    userId: string,
+    now: Date,
+  ): Promise<RuntimeProfileSnapshot | null> {
+    const cached = this.readRuntimeProfileFromL1(userId);
+    if (cached !== undefined) {
+      return this.isFreshRuntimeProfileSnapshot(cached, now) ? cached : null;
+    }
+
+    const redisSnapshot = await this.readRuntimeProfileFromRedis(userId);
+    if (redisSnapshot !== undefined) {
+      this.writeRuntimeProfileToL1(userId, redisSnapshot);
+      return this.isFreshRuntimeProfileSnapshot(redisSnapshot, now) ? redisSnapshot : null;
+    }
+
+    const row = await this.prisma.globalSpammerRuntimeProfile.findUnique({
+      where: {
+        userId,
+      },
+    });
+    const snapshot = row ? this.runtimeProfileRowToSnapshot(row) : null;
+    await this.writeRuntimeProfileToCaches(userId, snapshot);
+    return this.isFreshRuntimeProfileSnapshot(snapshot, now) ? snapshot : null;
+  }
+
+  private readRuntimeProfileFromL1(userId: string): RuntimeProfileSnapshot | null | undefined {
+    const entry = this.runtimeProfileL1Cache.get(userId);
+    if (!entry) {
+      return undefined;
+    }
+    if (entry.expiresAtMs <= Date.now()) {
+      this.runtimeProfileL1Cache.delete(userId);
+      return undefined;
+    }
+    return entry.snapshot ? { ...entry.snapshot } : null;
+  }
+
+  private writeRuntimeProfileToL1(
+    userId: string,
+    snapshot: RuntimeProfileSnapshot | null,
+    ttlMs = RUNTIME_PROFILE_L1_TTL_MS,
+  ): void {
+    this.runtimeProfileL1Cache.set(userId, {
+      snapshot: snapshot ? { ...snapshot } : null,
+      expiresAtMs: Date.now() + Math.max(1, ttlMs),
+    });
+  }
+
+  private async readRuntimeProfileFromRedis(
+    userId: string,
+  ): Promise<RuntimeProfileSnapshot | null | undefined> {
+    if (!this.redisCounter) {
+      return undefined;
+    }
+    try {
+      const value = await this.redisCounter.getString(this.buildRuntimeProfileCacheKey(userId));
+      if (value === null) {
+        return undefined;
+      }
+      if (value === 'null') {
+        return null;
+      }
+      return this.parseRuntimeProfileSnapshot(value);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read spammer runtime profile cache',
+      );
+      return undefined;
+    }
+  }
+
+  private async writeRuntimeProfileToCaches(
+    userId: string,
+    snapshot: RuntimeProfileSnapshot | null,
+  ): Promise<void> {
+    this.writeRuntimeProfileToL1(userId, snapshot);
+    if (!this.redisCounter) {
+      return;
+    }
+    try {
+      await this.redisCounter.setStringWithTtl(
+        this.buildRuntimeProfileCacheKey(userId),
+        snapshot ? JSON.stringify(snapshot) : 'null',
+        snapshot ? RUNTIME_PROFILE_REDIS_TTL_SEC : RUNTIME_PROFILE_REDIS_NEGATIVE_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to write spammer runtime profile cache',
+      );
+    }
+  }
+
+  private async invalidateRuntimeProfileCaches(userId: string): Promise<void> {
+    if (!this.runtimeProfileCacheEnabled) {
+      return;
+    }
+    this.runtimeProfileL1Cache.delete(userId);
+    if (!this.redisCounter) {
+      return;
+    }
+    try {
+      await this.redisCounter.deleteKey(this.buildRuntimeProfileCacheKey(userId));
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to invalidate spammer runtime profile cache',
+      );
+    }
+  }
+
+  private buildRuntimeProfileCacheKey(userId: string): string {
+    return `spammer:profile:v2:${userId}`;
+  }
+
+  private isFreshRuntimeProfileSnapshot(
+    snapshot: RuntimeProfileSnapshot | null,
+    now: Date,
+  ): snapshot is RuntimeProfileSnapshot {
+    if (!snapshot || snapshot.sourceVersion !== RUNTIME_PROFILE_SOURCE_VERSION) {
+      return false;
+    }
+    if (snapshot.staleAfter && new Date(snapshot.staleAfter) <= now) {
+      return false;
+    }
+    if (
+      snapshot.registryStatus === 'ACTIVE_CONFIRMED' &&
+      (!snapshot.expiresAt || new Date(snapshot.expiresAt) <= now)
+    ) {
+      return false;
+    }
+    if (
+      snapshot.registryStatus === 'SUPPRESSED' &&
+      snapshot.suppressedUntil &&
+      new Date(snapshot.suppressedUntil) <= now
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  private parseRuntimeProfileSnapshot(value: string): RuntimeProfileSnapshot | null | undefined {
+    try {
+      const parsed = JSON.parse(value) as Partial<RuntimeProfileSnapshot>;
+      if (
+        !parsed ||
+        typeof parsed.userId !== 'string' ||
+        typeof parsed.registryStatus !== 'string' ||
+        typeof parsed.action !== 'string' ||
+        typeof parsed.reason !== 'string' ||
+        typeof parsed.sourceVersion !== 'number'
+      ) {
+        return undefined;
+      }
+      return {
+        userId: parsed.userId,
+        registryStatus: this.normalizeRegistryStatus(parsed.registryStatus),
+        action: this.normalizePolicyAction(parsed.action),
+        confidenceScore: this.readOptionalScore(parsed.confidenceScore),
+        shadowScore: this.readOptionalScore(parsed.shadowScore),
+        policyBand: this.normalizePolicyBand(parsed.policyBand),
+        reason: parsed.reason,
+        expiresAt: typeof parsed.expiresAt === 'string' ? parsed.expiresAt : null,
+        suppressedUntil: typeof parsed.suppressedUntil === 'string' ? parsed.suppressedUntil : null,
+        sourceBreakdown: this.toNullableInputJsonValue(parsed.sourceBreakdown),
+        campaignBreakdown: this.toNullableInputJsonValue(parsed.campaignBreakdown),
+        sourceVersion: parsed.sourceVersion,
+        staleAfter: typeof parsed.staleAfter === 'string' ? parsed.staleAfter : null,
+        updatedAt:
+          typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private runtimeProfileRowToSnapshot(row: GlobalSpammerRuntimeProfileRow): RuntimeProfileSnapshot {
+    return {
+      userId: row.userId,
+      registryStatus: this.normalizeRegistryStatus(row.registryStatus),
+      action: this.normalizePolicyAction(row.action),
+      confidenceScore: this.readOptionalScore(row.confidenceScore),
+      shadowScore: this.readOptionalScore(row.shadowScore),
+      policyBand: this.normalizePolicyBand(row.policyBand),
+      reason: row.reason,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      suppressedUntil: row.suppressedUntil?.toISOString() ?? null,
+      sourceBreakdown: this.toNullableInputJsonValue(row.sourceBreakdown),
+      campaignBreakdown: this.toNullableInputJsonValue(row.campaignBreakdown),
+      sourceVersion: row.sourceVersion,
+      staleAfter: row.staleAfter?.toISOString() ?? null,
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
   private async buildPolicyDecisionRiskContext(userId: string): Promise<PolicyDecisionRiskContext> {
     const latestShadowScore = await this.prisma.globalSpammerShadowScore.findFirst({
       where: {
@@ -2336,6 +2718,203 @@ export class GlobalSpammerIntelligenceService {
           : null,
       campaignBreakdown,
     };
+  }
+
+  private async scheduleRuntimeProfileWriteFromDecision(params: {
+    decision: GlobalSpammerPolicyDecision;
+    activeSuppression?: GlobalSpammerSuppressionRow | null;
+    registry?: GlobalSpammerRow | null;
+    candidate?: GlobalSpammerCandidateRow | null;
+    now: Date;
+    source: string;
+    lookupContextProvided: boolean;
+  }): Promise<void> {
+    if (!this.runtimeProfileCacheEnabled) {
+      return;
+    }
+    if (this.runtimeProfileAsyncWriteEnabled) {
+      void this.writeRuntimeProfileFromDecision(params).catch((error: unknown) => {
+        this.logger.debug(
+          {
+            userId: params.decision.userId,
+            source: params.source,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to refresh spammer runtime profile asynchronously',
+        );
+      });
+      return;
+    }
+    await this.writeRuntimeProfileFromDecision(params);
+  }
+
+  private async writeRuntimeProfileFromDecision(params: {
+    decision: GlobalSpammerPolicyDecision;
+    activeSuppression?: GlobalSpammerSuppressionRow | null;
+    registry?: GlobalSpammerRow | null;
+    candidate?: GlobalSpammerCandidateRow | null;
+    now: Date;
+    source: string;
+    lookupContextProvided: boolean;
+  }): Promise<void> {
+    const snapshot = this.buildRuntimeProfileSnapshotFromDecision(params);
+    const staleAfter = snapshot.staleAfter ? new Date(snapshot.staleAfter) : null;
+    await this.prisma.globalSpammerRuntimeProfile.upsert({
+      where: {
+        userId: snapshot.userId,
+      },
+      create: {
+        userId: snapshot.userId,
+        registryStatus: snapshot.registryStatus,
+        action: snapshot.action,
+        confidenceScore: snapshot.confidenceScore,
+        shadowScore: snapshot.shadowScore,
+        policyBand: snapshot.policyBand,
+        reason: snapshot.reason,
+        expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
+        suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
+        sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
+        campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
+        sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
+        staleAfter,
+      },
+      update: {
+        registryStatus: snapshot.registryStatus,
+        action: snapshot.action,
+        confidenceScore: snapshot.confidenceScore,
+        shadowScore: snapshot.shadowScore,
+        policyBand: snapshot.policyBand,
+        reason: snapshot.reason,
+        expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
+        suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
+        sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
+        campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
+        sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
+        staleAfter,
+      },
+    });
+    await this.writeRuntimeProfileToCaches(snapshot.userId, snapshot);
+  }
+
+  private async scheduleRuntimeProfileRefresh(
+    userId: string,
+    chatId: string | null,
+    source: string,
+  ): Promise<void> {
+    if (!this.runtimeProfileCacheEnabled) {
+      return;
+    }
+    const task = async () => {
+      const now = new Date();
+      const [registry, candidate, activeSuppression, riskContext] = await Promise.all([
+        this.prisma.globalSpammer.findUnique({ where: { userId } }),
+        this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+        this.findActiveSuppression(userId, now),
+        this.buildPolicyDecisionRiskContext(userId),
+      ]);
+      const decision = await this.evaluatePolicy({
+        chatId,
+        userId,
+        trigger: `runtime-profile:${source}`,
+        deleteSpammersEnabled: true,
+        enforcementMode: 'enforce',
+        recordDecision: false,
+        riskContext,
+        lookupContext: {
+          now,
+          registry,
+          candidate,
+          activeSuppression,
+        },
+      });
+      await this.writeRuntimeProfileFromDecision({
+        decision,
+        activeSuppression,
+        registry,
+        candidate,
+        now,
+        source,
+        lookupContextProvided: true,
+      });
+    };
+
+    if (this.runtimeProfileAsyncWriteEnabled) {
+      void task().catch((error: unknown) => {
+        this.logger.debug(
+          {
+            userId,
+            source,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to refresh spammer runtime profile',
+        );
+      });
+      return;
+    }
+    await task();
+  }
+
+  private buildRuntimeProfileSnapshotFromDecision(params: {
+    decision: GlobalSpammerPolicyDecision;
+    activeSuppression?: GlobalSpammerSuppressionRow | null;
+    registry?: GlobalSpammerRow | null;
+    candidate?: GlobalSpammerCandidateRow | null;
+    now: Date;
+  }): RuntimeProfileSnapshot {
+    const decision = params.decision;
+    const expiresAt =
+      decision.registryStatus === 'ACTIVE_CONFIRMED'
+        ? (params.registry?.expiresAt?.toISOString() ?? decision.expiresAt)
+        : decision.registryStatus === 'EXPIRED'
+          ? (params.registry?.expiresAt?.toISOString() ?? decision.expiresAt)
+          : null;
+    const suppressedUntil =
+      decision.registryStatus === 'SUPPRESSED'
+        ? (params.activeSuppression?.suppressedUntil.toISOString() ?? decision.expiresAt)
+        : (params.candidate?.suppressedUntil?.toISOString() ?? null);
+    const staleAfter = this.resolveRuntimeProfileStaleAfter({
+      status: decision.registryStatus,
+      expiresAt,
+      suppressedUntil,
+      now: params.now,
+    });
+    return {
+      userId: decision.userId,
+      registryStatus: decision.registryStatus,
+      action: decision.registryStatus === 'ACTIVE_CONFIRMED' ? 'DELETE_AND_KICK' : 'NONE',
+      confidenceScore: decision.confidenceScore,
+      shadowScore: decision.shadowScore,
+      policyBand: decision.policyBand,
+      reason: decision.reason,
+      expiresAt,
+      suppressedUntil,
+      sourceBreakdown: decision.sourceBreakdown,
+      campaignBreakdown: decision.campaignBreakdown,
+      sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
+      staleAfter: staleAfter.toISOString(),
+      updatedAt: params.now.toISOString(),
+    };
+  }
+
+  private resolveRuntimeProfileStaleAfter(params: {
+    status: GlobalSpammerRegistryStatus;
+    expiresAt: string | null;
+    suppressedUntil: string | null;
+    now: Date;
+  }): Date {
+    const statusDeadline =
+      params.status === 'ACTIVE_CONFIRMED'
+        ? params.expiresAt
+        : params.status === 'SUPPRESSED'
+          ? params.suppressedUntil
+          : null;
+    if (statusDeadline) {
+      const parsed = new Date(statusDeadline);
+      if (Number.isFinite(parsed.getTime()) && parsed > params.now) {
+        return parsed;
+      }
+    }
+    return new Date(params.now.getTime() + RUNTIME_PROFILE_DEFAULT_STALE_MS);
   }
 
   private buildPolicyRiskContextFromDiagnostics(params: {
@@ -3773,7 +4352,7 @@ export class GlobalSpammerIntelligenceService {
     return independentBehaviorSources.length >= 2 && !hasFanoutOnlyBehavior;
   }
 
-  private hasDeveloperForcedSource(sourceBreakdown: Prisma.JsonValue | null | undefined): boolean {
+  private hasDeveloperForcedSource(sourceBreakdown: unknown): boolean {
     const source = this.asRecord(sourceBreakdown);
     return Boolean(source?.DEVELOPER_FORCED);
   }
@@ -4215,6 +4794,66 @@ export class GlobalSpammerIntelligenceService {
     return this.maxBotRegistry?.isKnownBotUserId(userId) === true;
   }
 
+  private readBooleanConfig(
+    value: boolean | string | null | undefined,
+    defaultValue: boolean,
+  ): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value !== 'string') {
+      return defaultValue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'off'].includes(normalized)) {
+      return false;
+    }
+    return defaultValue;
+  }
+
+  private normalizeRegistryStatus(value: string | null | undefined): GlobalSpammerRegistryStatus {
+    const normalized = value?.trim().toUpperCase();
+    switch (normalized) {
+      case 'ACTIVE_CONFIRMED':
+      case 'LOCAL_BLOCKED':
+      case 'MEDIUM_REVIEW':
+      case 'SUPPRESSED':
+      case 'EXPIRED':
+      case 'ADMIN_EXEMPT':
+        return normalized;
+      default:
+        return 'NONE';
+    }
+  }
+
+  private normalizePolicyAction(value: string | null | undefined): GlobalSpammerPolicyAction {
+    const normalized = value?.trim().toUpperCase();
+    if (normalized === 'DELETE_AND_KICK' || normalized === 'SHADOW_DELETE_AND_KICK') {
+      return normalized;
+    }
+    return 'NONE';
+  }
+
+  private normalizePolicyBand(value: string | null | undefined): GlobalSpammerPolicyBand {
+    const normalized = value?.trim().toUpperCase();
+    switch (normalized) {
+      case 'CONFIRMED':
+      case 'VERY_HIGH':
+      case 'HIGH':
+      case 'MEDIUM':
+        return normalized;
+      default:
+        return 'LOW';
+    }
+  }
+
+  private readOptionalScore(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? this.roundScore(value) : null;
+  }
+
   private normalizeText(value: string | null | undefined): string {
     return typeof value === 'string' ? value.trim() : '';
   }
@@ -4263,6 +4902,13 @@ export class GlobalSpammerIntelligenceService {
       return this.toInputJsonObject(value as Record<string, unknown>);
     }
     return null;
+  }
+
+  private toNullableInputJsonValue(value: unknown): Prisma.InputJsonValue | null {
+    if (value === null || value === undefined || value === Prisma.JsonNull) {
+      return null;
+    }
+    return this.toInputJsonValue(value);
   }
 
   private readNumber(value: unknown): number | null {
