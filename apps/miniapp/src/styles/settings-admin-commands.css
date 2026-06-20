@@ -1,43 +1,45 @@
 @layer pages {
   .settings-admin-commands {
     display: grid;
-    gap: 16px;
+    gap: 18px;
   }
 
   .settings-admin-commands__category {
     display: grid;
-    gap: 10px;
+    gap: 11px;
     min-width: 0;
   }
 
   .settings-admin-commands__category h3 {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.74rem;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
     font-weight: 800;
-    line-height: 1.2;
-    text-transform: uppercase;
+    line-height: 1.25;
   }
 
   .settings-admin-commands__grid {
     display: grid;
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: 12px;
   }
 
   .settings-command-card {
     display: grid;
-    gap: 10px;
+    gap: 11px;
     min-width: 0;
-    padding: 13px;
+    padding: 14px;
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
-    background: var(--surface-card);
+    background:
+      linear-gradient(180deg, var(--surface-card), var(--surface-card-muted)),
+      var(--surface-card);
     box-shadow: var(--shadow-sm);
   }
 
   .settings-command-card__head {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 32px;
+    grid-template-columns: minmax(0, 1fr) 30px;
     align-items: start;
     gap: 10px;
     min-width: 0;
@@ -46,31 +48,44 @@
   .settings-command-card__copy {
     min-width: 0;
     display: grid;
-    gap: 3px;
+    gap: 4px;
   }
 
   .settings-command-card__copy strong {
     color: var(--text-primary);
-    font-size: 0.92rem;
-    line-height: 1.18;
+    font-size: 0.96rem;
+    line-height: 1.2;
   }
 
   .settings-command-card__copy span {
-    color: var(--text-muted);
-    font-size: 0.76rem;
-    line-height: 1.35;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.4;
   }
 
   .settings-command-card__field {
     margin: 0;
   }
 
+  .settings-command-card__field input {
+    font-weight: 750;
+    letter-spacing: 0;
+  }
+
   .settings-command-card__examples {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    align-items: center;
+    gap: 7px;
     min-width: 0;
-    min-height: 28px;
+    min-height: 30px;
+  }
+
+  .settings-command-card__examples-label {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 800;
+    line-height: 1;
   }
 
   .settings-command-card__examples code {
@@ -79,17 +94,37 @@
     min-width: 0;
     max-width: 100%;
     min-height: 28px;
-    padding: 0 9px;
-    border: 1px solid var(--text-primary);
+    padding: 0 10px;
+    border: 1px solid var(--border-subtle);
     border-radius: 999px;
-    background: var(--text-primary);
-    color: var(--color-surface);
+    background: var(--surface-card-muted);
+    color: var(--text-primary);
     font-family:
       ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
     font-size: 0.72rem;
     font-weight: 700;
     line-height: 1;
     overflow-wrap: anywhere;
+  }
+
+  .settings-command-card .settings-info-button {
+    color: var(--text-secondary);
+  }
+
+  .settings-command-card .settings-info-button svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .settings-command-card__hint {
+    border-radius: 8px;
+    border-color: var(--settings-panel-accent-border);
+    background:
+      linear-gradient(180deg, var(--surface-card), var(--settings-panel-accent-soft)),
+      var(--surface-card-muted);
+    color: var(--text-primary);
+    font-size: 0.78rem;
+    line-height: 1.45;
   }
 
   .settings-command-card.field--error {
