@@ -340,6 +340,8 @@ function buildSettings(chatId: string): ChatSettings {
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
+    adminMuteCommandAliases: 'мут, мьют, мью, mute',
+    adminRulesCommandAliases: 'правило, правила, rule, rules',
     muteDurationHours: 6,
     warnThreshold: 3,
     createdAt: now,

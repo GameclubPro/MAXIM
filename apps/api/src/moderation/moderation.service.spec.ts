@@ -383,6 +383,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: false,
+    adminMuteCommandAliases: 'мут, мьют, мью, mute',
+    adminRulesCommandAliases: 'правило, правила, rule, rules',
     muteDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),
@@ -9088,6 +9090,143 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('uses per-chat custom mute command aliases for group commands', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            adminMuteCommandAliases: 'тихо, молчать',
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminLinkedModerationUpdate('тихо 12'));
+
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        action: 'MUTE',
+        muteDurationHours: 12,
+      }),
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('stops accepting the default mute word after a chat replaces its command aliases', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            adminMuteCommandAliases: 'тихо',
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminLinkedModerationUpdate('мут 12'));
+
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('treats group mute command duration 88 as a permanent mute', async () => {
     const prisma = {
       chat: {
@@ -9259,6 +9398,93 @@ describe('ModerationService', () => {
     ).toBe(true);
   });
 
+  it('uses per-chat custom rules command aliases for forwarded rules messages', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            adminRulesCommandAliases: 'регламент',
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      adoptChatRulesFromMessage: jest.fn().mockResolvedValue({
+        text: '1. Без спама.\n2. Без ссылок.',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        autoTextEnabled: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        publishedMessageId: 'mid-rules-source-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+        publishedAt: '2026-03-27T01:00:00.000Z',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedRulesUpdate('регламент'));
+
+    expect(adminService.adoptChatRulesFromMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+      }),
+      expect.objectContaining({
+        sourceMessageId: 'mid-rules-source-1',
+      }),
+      'group_command',
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-rules-1', {
+      immediate: true,
+    });
+  });
+
   it('rejects duration suffix for the group ban command', async () => {
     const prisma = {
       chat: {
@@ -9391,9 +9617,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Команда `бан` или `мут` работает только'))).toBe(
-      true,
-    );
+    expect(sentTexts.some((text) => text.includes('Команда `бан` работает только'))).toBe(true);
   });
 
   it('keeps local allowlist admin bypass even when remote list does not include sender', async () => {

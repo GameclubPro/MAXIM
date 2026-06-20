@@ -913,8 +913,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
       const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
       const destructiveAccessGateActive = manualGroupCloseActiveNow || nightModeActiveNow;
-      const forceSynchronousRemoteAdminLookup =
-        this.shouldForceSynchronousRemoteAdminLookup(update);
+      const forceSynchronousRemoteAdminLookup = this.shouldForceSynchronousRemoteAdminLookup(
+        update,
+        settings,
+      );
       const keepDestructiveAdminCheckOnHotPath =
         destructiveAccessGateActive && !forceSynchronousRemoteAdminLookup;
       const rulesPublishedUrl = chat.rulesPublishedUrl;
@@ -5236,7 +5238,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const directText = this.extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
     try {
-      command = this.parseAdminForwardedModerationCommand(directText);
+      command = this.parseAdminForwardedModerationCommand(directText, settings);
     } catch (error: unknown) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -5281,6 +5283,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (command.action === 'RULES') {
+      const rulesCommandHelpText = `\`${this.getPrimaryAdminCommandAlias(
+        settings.adminRulesCommandAliases,
+        ['правило', 'правила', 'rule', 'rules'],
+      )}\``;
       const sources = this.extractForwardedRulesSources(update);
       if (sources.length === 0) {
         return false;
@@ -5291,7 +5297,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.sendGroupAdminCommandNotice({
           chatId,
           settings,
-          text: 'Перешлите или ответьте на одно сообщение из этого чата и добавьте слово `правило` или `правила`.',
+          text: `Перешлите или ответьте на одно сообщение из этого чата и добавьте команду ${rulesCommandHelpText}.`,
         });
         return true;
       }
@@ -5301,7 +5307,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.sendGroupAdminCommandNotice({
           chatId,
           settings,
-          text: 'Команда `правило` работает только для сообщений из этого чата.',
+          text: `Команда ${rulesCommandHelpText} работает только для сообщений из этого чата.`,
         });
         return true;
       }
@@ -5348,7 +5354,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const targets = this.extractForwardedModerationTargets(update, chatId);
-    const commandHelpText = command.action === 'SUPER_BAN' ? '`супер бан`' : '`бан` или `мут`';
+    const commandHelpText =
+      command.action === 'SUPER_BAN'
+        ? '`супер бан`'
+        : command.action === 'MUTE'
+          ? `\`${this.getPrimaryAdminCommandAlias(settings.adminMuteCommandAliases, [
+              'мут',
+              'мьют',
+              'мью',
+              'mute',
+            ])}\``
+          : '`бан`';
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -5460,11 +5476,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private parseAdminForwardedModerationCommand(
     text: string,
+    settings?: Pick<ChatSettings, 'adminMuteCommandAliases' | 'adminRulesCommandAliases'>,
   ): AdminForwardedModerationCommand | null {
     const normalized = this.readLowerString(text);
     if (!normalized) {
       return null;
     }
+    const muteCommandMatch = this.matchAdminCommandAliasWithOptionalDuration(
+      normalized,
+      settings?.adminMuteCommandAliases,
+      ['мут', 'мьют', 'мью', 'mute'],
+    );
+    const rulesCommandMatch = this.matchesAdminCommandAlias(
+      normalized,
+      settings?.adminRulesCommandAliases,
+      ['правило', 'правила', 'rule', 'rules'],
+    );
 
     if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalized)) {
       return {
@@ -5494,27 +5521,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
-      if (/^(?:правило|правила|rule|rules)[.!]?$/u.test(normalized)) {
+      if (rulesCommandMatch) {
         return {
           action: 'RULES',
         };
       }
 
-      if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
+      if (muteCommandMatch?.durationText === null) {
         return {
           action: 'MUTE',
           muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
         };
       }
 
-      const muteDurationMatch = normalized.match(
-        /^(?:мут|мьют|мью|mute)\s+(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-      );
-      if (!muteDurationMatch) {
+      if (!muteCommandMatch) {
         return null;
       }
 
-      const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+      const muteDurationHours = Number.parseInt(muteCommandMatch.durationText, 10);
       if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
         return {
           action: 'MUTE',
@@ -5541,6 +5565,71 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return {
       action: 'BAN',
     };
+  }
+
+  private matchesAdminCommandAlias(
+    normalizedText: string,
+    aliasesText: string | null | undefined,
+    fallbackAliases: readonly string[],
+  ): boolean {
+    return this.resolveAdminCommandAliases(aliasesText, fallbackAliases).some(
+      (alias) =>
+        normalizedText === alias ||
+        normalizedText === `${alias}!` ||
+        normalizedText === `${alias}.`,
+    );
+  }
+
+  private matchAdminCommandAliasWithOptionalDuration(
+    normalizedText: string,
+    aliasesText: string | null | undefined,
+    fallbackAliases: readonly string[],
+  ): { alias: string; durationText: string | null } | null {
+    for (const alias of this.resolveAdminCommandAliases(aliasesText, fallbackAliases)) {
+      if (
+        normalizedText === alias ||
+        normalizedText === `${alias}!` ||
+        normalizedText === `${alias}.`
+      ) {
+        return { alias, durationText: null };
+      }
+
+      if (!normalizedText.startsWith(`${alias} `)) {
+        continue;
+      }
+
+      const suffix = normalizedText.slice(alias.length).trim();
+      const durationMatch = suffix.match(
+        /^(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+      );
+      if (durationMatch) {
+        return { alias, durationText: durationMatch[1] };
+      }
+    }
+
+    return null;
+  }
+
+  private resolveAdminCommandAliases(
+    aliasesText: string | null | undefined,
+    fallbackAliases: readonly string[],
+  ): string[] {
+    const aliases =
+      typeof aliasesText === 'string'
+        ? aliasesText
+            .split(',')
+            .map((alias) => this.readLowerString(alias))
+            .filter((alias): alias is string => Boolean(alias))
+        : [];
+
+    return Array.from(new Set(aliases.length > 0 ? aliases : fallbackAliases));
+  }
+
+  private getPrimaryAdminCommandAlias(
+    aliasesText: string | null | undefined,
+    fallbackAliases: readonly string[],
+  ): string {
+    return this.resolveAdminCommandAliases(aliasesText, fallbackAliases)[0] ?? fallbackAliases[0];
   }
 
   private extractDirectIncomingMessageText(update: MaxUpdate): string {
@@ -12863,7 +12952,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return results;
   }
 
-  private shouldForceSynchronousRemoteAdminLookup(update: MaxUpdate): boolean {
+  private shouldForceSynchronousRemoteAdminLookup(
+    update: MaxUpdate,
+    settings?: Pick<ChatSettings, 'adminMuteCommandAliases' | 'adminRulesCommandAliases'>,
+  ): boolean {
     if (this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown) {
       return true;
     }
@@ -12874,7 +12966,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      return this.parseAdminForwardedModerationCommand(directText) !== null;
+      return this.parseAdminForwardedModerationCommand(directText, settings) !== null;
     } catch {
       return true;
     }

@@ -578,6 +578,8 @@ export type HintKey =
   | 'invitationAccessEnabled'
   | 'invitationAccessBotMessage'
   | 'invitationAccessWarnMessage'
+  | 'adminMuteCommand'
+  | 'adminRulesCommand'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'mailingStudio'
@@ -631,6 +633,7 @@ export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   night: false,
   requiredSubscription: false,
   invitationAccess: false,
+  commands: false,
   comments: false,
   mailing: false,
   vkParsing: false,
@@ -650,6 +653,7 @@ export const SECTION_LABELS: Record<ApplySectionKey, string> = {
   night: 'Ночной режим',
   requiredSubscription: 'Подписка на канал',
   invitationAccess: 'Настройки',
+  commands: 'Команды',
   extra: 'Сервис',
 };
 export const APPLY_TARGET_FAVORITE_ICONS = HOME_ENTITY_FAVORITE_ICONS;

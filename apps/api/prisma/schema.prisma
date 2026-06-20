@@ -440,6 +440,8 @@ model ChatSettings {
   duplicateMuteDurationHours                    Int                      @default(6) @map("duplicate_mute_duration_hours")
   messageLimitsRulesButtonEnabled               Boolean                  @default(false) @map("message_limits_rules_button_enabled")
   rulesAttachViolationsEnabled                  Boolean                  @default(true) @map("rules_attach_violations_enabled")
+  adminMuteCommandAliases                       String                   @default("мут, мьют, мью, mute") @map("admin_mute_command_aliases")
+  adminRulesCommandAliases                      String                   @default("правило, правила, rule, rules") @map("admin_rules_command_aliases")
   muteDurationHours                             Int                      @default(6) @map("mute_duration_hours")
   warnThreshold                                 Int                      @default(3) @map("warn_threshold")
   createdAt                                     DateTime                 @default(now()) @map("created_at")

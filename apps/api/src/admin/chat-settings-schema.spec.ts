@@ -144,6 +144,19 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(disabled.requiredSubscriptionExpiresAt).toBe('');
   });
 
+  it('keeps per-chat admin command aliases normalized', () => {
+    const defaults = chatSettingsSchema.parse({});
+    const customized = chatSettingsSchema.parse({
+      adminMuteCommandAliases: ' тихо, молчать, тихо ',
+      adminRulesCommandAliases: ' регламент , rules ',
+    });
+
+    expect(defaults.adminMuteCommandAliases).toBe('мут, мьют, мью, mute');
+    expect(defaults.adminRulesCommandAliases).toBe('правило, правила, rule, rules');
+    expect(customized.adminMuteCommandAliases).toBe('тихо, молчать');
+    expect(customized.adminRulesCommandAliases).toBe('регламент, rules');
+  });
+
   it('rejects bot speech media with non-image mime type', () => {
     const result = chatSettingsSchema.safeParse({
       botSpeechMedia: {

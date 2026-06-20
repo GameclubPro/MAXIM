@@ -364,6 +364,11 @@ const LazyManagedEntityAccessDiagnosticsBanner = lazy(() =>
     default: module.ManagedEntityAccessDiagnosticsBanner,
   })),
 );
+const LazySettingsAdminCommandsSection = lazy(() =>
+  import('./settings/settings-admin-commands-section').then((module) => ({
+    default: module.SettingsAdminCommandsSection,
+  })),
+);
 
 export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
@@ -11238,6 +11243,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </div>
               </SettingsDrilldownPanel>
             </GlassCard>
+
+            <Suspense fallback={null}>
+              <LazySettingsAdminCommandsSection
+                draft={draft}
+                expanded={expandedSections.commands}
+                fieldErrors={fieldErrors}
+                openHintKey={openHintKey}
+                footer={renderSectionSaveFooter('commands')}
+                onToggleSection={() => toggleSection('commands')}
+                onToggleHint={toggleHint}
+                onFieldChange={(key, value) => setFieldValue(key, value)}
+              />
+            </Suspense>
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"

@@ -14,6 +14,7 @@ export type SettingsSectionIconName =
   | 'subscription'
   | 'moon'
   | 'send'
+  | 'commands'
   | 'tools'
   | 'comments'
   | 'spark'
@@ -283,6 +284,27 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
         <path
           d="M14.8 5.2a4 4 0 0 0-5.4 5.1l-4.2 4.2a1.7 1.7 0 1 0 2.4 2.4l4.2-4.2a4 4 0 0 0 5.1-5.4l-2 2-1.9-.4-.4-1.9 2.2-1.8Z"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
+  if (name === 'commands') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <path
+          d="M4.8 7.2 8.6 11l-3.8 3.8M10.2 16.8h8.9"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M5.2 4.8h13.6A2.2 2.2 0 0 1 21 7v10a2.2 2.2 0 0 1-2.2 2.2H5.2A2.2 2.2 0 0 1 3 17V7a2.2 2.2 0 0 1 2.2-2.2Z"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"

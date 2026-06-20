@@ -134,8 +134,33 @@ test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections'
 test('required subscription section keeps expiry and duration out of scoped saves', () => {
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionEnabled'));
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionChannelIds'));
-  assert.ok(!SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionDurationDays'));
+  assert.ok(
+    !SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionDurationDays'),
+  );
   assert.ok(!SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionExpiresAt'));
+});
+
+test('commands section keeps admin command aliases scoped', () => {
+  assert.deepEqual(SECTION_SETTING_KEYS.commands, [
+    'adminMuteCommandAliases',
+    'adminRulesCommandAliases',
+  ]);
+
+  const current = createSettings({
+    adminMuteCommandAliases: 'мут, mute',
+    adminRulesCommandAliases: 'правила',
+    linkPolicy: 'ALLOWLIST_ONLY',
+  });
+  const saved = createSettings({
+    adminMuteCommandAliases: 'тихо',
+    adminRulesCommandAliases: 'регламент',
+    linkPolicy: 'BLOCKLIST_ONLY',
+  });
+
+  const merged = mergeSectionSettings(current, saved, 'commands');
+  assert.equal(merged.adminMuteCommandAliases, 'тихо');
+  assert.equal(merged.adminRulesCommandAliases, 'регламент');
+  assert.equal(merged.linkPolicy, 'ALLOWLIST_ONLY');
 });
 
 test('mergeSectionSettings preserves multi-button arrays when saving a section', () => {
@@ -278,7 +303,10 @@ test('mergeSectionSettings scopes bot speech media to the saved section', () => 
   });
 
   const merged = mergeSectionSettings(current, saved, 'links');
-  assert.deepEqual(merged.botSpeechMedia.linkBotMessageText, saved.botSpeechMedia.linkBotMessageText);
+  assert.deepEqual(
+    merged.botSpeechMedia.linkBotMessageText,
+    saved.botSpeechMedia.linkBotMessageText,
+  );
   assert.deepEqual(
     merged.botSpeechMedia.greetingBotMessageText,
     current.botSpeechMedia.greetingBotMessageText,

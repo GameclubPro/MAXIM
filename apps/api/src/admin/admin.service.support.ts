@@ -753,6 +753,7 @@ export const SETTINGS_SECTION_KEYS = {
     'invitationAccessMuteEnabled',
     'invitationAccessMuteDurationHours',
   ],
+  commands: ['adminMuteCommandAliases', 'adminRulesCommandAliases'],
   extra: [
     'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
@@ -776,6 +777,7 @@ export const SETTINGS_SECTION_BOT_SPEECH_MEDIA_KEYS = {
     'requiredSubscriptionWarnMessageText',
   ],
   invitationAccess: ['invitationAccessBotMessageText', 'invitationAccessWarnMessageText'],
+  commands: [],
   extra: [],
 } as const satisfies Record<keyof typeof SETTINGS_SECTION_KEYS, readonly BotSpeechMediaFieldKey[]>;
 export const BOT_SPEECH_MEDIA_SETTING_KEYS = BOT_SPEECH_EDITABLE_FIELD_KEYS;

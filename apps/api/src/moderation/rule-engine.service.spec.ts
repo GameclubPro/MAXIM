@@ -231,6 +231,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
+    adminMuteCommandAliases: 'мут, мьют, мью, mute',
+    adminRulesCommandAliases: 'правило, правила, rule, rules',
     muteDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),

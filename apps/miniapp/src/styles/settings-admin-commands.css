@@ -1,0 +1,76 @@
+@layer pages {
+  .settings-command-aliases {
+    display: grid;
+    gap: 12px;
+  }
+
+  .settings-command-card {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--surface-card);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .settings-command-card__head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+  }
+
+  .settings-command-card__copy {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .settings-command-card__copy strong {
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    line-height: 1.18;
+  }
+
+  .settings-command-card__copy span {
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+
+  .settings-command-card__field {
+    margin: 0;
+  }
+
+  .settings-command-card__examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 28px;
+  }
+
+  .settings-command-card__examples code {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 28px;
+    padding: 0 9px;
+    border: 1px solid var(--text-primary);
+    border-radius: 999px;
+    background: var(--text-primary);
+    color: var(--color-surface);
+    font-family:
+      ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+    overflow-wrap: anywhere;
+  }
+
+  .settings-command-card.field--error {
+    border-color: var(--danger);
+    background: var(--surface-card);
+  }
+}

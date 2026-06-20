@@ -62,6 +62,7 @@ export const applySettingsSectionSchema = z.enum([
   'night',
   'requiredSubscription',
   'invitationAccess',
+  'commands',
   'extra',
 ]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
@@ -88,6 +89,10 @@ export const INVITATION_ACCESS_REQUIRED_COUNT_MIN = 1;
 export const INVITATION_ACCESS_REQUIRED_COUNT_MAX = 10;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
 export const MESSAGE_LIMITS_BLOCKED_DOMAINS_MAX = 300;
+export const ADMIN_COMMAND_ALIASES_MAX = 8;
+export const ADMIN_COMMAND_ALIAS_MAX_LENGTH = 32;
+export const ADMIN_MUTE_COMMAND_ALIASES_DEFAULT = 'мут, мьют, мью, mute';
+export const ADMIN_RULES_COMMAND_ALIASES_DEFAULT = 'правило, правила, rule, rules';
 export const MAX_MESSAGE_LENGTH_MIN = 50;
 export const MAX_MESSAGE_LENGTH_MAX = 1500;
 export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
@@ -132,6 +137,44 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const adminCommandAliasesTextSchema = z
+  .string()
+  .trim()
+  .max(256)
+  .refine(
+    (value) => {
+      const aliases = value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+      return aliases.length > 0 && aliases.length <= ADMIN_COMMAND_ALIASES_MAX;
+    },
+    {
+      message: `Укажите от 1 до ${ADMIN_COMMAND_ALIASES_MAX} команд через запятую.`,
+    },
+  )
+  .refine(
+    (value) =>
+      value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+        .every((item) => item.length <= ADMIN_COMMAND_ALIAS_MAX_LENGTH),
+    {
+      message: `Каждая команда должна быть не длиннее ${ADMIN_COMMAND_ALIAS_MAX_LENGTH} символов.`,
+    },
+  )
+  .transform((value) => {
+    const aliases = Array.from(
+      new Set(
+        value
+          .split(',')
+          .map((item) => item.trim().replace(/\s+/g, ' '))
+          .filter((item) => item.length > 0),
+      ),
+    );
+    return aliases.join(', ');
+  });
 const botSpeechMediaFieldKeySchema = z.enum(BOT_SPEECH_EDITABLE_FIELD_KEYS);
 const botSpeechMediaImageSchema = z
   .object({
@@ -827,6 +870,12 @@ export const chatSettingsSchema = z
       duplicateRulesButtonEnabled: z.boolean().default(false),
       messageLimitsRulesButtonEnabled: z.boolean().default(false),
       rulesAttachViolationsEnabled: z.boolean().default(true),
+      adminMuteCommandAliases: adminCommandAliasesTextSchema.default(
+        ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
+      ),
+      adminRulesCommandAliases: adminCommandAliasesTextSchema.default(
+        ADMIN_RULES_COMMAND_ALIASES_DEFAULT,
+      ),
       muteDurationHours: autoMuteDurationHoursSchema,
       warnThreshold: z.number().int().min(1).max(10).default(3),
     }),
