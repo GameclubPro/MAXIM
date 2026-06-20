@@ -716,20 +716,30 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
   return DIAGNOSTICS_SIGNAL_CATEGORIES[resolveSpammerSignalCategory(raw)].reasonLabel;
 }
 
+function readUserFacingName(value: string | null | undefined, userId: string | null | undefined) {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) {
+    return '';
+  }
+
+  const normalizedUserId = userId?.trim() ?? '';
+  if (normalizedUserId && normalized === normalizedUserId) {
+    return '';
+  }
+
+  return normalized;
+}
+
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
   return (
-    candidate.displayName?.trim() ||
-    candidate.lastUserLabel?.trim() ||
-    formatUserReference(candidate.userId)
+    readUserFacingName(candidate.displayName, candidate.userId) ||
+    readUserFacingName(candidate.lastUserLabel, candidate.userId) ||
+    formatUserReference()
   );
 }
 
-function formatUserReference(userId: string): string {
-  const value = userId.trim();
-  if (!value || /[A-Za-z]/.test(value)) {
-    return 'Пользователь';
-  }
-  return `Пользователь ${value}`;
+function formatUserReference(): string {
+  return 'Пользователь';
 }
 
 function resolveSpammerCandidateInitial(candidate: GlobalSpammerReviewCandidate): string {
@@ -747,10 +757,11 @@ function resolveSpammerDiagnosticsName(
   target: SpammerDiagnosticsTarget | null,
   diagnostics: GlobalSpammerUserDiagnostics | null,
 ): string {
+  const userId = diagnostics?.userId ?? target?.userId ?? '';
   return (
-    diagnostics?.displayName?.trim() ||
-    target?.displayName?.trim() ||
-    formatUserReference(diagnostics?.userId ?? target?.userId ?? '')
+    readUserFacingName(diagnostics?.displayName, userId) ||
+    readUserFacingName(target?.displayName, userId) ||
+    formatUserReference()
   );
 }
 
@@ -2042,11 +2053,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       spammerDiagnosticsTarget?.userId ?? null,
     ),
     queryFn: ({ signal }) =>
-      getGlobalSpammerUserDiagnostics(api, chatId ?? '', spammerDiagnosticsTarget?.userId ?? '', {
-        includeProfile: false,
-      }, {
-        signal,
-      }),
+      getGlobalSpammerUserDiagnostics(
+        api,
+        chatId ?? '',
+        spammerDiagnosticsTarget?.userId ?? '',
+        {},
+        {
+          signal,
+        },
+      ),
     enabled: Boolean(chatId && spammerDiagnosticsTarget?.userId),
     staleTime: 20_000,
     refetchOnWindowFocus: false,
@@ -3041,7 +3056,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
           openSpammerDiagnostics({
             userId: selectedParticipant.userId,
-            displayName: selectedParticipant.userDisplayName || selectedParticipant.userId,
+            displayName: selectedParticipant.userDisplayName || selectedParticipant.username || '',
             avatarUrl: selectedParticipant.avatarUrl,
             profileUrl: selectedParticipant.profileUrl,
             profileHandoffUrl: selectedParticipant.profileHandoffUrl,
