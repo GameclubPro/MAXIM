@@ -99,6 +99,8 @@ export const ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT = 'БАН';
 export const ADMIN_MUTE_COMMAND_NAME_DEFAULT = 'мут';
 export const ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT = 'мут 88';
 export const ADMIN_RULES_COMMAND_NAME_DEFAULT = 'правило';
+export const ADMIN_SILENCE_COMMAND_NAME_DEFAULT = 'тишина';
+export const ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT = 'тишина выкл';
 export const MAX_MESSAGE_LENGTH_MIN = 50;
 export const MAX_MESSAGE_LENGTH_MAX = 1500;
 export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
@@ -891,6 +893,8 @@ export const chatSettingsSchema = z
         ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
       ),
       adminRulesCommandName: adminCommandNameSchema.default(ADMIN_RULES_COMMAND_NAME_DEFAULT),
+      adminSilenceCommandName: adminCommandNameSchema.default(ADMIN_SILENCE_COMMAND_NAME_DEFAULT),
+      adminOpenChatCommandName: adminCommandNameSchema.default(ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT),
       adminMuteCommandAliases: adminCommandAliasesTextSchema.default(
         ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
       ),
@@ -957,6 +961,8 @@ export const chatSettingsSchema = z
       ['adminMuteCommandName', value.adminMuteCommandName],
       ['adminPermanentMuteCommandName', value.adminPermanentMuteCommandName],
       ['adminRulesCommandName', value.adminRulesCommandName],
+      ['adminSilenceCommandName', value.adminSilenceCommandName],
+      ['adminOpenChatCommandName', value.adminOpenChatCommandName],
     ] as const;
     const caseSensitiveBanCommandKeys = new Set<(typeof adminCommandEntries)[number][0]>([
       'adminBanCommandName',

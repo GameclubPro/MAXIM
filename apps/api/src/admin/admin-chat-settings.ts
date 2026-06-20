@@ -2,8 +2,10 @@ import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_RULES_COMMAND_NAME_DEFAULT,
+  ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   botSpeechMediaSchema,
   chatSettingsSchema,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -364,6 +366,18 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
         normalizedSettings.adminRulesCommandAliases,
         ADMIN_RULES_COMMAND_NAME_DEFAULT,
       ),
+    };
+  }
+  if (typeof normalizedSettings.adminSilenceCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminSilenceCommandName: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
+    };
+  }
+  if (typeof normalizedSettings.adminOpenChatCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminOpenChatCommandName: ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
     };
   }
 

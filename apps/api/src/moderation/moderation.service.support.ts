@@ -198,6 +198,13 @@ export type AdminForwardedModerationCommand =
     }
   | {
       action: 'RULES';
+    }
+  | {
+      action: 'SILENCE';
+      silenceDurationHours?: number;
+    }
+  | {
+      action: 'OPEN_CHAT';
     };
 
 export type ForwardedModerationTarget = {

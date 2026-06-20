@@ -760,6 +760,8 @@ export const SETTINGS_SECTION_KEYS = {
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',
+    'adminSilenceCommandName',
+    'adminOpenChatCommandName',
   ],
   extra: [
     'deleteSpammersEnabled',

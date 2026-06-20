@@ -445,6 +445,8 @@ model ChatSettings {
   adminMuteCommandName                          String                   @default("мут") @map("admin_mute_command_name")
   adminPermanentMuteCommandName                 String                   @default("мут 88") @map("admin_permanent_mute_command_name")
   adminRulesCommandName                         String                   @default("правило") @map("admin_rules_command_name")
+  adminSilenceCommandName                       String                   @default("тишина") @map("admin_silence_command_name")
+  adminOpenChatCommandName                      String                   @default("тишина выкл") @map("admin_open_chat_command_name")
   adminMuteCommandAliases                       String                   @default("мут, мьют, мью, mute") @map("admin_mute_command_aliases")
   adminRulesCommandAliases                      String                   @default("правило, правила, rule, rules") @map("admin_rules_command_aliases")
   muteDurationHours                             Int                      @default(6) @map("mute_duration_hours")

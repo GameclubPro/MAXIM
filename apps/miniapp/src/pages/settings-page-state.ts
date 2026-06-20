@@ -226,6 +226,8 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',
+    'adminSilenceCommandName',
+    'adminOpenChatCommandName',
   ],
   extra: [
     'deleteBotMessagesEnabled',

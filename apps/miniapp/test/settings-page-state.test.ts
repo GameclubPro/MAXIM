@@ -147,6 +147,8 @@ test('commands section keeps admin command names scoped', () => {
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',
+    'adminSilenceCommandName',
+    'adminOpenChatCommandName',
   ]);
 
   const current = createSettings({
@@ -155,6 +157,8 @@ test('commands section keeps admin command names scoped', () => {
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
+    adminSilenceCommandName: 'тишина',
+    adminOpenChatCommandName: 'тишина выкл',
     linkPolicy: 'ALLOWLIST_ONLY',
   });
   const saved = createSettings({
@@ -163,6 +167,8 @@ test('commands section keeps admin command names scoped', () => {
     adminMuteCommandName: 'тихо',
     adminPermanentMuteCommandName: 'тихо навсегда',
     adminRulesCommandName: 'регламент',
+    adminSilenceCommandName: 'закрыть',
+    adminOpenChatCommandName: 'открыть',
     linkPolicy: 'BLOCKLIST_ONLY',
   });
 
@@ -172,6 +178,8 @@ test('commands section keeps admin command names scoped', () => {
   assert.equal(merged.adminMuteCommandName, 'тихо');
   assert.equal(merged.adminPermanentMuteCommandName, 'тихо навсегда');
   assert.equal(merged.adminRulesCommandName, 'регламент');
+  assert.equal(merged.adminSilenceCommandName, 'закрыть');
+  assert.equal(merged.adminOpenChatCommandName, 'открыть');
   assert.equal(merged.linkPolicy, 'ALLOWLIST_ONLY');
 });
 

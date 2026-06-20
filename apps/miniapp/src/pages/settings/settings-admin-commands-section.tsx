@@ -3,8 +3,10 @@ import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_RULES_COMMAND_NAME_DEFAULT,
+  ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   type ChatSettings,
 } from '@maxim/contracts/settings';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -19,7 +21,9 @@ type AdminCommandNameKey =
   | 'adminBanAllCommandName'
   | 'adminMuteCommandName'
   | 'adminPermanentMuteCommandName'
-  | 'adminRulesCommandName';
+  | 'adminRulesCommandName'
+  | 'adminSilenceCommandName'
+  | 'adminOpenChatCommandName';
 
 type AdminCommandConfig = {
   key: AdminCommandNameKey;
@@ -30,6 +34,8 @@ type AdminCommandConfig = {
     | 'adminMuteCommand'
     | 'adminPermanentMuteCommand'
     | 'adminRulesCommand'
+    | 'adminSilenceCommand'
+    | 'adminOpenChatCommand'
   >;
   title: string;
   caption: string;
@@ -101,6 +107,26 @@ const commandCategories: AdminCommandCategory[] = [
         examples: (value) => [value],
         hint: (value) =>
           `Команда ${value} ставит бессрочный мут. Это отдельное действие, а не вариант временного мута.`,
+      },
+      {
+        key: 'adminSilenceCommandName',
+        hintKey: 'adminSilenceCommand',
+        title: 'Тишина',
+        caption: 'Закрывает чат на время.',
+        defaultValue: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value, `${value} 12`],
+        hint: (value) =>
+          `Команда ${value} закрывает чат на 6 часов по умолчанию. Число после команды задает срок от 1 до 336 часов.`,
+      },
+      {
+        key: 'adminOpenChatCommandName',
+        hintKey: 'adminOpenChatCommand',
+        title: 'Открыть чат',
+        caption: 'Снимает тишину сразу.',
+        defaultValue: ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value],
+        hint: (value) =>
+          `Команда ${value} отключает тишину. После этого сообщения участников снова проходят по обычным правилам.`,
       },
     ],
   },

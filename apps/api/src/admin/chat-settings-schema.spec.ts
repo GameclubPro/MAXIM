@@ -152,6 +152,8 @@ describe('chatSettingsSchema duplicate flow validation', () => {
       adminMuteCommandName: ' тихий   час ',
       adminPermanentMuteCommandName: ' мут   навсегда ',
       adminRulesCommandName: ' регламент ',
+      adminSilenceCommandName: ' режим   тишины ',
+      adminOpenChatCommandName: ' открыть   чат ',
     });
 
     expect(defaults.adminBanCommandName).toBe('бан');
@@ -159,17 +161,21 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(defaults.adminMuteCommandName).toBe('мут');
     expect(defaults.adminPermanentMuteCommandName).toBe('мут 88');
     expect(defaults.adminRulesCommandName).toBe('правило');
+    expect(defaults.adminSilenceCommandName).toBe('тишина');
+    expect(defaults.adminOpenChatCommandName).toBe('тишина выкл');
     expect(customized.adminBanCommandName).toBe('бан');
     expect(customized.adminBanAllCommandName).toBe('БАН');
     expect(customized.adminMuteCommandName).toBe('тихий час');
     expect(customized.adminPermanentMuteCommandName).toBe('мут навсегда');
     expect(customized.adminRulesCommandName).toBe('регламент');
+    expect(customized.adminSilenceCommandName).toBe('режим тишины');
+    expect(customized.adminOpenChatCommandName).toBe('открыть чат');
   });
 
   it('rejects duplicate per-chat admin command names', () => {
     const result = chatSettingsSchema.safeParse({
       adminBanCommandName: 'мера',
-      adminMuteCommandName: ' мера ',
+      adminOpenChatCommandName: ' мера ',
     });
 
     expect(result.success).toBe(false);

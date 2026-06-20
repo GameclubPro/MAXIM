@@ -236,6 +236,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
+    adminSilenceCommandName: 'тишина',
+    adminOpenChatCommandName: 'тишина выкл',
     adminMuteCommandAliases: 'мут, мьют, мью, mute',
     adminRulesCommandAliases: 'правило, правила, rule, rules',
     muteDurationHours: 6,

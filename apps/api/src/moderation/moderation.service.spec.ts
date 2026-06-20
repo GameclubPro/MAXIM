@@ -388,6 +388,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
+    adminSilenceCommandName: 'тишина',
+    adminOpenChatCommandName: 'тишина выкл',
     adminMuteCommandAliases: 'мут, мьют, мью, mute',
     adminRulesCommandAliases: 'правило, правила, rule, rules',
     muteDurationHours: 6,
@@ -9382,6 +9384,203 @@ describe('ModerationService', () => {
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('lets chat admins enable silence from a group command without a target message', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn(),
+      applyManualChatSilenceCommand: jest.fn().mockResolvedValue({
+        ok: true,
+        message: 'Тишина включена на 12 ч.',
+        durationHours: 12,
+        until: '2026-06-20T15:00:00.000Z',
+      }),
+      applyManualOpenChatCommand: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    const baseUpdate = createUpdate();
+    const baseMessage = baseUpdate.message!;
+    await service.handleUpdate({
+      ...baseUpdate,
+      message: {
+        ...baseMessage,
+        messageId: 'msg-admin-silence-1',
+        senderId: 'admin-1',
+        text: 'тишина 12',
+      },
+    });
+
+    expect(adminService.applyManualChatSilenceCommand).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+      }),
+      { durationHours: 12 },
+      'group_command',
+    );
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(adminService.applyManualOpenChatCommand).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-silence-1', {
+      immediate: true,
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Тишина включена на 12 ч.',
+      expect.any(Object),
+      expect.objectContaining({
+        autoDeleteDelayMs: 180_000,
+        immediate: true,
+      }),
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('lets chat admins open the chat from a group command', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn(),
+      applyManualChatSilenceCommand: jest.fn(),
+      applyManualOpenChatCommand: jest.fn().mockResolvedValue({
+        ok: true,
+        message: 'Чат открыт.',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    const baseUpdate = createUpdate();
+    const baseMessage = baseUpdate.message!;
+    await service.handleUpdate({
+      ...baseUpdate,
+      message: {
+        ...baseMessage,
+        messageId: 'msg-admin-open-chat-1',
+        senderId: 'admin-1',
+        text: 'тишина выкл',
+      },
+    });
+
+    expect(adminService.applyManualOpenChatCommand).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+      }),
+      'group_command',
+    );
+    expect(adminService.applyManualChatSilenceCommand).not.toHaveBeenCalled();
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-open-chat-1', {
+      immediate: true,
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Чат открыт.',
+      expect.any(Object),
+      expect.objectContaining({
+        immediate: true,
+      }),
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
   it('stops accepting the default mute word after a chat replaces its command name', async () => {

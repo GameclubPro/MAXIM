@@ -583,6 +583,8 @@ export type HintKey =
   | 'adminMuteCommand'
   | 'adminPermanentMuteCommand'
   | 'adminRulesCommand'
+  | 'adminSilenceCommand'
+  | 'adminOpenChatCommand'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'mailingStudio'

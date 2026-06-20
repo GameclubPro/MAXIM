@@ -13,8 +13,10 @@ import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_RULES_COMMAND_NAME_DEFAULT,
+  ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -5357,6 +5359,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
+    if (command.action === 'SILENCE' || command.action === 'OPEN_CHAT') {
+      try {
+        const result =
+          command.action === 'SILENCE'
+            ? await this.adminService.applyManualChatSilenceCommand(
+                chatId,
+                actor,
+                {
+                  durationHours: command.silenceDurationHours,
+                },
+                'group_command',
+              )
+            : await this.adminService.applyManualOpenChatCommand(chatId, actor, 'group_command');
+
+        await this.deleteAdminCommandMessage(chatId, messageId);
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: result.message,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: senderId,
+            action: command.action,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to apply manual chat silence command',
+        );
+
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: `Не удалось выполнить команду: ${this.escapeMaxMarkdownText(
+            this.extractGroupAdminCommandErrorMessage(error),
+          )}`,
+        });
+      }
+
+      return true;
+    }
+
     const targets = this.extractForwardedModerationTargets(update, chatId);
     const commandHelpText =
       command.action === 'SUPER_BAN'
@@ -5499,6 +5544,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'adminMuteCommandName'
       | 'adminPermanentMuteCommandName'
       | 'adminRulesCommandName'
+      | 'adminSilenceCommandName'
+      | 'adminOpenChatCommandName'
     >,
   ): AdminForwardedModerationCommand | null {
     const normalized = this.readAdminCommandText(text);
@@ -5526,10 +5573,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings?.adminRulesCommandName,
       ADMIN_RULES_COMMAND_NAME_DEFAULT,
     );
+    const silenceCommandName = this.getAdminCommandName(
+      settings?.adminSilenceCommandName,
+      ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
+    );
+    const openChatCommandName = this.getAdminCommandName(
+      settings?.adminOpenChatCommandName,
+      ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
+    );
 
     const muteCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
       normalizedLower,
       muteCommandName,
+    );
+    const silenceCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
+      normalizedLower,
+      silenceCommandName,
     );
 
     if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalizedLower)) {
@@ -5568,6 +5627,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.matchesAdminCommandName(normalizedLower, rulesCommandName)) {
       return {
         action: 'RULES',
+      };
+    }
+
+    if (this.matchesAdminCommandName(normalizedLower, openChatCommandName)) {
+      return {
+        action: 'OPEN_CHAT',
+      };
+    }
+
+    if (silenceCommandMatch?.durationText === null) {
+      return {
+        action: 'SILENCE',
+      };
+    }
+
+    if (silenceCommandMatch) {
+      const silenceDurationHours = Number.parseInt(silenceCommandMatch.durationText, 10);
+      if (
+        !Number.isInteger(silenceDurationHours) ||
+        silenceDurationHours < 1 ||
+        silenceDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
+      ) {
+        throw new BadRequestException(
+          `Длительность тишины должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+        );
+      }
+
+      return {
+        action: 'SILENCE',
+        silenceDurationHours,
       };
     }
 
@@ -12990,6 +13079,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'adminMuteCommandName'
       | 'adminPermanentMuteCommandName'
       | 'adminRulesCommandName'
+      | 'adminSilenceCommandName'
+      | 'adminOpenChatCommandName'
     >,
   ): boolean {
     if (this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown) {

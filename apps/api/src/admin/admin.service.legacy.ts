@@ -11615,6 +11615,148 @@ export class AdminService implements OnModuleDestroy {
     return this.enqueueManualModerationFanout(job);
   }
 
+  async applyManualChatSilenceCommand(
+    chatId: string,
+    user: AuthUser,
+    options: { durationHours?: number | null } = {},
+    source: Extract<AdminActionSource, 'group_command'> = 'group_command',
+  ): Promise<{ ok: true; message: string; durationHours: number; until: string }> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const durationHours = this.normalizeManualChatSilenceDurationHours(options.durationHours);
+    const until = new Date(Date.now() + durationHours * 60 * 60 * 1_000).toISOString();
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+
+    await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Chat ${chatId}`,
+        entityType: ChatEntityType.CHAT,
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          create: {
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: false,
+            nightModeForceCloseHours: durationHours % 24,
+            nightModeForceCloseDays: Math.floor(durationHours / 24),
+            nightModeForceCloseUntil: until,
+          },
+        },
+      },
+      update: {
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          upsert: {
+            update: {
+              nightModeForceCloseEnabled: true,
+              nightModeForceCloseForever: false,
+              nightModeForceCloseHours: durationHours % 24,
+              nightModeForceCloseDays: Math.floor(durationHours / 24),
+              nightModeForceCloseUntil: until,
+            },
+            create: {
+              nightModeForceCloseEnabled: true,
+              nightModeForceCloseForever: false,
+              nightModeForceCloseHours: durationHours % 24,
+              nightModeForceCloseDays: Math.floor(durationHours / 24),
+              nightModeForceCloseUntil: until,
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'MANUAL_CHAT_SILENCE',
+        payload: {
+          source,
+          durationHours,
+          until,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'manual chat silence command');
+    this.scheduleDestructiveModerationAdminRosterWarmup(chatId, {
+      nightModeEnabled: false,
+      nightModeForceCloseEnabled: true,
+    });
+
+    return {
+      ok: true,
+      message: `Тишина включена на ${durationHours} ч. Сообщения не-админов будут удаляться до окончания срока.`,
+      durationHours,
+      until,
+    };
+  }
+
+  async applyManualOpenChatCommand(
+    chatId: string,
+    user: AuthUser,
+    source: Extract<AdminActionSource, 'group_command'> = 'group_command',
+  ): Promise<{ ok: true; message: string }> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Chat ${chatId}`,
+        entityType: ChatEntityType.CHAT,
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          create: {
+            nightModeForceCloseEnabled: false,
+            nightModeForceCloseForever: false,
+            nightModeForceCloseUntil: '',
+          },
+        },
+      },
+      update: {
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          upsert: {
+            update: {
+              nightModeForceCloseEnabled: false,
+              nightModeForceCloseForever: false,
+              nightModeForceCloseUntil: '',
+            },
+            create: {
+              nightModeForceCloseEnabled: false,
+              nightModeForceCloseForever: false,
+              nightModeForceCloseUntil: '',
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'MANUAL_CHAT_OPEN',
+        payload: {
+          source,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'manual open chat command');
+
+    return {
+      ok: true,
+      message: 'Чат открыт. Сообщения участников снова проходят по обычным правилам.',
+    };
+  }
+
   isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
     const normalized = this.readTrimmedString(userId);
     return Boolean(normalized && this.superBanDeveloperUserIds.has(normalized));
@@ -12775,6 +12917,23 @@ export class AdminService implements OnModuleDestroy {
       .digest('hex')
       .slice(0, 32);
     return `manual_group_moderation_command__${digest}`;
+  }
+
+  private normalizeManualChatSilenceDurationHours(value: number | null | undefined): number {
+    if (value === null || value === undefined) {
+      return DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS;
+    }
+
+    const durationHours = Math.trunc(value);
+    if (
+      !Number.isInteger(durationHours) ||
+      durationHours < 1 ||
+      durationHours > 14 * 24
+    ) {
+      throw new BadRequestException('Длительность тишины должна быть от 1 до 336 часов.');
+    }
+
+    return durationHours;
   }
 
   private buildQueuedManualModerationCleanupSummary(jobId: string) {
