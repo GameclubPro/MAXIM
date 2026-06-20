@@ -75,8 +75,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Для нарушителя в текущем чате.',
         defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
-        hint: (value) =>
-          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот забанит пользователя только в текущем чате.`,
+        hint: () =>
+          'Ответьте этой командой на сообщение нарушителя или перешлите его сообщение в чат. Бот забанит пользователя только в этом чате.',
       },
       {
         key: 'adminBanAllCommandName',
@@ -85,8 +85,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Во всех чатах, где вы админ.',
         defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
-        hint: (value) =>
-          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот применит бан в этом чате и остальных чатах, где админ может управлять ботом.`,
+        hint: () =>
+          'Команда для серьезных случаев: бот забанит пользователя во всех чатах, где вы админ и где бот может выполнять действия.',
       },
       {
         key: 'adminMuteCommandName',
@@ -95,8 +95,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Пауза в сообщениях, обычно на 6 часов.',
         defaultValue: ADMIN_MUTE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `${value} 12`],
-        hint: (value) =>
-          `Команда ${value} ставит мут на 6 часов. Число после команды задает срок от 1 до 336 часов.`,
+        hint: () =>
+          'Ограничивает сообщения пользователя на время. Без числа мут длится 6 часов, с числом можно выбрать срок от 1 до 336 часов.',
       },
       {
         key: 'adminPermanentMuteCommandName',
@@ -105,8 +105,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Молчание без срока окончания.',
         defaultValue: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
-        hint: (value) =>
-          `Команда ${value} ставит бессрочный мут. Это отдельное действие, а не вариант временного мута.`,
+        hint: () =>
+          'Оставляет пользователя в чате, но закрывает ему возможность писать без срока окончания.',
       },
       {
         key: 'adminSilenceCommandName',
@@ -115,8 +115,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Временно закрывает чат для участников.',
         defaultValue: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `${value} 12`],
-        hint: (value) =>
-          `Команда ${value} закрывает чат на 6 часов по умолчанию. Число после команды задает срок от 1 до 336 часов.`,
+        hint: () =>
+          'Временно закрывает чат для участников: их сообщения будут удаляться, а админы смогут писать как обычно. Без числа включается на 6 часов.',
       },
       {
         key: 'adminOpenChatCommandName',
@@ -125,8 +125,7 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Возвращает чат в обычный режим.',
         defaultValue: ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
-        hint: (value) =>
-          `Команда ${value} отключает тишину. После этого сообщения участников снова проходят по обычным правилам.`,
+        hint: () => 'Снимает тишину сразу. После этого участники снова смогут писать в чат.',
       },
     ],
   },
@@ -140,8 +139,8 @@ const commandCategories: AdminCommandCategory[] = [
         caption: 'Сохраняет сообщение как правила чата.',
         defaultValue: ADMIN_RULES_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `ответ + ${value}`],
-        hint: (value) =>
-          `Ответьте на сообщение с командой ${value} или перешлите сообщение вместе с ней. Бот сохранит его как правила.`,
+        hint: () =>
+          'Ответьте этой командой на сообщение с правилами или перешлите его вместе с командой. Бот сохранит сообщение как правила чата.',
       },
     ],
   },
@@ -269,6 +268,9 @@ export function SettingsAdminCommandsSection({
                   </div>
                 </section>
               ))}
+              <p className="settings-admin-commands__case-note">
+                Команды можно писать маленькими или большими буквами.
+              </p>
             </div>
           ) : null}
         </div>
