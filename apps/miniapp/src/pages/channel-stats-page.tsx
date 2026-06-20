@@ -1329,7 +1329,6 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
   const resolvePostViews = (
     post: ChannelStatsResponse['official']['content']['topPosts'][number],
   ) => post.viewsDelta;
-  const maxViews = Math.max(...posts.map(resolvePostViews), 0);
 
   if (posts.length === 0) {
     return (
@@ -1344,7 +1343,6 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
       <div className="channel-posts-chart__list">
         {posts.map((post, index) => {
           const value = resolvePostViews(post);
-          const width = maxViews > 0 && value > 0 ? Math.max(5, (value / maxViews) * 100) : 0;
           const valueLabel = formatCompactCount(value);
           const detailParts = [`${formatCount(value)} просмотров за период`];
           const hasPreview = Boolean(post.previewUrl);
@@ -1375,12 +1373,6 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                     <small>Просмотры</small>
                     <strong>{valueLabel}</strong>
                   </span>
-                </div>
-                <div className="channel-posts-chart__bar" aria-hidden="true">
-                  <span style={{ width: `${width}%` }} />
-                </div>
-                <div className="channel-posts-chart__row-meta">
-                  <small>{detailParts[0]}</small>
                 </div>
               </div>
             </>

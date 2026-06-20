@@ -141,7 +141,7 @@
   display: grid;
   place-items: center;
   min-width: 0;
-  min-height: 82px;
+  min-height: 68px;
   overflow: hidden;
   border-radius: 12px;
   background:
@@ -203,8 +203,8 @@
 
 .channel-posts-chart__content {
   display: grid;
-  align-content: space-between;
-  gap: 8px;
+  align-content: center;
+  gap: 7px;
   min-width: 0;
 }
 
@@ -272,24 +272,6 @@
   letter-spacing: 0;
   line-height: 1;
   white-space: nowrap;
-}
-
-.channel-posts-chart__bar {
-  height: 6px;
-  background: var(--surface-card-muted);
-}
-
-.channel-posts-chart__bar span {
-  background: linear-gradient(90deg, var(--accent), var(--success));
-}
-
-.channel-posts-chart__row-meta {
-  display: flex;
-  flex-wrap: wrap;
-}
-
-.channel-posts-chart__row-meta small {
-  color: var(--text-muted);
 }
 
 .channel-best-windows__row {
@@ -712,15 +694,6 @@ body.channel-stats-page-open .channel-insights__body {
   min-width: 30px;
   height: 30px;
   border-radius: 10px;
-}
-
-.channel-posts-chart__bar {
-  height: 8px;
-  background: var(--surface-card-muted);
-}
-
-.channel-posts-chart__bar span {
-  background: linear-gradient(90deg, var(--accent), var(--success));
 }
 
 .channel-best-windows__row {
