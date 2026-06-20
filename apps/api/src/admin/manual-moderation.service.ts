@@ -15,6 +15,8 @@ import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-i
 import { AdminService } from './admin.service';
 import { type ResolvedUserProfile } from './admin.service.support';
 
+type GlobalSpammerProfileMode = 'full' | 'local';
+
 @Injectable()
 export class ManualModerationService {
   constructor(
@@ -81,6 +83,7 @@ export class ManualModerationService {
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.trunc(rawLimit))) : 50;
     const includeProfiles = this.parseBooleanQuery(queryRecord.includeProfiles, true);
     const includeObservations = this.parseBooleanQuery(queryRecord.includeObservations, true);
+    const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
     const response = await this.globalSpammerIntelligence.listReviewQueue({
       chatId,
       status,
@@ -91,7 +94,13 @@ export class ManualModerationService {
     if (!includeProfiles) {
       return parsedResponse;
     }
-    const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(chatId, parsedResponse);
+    const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(
+      chatId,
+      parsedResponse,
+      {
+        allowRemoteLookup: profileMode === 'full',
+      },
+    );
     return globalSpammerReviewQueueSchema.parse(enrichedResponse);
   }
 
@@ -116,6 +125,7 @@ export class ManualModerationService {
       queryRecord.includeProfile ?? queryRecord.includeProfiles,
       true,
     );
+    const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
     const response = await this.globalSpammerIntelligence.getUserDiagnostics({
       chatId,
       userId: targetUserId,
@@ -127,6 +137,9 @@ export class ManualModerationService {
     const enrichedResponse = await this.attachGlobalSpammerDiagnosticsProfile(
       chatId,
       parsedResponse,
+      {
+        allowRemoteLookup: profileMode === 'full',
+      },
     );
     return globalSpammerUserDiagnosticsSchema.parse(enrichedResponse);
   }
@@ -191,13 +204,23 @@ export class ManualModerationService {
     return fallback;
   }
 
+  private parseGlobalSpammerProfileMode(value: unknown): GlobalSpammerProfileMode {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (normalized === 'local' || normalized === 'cached') {
+      return 'local';
+    }
+    return 'full';
+  }
+
   private async attachGlobalSpammerReviewProfiles(
     chatId: string,
     response: GlobalSpammerReviewQueue,
+    options: { allowRemoteLookup?: boolean } = {},
   ): Promise<GlobalSpammerReviewQueue> {
     const profiles = await this.resolveGlobalSpammerProfiles(
       chatId,
       response.items.map((item) => item.userId),
+      options,
     );
 
     return {
@@ -228,10 +251,11 @@ export class ManualModerationService {
   private async attachGlobalSpammerDiagnosticsProfile(
     chatId: string,
     response: GlobalSpammerUserDiagnostics,
+    options: { allowRemoteLookup?: boolean } = {},
   ): Promise<GlobalSpammerUserDiagnostics> {
-    const profile = (await this.resolveGlobalSpammerProfiles(chatId, [response.userId])).get(
-      response.userId.trim(),
-    );
+    const profile = (
+      await this.resolveGlobalSpammerProfiles(chatId, [response.userId], options)
+    ).get(response.userId.trim());
 
     return {
       ...response,
@@ -275,6 +299,7 @@ export class ManualModerationService {
   private async resolveGlobalSpammerProfiles(
     chatId: string,
     userIds: readonly string[],
+    options: { allowRemoteLookup?: boolean } = {},
   ): Promise<Map<string, ResolvedUserProfile>> {
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
     if (normalizedUserIds.length === 0) {
@@ -286,7 +311,7 @@ export class ManualModerationService {
       'chat',
       normalizedUserIds,
       {
-        allowRemoteLookup: true,
+        allowRemoteLookup: options.allowRemoteLookup !== false,
       },
     );
   }

@@ -320,6 +320,7 @@ export async function getGlobalSpammerReviewQueue(
     limit: number;
     includeProfiles: boolean;
     includeObservations: boolean;
+    profileMode: 'full' | 'local';
   }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<GlobalSpammerReviewQueue> {
@@ -338,6 +339,9 @@ export async function getGlobalSpammerReviewQueue(
   }
   if (query.includeObservations === false) {
     params.set('includeObservations', 'false');
+  }
+  if (query.profileMode === 'local') {
+    params.set('profileMode', 'local');
   }
   const response = await api.request(
     `/chats/${chatId}/spammer-review?${params.toString()}`,
@@ -361,12 +365,16 @@ export async function getGlobalSpammerUserDiagnostics(
   userId: string,
   query: Partial<{
     includeProfile: boolean;
+    profileMode: 'full' | 'local';
   }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<GlobalSpammerUserDiagnostics> {
   const params = new URLSearchParams();
   if (query.includeProfile === false) {
     params.set('includeProfile', 'false');
+  }
+  if (query.profileMode === 'local') {
+    params.set('profileMode', 'local');
   }
   const suffix = params.toString();
   const path = `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`;

@@ -2029,7 +2029,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
   const spammerReviewQueueQuery = useQuery({
-    queryKey: queryKeys.globalSpammerReviewQueue(chatId, 'PENDING', 20, 'stored-profile'),
+    queryKey: queryKeys.globalSpammerReviewQueue(chatId, 'PENDING', 20, 'local-profile'),
     queryFn: ({ signal }) =>
       getGlobalSpammerReviewQueue(
         api,
@@ -2037,8 +2037,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         {
           status: 'PENDING',
           limit: 20,
-          includeProfiles: false,
+          includeProfiles: true,
           includeObservations: false,
+          profileMode: 'local',
         },
         { signal },
       ),
@@ -2057,7 +2058,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         api,
         chatId ?? '',
         spammerDiagnosticsTarget?.userId ?? '',
-        {},
+        {
+          includeProfile: false,
+        },
         {
           signal,
         },

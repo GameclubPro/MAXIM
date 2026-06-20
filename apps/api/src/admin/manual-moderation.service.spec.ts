@@ -139,7 +139,42 @@ describe('ManualModerationService spammer profiles', () => {
     );
   });
 
-  it('skips profile enrichment and observations for lightweight spammer review lists', async () => {
+  it('attaches local profile data without remote lookup for lightweight spammer review lists', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const queue = await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      status: 'PENDING',
+      limit: '20',
+      includeObservations: 'false',
+      profileMode: 'local',
+    });
+
+    expect(globalSpammerIntelligence.listReviewQueue).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      limit: 20,
+      includeObservations: false,
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).toHaveBeenCalledWith(
+      'chat-1',
+      'chat',
+      ['user-1'],
+      { allowRemoteLookup: false },
+    );
+    expect(queue.items[0]).toEqual(
+      expect.objectContaining({
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+      }),
+    );
+  });
+
+  it('skips profile enrichment and observations when lightweight spammer review lists opt out', async () => {
     const legacyAdminService = createLegacyAdminServiceMock();
     const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
     const service = new ManualModerationService(
