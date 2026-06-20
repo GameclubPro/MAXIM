@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { InfoCircleSolid } from 'iconoir-react';
 import {
   ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
@@ -65,14 +64,6 @@ function readCommandName(value: string | null | undefined, fallback: string) {
   return value?.trim().replace(/\s+/g, ' ') || fallback;
 }
 
-function commandLabel(value: string) {
-  return `«${value}»`;
-}
-
-function appendCaseNote(text: string) {
-  return `${text} Пишите как удобно: бот поймет и маленькие, и большие буквы.`;
-}
-
 const commandCategories: AdminCommandCategory[] = [
   {
     title: 'Модерация',
@@ -85,9 +76,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} быстро закрывает доступ человеку только здесь. Ответьте командой на сообщение нарушителя или перешлите это сообщение в чат.`,
-          ),
+          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот забанит пользователя только в текущем чате.`,
       },
       {
         key: 'adminBanAllCommandName',
@@ -97,9 +86,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} - усиленная команда для одного и того же нарушителя во всех ваших чатах с ботом. Восклицательный знак помогает не перепутать ее с обычным баном.`,
-          ),
+          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот применит бан в этом чате и остальных чатах, где админ может управлять ботом.`,
       },
       {
         key: 'adminMuteCommandName',
@@ -109,9 +96,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_MUTE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `${value} 12`],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} мягче бана: человек остается в чате, но временно не пишет. Без числа будет 6 часов, с числом - выбранный срок, например ${commandLabel(`${value} 12`)}.`,
-          ),
+          `Команда ${value} ставит мут на 6 часов. Число после команды задает срок от 1 до 336 часов.`,
       },
       {
         key: 'adminPermanentMuteCommandName',
@@ -121,9 +106,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} оставляет человека в чате, но закрывает ему возможность писать без таймера. Удобно, когда удалять из чата не хочется.`,
-          ),
+          `Команда ${value} ставит бессрочный мут. Это отдельное действие, а не вариант временного мута.`,
       },
       {
         key: 'adminSilenceCommandName',
@@ -133,9 +116,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `${value} 12`],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} включает тихий режим: сообщения участников будут удаляться, а админы смогут писать как обычно. Без числа - 6 часов, с числом - нужный срок.`,
-          ),
+          `Команда ${value} закрывает чат на 6 часов по умолчанию. Число после команды задает срок от 1 до 336 часов.`,
       },
       {
         key: 'adminOpenChatCommandName',
@@ -145,9 +126,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
         hint: (value) =>
-          appendCaseNote(
-            `${commandLabel(value)} снимает тишину сразу. Участники снова смогут писать, а остальные правила продолжат работать как раньше.`,
-          ),
+          `Команда ${value} отключает тишину. После этого сообщения участников снова проходят по обычным правилам.`,
       },
     ],
   },
@@ -162,9 +141,7 @@ const commandCategories: AdminCommandCategory[] = [
         defaultValue: ADMIN_RULES_COMMAND_NAME_DEFAULT,
         examples: (value) => [value, `ответ + ${value}`],
         hint: (value) =>
-          appendCaseNote(
-            `Ответьте ${commandLabel(value)} на сообщение с правилами или перешлите его вместе с командой. Бот сохранит текст и покажет кнопку "Правила" в предупреждениях.`,
-          ),
+          `Ответьте на сообщение с командой ${value} или перешлите сообщение вместе с ней. Бот сохранит его как правила.`,
       },
     ],
   },
@@ -254,12 +231,12 @@ export function SettingsAdminCommandsSection({
                               aria-expanded={isHintOpen}
                               onClick={() => onToggleHint(item.hintKey)}
                             >
-                              <InfoCircleSolid aria-hidden focusable="false" />
+                              <span aria-hidden>i</span>
                             </button>
                           </div>
 
                           <label className="field settings-command-card__field">
-                            <span>Команда</span>
+                            <span>Название команды</span>
                             <input
                               value={draft[item.key]}
                               onChange={(event) => onFieldChange(item.key, event.target.value)}
@@ -271,7 +248,6 @@ export function SettingsAdminCommandsSection({
                             className="settings-command-card__examples"
                             aria-label={`Примеры: ${item.title}`}
                           >
-                            <span className="settings-command-card__examples-label">Примеры</span>
                             {item.examples(value).map((example) => (
                               <code key={example}>{example}</code>
                             ))}
