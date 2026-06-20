@@ -1,7 +1,12 @@
 @layer pages {
 .settings-sections--chat-home .settings-sections-shell {
+  --settings-home-tile-min-height: 88px;
+  --settings-home-tile-icon-size: 44px;
+  --settings-home-tile-icon-glyph-size: 22px;
+  --settings-home-tile-gap: 7px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  align-items: stretch;
+  gap: 8px 7px;
 }
 
 .settings-sections--chat-home .settings-home-group-head,
@@ -11,10 +16,12 @@
 
 .settings-sections--chat-home .settings-home-entry:not(.settings-home-entry--speech) {
   grid-column: auto;
+  height: 100%;
   min-width: 0;
 }
 
 .settings-sections--chat-home .settings-home-entry .settings-section__head {
+  height: 100%;
   min-width: 0;
 }
 
@@ -22,17 +29,18 @@
   .settings-home-entry:not(.settings-home-entry--speech)
   .settings-section__toggle {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(30px, 1fr);
+  grid-template-rows: var(--settings-home-tile-icon-size) minmax(26px, auto);
   grid-template-areas:
     'icon'
     'title';
   justify-items: center;
   align-items: center;
   align-content: center;
-  gap: 10px;
-  min-height: 94px;
-  padding: 11px 8px 10px;
-  border-radius: 16px;
+  gap: var(--settings-home-tile-gap);
+  height: 100%;
+  min-height: var(--settings-home-tile-min-height);
+  padding: 9px 7px 8px;
+  border-radius: 15px;
   text-align: center;
 }
 
@@ -52,17 +60,17 @@
   .settings-section__icon-badge {
   grid-area: icon;
   justify-self: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
+  width: var(--settings-home-tile-icon-size);
+  height: var(--settings-home-tile-icon-size);
+  border-radius: 15px;
 }
 
 .settings-sections--chat-home
   .settings-home-entry:not(.settings-home-entry--speech)
   .settings-section__icon-badge
   svg {
-  width: 25px;
-  height: 25px;
+  width: var(--settings-home-tile-icon-glyph-size);
+  height: var(--settings-home-tile-icon-glyph-size);
 }
 
 .settings-sections--chat-home
@@ -83,7 +91,7 @@
   .settings-section__toggle-main
   h3 {
   width: 100%;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   line-height: 1.08;
   text-align: center;
 }
@@ -91,7 +99,7 @@
 .settings-sections--chat-home
   .settings-home-entry:not(.settings-home-entry--speech)
   .settings-section__toggle.is-stateless {
-  grid-template-rows: auto minmax(40px, 1fr);
+  grid-template-rows: var(--settings-home-tile-icon-size) minmax(26px, auto);
   grid-template-areas:
     'icon'
     'title';
@@ -105,39 +113,25 @@
 
 @media (max-width: 360px) {
   .settings-sections--chat-home .settings-sections-shell {
+    --settings-home-tile-min-height: 84px;
+    --settings-home-tile-icon-size: 42px;
+    --settings-home-tile-icon-glyph-size: 21px;
+    --settings-home-tile-gap: 7px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 7px;
+    gap: 8px 7px;
   }
 
   .settings-sections--chat-home
     .settings-home-entry:not(.settings-home-entry--speech)
     .settings-section__toggle {
-    min-height: 90px;
-    padding: 10px 7px 9px;
-    gap: 8px;
+    padding: 8px 7px 7px;
   }
 
   .settings-sections--chat-home
     .settings-home-entry:not(.settings-home-entry--speech)
     .settings-section__toggle-main
     h3 {
-    font-size: 0.68rem;
-  }
-
-  .settings-sections--chat-home
-    .settings-home-entry:not(.settings-home-entry--speech)
-    .settings-section__icon-badge {
-    width: 44px;
-    height: 44px;
-    border-radius: 15px;
-  }
-
-  .settings-sections--chat-home
-    .settings-home-entry:not(.settings-home-entry--speech)
-    .settings-section__icon-badge
-    svg {
-    width: 23px;
-    height: 23px;
+    font-size: 0.7rem;
   }
 }
 
