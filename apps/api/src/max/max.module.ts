@@ -17,6 +17,7 @@ import { MaxMembershipLookupService } from './max-membership-lookup.service';
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
 import { ManagedEntityAccessWriter } from './managed-entity-access-writer.service';
 import { ManagedEntityHandshakeService } from './managed-entity-handshake.service';
+import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
 import { MaxBotModule } from './max-bot.module';
 
 const maxProviders = [
@@ -28,6 +29,7 @@ const maxProviders = [
   MaxWebhookSubscriptionReconcilerService,
   ManagedEntityAccessLossService,
   ManagedEntityAccessWriter,
+  ManagedEntityHandshakeOutcomeService,
   ManagedEntityHandshakeService,
   ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
   ...(roleRunsAction(getAppRole()) ? [MaxChatAdminRosterSyncProcessor] : []),
@@ -56,6 +58,7 @@ const maxProviders = [
     MaxWebhookSubscriptionReconcilerService,
     ManagedEntityAccessLossService,
     ManagedEntityAccessWriter,
+    ManagedEntityHandshakeOutcomeService,
     ManagedEntityHandshakeService,
   ],
 })

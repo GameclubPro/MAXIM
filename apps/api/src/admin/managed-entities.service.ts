@@ -1,6 +1,7 @@
 import {
   managedEntityAccessRecheckResponseSchema,
   managedEntityFavoritesResponseSchema,
+  managedEntityOnboardingDiagnosticsSchema,
   managedEntityTypeSchema,
   managedEntityBotExecutionPlanSchema,
   promoteManagedEntityStandbyRequestSchema,
@@ -17,6 +18,7 @@ import {
   type ManagedEntityFavoriteType,
   type ManagedEntityFavoritesResponse,
   type ManagedEntityHeader,
+  type ManagedEntityOnboardingDiagnostics,
   type ManagedEntitiesListResponse,
   type ManagedEntitiesResponseDiff,
   type ManagedEntityType,
@@ -40,6 +42,7 @@ import { MaxClientService } from '../max/max-client.service';
 import {
   ChatBotMembershipStatus,
   ManagedEntityAccessState,
+  ManagedEntityHandshakeOutcomeStatus,
 } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeMembershipAccessSnapshot } from '../max/max-bot-access-policy.util';
@@ -86,6 +89,19 @@ const MANAGED_ENTITY_ACCESS_LOSS_REASONS = new Set<ManagedEntityAccessLossReason
   'bot_removed',
   'chat_inaccessible',
 ]);
+
+const HANDSHAKE_OUTCOME_BY_PRISMA_STATUS: Record<
+  ManagedEntityHandshakeOutcomeStatus,
+  'connected' | 'already_connected' | 'bootstrapped_without_user' | 'bot_denied' | 'user_denied' | 'rate_limited' | 'failed'
+> = {
+  CONNECTED: 'connected',
+  ALREADY_CONNECTED: 'already_connected',
+  BOOTSTRAPPED_WITHOUT_USER: 'bootstrapped_without_user',
+  BOT_DENIED: 'bot_denied',
+  USER_DENIED: 'user_denied',
+  RATE_LIMITED: 'rate_limited',
+  FAILED: 'failed',
+};
 
 type AccessLossSnapshot = {
   reason: ManagedEntityAccessLossReason;
@@ -297,6 +313,101 @@ export class ManagedEntitiesService {
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
       createIdleRefreshState: () =>
         this.legacyAdminService.createIdleManagedEntitiesRefreshStateForManagedEntities(),
+    });
+  }
+
+  async getOnboardingDiagnostics(
+    entityTypeRaw: string,
+    user: AuthUser,
+  ): Promise<ManagedEntityOnboardingDiagnostics> {
+    const entityType = managedEntityTypeSchema.parse(entityTypeRaw);
+    const prismaEntityType = toPrismaEntityType(entityType);
+    const now = new Date();
+    const [visibleEdge, localActivities, accessEdges, lastHandshake] = await Promise.all([
+      this.prisma.managedEntityAccessEdge.findFirst({
+        where: {
+          userId: user.userId,
+          entityType: prismaEntityType,
+          state: ManagedEntityAccessState.GRANTED,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        select: { chatId: true },
+        orderBy: [{ checkedAt: 'desc' }],
+      }),
+      this.prisma.managedEntityLocalActivity.findMany({
+        where: {
+          userId: user.userId,
+          entityType: prismaEntityType,
+        },
+        select: {
+          chatId: true,
+          chatTitle: true,
+          sourceEventType: true,
+          lastEventAt: true,
+        },
+        orderBy: [{ lastEventAt: 'desc' }],
+        take: 3,
+      }),
+      this.prisma.managedEntityAccessEdge.findMany({
+        where: {
+          userId: user.userId,
+          entityType: prismaEntityType,
+        },
+        select: {
+          chatId: true,
+          state: true,
+          checkedAt: true,
+        },
+        orderBy: [{ checkedAt: 'desc' }],
+        take: 3,
+      }),
+      this.prisma.managedEntityHandshakeOutcome.findFirst({
+        where: {
+          userId: user.userId,
+          entityType: prismaEntityType,
+          expiresAt: { gt: now },
+        },
+        select: {
+          chatId: true,
+          title: true,
+          status: true,
+          reason: true,
+          happenedAt: true,
+        },
+        orderBy: [{ happenedAt: 'desc' }],
+      }),
+    ]);
+
+    return managedEntityOnboardingDiagnosticsSchema.parse({
+      entityType,
+      hasVisibleEntities: visibleEdge !== null,
+      recentSignals: [
+        ...localActivities.map((activity) => ({
+          type: 'recent_activity',
+          chatId: activity.chatId,
+          title: activity.chatTitle,
+          status: activity.sourceEventType,
+          at: activity.lastEventAt.toISOString(),
+        })),
+        ...accessEdges.map((edge) => ({
+          type: 'access_edge',
+          chatId: edge.chatId,
+          title: null,
+          status: edge.state.toLowerCase(),
+          at: edge.checkedAt.toISOString(),
+        })),
+      ]
+        .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
+        .slice(0, 5),
+      lastHandshake: lastHandshake
+        ? {
+            chatId: lastHandshake.chatId,
+            title: lastHandshake.title,
+            status: HANDSHAKE_OUTCOME_BY_PRISMA_STATUS[lastHandshake.status],
+            reason: lastHandshake.reason,
+            happenedAt: lastHandshake.happenedAt.toISOString(),
+          }
+        : null,
     });
   }
 

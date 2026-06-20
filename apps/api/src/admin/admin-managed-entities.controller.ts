@@ -127,6 +127,14 @@ export class AdminManagedEntitiesController {
     return this.entitiesService.updateManagedEntityFavorites(entityType, entityId, user, body);
   }
 
+  @Get('managed-entities/:entityType/onboarding-diagnostics')
+  getManagedEntityOnboardingDiagnostics(
+    @Param('entityType') entityType: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.entitiesService.getOnboardingDiagnostics(entityType, user);
+  }
+
   @Post('managed-entities/:entityType/:entityId/access/recheck')
   recheckManagedEntityAccess(
     @Param('entityType') entityType: string,

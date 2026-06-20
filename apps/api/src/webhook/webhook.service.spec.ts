@@ -1749,7 +1749,7 @@ describe('WebhookService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100129',
-      'Чтобы подключить чат к панели, администратор должен написать ровно: Старт',
+      'Чат почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.',
       expect.objectContaining({
         buttons: [
           [
@@ -1776,6 +1776,64 @@ describe('WebhookService', () => {
     await flushDeferredWebhookWork();
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses channel wording in the Старт hint after channel bot_added webhooks', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-channel-hint' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'hint-1', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-channel-hint-1',
+          type: 'bot_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_added:u-bot-added-channel-hint-1',
+            chatId: '-100130',
+            chatTitle: 'Канал с подсказкой',
+            entityType: 'channel',
+            senderId: 'id613002203036_bot',
+            text: '',
+            createdAt: new Date('2026-04-03T12:04:00.000Z').toISOString(),
+          },
+        } as never,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100130',
+      'Канал почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Старт' })]],
+      }),
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        sourceTag: 'managed_handshake',
+      }),
+    );
   });
 
   it('enqueues chat admin roster sync for bot membership churn updates', async () => {

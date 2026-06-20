@@ -1,4 +1,8 @@
-import { ChatEntityType, ManagedEntityAccessState } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  ManagedEntityAccessState,
+  ManagedEntityHandshakeOutcomeStatus,
+} from '../prisma/prisma-client';
 import { ManagedEntityAccessWriter } from './managed-entity-access-writer.service';
 import {
   ManagedEntityHandshakeService,
@@ -92,6 +96,9 @@ function createFixture() {
   const rosterSync = {
     scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
   };
+  const handshakeOutcomes = {
+    recordOutcome: jest.fn().mockResolvedValue(undefined),
+  };
   const accessWriter = new ManagedEntityAccessWriter(
     prisma as never,
     maxBotLinkService as never,
@@ -103,6 +110,7 @@ function createFixture() {
     maxBotLinkService as never,
     maxBotRegistry as never,
     rosterSync as never,
+    handshakeOutcomes as never,
   );
 
   return {
@@ -113,6 +121,7 @@ function createFixture() {
     maxBotRegistry,
     chatContextCache,
     rosterSync,
+    handshakeOutcomes,
   };
 }
 
@@ -180,6 +189,15 @@ describe('ManagedEntityHandshakeService', () => {
       '-100',
       ['admin-1'],
       expect.objectContaining({ sourceTag: 'managed_handshake' }),
+    );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        botId: 'bot-1',
+        entityType: ChatEntityType.CHAT,
+        status: ManagedEntityHandshakeOutcomeStatus.CONNECTED,
+      }),
     );
   });
 
@@ -298,6 +316,46 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
+  it('uses the callback user when the callback message sender is the bot', async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          type: 'message_callback',
+          message: {
+            chatId: '-100',
+            senderId: 'bot-1',
+            text: '',
+          },
+          raw: {
+            callback: {
+              callback_id: 'cb-start-3',
+              payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+              user: {
+                user_id: 'admin-1',
+              },
+            },
+          },
+        }),
+      ),
+    ).resolves.toBe('connected');
+
+    expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '-100',
+        entityType: 'chat',
+      }),
+      expect.any(Number),
+      'admin-1',
+    );
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      '-100',
+      ['admin-1'],
+      expect.objectContaining({ sourceTag: 'managed_handshake' }),
+    );
+  });
+
   it('ignores unrelated callbacks', async () => {
     const fixture = createFixture();
 
@@ -346,10 +404,39 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100',
-      'Команду Старт может выполнить только администратор или владелец чата.',
+      'Подключение может подтвердить только администратор или владелец чата. Попросите администратора нажать «Старт» в сообщении бота или отправить Старт.',
       undefined,
       expect.anything(),
     );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.USER_DENIED,
+        reason: 'user_not_admin',
+      }),
+    );
+  });
+
+  it('does not rate limit a retry after a transient bot access denial', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess
+      .mockResolvedValueOnce({
+        userId: 'bot-1',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      })
+      .mockResolvedValueOnce({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['change_chat_info'],
+      });
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes an existing granted edge when the chat is already connected', async () => {
@@ -407,6 +494,13 @@ describe('ManagedEntityHandshakeService', () => {
       null,
     );
     expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'bot-1',
+        status: ManagedEntityHandshakeOutcomeStatus.BOOTSTRAPPED_WITHOUT_USER,
+        reason: 'sender_missing',
+      }),
+    );
   });
 
   it('rate limits duplicate Старт commands per chat and user', async () => {
@@ -416,5 +510,14 @@ describe('ManagedEntityHandshakeService', () => {
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('rate_limited');
 
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        botId: 'bot-1',
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
   });
 });

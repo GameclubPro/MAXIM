@@ -17,6 +17,7 @@ type CandidateRow = {
 };
 
 type CandidateReadClient = Pick<PrismaService, '$queryRaw'>;
+type CandidateEntityType = Exclude<ManagedEntityTypeFilter, 'all'>;
 
 @Injectable()
 export class ManagedEntityCandidateSyncService {
@@ -34,7 +35,8 @@ export class ManagedEntityCandidateSyncService {
     const limit = Math.max(1, Math.trunc(options.limit));
     const now = options.now ?? new Date();
     const lookbackFrom = new Date(now.getTime() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
-    const rows = await prisma.$queryRaw<CandidateRow[]>`
+    const requestedEntityType = this.resolveRequestedEntityType(entityType);
+    const rows = await prisma.$queryRaw<CandidateRow[]>(Prisma.sql`
       SELECT
         activities.chat_id,
         COALESCE(NULLIF(BTRIM(activities.chat_title), ''), chats.title) AS chat_title,
@@ -53,9 +55,14 @@ export class ManagedEntityCandidateSyncService {
       LEFT JOIN chats ON chats.id = activities.chat_id
       WHERE activities.user_id = ${normalizedUserId}
         AND activities.last_event_at >= ${lookbackFrom}
+        ${this.buildEntityTypeSqlFilter(
+          Prisma.sql`activities.entity_type`,
+          Prisma.sql`chats.entity_type`,
+          requestedEntityType,
+        )}
       ORDER BY activities.last_event_at DESC
       LIMIT ${limit}
-    `;
+    `);
 
     const sourceRows =
       rows.length > 0
@@ -65,6 +72,7 @@ export class ManagedEntityCandidateSyncService {
             normalizedUserId,
             lookbackFrom,
             limit,
+            requestedEntityType,
           );
 
     return this.toDiscoverySnapshot(sourceRows, entityType, limit);
@@ -75,8 +83,9 @@ export class ManagedEntityCandidateSyncService {
     normalizedUserId: string,
     lookbackFrom: Date,
     limit: number,
+    requestedEntityType: CandidateEntityType | null,
   ): Promise<CandidateRow[]> {
-    return prisma.$queryRaw<CandidateRow[]>`
+    return prisma.$queryRaw<CandidateRow[]>(Prisma.sql`
       WITH local_candidates AS (
         SELECT DISTINCT ON (chat_id)
           chat_id,
@@ -127,9 +136,15 @@ export class ManagedEntityCandidateSyncService {
         local_candidates.created_at
       FROM local_candidates
       LEFT JOIN chats ON chats.id = local_candidates.chat_id
+      WHERE local_candidates.chat_id IS NOT NULL
+        ${this.buildFallbackEntityTypeSqlFilter(
+          Prisma.sql`local_candidates.chat_type`,
+          Prisma.sql`chats.entity_type`,
+          requestedEntityType,
+        )}
       ORDER BY local_candidates.created_at DESC
       LIMIT ${limit}
-    `;
+    `);
   }
 
   private toDiscoverySnapshot(
@@ -174,6 +189,48 @@ export class ManagedEntityCandidateSyncService {
       return 'chat';
     }
     return null;
+  }
+
+  private resolveRequestedEntityType(entityType: ManagedEntityTypeFilter): CandidateEntityType | null {
+    return entityType === 'chat' || entityType === 'channel' ? entityType : null;
+  }
+
+  private buildEntityTypeSqlFilter(
+    primaryColumn: Prisma.Sql,
+    fallbackColumn: Prisma.Sql,
+    entityType: CandidateEntityType | null,
+  ): Prisma.Sql {
+    if (!entityType) {
+      return Prisma.empty;
+    }
+
+    const prismaEntityType = entityType === 'channel' ? 'CHANNEL' : 'CHAT';
+    return Prisma.sql`
+      AND COALESCE(${primaryColumn}, ${fallbackColumn}, 'CHAT'::"ChatEntityType") = ${prismaEntityType}::"ChatEntityType"
+    `;
+  }
+
+  private buildFallbackEntityTypeSqlFilter(
+    primaryColumn: Prisma.Sql,
+    fallbackColumn: Prisma.Sql,
+    entityType: CandidateEntityType | null,
+  ): Prisma.Sql {
+    if (!entityType) {
+      return Prisma.empty;
+    }
+
+    const fallbackEntityType = entityType === 'channel' ? 'CHANNEL' : 'CHAT';
+    return Prisma.sql`
+      AND COALESCE(
+        ${primaryColumn},
+        CASE ${fallbackColumn}
+          WHEN 'CHANNEL' THEN 'channel'
+          ELSE 'chat'
+        END,
+        'chat'
+      ) = ${entityType}
+      AND COALESCE(${fallbackColumn}, ${fallbackEntityType}::"ChatEntityType") = ${fallbackEntityType}::"ChatEntityType"
+    `;
   }
 
   private readTrimmedString(value: unknown): string | null {

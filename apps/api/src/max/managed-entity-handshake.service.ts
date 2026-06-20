@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatEntityType, ManagedEntityHandshakeOutcomeStatus } from '../prisma/prisma-client';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import {
   MAX_API_SOURCE_TAGS,
@@ -15,6 +15,7 @@ import {
   MANAGED_ENTITY_HANDSHAKE_SOURCE,
   type ManagedEntityAccessWriteContext,
 } from './managed-entity-access-writer.service';
+import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
 
 const HANDSHAKE_COMMAND = 'старт';
 export const MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD =
@@ -55,6 +56,7 @@ export class ManagedEntityHandshakeService {
     private readonly maxBotLinkService: MaxBotLinkService,
     private readonly maxBotRegistry: MaxBotRegistryService,
     private readonly maxChatAdminRosterSyncService: MaxChatAdminRosterSyncService,
+    private readonly handshakeOutcomes: ManagedEntityHandshakeOutcomeService,
   ) {}
 
   async handleWebhookUpdate(update: MaxUpdate): Promise<ManagedEntityHandshakeResult> {
@@ -64,6 +66,12 @@ export class ManagedEntityHandshakeService {
     }
 
     if (!this.reserveRateLimitSlot(context)) {
+      await this.recordOutcome(
+        context,
+        ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        'duplicate_recently',
+      );
+      this.logOutcome(context, 'rate_limited');
       return 'rate_limited';
     }
 
@@ -76,7 +84,17 @@ export class ManagedEntityHandshakeService {
         timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
       });
       if (!this.isAdminOrOwner(botAccess)) {
-        await this.replySafely(context, 'Не получилось подключить чат: у бота нет прав администратора.');
+        await this.replySafely(
+          context,
+          'Не получилось подключить чат: у бота нет прав администратора.',
+        );
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+          'bot_not_admin',
+        );
+        this.logOutcome(context, 'bot_denied');
+        this.releaseRateLimitSlot(context);
         return 'denied';
       }
 
@@ -86,6 +104,12 @@ export class ManagedEntityHandshakeService {
           context,
           'Бот видит этот канал. Откройте мини-приложение от имени администратора, чтобы привязать доступ.',
         );
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.BOOTSTRAPPED_WITHOUT_USER,
+          'sender_missing',
+        );
+        this.logOutcome(context, 'bootstrapped_without_user');
         return 'bootstrapped_without_user';
       }
 
@@ -104,8 +128,15 @@ export class ManagedEntityHandshakeService {
       if (!userAccess || !this.isAdminOrOwner(userAccess)) {
         await this.replySafely(
           context,
-          'Команду Старт может выполнить только администратор или владелец чата.',
+          'Подключение может подтвердить только администратор или владелец чата. Попросите администратора нажать «Старт» в сообщении бота или отправить Старт.',
         );
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.USER_DENIED,
+          'user_not_admin',
+        );
+        this.logOutcome(context, 'user_denied');
+        this.releaseRateLimitSlot(context);
         return 'denied';
       }
 
@@ -122,8 +153,17 @@ export class ManagedEntityHandshakeService {
         wasConnected ? 'Уже подключен. Я обновил доступ и настройки.' : 'Готово, чат подключен.',
         this.buildSettingsButton(context),
       );
+      await this.recordOutcome(
+        context,
+        wasConnected
+          ? ManagedEntityHandshakeOutcomeStatus.ALREADY_CONNECTED
+          : ManagedEntityHandshakeOutcomeStatus.CONNECTED,
+      );
+      this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
       return wasConnected ? 'already_connected' : 'connected';
     } catch (error: unknown) {
+      this.releaseRateLimitSlot(context);
+      await this.recordOutcome(context, ManagedEntityHandshakeOutcomeStatus.FAILED, 'exception');
       this.logger.warn(
         {
           updateId: update.updateId,
@@ -163,9 +203,9 @@ export class ManagedEntityHandshakeService {
     }
 
     const rawSenderId =
-      update.message?.senderId?.trim() ||
-      (updateType === 'message_callback' ? this.readCallbackUserId(update) : null) ||
-      '';
+      updateType === 'message_callback'
+        ? (this.readCallbackUserId(update) ?? update.message?.senderId?.trim() ?? '')
+        : (update.message?.senderId?.trim() ?? '');
     const senderId =
       rawSenderId && !this.maxBotRegistry.isKnownBotUserId(rawSenderId) ? rawSenderId : null;
     const entityType = update.message?.entityType === 'channel' ? 'channel' : 'chat';
@@ -217,7 +257,7 @@ export class ManagedEntityHandshakeService {
   }
 
   private reserveRateLimitSlot(context: ManagedEntityHandshakeContext): boolean {
-    const key = `${context.chatId}:${context.senderId ?? context.botId}`;
+    const key = this.buildRateLimitKey(context);
     const now = Date.now();
     const blockedUntil = this.rateLimitUntilMs.get(key) ?? 0;
     if (blockedUntil > now) {
@@ -225,6 +265,44 @@ export class ManagedEntityHandshakeService {
     }
     this.rateLimitUntilMs.set(key, now + HANDSHAKE_RATE_LIMIT_MS);
     return true;
+  }
+
+  private releaseRateLimitSlot(context: ManagedEntityHandshakeContext): void {
+    this.rateLimitUntilMs.delete(this.buildRateLimitKey(context));
+  }
+
+  private buildRateLimitKey(context: ManagedEntityHandshakeContext): string {
+    return `${context.chatId}:${context.senderId ?? context.botId}`;
+  }
+
+  private async recordOutcome(
+    context: ManagedEntityHandshakeContext,
+    status: ManagedEntityHandshakeOutcomeStatus,
+    reason: string | null = null,
+  ): Promise<void> {
+    await this.handshakeOutcomes.recordOutcome({
+      chatId: context.chatId,
+      userId: context.senderId ?? context.botId,
+      botId: context.botId,
+      entityType: context.prismaEntityType,
+      status,
+      reason,
+      title: context.title,
+      source: HANDSHAKE_SOURCE,
+    });
+  }
+
+  private logOutcome(context: ManagedEntityHandshakeContext, outcome: string): void {
+    this.logger.log(
+      {
+        chatId: context.chatId,
+        botId: context.botId,
+        hasSender: Boolean(context.senderId),
+        entityType: context.entityType,
+        outcome,
+      },
+      'Managed entity handshake outcome',
+    );
   }
 
   private isAdminOrOwner(access: MaxChatMemberAccess | null): boolean {

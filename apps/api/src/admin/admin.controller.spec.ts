@@ -109,6 +109,17 @@ describe('admin domain controllers', () => {
     expect(managedEntitiesService.listChats).toHaveBeenCalled();
   });
 
+  it('routes managed entity onboarding diagnostics through the managed entities domain service', async () => {
+    const managedEntitiesService = {
+      getOnboardingDiagnostics: jest.fn().mockResolvedValue({ entityType: 'chat' }),
+    };
+    const controller = new AdminManagedEntitiesController(managedEntitiesService as never);
+
+    await controller.getManagedEntityOnboardingDiagnostics('chat', user as never);
+
+    expect(managedEntitiesService.getOnboardingDiagnostics).toHaveBeenCalledWith('chat', user);
+  });
+
   it('routes settings reads through the settings domain service', async () => {
     const adminSettingsService = {
       getSettings: jest.fn().mockResolvedValue({}),

@@ -41,12 +41,19 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
     },
     managedEntityAccessEdge: {
+      findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
     },
     managedEntityFavorite: {
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn(() => ({ operation: 'delete-many-favorites' })),
       upsert: jest.fn(() => ({ operation: 'upsert-favorite' })),
+    },
+    managedEntityLocalActivity: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    managedEntityHandshakeOutcome: {
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     auditLog: {
       create: jest.fn(() => ({ operation: 'audit-log' })),
@@ -698,6 +705,64 @@ describe('ManagedEntitiesService refresh jobs', () => {
     expect(
       legacyAdminService.runManagedEntitiesRemoteFullRefreshForManagedEntities,
     ).not.toHaveBeenCalled();
+  });
+});
+
+describe('ManagedEntitiesService onboarding diagnostics', () => {
+  it('returns bounded local diagnostics without remote discovery', async () => {
+    const { maxClient, prisma, service } = createService();
+    prisma.managedEntityAccessEdge.findFirst = jest.fn().mockResolvedValue({ chatId: '-100' });
+    prisma.managedEntityLocalActivity.findMany.mockResolvedValueOnce([
+      {
+        chatId: '-100',
+        chatTitle: 'Команда MAX',
+        sourceEventType: 'handshake_start',
+        lastEventAt: new Date('2026-06-20T12:00:00.000Z'),
+      },
+    ]);
+    prisma.managedEntityAccessEdge.findMany.mockResolvedValueOnce([
+      {
+        chatId: '-100',
+        state: 'GRANTED',
+        checkedAt: new Date('2026-06-20T12:01:00.000Z'),
+      },
+    ]);
+    prisma.managedEntityHandshakeOutcome.findFirst.mockResolvedValueOnce({
+      chatId: '-100',
+      title: 'Команда MAX',
+      status: 'CONNECTED',
+      reason: null,
+      happenedAt: new Date('2026-06-20T12:02:00.000Z'),
+    });
+
+    await expect(service.getOnboardingDiagnostics('chat', user as never)).resolves.toEqual({
+      entityType: 'chat',
+      hasVisibleEntities: true,
+      recentSignals: [
+        {
+          type: 'access_edge',
+          chatId: '-100',
+          title: null,
+          status: 'granted',
+          at: '2026-06-20T12:01:00.000Z',
+        },
+        {
+          type: 'recent_activity',
+          chatId: '-100',
+          title: 'Команда MAX',
+          status: 'handshake_start',
+          at: '2026-06-20T12:00:00.000Z',
+        },
+      ],
+      lastHandshake: {
+        chatId: '-100',
+        title: 'Команда MAX',
+        status: 'connected',
+        reason: null,
+        happenedAt: '2026-06-20T12:02:00.000Z',
+      },
+    });
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
   });
 });
 

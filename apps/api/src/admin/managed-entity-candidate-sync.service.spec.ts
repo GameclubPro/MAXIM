@@ -98,6 +98,31 @@ describe('ManagedEntityCandidateSyncService', () => {
     ]);
   });
 
+  it('pushes requested entity type filtering into local activity SQL before limiting', async () => {
+    const service = new ManagedEntityCandidateSyncService();
+    const prisma = createPrismaMock([
+      {
+        chat_id: '-200',
+        chat_title: 'Рабочий канал',
+        chat_type: 'channel',
+        created_at: now,
+      },
+    ]);
+
+    await expect(
+      service.loadLocalDiscoverySnapshot(prisma as never, 'admin-1', 'channel', {
+        limit: 1,
+        now,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        chatId: '-200',
+        entityType: 'channel',
+      }),
+    ]);
+    expect(readSqlValues(prisma.$queryRaw.mock.calls[0]?.[0])).toContain('CHANNEL');
+  });
+
   it('falls back to webhook events when local activity has no rows', async () => {
     const service = new ManagedEntityCandidateSyncService();
     const prisma = createPrismaMock(
@@ -127,6 +152,65 @@ describe('ManagedEntityCandidateSyncService', () => {
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
+  it('pushes requested entity type filtering into webhook fallback SQL before limiting', async () => {
+    const service = new ManagedEntityCandidateSyncService();
+    const prisma = createPrismaMock(
+      [],
+      [
+        {
+          chat_id: '-500',
+          chat_title: 'Канал из webhook',
+          chat_type: 'channel',
+          created_at: new Date('2026-06-20T10:00:00.000Z'),
+        },
+      ],
+    );
+
+    await expect(
+      service.loadLocalDiscoverySnapshot(prisma as never, 'admin-1', 'channel', {
+        limit: 1,
+        now,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        chatId: '-500',
+        entityType: 'channel',
+      }),
+    ]);
+    expect(readSqlValues(prisma.$queryRaw.mock.calls[1]?.[0])).toContain('channel');
+  });
+
+  it('allows webhook fallback channels resolved from stored chat metadata', async () => {
+    const service = new ManagedEntityCandidateSyncService();
+    const prisma = createPrismaMock(
+      [],
+      [
+        {
+          chat_id: '-501',
+          chat_title: 'Канал из chats',
+          chat_type: 'channel',
+          created_at: new Date('2026-06-20T10:01:00.000Z'),
+        },
+      ],
+    );
+
+    await expect(
+      service.loadLocalDiscoverySnapshot(prisma as never, 'admin-1', 'channel', {
+        limit: 1,
+        now,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        chatId: '-501',
+        title: 'Канал из chats',
+        entityType: 'channel',
+      }),
+    ]);
+    expect(readSqlValues(prisma.$queryRaw.mock.calls[1]?.[0])).toEqual(
+      expect.arrayContaining(['channel', 'CHANNEL']),
+    );
+  });
+
   it('returns an empty snapshot for blank user ids without querying', async () => {
     const service = new ManagedEntityCandidateSyncService();
     const prisma = createPrismaMock([]);
@@ -140,3 +224,9 @@ describe('ManagedEntityCandidateSyncService', () => {
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 });
+
+function readSqlValues(value: unknown): unknown[] {
+  return value && typeof value === 'object' && Array.isArray((value as { values?: unknown[] }).values)
+    ? (value as { values: unknown[] }).values
+    : [];
+}

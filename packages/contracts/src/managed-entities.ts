@@ -184,6 +184,49 @@ export const managedEntitiesListResponseSchema = z.object({
 });
 export type ManagedEntitiesListResponse = z.infer<typeof managedEntitiesListResponseSchema>;
 
+export const managedEntityHandshakeOutcomeStatusSchema = z.enum([
+  'connected',
+  'already_connected',
+  'bootstrapped_without_user',
+  'bot_denied',
+  'user_denied',
+  'rate_limited',
+  'failed',
+]);
+export type ManagedEntityHandshakeOutcomeStatus = z.infer<
+  typeof managedEntityHandshakeOutcomeStatusSchema
+>;
+
+export const managedEntityOnboardingDiagnosticSignalSchema = z.object({
+  type: z.enum(['recent_activity', 'access_edge', 'handshake']),
+  chatId: z.string().trim().min(1),
+  title: z.string().trim().nullable().optional().default(null),
+  status: z.string().trim().min(1),
+  at: z.string().datetime().nullable().optional().default(null),
+});
+export type ManagedEntityOnboardingDiagnosticSignal = z.infer<
+  typeof managedEntityOnboardingDiagnosticSignalSchema
+>;
+
+export const managedEntityOnboardingDiagnosticsSchema = z.object({
+  entityType: managedEntityTypeSchema,
+  hasVisibleEntities: z.boolean(),
+  recentSignals: z.array(managedEntityOnboardingDiagnosticSignalSchema).default([]),
+  lastHandshake: z
+    .object({
+      chatId: z.string().trim().min(1),
+      title: z.string().trim().nullable().optional().default(null),
+      status: managedEntityHandshakeOutcomeStatusSchema,
+      reason: z.string().trim().nullable().optional().default(null),
+      happenedAt: z.string().datetime(),
+    })
+    .nullable()
+    .default(null),
+});
+export type ManagedEntityOnboardingDiagnostics = z.infer<
+  typeof managedEntityOnboardingDiagnosticsSchema
+>;
+
 export const managedEntityAccessLossReasonSchema = z.enum([
   'chat_not_found',
   'bot_denied',

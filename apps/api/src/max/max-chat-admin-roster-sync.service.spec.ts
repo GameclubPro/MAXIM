@@ -765,4 +765,41 @@ describe('MaxChatAdminRosterSyncService', () => {
       604800,
     );
   });
+
+  it('does not create first published snapshots during roster sync', async () => {
+    const { service, prisma, maxClient, chatContextCache } = createService();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'New chat',
+      entityType: 'CHAT',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      id: '-100127',
+      createdAt: new Date('2026-04-05T10:00:00.000Z'),
+    });
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+    chatContextCache.getManagedEntitiesPublishedSnapshot.mockResolvedValue(null);
+
+    await expect(
+      service.processJob({
+        chatId: '-100127',
+        botIds: ['bot-1'],
+        title: 'New chat',
+        entityType: 'chat',
+        source: 'handshake_start',
+      }),
+    ).resolves.toBe(true);
+
+    expect(chatContextCache.getManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'user-1',
+      'chat',
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).not.toHaveBeenCalled();
+  });
 });

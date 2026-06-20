@@ -585,6 +585,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function queueRefresh(tab: ManagedTab, behavior: ManagedEntitiesReloadRequest['behavior']) {
     noteRefreshRequested();
+    if (behavior === 'manual') {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.managedEntityOnboardingDiagnostics(tab),
+      });
+    }
     setRefreshRequestByTab((current) => ({
       ...current,
       [tab]: {
@@ -1559,44 +1564,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {showEmptyState && activeTab === 'chat' ? (
+      {showEmptyState ? (
         <Suspense
           fallback={
             <GlassCard>
               <StatusState
                 tone="neutral"
-                title="Нет доступных чатов"
+                title={activeTab === 'channel' ? 'Каналы не найдены' : 'Нет доступных чатов'}
                 description="Загружаем подсказки по подключению."
               />
             </GlassCard>
           }
         >
           <LazyChatOnboardingSection
+            api={api}
+            entityType={activeTab}
             isFetching={isFetching}
             isRefreshBlocked={isRefreshTemporarilyBlocked}
             onRefresh={() => handleRefresh(activeTab, 'manual')}
           />
         </Suspense>
-      ) : null}
-
-      {showEmptyState && activeTab === 'channel' ? (
-        <GlassCard>
-          <StatusState
-            tone="neutral"
-            title="Каналы не найдены"
-            description="Добавьте бота в канал с правами администратора и обновите список."
-            action={
-              <button
-                type="button"
-                className="button button--accent"
-                onClick={() => handleRefresh(activeTab, 'manual')}
-                disabled={isFetching || isRefreshTemporarilyBlocked}
-              >
-                {isFetching ? 'Обновляем...' : 'Обновить'}
-              </button>
-            }
-          />
-        </GlassCard>
       ) : null}
 
       {!isLoading &&

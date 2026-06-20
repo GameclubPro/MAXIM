@@ -33,6 +33,28 @@
   gap: var(--space-3);
 }
 
+.onboarding-diagnostics {
+  display: grid;
+  gap: 6px;
+  border-color: var(--border-subtle);
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface-card));
+}
+
+.onboarding-diagnostics__kicker {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.onboarding-diagnostics strong {
+  font-size: 0.98rem;
+}
+
+.onboarding-diagnostics span:not(.onboarding-diagnostics__kicker) {
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 .onboarding-step-card__content {
   display: grid;
   gap: 10px;
@@ -68,6 +90,33 @@
   color: var(--text-muted);
 }
 
+.onboarding-step-card--command {
+  align-content: start;
+}
+
+.onboarding-command-preview {
+  width: 100%;
+  min-height: 88px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--text-primary), var(--accent));
+  color: var(--surface-card);
+  box-shadow: inset 0 1px 0 var(--accent-soft);
+}
+
+.onboarding-command-preview span {
+  min-width: 128px;
+  min-height: 44px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 22px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-weight: 800;
+}
+
 .onboarding-refresh {
   width: 100%;
   min-height: 48px;
@@ -80,6 +129,7 @@
   }
 
   .chats-onboarding__hero,
+  .onboarding-diagnostics,
   .onboarding-refresh {
     grid-column: 1 / -1;
   }

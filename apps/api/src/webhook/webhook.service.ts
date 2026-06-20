@@ -1,13 +1,12 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { type ChatSummary } from '@maxim/contracts';
+import type { ChatSummary, MaxUpdate } from '@maxim/contracts';
 import {
   ChatEntityType,
   ManagedEntityAccessState,
   Prisma,
   WebhookStatus,
 } from '../prisma/prisma-client';
-import type { MaxUpdate } from '@maxim/contracts';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import {
@@ -377,7 +376,7 @@ export class WebhookService {
 
     this.deferBackgroundTask(
       async () => {
-        await this.sendBotAddedStartHint(update, chatId, botId);
+        await this.sendBotAddedStartHint(update, chatId, botId, entityType);
       },
       'bot added start hint',
       update,
@@ -388,15 +387,17 @@ export class WebhookService {
     update: MaxUpdate,
     chatId: string,
     botId: string,
+    entityType: ChatEntityType,
   ): Promise<void> {
     if (!this.maxClient) {
       return;
     }
 
+    const entityLabel = entityType === ChatEntityType.CHANNEL ? 'Канал' : 'Чат';
     try {
       await this.maxClient.sendMessageImmediateWithId(
         chatId,
-        'Чтобы подключить чат к панели, администратор должен написать ровно: Старт',
+        `${entityLabel} почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.`,
         {
           buttons: [
             [
@@ -420,6 +421,15 @@ export class WebhookService {
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
           timeoutMs: BOT_ADDED_START_HINT_SEND_TIMEOUT_MS,
         },
+      );
+      this.logger.log(
+        {
+          updateId: update.updateId,
+          chatId,
+          botId,
+          entityType,
+        },
+        'Managed entity handshake start hint sent',
       );
     } catch (error: unknown) {
       this.logger.warn(

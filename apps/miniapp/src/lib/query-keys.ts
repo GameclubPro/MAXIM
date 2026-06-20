@@ -42,6 +42,8 @@ export const queryKeys = {
   chatBroadcastComposerClientReset: (chatId: string | null | undefined) =>
     ['broadcast-composer-client-reset', chatId] as const,
   currentUser: (chatId: string | null | undefined) => ['me', chatId ?? null] as const,
+  managedEntityOnboardingDiagnostics: (entityType: string) =>
+    ['managed-entity-onboarding-diagnostics', entityType] as const,
   settingsHeaderBotLoad: (botIdsSignature: string) =>
     ['settings-header-bot-load', botIdsSignature] as const,
   chatManagedBroadcastCalendar: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
