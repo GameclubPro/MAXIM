@@ -186,6 +186,7 @@ export type ModerationActionAttemptResult =
 export type AdminForwardedModerationCommand =
   | {
       action: 'BAN';
+      fanoutAllChats?: boolean;
     }
   | {
       action: 'SUPER_BAN';

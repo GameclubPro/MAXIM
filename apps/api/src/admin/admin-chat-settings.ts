@@ -1,4 +1,5 @@
 import {
+  ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
@@ -333,6 +334,12 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
     normalizedSettings = {
       ...normalizedSettings,
       adminBanCommandName: ADMIN_BAN_COMMAND_NAME_DEFAULT,
+    };
+  }
+  if (typeof normalizedSettings.adminBanAllCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminBanAllCommandName: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
     };
   }
   if (typeof normalizedSettings.adminMuteCommandName !== 'string') {

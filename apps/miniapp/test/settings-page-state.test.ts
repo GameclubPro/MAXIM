@@ -143,6 +143,7 @@ test('required subscription section keeps expiry and duration out of scoped save
 test('commands section keeps admin command names scoped', () => {
   assert.deepEqual(SECTION_SETTING_KEYS.commands, [
     'adminBanCommandName',
+    'adminBanAllCommandName',
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',
@@ -150,6 +151,7 @@ test('commands section keeps admin command names scoped', () => {
 
   const current = createSettings({
     adminBanCommandName: 'бан',
+    adminBanAllCommandName: 'БАН',
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
@@ -157,6 +159,7 @@ test('commands section keeps admin command names scoped', () => {
   });
   const saved = createSettings({
     adminBanCommandName: 'заблокировать',
+    adminBanAllCommandName: 'ЗАБЛОКИРОВАТЬ',
     adminMuteCommandName: 'тихо',
     adminPermanentMuteCommandName: 'тихо навсегда',
     adminRulesCommandName: 'регламент',
@@ -165,6 +168,7 @@ test('commands section keeps admin command names scoped', () => {
 
   const merged = mergeSectionSettings(current, saved, 'commands');
   assert.equal(merged.adminBanCommandName, 'заблокировать');
+  assert.equal(merged.adminBanAllCommandName, 'ЗАБЛОКИРОВАТЬ');
   assert.equal(merged.adminMuteCommandName, 'тихо');
   assert.equal(merged.adminPermanentMuteCommandName, 'тихо навсегда');
   assert.equal(merged.adminRulesCommandName, 'регламент');

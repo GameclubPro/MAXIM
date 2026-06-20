@@ -225,6 +225,7 @@ export type ManualModerationExecutionOptions = {
   preferredBotId?: string | null;
   targetDisplayNameHint?: string | null;
   allowTargetDisplayNameRemoteLookup?: boolean;
+  fanoutAllChats?: boolean;
 };
 export type ResolveManualModerationActionBotAssignmentOptions = {
   preferredBotId?: string | null;
@@ -755,6 +756,7 @@ export const SETTINGS_SECTION_KEYS = {
   ],
   commands: [
     'adminBanCommandName',
+    'adminBanAllCommandName',
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',

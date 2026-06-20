@@ -222,6 +222,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
   ],
   commands: [
     'adminBanCommandName',
+    'adminBanAllCommandName',
     'adminMuteCommandName',
     'adminPermanentMuteCommandName',
     'adminRulesCommandName',

@@ -7398,6 +7398,7 @@ describe('AdminService.applyManualSystemBan', () => {
         chatTitle: null,
       },
       'group_command',
+      { fanoutAllChats: true },
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
@@ -7502,6 +7503,7 @@ describe('AdminService.applyManualSystemBan', () => {
         chatTitle: null,
       },
       'group_command',
+      { fanoutAllChats: true },
     );
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
@@ -7683,6 +7685,7 @@ describe('AdminService.applyManualSystemBan', () => {
         targetMessageId: 'mid-target-1',
         commandMessageId: 'mid-command-1',
         action: 'MUTE',
+        fanoutAllChats: false,
         muteDurationHours: 6,
         deleteBotMessagesEnabled: true,
         deleteBotMessagesDelayMinutes: 3,
@@ -7700,6 +7703,63 @@ describe('AdminService.applyManualSystemBan', () => {
     );
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('queues all-chats group ban commands with the fanout marker', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    const queued = await service.enqueueManualGroupModerationCommand({
+      sourceChatId: 'chat-1',
+      commandBotId: 'bot-2',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: 'Админ',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN',
+      fanoutAllChats: true,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(queued).toBe(true);
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_group_moderation_command',
+        sourceChatId: 'chat-1',
+        commandBotId: 'bot-2',
+        targetUserId: 'user-2',
+        action: 'BAN',
+        fanoutAllChats: true,
+      }),
+      expect.objectContaining({
+        priority: 1,
+      }),
+    );
   });
 
   it('queues developer super ban commands with the highest group-command priority', async () => {
@@ -8182,6 +8242,7 @@ describe('AdminService.applyManualSystemBan', () => {
         preferredBotId: 'bot-2',
         targetDisplayNameHint: 'Нарушитель',
         allowTargetDisplayNameRemoteLookup: false,
+        fanoutAllChats: false,
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -8424,6 +8485,7 @@ describe('AdminService.applyManualSystemBan', () => {
         preferredBotId: null,
         targetDisplayNameHint: 'Нарушитель',
         allowTargetDisplayNameRemoteLookup: false,
+        fanoutAllChats: false,
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
@@ -8560,6 +8622,7 @@ describe('AdminService.applyManualSystemBan', () => {
         chatTitle: null,
       },
       'group_command',
+      { fanoutAllChats: true },
     );
 
     expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(

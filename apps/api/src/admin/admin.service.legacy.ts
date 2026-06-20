@@ -11529,14 +11529,24 @@ export class AdminService implements OnModuleDestroy {
     });
 
     if (source === 'group_command' || source === 'private_command') {
-      const followUp = await this.resolveManualBanFollowUpSummaries({
-        sourceChatId: chatId,
-        targetUserId,
-        actor: user,
-        source,
-      });
-      recentMessageCleanup = followUp.sourceMessageCleanup;
-      crossChatFanout = followUp.crossChatFanout;
+      const shouldFanoutBan =
+        options.fanoutAllChats === true || source === 'private_command';
+      if (shouldFanoutBan) {
+        const followUp = await this.resolveManualBanFollowUpSummaries({
+          sourceChatId: chatId,
+          targetUserId,
+          actor: user,
+          source,
+        });
+        recentMessageCleanup = followUp.sourceMessageCleanup;
+        crossChatFanout = followUp.crossChatFanout;
+      } else {
+        recentMessageCleanup = this.summarizeManualModerationCleanup(
+          await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId, {
+            botId: resolvedBotId,
+          }),
+        );
+      }
     }
 
     await this.recordManualModerationAction({
@@ -11595,6 +11605,7 @@ export class AdminService implements OnModuleDestroy {
     commandMessageId: string;
     actor: AuthUser;
     action: 'BAN' | 'MUTE';
+    fanoutAllChats?: boolean;
     muteDurationHours?: number | null;
     mutePermanent?: boolean;
     deleteBotMessagesEnabled: boolean;
@@ -12271,6 +12282,7 @@ export class AdminService implements OnModuleDestroy {
       preferredBotId: job.commandBotId ?? null,
       targetDisplayNameHint: job.targetSenderName ?? null,
       allowTargetDisplayNameRemoteLookup: false,
+      fanoutAllChats: job.fanoutAllChats === true,
     };
     let result: ManualModerationActionResult;
     try {
@@ -12315,10 +12327,12 @@ export class AdminService implements OnModuleDestroy {
         throw error;
       }
 
+      const failedActionLabel =
+        job.action === 'BAN' ? (job.fanoutAllChats === true ? 'БАН' : 'бан') : 'мут';
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
         botId: job.commandBotId ?? undefined,
-        text: `Не удалось применить ${job.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMarkdownPlainText(
+        text: `Не удалось применить ${failedActionLabel}: ${this.escapeMarkdownPlainText(
           this.extractManualGroupCommandErrorMessage(error),
         )}`,
         deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
@@ -12673,6 +12687,7 @@ export class AdminService implements OnModuleDestroy {
     commandMessageId: string;
     actor: AuthUser;
     action: 'BAN' | 'MUTE';
+    fanoutAllChats?: boolean;
     muteDurationHours?: number | null;
     mutePermanent?: boolean;
     deleteBotMessagesEnabled: boolean;
@@ -12685,6 +12700,7 @@ export class AdminService implements OnModuleDestroy {
         params.commandMessageId,
         params.targetUserId,
         params.action,
+        params.fanoutAllChats,
       ),
       sourceChatId: params.sourceChatId,
       commandBotId: this.readTrimmedString(params.commandBotId),
@@ -12700,6 +12716,7 @@ export class AdminService implements OnModuleDestroy {
         chatTitle: params.actor.chatTitle ?? null,
       },
       action: params.action,
+      fanoutAllChats: params.fanoutAllChats === true,
       muteDurationHours: params.muteDurationHours ?? null,
       mutePermanent: params.mutePermanent === true,
       deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
@@ -12747,9 +12764,14 @@ export class AdminService implements OnModuleDestroy {
     commandMessageId: string,
     targetUserId: string,
     action: 'BAN' | 'MUTE',
+    fanoutAllChats?: boolean,
   ): string {
     const digest = createHash('sha256')
-      .update(`${sourceChatId}\n${commandMessageId}\n${targetUserId}\n${action}`)
+      .update(
+        `${sourceChatId}\n${commandMessageId}\n${targetUserId}\n${action}\n${
+          fanoutAllChats === true ? 'all' : 'local'
+        }`,
+      )
       .digest('hex')
       .slice(0, 32);
     return `manual_group_moderation_command__${digest}`;

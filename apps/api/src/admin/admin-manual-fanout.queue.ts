@@ -55,6 +55,7 @@ export type AdminManualGroupModerationCommandJob = QueueJobEnvelope<
     commandMessageId: string;
     actor: AdminManualFanoutActor;
     action: 'BAN' | 'MUTE';
+    fanoutAllChats?: boolean;
     muteDurationHours?: number | null;
     mutePermanent?: boolean;
     deleteBotMessagesEnabled: boolean;

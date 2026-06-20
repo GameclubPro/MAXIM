@@ -441,6 +441,7 @@ model ChatSettings {
   messageLimitsRulesButtonEnabled               Boolean                  @default(false) @map("message_limits_rules_button_enabled")
   rulesAttachViolationsEnabled                  Boolean                  @default(true) @map("rules_attach_violations_enabled")
   adminBanCommandName                           String                   @default("бан") @map("admin_ban_command_name")
+  adminBanAllCommandName                        String                   @default("БАН") @map("admin_ban_all_command_name")
   adminMuteCommandName                          String                   @default("мут") @map("admin_mute_command_name")
   adminPermanentMuteCommandName                 String                   @default("мут 88") @map("admin_permanent_mute_command_name")
   adminRulesCommandName                         String                   @default("правило") @map("admin_rules_command_name")

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
@@ -5369,9 +5370,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
                 : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
             )}\``
-          : `\`${this.getAdminCommandName(
-              settings.adminBanCommandName,
-              ADMIN_BAN_COMMAND_NAME_DEFAULT,
+          : `\`${this.getCaseSensitiveAdminCommandName(
+              command.fanoutAllChats
+                ? settings.adminBanAllCommandName
+                : settings.adminBanCommandName,
+              command.fanoutAllChats
+                ? ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT
+                : ADMIN_BAN_COMMAND_NAME_DEFAULT,
             )}\``;
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
@@ -5427,6 +5432,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               commandMessageId: messageId,
               actor,
               action: command.action,
+              ...(command.action === 'BAN'
+                ? { fanoutAllChats: command.fanoutAllChats === true }
+                : {}),
               ...(command.action === 'MUTE'
                 ? command.mutePermanent
                   ? { mutePermanent: true }
@@ -5487,18 +5495,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings?: Pick<
       ChatSettings,
       | 'adminBanCommandName'
+      | 'adminBanAllCommandName'
       | 'adminMuteCommandName'
       | 'adminPermanentMuteCommandName'
       | 'adminRulesCommandName'
     >,
   ): AdminForwardedModerationCommand | null {
-    const normalized = this.readLowerString(text);
+    const normalized = this.readAdminCommandText(text);
     if (!normalized) {
       return null;
     }
-    const banCommandName = this.getAdminCommandName(
+    const normalizedLower = normalized.toLowerCase();
+    const banCommandName = this.getCaseSensitiveAdminCommandName(
       settings?.adminBanCommandName,
       ADMIN_BAN_COMMAND_NAME_DEFAULT,
+    );
+    const banAllCommandName = this.getCaseSensitiveAdminCommandName(
+      settings?.adminBanAllCommandName,
+      ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
     );
     const muteCommandName = this.getAdminCommandName(
       settings?.adminMuteCommandName,
@@ -5514,17 +5528,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     const muteCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalized,
+      normalizedLower,
       muteCommandName,
     );
 
-    if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalized)) {
+    if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalizedLower)) {
       return {
         action: 'SUPER_BAN',
       };
     }
 
-    if (this.matchesAdminCommandName(normalized, permanentMuteCommandName)) {
+    if (this.matchesAdminCommandName(normalizedLower, permanentMuteCommandName)) {
       return {
         action: 'MUTE',
         mutePermanent: true,
@@ -5541,9 +5555,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    if (this.matchesAdminCommandName(normalized, rulesCommandName)) {
+    const banAllDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
+      normalized,
+      banAllCommandName,
+    );
+    if (banAllDurationMatch && banAllDurationMatch.durationText !== null) {
+      throw new BadRequestException(
+        `Команда \`${banAllCommandName}\` теперь делает только постоянный системный бан во всех чатах админа. Используйте просто \`${banAllCommandName}\`.`,
+      );
+    }
+
+    if (this.matchesAdminCommandName(normalizedLower, rulesCommandName)) {
       return {
         action: 'RULES',
+      };
+    }
+
+    if (this.matchesAdminCommandName(normalized, banAllCommandName)) {
+      return {
+        action: 'BAN',
+        fanoutAllChats: true,
       };
     }
 
@@ -5617,6 +5648,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private getAdminCommandName(commandName: string | null | undefined, fallback: string): string {
     return this.readLowerString(commandName)?.replace(/\s+/g, ' ') ?? fallback;
+  }
+
+  private getCaseSensitiveAdminCommandName(
+    commandName: string | null | undefined,
+    fallback: string,
+  ): string {
+    return this.readString(commandName)?.replace(/\s+/g, ' ') ?? fallback;
+  }
+
+  private readAdminCommandText(value: unknown): string | null {
+    return this.readString(value)?.replace(/\s+/g, ' ') ?? null;
   }
 
   private extractDirectIncomingMessageText(update: MaxUpdate): string {
@@ -12944,6 +12986,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings?: Pick<
       ChatSettings,
       | 'adminBanCommandName'
+      | 'adminBanAllCommandName'
       | 'adminMuteCommandName'
       | 'adminPermanentMuteCommandName'
       | 'adminRulesCommandName'

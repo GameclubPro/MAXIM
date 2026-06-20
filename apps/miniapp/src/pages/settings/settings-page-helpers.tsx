@@ -579,6 +579,7 @@ export type HintKey =
   | 'invitationAccessBotMessage'
   | 'invitationAccessWarnMessage'
   | 'adminBanCommand'
+  | 'adminBanAllCommand'
   | 'adminMuteCommand'
   | 'adminPermanentMuteCommand'
   | 'adminRulesCommand'

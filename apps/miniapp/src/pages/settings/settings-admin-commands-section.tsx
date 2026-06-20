@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import {
+  ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
   ADMIN_BAN_COMMAND_NAME_DEFAULT,
   ADMIN_MUTE_COMMAND_NAME_DEFAULT,
   ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
@@ -15,6 +16,7 @@ import '../../styles/settings-admin-commands.css';
 
 type AdminCommandNameKey =
   | 'adminBanCommandName'
+  | 'adminBanAllCommandName'
   | 'adminMuteCommandName'
   | 'adminPermanentMuteCommandName'
   | 'adminRulesCommandName';
@@ -23,7 +25,11 @@ type AdminCommandConfig = {
   key: AdminCommandNameKey;
   hintKey: Extract<
     HintKey,
-    'adminBanCommand' | 'adminMuteCommand' | 'adminPermanentMuteCommand' | 'adminRulesCommand'
+    | 'adminBanCommand'
+    | 'adminBanAllCommand'
+    | 'adminMuteCommand'
+    | 'adminPermanentMuteCommand'
+    | 'adminRulesCommand'
   >;
   title: string;
   caption: string;
@@ -60,11 +66,21 @@ const commandCategories: AdminCommandCategory[] = [
         key: 'adminBanCommandName',
         hintKey: 'adminBanCommand',
         title: 'Бан',
-        caption: 'Постоянный системный бан.',
+        caption: 'Только этот чат.',
         defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],
         hint: (value) =>
-          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Команда не принимает часы.`,
+          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот забанит пользователя только в текущем чате.`,
+      },
+      {
+        key: 'adminBanAllCommandName',
+        hintKey: 'adminBanAllCommand',
+        title: 'БАН',
+        caption: 'Все чаты админа.',
+        defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value],
+        hint: (value) =>
+          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Бот применит бан в этом чате и остальных чатах, где админ может управлять ботом.`,
       },
       {
         key: 'adminMuteCommandName',
@@ -118,8 +134,13 @@ export function SettingsAdminCommandsSection({
   const filledCount = commandCategories
     .flatMap((category) => category.items)
     .filter((item) => readCommandName(draft[item.key], '').length > 0).length;
-  const headerSummary = filledCount === 4 ? '4 команды настроены' : 'Нужно заполнить команды';
-  const cardStatus = `${filledCount}/4`;
+  const commandCount = commandCategories.reduce(
+    (count, category) => count + category.items.length,
+    0,
+  );
+  const headerSummary =
+    filledCount === commandCount ? `${commandCount} команд настроено` : 'Нужно заполнить команды';
+  const cardStatus = `${filledCount}/${commandCount}`;
 
   return (
     <GlassCard

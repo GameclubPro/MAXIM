@@ -232,6 +232,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
     adminBanCommandName: 'бан',
+    adminBanAllCommandName: 'БАН',
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
