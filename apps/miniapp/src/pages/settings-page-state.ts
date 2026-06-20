@@ -220,7 +220,12 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'invitationAccessMuteDurationHours',
     'invitationAccessBanEnabled',
   ],
-  commands: ['adminMuteCommandAliases', 'adminRulesCommandAliases'],
+  commands: [
+    'adminBanCommandName',
+    'adminMuteCommandName',
+    'adminPermanentMuteCommandName',
+    'adminRulesCommandName',
+  ],
   extra: [
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',

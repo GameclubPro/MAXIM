@@ -891,6 +891,95 @@ describe('WebhookService', () => {
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
   });
 
+  it('refreshes the execution owner inline for custom linked admin commands', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-custom-command-failover' }),
+        updateMany: jest.fn(),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_4_bot',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        })
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['add_remove_members'],
+        }),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('id613002203036_4_bot');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-custom-command-failover-1',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-custom-command-ban-1',
+            chatId: '-73729721862151',
+            chatTitle: 'Пантера',
+            senderId: '98315271',
+            text: 'заблокировать',
+            createdAt: new Date('2026-05-10T03:00:26.996Z').toISOString(),
+          },
+          raw: {
+            message: {
+              link: {
+                type: 'reply',
+                sender: {
+                  user_id: 'user-2',
+                },
+              },
+            },
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-73729721862151',
+        botId: 'id613002203036_bot',
+        allowReassign: true,
+      }),
+    );
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('refreshes the execution owner inline for developer super ban commands', async () => {
     const prisma = {
       webhookEvent: {

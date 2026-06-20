@@ -93,6 +93,11 @@ export const ADMIN_COMMAND_ALIASES_MAX = 8;
 export const ADMIN_COMMAND_ALIAS_MAX_LENGTH = 32;
 export const ADMIN_MUTE_COMMAND_ALIASES_DEFAULT = 'мут, мьют, мью, mute';
 export const ADMIN_RULES_COMMAND_ALIASES_DEFAULT = 'правило, правила, rule, rules';
+export const ADMIN_COMMAND_NAME_MAX_LENGTH = 32;
+export const ADMIN_BAN_COMMAND_NAME_DEFAULT = 'бан';
+export const ADMIN_MUTE_COMMAND_NAME_DEFAULT = 'мут';
+export const ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT = 'мут 88';
+export const ADMIN_RULES_COMMAND_NAME_DEFAULT = 'правило';
 export const MAX_MESSAGE_LENGTH_MIN = 50;
 export const MAX_MESSAGE_LENGTH_MAX = 1500;
 export const MAX_MESSAGE_LENGTH_DEFAULT = MAX_MESSAGE_LENGTH_MAX;
@@ -137,6 +142,14 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const adminCommandNameSchema = z
+  .string()
+  .trim()
+  .min(1, { message: 'Введите название команды.' })
+  .max(ADMIN_COMMAND_NAME_MAX_LENGTH, {
+    message: `Команда должна быть не длиннее ${ADMIN_COMMAND_NAME_MAX_LENGTH} символов.`,
+  })
+  .transform((value) => value.replace(/\s+/g, ' '));
 const adminCommandAliasesTextSchema = z
   .string()
   .trim()
@@ -870,6 +883,12 @@ export const chatSettingsSchema = z
       duplicateRulesButtonEnabled: z.boolean().default(false),
       messageLimitsRulesButtonEnabled: z.boolean().default(false),
       rulesAttachViolationsEnabled: z.boolean().default(true),
+      adminBanCommandName: adminCommandNameSchema.default(ADMIN_BAN_COMMAND_NAME_DEFAULT),
+      adminMuteCommandName: adminCommandNameSchema.default(ADMIN_MUTE_COMMAND_NAME_DEFAULT),
+      adminPermanentMuteCommandName: adminCommandNameSchema.default(
+        ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+      ),
+      adminRulesCommandName: adminCommandNameSchema.default(ADMIN_RULES_COMMAND_NAME_DEFAULT),
       adminMuteCommandAliases: adminCommandAliasesTextSchema.default(
         ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
       ),
@@ -928,6 +947,27 @@ export const chatSettingsSchema = z
           message: 'Не удалось сохранить ссылку на администратора.',
         });
       }
+    }
+
+    const adminCommandEntries = [
+      ['adminBanCommandName', value.adminBanCommandName],
+      ['adminMuteCommandName', value.adminMuteCommandName],
+      ['adminPermanentMuteCommandName', value.adminPermanentMuteCommandName],
+      ['adminRulesCommandName', value.adminRulesCommandName],
+    ] as const;
+    const seenAdminCommandNames = new Map<string, (typeof adminCommandEntries)[number][0]>();
+    for (const [key, commandName] of adminCommandEntries) {
+      const normalizedCommandName = commandName.toLowerCase();
+      const existingKey = seenAdminCommandNames.get(normalizedCommandName);
+      if (existingKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: 'Такая команда уже используется в этом блоке.',
+        });
+        continue;
+      }
+      seenAdminCommandNames.set(normalizedCommandName, key);
     }
 
     const duplicateBotButtons = resolveStoredLinkButtons({

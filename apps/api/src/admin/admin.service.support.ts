@@ -753,7 +753,12 @@ export const SETTINGS_SECTION_KEYS = {
     'invitationAccessMuteEnabled',
     'invitationAccessMuteDurationHours',
   ],
-  commands: ['adminMuteCommandAliases', 'adminRulesCommandAliases'],
+  commands: [
+    'adminBanCommandName',
+    'adminMuteCommandName',
+    'adminPermanentMuteCommandName',
+    'adminRulesCommandName',
+  ],
   extra: [
     'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',

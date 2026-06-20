@@ -10,6 +10,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ADMIN_BAN_COMMAND_NAME_DEFAULT,
+  ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_RULES_COMMAND_NAME_DEFAULT,
   DEFAULT_BROADCAST_BUTTON_TEXT,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
@@ -181,7 +185,6 @@ import {
   BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES,
   DEFAULT_MUTE_DURATION_HOURS,
   MAX_ACTIVE_MUTE_DURATION_HOURS,
-  PERMANENT_MUTE_COMMAND_DURATION_HOURS,
   DELETE_MESSAGE_PERMISSION_ALIASES,
   MODERATE_MEMBER_PERMISSION_ALIASES,
   DEFAULT_BOT_BUTTON_TEXT,
@@ -5283,9 +5286,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (command.action === 'RULES') {
-      const rulesCommandHelpText = `\`${this.getPrimaryAdminCommandAlias(
-        settings.adminRulesCommandAliases,
-        ['правило', 'правила', 'rule', 'rules'],
+      const rulesCommandHelpText = `\`${this.getAdminCommandName(
+        settings.adminRulesCommandName,
+        ADMIN_RULES_COMMAND_NAME_DEFAULT,
       )}\``;
       const sources = this.extractForwardedRulesSources(update);
       if (sources.length === 0) {
@@ -5358,13 +5361,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       command.action === 'SUPER_BAN'
         ? '`супер бан`'
         : command.action === 'MUTE'
-          ? `\`${this.getPrimaryAdminCommandAlias(settings.adminMuteCommandAliases, [
-              'мут',
-              'мьют',
-              'мью',
-              'mute',
-            ])}\``
-          : '`бан`';
+          ? `\`${this.getAdminCommandName(
+              command.mutePermanent
+                ? settings.adminPermanentMuteCommandName
+                : settings.adminMuteCommandName,
+              command.mutePermanent
+                ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
+                : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+            )}\``
+          : `\`${this.getAdminCommandName(
+              settings.adminBanCommandName,
+              ADMIN_BAN_COMMAND_NAME_DEFAULT,
+            )}\``;
     if (targets.length === 0) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -5476,21 +5484,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private parseAdminForwardedModerationCommand(
     text: string,
-    settings?: Pick<ChatSettings, 'adminMuteCommandAliases' | 'adminRulesCommandAliases'>,
+    settings?: Pick<
+      ChatSettings,
+      | 'adminBanCommandName'
+      | 'adminMuteCommandName'
+      | 'adminPermanentMuteCommandName'
+      | 'adminRulesCommandName'
+    >,
   ): AdminForwardedModerationCommand | null {
     const normalized = this.readLowerString(text);
     if (!normalized) {
       return null;
     }
-    const muteCommandMatch = this.matchAdminCommandAliasWithOptionalDuration(
-      normalized,
-      settings?.adminMuteCommandAliases,
-      ['мут', 'мьют', 'мью', 'mute'],
+    const banCommandName = this.getAdminCommandName(
+      settings?.adminBanCommandName,
+      ADMIN_BAN_COMMAND_NAME_DEFAULT,
     );
-    const rulesCommandMatch = this.matchesAdminCommandAlias(
+    const muteCommandName = this.getAdminCommandName(
+      settings?.adminMuteCommandName,
+      ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+    );
+    const permanentMuteCommandName = this.getAdminCommandName(
+      settings?.adminPermanentMuteCommandName,
+      ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+    );
+    const rulesCommandName = this.getAdminCommandName(
+      settings?.adminRulesCommandName,
+      ADMIN_RULES_COMMAND_NAME_DEFAULT,
+    );
+
+    const muteCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
       normalized,
-      settings?.adminRulesCommandAliases,
-      ['правило', 'правила', 'rule', 'rules'],
+      muteCommandName,
     );
 
     if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalized)) {
@@ -5499,137 +5524,99 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (
-      normalized === 'бан' ||
-      normalized === 'ban' ||
-      normalized === 'бан!' ||
-      normalized === 'ban!'
-    ) {
+    if (this.matchesAdminCommandName(normalized, permanentMuteCommandName)) {
+      return {
+        action: 'MUTE',
+        mutePermanent: true,
+      };
+    }
+
+    const banDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
+      normalized,
+      banCommandName,
+    );
+    if (banDurationMatch && banDurationMatch.durationText !== null) {
+      throw new BadRequestException(
+        `Команда \`${banCommandName}\` теперь делает только постоянный системный бан. Используйте просто \`${banCommandName}\`.`,
+      );
+    }
+
+    if (this.matchesAdminCommandName(normalized, rulesCommandName)) {
+      return {
+        action: 'RULES',
+      };
+    }
+
+    if (this.matchesAdminCommandName(normalized, banCommandName)) {
       return {
         action: 'BAN',
       };
     }
 
-    if (
-      /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
-        normalized,
-      )
-    ) {
-      throw new BadRequestException(
-        'Команда `бан` теперь делает только постоянный системный бан. Используйте просто `бан`.',
-      );
-    }
-
-    if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
-      if (rulesCommandMatch) {
-        return {
-          action: 'RULES',
-        };
-      }
-
-      if (muteCommandMatch?.durationText === null) {
-        return {
-          action: 'MUTE',
-          muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
-        };
-      }
-
-      if (!muteCommandMatch) {
-        return null;
-      }
-
-      const muteDurationHours = Number.parseInt(muteCommandMatch.durationText, 10);
-      if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
-        return {
-          action: 'MUTE',
-          mutePermanent: true,
-        };
-      }
-
-      if (
-        !Number.isInteger(muteDurationHours) ||
-        muteDurationHours < 1 ||
-        muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
-      ) {
-        throw new BadRequestException(
-          `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
-        );
-      }
-
+    if (muteCommandMatch?.durationText === null) {
       return {
         action: 'MUTE',
-        muteDurationHours,
+        muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
       };
     }
 
+    if (!muteCommandMatch) {
+      return null;
+    }
+
+    const muteDurationHours = Number.parseInt(muteCommandMatch.durationText, 10);
+    if (
+      !Number.isInteger(muteDurationHours) ||
+      muteDurationHours < 1 ||
+      muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
+    ) {
+      throw new BadRequestException(
+        `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+      );
+    }
+
     return {
-      action: 'BAN',
+      action: 'MUTE',
+      muteDurationHours,
     };
   }
 
-  private matchesAdminCommandAlias(
+  private matchesAdminCommandName(
     normalizedText: string,
-    aliasesText: string | null | undefined,
-    fallbackAliases: readonly string[],
+    commandName: string,
   ): boolean {
-    return this.resolveAdminCommandAliases(aliasesText, fallbackAliases).some(
-      (alias) =>
-        normalizedText === alias ||
-        normalizedText === `${alias}!` ||
-        normalizedText === `${alias}.`,
+    return (
+      normalizedText === commandName ||
+      normalizedText === `${commandName}!` ||
+      normalizedText === `${commandName}.`
     );
   }
 
-  private matchAdminCommandAliasWithOptionalDuration(
+  private matchAdminCommandNameWithOptionalDuration(
     normalizedText: string,
-    aliasesText: string | null | undefined,
-    fallbackAliases: readonly string[],
-  ): { alias: string; durationText: string | null } | null {
-    for (const alias of this.resolveAdminCommandAliases(aliasesText, fallbackAliases)) {
-      if (
-        normalizedText === alias ||
-        normalizedText === `${alias}!` ||
-        normalizedText === `${alias}.`
-      ) {
-        return { alias, durationText: null };
-      }
+    commandName: string,
+  ): { commandName: string; durationText: string | null } | null {
+    if (this.matchesAdminCommandName(normalizedText, commandName)) {
+      return { commandName, durationText: null };
+    }
 
-      if (!normalizedText.startsWith(`${alias} `)) {
-        continue;
-      }
+    if (!normalizedText.startsWith(`${commandName} `)) {
+      return null;
+    }
 
-      const suffix = normalizedText.slice(alias.length).trim();
-      const durationMatch = suffix.match(
-        /^(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-      );
-      if (durationMatch) {
-        return { alias, durationText: durationMatch[1] };
-      }
+    const suffix = normalizedText.slice(commandName.length).trim();
+    const durationMatch = suffix.match(
+      /^(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+    );
+    if (durationMatch) {
+      return { commandName, durationText: durationMatch[1] };
     }
 
     return null;
   }
 
-  private resolveAdminCommandAliases(
-    aliasesText: string | null | undefined,
-    fallbackAliases: readonly string[],
-  ): string[] {
-    const aliases =
-      typeof aliasesText === 'string'
-        ? aliasesText
-            .split(',')
-            .map((alias) => this.readLowerString(alias))
-            .filter((alias): alias is string => Boolean(alias))
-        : [];
-
-    return Array.from(new Set(aliases.length > 0 ? aliases : fallbackAliases));
-  }
-
-  private getPrimaryAdminCommandAlias(
-    aliasesText: string | null | undefined,
-    fallbackAliases: readonly string[],
-  ): string {
-    return this.resolveAdminCommandAliases(aliasesText, fallbackAliases)[0] ?? fallbackAliases[0];
+  private getAdminCommandName(commandName: string | null | undefined, fallback: string): string {
+    return this.readLowerString(commandName)?.replace(/\s+/g, ' ') ?? fallback;
   }
 
   private extractDirectIncomingMessageText(update: MaxUpdate): string {
@@ -12954,7 +12941,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private shouldForceSynchronousRemoteAdminLookup(
     update: MaxUpdate,
-    settings?: Pick<ChatSettings, 'adminMuteCommandAliases' | 'adminRulesCommandAliases'>,
+    settings?: Pick<
+      ChatSettings,
+      | 'adminBanCommandName'
+      | 'adminMuteCommandName'
+      | 'adminPermanentMuteCommandName'
+      | 'adminRulesCommandName'
+    >,
   ): boolean {
     if (this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown) {
       return true;

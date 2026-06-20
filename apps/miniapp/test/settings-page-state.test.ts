@@ -140,26 +140,34 @@ test('required subscription section keeps expiry and duration out of scoped save
   assert.ok(!SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionExpiresAt'));
 });
 
-test('commands section keeps admin command aliases scoped', () => {
+test('commands section keeps admin command names scoped', () => {
   assert.deepEqual(SECTION_SETTING_KEYS.commands, [
-    'adminMuteCommandAliases',
-    'adminRulesCommandAliases',
+    'adminBanCommandName',
+    'adminMuteCommandName',
+    'adminPermanentMuteCommandName',
+    'adminRulesCommandName',
   ]);
 
   const current = createSettings({
-    adminMuteCommandAliases: 'мут, mute',
-    adminRulesCommandAliases: 'правила',
+    adminBanCommandName: 'бан',
+    adminMuteCommandName: 'мут',
+    adminPermanentMuteCommandName: 'мут 88',
+    adminRulesCommandName: 'правило',
     linkPolicy: 'ALLOWLIST_ONLY',
   });
   const saved = createSettings({
-    adminMuteCommandAliases: 'тихо',
-    adminRulesCommandAliases: 'регламент',
+    adminBanCommandName: 'заблокировать',
+    adminMuteCommandName: 'тихо',
+    adminPermanentMuteCommandName: 'тихо навсегда',
+    adminRulesCommandName: 'регламент',
     linkPolicy: 'BLOCKLIST_ONLY',
   });
 
   const merged = mergeSectionSettings(current, saved, 'commands');
-  assert.equal(merged.adminMuteCommandAliases, 'тихо');
-  assert.equal(merged.adminRulesCommandAliases, 'регламент');
+  assert.equal(merged.adminBanCommandName, 'заблокировать');
+  assert.equal(merged.adminMuteCommandName, 'тихо');
+  assert.equal(merged.adminPermanentMuteCommandName, 'тихо навсегда');
+  assert.equal(merged.adminRulesCommandName, 'регламент');
   assert.equal(merged.linkPolicy, 'ALLOWLIST_ONLY');
 });
 

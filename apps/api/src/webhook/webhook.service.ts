@@ -486,7 +486,42 @@ export class WebhookService {
       ) ||
       /^(?:мут|мьют|мью|mute)(?:\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?)?[.!]?$/u.test(
         text,
-      )
+      ) ||
+      (this.hasLinkedAdminCommandMessage(update) && this.isShortAdminCommandText(text))
+    );
+  }
+
+  private hasLinkedAdminCommandMessage(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    const rawMessage = this.asRecord(raw?.message) ?? raw;
+    if (!rawMessage) {
+      return false;
+    }
+
+    const body = this.asRecord(rawMessage.body);
+    const content = this.asRecord(rawMessage.content);
+    const payload = this.asRecord(rawMessage.payload);
+    return [
+      rawMessage.link,
+      rawMessage.forwarded_message,
+      rawMessage.forwarded,
+      body?.forwarded_message,
+      body?.forwarded,
+      body?.reply,
+      body?.replied_message,
+      content?.forwarded_message,
+      content?.reply,
+      payload?.forwarded_message,
+      payload?.reply,
+    ].some((candidate) => this.asRecord(candidate) !== null);
+  }
+
+  private isShortAdminCommandText(text: string): boolean {
+    const normalized = text.trim();
+    return (
+      normalized.length > 0 &&
+      normalized.length <= 64 &&
+      /^[\p{L}\p{N}_ -]+[.!]?$/u.test(normalized)
     );
   }
 

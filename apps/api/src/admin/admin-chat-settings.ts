@@ -1,4 +1,8 @@
 import {
+  ADMIN_BAN_COMMAND_NAME_DEFAULT,
+  ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_RULES_COMMAND_NAME_DEFAULT,
   botSpeechMediaSchema,
   chatSettingsSchema,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -21,6 +25,16 @@ import {
   type AdminActionSource,
 } from './admin.service.support';
 import { buildStoredLinkButtonState } from './admin-chat-rules';
+
+function readLegacyPrimaryAdminCommandName(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  return value
+    .split(',')
+    .map((item) => item.trim().replace(/\s+/g, ' '))
+    .find((item) => item.length > 0) ?? fallback;
+}
 
 export type ChatSettingsCurrentState = Pick<
   ChatSettings,
@@ -314,6 +328,37 @@ export function sanitizeStoredChatSettings(settings: unknown): unknown {
   }
 
   let normalizedSettings = settings as Record<string, unknown>;
+
+  if (typeof normalizedSettings.adminBanCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminBanCommandName: ADMIN_BAN_COMMAND_NAME_DEFAULT,
+    };
+  }
+  if (typeof normalizedSettings.adminMuteCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminMuteCommandName: readLegacyPrimaryAdminCommandName(
+        normalizedSettings.adminMuteCommandAliases,
+        ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+      ),
+    };
+  }
+  if (typeof normalizedSettings.adminPermanentMuteCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminPermanentMuteCommandName: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+    };
+  }
+  if (typeof normalizedSettings.adminRulesCommandName !== 'string') {
+    normalizedSettings = {
+      ...normalizedSettings,
+      adminRulesCommandName: readLegacyPrimaryAdminCommandName(
+        normalizedSettings.adminRulesCommandAliases,
+        ADMIN_RULES_COMMAND_NAME_DEFAULT,
+      ),
+    };
+  }
 
   for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
     const buttonState = buildStoredLinkButtonState(normalizedSettings[group.buttons], {

@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
 import {
-  ADMIN_MUTE_COMMAND_ALIASES_DEFAULT,
-  ADMIN_RULES_COMMAND_ALIASES_DEFAULT,
+  ADMIN_BAN_COMMAND_NAME_DEFAULT,
+  ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+  ADMIN_RULES_COMMAND_NAME_DEFAULT,
   type ChatSettings,
 } from '@maxim/contracts/settings';
 import { GlassCard } from '../../components/ui/glass-card';
@@ -11,7 +13,29 @@ import { cn } from '../../lib/cn';
 import type { FieldErrors, HintKey } from './settings-page-helpers';
 import '../../styles/settings-admin-commands.css';
 
-type AdminCommandAliasKey = 'adminMuteCommandAliases' | 'adminRulesCommandAliases';
+type AdminCommandNameKey =
+  | 'adminBanCommandName'
+  | 'adminMuteCommandName'
+  | 'adminPermanentMuteCommandName'
+  | 'adminRulesCommandName';
+
+type AdminCommandConfig = {
+  key: AdminCommandNameKey;
+  hintKey: Extract<
+    HintKey,
+    'adminBanCommand' | 'adminMuteCommand' | 'adminPermanentMuteCommand' | 'adminRulesCommand'
+  >;
+  title: string;
+  caption: string;
+  defaultValue: string;
+  examples: (value: string) => string[];
+  hint: (value: string) => string;
+};
+
+type AdminCommandCategory = {
+  title: string;
+  items: AdminCommandConfig[];
+};
 
 type SettingsAdminCommandsSectionProps = {
   draft: ChatSettings;
@@ -21,17 +45,65 @@ type SettingsAdminCommandsSectionProps = {
   footer: ReactNode;
   onToggleSection: () => void;
   onToggleHint: (key: HintKey) => void;
-  onFieldChange: (key: AdminCommandAliasKey, value: string) => void;
+  onFieldChange: (key: AdminCommandNameKey, value: string) => void;
 };
 
-function getFirstAdminCommandAlias(value: string | null | undefined, fallback: string) {
-  return (
-    value
-      ?.split(',')
-      .map((item) => item.trim().replace(/\s+/g, ' '))
-      .find((item) => item.length > 0) ?? fallback
-  );
+function readCommandName(value: string | null | undefined, fallback: string) {
+  return value?.trim().replace(/\s+/g, ' ') || fallback;
 }
+
+const commandCategories: AdminCommandCategory[] = [
+  {
+    title: 'Модерация',
+    items: [
+      {
+        key: 'adminBanCommandName',
+        hintKey: 'adminBanCommand',
+        title: 'Бан',
+        caption: 'Постоянный системный бан.',
+        defaultValue: ADMIN_BAN_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value],
+        hint: (value) =>
+          `Ответьте на сообщение или перешлите его в чат с командой ${value}. Команда не принимает часы.`,
+      },
+      {
+        key: 'adminMuteCommandName',
+        hintKey: 'adminMuteCommand',
+        title: 'Мут',
+        caption: 'Временный мут на 6 часов по умолчанию.',
+        defaultValue: ADMIN_MUTE_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value, `${value} 12`],
+        hint: (value) =>
+          `Команда ${value} ставит мут на 6 часов. Число после команды задает срок от 1 до 336 часов.`,
+      },
+      {
+        key: 'adminPermanentMuteCommandName',
+        hintKey: 'adminPermanentMuteCommand',
+        title: 'Бессрочный мут',
+        caption: 'Отдельная команда без таймера.',
+        defaultValue: ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value],
+        hint: (value) =>
+          `Команда ${value} ставит бессрочный мут. Это отдельное действие, а не вариант временного мута.`,
+      },
+    ],
+  },
+  {
+    title: 'Правила',
+    items: [
+      {
+        key: 'adminRulesCommandName',
+        hintKey: 'adminRulesCommand',
+        title: 'Правило',
+        caption: 'Привязка сообщения как правил чата.',
+        defaultValue: ADMIN_RULES_COMMAND_NAME_DEFAULT,
+        examples: (value) => [value, `ответ + ${value}`],
+        hint: (value) =>
+          `Ответьте на сообщение с командой ${value} или перешлите сообщение вместе с ней. Бот сохранит его как правила.`,
+      },
+    ],
+  },
+];
 
 export function SettingsAdminCommandsSection({
   draft,
@@ -43,20 +115,11 @@ export function SettingsAdminCommandsSection({
   onToggleHint,
   onFieldChange,
 }: SettingsAdminCommandsSectionProps) {
-  const enabledCount = [
-    draft.adminMuteCommandAliases.trim(),
-    draft.adminRulesCommandAliases.trim(),
-  ].filter(Boolean).length;
-  const headerSummary = enabledCount === 2 ? 'Мут и правила настроены' : 'Нужно заполнить команды';
-  const cardStatus = `${enabledCount}/2`;
-  const muteCommandExample = getFirstAdminCommandAlias(
-    draft.adminMuteCommandAliases,
-    ADMIN_MUTE_COMMAND_ALIASES_DEFAULT.split(',')[0] ?? 'мут',
-  );
-  const rulesCommandExample = getFirstAdminCommandAlias(
-    draft.adminRulesCommandAliases,
-    ADMIN_RULES_COMMAND_ALIASES_DEFAULT.split(',')[0] ?? 'правило',
-  );
+  const filledCount = commandCategories
+    .flatMap((category) => category.items)
+    .filter((item) => readCommandName(draft[item.key], '').length > 0).length;
+  const headerSummary = filledCount === 4 ? '4 команды настроены' : 'Нужно заполнить команды';
+  const cardStatus = `${filledCount}/4`;
 
   return (
     <GlassCard
@@ -92,116 +155,70 @@ export function SettingsAdminCommandsSection({
           className={cn('settings-section__collapse', expanded && 'is-open')}
         >
           {expanded ? (
-            <div className="settings-section__collapse-inner settings-command-aliases">
-              <div
-                className={cn(
-                  'settings-command-card',
-                  fieldErrors.adminMuteCommandAliases && 'field--error',
-                )}
-              >
-                <div className="settings-command-card__head">
-                  <div className="settings-command-card__copy">
-                    <strong>Мут</strong>
-                    <span>Команда в ответ на сообщение нарушителя.</span>
+            <div className="settings-section__collapse-inner settings-admin-commands">
+              {commandCategories.map((category) => (
+                <section className="settings-admin-commands__category" key={category.title}>
+                  <h3>{category.title}</h3>
+                  <div className="settings-admin-commands__grid">
+                    {category.items.map((item) => {
+                      const value = readCommandName(draft[item.key], item.defaultValue);
+                      const hintId = `${item.key}-hint`;
+                      const isHintOpen = openHintKey === item.hintKey;
+                      const error = fieldErrors[item.key];
+
+                      return (
+                        <div
+                          className={cn('settings-command-card', error && 'field--error')}
+                          key={item.key}
+                        >
+                          <div className="settings-command-card__head">
+                            <div className="settings-command-card__copy">
+                              <strong>{item.title}</strong>
+                              <span>{item.caption}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className={cn('settings-info-button', isHintOpen && 'is-open')}
+                              aria-label={`Пояснение: ${item.title}`}
+                              aria-controls={hintId}
+                              aria-expanded={isHintOpen}
+                              onClick={() => onToggleHint(item.hintKey)}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label className="field settings-command-card__field">
+                            <span>Название команды</span>
+                            <input
+                              value={draft[item.key]}
+                              onChange={(event) => onFieldChange(item.key, event.target.value)}
+                              placeholder={item.defaultValue}
+                            />
+                          </label>
+
+                          <div
+                            className="settings-command-card__examples"
+                            aria-label={`Примеры: ${item.title}`}
+                          >
+                            {item.examples(value).map((example) => (
+                              <code key={example}>{example}</code>
+                            ))}
+                          </div>
+
+                          {isHintOpen ? (
+                            <p id={hintId} className="settings-native-toggle__hint">
+                              {item.hint(value)}
+                            </p>
+                          ) : null}
+
+                          {error ? <small className="field__hint">{error}</small> : null}
+                        </div>
+                      );
+                    })}
                   </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      'settings-info-button',
-                      openHintKey === 'adminMuteCommand' && 'is-open',
-                    )}
-                    aria-label="Пояснение для команды мута"
-                    aria-controls="admin-mute-command-hint"
-                    aria-expanded={openHintKey === 'adminMuteCommand'}
-                    onClick={() => onToggleHint('adminMuteCommand')}
-                  >
-                    <span aria-hidden>i</span>
-                  </button>
-                </div>
-
-                <label className="field settings-command-card__field">
-                  <span>Тексты команды</span>
-                  <input
-                    value={draft.adminMuteCommandAliases}
-                    onChange={(event) =>
-                      onFieldChange('adminMuteCommandAliases', event.target.value)
-                    }
-                    placeholder={ADMIN_MUTE_COMMAND_ALIASES_DEFAULT}
-                  />
-                </label>
-
-                <div className="settings-command-card__examples" aria-label="Примеры мута">
-                  <code>{muteCommandExample}</code>
-                  <code>{muteCommandExample} 12</code>
-                  <code>{muteCommandExample} 88</code>
-                </div>
-
-                {openHintKey === 'adminMuteCommand' ? (
-                  <p id="admin-mute-command-hint" className="settings-native-toggle__hint">
-                    Без числа бот ставит мут на 6 часов. Число задает часы от 1 до 336, а 88
-                    включает бессрочный мут.
-                  </p>
-                ) : null}
-
-                {fieldErrors.adminMuteCommandAliases ? (
-                  <small className="field__hint">{fieldErrors.adminMuteCommandAliases}</small>
-                ) : null}
-              </div>
-
-              <div
-                className={cn(
-                  'settings-command-card',
-                  fieldErrors.adminRulesCommandAliases && 'field--error',
-                )}
-              >
-                <div className="settings-command-card__head">
-                  <div className="settings-command-card__copy">
-                    <strong>Правила</strong>
-                    <span>Привязка сообщения как правил чата.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className={cn(
-                      'settings-info-button',
-                      openHintKey === 'adminRulesCommand' && 'is-open',
-                    )}
-                    aria-label="Пояснение для команды правил"
-                    aria-controls="admin-rules-command-hint"
-                    aria-expanded={openHintKey === 'adminRulesCommand'}
-                    onClick={() => onToggleHint('adminRulesCommand')}
-                  >
-                    <span aria-hidden>i</span>
-                  </button>
-                </div>
-
-                <label className="field settings-command-card__field">
-                  <span>Тексты команды</span>
-                  <input
-                    value={draft.adminRulesCommandAliases}
-                    onChange={(event) =>
-                      onFieldChange('adminRulesCommandAliases', event.target.value)
-                    }
-                    placeholder={ADMIN_RULES_COMMAND_ALIASES_DEFAULT}
-                  />
-                </label>
-
-                <div className="settings-command-card__examples" aria-label="Примеры правил">
-                  <code>{rulesCommandExample}</code>
-                  <code>ответ + {rulesCommandExample}</code>
-                  <code>пересылка + {rulesCommandExample}</code>
-                </div>
-
-                {openHintKey === 'adminRulesCommand' ? (
-                  <p id="admin-rules-command-hint" className="settings-native-toggle__hint">
-                    Бот берет сообщение из ответа или пересылки, сохраняет его как правила и
-                    включает кнопку “Правила” в нарушениях.
-                  </p>
-                ) : null}
-
-                {fieldErrors.adminRulesCommandAliases ? (
-                  <small className="field__hint">{fieldErrors.adminRulesCommandAliases}</small>
-                ) : null}
-              </div>
+                </section>
+              ))}
             </div>
           ) : null}
         </div>

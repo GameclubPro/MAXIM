@@ -144,17 +144,32 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(disabled.requiredSubscriptionExpiresAt).toBe('');
   });
 
-  it('keeps per-chat admin command aliases normalized', () => {
+  it('keeps per-chat admin command names normalized', () => {
     const defaults = chatSettingsSchema.parse({});
     const customized = chatSettingsSchema.parse({
-      adminMuteCommandAliases: ' тихо, молчать, тихо ',
-      adminRulesCommandAliases: ' регламент , rules ',
+      adminBanCommandName: ' бан ',
+      adminMuteCommandName: ' тихий   час ',
+      adminPermanentMuteCommandName: ' мут   навсегда ',
+      adminRulesCommandName: ' регламент ',
     });
 
-    expect(defaults.adminMuteCommandAliases).toBe('мут, мьют, мью, mute');
-    expect(defaults.adminRulesCommandAliases).toBe('правило, правила, rule, rules');
-    expect(customized.adminMuteCommandAliases).toBe('тихо, молчать');
-    expect(customized.adminRulesCommandAliases).toBe('регламент, rules');
+    expect(defaults.adminBanCommandName).toBe('бан');
+    expect(defaults.adminMuteCommandName).toBe('мут');
+    expect(defaults.adminPermanentMuteCommandName).toBe('мут 88');
+    expect(defaults.adminRulesCommandName).toBe('правило');
+    expect(customized.adminBanCommandName).toBe('бан');
+    expect(customized.adminMuteCommandName).toBe('тихий час');
+    expect(customized.adminPermanentMuteCommandName).toBe('мут навсегда');
+    expect(customized.adminRulesCommandName).toBe('регламент');
+  });
+
+  it('rejects duplicate per-chat admin command names', () => {
+    const result = chatSettingsSchema.safeParse({
+      adminBanCommandName: 'мера',
+      adminMuteCommandName: ' мера ',
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('rejects bot speech media with non-image mime type', () => {
