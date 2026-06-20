@@ -20,6 +20,7 @@ import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake
 const HANDSHAKE_COMMAND = 'старт';
 export const MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD =
   'managed_entity_handshake:start_hint';
+export const MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT = 'Проверить подключение';
 const HANDSHAKE_RATE_LIMIT_MS = 3 * 60 * 1_000;
 const HANDSHAKE_ACCESS_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SEND_TIMEOUT_MS = 1_500;
@@ -86,7 +87,8 @@ export class ManagedEntityHandshakeService {
       if (!this.isAdminOrOwner(botAccess)) {
         await this.replySafely(
           context,
-          'Не получилось подключить чат: у бота нет прав администратора.',
+          this.buildBotDeniedReply(context),
+          this.buildRetryButton(),
         );
         await this.recordOutcome(
           context,
@@ -128,7 +130,8 @@ export class ManagedEntityHandshakeService {
       if (!userAccess || !this.isAdminOrOwner(userAccess)) {
         await this.replySafely(
           context,
-          'Подключение может подтвердить только администратор или владелец чата. Попросите администратора нажать «Старт» в сообщении бота или отправить Старт.',
+          this.buildUserDeniedReply(context),
+          this.buildRetryButton(),
         );
         await this.recordOutcome(
           context,
@@ -355,6 +358,34 @@ export class ManagedEntityHandshakeService {
         'Failed to send managed entity handshake reply',
       );
     }
+  }
+
+  private buildBotDeniedReply(context: ManagedEntityHandshakeContext): string {
+    const entityLabel = context.entityType === 'channel' ? 'канал' : 'чат';
+    return [
+      `Пока не могу подключить ${entityLabel}: MAX не подтверждает права администратора у бота.`,
+      `Проверьте в настройках ${entityLabel === 'канал' ? 'канала' : 'чата'}, что бот назначен администратором, затем нажмите кнопку ниже еще раз.`,
+    ].join('\n\n');
+  }
+
+  private buildUserDeniedReply(context: ManagedEntityHandshakeContext): string {
+    const entityLabel = context.entityType === 'channel' ? 'канал' : 'чат';
+    return `Подключить ${entityLabel} может только администратор или владелец. Попросите такого пользователя нажать кнопку ниже.`;
+  }
+
+  private buildRetryButton(): NonNullable<
+    Parameters<MaxClientService['sendMessageImmediateWithId']>[2]
+  >['buttons'] {
+    return [
+      [
+        {
+          type: 'callback',
+          text: MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
+          payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+          intent: 'positive',
+        },
+      ],
+    ];
   }
 
   private buildSettingsButton(

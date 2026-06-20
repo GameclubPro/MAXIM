@@ -52,18 +52,6 @@ function userMention(name: string, userId = 'user-1'): string {
   return `[${escapeMaxMarkdown(name)}](max://user/${encodeURIComponent(userId)})`;
 }
 
-function decodeMiniappRouteFromUrl(url: string): string | null {
-  const startParam = new URL(url).searchParams.get('startapp');
-  if (!startParam?.startsWith('mr-')) {
-    return null;
-  }
-
-  const payload = JSON.parse(Buffer.from(startParam.slice(3), 'base64url').toString('utf8')) as {
-    r?: unknown;
-  };
-  return typeof payload.r === 'string' ? payload.r : null;
-}
-
 function majorExplanation(
   name: string,
   messageStatus: 'снято с линии' | 'не по форме',
@@ -3761,7 +3749,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
-  it('sends a miniapp settings handoff button on bot_added updates', async () => {
+  it('does not send a premature miniapp settings handoff on bot_added updates', async () => {
     const service = new ModerationService(
       {} as never,
       {} as never,
@@ -3784,30 +3772,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createBotAddedUpdate('chat-1'));
 
     const maxClient = (service as unknown as { maxClient: { sendMessage: jest.Mock } }).maxClient;
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'Бот подключён. Чтобы начать, откройте настройки чата.',
-      expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              type: 'link',
-              text: 'Открыть настройки',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
-            }),
-          ],
-        ],
-      }),
-      expect.objectContaining({
-        ignoreFailureMetricStatuses: [403, 404],
-      }),
-    );
-
-    const options = maxClient.sendMessage.mock.calls[0]?.[2] as {
-      buttons?: Array<Array<{ url?: string }>>;
-    };
-    const buttonUrl = options.buttons?.[0]?.[0]?.url ?? '';
-    expect(decodeMiniappRouteFromUrl(buttonUrl)).toBe('/chat/chat-1/settings?handoff=1');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('kicks bots immediately from service join events when toggle is enabled', async () => {

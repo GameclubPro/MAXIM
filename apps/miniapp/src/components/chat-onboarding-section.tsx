@@ -44,8 +44,8 @@ export function ChatOnboardingSection({
         <div className="chats-onboarding__hero-text">
           <h1>{heading}</h1>
           <p>
-            Добавьте бота, выдайте ему права администратора, затем подтвердите подключение
-            командой Старт в MAX. После подтверждения {entityLabel} появится здесь автоматически.
+            Добавьте бота, выдайте ему права администратора и нажмите «Проверить подключение» в
+            сообщении бота. После успешной проверки {entityLabel} появится здесь автоматически.
           </p>
         </div>
       </GlassCard>
@@ -112,13 +112,14 @@ export function ChatOnboardingSection({
         <div className="onboarding-step-card__content">
           <h2>3. Подтвердите подключение</h2>
           <ul>
-            <li>Нажмите кнопку «Старт» в сообщении бота или отправьте Старт в {entityLabel}.</li>
+            <li>Нажмите «Проверить подключение» в сообщении бота.</li>
+            <li>Если сообщения нет, отправьте в {entityLabel} слово Старт.</li>
             <li>Подтверждение доступно администратору или владельцу.</li>
             <li>После успешной проверки {entityLabel} появится в списке.</li>
           </ul>
         </div>
         <div className="onboarding-command-preview" aria-hidden>
-          <span>Старт</span>
+          <span>Проверить подключение</span>
         </div>
       </GlassCard>
 
@@ -175,7 +176,7 @@ function buildRecentSignalText(
   }
 
   if (signal.type === 'recent_activity') {
-    return `Видим активность в MAX, подтвердите ${entityLabel} командой Старт.`;
+    return `Видим активность в MAX, нажмите «Проверить подключение» в сообщении бота.`;
   }
   if (signal.type === 'access_edge') {
     return signal.status === 'granted'

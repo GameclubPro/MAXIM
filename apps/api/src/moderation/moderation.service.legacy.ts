@@ -185,7 +185,6 @@ import {
 import {
   CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
   PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
-  BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES,
   DEFAULT_MUTE_DURATION_HOURS,
   MAX_ACTIVE_MUTE_DURATION_HOURS,
   DELETE_MESSAGE_PERMISSION_ALIASES,
@@ -818,7 +817,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (this.isBotAddedUpdate(update)) {
-        await this.handleBotAddedMiniappHandoff(update, chatId, chatTitle);
         if (!serviceAuthored && !serviceMembersEvent) {
           return;
         }
@@ -10128,72 +10126,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private async handleBotAddedMiniappHandoff(
-    update: MaxUpdate,
-    chatId: string,
-    chatTitle: string | undefined,
-  ): Promise<void> {
-    if (this.isPrivateDirectChat(chatId)) {
-      return;
-    }
-
-    const sendMessage = (
-      this.maxClient as unknown as {
-        sendMessage?: MaxClientService['sendMessage'];
-      }
-    ).sendMessage?.bind(this.maxClient);
-    if (!sendMessage) {
-      return;
-    }
-
-    const entityType = update.message?.entityType === 'channel' ? 'channel' : 'chat';
-    const button = this.buildManagedEntitySettingsMiniappButton(
-      chatId,
-      entityType,
-      update.botId ?? null,
-    );
-    const entityLabel = entityType === 'channel' ? 'канала' : 'чата';
-    const title = typeof chatTitle === 'string' && chatTitle.trim() ? ` «${chatTitle.trim()}»` : '';
-
-    try {
-      await sendMessage(
-        chatId,
-        `Бот подключён${title}. Чтобы начать, откройте настройки ${entityLabel}.`,
-        {
-          buttons: [[button]],
-          debugContext: {
-            screen: 'bot-added',
-            action: 'miniapp-handoff',
-          },
-        },
-        {
-          ignoreFailureMetricStatuses: BOT_ADDED_ONBOARDING_TERMINAL_FAILURE_METRIC_STATUSES,
-        },
-      );
-    } catch (error: unknown) {
-      if (this.isTerminalWebhookProcessingError(error)) {
-        this.logger.debug(
-          {
-            chatId,
-            updateId: update.updateId,
-            err: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Skipped bot_added miniapp handoff after terminal chat delivery error',
-        );
-        return;
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          updateId: update.updateId,
-          err: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to send bot_added miniapp handoff',
-      );
-    }
-  }
-
   private async handleBotStartedInstruction(update: MaxUpdate, chatId: string) {
     if (!this.shouldSendBotStartedInstruction(update, chatId)) {
       return;
@@ -11379,57 +11311,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       url: fallbackWebAppUrl ?? 'https://maxim.play-team.ru/app/',
     };
-  }
-
-  private buildManagedEntitySettingsMiniappButton(
-    chatId: string,
-    entityType: 'chat' | 'channel',
-    botId?: string | null,
-  ): MaxMessageButton {
-    const route = this.buildManagedEntitySettingsMiniappRoute(chatId, entityType);
-    const launchUrl = this.buildMiniappRouteLaunchUrl(route, botId);
-    if (launchUrl) {
-      return {
-        type: 'link',
-        text: 'Открыть настройки',
-        url: launchUrl,
-      };
-    }
-
-    const fallbackWebAppUrl = this.buildMiniappDirectRouteUrl(route);
-    const botContactId = this.resolveBotContactId(botId);
-    if (fallbackWebAppUrl && botContactId) {
-      return {
-        type: 'open_app',
-        text: 'Открыть настройки',
-        webApp: fallbackWebAppUrl,
-        contactId: botContactId,
-      };
-    }
-
-    return {
-      type: 'link',
-      text: 'Открыть настройки',
-      url: fallbackWebAppUrl ?? 'https://maxim.play-team.ru/app/',
-    };
-  }
-
-  private buildManagedEntitySettingsMiniappRoute(
-    chatId: string,
-    entityType: 'chat' | 'channel',
-  ): string {
-    const encodedChatId = encodeURIComponent(chatId);
-    return entityType === 'channel'
-      ? `/channel/${encodedChatId}/settings?handoff=1`
-      : `/chat/${encodedChatId}/settings?handoff=1`;
-  }
-
-  private buildMiniappDirectRouteUrl(route: string): string | null {
-    if (!this.appBaseUrl) {
-      return null;
-    }
-
-    return `${this.appBaseUrl}/app${route}`;
   }
 
   private buildMiniappRouteLaunchUrl(route: string, _botId?: string | null): string | null {

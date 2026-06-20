@@ -1,4 +1,6 @@
 import {
+  ChatBotMembershipRole,
+  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessState,
   ManagedEntityHandshakeOutcomeStatus,
@@ -35,7 +37,7 @@ function createUpdate(overrides: Record<string, unknown> = {}) {
 function createFixture() {
   const prisma = {
     chatBotMembership: {
-      updateMany: jest.fn((args) => ({ operation: 'membership.updateMany', args })),
+      upsert: jest.fn((args) => ({ operation: 'membership.upsert', args })),
     },
     chatAdminAllowlist: {
       upsert: jest.fn((args) => ({ operation: 'allowlist.upsert', args })),
@@ -92,6 +94,8 @@ function createFixture() {
     upsertManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
     setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
+    setAdminAccess: jest.fn().mockResolvedValue(undefined),
+    rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
   };
   const rosterSync = {
     scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
@@ -157,6 +161,24 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
+    expect(fixture.prisma.chatBotMembership.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_botId: {
+            chatId: '-100',
+            botId: 'bot-1',
+          },
+        },
+        create: expect.objectContaining({
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+        }),
+        update: expect.objectContaining({
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: expect.objectContaining({ isAdmin: true }),
+        }),
+      }),
+    );
     expect(fixture.chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
       'admin-1',
       'chat',
@@ -165,6 +187,17 @@ describe('ManagedEntityHandshakeService', () => {
         items: [expect.objectContaining({ id: '-100', title: 'Команда MAX' })],
       }),
       expect.any(Number),
+    );
+    expect(fixture.chatContextCache.setAdminAccess).toHaveBeenCalledWith(
+      '-100',
+      'admin-1',
+      'granted',
+    );
+    expect(fixture.chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('-100', 'admin-1');
+    expect(
+      fixture.chatContextCache.setAdminAccess.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      fixture.chatContextCache.setManagedEntitiesPublishedSnapshot.mock.invocationCallOrder[0],
     );
     expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
       chatId: '-100',
@@ -404,8 +437,18 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100',
-      'Подключение может подтвердить только администратор или владелец чата. Попросите администратора нажать «Старт» в сообщении бота или отправить Старт.',
-      undefined,
+      'Подключить чат может только администратор или владелец. Попросите такого пользователя нажать кнопку ниже.',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'callback',
+              text: 'Проверить подключение',
+              payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+            }),
+          ],
+        ],
+      }),
       expect.anything(),
     );
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
@@ -488,6 +531,7 @@ describe('ManagedEntityHandshakeService', () => {
     ).resolves.toBe('bootstrapped_without_user');
 
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.chatContextCache.setAdminAccess).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
       expect.objectContaining({ id: '-200', entityType: 'channel' }),
       expect.any(Number),

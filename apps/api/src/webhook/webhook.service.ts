@@ -20,6 +20,7 @@ import { MaxMembershipLookupService } from '../max/max-membership-lookup.service
 import {
   ManagedEntityHandshakeService,
   MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+  MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
 } from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -397,13 +398,13 @@ export class WebhookService {
     try {
       await this.maxClient.sendMessageImmediateWithId(
         chatId,
-        `${entityLabel} почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.`,
+        `${entityLabel} почти подключен. Назначьте бота администратором, затем нажмите кнопку ниже. После проверки ${entityType === ChatEntityType.CHANNEL ? 'канал' : 'чат'} появится в мини-приложении.`,
         {
           buttons: [
             [
               {
                 type: 'callback',
-                text: 'Старт',
+                text: MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT,
                 payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
                 intent: 'positive',
               },

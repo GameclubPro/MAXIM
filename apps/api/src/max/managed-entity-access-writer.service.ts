@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
 import {
+  ChatBotMembershipRole,
+  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
@@ -108,12 +110,24 @@ export class ManagedEntityAccessWriter {
     });
 
     await this.prisma.$transaction([
-      this.prisma.chatBotMembership.updateMany({
+      this.prisma.chatBotMembership.upsert({
         where: {
+          chatId_botId: {
+            chatId: context.chatId,
+            botId: context.botId,
+          },
+        },
+        create: {
           chatId: context.chatId,
           botId: context.botId,
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: this.buildPermissionsSnapshot(botAccess),
+          lastSeenAt: now,
+          lastWebhookAt: now,
         },
-        data: {
+        update: {
+          status: ChatBotMembershipStatus.ACTIVE,
           permissionsSnapshot: this.buildPermissionsSnapshot(botAccess),
           lastSeenAt: now,
           lastWebhookAt: now,
@@ -190,6 +204,11 @@ export class ManagedEntityAccessWriter {
           lastEventAt: now,
         },
       }),
+    ]);
+
+    await Promise.all([
+      this.chatContextCache.setAdminAccess(context.chatId, context.senderId, 'granted'),
+      this.chatContextCache.rememberChatAdminUser(context.chatId, context.senderId),
     ]);
 
     return existing?.state === ManagedEntityAccessState.GRANTED;

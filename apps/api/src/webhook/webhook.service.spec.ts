@@ -1749,12 +1749,12 @@ describe('WebhookService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100129',
-      'Чат почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.',
+      'Чат почти подключен. Назначьте бота администратором, затем нажмите кнопку ниже. После проверки чат появится в мини-приложении.',
       expect.objectContaining({
         buttons: [
           [
             expect.objectContaining({
-              text: 'Старт',
+              text: 'Проверить подключение',
               type: 'callback',
               payload: 'managed_entity_handshake:start_hint',
             }),
@@ -1825,9 +1825,9 @@ describe('WebhookService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100130',
-      'Канал почти подключен. Нажмите «Старт» или отправьте Старт, чтобы подтвердить доступ администратора.',
+      'Канал почти подключен. Назначьте бота администратором, затем нажмите кнопку ниже. После проверки канал появится в мини-приложении.',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: 'Старт' })]],
+        buttons: [[expect.objectContaining({ text: 'Проверить подключение' })]],
       }),
       expect.objectContaining({
         botId: 'id613002203036_bot',
