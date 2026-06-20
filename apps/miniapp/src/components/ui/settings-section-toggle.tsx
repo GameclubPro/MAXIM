@@ -404,12 +404,13 @@ export function SettingsSectionToggle({
   const trimmedSummary = summary?.trim() ?? '';
   const trimmedStatus = status?.trim() ?? '';
   const hasStatus = trimmedStatus.length > 0;
+  const showStatus = hasStatus && !hideChevron;
   const accessibleLabel = [title, trimmedStatus, trimmedSummary].filter(Boolean).join('. ');
 
   return (
     <button
       type="button"
-      className={cn('settings-section__toggle', !hasStatus && 'is-stateless')}
+      className={cn('settings-section__toggle', !showStatus && 'is-stateless')}
       aria-expanded={open}
       aria-controls={controls}
       aria-label={accessibleLabel || title}
@@ -423,7 +424,7 @@ export function SettingsSectionToggle({
         <h3>{title}</h3>
       </span>
 
-      {hasStatus ? (
+      {showStatus ? (
         <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
       ) : null}
 
