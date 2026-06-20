@@ -10,7 +10,8 @@ export const queryKeys = {
   globalSpammerUserDiagnostics: (
     chatId: string | null | undefined,
     userId: string | null | undefined,
-  ) => ['global-spammer-user-diagnostics', chatId, userId] as const,
+    ...scope: readonly unknown[]
+  ) => ['global-spammer-user-diagnostics', chatId, userId, ...scope] as const,
   channelStats: (chatId: string, range: string) => ['channel-stats', chatId, range] as const,
 
   entityDialog: (

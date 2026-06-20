@@ -716,6 +716,8 @@ model GlobalSpammerCandidate {
   chats GlobalSpammerCandidateChat[]
 
   @@index([status, lastDetectedAt(sort: Desc)], map: "global_spammer_candidates_status_last_detected_at_idx")
+  @@index([status, confidenceScore(sort: Desc), lastDetectedAt(sort: Desc)], map: "global_spammer_candidates_status_confidence_detected_idx")
+  @@index([lastChatId, status, confidenceScore(sort: Desc), lastDetectedAt(sort: Desc)], map: "global_spammer_candidates_chat_status_confidence_idx")
   @@index([suppressedUntil], map: "global_spammer_candidates_suppressed_until_idx")
   @@index([confidenceScore], map: "global_spammer_candidates_confidence_score_idx")
   @@map("global_spammer_candidates")
@@ -737,6 +739,7 @@ model GlobalSpammerCandidateChat {
 
   @@id([candidateUserId, chatId])
   @@index([chatId, lastDetectedAt(sort: Desc)], map: "global_spammer_candidate_chats_chat_id_last_detected_at_idx")
+  @@index([chatId, candidateUserId], map: "global_spammer_candidate_chats_chat_candidate_idx")
   @@map("global_spammer_candidate_chats")
 }
 
@@ -767,6 +770,11 @@ model SpammerObservation {
 
   @@unique([userId, source, evidenceHash], map: "spammer_observations_user_source_evidence_key")
   @@index([userId, expiresAt], map: "spammer_observations_user_expires_at_idx")
+  @@index([userId, observedAt(sort: Desc)], map: "spammer_observations_user_observed_at_idx")
+  @@index([chatId, observedAt(sort: Desc), source], map: "spammer_observations_chat_observed_source_idx")
+  @@index([chatId, suppressedAt(sort: Desc), source], map: "spammer_observations_chat_suppressed_source_idx")
+  @@index([observedAt(sort: Desc), source], map: "spammer_observations_observed_source_idx")
+  @@index([suppressedAt(sort: Desc), source], map: "spammer_observations_suppressed_source_idx")
   @@index([source, observedAt(sort: Desc)], map: "spammer_observations_source_observed_at_idx")
   @@index([expiresAt], map: "spammer_observations_expires_at_idx")
   @@index([suppressedAt], map: "spammer_observations_suppressed_at_idx")
@@ -822,6 +830,8 @@ model SpammerCampaignClusterMember {
 
   @@id([clusterId, userId])
   @@index([userId, lastSeenAt(sort: Desc)], map: "spammer_campaign_members_user_last_idx")
+  @@index([chatId, lastSeenAt(sort: Desc)], map: "spammer_campaign_members_chat_last_idx")
+  @@index([chatId, clusterId], map: "spammer_campaign_members_chat_cluster_idx")
   @@index([clusterId, memberScore], map: "spammer_campaign_members_cluster_score_idx")
   @@map("spammer_campaign_cluster_members")
 }
@@ -844,6 +854,7 @@ model SpammerGraphSignal {
 
   @@index([signalType, signalHash, expiresAt], map: "spammer_graph_signals_type_hash_expires_idx")
   @@index([userId, expiresAt], map: "spammer_graph_signals_user_expires_idx")
+  @@index([userId, observedAt(sort: Desc)], map: "spammer_graph_signals_user_observed_idx")
   @@map("spammer_graph_signals")
 }
 
@@ -916,6 +927,7 @@ model GlobalSpammerShadowScore {
 
   @@index([userId, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_user_created_idx")
   @@index([chatId, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_chat_created_idx")
+  @@index([chatId, wouldPromote, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_chat_promote_created_idx")
   @@index([v2Band, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_band_created_idx")
   @@index([wouldPromote, createdAt(sort: Desc)], map: "global_spammer_shadow_scores_promote_created_idx")
   @@map("global_spammer_shadow_scores")

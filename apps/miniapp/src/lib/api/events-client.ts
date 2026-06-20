@@ -365,6 +365,11 @@ export async function getGlobalSpammerUserDiagnostics(
   userId: string,
   query: Partial<{
     includeProfile: boolean;
+    includeObservations: boolean;
+    includeGraphSignals: boolean;
+    includeReputation: boolean;
+    includeCampaigns: boolean;
+    includeShadow: boolean;
     profileMode: 'full' | 'local';
   }> = {},
   request: Pick<RequestInit, 'signal'> = {},
@@ -372,6 +377,21 @@ export async function getGlobalSpammerUserDiagnostics(
   const params = new URLSearchParams();
   if (query.includeProfile === false) {
     params.set('includeProfile', 'false');
+  }
+  if (query.includeObservations === false) {
+    params.set('includeObservations', 'false');
+  }
+  if (query.includeGraphSignals === false) {
+    params.set('includeGraphSignals', 'false');
+  }
+  if (query.includeReputation === false) {
+    params.set('includeReputation', 'false');
+  }
+  if (query.includeCampaigns === false) {
+    params.set('includeCampaigns', 'false');
+  }
+  if (query.includeShadow === false) {
+    params.set('includeShadow', 'false');
   }
   if (query.profileMode === 'local') {
     params.set('profileMode', 'local');

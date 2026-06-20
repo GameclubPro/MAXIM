@@ -260,6 +260,14 @@ export type GlobalSpammerUserDiagnostics = {
   };
 };
 
+export type GlobalSpammerUserDiagnosticsOptions = {
+  includeObservations?: boolean;
+  includeGraphSignals?: boolean;
+  includeReputation?: boolean;
+  includeCampaigns?: boolean;
+  includeShadow?: boolean;
+};
+
 type SourceReputation = {
   source: string;
   weight: number;
@@ -334,6 +342,27 @@ type PolicyDecisionLookupContext = {
   registry?: GlobalSpammerRow | null;
   candidate?: GlobalSpammerCandidateRow | null;
   activeSuppression?: GlobalSpammerSuppressionRow | null;
+};
+
+type ReviewQueueCandidateIdRow = {
+  userId: string;
+};
+
+type ReviewMetricsCountRow = {
+  pending: unknown;
+  approved: unknown;
+  suppressed: unknown;
+  reviewed: unknown;
+  falsePositiveCount: unknown;
+  newCandidates24h: unknown;
+  autoApproved24h: unknown;
+  suppressed24h: unknown;
+};
+
+type ReviewMetricsObservationRow = {
+  source: string;
+  observedCount: unknown;
+  suppressedCount: unknown;
 };
 
 type LocalAdminDecisionRow = {
@@ -1068,49 +1097,44 @@ export class GlobalSpammerIntelligenceService {
     limit?: number;
     includeObservations?: boolean;
   }) {
+    const startedAtMs = Date.now();
+    const timings: Record<string, number> = {};
     const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
     const status = params.status && params.status !== 'ALL' ? params.status : undefined;
     const includeObservations = params.includeObservations ?? true;
-    const candidates = await this.prisma.globalSpammerCandidate.findMany({
-      where: {
-        ...(status ? { status } : {}),
-        OR: [
-          { lastChatId: params.chatId },
-          {
-            chats: {
-              some: {
-                chatId: params.chatId,
-              },
-            },
-          },
-        ],
-      },
-      orderBy: [{ confidenceScore: 'desc' }, { lastDetectedAt: 'desc' }],
-      take: limit,
-      include: {
-        chats: {
-          orderBy: {
-            lastDetectedAt: 'desc',
-          },
-          take: 10,
-        },
-      },
-    });
+    const candidateIds = await this.timeSpammerStage(timings, 'candidateIdQueryMs', () =>
+      this.listReviewQueueCandidateIds({
+        chatId: params.chatId,
+        status,
+        limit,
+      }),
+    );
+    const loadedCandidates = await this.timeSpammerStage(timings, 'candidateQueryMs', () =>
+      this.loadReviewQueueCandidatesByIds(candidateIds),
+    );
+    const candidatesByUserId = new Map(
+      loadedCandidates.map((candidate) => [candidate.userId, candidate]),
+    );
+    const candidates = candidateIds
+      .map((userId) => candidatesByUserId.get(userId))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
     const userIds = candidates.map((candidate) => candidate.userId);
     const observations =
       !includeObservations || userIds.length === 0
         ? []
-        : await this.prisma.spammerObservation.findMany({
-            where: {
-              userId: {
-                in: userIds,
+        : await this.timeSpammerStage(timings, 'observationsQueryMs', () =>
+            this.prisma.spammerObservation.findMany({
+              where: {
+                userId: {
+                  in: userIds,
+                },
               },
-            },
-            orderBy: {
-              observedAt: 'desc',
-            },
-            take: limit * 6,
-          });
+              orderBy: {
+                observedAt: 'desc',
+              },
+              take: limit * 6,
+            }),
+          );
     const observationsByUserId = new Map<string, typeof observations>();
     for (const observation of observations) {
       const rows = observationsByUserId.get(observation.userId) ?? [];
@@ -1118,7 +1142,7 @@ export class GlobalSpammerIntelligenceService {
       observationsByUserId.set(observation.userId, rows);
     }
 
-    return {
+    const result = {
       items: candidates.map((candidate) => ({
         userId: candidate.userId,
         status: candidate.status,
@@ -1159,164 +1183,98 @@ export class GlobalSpammerIntelligenceService {
       })),
       limit,
     };
+    this.logSpammerIntelligenceTiming('listReviewQueue', {
+      chatId: params.chatId,
+      status: status ?? 'ALL',
+      limit,
+      includeObservations,
+      itemCount: result.items.length,
+      ...timings,
+      totalMs: Date.now() - startedAtMs,
+    });
+    return result;
   }
 
   async getReviewMetrics(params: { chatId?: string | null } = {}) {
+    const startedAtMs = Date.now();
+    const timings: Record<string, number> = {};
     const now = new Date();
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const candidateWhere = params.chatId
-      ? {
-          OR: [
-            { lastChatId: params.chatId },
-            {
-              chats: {
-                some: {
-                  chatId: params.chatId,
-                },
-              },
-            },
-          ],
-        }
-      : {};
 
     const [
-      pending,
-      approved,
-      suppressed,
-      reviewed,
-      falsePositiveCount,
-      recentObservations,
-      suppressedObservations,
+      candidateMetrics,
+      observationMetrics,
       sourceReputation,
       activeRegistry,
       expiredRegistry,
       archivedExpired,
-      newCandidates24h,
-      autoApproved24h,
-      suppressed24h,
       shadowWouldEnforceCount,
       topCampaigns,
     ] = await Promise.all([
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: 'PENDING',
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: {
-            in: ['APPROVED', 'AUTO_APPROVED'],
+      this.timeSpammerStage(timings, 'candidateMetricsMs', () =>
+        this.getReviewCandidateMetrics({ chatId: params.chatId ?? null, since }),
+      ),
+      this.timeSpammerStage(timings, 'observationMetricsMs', () =>
+        this.getReviewObservationMetrics({ chatId: params.chatId ?? null, since }),
+      ),
+      this.timeSpammerStage(timings, 'sourceReputationMs', () => this.getSourceReputation(now)),
+      this.timeSpammerStage(timings, 'activeRegistryCountMs', () =>
+        this.prisma.globalSpammer.count({
+          where: {
+            expiresAt: {
+              gt: now,
+            },
           },
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: 'SUPPRESSED',
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: {
-            in: ['APPROVED', 'SUPPRESSED'],
+        }),
+      ),
+      this.timeSpammerStage(timings, 'expiredRegistryCountMs', () =>
+        this.prisma.globalSpammer.count({
+          where: this.buildExpiredRegistryWhere(now),
+        }),
+      ),
+      this.timeSpammerStage(timings, 'archiveCountMs', () =>
+        this.prisma.globalSpammerArchive.count(),
+      ),
+      this.timeSpammerStage(timings, 'shadowCountMs', () =>
+        this.prisma.globalSpammerShadowScore.count({
+          where: {
+            createdAt: {
+              gte: since,
+            },
+            wouldPromote: true,
+            ...(params.chatId ? { chatId: params.chatId } : {}),
           },
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          falsePositive: true,
-        },
-      }),
-      this.prisma.spammerObservation.groupBy({
-        by: ['source'],
-        where: {
-          observedAt: {
-            gte: since,
-          },
-          ...(params.chatId ? { chatId: params.chatId } : {}),
-        },
-        _count: {
-          _all: true,
-        },
-      }),
-      this.prisma.spammerObservation.groupBy({
-        by: ['source'],
-        where: {
-          suppressedAt: {
-            gte: since,
-          },
-          ...(params.chatId ? { chatId: params.chatId } : {}),
-        },
-        _count: {
-          _all: true,
-        },
-      }),
-      this.getSourceReputation(now),
-      this.prisma.globalSpammer.count({
-        where: {
-          expiresAt: {
-            gt: now,
-          },
-        },
-      }),
-      this.prisma.globalSpammer.count({
-        where: this.buildExpiredRegistryWhere(now),
-      }),
-      this.prisma.globalSpammerArchive.count(),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          firstDetectedAt: {
-            gte: since,
-          },
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: 'AUTO_APPROVED',
-          reviewedAt: {
-            gte: since,
-          },
-        },
-      }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          ...candidateWhere,
-          status: 'SUPPRESSED',
-          reviewedAt: {
-            gte: since,
-          },
-        },
-      }),
-      this.prisma.globalSpammerShadowScore.count({
-        where: {
-          createdAt: {
-            gte: since,
-          },
-          wouldPromote: true,
-          ...(params.chatId ? { chatId: params.chatId } : {}),
-        },
-      }),
-      this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
+        }),
+      ),
+      this.timeSpammerStage(timings, 'topCampaignsMs', () =>
+        this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
+      ),
     ]);
+    const pending = candidateMetrics.pending;
+    const approved = candidateMetrics.approved;
+    const suppressed = candidateMetrics.suppressed;
+    const reviewed = candidateMetrics.reviewed;
+    const falsePositiveCount = candidateMetrics.falsePositiveCount;
+    const newCandidates24h = candidateMetrics.newCandidates24h;
+    const autoApproved24h = candidateMetrics.autoApproved24h;
+    const suppressed24h = candidateMetrics.suppressed24h;
+    const recentObservations = observationMetrics.map((row) => ({
+      source: row.source,
+      count: row.observedCount,
+    }));
+    const suppressedObservations = observationMetrics
+      .filter((row) => row.suppressedCount > 0)
+      .map((row) => ({
+        source: row.source,
+        count: row.suppressedCount,
+      }));
 
     const sourceAlerts = this.buildSourceAlerts({
-      recentObservations: recentObservations.map((row) => ({
-        source: row.source,
-        count: row._count._all,
-      })),
-      suppressedObservations: suppressedObservations.map((row) => ({
-        source: row.source,
-        count: row._count._all,
-      })),
+      recentObservations,
+      suppressedObservations,
     });
 
-    return {
+    const result = {
       pending,
       approved,
       suppressed,
@@ -1332,17 +1290,17 @@ export class GlobalSpammerIntelligenceService {
       enforcementMode: this.defaultEnforcementMode,
       falsePositiveCount,
       falsePositiveRate: reviewed > 0 ? this.roundScore(falsePositiveCount / reviewed) : 0,
-      recentObservations: recentObservations.map((row) => ({
-        source: row.source,
-        count: row._count._all,
-      })),
-      suppressedObservations: suppressedObservations.map((row) => ({
-        source: row.source,
-        count: row._count._all,
-      })),
+      recentObservations,
+      suppressedObservations,
       sourceAlerts,
       sourceReputation,
     };
+    this.logSpammerIntelligenceTiming('getReviewMetrics', {
+      chatId: params.chatId ?? null,
+      ...timings,
+      totalMs: Date.now() - startedAtMs,
+    });
+    return result;
   }
 
   async archiveExpiredRegistryEntries(
@@ -1745,13 +1703,23 @@ export class GlobalSpammerIntelligenceService {
     deleteSpammersEnabled?: boolean;
     adminExempt?: boolean;
     enforcementMode?: GlobalSpammerEnforcementMode;
+    options?: GlobalSpammerUserDiagnosticsOptions;
   }): Promise<GlobalSpammerUserDiagnostics> {
+    const startedAtMs = Date.now();
+    const timings: Record<string, number> = {};
     const userId = this.normalizeUserId(params.userId);
     if (!userId) {
       throw new Error('User ID is required');
     }
     const chatId = this.normalizeText(params.chatId ?? '') || null;
     const now = new Date();
+    const options = {
+      includeObservations: params.options?.includeObservations ?? true,
+      includeGraphSignals: params.options?.includeGraphSignals ?? true,
+      includeReputation: params.options?.includeReputation ?? true,
+      includeCampaigns: params.options?.includeCampaigns ?? true,
+      includeShadow: params.options?.includeShadow ?? true,
+    };
     const [
       resolvedDeleteSpammersEnabled,
       localAdminDecision,
@@ -1764,27 +1732,56 @@ export class GlobalSpammerIntelligenceService {
       campaigns,
       latestShadowScore,
     ] = await Promise.all([
-      params.deleteSpammersEnabled ?? this.resolveDeleteSpammersEnabled(chatId),
-      this.resolveLocalAdminDecision(userId, chatId),
-      this.prisma.globalSpammer.findUnique({ where: { userId } }),
-      this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
-      this.findActiveSuppression(userId, now),
-      this.prisma.spammerObservation.findMany({
-        where: { userId },
-        orderBy: { observedAt: 'desc' },
-        take: 20,
-      }),
-      this.prisma.spammerGraphSignal.findMany({
-        where: {
-          userId,
-          expiresAt: { gt: now },
-        },
-        orderBy: { observedAt: 'desc' },
-        take: 20,
-      }),
-      this.getSourceReputation(now),
-      this.listUserCampaignDiagnostics(userId),
-      this.getLatestShadowScoreDiagnostics(userId),
+      params.deleteSpammersEnabled ??
+        this.timeSpammerStage(timings, 'deleteSpammersSettingMs', () =>
+          this.resolveDeleteSpammersEnabled(chatId),
+        ),
+      this.timeSpammerStage(timings, 'localAdminDecisionMs', () =>
+        this.resolveLocalAdminDecision(userId, chatId),
+      ),
+      this.timeSpammerStage(timings, 'registryQueryMs', () =>
+        this.prisma.globalSpammer.findUnique({ where: { userId } }),
+      ),
+      this.timeSpammerStage(timings, 'candidateQueryMs', () =>
+        this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+      ),
+      this.timeSpammerStage(timings, 'suppressionQueryMs', () =>
+        this.findActiveSuppression(userId, now),
+      ),
+      options.includeObservations
+        ? this.timeSpammerStage(timings, 'observationsQueryMs', () =>
+            this.prisma.spammerObservation.findMany({
+              where: { userId },
+              orderBy: { observedAt: 'desc' },
+              take: 20,
+            }),
+          )
+        : Promise.resolve([]),
+      options.includeGraphSignals
+        ? this.timeSpammerStage(timings, 'graphSignalsQueryMs', () =>
+            this.prisma.spammerGraphSignal.findMany({
+              where: {
+                userId,
+                expiresAt: { gt: now },
+              },
+              orderBy: { observedAt: 'desc' },
+              take: 20,
+            }),
+          )
+        : Promise.resolve([]),
+      options.includeReputation
+        ? this.timeSpammerStage(timings, 'sourceReputationMs', () => this.getSourceReputation(now))
+        : Promise.resolve([]),
+      options.includeCampaigns
+        ? this.timeSpammerStage(timings, 'campaignsQueryMs', () =>
+            this.listUserCampaignDiagnostics(userId),
+          )
+        : Promise.resolve([]),
+      options.includeShadow
+        ? this.timeSpammerStage(timings, 'shadowScoreQueryMs', () =>
+            this.getLatestShadowScoreDiagnostics(userId),
+          )
+        : Promise.resolve(null),
     ]);
     const resolvedAdminExempt = params.adminExempt ?? localAdminDecision?.decision === 'ALLOW';
     const riskContext = this.buildPolicyRiskContextFromDiagnostics({
@@ -1833,7 +1830,7 @@ export class GlobalSpammerIntelligenceService {
       );
     }
 
-    return {
+    const result = {
       userId,
       chatId,
       policy,
@@ -1899,6 +1896,14 @@ export class GlobalSpammerIntelligenceService {
         : null,
       reputationSummary: this.buildReputationSummary(observations, now),
     };
+    this.logSpammerIntelligenceTiming('getUserDiagnostics', {
+      chatId,
+      userId,
+      ...options,
+      ...timings,
+      totalMs: Date.now() - startedAtMs,
+    });
+    return result;
   }
 
   private async resolveDeleteSpammersEnabled(chatId: string | null): Promise<boolean> {
@@ -1916,6 +1921,197 @@ export class GlobalSpammerIntelligenceService {
       },
     });
     return Boolean(chat?.settings?.deleteSpammersEnabled);
+  }
+
+  private async listReviewQueueCandidateIds(params: {
+    chatId: string;
+    status?: GlobalSpammerCandidateStatus;
+    limit: number;
+  }): Promise<string[]> {
+    const statusFilter = params.status ? Prisma.sql`AND c.status = ${params.status}` : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<ReviewQueueCandidateIdRow[]>(Prisma.sql`
+      WITH scoped_candidates AS (
+        SELECT
+          c.user_id,
+          c.confidence_score,
+          GREATEST(edge.last_detected_at, c.last_detected_at) AS rank_detected_at,
+          c.last_detected_at
+        FROM global_spammer_candidate_chats edge
+        INNER JOIN global_spammer_candidates c ON c.user_id = edge.candidate_user_id
+        WHERE edge.chat_id = ${params.chatId}
+          ${statusFilter}
+
+        UNION ALL
+
+        SELECT
+          c.user_id,
+          c.confidence_score,
+          c.last_detected_at AS rank_detected_at,
+          c.last_detected_at
+        FROM global_spammer_candidates c
+        WHERE c.last_chat_id = ${params.chatId}
+          ${statusFilter}
+      ),
+      ranked_candidates AS (
+        SELECT DISTINCT ON (user_id)
+          user_id,
+          confidence_score,
+          rank_detected_at,
+          last_detected_at
+        FROM scoped_candidates
+        ORDER BY user_id, confidence_score DESC, rank_detected_at DESC, last_detected_at DESC
+      )
+      SELECT user_id AS "userId"
+      FROM ranked_candidates
+      ORDER BY confidence_score DESC, rank_detected_at DESC, last_detected_at DESC
+      LIMIT ${params.limit}
+    `);
+    return rows.map((row) => row.userId).filter(Boolean);
+  }
+
+  private async loadReviewQueueCandidatesByIds(userIds: readonly string[]) {
+    if (userIds.length === 0) {
+      return [];
+    }
+    return this.prisma.globalSpammerCandidate.findMany({
+      where: {
+        userId: {
+          in: [...userIds],
+        },
+      },
+      include: {
+        chats: {
+          orderBy: {
+            lastDetectedAt: 'desc',
+          },
+          take: 10,
+        },
+      },
+    });
+  }
+
+  private async getReviewCandidateMetrics(params: {
+    chatId?: string | null;
+    since: Date;
+  }): Promise<{
+    pending: number;
+    approved: number;
+    suppressed: number;
+    reviewed: number;
+    falsePositiveCount: number;
+    newCandidates24h: number;
+    autoApproved24h: number;
+    suppressed24h: number;
+  }> {
+    const chatScopedCandidates = params.chatId
+      ? Prisma.sql`
+          SELECT DISTINCT ON (user_id) *
+          FROM (
+            SELECT c.*
+            FROM global_spammer_candidate_chats edge
+            INNER JOIN global_spammer_candidates c ON c.user_id = edge.candidate_user_id
+            WHERE edge.chat_id = ${params.chatId}
+
+            UNION ALL
+
+            SELECT c.*
+            FROM global_spammer_candidates c
+            WHERE c.last_chat_id = ${params.chatId}
+          ) scoped
+          ORDER BY user_id
+        `
+      : Prisma.sql`
+          SELECT c.*
+          FROM global_spammer_candidates c
+        `;
+    const rows = await this.prisma.$queryRaw<ReviewMetricsCountRow[]>(Prisma.sql`
+      WITH scoped_candidates AS (
+        ${chatScopedCandidates}
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'PENDING')::bigint AS "pending",
+        COUNT(*) FILTER (WHERE status IN ('APPROVED', 'AUTO_APPROVED'))::bigint AS "approved",
+        COUNT(*) FILTER (WHERE status = 'SUPPRESSED')::bigint AS "suppressed",
+        COUNT(*) FILTER (WHERE status IN ('APPROVED', 'SUPPRESSED'))::bigint AS "reviewed",
+        COUNT(*) FILTER (WHERE false_positive = true)::bigint AS "falsePositiveCount",
+        COUNT(*) FILTER (WHERE first_detected_at >= ${params.since})::bigint AS "newCandidates24h",
+        COUNT(*) FILTER (
+          WHERE status = 'AUTO_APPROVED' AND reviewed_at >= ${params.since}
+        )::bigint AS "autoApproved24h",
+        COUNT(*) FILTER (
+          WHERE status = 'SUPPRESSED' AND reviewed_at >= ${params.since}
+        )::bigint AS "suppressed24h"
+      FROM scoped_candidates
+    `);
+    const row = rows[0];
+    return {
+      pending: this.readSqlCount(row?.pending),
+      approved: this.readSqlCount(row?.approved),
+      suppressed: this.readSqlCount(row?.suppressed),
+      reviewed: this.readSqlCount(row?.reviewed),
+      falsePositiveCount: this.readSqlCount(row?.falsePositiveCount),
+      newCandidates24h: this.readSqlCount(row?.newCandidates24h),
+      autoApproved24h: this.readSqlCount(row?.autoApproved24h),
+      suppressed24h: this.readSqlCount(row?.suppressed24h),
+    };
+  }
+
+  private async getReviewObservationMetrics(params: {
+    chatId?: string | null;
+    since: Date;
+  }): Promise<Array<{ source: string; observedCount: number; suppressedCount: number }>> {
+    const chatFilter = params.chatId ? Prisma.sql`AND chat_id = ${params.chatId}` : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<ReviewMetricsObservationRow[]>(Prisma.sql`
+      SELECT
+        source,
+        COUNT(*) FILTER (WHERE observed_at >= ${params.since})::bigint AS "observedCount",
+        COUNT(*) FILTER (WHERE suppressed_at >= ${params.since})::bigint AS "suppressedCount"
+      FROM spammer_observations
+      WHERE (observed_at >= ${params.since} OR suppressed_at >= ${params.since})
+        ${chatFilter}
+      GROUP BY source
+      ORDER BY source ASC
+    `);
+    return rows.map((row) => ({
+      source: row.source,
+      observedCount: this.readSqlCount(row.observedCount),
+      suppressedCount: this.readSqlCount(row.suppressedCount),
+    }));
+  }
+
+  private async timeSpammerStage<T>(
+    timings: Record<string, number>,
+    stage: string,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const startedAtMs = Date.now();
+    try {
+      return await task();
+    } finally {
+      timings[stage] = Date.now() - startedAtMs;
+    }
+  }
+
+  private readSqlCount(value: unknown): number {
+    if (typeof value === 'bigint') {
+      return Number(value);
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.max(0, Math.trunc(value));
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+    }
+    return 0;
+  }
+
+  private logSpammerIntelligenceTiming(operation: string, details: Record<string, unknown>): void {
+    this.logger.debug({
+      event: 'global_spammer_intelligence_timing',
+      operation,
+      ...details,
+    });
   }
 
   private buildExpiredRegistryWhere(now: Date): Prisma.GlobalSpammerWhereInput {

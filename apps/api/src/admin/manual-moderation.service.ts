@@ -9,7 +9,7 @@ import {
   type GlobalSpammerReviewQueue,
   type GlobalSpammerUserDiagnostics,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
 import { AdminService } from './admin.service';
@@ -19,6 +19,8 @@ type GlobalSpammerProfileMode = 'full' | 'local';
 
 @Injectable()
 export class ManualModerationService {
+  private readonly logger = new Logger(ManualModerationService.name);
+
   constructor(
     private readonly legacyAdminService: AdminService,
     private readonly globalSpammerIntelligence: GlobalSpammerIntelligenceService,
@@ -71,7 +73,9 @@ export class ManualModerationService {
   }
 
   async getGlobalSpammerReviewQueue(chatId: string, user: AuthUser, query: unknown) {
+    const startedAtMs = Date.now();
     await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    const assertAdminMs = Date.now() - startedAtMs;
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
     const rawStatus = typeof queryRecord.status === 'string' ? queryRecord.status.trim() : '';
@@ -84,32 +88,73 @@ export class ManualModerationService {
     const includeProfiles = this.parseBooleanQuery(queryRecord.includeProfiles, true);
     const includeObservations = this.parseBooleanQuery(queryRecord.includeObservations, true);
     const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
+    const queueStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.listReviewQueue({
       chatId,
       status,
       limit,
       includeObservations,
     });
+    const queueMs = Date.now() - queueStartedAtMs;
+    const parseStartedAtMs = Date.now();
     const parsedResponse = globalSpammerReviewQueueSchema.parse(response);
+    const initialParseMs = Date.now() - parseStartedAtMs;
     if (!includeProfiles) {
+      this.logSpammerSurfaceTiming('spammer-review', {
+        chatId,
+        assertAdminMs,
+        queueMs,
+        profileMs: 0,
+        zodParseMs: initialParseMs,
+        totalMs: Date.now() - startedAtMs,
+        itemCount: parsedResponse.items.length,
+        profileMode,
+        includeProfiles,
+        includeObservations,
+      });
       return parsedResponse;
     }
-    const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(
+    const profileStartedAtMs = Date.now();
+    const enrichedResponse = await this.attachGlobalSpammerReviewProfiles(chatId, parsedResponse, {
+      allowRemoteLookup: profileMode === 'full',
+    });
+    const profileMs = Date.now() - profileStartedAtMs;
+    const finalParseStartedAtMs = Date.now();
+    const finalResponse = globalSpammerReviewQueueSchema.parse(enrichedResponse);
+    this.logSpammerSurfaceTiming('spammer-review', {
       chatId,
-      parsedResponse,
-      {
-        allowRemoteLookup: profileMode === 'full',
-      },
-    );
-    return globalSpammerReviewQueueSchema.parse(enrichedResponse);
+      assertAdminMs,
+      queueMs,
+      profileMs,
+      zodParseMs: initialParseMs + (Date.now() - finalParseStartedAtMs),
+      totalMs: Date.now() - startedAtMs,
+      itemCount: finalResponse.items.length,
+      profileMode,
+      includeProfiles,
+      includeObservations,
+    });
+    return finalResponse;
   }
 
   async getGlobalSpammerReviewMetrics(chatId: string, user: AuthUser) {
+    const startedAtMs = Date.now();
     await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    const assertAdminMs = Date.now() - startedAtMs;
+    const metricsStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.getReviewMetrics({
       chatId,
     });
-    return globalSpammerReviewMetricsSchema.parse(response);
+    const metricsMs = Date.now() - metricsStartedAtMs;
+    const parseStartedAtMs = Date.now();
+    const parsedResponse = globalSpammerReviewMetricsSchema.parse(response);
+    this.logSpammerSurfaceTiming('spammer-review-metrics', {
+      chatId,
+      assertAdminMs,
+      metricsMs,
+      zodParseMs: Date.now() - parseStartedAtMs,
+      totalMs: Date.now() - startedAtMs,
+    });
+    return parsedResponse;
   }
 
   async getGlobalSpammerUserDiagnostics(
@@ -118,7 +163,9 @@ export class ManualModerationService {
     user: AuthUser,
     query: unknown = {},
   ) {
+    const startedAtMs = Date.now();
     await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    const assertAdminMs = Date.now() - startedAtMs;
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
     const includeProfile = this.parseBooleanQuery(
@@ -126,14 +173,39 @@ export class ManualModerationService {
       true,
     );
     const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
+    const diagnosticsOptions = {
+      includeObservations: this.parseBooleanQuery(queryRecord.includeObservations, true),
+      includeGraphSignals: this.parseBooleanQuery(queryRecord.includeGraphSignals, true),
+      includeReputation: this.parseBooleanQuery(queryRecord.includeReputation, true),
+      includeCampaigns: this.parseBooleanQuery(queryRecord.includeCampaigns, true),
+      includeShadow: this.parseBooleanQuery(queryRecord.includeShadow, true),
+    };
+    const diagnosticsStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.getUserDiagnostics({
       chatId,
       userId: targetUserId,
+      options: diagnosticsOptions,
     });
+    const diagnosticsMs = Date.now() - diagnosticsStartedAtMs;
+    const parseStartedAtMs = Date.now();
     const parsedResponse = globalSpammerUserDiagnosticsSchema.parse(response);
+    const initialParseMs = Date.now() - parseStartedAtMs;
     if (!includeProfile) {
+      this.logSpammerSurfaceTiming('spammer-diagnostics', {
+        chatId,
+        targetUserId,
+        assertAdminMs,
+        diagnosticsMs,
+        profileMs: 0,
+        zodParseMs: initialParseMs,
+        totalMs: Date.now() - startedAtMs,
+        profileMode,
+        includeProfile,
+        ...diagnosticsOptions,
+      });
       return parsedResponse;
     }
+    const profileStartedAtMs = Date.now();
     const enrichedResponse = await this.attachGlobalSpammerDiagnosticsProfile(
       chatId,
       parsedResponse,
@@ -141,7 +213,22 @@ export class ManualModerationService {
         allowRemoteLookup: profileMode === 'full',
       },
     );
-    return globalSpammerUserDiagnosticsSchema.parse(enrichedResponse);
+    const profileMs = Date.now() - profileStartedAtMs;
+    const finalParseStartedAtMs = Date.now();
+    const finalResponse = globalSpammerUserDiagnosticsSchema.parse(enrichedResponse);
+    this.logSpammerSurfaceTiming('spammer-diagnostics', {
+      chatId,
+      targetUserId,
+      assertAdminMs,
+      diagnosticsMs,
+      profileMs,
+      zodParseMs: initialParseMs + (Date.now() - finalParseStartedAtMs),
+      totalMs: Date.now() - startedAtMs,
+      profileMode,
+      includeProfile,
+      ...diagnosticsOptions,
+    });
+    return finalResponse;
   }
 
   async reviewGlobalSpammerCandidate(
@@ -210,6 +297,14 @@ export class ManualModerationService {
       return 'local';
     }
     return 'full';
+  }
+
+  private logSpammerSurfaceTiming(surface: string, details: Record<string, unknown>): void {
+    this.logger.debug({
+      event: 'admin.spammer_surface_timing',
+      surface,
+      ...details,
+    });
   }
 
   private async attachGlobalSpammerReviewProfiles(

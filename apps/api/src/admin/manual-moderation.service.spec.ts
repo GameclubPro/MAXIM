@@ -223,6 +223,13 @@ describe('ManualModerationService spammer profiles', () => {
     expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
       chatId: 'chat-1',
       userId: 'user-1',
+      options: {
+        includeObservations: true,
+        includeGraphSignals: true,
+        includeReputation: true,
+        includeCampaigns: true,
+        includeShadow: true,
+      },
     });
     expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
     expect(diagnostics).toEqual(
@@ -232,6 +239,56 @@ describe('ManualModerationService spammer profiles', () => {
         avatarUrl: null,
         profileUrl: null,
         profileHandoffUrl: null,
+      }),
+    );
+  });
+
+  it('attaches local profile data without remote lookup for lightweight spammer dossier diagnostics', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics(
+      'chat-1',
+      'user-1',
+      authUser,
+      {
+        profileMode: 'local',
+        includeObservations: 'false',
+        includeGraphSignals: 'false',
+        includeReputation: 'false',
+        includeCampaigns: 'false',
+        includeShadow: 'false',
+      },
+    );
+
+    expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      options: {
+        includeObservations: false,
+        includeGraphSignals: false,
+        includeReputation: false,
+        includeCampaigns: false,
+        includeShadow: false,
+      },
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).toHaveBeenCalledWith(
+      'chat-1',
+      'chat',
+      ['user-1'],
+      { allowRemoteLookup: false },
+    );
+    expect(diagnostics).toEqual(
+      expect.objectContaining({
+        userId: 'user-1',
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+        profileUrl: profile.profileUrl,
+        profileHandoffUrl: profile.profileHandoffUrl,
       }),
     );
   });

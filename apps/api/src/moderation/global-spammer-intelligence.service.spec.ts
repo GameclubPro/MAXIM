@@ -444,6 +444,7 @@ function createPrismaMock() {
       spammerCampaignClusterMember,
       globalSpammerShadowScore,
       globalSpammerReviewFeedback,
+      $queryRaw: jest.fn().mockResolvedValue([]),
       $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
     },
   };
@@ -597,6 +598,7 @@ describe('GlobalSpammerIntelligenceService', () => {
       suppressedAt: null,
       suppressionReason: null,
     });
+    prisma.$queryRaw.mockResolvedValueOnce([{ userId: 'user-dirty-confidence' }]);
     prisma.globalSpammerCandidate.findMany.mockResolvedValueOnce([
       {
         userId: 'user-dirty-confidence',
@@ -627,6 +629,67 @@ describe('GlobalSpammerIntelligenceService', () => {
         confidenceLevel: 'MEDIUM',
       }),
     );
+  });
+
+  it('ranks legacy last-chat candidates together with edge candidates in the review queue', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    prisma.$queryRaw.mockResolvedValueOnce([{ userId: 'legacy-high' }, { userId: 'edge-low' }]);
+    prisma.globalSpammerCandidate.findMany.mockResolvedValueOnce([
+      {
+        userId: 'edge-low',
+        status: 'PENDING',
+        confidenceScore: 0.61,
+        sourceBreakdown: {},
+        lastReason: 'EDGE_LOW',
+        lastChatId: 'chat-1',
+        lastEvidence: null,
+        lastUserLabel: 'Edge Low',
+        suppressedUntil: null,
+        reviewedAt: null,
+        reviewedByUserId: null,
+        reviewReason: null,
+        falsePositive: false,
+        chats: [],
+      },
+      {
+        userId: 'legacy-high',
+        status: 'PENDING',
+        confidenceScore: 0.95,
+        sourceBreakdown: {},
+        lastReason: 'LEGACY_HIGH',
+        lastChatId: 'chat-1',
+        lastEvidence: null,
+        lastUserLabel: 'Legacy High',
+        suppressedUntil: null,
+        reviewedAt: null,
+        reviewedByUserId: null,
+        reviewReason: null,
+        falsePositive: false,
+        chats: [],
+      },
+    ]);
+
+    const queue = await service.listReviewQueue({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      includeObservations: false,
+      limit: 2,
+    });
+
+    const rawSql = prisma.$queryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] };
+    expect(rawSql.strings?.join(' ')).toContain('UNION ALL');
+    expect(prisma.globalSpammerCandidate.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId: {
+            in: ['legacy-high', 'edge-low'],
+          },
+        },
+      }),
+    );
+    expect(queue.items.map((item) => item.userId)).toEqual(['legacy-high', 'edge-low']);
   });
 
   it('promotes high-confidence fanout to the registry', async () => {
@@ -1057,34 +1120,34 @@ describe('GlobalSpammerIntelligenceService', () => {
   it('reports review and false-positive metrics', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
-    prisma.globalSpammerCandidate.count
-      .mockResolvedValueOnce(4)
-      .mockResolvedValueOnce(7)
-      .mockResolvedValueOnce(3)
-      .mockResolvedValueOnce(5)
-      .mockResolvedValueOnce(2);
-    prisma.globalSpammer.count.mockResolvedValueOnce(9).mockResolvedValueOnce(1);
-    prisma.globalSpammerArchive.count.mockResolvedValueOnce(8);
-    prisma.spammerObservation.groupBy
+    prisma.$queryRaw
       .mockResolvedValueOnce([
         {
-          source: 'FANOUT_REPEAT',
-          _count: {
-            _all: 12,
-          },
+          pending: 4n,
+          approved: 7n,
+          suppressed: 3n,
+          reviewed: 5n,
+          falsePositiveCount: 2n,
+          newCandidates24h: 6n,
+          autoApproved24h: 1n,
+          suppressed24h: 2n,
         },
       ])
       .mockResolvedValueOnce([
         {
           source: 'FANOUT_REPEAT',
-          _count: {
-            _all: 2,
-          },
+          observedCount: 12n,
+          suppressedCount: 2n,
         },
       ]);
+    prisma.globalSpammer.count.mockResolvedValueOnce(9).mockResolvedValueOnce(1);
+    prisma.globalSpammerArchive.count.mockResolvedValueOnce(8);
 
     const metrics = await service.getReviewMetrics({ chatId: 'chat-1' });
 
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.globalSpammerCandidate.count).not.toHaveBeenCalled();
+    expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
     expect(metrics).toEqual(
       expect.objectContaining({
         pending: 4,
