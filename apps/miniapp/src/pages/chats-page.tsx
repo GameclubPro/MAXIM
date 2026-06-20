@@ -203,28 +203,6 @@ function buildHomeSyncStatus(options: {
   return { label: 'Готово', tone: 'ready' };
 }
 
-function formatCompactLinkLabel(link: string | null | undefined): string | null {
-  const rawLink = link?.trim();
-  if (!rawLink) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(rawLink);
-    const hostname = parsed.hostname.replace(/^www\./u, '');
-    const pathParts = parsed.pathname.split('/').filter(Boolean);
-    const lastPathPart = pathParts[pathParts.length - 1];
-
-    if (hostname === 'max.ru' && lastPathPart) {
-      return `@${decodeURIComponent(lastPathPart)}`;
-    }
-
-    return hostname || rawLink;
-  } catch {
-    return rawLink.length > 28 ? `${rawLink.slice(0, 25)}...` : rawLink;
-  }
-}
-
 function buildEntitySignals(entity: ManagedHomeEntity, entityType: ManagedTab): EntitySignal[] {
   if (entityType !== 'channel' || !entity.channelOverview) {
     return [];
@@ -1069,7 +1047,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             .map((favoriteType) => favoriteLabels[favoriteType])
             .join(', ')}`
         : 'Добавить в избранное';
-    const compactLinkLabel = activeTab === 'channel' ? formatCompactLinkLabel(entity.link) : null;
     const entitySignals = buildEntitySignals(entity, activeTab);
 
     return (
@@ -1097,11 +1074,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             />
             <div className="chat-card__title-wrap">
               <h3>{entity.title}</h3>
-              {compactLinkLabel || entitySignals.length > 0 ? (
+              {entitySignals.length > 0 ? (
                 <div className="chat-card__meta">
-                  {compactLinkLabel ? (
-                    <span className="chat-card__link-label">{compactLinkLabel}</span>
-                  ) : null}
                   {entitySignals.map(({ key, value, Icon }) => (
                     <span key={key} className="chat-card__signal">
                       <Icon aria-hidden />
