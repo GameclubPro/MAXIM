@@ -17774,7 +17774,6 @@ describe('AdminService.getChannelStats', () => {
           url: string | null;
           previewUrl: string | null;
           viewsDelta: number;
-          reactions: number;
         }>,
       ) => Promise<
         Array<{
@@ -17783,7 +17782,6 @@ describe('AdminService.getChannelStats', () => {
           url: string | null;
           previewUrl: string | null;
           viewsDelta: number;
-          reactions: number;
         }>
       >;
     };
@@ -17795,7 +17793,6 @@ describe('AdminService.getChannelStats', () => {
         url: 'https://max.ru/news/top-1',
         previewUrl: null,
         viewsDelta: 5926,
-        reactions: 0,
       },
     ]);
 
@@ -18699,7 +18696,6 @@ describe('AdminService.getChannelStats', () => {
           url: 'https://max.ru/news/post-2',
           previewUrl: 'https://cdn.max.ru/news/post-2.jpg',
           viewsDelta: 260,
-          reactions: 7,
         },
         {
           messageId: 'mid-1',
@@ -18707,7 +18703,6 @@ describe('AdminService.getChannelStats', () => {
           url: 'https://max.ru/news/post-1',
           previewUrl: null,
           viewsDelta: 150,
-          reactions: 5,
         },
       ],
       lastPublishedAt: '2026-03-06T14:00:00.000Z',
@@ -19177,7 +19172,6 @@ describe('AdminService.getChannelStats', () => {
           url: null,
           previewUrl: null,
           viewsDelta: 44,
-          reactions: 0,
         },
       ],
       lastPublishedAt: '2026-03-07T09:00:00.000Z',

@@ -1347,7 +1347,6 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
           const width = maxViews > 0 && value > 0 ? Math.max(5, (value / maxViews) * 100) : 0;
           const valueLabel = formatCompactCount(value);
           const detailParts = [`${formatCount(value)} просмотров за период`];
-          const reactionLabel = `${formatCount(post.reactions)} реакц.`;
           const hasPreview = Boolean(post.previewUrl);
 
           const row = (
@@ -1376,24 +1375,19 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
                     <small>Просмотры</small>
                     <strong>{valueLabel}</strong>
                   </span>
-                  <span>
-                    <small>Реакции</small>
-                    <b>{formatCompactCount(post.reactions)}</b>
-                  </span>
                 </div>
                 <div className="channel-posts-chart__bar" aria-hidden="true">
                   <span style={{ width: `${width}%` }} />
                 </div>
                 <div className="channel-posts-chart__row-meta">
                   <small>{detailParts[0]}</small>
-                  <small>{reactionLabel}</small>
                 </div>
               </div>
             </>
           );
           const rowLabel = `Публикация ${index + 1}, ${formatPostDateTime(
             post.publishedAt,
-          )}: ${detailParts.join(', ')}, ${formatCount(post.reactions)} реакций`;
+          )}: ${detailParts.join(', ')}`;
 
           return post.url ? (
             <a

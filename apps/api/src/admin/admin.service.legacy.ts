@@ -16790,8 +16790,6 @@ export class AdminService implements OnModuleDestroy {
       .sort(
         (left, right) =>
           this.toSafeInteger(right.post.latestViews) - this.toSafeInteger(left.post.latestViews) ||
-          this.toSafeInteger(right.post.latestReactionsTotal) -
-            this.toSafeInteger(left.post.latestReactionsTotal) ||
           left.post.publishedAt.getTime() - right.post.publishedAt.getTime(),
       )
       .slice(0, 5)
@@ -16801,7 +16799,6 @@ export class AdminService implements OnModuleDestroy {
         url: metric.post.url,
         previewUrl: metric.post.previewUrl,
         viewsDelta: this.toSafeInteger(metric.post.latestViews),
-        reactions: this.toSafeInteger(metric.post.latestReactionsTotal),
       }));
   }
 

@@ -3802,7 +3802,6 @@ function buildChannelStats(
       url: `https://max.ru/channels/yuzhnoe-news/${index + 1}`,
       previewUrl: previewUrls[index] ?? null,
       viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
-      reactions: Math.round(postViews * 0.055),
     };
   });
   const buildDelta = (current: number, previous: number) => ({
