@@ -5414,6 +5414,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.links}
                   controls="settings-links-content"
                   onClick={() => toggleSection('links')}
+                  hideChevron
                 />
               </div>
 
@@ -6028,6 +6029,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.rules}
                   controls="settings-rules-content"
                   onClick={() => toggleSection('rules')}
+                  hideChevron
                 />
               </div>
 
@@ -6297,6 +6299,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     open={expandedSections.giveaway}
                     controls="settings-giveaway-content"
                     onClick={() => toggleSection('giveaway')}
+                    hideChevron
                   />
                 </div>
 
@@ -6343,6 +6346,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.greeting}
                   controls="settings-greeting-content"
                   onClick={() => toggleSection('greeting')}
+                  hideChevron
                 />
               </div>
 
@@ -6678,6 +6682,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.profanityFilter}
                   controls="settings-profanity-filter-content"
                   onClick={() => toggleSection('profanityFilter')}
+                  hideChevron
                 />
               </div>
 
@@ -6879,6 +6884,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.commercialFilter}
                   controls="settings-commercial-filter-content"
                   onClick={() => toggleSection('commercialFilter')}
+                  hideChevron
                 />
               </div>
 
@@ -7331,6 +7337,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     open={expandedSections.thematicFilters}
                     controls="settings-thematic-filters-content"
                     onClick={() => toggleSection('thematicFilters')}
+                    hideChevron
                   />
                 </div>
 
@@ -7604,6 +7611,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.duplicates}
                   controls="settings-duplicates-content"
                   onClick={() => toggleSection('duplicates')}
+                  hideChevron
                 />
               </div>
 
@@ -8167,6 +8175,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.limits}
                   controls="settings-limits-content"
                   onClick={() => toggleSection('limits')}
+                  hideChevron
                 />
               </div>
 
@@ -9053,6 +9062,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.stopWords}
                   controls="settings-stop-words-content"
                   onClick={() => toggleSection('stopWords')}
+                  hideChevron
                 />
               </div>
 
@@ -9382,6 +9392,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.night}
                   controls="settings-night-content"
                   onClick={() => toggleSection('night')}
+                  hideChevron
                 />
               </div>
 
@@ -10031,6 +10042,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.mailing}
                   controls="settings-mailing-content"
                   onClick={() => toggleSection('mailing')}
+                  hideChevron
                 />
               </div>
 
@@ -10415,6 +10427,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     open={expandedSections.vkParsing}
                     controls="settings-vk-parsing-content"
                     onClick={() => toggleSection('vkParsing')}
+                    hideChevron
                   />
                 </div>
 
@@ -10486,6 +10499,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.comments}
                   controls="settings-comments-content"
                   onClick={() => toggleSection('comments')}
+                  hideChevron
                 />
               </div>
 
@@ -10677,6 +10691,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.requiredSubscription}
                   controls="settings-required-subscription-content"
                   onClick={() => toggleSection('requiredSubscription')}
+                  hideChevron
                 />
               </div>
 
@@ -11222,6 +11237,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.extra}
                   controls="settings-extra-content"
                   onClick={() => toggleSection('extra')}
+                  hideChevron
                 />
               </div>
 

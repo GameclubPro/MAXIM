@@ -9,7 +9,7 @@
   grid-column: 1 / -1;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority {
+.settings-sections--chat-home .settings-home-entry:not(.settings-home-entry--speech) {
   grid-column: auto;
   min-width: 0;
 }
@@ -18,13 +18,15 @@
   min-width: 0;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle {
-  grid-template-columns: minmax(0, 1fr) auto;
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__toggle {
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(24px, 1fr) auto;
   grid-template-areas:
-    'icon chevron'
-    'title title'
-    'status status';
+    'icon'
+    'title'
+    'status';
   align-items: start;
   align-content: stretch;
   gap: 5px;
@@ -34,7 +36,9 @@
   text-align: left;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle::after {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__toggle::after {
   top: auto;
   bottom: 0;
   left: 8px;
@@ -43,19 +47,26 @@
   opacity: 0.24;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__icon-badge {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__icon-badge {
   grid-area: icon;
   width: 38px;
   height: 38px;
   border-radius: 14px;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__icon-badge svg {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__icon-badge
+  svg {
   width: 19px;
   height: 19px;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle-main {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__toggle-main {
   grid-area: title;
   align-self: end;
   min-height: 26px;
@@ -63,12 +74,17 @@
   align-items: flex-end;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle-main h3 {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__toggle-main
+  h3 {
   font-size: 0.76rem;
   line-height: 1.08;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__status-chip {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__status-chip {
   grid-area: status;
   justify-self: start;
   max-width: 100%;
@@ -77,18 +93,13 @@
   font-size: 0.5rem;
 }
 
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__chevron {
-  grid-area: chevron;
-  width: 22px;
-  height: 22px;
-  border-radius: 8px;
-}
-
-.settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle.is-stateless {
+.settings-sections--chat-home
+  .settings-home-entry:not(.settings-home-entry--speech)
+  .settings-section__toggle.is-stateless {
   grid-template-rows: auto minmax(40px, 1fr);
   grid-template-areas:
-    'icon chevron'
-    'title title';
+    'icon'
+    'title';
 }
 
 @media (min-width: 560px) {
@@ -99,20 +110,28 @@
 
 @media (max-width: 360px) {
   .settings-sections--chat-home .settings-sections-shell {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 7px;
   }
 
-  .settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle {
+  .settings-sections--chat-home
+    .settings-home-entry:not(.settings-home-entry--speech)
+    .settings-section__toggle {
     min-height: 90px;
     padding: 8px;
     gap: 5px;
   }
 
-  .settings-sections--chat-home .settings-home-entry--priority .settings-section__toggle-main h3 {
+  .settings-sections--chat-home
+    .settings-home-entry:not(.settings-home-entry--speech)
+    .settings-section__toggle-main
+    h3 {
     font-size: 0.68rem;
   }
 
-  .settings-sections--chat-home .settings-home-entry--priority .settings-section__icon-badge {
+  .settings-sections--chat-home
+    .settings-home-entry:not(.settings-home-entry--speech)
+    .settings-section__icon-badge {
     width: 38px;
     height: 38px;
     border-radius: 14px;

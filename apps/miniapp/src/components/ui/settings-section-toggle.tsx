@@ -30,6 +30,7 @@ type SettingsSectionToggleProps = {
   tone: SettingsSectionTone;
   open: boolean;
   controls: string;
+  hideChevron?: boolean;
   onClick: () => void;
 };
 
@@ -397,6 +398,7 @@ export function SettingsSectionToggle({
   tone,
   open,
   controls,
+  hideChevron = false,
   onClick,
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
@@ -425,9 +427,11 @@ export function SettingsSectionToggle({
         <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
       ) : null}
 
-      <span className={cn('settings-section__chevron', open && 'is-open')} aria-hidden>
-        <ChevronIcon />
-      </span>
+      {hideChevron ? null : (
+        <span className={cn('settings-section__chevron', open && 'is-open')} aria-hidden>
+          <ChevronIcon />
+        </span>
+      )}
     </button>
   );
 }
