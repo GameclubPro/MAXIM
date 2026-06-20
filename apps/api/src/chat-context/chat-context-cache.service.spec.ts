@@ -291,6 +291,7 @@ function buildSettings(chatId: string): ChatSettings {
     requiredSubscriptionChannelIds: [],
     requiredSubscriptionBotMessageEnabled: true,
     requiredSubscriptionBotMessageText: '',
+    requiredSubscriptionButtonText: '',
     requiredSubscriptionAdminContactButtonEnabled: false,
     requiredSubscriptionAdminContactButtonUrl: '',
     requiredSubscriptionWarnEnabled: false,

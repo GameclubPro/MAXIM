@@ -47,6 +47,10 @@ function resolveDrilldownPortalTarget(): Element | null {
     return null;
   }
 
+  if (typeof window !== 'undefined' && window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true) {
+    return document.body;
+  }
+
   return document.querySelector('.design-preview__device-screen') ?? document.body;
 }
 

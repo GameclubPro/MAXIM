@@ -182,6 +182,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     requiredSubscriptionChannelIds: [],
     requiredSubscriptionBotMessageEnabled: true,
     requiredSubscriptionBotMessageText: '',
+    requiredSubscriptionButtonText: '',
     requiredSubscriptionAdminContactButtonEnabled: false,
     requiredSubscriptionAdminContactButtonUrl: '',
     requiredSubscriptionWarnEnabled: false,

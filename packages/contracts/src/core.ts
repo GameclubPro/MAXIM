@@ -688,6 +688,7 @@ export const chatSettingsSchema = z
       requiredSubscriptionExpiresAt: requiredSubscriptionExpiresAtSchema,
       requiredSubscriptionBotMessageEnabled: z.boolean().default(true),
       requiredSubscriptionBotMessageText: botMessageTextSchema,
+      requiredSubscriptionButtonText: z.string().trim().max(32).default(''),
       requiredSubscriptionAdminContactButtonEnabled: z.boolean().default(false),
       requiredSubscriptionAdminContactButtonUrl: botButtonUrlSchema,
       requiredSubscriptionWarnEnabled: z.boolean().default(false),

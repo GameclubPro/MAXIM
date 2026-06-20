@@ -4539,10 +4539,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildRequiredSubscriptionMessageOptions(
     channels: ReadonlyArray<{ id: string; title: string; link: string | null }>,
+    buttonText: string | null | undefined,
     rulesButtonEnabled: boolean,
     rulesPublishedUrl: string | null,
     rulesPublishedMessageId: string | null,
   ): MaxSendMessageOptions | null {
+    const normalizedButtonText =
+      typeof buttonText === 'string' && buttonText.trim().length > 0 ? buttonText.trim() : null;
     const buttons = channels
       .map((channel) => {
         const normalizedUrl = this.normalizeBotButtonUrl(channel.link ?? '');
@@ -4551,7 +4554,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
 
         return {
-          text: this.normalizeBotButtonText(channel.title),
+          text: this.normalizeBotButtonText(normalizedButtonText ?? channel.title),
           url: normalizedUrl,
         } satisfies MaxLinkButton;
       })
@@ -8403,10 +8406,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     systemMode: SystemModeSnapshot;
     settings: Pick<
       ChatSettings,
-	      | 'requiredSubscriptionEnabled'
-	      | 'requiredSubscriptionChannelIds'
-	      | 'requiredSubscriptionBotMessageEnabled'
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionBotMessageEnabled'
       | 'requiredSubscriptionBotMessageText'
+      | 'requiredSubscriptionButtonText'
       | 'requiredSubscriptionAdminContactButtonEnabled'
       | 'requiredSubscriptionAdminContactButtonUrl'
       | 'requiredSubscriptionWarnEnabled'
@@ -8564,6 +8568,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         requiredSubscriptionMessageOptions =
           this.buildRequiredSubscriptionMessageOptions(
             followUpMissingChannels,
+            params.settings.requiredSubscriptionButtonText,
             params.settings.rulesAttachViolationsEnabled,
             params.rulesPublishedUrl,
             params.rulesPublishedMessageId,

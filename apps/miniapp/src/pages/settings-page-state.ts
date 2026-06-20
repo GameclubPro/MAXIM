@@ -199,6 +199,7 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'requiredSubscriptionChannelIds',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionButtonText',
     'requiredSubscriptionAdminContactButtonEnabled',
     'requiredSubscriptionAdminContactButtonUrl',
     'requiredSubscriptionWarnEnabled',

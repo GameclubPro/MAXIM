@@ -734,6 +734,7 @@ export const SETTINGS_SECTION_KEYS = {
     'requiredSubscriptionChannelIds',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionButtonText',
     'requiredSubscriptionAdminContactButtonEnabled',
     'requiredSubscriptionAdminContactButtonUrl',
     'requiredSubscriptionWarnEnabled',

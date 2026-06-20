@@ -134,6 +134,7 @@ test('SECTION_SETTING_KEYS includes admin contact toggles for sanction sections'
 test('required subscription section keeps expiry and duration out of scoped saves', () => {
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionEnabled'));
   assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionChannelIds'));
+  assert.ok(SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionButtonText'));
   assert.ok(
     !SECTION_SETTING_KEYS.requiredSubscription.includes('requiredSubscriptionDurationDays'),
   );
@@ -215,6 +216,7 @@ test('mergeSectionSettings does not copy legacy required subscription expiry fie
   const saved = createSettings({
     requiredSubscriptionEnabled: true,
     requiredSubscriptionChannelIds: ['channel-1'],
+    requiredSubscriptionButtonText: 'Подписаться',
     requiredSubscriptionDurationDays: 14,
     requiredSubscriptionExpiresAt: '',
   });
@@ -222,6 +224,7 @@ test('mergeSectionSettings does not copy legacy required subscription expiry fie
   const merged = mergeSectionSettings(current, saved, 'requiredSubscription');
   assert.equal(merged.requiredSubscriptionEnabled, true);
   assert.deepEqual(merged.requiredSubscriptionChannelIds, ['channel-1']);
+  assert.equal(merged.requiredSubscriptionButtonText, 'Подписаться');
   assert.equal(merged.requiredSubscriptionDurationDays, 7);
   assert.equal(merged.requiredSubscriptionExpiresAt, '2026-04-01T00:00:00.000Z');
 });

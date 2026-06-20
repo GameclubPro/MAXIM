@@ -10704,7 +10704,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   )}
                 >
 	                  {expandedSections.requiredSubscription ? (
-	                    <div className="settings-section__collapse-inner managed-giveaway">
+	                    <div className="settings-section__collapse-inner managed-giveaway required-subscription__workspace">
 	                      <div className="managed-giveaway__section required-subscription__board">
 	                        <div className="managed-giveaway__title-row">
 	                          <div className="managed-giveaway__section-copy">
@@ -10715,6 +10715,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 	                            </small>
 	                          </div>
 	                        </div>
+
+                        <label className="field settings-text-field required-subscription__button-label">
+                          <span>Название кнопки</span>
+                          <input
+                            type="text"
+                            value={draft.requiredSubscriptionButtonText}
+                            onChange={(event) =>
+                              setFieldValue('requiredSubscriptionButtonText', event.target.value)
+                            }
+                            maxLength={32}
+                            placeholder="По умолчанию: канал"
+                          />
+                        </label>
 
                         {requiredSubscriptionStaleCount > 0 ? (
                           <p

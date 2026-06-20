@@ -567,11 +567,13 @@ describe('AdminSettingsService chat rules', () => {
     const result = await service.updateSettings('chat-1', user as never, {
       requiredSubscriptionEnabled: false,
       requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionButtonText: '  Подписаться  ',
       requiredSubscriptionExpiresAt: '2026-03-16T09:00:00.000Z',
     });
 
     expect(result.requiredSubscriptionEnabled).toBe(true);
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
+    expect(result.requiredSubscriptionButtonText).toBe('Подписаться');
     expect(result.requiredSubscriptionExpiresAt).toBe('');
     expect(
       legacyAdminService.assertRequiredSubscriptionSettingsForChatSettings,
@@ -590,11 +592,13 @@ describe('AdminSettingsService chat rules', () => {
               update: expect.objectContaining({
                 requiredSubscriptionEnabled: true,
                 requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionButtonText: 'Подписаться',
                 requiredSubscriptionExpiresAt: '',
               }),
               create: expect.objectContaining({
                 requiredSubscriptionEnabled: true,
                 requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionButtonText: 'Подписаться',
                 requiredSubscriptionExpiresAt: '',
               }),
             },

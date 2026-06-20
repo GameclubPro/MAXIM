@@ -290,6 +290,7 @@ model ChatSettings {
   requiredSubscriptionExpiresAt                 String                   @default("") @map("required_subscription_expires_at")
   requiredSubscriptionBotMessageEnabled         Boolean                  @default(true) @map("required_subscription_bot_message_enabled")
   requiredSubscriptionBotMessageText            String                   @default("") @map("required_subscription_bot_message_text")
+  requiredSubscriptionButtonText                String                   @default("") @map("required_subscription_button_text")
   requiredSubscriptionAdminContactButtonEnabled Boolean                  @default(false) @map("required_subscription_admin_contact_button_enabled")
   requiredSubscriptionAdminContactButtonUrl     String                   @default("") @map("required_subscription_admin_contact_button_url")
   requiredSubscriptionWarnEnabled               Boolean                  @default(false) @map("required_subscription_warn_enabled")

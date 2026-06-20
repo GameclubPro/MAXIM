@@ -339,6 +339,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     requiredSubscriptionExpiresAt: '',
     requiredSubscriptionBotMessageEnabled: true,
     requiredSubscriptionBotMessageText: '',
+    requiredSubscriptionButtonText: '',
     requiredSubscriptionWarnEnabled: false,
     requiredSubscriptionWarnMessageText: '',
     requiredSubscriptionBanEnabled: false,
@@ -17628,6 +17629,7 @@ describe('ModerationService', () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['chat-2', 'channel-1'],
+        requiredSubscriptionButtonText: 'Подписаться',
       });
       prisma.chat.findMany.mockResolvedValue([
         {
@@ -17712,13 +17714,13 @@ describe('ModerationService', () => {
           buttons: [
             [
               {
-                text: 'Общий чат',
+                text: 'Подписаться',
                 url: 'https://max.ru/chats/chat-2',
               },
             ],
             [
               {
-                text: 'Новости MAX',
+                text: 'Подписаться',
                 url: 'https://max.ru/channels/news-max',
               },
             ],
