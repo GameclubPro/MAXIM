@@ -341,7 +341,7 @@ function buildSettings(chatId: string): ChatSettings {
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
     adminBanCommandName: 'бан',
-    adminBanAllCommandName: 'БАН',
+    adminBanAllCommandName: 'Бан!',
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',

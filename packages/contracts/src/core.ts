@@ -95,7 +95,7 @@ export const ADMIN_MUTE_COMMAND_ALIASES_DEFAULT = 'мут, мьют, мью, mut
 export const ADMIN_RULES_COMMAND_ALIASES_DEFAULT = 'правило, правила, rule, rules';
 export const ADMIN_COMMAND_NAME_MAX_LENGTH = 32;
 export const ADMIN_BAN_COMMAND_NAME_DEFAULT = 'бан';
-export const ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT = 'БАН';
+export const ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT = 'Бан!';
 export const ADMIN_MUTE_COMMAND_NAME_DEFAULT = 'мут';
 export const ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT = 'мут 88';
 export const ADMIN_RULES_COMMAND_NAME_DEFAULT = 'правило';
@@ -964,20 +964,10 @@ export const chatSettingsSchema = z
       ['adminSilenceCommandName', value.adminSilenceCommandName],
       ['adminOpenChatCommandName', value.adminOpenChatCommandName],
     ] as const;
-    const caseSensitiveBanCommandKeys = new Set<(typeof adminCommandEntries)[number][0]>([
-      'adminBanCommandName',
-      'adminBanAllCommandName',
-    ]);
     for (let index = 0; index < adminCommandEntries.length; index += 1) {
       const [key, commandName] = adminCommandEntries[index];
       for (const [otherKey, otherCommandName] of adminCommandEntries.slice(0, index)) {
-        const bothCaseSensitiveBanCommands =
-          caseSensitiveBanCommandKeys.has(key) && caseSensitiveBanCommandKeys.has(otherKey);
-        const sameCommandName =
-          commandName === otherCommandName ||
-          (!bothCaseSensitiveBanCommands &&
-            commandName.toLowerCase() === otherCommandName.toLowerCase());
-        if (sameCommandName) {
+        if (commandName.toLowerCase() === otherCommandName.toLowerCase()) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: [key],

@@ -81,7 +81,7 @@ const commandCategories: AdminCommandCategory[] = [
       {
         key: 'adminBanAllCommandName',
         hintKey: 'adminBanAllCommand',
-        title: 'БАН',
+        title: 'Бан!',
         caption: 'Все чаты админа.',
         defaultValue: ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
         examples: (value) => [value],

@@ -384,7 +384,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: false,
     adminBanCommandName: 'бан',
-    adminBanAllCommandName: 'БАН',
+    adminBanAllCommandName: 'Бан!',
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',
@@ -8602,7 +8602,7 @@ describe('ModerationService', () => {
       adminService as never,
     );
 
-    await service.handleUpdate(createAdminForwardedBanUpdate('БАН'));
+    await service.handleUpdate(createAdminForwardedBanUpdate('БаН!'));
 
     expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({

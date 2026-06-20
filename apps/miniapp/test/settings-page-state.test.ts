@@ -153,7 +153,7 @@ test('commands section keeps admin command names scoped', () => {
 
   const current = createSettings({
     adminBanCommandName: 'бан',
-    adminBanAllCommandName: 'БАН',
+    adminBanAllCommandName: 'Бан!',
     adminMuteCommandName: 'мут',
     adminPermanentMuteCommandName: 'мут 88',
     adminRulesCommandName: 'правило',

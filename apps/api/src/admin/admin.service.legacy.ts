@@ -12399,7 +12399,7 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const failedActionLabel =
-        job.action === 'BAN' ? (job.fanoutAllChats === true ? 'БАН' : 'бан') : 'мут';
+        job.action === 'BAN' ? (job.fanoutAllChats === true ? 'Бан!' : 'бан') : 'мут';
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
         botId: job.commandBotId ?? undefined,

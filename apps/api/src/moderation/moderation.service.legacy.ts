@@ -5415,7 +5415,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
                 : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
             )}\``
-          : `\`${this.getCaseSensitiveAdminCommandName(
+          : `\`${this.getAdminCommandName(
               command.fanoutAllChats
                 ? settings.adminBanAllCommandName
                 : settings.adminBanCommandName,
@@ -5553,11 +5553,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
     const normalizedLower = normalized.toLowerCase();
-    const banCommandName = this.getCaseSensitiveAdminCommandName(
+    const banCommandName = this.getAdminCommandName(
       settings?.adminBanCommandName,
       ADMIN_BAN_COMMAND_NAME_DEFAULT,
     );
-    const banAllCommandName = this.getCaseSensitiveAdminCommandName(
+    const banAllCommandName = this.getAdminCommandName(
       settings?.adminBanAllCommandName,
       ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
     );
@@ -5605,7 +5605,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const banDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalized,
+      normalizedLower,
       banCommandName,
     );
     if (banDurationMatch && banDurationMatch.durationText !== null) {
@@ -5615,7 +5615,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const banAllDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalized,
+      normalizedLower,
       banAllCommandName,
     );
     if (banAllDurationMatch && banAllDurationMatch.durationText !== null) {
@@ -5660,14 +5660,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (this.matchesAdminCommandName(normalized, banAllCommandName)) {
+    if (this.matchesAdminCommandName(normalizedLower, banAllCommandName)) {
       return {
         action: 'BAN',
         fanoutAllChats: true,
       };
     }
 
-    if (this.matchesAdminCommandName(normalized, banCommandName)) {
+    if (this.matchesAdminCommandName(normalizedLower, banCommandName)) {
       return {
         action: 'BAN',
       };
@@ -5736,14 +5736,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getAdminCommandName(commandName: string | null | undefined, fallback: string): string {
-    return this.readLowerString(commandName)?.replace(/\s+/g, ' ') ?? fallback;
-  }
-
-  private getCaseSensitiveAdminCommandName(
-    commandName: string | null | undefined,
-    fallback: string,
-  ): string {
-    return this.readString(commandName)?.replace(/\s+/g, ' ') ?? fallback;
+    return this.readLowerString(commandName)?.replace(/\s+/g, ' ') ?? fallback.toLowerCase();
   }
 
   private readAdminCommandText(value: unknown): string | null {

@@ -148,7 +148,7 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     const defaults = chatSettingsSchema.parse({});
     const customized = chatSettingsSchema.parse({
       adminBanCommandName: ' бан ',
-      adminBanAllCommandName: ' БАН ',
+      adminBanAllCommandName: ' Бан! ',
       adminMuteCommandName: ' тихий   час ',
       adminPermanentMuteCommandName: ' мут   навсегда ',
       adminRulesCommandName: ' регламент ',
@@ -157,14 +157,14 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     });
 
     expect(defaults.adminBanCommandName).toBe('бан');
-    expect(defaults.adminBanAllCommandName).toBe('БАН');
+    expect(defaults.adminBanAllCommandName).toBe('Бан!');
     expect(defaults.adminMuteCommandName).toBe('мут');
     expect(defaults.adminPermanentMuteCommandName).toBe('мут 88');
     expect(defaults.adminRulesCommandName).toBe('правило');
     expect(defaults.adminSilenceCommandName).toBe('тишина');
     expect(defaults.adminOpenChatCommandName).toBe('тишина выкл');
     expect(customized.adminBanCommandName).toBe('бан');
-    expect(customized.adminBanAllCommandName).toBe('БАН');
+    expect(customized.adminBanAllCommandName).toBe('Бан!');
     expect(customized.adminMuteCommandName).toBe('тихий час');
     expect(customized.adminPermanentMuteCommandName).toBe('мут навсегда');
     expect(customized.adminRulesCommandName).toBe('регламент');
@@ -181,13 +181,13 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('allows per-chat admin command names that only differ by case', () => {
+  it('rejects per-chat admin command names that only differ by case', () => {
     const result = chatSettingsSchema.safeParse({
       adminBanCommandName: 'бан',
       adminBanAllCommandName: 'БАН',
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('rejects case-only duplicates for case-insensitive admin commands', () => {
