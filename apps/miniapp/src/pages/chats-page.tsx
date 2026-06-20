@@ -190,17 +190,17 @@ function buildHomeSyncStatus(options: {
   if (options.isBackoffActive) {
     return { label: 'Пауза', tone: 'warning' };
   }
-  if (options.isRefreshing || options.snapshotStale === true) {
-    return { label: 'Синк', tone: 'syncing' };
-  }
   if (!options.hasLoadedFromServer) {
     return { label: 'Кеш', tone: 'cache' };
   }
   if (options.isSyncComplete) {
     return { label: 'Готово', tone: 'ready' };
   }
+  if (options.isRefreshing || options.snapshotStale === true) {
+    return { label: 'Синк', tone: 'syncing' };
+  }
 
-  return { label: 'Синк', tone: 'syncing' };
+  return { label: 'Готово', tone: 'ready' };
 }
 
 function formatCompactLinkLabel(link: string | null | undefined): string | null {
@@ -455,12 +455,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     !activeEntitiesState.isUserVisibleComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
+  const isForegroundSyncing = activeEntitiesState.isRefreshing && !isUserVisibleSyncSettled;
   const homeSyncStatus = buildHomeSyncStatus({
-    isRefreshing: isFetching,
+    isRefreshing: isForegroundSyncing,
     isBackoffActive: activeEntitiesState.isBackoffActive,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
-    isSyncComplete: activeEntitiesState.isSyncComplete || activeEntitiesState.isUserVisibleComplete,
+    isSyncComplete: isUserVisibleSyncSettled,
   });
   const refreshProgressPercent =
     !activeEntitiesState.isUserVisibleComplete &&
@@ -1030,6 +1031,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = 'Поиск';
   const showSystemCard = canAccessSystem;
+  const refreshButtonLabel = isFetching ? 'Обновление уже идет' : 'Обновить';
 
   function renderEntityCard(entity: ManagedHomeEntity, index: number) {
     const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
@@ -1361,7 +1363,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {renderFavoriteLabelsEditor()}
 
       <GlassCard
-        className={cn('chats-command', isFetching && 'is-syncing')}
+        className={cn('chats-command', isForegroundSyncing && 'is-syncing')}
         hidden={isLoading}
         padding="sm"
         elevated
@@ -1402,10 +1404,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               className="chats-command__icon-button"
               onClick={() => handleRefresh(activeTab, 'manual')}
               disabled={isFetching || isManualRefreshBlocked}
-              aria-label="Обновить"
-              title="Обновить"
+              aria-label={refreshButtonLabel}
+              title={refreshButtonLabel}
             >
-              <RefreshGlyph aria-hidden className={isFetching ? 'is-spinning' : undefined} />
+              <RefreshGlyph
+                aria-hidden
+                className={isForegroundSyncing ? 'is-spinning' : undefined}
+              />
             </button>
           </div>
         </div>
