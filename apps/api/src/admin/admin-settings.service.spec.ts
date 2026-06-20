@@ -60,24 +60,6 @@ function createPersistedChannelSettings(overrides: Record<string, unknown> = {})
   };
 }
 
-function createPersistedManagedPoll(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'poll-1',
-    chatId: 'chat-1',
-    question: 'Ваш режим?',
-    options: ['Соло', 'Сквад'],
-    status: 'DRAFT',
-    activeVersion: 0,
-    publishedMessageId: null,
-    publishedUrl: null,
-    publishedAt: null,
-    closedAt: null,
-    createdAt: new Date('2026-03-10T09:00:00.000Z'),
-    updatedAt: new Date('2026-03-10T09:00:00.000Z'),
-    ...overrides,
-  };
-}
-
 function createManagedEntityHeader(overrides: Record<string, unknown> = {}) {
   return {
     id: 'chat-1',
@@ -169,8 +151,6 @@ function createService(
     managedEntityHeader?: Record<string, unknown>;
     persistedChannelSettings?: ReturnType<typeof createPersistedChannelSettings>;
     persistedSettings?: ReturnType<typeof createPersistedChatSettings>;
-    persistedPoll?: ReturnType<typeof createPersistedManagedPoll>;
-    persistedPollUpdate?: ReturnType<typeof createPersistedManagedPoll>;
     persistedRules?: ReturnType<typeof createPersistedChatRules>;
     persistedRulesUpdate?: ReturnType<typeof createPersistedChatRules>;
     requiredSubscriptionChannels?: Array<Record<string, unknown>>;
@@ -197,15 +177,11 @@ function createService(
     getChannelSettings: jest.fn(),
     getChannelSettingsScreen: jest.fn(),
     getRules: jest.fn(),
-    getChatPoll: jest.fn(),
-    getChannelPoll: jest.fn(),
     applySettingsToAllChats: jest.fn(),
     applySettingsSectionToAllChats: jest.fn(),
     previewApplySettingsSectionTarget: jest.fn(),
     publishChannelEngagementMessage: jest.fn(),
     publishRules: jest.fn(),
-    publishChatPoll: jest.fn(),
-    publishChannelPoll: jest.fn(),
     resolveRequiredSubscriptionChannel: jest.fn(),
     resolveRequiredSubscriptionChannelReferenceValue: jest
       .fn()
@@ -269,18 +245,12 @@ function createService(
     isRequiredSubscriptionCurrentlyActiveForSettings: jest.fn().mockReturnValue(false),
     scheduleApplySettingsToAllReadinessRefreshForSettings: jest.fn(),
     syncDomainAllowlistToChatsForSettings: jest.fn().mockResolvedValue(undefined),
-    resolveManagedPollActionBotId: jest.fn().mockResolvedValue(options.botAssignmentData?.botId),
-    resolveManagedPollReadBotId: jest.fn().mockResolvedValue(options.botAssignmentData?.botId),
-    closeChatPoll: jest.fn(),
-    closeChannelPoll: jest.fn(),
     resetPublishedRules: jest.fn(),
     refreshChannelSettingsExecutionReadiness: jest.fn().mockResolvedValue(undefined),
     sendPublishedChatRulesPrivateConfirmation: jest.fn().mockResolvedValue(undefined),
     updateSettings: jest.fn(),
     updateChannelSettings: jest.fn(),
     updateRules: jest.fn(),
-    updateChatPoll: jest.fn(),
-    updateChannelPoll: jest.fn(),
   };
   const prisma = {
     $transaction: jest.fn().mockImplementation((operations) => Promise.all(operations)),
@@ -310,15 +280,6 @@ function createService(
       update: jest
         .fn()
         .mockResolvedValue(options.persistedRulesUpdate ?? createPersistedChatRules()),
-    },
-    managedPoll: {
-      upsert: jest.fn().mockResolvedValue(options.persistedPoll ?? createPersistedManagedPoll()),
-      update: jest
-        .fn()
-        .mockResolvedValue(options.persistedPollUpdate ?? createPersistedManagedPoll()),
-    },
-    managedPollVote: {
-      groupBy: jest.fn().mockResolvedValue([]),
     },
     auditLog: {
       create: jest.fn().mockResolvedValue({}),
@@ -1495,119 +1456,4 @@ describe('AdminSettingsService chat rules', () => {
     });
   });
 
-  it('updates chat poll draft without routing through legacy updateChatPoll', async () => {
-    const { chatContextCache, legacyAdminService, prisma, service } = createService({
-      persistedPoll: createPersistedManagedPoll({
-        question: 'Старый вопрос',
-        options: ['Первый', 'Второй'],
-      }),
-      persistedPollUpdate: createPersistedManagedPoll({
-        question: 'Новый вопрос',
-        options: ['Да', 'Нет'],
-      }),
-    });
-
-    const result = await service.updateChatPoll('chat-1', user as never, {
-      question: ' Новый вопрос ',
-      options: [' Да ', ' Нет '],
-    });
-
-    expect(result.question).toBe('Новый вопрос');
-    expect(result.options).toEqual(['Да', 'Нет']);
-    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
-      'chat-1',
-      'admin-1',
-      'chat',
-    );
-    expect(legacyAdminService.updateChatPoll).not.toHaveBeenCalled();
-    expect(prisma.managedPoll.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      create: {
-        chatId: 'chat-1',
-      },
-      update: {},
-    });
-    expect(prisma.managedPoll.update).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      data: {
-        question: 'Новый вопрос',
-        options: ['Да', 'Нет'],
-      },
-    });
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
-        chatId: 'chat-1',
-        actorUserId: 'admin-1',
-        action: 'UPDATE_MANAGED_POLL',
-        payload: {
-          entityType: 'chat',
-          questionLength: 'Новый вопрос'.length,
-          optionsCount: 2,
-          statusBefore: 'DRAFT',
-          statusAfter: 'DRAFT',
-          source: 'miniapp',
-        },
-      },
-    });
-    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
-  });
-
-  it('updates channel poll draft without routing through legacy updateChannelPoll', async () => {
-    const { chatContextCache, legacyAdminService, prisma, service } = createService({
-      persistedPoll: createPersistedManagedPoll({
-        chatId: 'channel-1',
-        question: 'Старый вопрос',
-        options: ['Первый', 'Второй'],
-      }),
-      persistedPollUpdate: createPersistedManagedPoll({
-        chatId: 'channel-1',
-        question: 'Новый вопрос',
-        options: ['Да', 'Нет'],
-      }),
-    });
-
-    const result = await service.updateChannelPoll('channel-1', user as never, {
-      question: ' Новый вопрос ',
-      options: [' Да ', ' Нет '],
-    });
-
-    expect(result.question).toBe('Новый вопрос');
-    expect(result.options).toEqual(['Да', 'Нет']);
-    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
-      'channel-1',
-      'admin-1',
-      'channel',
-    );
-    expect(legacyAdminService.updateChannelPoll).not.toHaveBeenCalled();
-    expect(prisma.managedPoll.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      create: {
-        chatId: 'channel-1',
-      },
-      update: {},
-    });
-    expect(prisma.managedPoll.update).toHaveBeenCalledWith({
-      where: { chatId: 'channel-1' },
-      data: {
-        question: 'Новый вопрос',
-        options: ['Да', 'Нет'],
-      },
-    });
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: {
-        chatId: 'channel-1',
-        actorUserId: 'admin-1',
-        action: 'UPDATE_MANAGED_POLL',
-        payload: {
-          entityType: 'channel',
-          questionLength: 'Новый вопрос'.length,
-          optionsCount: 2,
-          statusBefore: 'DRAFT',
-          statusAfter: 'DRAFT',
-          source: 'miniapp',
-        },
-      },
-    });
-    expect(chatContextCache.invalidate).toHaveBeenCalledWith('channel-1');
-  });
 });

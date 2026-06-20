@@ -404,7 +404,7 @@ describe('ManagedEntityHandshakeService', () => {
           raw: {
             callback: {
               callback_id: 'cb-other',
-              payload: 'poll|poll-1|1|0',
+              payload: 'action|sample-1|1|0',
             },
           },
         }),

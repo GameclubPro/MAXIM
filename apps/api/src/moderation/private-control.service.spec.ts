@@ -5,7 +5,6 @@ import {
   type ChatRules,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
-  type ManagedPoll,
   type MaxUpdate,
 } from '@maxim/contracts';
 import {
@@ -462,25 +461,6 @@ const TINY_PNG = Buffer.from(
   'base64',
 );
 
-function createPoll(overrides: Partial<ManagedPoll> = {}): ManagedPoll {
-  return {
-    question: '',
-    options: ['', ''],
-    status: 'DRAFT',
-    activeVersion: 0,
-    publishedMessageId: null,
-    publishedUrl: null,
-    publishedAt: null,
-    closedAt: null,
-    totalVotes: 0,
-    optionResults: [
-      { option: '', votes: 0, percent: 0 },
-      { option: '', votes: 0, percent: 0 },
-    ],
-    ...overrides,
-  };
-}
-
 function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
   return {
     text: '',
@@ -753,38 +733,6 @@ function createHarness(
       unbanScheduledAt: null,
       message: 'Пользователь забанен.',
     }),
-    getChatPoll: jest.fn().mockResolvedValue(createPoll()),
-    updateChatPoll: jest.fn().mockImplementation(async (_chatId, _actor, draft) =>
-      createPoll({
-        question: draft.question,
-        options: draft.options,
-      }),
-    ),
-    publishChatPoll: jest.fn().mockResolvedValue(
-      createPoll({
-        question: 'Выбираем режим?',
-        status: 'ACTIVE',
-        activeVersion: 1,
-        publishedMessageId: 'mid-poll-1',
-        publishedUrl: 'https://max.ru/chats/chat-1/message/1',
-      }),
-    ),
-    closeChatPoll: jest.fn().mockResolvedValue(
-      createPoll({
-        status: 'CLOSED',
-      }),
-    ),
-    getChannelPoll: jest.fn().mockResolvedValue(createPoll()),
-    updateChannelPoll: jest.fn().mockResolvedValue(createPoll()),
-    publishChannelPoll: jest.fn().mockResolvedValue(
-      createPoll({
-        status: 'ACTIVE',
-        activeVersion: 1,
-        publishedMessageId: 'mid-channel-poll-1',
-        publishedUrl: 'https://max.ru/chats/channel-1/message/1',
-      }),
-    ),
-    closeChannelPoll: jest.fn().mockResolvedValue(createPoll({ status: 'CLOSED' })),
     getChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
@@ -4145,33 +4093,6 @@ describe('PrivateControlService', () => {
       ) as { url?: string } | undefined;
     expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
-    );
-  });
-
-  it('redirects poll callbacks to mini app instead of opening the private poll flow', async () => {
-    const { service, maxClient, adminService, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_poll'));
-    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_input_prompt|question'));
-    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_publish'));
-    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
-
-    expect(adminService.getChatPoll).not.toHaveBeenCalled();
-    expect(adminService.updateChatPoll).not.toHaveBeenCalled();
-    expect(adminService.publishChatPoll).not.toHaveBeenCalled();
-
-    const launchButton = getLastEditedButtons(maxClient)
-      .flat()
-      .find(
-        (button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении',
-      ) as { url?: string } | undefined;
-    expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
-      `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=poll&handoff=1`,
     );
   });
 

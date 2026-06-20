@@ -10,14 +10,12 @@ import {
   managedBroadcastDetailsSchema,
   managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
-  managedPollSchema,
   promoteManagedEntityStandbyRequestSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   sendBroadcastResultSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
-  updateManagedPollRequestSchema,
   addVkParsingSourceRequestSchema,
   publishVkParsingPostRequestSchema,
   publishVkParsingPostResultSchema,
@@ -35,7 +33,6 @@ import {
   type ManagedBroadcastSummary,
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityHeader,
-  type ManagedPoll,
   type PublishVkParsingPostRequest,
   type PublishVkParsingPostResult,
   type PublishChannelEngagementRequest,
@@ -386,36 +383,4 @@ export async function publishChannelEngagement(
     body: JSON.stringify(requestBody),
   });
   return publishChannelEngagementResultSchema.parse(response);
-}
-
-export async function getChannelPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/channels/${chatId}/poll`);
-  return managedPollSchema.parse(response);
-}
-
-export async function updateChannelPoll(
-  api: ApiTransport,
-  chatId: string,
-  payload: { question: string; options: string[] },
-): Promise<ManagedPoll> {
-  const requestBody = updateManagedPollRequestSchema.parse(payload);
-  const response = await api.request(`/channels/${chatId}/poll`, {
-    method: 'PUT',
-    body: JSON.stringify(requestBody),
-  });
-  return managedPollSchema.parse(response);
-}
-
-export async function publishChannelPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/channels/${chatId}/poll/publish`, {
-    method: 'POST',
-  });
-  return managedPollSchema.parse(response);
-}
-
-export async function closeChannelPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/channels/${chatId}/poll/close`, {
-    method: 'POST',
-  });
-  return managedPollSchema.parse(response);
 }

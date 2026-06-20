@@ -36,7 +36,6 @@ import {
   managedGiveawayDetailsSchema,
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
-  managedPollSchema,
   manualModerationActionResultSchema,
   moderationFeedPageSchema,
   membershipActivityPageSchema,
@@ -99,7 +98,6 @@ import {
   type ManagedGiveawayParticipantState,
   type ManagedGiveawayPublic,
   type ManagedGiveawaySummary,
-  type ManagedPoll,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
   type Me,
@@ -144,7 +142,6 @@ type PreviewState = {
   chatSettings: ChatSettings;
   chatRules: ChatRules;
   chatDomains: DomainAllowlistEntry[];
-  chatPoll: ManagedPoll;
   chatBroadcasts: ManagedBroadcastDetails[];
   channelBroadcasts: ManagedBroadcastDetails[];
   chatGiveaways: ManagedGiveawayDetails[];
@@ -154,7 +151,6 @@ type PreviewState = {
   spammerReviewCandidates: GlobalSpammerReviewCandidate[];
   channelHeaderParticipantsCount: number;
   channelSettings: ChannelSettings;
-  channelPoll: ManagedPoll;
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
   chatVkParsing: VkParsingFeed;
@@ -2860,22 +2856,6 @@ function createInitialState(): PreviewState {
       removeAfterAt: addDays(now, 2).toISOString(),
     }),
   ];
-  const chatPoll = managedPollSchema.parse({
-    question: 'Нужен ли тихий режим после 22:00?',
-    options: ['Да', 'Нет', 'Тест на неделю'],
-    status: 'ACTIVE',
-    activeVersion: 2,
-    publishedMessageId: 'poll-preview-1',
-    publishedUrl: 'https://max.ru/poll/preview-1',
-    publishedAt: addHours(now, -8).toISOString(),
-    closedAt: null,
-    totalVotes: 94,
-    optionResults: [
-      { option: 'Да', votes: 52, percent: 55 },
-      { option: 'Нет', votes: 21, percent: 22 },
-      { option: 'Тест на неделю', votes: 21, percent: 22 },
-    ],
-  });
   const chatBroadcasts = [
     managedBroadcastDetailsSchema.parse({
       id: 'broadcast-preview-1',
@@ -2982,18 +2962,6 @@ function createInitialState(): PreviewState {
     postSuggestionsButtonUrl: 'https://maxim.play-team.ru/suggest',
     engagementMessageText: 'Есть идея или обратная связь? Выберите действие ниже.',
     autoPostButtonsMode: 'BOTH',
-  });
-  const channelPoll = managedPollSchema.parse({
-    question: 'Какой формат постов удобнее?',
-    options: ['Короткие', 'Подробные', 'Микс'],
-    status: 'DRAFT',
-    activeVersion: 1,
-    publishedMessageId: null,
-    publishedUrl: null,
-    publishedAt: null,
-    closedAt: null,
-    totalVotes: 0,
-    optionResults: [],
   });
   const channelGiveaways = [
     managedGiveawayDetailsSchema.parse({
@@ -3381,7 +3349,6 @@ function createInitialState(): PreviewState {
     chatSettings,
     chatRules,
     chatDomains,
-    chatPoll,
     chatBroadcasts,
     chatGiveaways,
     chatParticipants: createParticipantsItems('chat-roster', 48),
@@ -3401,7 +3368,6 @@ function createInitialState(): PreviewState {
     channelDialogs,
     channelDialogThreads: {},
     channelSettings,
-    channelPoll,
     channelBroadcasts,
     channelGiveaways,
     channelActivity: createActivityItems(
@@ -5096,53 +5062,6 @@ async function handleChatRequest(
     }
   }
 
-  if (tail[0] === 'poll' && tail.length === 1) {
-    if (method === 'GET') {
-      return cloneJson(state.chatPoll);
-    }
-
-    if (method === 'PUT') {
-      const payload = parseJsonBody(init) as { question?: string; options?: string[] } | null;
-      state.chatPoll = managedPollSchema.parse({
-        ...state.chatPoll,
-        question: payload?.question ?? state.chatPoll.question,
-        options: payload?.options ?? state.chatPoll.options,
-        optionResults: [],
-        totalVotes: 0,
-      });
-      return cloneJson(state.chatPoll);
-    }
-  }
-
-  if (tail[0] === 'poll' && tail[1] === 'publish' && method === 'POST') {
-    state.chatPoll = managedPollSchema.parse({
-      ...state.chatPoll,
-      status: 'ACTIVE',
-      publishedMessageId: `poll-${Date.now()}`,
-      publishedUrl: 'https://max.ru/poll/preview-active',
-      publishedAt: new Date().toISOString(),
-      totalVotes: state.chatPoll.totalVotes || 18,
-      optionResults:
-        state.chatPoll.optionResults.length > 0
-          ? state.chatPoll.optionResults
-          : state.chatPoll.options.map((option, index) => ({
-              option,
-              votes: index === 0 ? 9 : 4 + index,
-              percent: index === 0 ? 50 : 25,
-            })),
-    });
-    return cloneJson(state.chatPoll);
-  }
-
-  if (tail[0] === 'poll' && tail[1] === 'close' && method === 'POST') {
-    state.chatPoll = managedPollSchema.parse({
-      ...state.chatPoll,
-      status: 'CLOSED',
-      closedAt: new Date().toISOString(),
-    });
-    return cloneJson(state.chatPoll);
-  }
-
   if (tail[0] === 'broadcast' && tail[1] === 'handoff') {
     if (method === 'GET') {
       return buildBroadcastHandoffState(state.chatBroadcasts[0] ?? state.channelBroadcasts[0]);
@@ -5802,50 +5721,6 @@ async function handleChannelRequest(
       state.channelSettings = channelSettingsSchema.parse(parseJsonBody(init));
       return cloneJson(state.channelSettings);
     }
-  }
-
-  if (tail[0] === 'poll' && tail.length === 1) {
-    if (method === 'GET') {
-      return cloneJson(state.channelPoll);
-    }
-
-    if (method === 'PUT') {
-      const payload = parseJsonBody(init) as { question?: string; options?: string[] } | null;
-      state.channelPoll = managedPollSchema.parse({
-        ...state.channelPoll,
-        question: payload?.question ?? state.channelPoll.question,
-        options: payload?.options ?? state.channelPoll.options,
-        optionResults: [],
-        totalVotes: 0,
-      });
-      return cloneJson(state.channelPoll);
-    }
-  }
-
-  if (tail[0] === 'poll' && tail[1] === 'publish' && method === 'POST') {
-    state.channelPoll = managedPollSchema.parse({
-      ...state.channelPoll,
-      status: 'ACTIVE',
-      publishedMessageId: `channel-poll-${Date.now()}`,
-      publishedUrl: 'https://max.ru/poll/channel-preview',
-      publishedAt: new Date().toISOString(),
-      totalVotes: 61,
-      optionResults: state.channelPoll.options.map((option, index) => ({
-        option,
-        votes: index === 0 ? 30 : index === 1 ? 17 : 14,
-        percent: index === 0 ? 49 : index === 1 ? 28 : 23,
-      })),
-    });
-    return cloneJson(state.channelPoll);
-  }
-
-  if (tail[0] === 'poll' && tail[1] === 'close' && method === 'POST') {
-    state.channelPoll = managedPollSchema.parse({
-      ...state.channelPoll,
-      status: 'CLOSED',
-      closedAt: new Date().toISOString(),
-    });
-    return cloneJson(state.channelPoll);
   }
 
   if (tail[0] === 'broadcast' && tail[1] === 'handoff') {

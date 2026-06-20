@@ -18,7 +18,6 @@ export type SettingsSectionIconName =
   | 'tools'
   | 'comments'
   | 'spark'
-  | 'poll'
   | 'gift';
 
 export type SettingsSectionTone = 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
@@ -340,27 +339,6 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
         <path
           d="m12 3.8 1.9 4.8 4.8 1.9-4.8 1.9-1.9 4.8-1.9-4.8-4.8-1.9 4.8-1.9L12 3.8ZM18.4 15.4l.8 2 .8.8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2Z"
-          stroke="currentColor"
-          strokeWidth="1.85"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
-
-  if (name === 'poll') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-        <path
-          d="M6.5 18.5V11M12 18.5V6.5M17.5 18.5V13.5"
-          stroke="currentColor"
-          strokeWidth="1.85"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M4.5 20h15"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"

@@ -66,30 +66,6 @@ export class AdminSettingsController {
     return this.settingsService.resetPublishedRules(chatId, user);
   }
 
-  @Get('chats/:chatId/poll')
-  getChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.getChatPoll(chatId, user);
-  }
-
-  @Put('chats/:chatId/poll')
-  updateChatPoll(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.settingsService.updateChatPoll(chatId, user, body);
-  }
-
-  @Post('chats/:chatId/poll/publish')
-  publishChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.publishChatPoll(chatId, user);
-  }
-
-  @Post('chats/:chatId/poll/close')
-  closeChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.closeChatPoll(chatId, user);
-  }
-
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.settingsService.getChannelSettings(chatId, user);
@@ -122,30 +98,6 @@ export class AdminSettingsController {
     @Body() body: unknown,
   ) {
     return this.settingsService.publishChannelEngagementMessage(chatId, user, body);
-  }
-
-  @Get('channels/:chatId/poll')
-  getChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.getChannelPoll(chatId, user);
-  }
-
-  @Put('channels/:chatId/poll')
-  updateChannelPoll(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.settingsService.updateChannelPoll(chatId, user, body);
-  }
-
-  @Post('channels/:chatId/poll/publish')
-  publishChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.publishChannelPoll(chatId, user);
-  }
-
-  @Post('channels/:chatId/poll/close')
-  closeChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.settingsService.closeChannelPoll(chatId, user);
   }
 
   @Post('chats/:chatId/settings/apply-to-all')

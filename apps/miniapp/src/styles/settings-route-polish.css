@@ -136,10 +136,6 @@
     .mailing-option-card,
     .managed-broadcast-editor-note,
     .managed-broadcast-card,
-    .managed-poll-card,
-    .managed-poll-option-card,
-    .managed-poll-card__meta,
-    .managed-poll-card__footer,
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
@@ -334,7 +330,6 @@
 .settings-drilldown .broadcast-compose-flow,
 .settings-drilldown .broadcast-studio-shell,
 .settings-drilldown .channel-broadcast-studio,
-.settings-drilldown .managed-poll-card__options,
 .settings-drilldown .channel-settings-stack {
   gap: 9px;
 }
@@ -408,53 +403,6 @@
 
 .settings-drilldown .broadcast-stage-card--planner .broadcast-planner__calendar-head strong {
   font-size: 0.92rem;
-}
-
-.settings-drilldown .managed-poll-card {
-  padding: 11px;
-  gap: 10px;
-}
-
-.settings-drilldown .managed-poll-card__head,
-.settings-drilldown .managed-poll-card__meta-line,
-.settings-drilldown .managed-poll-option-card__head,
-.settings-drilldown .managed-poll-card__footer-copy {
-  gap: 8px;
-}
-
-.settings-drilldown .managed-poll-card__head,
-.settings-drilldown .managed-poll-card__meta-line {
-  align-items: center;
-}
-
-.settings-drilldown .managed-poll-card__title-wrap h3 {
-  font-size: 0.96rem;
-}
-
-.settings-drilldown .managed-poll-card__meta,
-.settings-drilldown .managed-poll-option-card,
-.settings-drilldown .managed-poll-card__footer {
-  padding: 9px;
-  gap: 8px;
-  border-radius: 16px;
-}
-
-.settings-drilldown .managed-poll-option-card .field {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-.settings-drilldown .managed-poll-option-card__remove {
-  min-height: 32px;
-  padding-inline: 10px;
-}
-
-.settings-drilldown .managed-poll-card__add-option,
-.settings-drilldown .managed-poll-card__actions .button {
-  min-height: 42px;
-  border-radius: 15px;
 }
 
 .settings-drilldown .managed-giveaway__surface,
@@ -911,10 +859,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
     .mailing-option-card,
     .managed-broadcast-editor-note,
     .managed-broadcast-card,
-    .managed-poll-card,
-    .managed-poll-option-card,
-    .managed-poll-card__meta,
-    .managed-poll-card__footer,
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
@@ -1368,7 +1312,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 }
 
 .settings-drilldown .broadcast-stage-card,
-.settings-drilldown .managed-poll-card,
 .settings-drilldown .managed-giveaway__surface,
 .settings-drilldown .managed-giveaway__section,
 .settings-drilldown .managed-giveaway__subsection {
@@ -1377,8 +1320,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 }
 
 .settings-drilldown .broadcast-stage-card__title-wrap strong,
-.settings-drilldown .managed-broadcast-editor-note strong,
-.settings-drilldown .managed-poll-card__title-wrap h3 {
+.settings-drilldown .managed-broadcast-editor-note strong {
   font-size: 0.92rem;
   letter-spacing: 0;
 }
@@ -1426,7 +1368,6 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 .settings-drilldown .broadcast-compose-flow,
 .settings-drilldown .broadcast-studio-shell,
 .settings-drilldown .channel-broadcast-studio,
-.settings-drilldown .managed-poll-card__options,
 .settings-drilldown .settings-duration-stack {
   gap: 9px;
 }
@@ -1615,7 +1556,7 @@ body.channel-settings-page-open .app-shell {
 }
 
 .settings-drilldown
-  :is(.channel-settings-toggle-card, .managed-poll-card, .managed-giveaway__section):has(
+  :is(.channel-settings-toggle-card, .managed-giveaway__section):has(
     .channel-settings-hint-popover
   ) {
   position: relative;
@@ -1829,7 +1770,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments,
 .settings-drilldown__panel--post-suggestions,
-.settings-drilldown__panel--channel-poll,
 .settings-drilldown__panel--channel-giveaway {
   width: min(100%, 680px);
   border-color: rgba(138, 163, 186, 0.18);
@@ -1844,7 +1784,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .settings-drilldown__header,
 .settings-drilldown__panel--post-suggestions .settings-drilldown__header,
-.settings-drilldown__panel--channel-poll .settings-drilldown__header,
 .settings-drilldown__panel--channel-giveaway .settings-drilldown__header {
   padding: 18px 12px 9px;
   background: rgba(255, 255, 255, 0.96);
@@ -1852,7 +1791,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .settings-drilldown__summary,
 .settings-drilldown__panel--post-suggestions .settings-drilldown__summary,
-.settings-drilldown__panel--channel-poll .settings-drilldown__summary,
 .settings-drilldown__panel--channel-giveaway .settings-drilldown__summary {
   min-height: 24px;
   padding: 4px 9px;
@@ -1865,7 +1803,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .settings-section__collapse-inner,
 .settings-drilldown__panel--post-suggestions .settings-section__collapse-inner,
-.settings-drilldown__panel--channel-poll .settings-section__collapse-inner,
 .settings-drilldown__panel--channel-giveaway .settings-section__collapse-inner {
   display: grid;
   gap: 8px;
@@ -1989,7 +1926,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .settings-info-button,
 .settings-drilldown__panel--post-suggestions .settings-info-button,
-.settings-drilldown__panel--channel-poll .settings-info-button,
 .settings-drilldown__panel--channel-giveaway .settings-info-button {
   width: 26px;
   height: 26px;
@@ -2001,7 +1937,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .field,
 .settings-drilldown__panel--post-suggestions .field,
-.settings-drilldown__panel--channel-poll .field,
 .settings-drilldown__panel--channel-giveaway .field {
   gap: 8px;
   border-radius: 15px;
@@ -2013,11 +1948,9 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .field > span,
 .settings-drilldown__panel--post-suggestions .field > span,
-.settings-drilldown__panel--channel-poll .field > span,
 .settings-drilldown__panel--channel-giveaway .field > span,
 .settings-drilldown__panel--channel-comments .field__label,
 .settings-drilldown__panel--post-suggestions .field__label,
-.settings-drilldown__panel--channel-poll .field__label,
 .settings-drilldown__panel--channel-giveaway .field__label {
   min-height: 0;
   padding: 0;
@@ -2033,15 +1966,12 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .field input,
 .settings-drilldown__panel--post-suggestions .field input,
-.settings-drilldown__panel--channel-poll .field input,
 .settings-drilldown__panel--channel-giveaway .field input,
 .settings-drilldown__panel--channel-comments .field select,
 .settings-drilldown__panel--post-suggestions .field select,
-.settings-drilldown__panel--channel-poll .field select,
 .settings-drilldown__panel--channel-giveaway .field select,
 .settings-drilldown__panel--channel-comments .field textarea,
 .settings-drilldown__panel--post-suggestions .field textarea,
-.settings-drilldown__panel--channel-poll .field textarea,
 .settings-drilldown__panel--channel-giveaway .field textarea {
   min-height: 44px;
   border-radius: 12px;
@@ -2057,7 +1987,6 @@ body.channel-settings-page-open {
   min-height: 88px;
 }
 
-.settings-drilldown__panel--channel-poll .managed-poll-card,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__surface,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__section,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__subsection {
@@ -2067,7 +1996,6 @@ body.channel-settings-page-open {
   box-shadow: none;
 }
 
-.settings-drilldown__panel--channel-poll .managed-poll-card::before,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__surface::before,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__section::before,
 .settings-drilldown__panel--channel-giveaway .managed-giveaway__subsection::before {
@@ -3359,10 +3287,6 @@ body.channel-settings-page-open {
     .mailing-option-card,
     .managed-broadcast-editor-note,
     .managed-broadcast-card,
-    .managed-poll-card,
-    .managed-poll-option-card,
-    .managed-poll-card__meta,
-    .managed-poll-card__footer,
     .managed-giveaway__section,
     .managed-giveaway__surface,
     .managed-giveaway__subsection,
@@ -3410,7 +3334,6 @@ body.channel-settings-page-open {
 .settings-drilldown .settings-edit-button,
 .settings-drilldown__panel--channel-comments .settings-info-button,
 .settings-drilldown__panel--post-suggestions .settings-info-button,
-.settings-drilldown__panel--channel-poll .settings-info-button,
 .settings-drilldown__panel--channel-giveaway .settings-info-button {
   width: 26px;
   height: 26px;
@@ -3503,8 +3426,7 @@ body.channel-settings-page-open {
 
 .settings-drilldown .allowlist-composer,
 .settings-drilldown .duplicate-stage,
-.settings-drilldown .broadcast-stage-card,
-.settings-drilldown .managed-poll-card {
+.settings-drilldown .broadcast-stage-card {
   gap: 7px;
   padding: 9px;
 }
@@ -3582,7 +3504,6 @@ body.channel-settings-page-open {
 
 .settings-drilldown__panel--channel-comments .settings-section__collapse-inner,
 .settings-drilldown__panel--post-suggestions .settings-section__collapse-inner,
-.settings-drilldown__panel--channel-poll .settings-section__collapse-inner,
 .settings-drilldown__panel--channel-giveaway .settings-section__collapse-inner {
   gap: 7px;
   padding: 8px 8px calc(10px + env(safe-area-inset-bottom, 0px));
@@ -4360,7 +4281,6 @@ body.channel-settings-page-open .app-shell {
 .settings-drilldown .settings-section__collapse-inner,
 .settings-drilldown__panel--channel-comments .settings-section__collapse-inner,
 .settings-drilldown__panel--post-suggestions .settings-section__collapse-inner,
-.settings-drilldown__panel--channel-poll .settings-section__collapse-inner,
 .settings-drilldown__panel--channel-giveaway .settings-section__collapse-inner {
   padding: 8px 8px calc(14px + env(safe-area-inset-bottom, 0px));
   gap: 7px;

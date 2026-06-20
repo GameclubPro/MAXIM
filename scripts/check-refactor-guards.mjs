@@ -125,13 +125,6 @@ const guardedFiles = [
       'ManagedBroadcastDeliveryMeter styles should stay component-owned instead of returning to broadcast route CSS.',
   },
   {
-    path: 'apps/miniapp/src/components/managed-poll-card.css',
-    maxLines: 206,
-    targetLines: 180,
-    reason:
-      'ManagedPollCard styles should stay component-owned while settings route overrides stay scoped.',
-  },
-  {
     path: 'apps/miniapp/src/components/broadcast-schedule-planner.css',
     maxLines: 1860,
     targetLines: 1500,

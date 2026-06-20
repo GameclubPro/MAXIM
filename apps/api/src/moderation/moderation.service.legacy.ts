@@ -36,7 +36,6 @@ import {
   ChatBotMembershipStatus,
   ChatEntityType,
   EventType,
-  ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
   SanctionAction,
@@ -163,13 +162,6 @@ import {
   GlobalSpammerIntelligenceService,
   type GlobalSpammerObservationSource,
 } from './global-spammer-intelligence.service';
-import {
-  buildManagedPollButtons,
-  buildManagedPollMessageText,
-  buildManagedPollOptionSummaries,
-  normalizeManagedPollDraft,
-  parseManagedPollCallbackPayload,
-} from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
 import {
@@ -423,7 +415,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     string,
     Promise<Set<string>>
   >();
-  private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly developerForcedGlobalSpammerMemoryCache = new Map<string, number>();
   private developerForcedGlobalSpammerWarmUntilMs = 0;
@@ -854,12 +845,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
         return;
       }
-      const pollCallback = parseManagedPollCallbackPayload(callbackPayload);
-      if (pollCallback) {
-        await this.handleManagedPollCallback(update, pollCallback, callbackId);
-        return;
-      }
-
       const channelMessage = this.isChannelMessage(update);
       const managedChannel = channelMessage
         ? await this.loadManagedChannelContext(chatId, chatTitle)
@@ -10729,205 +10714,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleManagedPollCallback(
-    update: MaxUpdate,
-    pollCallback: {
-      pollId: string;
-      version: number;
-      optionIndex: number;
-    },
-    callbackId: string | null,
-  ): Promise<void> {
-    const message = update.message;
-    const chatId = message?.chatId?.trim() ?? '';
-    const sourceMessageId = message?.messageId?.trim() ?? '';
-    const voterUserId = this.extractCallbackUserId(update);
-    if (!chatId || !sourceMessageId || !voterUserId) {
-      if (callbackId) {
-        await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
-      }
-      return;
-    }
-
-    await this.runManagedPollCallbackSerialized(pollCallback.pollId, async () => {
-      const poll = await this.prisma.managedPoll.findUnique({
-        where: { id: pollCallback.pollId },
-        select: {
-          id: true,
-          chatId: true,
-          question: true,
-          options: true,
-          status: true,
-          activeVersion: true,
-          publishedMessageId: true,
-        },
-      });
-
-      if (!poll || poll.chatId !== chatId) {
-        if (callbackId) {
-          await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
-        }
-        return;
-      }
-
-      if (poll.status !== PrismaManagedPollStatus.ACTIVE) {
-        if (callbackId) {
-          await this.answerCallbackSafe(callbackId, 'Опрос закрыт');
-        }
-        return;
-      }
-
-      if (
-        poll.activeVersion !== pollCallback.version ||
-        (poll.publishedMessageId?.trim() ?? '') !== sourceMessageId
-      ) {
-        if (callbackId) {
-          await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
-        }
-        return;
-      }
-
-      const normalizedDraft = normalizeManagedPollDraft(
-        poll.question,
-        this.readManagedPollOptions(poll.options),
-      );
-      if (
-        pollCallback.optionIndex < 0 ||
-        pollCallback.optionIndex >= normalizedDraft.options.length ||
-        !normalizedDraft.options[pollCallback.optionIndex]
-      ) {
-        if (callbackId) {
-          await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
-        }
-        return;
-      }
-
-      const existingVote = await this.prisma.managedPollVote.findUnique({
-        where: {
-          pollId_pollVersion_userId: {
-            pollId: poll.id,
-            pollVersion: poll.activeVersion,
-            userId: voterUserId,
-          },
-        },
-        select: {
-          optionIndex: true,
-        },
-      });
-
-      const notification =
-        existingVote && existingVote.optionIndex === pollCallback.optionIndex
-          ? 'Вы уже выбрали этот вариант'
-          : 'Голос учтён';
-
-      if (existingVote && existingVote.optionIndex === pollCallback.optionIndex) {
-        if (callbackId) {
-          await this.answerCallbackSafe(callbackId, notification);
-        }
-        return;
-      }
-
-      await this.prisma.managedPollVote.upsert({
-        where: {
-          pollId_pollVersion_userId: {
-            pollId: poll.id,
-            pollVersion: poll.activeVersion,
-            userId: voterUserId,
-          },
-        },
-        create: {
-          pollId: poll.id,
-          pollVersion: poll.activeVersion,
-          userId: voterUserId,
-          optionIndex: pollCallback.optionIndex,
-        },
-        update: {
-          optionIndex: pollCallback.optionIndex,
-        },
-      });
-
-      const voteCounts = await this.loadManagedPollVoteCounts(
-        poll.id,
-        poll.activeVersion,
-        normalizedDraft.options.length,
-      );
-      const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
-      const text = buildManagedPollMessageText(
-        normalizedDraft.question,
-        summary.optionResults,
-        'ACTIVE',
-      );
-      const editOptions: Pick<MaxSendMessageOptions, 'buttons' | 'debugContext'> = {
-        buttons: buildManagedPollButtons(
-          poll.id,
-          poll.activeVersion,
-          normalizedDraft.options,
-          summary.optionResults,
-        ),
-        debugContext: {
-          screen: 'managed-poll',
-          action: 'vote',
-        },
-      };
-
-      if (callbackId) {
-        try {
-          await this.maxClient.answerCallback(
-            callbackId,
-            notification,
-            {
-              text,
-              options: editOptions,
-            },
-            {
-              ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
-            },
-          );
-          return;
-        } catch (error: unknown) {
-          if (!this.isTerminalCallbackError(error)) {
-            throw error;
-          }
-
-          this.logger.debug(
-            {
-              callbackId,
-              chatId,
-              sourceMessageId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Managed poll callback answer expired; falling back to direct message edit',
-          );
-        }
-      }
-
-      await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, editOptions);
-    });
-  }
-
-  private async runManagedPollCallbackSerialized<T>(
-    pollId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    const previous = this.managedPollCallbackChains.get(pollId) ?? Promise.resolve();
-    let releaseCurrent: () => void = () => undefined;
-    const current = new Promise<void>((resolve) => {
-      releaseCurrent = resolve;
-    });
-    const chain = previous.catch(() => undefined).then(() => current);
-    this.managedPollCallbackChains.set(pollId, chain);
-
-    await previous.catch(() => undefined);
-    try {
-      return await operation();
-    } finally {
-      releaseCurrent();
-      if (this.managedPollCallbackChains.get(pollId) === chain) {
-        this.managedPollCallbackChains.delete(pollId);
-      }
-    }
-  }
-
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
     const raw = this.asRecord(update.raw);
     if (!raw) {
@@ -11011,40 +10797,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
-  }
-
-  private readManagedPollOptions(value: Prisma.JsonValue): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return value.filter((item): item is string => typeof item === 'string');
-  }
-
-  private async loadManagedPollVoteCounts(
-    pollId: string,
-    pollVersion: number,
-    optionCount: number,
-  ): Promise<number[]> {
-    const counts = Array.from({ length: optionCount }, () => 0);
-    const votes = await this.prisma.managedPollVote.groupBy({
-      where: {
-        pollId,
-        pollVersion,
-      },
-      by: ['optionIndex'],
-      _count: {
-        _all: true,
-      },
-    });
-
-    for (const vote of votes) {
-      if (vote.optionIndex >= 0 && vote.optionIndex < counts.length) {
-        counts[vote.optionIndex] = vote._count._all;
-      }
-    }
-
-    return counts;
   }
 
   private resolvePrivateCallbackCommand(payload: string | null): PrivateControlCommand | null {

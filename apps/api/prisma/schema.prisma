@@ -116,12 +116,6 @@ enum ChannelSuggestionEntryMode {
   MINIAPP
 }
 
-enum ManagedPollStatus {
-  DRAFT
-  ACTIVE
-  CLOSED
-}
-
 enum ManagedGiveawayStatus {
   DRAFT
   SCHEDULED
@@ -187,7 +181,6 @@ model Chat {
 
   settings                        ChatSettings?
   rules                           ChatRules?
-  poll                            ManagedPoll?
   channelSettings                 ChannelSettings?
   admins                          ChatAdminAllowlist[]
   domains                         DomainAllowlist[]
@@ -537,42 +530,6 @@ model ChannelSettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("channel_settings")
-}
-
-model ManagedPoll {
-  id                 String            @id @default(cuid())
-  chatId             String            @unique @map("chat_id")
-  question           String            @default("")
-  options            Json              @default("[]")
-  status             ManagedPollStatus @default(DRAFT)
-  activeVersion      Int               @default(0) @map("active_version")
-  publishedMessageId String?           @map("published_message_id")
-  publishedUrl       String?           @map("published_url")
-  publishedAt        DateTime?         @map("published_at")
-  closedAt           DateTime?         @map("closed_at")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
-
-  chat  Chat              @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  votes ManagedPollVote[]
-
-  @@map("managed_polls")
-}
-
-model ManagedPollVote {
-  id          String   @id @default(cuid())
-  pollId      String   @map("poll_id")
-  pollVersion Int      @map("poll_version")
-  userId      String   @map("user_id")
-  optionIndex Int      @map("option_index")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  poll ManagedPoll @relation(fields: [pollId], references: [id], onDelete: Cascade)
-
-  @@unique([pollId, pollVersion, userId])
-  @@index([pollId, pollVersion, optionIndex])
-  @@map("managed_poll_votes")
 }
 
 model ChatAdminAllowlist {

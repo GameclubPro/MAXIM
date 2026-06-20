@@ -431,10 +431,6 @@
       .managed-broadcast-card,
       .managed-broadcast-editor-note,
       .mailing-option-card,
-      .managed-poll-card,
-      .managed-poll-option-card,
-      .managed-poll-card__meta,
-      .managed-poll-card__footer,
       .managed-giveaway__section,
       .managed-giveaway__surface,
       .managed-giveaway__subsection
@@ -458,10 +454,6 @@
       .managed-broadcast-card,
       .managed-broadcast-editor-note,
       .mailing-option-card,
-      .managed-poll-card,
-      .managed-poll-option-card,
-      .managed-poll-card__meta,
-      .managed-poll-card__footer,
       .managed-giveaway__section,
       .managed-giveaway__surface,
       .managed-giveaway__subsection
@@ -477,8 +469,7 @@
     box-shadow: 0 10px 18px rgba(20, 44, 68, 0.06);
   }
 
-  .settings-drilldown__panel--campaign .broadcast-compose-flow,
-  .settings-drilldown__panel--campaign .managed-poll-card__options {
+  .settings-drilldown__panel--campaign .broadcast-compose-flow {
     gap: 12px;
   }
 

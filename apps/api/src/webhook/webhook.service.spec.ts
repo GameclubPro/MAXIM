@@ -171,7 +171,7 @@ describe('WebhookService', () => {
         raw: {
           callback: {
             callback_id: 'callback-1',
-            payload: 'poll|poll-1|1|0',
+            payload: 'action|sample-1|1|0',
             user: {
               user_id: 'user-1',
             },

@@ -93,7 +93,6 @@ import {
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeStoredAllowlistEntry,
   parseStoredAllowlistEntry,
-  type ManagedPoll,
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionResponseSchema,
   updateChannelDialogNotificationsRequestSchema,
@@ -245,12 +244,6 @@ import {
   saveChatSettings as saveChatSettingsValue,
   type ResolvedBotAssignmentData,
 } from './admin-chat-settings';
-import {
-  closeManagedPoll as closeManagedPollValue,
-  publishManagedPoll as publishManagedPollValue,
-  readManagedPoll as readManagedPollValue,
-  saveManagedPollDraft as saveManagedPollDraftValue,
-} from './admin-managed-poll';
 import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
 import {
   listManagedEntitiesValue,
@@ -7425,138 +7418,6 @@ export class AdminService implements OnModuleDestroy {
       actorUserId: user.userId,
       source,
       resolveBotId: () => this.resolveChatRulesActionBotId(chatId),
-    });
-  }
-
-  async getChatPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
-    await this.assertManagedEntityReadAccess(chatId, user.userId, 'chat');
-    return readManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      logger: this.logger,
-      chatId,
-      resolveReadBotId: () => this.resolveManagedPollReadBotId(chatId),
-    });
-  }
-
-  async updateChatPoll(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
-    return saveManagedPollDraftValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'chat',
-      body,
-      source,
-    });
-  }
-
-  async publishChatPoll(
-    chatId: string,
-    user: AuthUser,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
-    return publishManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'chat',
-      source,
-      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
-    });
-  }
-
-  async closeChatPoll(
-    chatId: string,
-    user: AuthUser,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'chat');
-    return closeManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'chat',
-      source,
-      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
-    });
-  }
-
-  async getChannelPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
-    await this.assertManagedEntityReadAccess(chatId, user.userId, 'channel');
-    return readManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      logger: this.logger,
-      chatId,
-      resolveReadBotId: () => this.resolveManagedPollReadBotId(chatId),
-    });
-  }
-
-  async updateChannelPoll(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
-    return saveManagedPollDraftValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'channel',
-      body,
-      source,
-    });
-  }
-
-  async publishChannelPoll(
-    chatId: string,
-    user: AuthUser,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
-    return publishManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'channel',
-      source,
-      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
-    });
-  }
-
-  async closeChannelPoll(
-    chatId: string,
-    user: AuthUser,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ManagedPoll> {
-    await this.assertManagedEntityAdminAccess(chatId, user.userId, 'channel');
-    return closeManagedPollValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      chatId,
-      actorUserId: user.userId,
-      entityType: 'channel',
-      source,
-      resolveBotId: () => this.resolveManagedPollActionBotId(chatId),
     });
   }
 
@@ -14742,14 +14603,6 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async resolveChatRulesActionBotId(chatId: string): Promise<string | undefined> {
-    return this.resolveManualActionBotAssignment(chatId);
-  }
-
-  async resolveManagedPollReadBotId(chatId: string): Promise<string | undefined> {
-    return this.resolveChatBotIdForRead(chatId);
-  }
-
-  async resolveManagedPollActionBotId(chatId: string): Promise<string | undefined> {
     return this.resolveManualActionBotAssignment(chatId);
   }
 

@@ -15,7 +15,6 @@ import {
   managedBroadcastCalendarResponseSchema,
   managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
-  managedPollSchema,
   publishChatRulesResultSchema,
   promoteManagedEntityStandbyRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
@@ -26,7 +25,6 @@ import {
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   updateChatRulesRequestSchema,
-  updateManagedPollRequestSchema,
   type ApplySectionToAllResponse,
   type ApplySectionTargetPreviewResponse,
   type ApplySettingsTarget,
@@ -42,7 +40,6 @@ import {
   type ManagedEntityBotExecutionPlan,
   type ManagedEntityAccessRecheckResponse,
   type ManagedEntityHeader,
-  type ManagedPoll,
   type PublishChatRulesResult,
   type ResolveRequiredSubscriptionChannelResponse,
   type SendBroadcastResult,
@@ -248,38 +245,6 @@ export async function resetPublishedRules(api: ApiTransport, chatId: string): Pr
     method: 'DELETE',
   });
   return chatRulesSchema.parse(response);
-}
-
-export async function getChatPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/chats/${chatId}/poll`);
-  return managedPollSchema.parse(response);
-}
-
-export async function updateChatPoll(
-  api: ApiTransport,
-  chatId: string,
-  payload: { question: string; options: string[] },
-): Promise<ManagedPoll> {
-  const requestBody = updateManagedPollRequestSchema.parse(payload);
-  const response = await api.request(`/chats/${chatId}/poll`, {
-    method: 'PUT',
-    body: JSON.stringify(requestBody),
-  });
-  return managedPollSchema.parse(response);
-}
-
-export async function publishChatPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/chats/${chatId}/poll/publish`, {
-    method: 'POST',
-  });
-  return managedPollSchema.parse(response);
-}
-
-export async function closeChatPoll(api: ApiTransport, chatId: string): Promise<ManagedPoll> {
-  const response = await api.request(`/chats/${chatId}/poll/close`, {
-    method: 'POST',
-  });
-  return managedPollSchema.parse(response);
 }
 
 export async function handoffBroadcast(

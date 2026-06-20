@@ -515,10 +515,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.answerCallback('callback-1', 'Голос учтён', {
-      text: 'Опрос\n\n1. Соло - 1 (100%)',
+    await service.answerCallback('callback-1', 'Действие выполнено', {
+      text: 'Обновление\n\n1. Вариант - 1 (100%)',
       options: {
-        buttons: [[{ type: 'callback', text: 'Соло (1)', payload: 'poll|poll-1|1|0' }]],
+        buttons: [[{ type: 'callback', text: 'Вариант (1)', payload: 'action|sample-1|1|0' }]],
       },
     });
 
@@ -531,14 +531,16 @@ describe('MaxClientService inline keyboard guardrails', () => {
           callback_id: 'callback-1',
         },
         data: {
-          notification: 'Голос учтён',
+          notification: 'Действие выполнено',
           message: {
-            text: 'Опрос\n\n1. Соло - 1 (100%)',
+            text: 'Обновление\n\n1. Вариант - 1 (100%)',
             attachments: [
               {
                 type: 'inline_keyboard',
                 payload: {
-                  buttons: [[{ type: 'callback', text: 'Соло (1)', payload: 'poll|poll-1|1|0' }]],
+                  buttons: [
+                    [{ type: 'callback', text: 'Вариант (1)', payload: 'action|sample-1|1|0' }],
+                  ],
                 },
               },
             ],
@@ -1132,12 +1134,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
             data: {
               body: {
                 mid: 'mid-edit-fallback-1',
-                text: 'Старый опрос',
+                text: 'Старое сообщение',
                 attachments: [
                   {
                     type: 'inline_keyboard',
                     payload: {
-                      buttons: [[{ type: 'callback', text: 'Да (1)', payload: 'poll|poll-1|1|0' }]],
+                      buttons: [[{ type: 'callback', text: 'Да (1)', payload: 'action|sample-1|1|0' }]],
                     },
                   },
                 ],
@@ -1156,8 +1158,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-fallback-1', 'Итоги опроса', {
-      buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'poll|poll-1|1|0' }]],
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-fallback-1', 'Итоги действия', {
+      buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'action|sample-1|1|0' }]],
     });
 
     expect(httpService.request).toHaveBeenNthCalledWith(
@@ -1177,12 +1179,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
           message_id: 'mid-edit-fallback-1',
         },
         data: {
-          text: 'Итоги опроса',
+          text: 'Итоги действия',
           attachments: [
             {
               type: 'inline_keyboard',
               payload: {
-                buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'poll|poll-1|1|0' }]],
+                buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'action|sample-1|1|0' }]],
               },
             },
           ],

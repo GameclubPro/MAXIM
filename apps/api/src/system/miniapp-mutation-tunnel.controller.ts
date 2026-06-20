@@ -66,11 +66,6 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   { method: 'PUT', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules$`) },
   { method: 'POST', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules/(publish|handoff)$`) },
   { method: 'DELETE', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/rules/publish$`) },
-  { method: 'PUT', pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/poll$`) },
-  {
-    method: 'POST',
-    pattern: new RegExp(`^/(chats|channels)/${ENTITY_ID_SEGMENT}/poll/(publish|close)$`),
-  },
   { method: 'POST', pattern: new RegExp(`^/channels/${ENTITY_ID_SEGMENT}/engagement-publish$`) },
 
   { method: 'POST', pattern: new RegExp(`^/chats/${ENTITY_ID_SEGMENT}/domain-allowlist$`) },

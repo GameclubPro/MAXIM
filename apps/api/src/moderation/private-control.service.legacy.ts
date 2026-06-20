@@ -22,10 +22,7 @@ import {
   type ManagedGiveawayWinner,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   MANAGED_GIVEAWAY_MAX_PRIZES,
-  MANAGED_POLL_MAX_OPTIONS,
-  MANAGED_POLL_MIN_OPTIONS,
   type ManagedEntityType,
-  type ManagedPoll,
   type MaxUpdate,
   type SendBroadcastResult,
   type UpdateManagedGiveawayRequest,
@@ -148,8 +145,6 @@ type PendingInput =
   | { kind: 'giveaway_claim_hours' }
   | { kind: 'giveaway_photo' }
   | { kind: 'giveaway_prize'; index: number }
-  | { kind: 'poll_question' }
-  | { kind: 'poll_option'; index: number }
   | { kind: 'manual_mute_duration'; targetUserId: string };
 
 type PendingMassAction =
@@ -188,11 +183,6 @@ type PrivateBroadcastDraft = {
   cycleEnabled: boolean;
   cycleEveryHours: number;
   cycleCount: number;
-};
-
-type PrivatePollDraft = {
-  question: string;
-  options: string[];
 };
 
 type PrivateSuggestionImageDraft = {
@@ -243,7 +233,6 @@ type PrivateScreen =
   | 'domains'
   | 'rules'
   | 'broadcast'
-  | 'poll'
   | 'giveaway'
   | 'events'
   | 'logs'
@@ -292,7 +281,6 @@ type PrivateSession = {
   pendingInput: PendingInput | null;
   pendingMassAction: PendingMassAction | null;
   broadcastDraft: PrivateBroadcastDraft;
-  pollDraft: PrivatePollDraft;
   suggestionDraft: PrivateSuggestionDraft | null;
 };
 
@@ -505,14 +493,6 @@ const MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS = new Set<string>([
   'toggle_channel',
   'set_channel_input',
   'publish_channel_engagement',
-]);
-const MINIAPP_POLL_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_poll',
-  'poll_input_prompt',
-  'poll_add_option',
-  'poll_remove_option',
-  'poll_publish',
-  'poll_close',
 ]);
 const MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'open_giveaway',
@@ -1179,11 +1159,6 @@ const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   cycleEnabled: false,
   cycleEveryHours: 24,
   cycleCount: 1,
-};
-
-const DEFAULT_POLL_DRAFT: PrivatePollDraft = {
-  question: '',
-  options: Array.from({ length: MANAGED_POLL_MIN_OPTIONS }, () => ''),
 };
 
 @Injectable()
@@ -3031,7 +3006,6 @@ export class PrivateControlService {
         MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
         MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
         MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS.has(callback.action) ||
-        MINIAPP_POLL_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
         MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
         MINIAPP_RULES_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
         MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS.has(callback.action))
@@ -3077,16 +3051,6 @@ export class PrivateControlService {
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
         notification: 'Открывайте настройки канала в mini app',
-      });
-      return;
-    }
-
-    if (MINIAPP_POLL_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
-      this.resetSessionToPrimaryScreen(session);
-      const view = await this.renderEntityPollMovedToMiniappScreen(context, session);
-      await this.respond(context, session, view, {
-        callbackId: context.callbackId,
-        notification: 'Опросы перенесены в mini app',
       });
       return;
     }
@@ -3250,10 +3214,6 @@ export class PrivateControlService {
         session.domainPage = 1;
         session.manualPage = 1;
         session.manualTargetUserId = null;
-        session.pollDraft = {
-          ...DEFAULT_POLL_DRAFT,
-          options: [...DEFAULT_POLL_DRAFT.options],
-        };
 
         const view = await this.renderEntitySettingsMovedToMiniappScreen(context, session);
         await this.respond(context, session, view, {
@@ -3275,10 +3235,6 @@ export class PrivateControlService {
         session.searchQuery = null;
         session.channelSection = null;
         session.lastScreenStack = [];
-        session.pollDraft = {
-          ...DEFAULT_POLL_DRAFT,
-          options: [...DEFAULT_POLL_DRAFT.options],
-        };
         const view = this.renderLauncherHomeView('Выбирайте чат и канал в приложении.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -4618,221 +4574,6 @@ export class PrivateControlService {
         return;
       }
 
-      case 'open_poll': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        this.pushHistory(session);
-        const poll = await this.getManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(poll);
-        session.screen = 'poll';
-        session.pendingInput = null;
-        session.pendingMassAction = null;
-        const view = await this.renderPollScreen(context, session, null, poll);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Открываю опрос',
-        });
-        return;
-      }
-
-      case 'poll_input_prompt': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const poll = await this.getManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(poll);
-        if (poll.status === 'ACTIVE') {
-          const view = await this.renderPollScreen(context, session, null, poll);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Сначала закройте активный опрос',
-          });
-          return;
-        }
-
-        const field = callback.args[0] ?? '';
-        if (field === 'question') {
-          session.pendingInput = { kind: 'poll_question' };
-        } else if (field === 'option') {
-          const index = this.toPositiveInt(callback.args[1], 1) - 1;
-          if (index < 0 || index >= session.pollDraft.options.length) {
-            throw new BadRequestException('Вариант не найден.');
-          }
-          session.pendingInput = { kind: 'poll_option', index };
-        } else {
-          throw new BadRequestException('Неизвестное поле опроса.');
-        }
-
-        const view = this.renderInputPrompt(session.pendingInput);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Жду ввод',
-        });
-        return;
-      }
-
-      case 'poll_add_option': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const poll = await this.getManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(poll);
-        if (poll.status === 'ACTIVE') {
-          const view = await this.renderPollScreen(context, session, null, poll);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Сначала закройте активный опрос',
-          });
-          return;
-        }
-
-        if (session.pollDraft.options.length >= MANAGED_POLL_MAX_OPTIONS) {
-          const view = await this.renderPollScreen(context, session, null, poll);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: `Максимум ${MANAGED_POLL_MAX_OPTIONS} вариантов`,
-          });
-          return;
-        }
-
-        const saved = await this.updateManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-          {
-            question: session.pollDraft.question,
-            options: [...session.pollDraft.options, ''],
-          },
-        );
-        session.pollDraft = this.toPrivatePollDraft(saved);
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, saved);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Вариант добавлен',
-        });
-        return;
-      }
-
-      case 'poll_remove_option': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const poll = await this.getManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(poll);
-        if (poll.status === 'ACTIVE') {
-          const view = await this.renderPollScreen(context, session, null, poll);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Сначала закройте активный опрос',
-          });
-          return;
-        }
-
-        if (session.pollDraft.options.length <= MANAGED_POLL_MIN_OPTIONS) {
-          const view = await this.renderPollScreen(context, session, null, poll);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: `Минимум ${MANAGED_POLL_MIN_OPTIONS} варианта`,
-          });
-          return;
-        }
-
-        const index = this.toPositiveInt(callback.args[0], 1) - 1;
-        if (index < 0 || index >= session.pollDraft.options.length) {
-          throw new BadRequestException('Вариант не найден.');
-        }
-
-        const nextOptions = session.pollDraft.options.filter((_, itemIndex) => itemIndex !== index);
-        const saved = await this.updateManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-          {
-            question: session.pollDraft.question,
-            options: nextOptions,
-          },
-        );
-        session.pollDraft = this.toPrivatePollDraft(saved);
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, saved);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Вариант удалён',
-        });
-        return;
-      }
-
-      case 'poll_publish': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const savedDraft = await this.updateManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-          {
-            question: session.pollDraft.question,
-            options: session.pollDraft.options,
-          },
-        );
-        const published = await this.publishManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(published);
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, published);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: savedDraft.status === 'ACTIVE' ? 'Опрос уже активен' : 'Опрос опубликован',
-        });
-        return;
-      }
-
-      case 'poll_close': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const closed = await this.closeManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
-        session.pollDraft = this.toPrivatePollDraft(closed);
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, closed);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Опрос закрыт',
-        });
-        return;
-      }
-
       case 'open_events': {
         this.assertChatSelected(session);
         this.pushHistory(session);
@@ -5020,15 +4761,6 @@ export class PrivateControlService {
           return;
         }
 
-        if (session.screen === 'poll') {
-          const view = await this.renderPollScreen(context, session);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Отменено',
-          });
-          return;
-        }
-
         if (session.screen === 'giveaway') {
           const view = await this.renderGiveawayScreen(context, session);
           await this.respond(context, session, view, {
@@ -5144,15 +4876,6 @@ export class PrivateControlService {
 
       if (session.screen === 'broadcast') {
         const view = await this.renderBroadcastScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      if (session.screen === 'poll') {
-        const view = await this.renderPollScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -5816,62 +5539,6 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.screen = 'giveaway';
         const view = await this.renderGiveawayScreen(context, session, 'Приз обновлён.');
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      case 'poll_question': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        const saved = await this.updateManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-          {
-            question: rawText,
-            options: session.pollDraft.options,
-          },
-        );
-        session.pollDraft = this.toPrivatePollDraft(saved);
-        session.pendingInput = null;
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, saved);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      case 'poll_option': {
-        if (!session.selectedChatId || !session.selectedEntityType) {
-          throw new BadRequestException('Сначала выберите чат или канал.');
-        }
-
-        if (pendingInput.index < 0 || pendingInput.index >= session.pollDraft.options.length) {
-          throw new BadRequestException('Вариант не найден.');
-        }
-
-        const nextOptions = [...session.pollDraft.options];
-        nextOptions[pendingInput.index] = rawText;
-        const saved = await this.updateManagedPollForSession(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-          {
-            question: session.pollDraft.question,
-            options: nextOptions,
-          },
-        );
-        session.pollDraft = this.toPrivatePollDraft(saved);
-        session.pendingInput = null;
-        session.screen = 'poll';
-        const view = await this.renderPollScreen(context, session, null, saved);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -6710,60 +6377,6 @@ export class PrivateControlService {
     return giveaway;
   }
 
-  private async getManagedPollForSession(
-    chatId: string,
-    actor: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedPoll> {
-    return entityType === 'channel'
-      ? this.adminService.getChannelPoll(chatId, actor)
-      : this.adminService.getChatPoll(chatId, actor);
-  }
-
-  private async updateManagedPollForSession(
-    chatId: string,
-    actor: AuthUser,
-    entityType: ManagedEntityType,
-    draft: PrivatePollDraft,
-  ): Promise<ManagedPoll> {
-    return entityType === 'channel'
-      ? this.adminService.updateChannelPoll(chatId, actor, draft, 'private_bot')
-      : this.adminService.updateChatPoll(chatId, actor, draft, 'private_bot');
-  }
-
-  private async publishManagedPollForSession(
-    chatId: string,
-    actor: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedPoll> {
-    return entityType === 'channel'
-      ? this.adminService.publishChannelPoll(chatId, actor, 'private_bot')
-      : this.adminService.publishChatPoll(chatId, actor, 'private_bot');
-  }
-
-  private async closeManagedPollForSession(
-    chatId: string,
-    actor: AuthUser,
-    entityType: ManagedEntityType,
-  ): Promise<ManagedPoll> {
-    return entityType === 'channel'
-      ? this.adminService.closeChannelPoll(chatId, actor, 'private_bot')
-      : this.adminService.closeChatPoll(chatId, actor, 'private_bot');
-  }
-
-  private toPrivatePollDraft(poll: ManagedPoll): PrivatePollDraft {
-    const options = poll.options.slice(0, MANAGED_POLL_MAX_OPTIONS);
-
-    while (options.length < MANAGED_POLL_MIN_OPTIONS) {
-      options.push('');
-    }
-
-    return {
-      question: poll.question,
-      options,
-    };
-  }
-
   private async renderChatSelection(
     _context: PrivateContext,
     _session: PrivateSession,
@@ -6807,10 +6420,6 @@ export class PrivateControlService {
     }
     if (session.screen === 'broadcast') {
       return this.renderBroadcastScreen(context, session);
-    }
-    if (session.screen === 'poll') {
-      this.resetSessionToPrimaryScreen(session);
-      return this.renderEntityPollMovedToMiniappScreen(context, session);
     }
     if (session.screen === 'giveaway') {
       this.resetSessionToPrimaryScreen(session);
@@ -7712,132 +7321,6 @@ export class PrivateControlService {
     return {
       text: lines.join('\n\n'),
       options: rows.length > 0 ? { buttons: rows } : undefined,
-    };
-  }
-
-  private async renderPollScreen(
-    context: PrivateContext,
-    session: PrivateSession,
-    notice: string | null = null,
-    pollOverride?: ManagedPoll,
-  ): Promise<PrivateView> {
-    if (!session.selectedChatId || !session.selectedEntityType) {
-      return this.renderChatSelection(context, session);
-    }
-
-    const poll =
-      pollOverride ??
-      (await this.getManagedPollForSession(
-        session.selectedChatId,
-        context.actor,
-        session.selectedEntityType,
-      ));
-    session.pollDraft = this.toPrivatePollDraft(poll);
-
-    const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
-    const entityTitle = await this.resolveManagedEntityTitle(
-      context.actor,
-      session.selectedEntityType,
-      session.selectedChatId,
-    );
-    const statusLabel =
-      poll.status === 'ACTIVE' ? 'Активен' : poll.status === 'CLOSED' ? 'Закрыт' : 'Черновик';
-    const totalVotes = poll.totalVotes;
-
-    const lines: string[] = [
-      this.markdownTitle('Опрос'),
-      '',
-      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
-      `Статус: ${statusLabel}`,
-      `Всего голосов: ${totalVotes}`,
-      `Пост: ${poll.publishedMessageId ? 'опубликован' : 'ещё нет'}`,
-    ];
-
-    if (poll.publishedUrl) {
-      lines.push(`Ссылка: ${poll.publishedUrl}`);
-    }
-
-    lines.push('');
-    lines.push(`Вопрос: ${poll.question.trim() || 'не задан'}`);
-    lines.push('');
-    lines.push('Варианты:');
-    lines.push(
-      ...poll.options.map((option, index) => {
-        const result = poll.optionResults[index];
-        const suffix =
-          result && (poll.status === 'ACTIVE' || poll.status === 'CLOSED')
-            ? ` - ${result.votes} (${result.percent}%)`
-            : '';
-        return `${index + 1}. ${option || 'Без текста'}${suffix}`;
-      }),
-    );
-
-    if (notice) {
-      lines.push('', `Статус: ${notice}`);
-    }
-
-    lines.push(
-      '',
-      poll.status === 'ACTIVE'
-        ? 'Опрос опубликован. Можно открыть пост или закрыть голосование.'
-        : 'Соберите вопрос и варианты, затем опубликуйте опрос.',
-    );
-
-    const rows: MaxMessageButton[][] = [];
-
-    if (poll.status !== 'ACTIVE') {
-      rows.push([this.callbackButton('✏️ Вопрос', this.cb('poll_input_prompt', 'question'))]);
-
-      for (const [index] of session.pollDraft.options.entries()) {
-        rows.push([
-          this.callbackButton(
-            `✏️ Вариант ${index + 1}`,
-            this.cb('poll_input_prompt', 'option', String(index + 1)),
-          ),
-        ]);
-      }
-
-      if (session.pollDraft.options.length < MANAGED_POLL_MAX_OPTIONS) {
-        rows.push([this.callbackButton('➕ Добавить вариант', this.cb('poll_add_option'))]);
-      }
-
-      if (session.pollDraft.options.length > MANAGED_POLL_MIN_OPTIONS) {
-        rows.push(
-          ...session.pollDraft.options.map((_, index) => [
-            this.callbackButton(
-              `🗑 Удалить вариант ${index + 1}`,
-              this.cb('poll_remove_option', String(index + 1)),
-              'negative',
-            ),
-          ]),
-        );
-      }
-
-      rows.push([this.callbackButton('Опубликовать опрос', this.cb('poll_publish'), 'positive')]);
-    } else {
-      if (poll.publishedUrl) {
-        rows.push([
-          {
-            type: 'link',
-            text: 'Открыть пост',
-            url: poll.publishedUrl,
-          },
-        ]);
-      }
-      rows.push([this.callbackButton('Закрыть опрос', this.cb('poll_close'), 'negative')]);
-    }
-
-    rows.push([
-      this.callbackButton('⬅️ Назад', this.cb('back')),
-      this.callbackButton('Главный экран', this.cb('home')),
-    ]);
-    rows.push(...this.buildFooterButtons());
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
     };
   }
 
@@ -9576,16 +9059,6 @@ export class PrivateControlService {
           title: `Приз ${input.index + 1}`,
           description: 'Введите название приза.',
         };
-      case 'poll_question':
-        return {
-          title: 'Вопрос опроса',
-          description: 'Введите вопрос для опроса.',
-        };
-      case 'poll_option':
-        return {
-          title: `Вариант ${input.index + 1}`,
-          description: 'Введите текст варианта ответа.',
-        };
       case 'manual_mute_duration':
         return {
           title: `Длительность мута для ${input.targetUserId}`,
@@ -11076,17 +10549,6 @@ export class PrivateControlService {
     });
   }
 
-  private async renderEntityPollMovedToMiniappScreen(
-    context: PrivateContext,
-    session: PrivateSession,
-  ): Promise<PrivateView> {
-    return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'poll', {
-      title: 'Опросы перенесены в mini app',
-      description:
-        'Создание, редактирование, публикация и закрытие опросов теперь выполняются только в приложении.',
-    });
-  }
-
   private async renderEntityGiveawayMovedToMiniappScreen(
     context: PrivateContext,
     session: PrivateSession,
@@ -12554,10 +12016,6 @@ export class PrivateControlService {
       broadcastDraft: {
         ...DEFAULT_BROADCAST_DRAFT,
       },
-      pollDraft: {
-        ...DEFAULT_POLL_DRAFT,
-        options: [...DEFAULT_POLL_DRAFT.options],
-      },
       suggestionDraft: null,
     };
   }
@@ -12673,7 +12131,6 @@ export class PrivateControlService {
       pendingInput: this.normalizePendingInput(row.pendingInput),
       pendingMassAction: this.normalizePendingMassAction(row.pendingMassAction),
       broadcastDraft: this.normalizeBroadcastDraft(row.broadcastDraft),
-      pollDraft: this.normalizePollDraft(row.pollDraft),
       suggestionDraft: this.normalizeSuggestionDraft(row.suggestionDraft),
     };
   }
@@ -12773,14 +12230,6 @@ export class PrivateControlService {
       };
     }
 
-    if (kind === 'poll_option') {
-      const index = this.toPositiveInt(row.index, 1) - 1;
-      return {
-        kind,
-        index: Math.max(0, index),
-      };
-    }
-
     const allowedKinds: PendingInput['kind'][] = [
       'search_settings',
       'add_domain',
@@ -12802,7 +12251,6 @@ export class PrivateControlService {
       'giveaway_end_at',
       'giveaway_claim_hours',
       'giveaway_photo',
-      'poll_question',
     ];
 
     if (allowedKinds.includes(kind as PendingInput['kind'])) {
@@ -12967,31 +12415,6 @@ export class PrivateControlService {
     };
   }
 
-  private normalizePollDraft(raw: unknown): PrivatePollDraft {
-    if (!raw || typeof raw !== 'object') {
-      return {
-        ...DEFAULT_POLL_DRAFT,
-        options: [...DEFAULT_POLL_DRAFT.options],
-      };
-    }
-
-    const row = raw as Partial<PrivatePollDraft>;
-    const question = typeof row.question === 'string' ? row.question : '';
-    const rawOptions = Array.isArray(row.options)
-      ? row.options.filter((item): item is string => typeof item === 'string')
-      : [];
-    const safeOptions = rawOptions.slice(0, MANAGED_POLL_MAX_OPTIONS);
-
-    while (safeOptions.length < MANAGED_POLL_MIN_OPTIONS) {
-      safeOptions.push('');
-    }
-
-    return {
-      question,
-      options: safeOptions,
-    };
-  }
-
   private normalizeSuggestionDraft(raw: unknown): PrivateSuggestionDraft | null {
     if (!raw || typeof raw !== 'object') {
       return null;
@@ -13099,7 +12522,6 @@ export class PrivateControlService {
       value === 'domains' ||
       value === 'rules' ||
       value === 'broadcast' ||
-      value === 'poll' ||
       value === 'giveaway' ||
       value === 'events' ||
       value === 'logs' ||

@@ -102,7 +102,6 @@ import {
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeStoredAllowlistEntry,
   parseStoredAllowlistEntry,
-  type ManagedPoll,
   sendBroadcastRequestSchema,
   sendBroadcastTestResultSchema,
   scheduleDomainRemovalRequestSchema,
@@ -266,12 +265,6 @@ import {
   saveChatSettings as saveChatSettingsValue,
   type ResolvedBotAssignmentData,
 } from './admin-chat-settings';
-import {
-  closeManagedPoll as closeManagedPollValue,
-  publishManagedPoll as publishManagedPollValue,
-  readManagedPoll as readManagedPollValue,
-  saveManagedPollDraft as saveManagedPollDraftValue,
-} from './admin-managed-poll';
 import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
 import {
   listManagedEntitiesValue,
