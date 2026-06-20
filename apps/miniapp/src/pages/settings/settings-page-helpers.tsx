@@ -212,11 +212,6 @@ export const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../../components/broadcast-publish-review-sheet'),
 );
 export const LazySettingsHandoffState = lazy(() => import('../../components/handoff'));
-export const LazyManagedPollCard = lazy(() =>
-  import('../../components/managed-poll-card').then((module) => ({
-    default: module.ManagedPollCard,
-  })),
-);
 export const LazyManagedGiveawayCard = lazy(() =>
   import('../../components/managed-giveaway-card').then((module) => ({
     default: module.ManagedGiveawayCard,
@@ -616,7 +611,6 @@ export type WarnMessageEditorKey =
 export type SettingsSectionKey =
   | ApplySectionKey
   | 'rules'
-  | 'poll'
   | 'giveaway'
   | 'comments'
   | 'mailing'
@@ -625,7 +619,6 @@ export type SettingsSectionKey =
 export const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
   rules: false,
-  poll: false,
   giveaway: false,
   greeting: false,
   profanityFilter: false,

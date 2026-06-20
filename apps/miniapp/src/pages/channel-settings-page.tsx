@@ -46,7 +46,6 @@ import {
 } from '../components/broadcast-studio-header';
 import { ManagedBroadcastHistoryCard } from '../components/managed-broadcast-history-card';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
-import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -167,7 +166,6 @@ type ChannelSettingsSectionKey =
   | 'postSuggestions'
   | 'vkParsing'
   | 'broadcast'
-  | 'poll'
   | 'giveaway';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
@@ -213,7 +211,6 @@ const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boole
   postSuggestions: false,
   vkParsing: false,
   broadcast: false,
-  poll: false,
   giveaway: false,
 };
 const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
@@ -975,7 +972,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'broadcast' &&
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
-      focusSection !== 'poll' &&
       focusSection !== 'postSuggestions' &&
       focusSection !== 'vkParsing'
     ) {
@@ -988,13 +984,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? { comments: true }
         : focusSection === 'postSuggestions'
           ? { postSuggestions: true }
-          : focusSection === 'vkParsing'
-            ? { vkParsing: true }
-            : focusSection === 'poll'
-              ? { poll: true }
-              : focusSection === 'giveaway'
-                ? { giveaway: true }
-                : { broadcast: true }),
+        : focusSection === 'vkParsing'
+          ? { vkParsing: true }
+          : focusSection === 'giveaway'
+            ? { giveaway: true }
+            : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -1312,7 +1306,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       (section === 'comments' && focusSection === 'comments') ||
       (section === 'postSuggestions' && focusSection === 'postSuggestions') ||
       (section === 'vkParsing' && focusSection === 'vkParsing') ||
-      (section === 'poll' && focusSection === 'poll') ||
       (section === 'giveaway' && focusSection === 'giveaway')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
@@ -3419,44 +3412,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
-
-      {chatId ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <SettingsSectionToggle
-              title="Опросы"
-              summary=""
-              status="Пост"
-              icon="poll"
-              tone="ink"
-              open={expandedSections.poll}
-              controls="channel-settings-poll"
-              onClick={() => toggleSection('poll')}
-            />
-          </div>
-
-          <SettingsDrilldownPanel
-            id="channel-settings-poll"
-            open={expandedSections.poll}
-            title="Опросы"
-            summary="Пост с голосованием"
-            tone="ink"
-            className="settings-drilldown__panel--campaign settings-drilldown__panel--poll settings-drilldown__panel--channel-poll"
-            onClose={() => toggleSection('poll')}
-          >
-            <div
-              id="channel-settings-poll"
-              className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
-            >
-              {expandedSections.poll ? (
-                <div className="settings-section__collapse-inner">
-                  <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
-                </div>
-              ) : null}
-            </div>
-          </SettingsDrilldownPanel>
-        </GlassCard>
-      ) : null}
 
       {chatId ? (
         <GlassCard className="channel-settings-card" elevated>

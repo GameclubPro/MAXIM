@@ -228,7 +228,6 @@ import {
   LazyBroadcastButtonsSheet,
   LazyBroadcastPublishReviewSheet,
   LazySettingsHandoffState,
-  LazyManagedPollCard,
   LazyManagedGiveawayCard,
   preloadBotSpeechMessageEditorSheet,
   AUTO_SAVE_DELAY_MS,
@@ -554,7 +553,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'rules' &&
       focusSection !== 'comments' &&
       focusSection !== 'stopWords' &&
-      focusSection !== 'poll' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'vkParsing' &&
       focusSection !== 'broadcast' &&
@@ -570,18 +568,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : focusSection === 'rules'
           ? { rules: true }
           : focusSection === 'comments'
-            ? { comments: true }
-            : focusSection === 'stopWords'
-              ? { stopWords: true }
-              : focusSection === 'poll'
-                ? { poll: true }
-                : focusSection === 'giveaway'
-                  ? { giveaway: true }
-                  : focusSection === 'vkParsing'
-                    ? { vkParsing: true }
-                    : focusSection === 'requiredSubscription'
-                      ? { requiredSubscription: true }
-                      : { mailing: true }),
+          ? { comments: true }
+          : focusSection === 'stopWords'
+            ? { stopWords: true }
+            : focusSection === 'giveaway'
+              ? { giveaway: true }
+              : focusSection === 'vkParsing'
+                ? { vkParsing: true }
+                : focusSection === 'requiredSubscription'
+                  ? { requiredSubscription: true }
+                  : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -6282,52 +6278,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </div>
               </SettingsDrilldownPanel>
             </GlassCard>
-
-            {chatId ? (
-              <GlassCard
-                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-                style={{ animationDelay: '52ms', order: 24 }}
-                aria-label="Опрос чата"
-              >
-                <div
-                  className={cn('settings-section__head', 'settings-section__head--interactive')}
-                >
-                  <SettingsSectionToggle
-                    title="Опросы"
-                    summary="Голосование в отдельном посте"
-                    status="Пост"
-                    icon="poll"
-                    tone="ink"
-                    open={expandedSections.poll}
-                    controls="settings-poll-content"
-                    onClick={() => toggleSection('poll')}
-                  />
-                </div>
-
-                <SettingsDrilldownPanel
-                  id="settings-poll-content"
-                  open={expandedSections.poll}
-                  title="Опросы"
-                  summary="Голосование в отдельном посте"
-                  tone="ink"
-                  className="settings-drilldown__panel--campaign settings-drilldown__panel--poll"
-                  onClose={() => toggleSection('poll')}
-                >
-                  <div
-                    id="settings-poll-content"
-                    className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
-                  >
-                    {expandedSections.poll ? (
-                      <div className="settings-section__collapse-inner">
-                        <Suspense fallback={null}>
-                          <LazyManagedPollCard api={api} entityType="chat" entityId={chatId} />
-                        </Suspense>
-                      </div>
-                    ) : null}
-                  </div>
-                </SettingsDrilldownPanel>
-              </GlassCard>
-            ) : null}
 
             {chatId ? (
               <GlassCard
