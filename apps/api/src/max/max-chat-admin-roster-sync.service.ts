@@ -364,6 +364,7 @@ export class MaxChatAdminRosterSyncService {
       params?.source === 'webhook_bot_removed' ||
       params?.source === 'webhook_chat_title_changed' ||
       params?.source === 'webhook_membership_churn' ||
+      params?.source === 'handshake_start' ||
       params?.source === 'moderation_destructive_path' ||
       params?.source === 'admin_access_validation' ||
       params?.source === 'discovery_snapshot'
@@ -852,6 +853,7 @@ export class MaxChatAdminRosterSyncService {
 
     if (
       job.source === 'webhook_membership_churn' ||
+      job.source === 'handshake_start' ||
       job.source === 'moderation_destructive_path' ||
       job.source === 'admin_access_validation'
     ) {
@@ -868,6 +870,7 @@ export class MaxChatAdminRosterSyncService {
 
     if (
       job.source === 'webhook_membership_churn' ||
+      job.source === 'handshake_start' ||
       job.source === 'moderation_destructive_path' ||
       job.source === 'admin_access_validation'
     ) {
@@ -906,6 +909,7 @@ export class MaxChatAdminRosterSyncService {
 
     if (
       job.source === 'webhook_membership_churn' ||
+      job.source === 'handshake_start' ||
       job.source === 'moderation_destructive_path' ||
       job.source === 'admin_access_validation'
     ) {
@@ -943,6 +947,7 @@ export class MaxChatAdminRosterSyncService {
     if (
       job.source === 'webhook_bot_added' ||
       job.source === 'webhook_membership_churn' ||
+      job.source === 'handshake_start' ||
       job.source === 'moderation_destructive_path' ||
       job.source === 'admin_access_validation'
     ) {

@@ -1,14 +1,27 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ChatSummary } from '@maxim/contracts';
-import { ChatEntityType, Prisma, WebhookStatus } from '../prisma/prisma-client';
+import {
+  ChatEntityType,
+  ManagedEntityAccessState,
+  Prisma,
+  WebhookStatus,
+} from '../prisma/prisma-client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
-import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  type MaxChatMemberAccess,
+} from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import {
+  ManagedEntityHandshakeService,
+  MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+} from '../max/managed-entity-handshake.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type WebhookIngestResult = {
@@ -32,6 +45,8 @@ const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
 const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
+const BOT_ADDED_START_HINT_BACKOFF_MS = 5 * 60 * 1_000;
+const BOT_ADDED_START_HINT_SEND_TIMEOUT_MS = 1_500;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 15 * 60;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
@@ -40,6 +55,8 @@ const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_callback',
   'bot_started',
   'bot_added',
+  'user_added',
+  'user_removed',
 ]);
 const MEMBERSHIP_ACTIVITY_UPDATE_TYPES = new Set(['user_added', 'user_removed']);
 const INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES = new Set([
@@ -70,6 +87,7 @@ export class WebhookService {
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
   private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
+  private readonly botAddedStartHintBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -80,6 +98,7 @@ export class WebhookService {
     @Optional()
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
     @Optional() private readonly chatContextCache?: ChatContextCacheService,
+    @Optional() private readonly managedEntityHandshakeService?: ManagedEntityHandshakeService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
   }
@@ -99,6 +118,8 @@ export class WebhookService {
     try {
       await this.persistEvent(update, sourceIp, rawPayload);
       await this.stageManagedEntityPendingBootstrap(update);
+      this.deferBotAddedStartHint(update);
+      this.deferManagedEntityHandshake(update);
 
       return { accepted: true, duplicate: false };
     } catch (error: unknown) {
@@ -114,6 +135,8 @@ export class WebhookService {
         try {
           await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
           await this.stageManagedEntityPendingBootstrap(sanitizedUpdate);
+          this.deferBotAddedStartHint(sanitizedUpdate);
+          this.deferManagedEntityHandshake(sanitizedUpdate);
           this.logger.warn(
             {
               dedupKey: update.updateId,
@@ -136,10 +159,6 @@ export class WebhookService {
   }
 
   private async invalidateMembershipCacheFromWebhook(update: MaxUpdate): Promise<void> {
-    if (!this.membershipLookupService) {
-      return;
-    }
-
     const chatId = update.message?.chatId?.trim() ?? '';
     const memberUserIds =
       update.membership?.memberUserIds ??
@@ -151,8 +170,24 @@ export class WebhookService {
       return;
     }
 
+    if (this.membershipLookupService) {
+      try {
+        await this.membershipLookupService.invalidateMemberships(chatId, memberUserIds);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            updateId: update.updateId,
+            chatId,
+            memberUserIds,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to invalidate MAX membership cache from webhook',
+        );
+      }
+    }
+
     try {
-      await this.membershipLookupService.invalidateMemberships(chatId, memberUserIds);
+      await this.invalidateManagedEntityAccessEdgesFromWebhook(update, chatId, memberUserIds);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -161,7 +196,7 @@ export class WebhookService {
           memberUserIds,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to invalidate MAX membership cache from webhook',
+        'Failed to invalidate managed entity access edges from webhook',
       );
     }
   }
@@ -174,6 +209,54 @@ export class WebhookService {
       normalizedType === 'user_removed' ||
       normalizedType === 'bot_removed'
     );
+  }
+
+  private async invalidateManagedEntityAccessEdgesFromWebhook(
+    update: MaxUpdate,
+    chatId: string,
+    memberUserIds: readonly string[],
+  ): Promise<void> {
+    if (update.type.trim().toLowerCase() !== 'user_removed') {
+      return;
+    }
+
+    const normalizedUserIds = Array.from(
+      new Set(
+        memberUserIds
+          .map((userId) => userId.trim())
+          .filter((userId): userId is string => userId.length > 0),
+      ),
+    );
+    if (normalizedUserIds.length === 0) {
+      return;
+    }
+
+    const accessEdge = (this.prisma as PrismaService & {
+      managedEntityAccessEdge?: {
+        updateMany?: (args: unknown) => Promise<unknown>;
+      };
+    }).managedEntityAccessEdge;
+    if (typeof accessEdge?.updateMany !== 'function') {
+      return;
+    }
+
+    await accessEdge.updateMany({
+      where: {
+        chatId,
+        userId: {
+          in: normalizedUserIds,
+        },
+      },
+      data: {
+        state: ManagedEntityAccessState.USER_DENIED,
+        userRole: 'MEMBER',
+        botRole: 'UNKNOWN',
+        checkedAt: new Date(),
+        expiresAt: null,
+        deniedReason: 'webhook_user_removed',
+        source: 'webhook_user_removed',
+      },
+    });
   }
 
   private async persistEvent(
@@ -245,6 +328,108 @@ export class WebhookService {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to stage managed entity pending bootstrap from bot_added webhook',
+      );
+    }
+  }
+
+  private deferManagedEntityHandshake(update: MaxUpdate): void {
+    if (!this.managedEntityHandshakeService) {
+      return;
+    }
+
+    this.deferBackgroundTask(
+      async () => {
+        await this.managedEntityHandshakeService?.handleWebhookUpdate(update);
+      },
+      'managed entity handshake',
+      update,
+    );
+  }
+
+  private deferBotAddedStartHint(update: MaxUpdate): void {
+    if (!this.maxClient) {
+      return;
+    }
+
+    if (update.type.trim().toLowerCase() !== 'bot_added') {
+      return;
+    }
+
+    const chatId = update.message?.chatId?.trim() ?? '';
+    const botId = update.botId?.trim() ?? '';
+    const entityType = this.readWebhookChatEntityType(update);
+    if (
+      !chatId ||
+      !botId ||
+      !entityType ||
+      this.isUnsupportedManagedRosterSyncChat(chatId, update.message?.entityType)
+    ) {
+      return;
+    }
+
+    const backoffKey = `${chatId}:${botId}`;
+    const now = Date.now();
+    const blockedUntil = this.botAddedStartHintBackoffUntilMs.get(backoffKey) ?? 0;
+    if (blockedUntil > now) {
+      return;
+    }
+    this.botAddedStartHintBackoffUntilMs.set(backoffKey, now + BOT_ADDED_START_HINT_BACKOFF_MS);
+
+    this.deferBackgroundTask(
+      async () => {
+        await this.sendBotAddedStartHint(update, chatId, botId);
+      },
+      'bot added start hint',
+      update,
+    );
+  }
+
+  private async sendBotAddedStartHint(
+    update: MaxUpdate,
+    chatId: string,
+    botId: string,
+  ): Promise<void> {
+    if (!this.maxClient) {
+      return;
+    }
+
+    try {
+      await this.maxClient.sendMessageImmediateWithId(
+        chatId,
+        'Чтобы подключить чат к панели, администратор должен написать ровно: Старт',
+        {
+          buttons: [
+            [
+              {
+                type: 'callback',
+                text: 'Старт',
+                payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+                intent: 'positive',
+              },
+            ],
+          ],
+          debugContext: {
+            screen: 'managed_entity_handshake',
+            action: 'bot_added_hint',
+          },
+        },
+        {
+          botId,
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+          timeoutMs: BOT_ADDED_START_HINT_SEND_TIMEOUT_MS,
+        },
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send managed entity start hint after bot_added webhook',
       );
     }
   }

@@ -58,6 +58,53 @@ describe('WebhookService', () => {
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
   });
 
+  it('defers the Старт handshake after storing the webhook event', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-start' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(0),
+    };
+    const handshake = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      handshake as never,
+    );
+    const update = {
+      updateId: 'u-start-1',
+      botId: 'bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'm-start-1',
+        chatId: '-100',
+        chatTitle: 'Команда MAX',
+        senderId: 'admin-1',
+        text: 'Старт',
+        createdAt: '2026-06-20T12:00:00.000Z',
+      },
+    };
+
+    await expect(service.ingest(update, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(handshake.handleWebhookUpdate).toHaveBeenCalledWith(update);
+  });
+
   it('accepts duplicate events without mutating the original webhook state', async () => {
     const prisma = {
       webhookEvent: {
@@ -271,6 +318,9 @@ describe('WebhookService', () => {
         create: jest.fn().mockResolvedValue({ id: 'evt-3b' }),
         updateMany: jest.fn(),
       },
+      managedEntityAccessEdge: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
     };
     const config = {
       get: jest.fn().mockReturnValue(1),
@@ -331,6 +381,22 @@ describe('WebhookService', () => {
     expect(membershipLookup.invalidateMemberships).toHaveBeenNthCalledWith(2, 'chat-1', [
       'user-10',
     ]);
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: {
+          in: ['user-10'],
+        },
+      },
+      data: expect.objectContaining({
+        state: 'USER_DENIED',
+        userRole: 'MEMBER',
+        botRole: 'UNKNOWN',
+        expiresAt: null,
+        deniedReason: 'webhook_user_removed',
+        source: 'webhook_user_removed',
+      }),
+    });
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
   });
 
@@ -425,6 +491,22 @@ describe('WebhookService', () => {
             chatId: '-100200',
           },
         },
+        create: expect.objectContaining({
+          sourceEventType: 'user_added',
+        }),
+      }),
+    );
+    expect(prisma.managedEntityLocalActivity.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_chatId: {
+            userId: 'user-77',
+            chatId: '-100200',
+          },
+        },
+        create: expect.objectContaining({
+          sourceEventType: 'message_created',
+        }),
       }),
     );
   });
@@ -1622,6 +1704,78 @@ describe('WebhookService', () => {
       15 * 60,
       'user-77',
     );
+  });
+
+  it('sends a throttled Старт hint after bot_added webhooks', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-hint' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'hint-1', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const update = {
+      updateId: 'u-bot-added-hint-1',
+      type: 'bot_added',
+      botId: 'id613002203036_bot',
+      message: {
+        messageId: 'bot_added:u-bot-added-hint-1',
+        chatId: '-100129',
+        chatTitle: 'Чат с подсказкой',
+        entityType: 'chat',
+        senderId: 'id613002203036_bot',
+        text: '',
+        createdAt: new Date('2026-04-03T12:03:00.000Z').toISOString(),
+      },
+    };
+
+    await expect(service.ingest(update as never, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100129',
+      'Чтобы подключить чат к панели, администратор должен написать ровно: Старт',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              text: 'Старт',
+              type: 'callback',
+              payload: 'managed_entity_handshake:start_hint',
+            }),
+          ],
+        ],
+      }),
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        sourceTag: 'managed_handshake',
+      }),
+    );
+
+    await expect(
+      service.ingest({ ...update, updateId: 'u-bot-added-hint-2' } as never, '127.0.0.1'),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
   });
 
   it('enqueues chat admin roster sync for bot membership churn updates', async () => {

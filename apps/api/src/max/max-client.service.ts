@@ -289,6 +289,7 @@ export const MAX_API_SOURCE_TAGS = {
   NIGHT_MODE_TRANSITION: 'night_mode_transition',
   PARTICIPANT_SEARCH: 'participant_search',
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
+  MANAGED_HANDSHAKE: 'managed_handshake',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',

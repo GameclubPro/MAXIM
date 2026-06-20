@@ -120,9 +120,10 @@ function createService(
     listChannels: jest.fn(),
     listChannelsWithRefreshState: jest.fn(),
     processManagedEntitiesRefreshJob: jest.fn(),
-    runManagedEntitiesRemoteFullRefreshForManagedEntities: jest
+    runManagedEntitiesBoundedRefreshForManagedEntities: jest
       .fn()
       .mockResolvedValue({ continueAfterMs: 5_000 }),
+    runManagedEntitiesRemoteFullRefreshForManagedEntities: jest.fn(),
     listManagedEntitiesDetailedForManagedEntities: jest.fn().mockResolvedValue({
       items: [],
       refresh: null,
@@ -680,7 +681,7 @@ describe('ManagedEntitiesService refresh jobs', () => {
 
     expect(legacyAdminService.processManagedEntitiesRefreshJob).not.toHaveBeenCalled();
     expect(
-      legacyAdminService.runManagedEntitiesRemoteFullRefreshForManagedEntities,
+      legacyAdminService.runManagedEntitiesBoundedRefreshForManagedEntities,
     ).toHaveBeenCalledWith(
       {
         userId: 'admin-1',
@@ -694,6 +695,9 @@ describe('ManagedEntitiesService refresh jobs', () => {
         resetRefreshCursor: false,
       },
     );
+    expect(
+      legacyAdminService.runManagedEntitiesRemoteFullRefreshForManagedEntities,
+    ).not.toHaveBeenCalled();
   });
 });
 

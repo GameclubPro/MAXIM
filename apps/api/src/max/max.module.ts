@@ -15,6 +15,9 @@ import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.servi
 import { MaxClientService } from './max-client.service';
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
+import { ManagedEntityAccessWriter } from './managed-entity-access-writer.service';
+import { ManagedEntityHandshakeService } from './managed-entity-handshake.service';
+import { MaxBotModule } from './max-bot.module';
 
 const maxProviders = [
   MaxClientService,
@@ -24,6 +27,8 @@ const maxProviders = [
   MaxMembershipLookupService,
   MaxWebhookSubscriptionReconcilerService,
   ManagedEntityAccessLossService,
+  ManagedEntityAccessWriter,
+  ManagedEntityHandshakeService,
   ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
   ...(roleRunsAction(getAppRole()) ? [MaxChatAdminRosterSyncProcessor] : []),
 ];
@@ -35,6 +40,7 @@ const maxProviders = [
       maxRedirects: 0,
     }),
     SystemModule,
+    MaxBotModule,
     ChatContextModule,
     NightModeTransitionModule,
     BullModule.registerQueue({ name: 'moderation-actions' }),
@@ -49,6 +55,8 @@ const maxProviders = [
     MaxMembershipLookupService,
     MaxWebhookSubscriptionReconcilerService,
     ManagedEntityAccessLossService,
+    ManagedEntityAccessWriter,
+    ManagedEntityHandshakeService,
   ],
 })
 export class MaxModule {}

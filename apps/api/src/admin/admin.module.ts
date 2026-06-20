@@ -28,6 +28,7 @@ import { ChannelDialogService } from './channel-dialog.service';
 import { ManualModerationService } from './manual-moderation.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedBroadcastService } from './managed-broadcast.service';
+import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { ManagedEntitiesDiscoveryService } from './managed-entities-discovery.service';
 import { ManagedEntitiesService } from './managed-entities.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
@@ -81,6 +82,7 @@ import { VkSyncService } from './vk-sync.service';
     RedisCounterService,
     GlobalSpammerIntelligenceService,
     ManagedBroadcastService,
+    ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
     ManagedBroadcastRunnerService,
@@ -110,6 +112,7 @@ import { VkSyncService } from './vk-sync.service';
     ChannelDialogService,
     ManualModerationService,
     ManagedBroadcastService,
+    ManagedEntityCandidateSyncService,
     ManagedEntitiesService,
     ManagedEntitiesDiscoveryService,
     ManagedGiveawayService,

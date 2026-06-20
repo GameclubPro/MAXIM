@@ -162,6 +162,7 @@ import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
+import { ManagedEntityCandidateSyncService } from './managed-entity-candidate-sync.service';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import {
@@ -323,6 +324,7 @@ import {
   MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS,
   MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS,
   MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE,
+  MANAGED_ENTITIES_FOREGROUND_CANDIDATE_CHECK_LIMIT,
   MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT,
   MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
   MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE,
@@ -413,7 +415,6 @@ import {
   MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS,
   MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS,
   MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS,
-  MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
   LOCAL_USER_DISPLAY_NAME_EVENT_TYPES,
   ManagedEntitiesRefreshThrottledError,
   mapManagedEntityTypeToChatEntityType,
@@ -548,7 +549,6 @@ export class AdminService implements OnModuleDestroy {
     Promise<ManagedEntitiesListResult>
   >();
   private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
-  private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesPublishedSnapshotRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesDiscoveryHeaderPrimeRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map<string, number>();
@@ -616,6 +616,8 @@ export class AdminService implements OnModuleDestroy {
     @Optional()
     @InjectQueue(ADMIN_SUPER_BAN_QUEUE)
     private readonly adminSuperBanQueue?: Queue<AdminSuperBanJob>,
+    @Optional()
+    private readonly managedEntityCandidateSyncService?: ManagedEntityCandidateSyncService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -732,7 +734,7 @@ export class AdminService implements OnModuleDestroy {
     } = {},
   ): Promise<ChatSummary[]> {
     return this.collectManagedEntitiesForMassAction(user, 'chat', {
-      discoveryMode: options.discoveryMode ?? 'full',
+      discoveryMode: options.discoveryMode ?? 'cached-first',
     });
   }
 
@@ -837,25 +839,38 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
-    let lightweightBootstrapPromise: Promise<{
-      recentBotAdded: ChatSummary[];
-    }> | null = null;
-    const loadLightweightBootstrap = async () => {
-      if (lightweightBootstrapPromise === null) {
+    const lightweightBootstrapPromises = new Map<
+      number,
+      Promise<{
+        recentBotAdded: ChatSummary[];
+      }>
+    >();
+    const loadLightweightBootstrap = async (
+      options: { adminCheckLimit?: number } = {},
+    ) => {
+      const adminCheckLimit = Math.max(
+        0,
+        Math.trunc(options.adminCheckLimit ?? RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS),
+      );
+      let lightweightBootstrapPromise = lightweightBootstrapPromises.get(adminCheckLimit);
+      if (!lightweightBootstrapPromise) {
         lightweightBootstrapPromise = this.loadManagedEntitiesLightweightBootstrap(
           user,
           entityType,
+          { adminCheckLimit },
         );
+        lightweightBootstrapPromises.set(adminCheckLimit, lightweightBootstrapPromise);
       }
 
       return lightweightBootstrapPromise;
     };
     const mergeWithLightweightBootstrap = async (
       items: readonly ChatSummary[],
+      options: { adminCheckLimit?: number } = {},
     ): Promise<ChatSummary[]> => {
       return this.mergeManagedEntitiesWithLightweightBootstrap(
         items,
-        await loadLightweightBootstrap(),
+        await loadLightweightBootstrap(options),
       );
     };
     const mergePublishedSnapshotWithLightweightBootstrap = async (
@@ -870,16 +885,19 @@ export class AdminService implements OnModuleDestroy {
     if (options.refresh !== true) {
       if (options.fresh === true) {
         try {
-          const fresh = await this.discoverManagedEntities(user, entityType, {
+          const fresh = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
             respectCooldown: false,
             fullScan: false,
             includeRefreshState: options.includeRefreshState === true,
-            bypassRemoteCache: true,
-            revalidateCachedChats: true,
-            resetRefreshCursor: options.resetRefreshCursor === true,
-            throwOnFailure: true,
           });
-          const mergedFresh = await mergeWithLightweightBootstrap(fresh.items);
+          const remainingFreshAdminCheckBudget = Math.max(
+            0,
+            MANAGED_ENTITIES_FOREGROUND_CANDIDATE_CHECK_LIMIT -
+              this.readManagedEntitiesAdminCheckCount(fresh),
+          );
+          const mergedFresh = await mergeWithLightweightBootstrap(fresh.items, {
+            adminCheckLimit: remainingFreshAdminCheckBudget,
+          });
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
           this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
             deferStart: true,
@@ -928,7 +946,6 @@ export class AdminService implements OnModuleDestroy {
         this.scheduleManagedEntitiesPriorityAllowlistWarmup(user, entityType, {
           seededChats: initial,
         });
-        this.scheduleManagedEntitiesColdStartRemoteFullRefresh(user, entityType);
       }
       if (initial.length > 0) {
         const items = await this.attachManagedEntityBotAssignments(
@@ -946,13 +963,9 @@ export class AdminService implements OnModuleDestroy {
         };
       }
 
-      const warmupPromise = this.shouldRunManagedEntitiesRemoteResponseWarmup()
-        ? this.startManagedEntitiesResponseWarmup(user, entityType, {
-            bypassRemoteCache: options.bypassRemoteCache === true,
-            resetRefreshCursor: options.resetRefreshCursor === true,
-            includeRefreshState: options.includeRefreshState === true,
-          })
-        : null;
+      const warmupPromise = this.startManagedEntitiesResponseWarmup(user, entityType, {
+        includeRefreshState: options.includeRefreshState === true,
+      });
       const discovered = warmupPromise
         ? await this.awaitManagedEntitiesResponseValueWithinBudget(warmupPromise, {
             fallback: {
@@ -990,16 +1003,7 @@ export class AdminService implements OnModuleDestroy {
       };
     }
 
-    const eagerWarmupPromise =
-      this.shouldRunManagedEntitiesRemoteResponseWarmup() &&
-      (options.bypassRemoteCache === true || options.resetRefreshCursor === true)
-        ? this.startManagedEntitiesResponseWarmup(user, entityType, {
-            bypassRemoteCache: options.bypassRemoteCache === true,
-            resetRefreshCursor: options.resetRefreshCursor === true,
-            includeRefreshState: false,
-          })
-        : null;
-    const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
+    const refresh = await this.scheduleManagedEntitiesBoundedRefresh(user, entityType, {
       bypassRemoteCache: options.bypassRemoteCache === true,
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
@@ -1051,14 +1055,11 @@ export class AdminService implements OnModuleDestroy {
       }),
     );
     const responseWarmupPromise =
-      eagerWarmupPromise ??
-      (cached.length === 0 && this.shouldRunManagedEntitiesRemoteResponseWarmup()
+      cached.length === 0
         ? this.startManagedEntitiesResponseWarmup(user, entityType, {
-            bypassRemoteCache: options.bypassRemoteCache === true,
-            resetRefreshCursor: options.resetRefreshCursor === true,
             includeRefreshState: false,
           })
-        : null);
+        : null;
     const responseWarmup = responseWarmupPromise
       ? await this.awaitManagedEntitiesResponseValueWithinBudget(responseWarmupPromise, {
           fallback: {
@@ -2261,6 +2262,78 @@ export class AdminService implements OnModuleDestroy {
     return refreshState;
   }
 
+  private async scheduleManagedEntitiesBoundedRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshState> {
+    const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
+      user.userId,
+      entityType,
+      {
+        bypassRemoteCache: options.bypassRemoteCache === true,
+        resetRefreshCursor: options.resetRefreshCursor === true,
+      },
+    );
+    if (refreshState.backoffActive || refreshState.complete) {
+      return refreshState;
+    }
+
+    const refreshKey = [user.userId, entityType, 'local', 'bounded', 'background'].join(':');
+    if (!this.managedEntitiesBackgroundRefreshRuns.has(refreshKey)) {
+      if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
+        const pending = this.runManagedEntitiesBoundedRefreshUntilSettled(user, entityType, options)
+          .catch((error: unknown) => {
+            this.logger.warn(
+              {
+                entityType,
+                userId: user.userId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Managed entities bounded background refresh failed',
+            );
+          })
+          .finally(() => {
+            if (this.managedEntitiesBackgroundRefreshRuns.get(refreshKey) === pending) {
+              this.managedEntitiesBackgroundRefreshRuns.delete(refreshKey);
+            }
+          });
+        this.managedEntitiesBackgroundRefreshRuns.set(refreshKey, pending);
+      }
+    }
+
+    return refreshState;
+  }
+
+  private async runManagedEntitiesBoundedRefreshUntilSettled(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<void> {
+    let nextOptions = {
+      ...options,
+    };
+
+    while (true) {
+      const outcome = await this.runManagedEntitiesBoundedRefreshJob(user, entityType, nextOptions);
+      if (!outcome) {
+        return;
+      }
+
+      nextOptions = {
+        bypassRemoteCache: false,
+        resetRefreshCursor: false,
+      };
+      await this.sleep(Math.max(0, outcome.continueAfterMs));
+    }
+  }
+
   private async runManagedEntitiesRemoteFullRefreshUntilSettled(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
@@ -2301,9 +2374,23 @@ export class AdminService implements OnModuleDestroy {
       chatTitle: null,
     };
 
-    return this.runManagedEntitiesRemoteFullRefreshForManagedEntities(user, job.entityType, {
+    return this.runManagedEntitiesBoundedRefreshForManagedEntities(user, job.entityType, {
       bypassRemoteCache: job.bypassRemoteCache,
       resetRefreshCursor: job.resetRefreshCursor,
+    });
+  }
+
+  runManagedEntitiesBoundedRefreshForManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    return this.runManagedEntitiesBoundedRefreshJob(user, entityType, {
+      bypassRemoteCache: options.bypassRemoteCache,
+      resetRefreshCursor: options.resetRefreshCursor,
     });
   }
 
@@ -2601,6 +2688,55 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private async runManagedEntitiesBoundedRefreshJob(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    const backgroundPauseDecision = await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
+      'job',
+      this.buildManagedEntitiesBackgroundGovernorOptions(options),
+    );
+    if (backgroundPauseDecision) {
+      return {
+        continueAfterMs: backgroundPauseDecision.retryAfterMs,
+      };
+    }
+
+    if (options.resetRefreshCursor === true) {
+      await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+    }
+
+    const result = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
+      respectCooldown: false,
+      fullScan: true,
+      includeRefreshState: true,
+    });
+    const refresh = result.refresh;
+    if (!refresh || refresh.backoffActive) {
+      return null;
+    }
+
+    if (refresh.complete) {
+      await this.rebuildManagedEntitiesPublishedSnapshot(user.userId, entityType);
+      return null;
+    }
+
+    if (result.items.length > 0) {
+      this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
+    }
+
+    return {
+      continueAfterMs: Math.max(
+        0,
+        refresh.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
+      ),
+    };
+  }
+
   private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
     const merged: ChatSummary[] = [];
     const seen = new Set<string>();
@@ -2631,10 +2767,13 @@ export class AdminService implements OnModuleDestroy {
   private async loadManagedEntitiesLightweightBootstrap(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
+    options: { adminCheckLimit?: number } = {},
   ): Promise<{
     recentBotAdded: ChatSummary[];
   }> {
-    const recentBotAddedPromise = this.bootstrapRecentBotAddedEntities(user, entityType);
+    const recentBotAddedPromise = this.bootstrapRecentBotAddedEntities(user, entityType, {
+      adminCheckLimit: options.adminCheckLimit,
+    });
 
     const [recentBotAdded] = await Promise.all([
       this.awaitManagedEntitiesResponseValueWithinBudget(recentBotAddedPromise, {
@@ -2724,13 +2863,6 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:allowlist-warmup`;
   }
 
-  private buildManagedEntitiesColdStartRefreshKey(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-  ): string {
-    return `${userId}:${entityType}:cold-start-refresh`;
-  }
-
   private buildManagedEntitiesAllowlistCacheKey(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -2743,10 +2875,6 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter,
   ): string {
     return `${userId}:${entityType}:last-success`;
-  }
-
-  private shouldRunManagedEntitiesRemoteResponseWarmup(): boolean {
-    return !this.adminManagedEntitiesRefreshQueue;
   }
 
   private buildManagedEntitiesRuntimeChatScopeFilter(): Prisma.ChatWhereInput | null {
@@ -3262,8 +3390,6 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
     options: {
-      bypassRemoteCache?: boolean;
-      resetRefreshCursor?: boolean;
       includeRefreshState?: boolean;
     } = {},
   ): Promise<ManagedEntitiesListResult> {
@@ -3273,12 +3399,10 @@ export class AdminService implements OnModuleDestroy {
       return existing;
     }
 
-    const pending = this.discoverManagedEntities(user, entityType, {
+    const pending = this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
       respectCooldown: false,
       fullScan: false,
       includeRefreshState: options.includeRefreshState === true,
-      bypassRemoteCache: options.bypassRemoteCache === true,
-      resetRefreshCursor: options.resetRefreshCursor === true,
     }).finally(() => {
       if (this.managedEntitiesResponseWarmupRuns.get(key) === pending) {
         this.managedEntitiesResponseWarmupRuns.delete(key);
@@ -3349,79 +3473,6 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync(priorityCandidates);
-  }
-
-  private scheduleManagedEntitiesColdStartRemoteFullRefresh(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-  ): void {
-    if (!this.adminManagedEntitiesRefreshQueue) {
-      return;
-    }
-
-    const key = this.buildManagedEntitiesColdStartRefreshKey(user.userId, entityType);
-    if (this.managedEntitiesColdStartRefreshScheduleRuns.has(key)) {
-      return;
-    }
-
-    const pending = this.runManagedEntitiesColdStartRemoteFullRefresh(user, entityType)
-      .catch((error: unknown) => {
-        this.logger.warn(
-          {
-            entityType,
-            userId: user.userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Managed entities cold-start background refresh scheduling failed',
-        );
-      })
-      .finally(() => {
-        if (this.managedEntitiesColdStartRefreshScheduleRuns.get(key) === pending) {
-          this.managedEntitiesColdStartRefreshScheduleRuns.delete(key);
-        }
-      });
-
-    this.managedEntitiesColdStartRefreshScheduleRuns.set(key, pending);
-  }
-
-  private async runManagedEntitiesColdStartRemoteFullRefresh(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-  ): Promise<void> {
-    if (!this.adminManagedEntitiesRefreshQueue) {
-      return;
-    }
-
-    let previousCursor: number | null = null;
-    try {
-      previousCursor =
-        (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(user.userId, entityType)) ??
-        null;
-    } catch {
-      previousCursor = null;
-    }
-
-    const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
-      user.userId,
-      entityType,
-    );
-    if (refreshState.backoffActive || refreshState.complete) {
-      return;
-    }
-
-    const enqueued = await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType);
-    if (
-      enqueued ||
-      !(previousCursor === null || previousCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
-    ) {
-      return;
-    }
-
-    try {
-      await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
-    } catch {
-      // Preserve best-effort behavior for passive cold-start scheduling.
-    }
   }
 
   private createManagedEntitySummary(params: {
@@ -3913,156 +3964,13 @@ export class AdminService implements OnModuleDestroy {
       return [];
     }
 
-    const lookbackFrom = new Date(Date.now() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
     const limit = Math.max(1, options.limit);
-    const rows = await managedEntitiesReadPrisma.$queryRaw<
-      Array<{
-        chat_id: string | null;
-        chat_title: string | null;
-        chat_type: string | null;
-        created_at: Date;
-      }>
-    >`
-      SELECT
-        activities.chat_id,
-        COALESCE(NULLIF(BTRIM(activities.chat_title), ''), chats.title) AS chat_title,
-        COALESCE(
-          CASE activities.entity_type
-            WHEN 'CHANNEL' THEN 'channel'
-            ELSE 'chat'
-          END,
-          CASE chats.entity_type
-            WHEN 'CHANNEL' THEN 'channel'
-            ELSE 'chat'
-          END
-        ) AS chat_type,
-        activities.last_event_at AS created_at
-      FROM managed_entity_local_activities AS activities
-      LEFT JOIN chats ON chats.id = activities.chat_id
-      WHERE activities.user_id = ${normalizedUserId}
-        AND activities.last_event_at >= ${lookbackFrom}
-      ORDER BY activities.last_event_at DESC
-      LIMIT ${limit}
-    `;
-
-    const sourceRows =
-      rows.length > 0
-        ? rows
-        : await this.loadManagedEntitiesLocalDiscoverySnapshotFromWebhookEvents(
-            managedEntitiesReadPrisma,
-            normalizedUserId,
-            lookbackFrom,
-            limit,
-          );
-
-    const snapshot: ManagedEntitiesDiscoverySnapshot = [];
-    for (const row of Array.isArray(sourceRows) ? sourceRows : []) {
-      const chatId = this.readTrimmedString(row.chat_id);
-      if (!chatId) {
-        continue;
-      }
-
-      const hintedEntityType = this.normalizeManagedEntityTypeHint(row.chat_type) ?? 'chat';
-      if (hintedEntityType === 'chat' && isPrivateDirectChat(chatId)) {
-        continue;
-      }
-      if (entityType !== 'all' && hintedEntityType !== entityType) {
-        continue;
-      }
-
-      snapshot.push({
-        chatId,
-        title: this.readTrimmedString(row.chat_title) ?? chatId,
-        lastEventTime: row.created_at instanceof Date ? row.created_at.getTime() : 0,
-        entityType: hintedEntityType,
-        link: null,
-        avatarUrl: null,
-      });
-    }
-
-    return snapshot;
-  }
-
-  private async loadManagedEntitiesLocalDiscoverySnapshotFromWebhookEvents(
-    prisma: PrismaClient | Pick<PrismaService, 'chatAdminAllowlist' | '$queryRaw' | 'chat'>,
-    normalizedUserId: string,
-    lookbackFrom: Date,
-    limit: number,
-  ): Promise<
-    Array<{
-      chat_id: string | null;
-      chat_title: string | null;
-      chat_type: string | null;
-      created_at: Date;
-    }>
-  > {
-    const trimmedUserId = normalizedUserId.trim();
-    if (!trimmedUserId) {
-      return [];
-    }
-
-    return prisma.$queryRaw<
-      Array<{
-        chat_id: string | null;
-        chat_title: string | null;
-        chat_type: string | null;
-        created_at: Date;
-      }>
-    >`
-      WITH local_candidates AS (
-        SELECT DISTINCT ON (chat_id)
-          chat_id,
-          chat_title,
-          chat_type,
-          created_at
-        FROM (
-          SELECT
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
-            NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
-            LOWER(
-              COALESCE(
-                NULLIF(BTRIM(normalized_payload->'raw'->>'chat_type'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->>'chatType'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chat_type'), ''),
-                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chatType'), ''),
-                CASE
-                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'true'
-                    THEN 'channel'
-                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'false'
-                    THEN 'chat'
-                  ELSE NULL
-                END
-              )
-            ) AS chat_type,
-            created_at
-          FROM webhook_events
-          WHERE normalized_payload->'message'->>'senderId' = ${trimmedUserId}
-            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
-            AND normalized_payload->>'type' IN (${Prisma.join(
-              MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
-            )})
-            AND created_at >= ${lookbackFrom}
-        ) ranked
-        WHERE chat_id IS NOT NULL
-        ORDER BY chat_id, created_at DESC
-      )
-      SELECT
-        local_candidates.chat_id,
-        COALESCE(local_candidates.chat_title, chats.title) AS chat_title,
-        COALESCE(
-          local_candidates.chat_type,
-          CASE chats.entity_type
-            WHEN 'CHANNEL' THEN 'channel'
-            ELSE 'chat'
-          END
-        ) AS chat_type,
-        local_candidates.created_at
-      FROM local_candidates
-      LEFT JOIN chats ON chats.id = local_candidates.chat_id
-      ORDER BY local_candidates.created_at DESC
-      LIMIT ${limit}
-    `;
+    return (
+      this.managedEntityCandidateSyncService ?? new ManagedEntityCandidateSyncService()
+    ).loadLocalDiscoverySnapshot(managedEntitiesReadPrisma, normalizedUserId, entityType, {
+      limit,
+    });
   }
 
   private async loadManagedEntitiesDeltaPrioritySnapshot(
@@ -4222,18 +4130,6 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private normalizeManagedEntityTypeHint(value: unknown): ManagedEntityType | null {
-    const normalized = this.readLowerString(value);
-    if (normalized === 'channel') {
-      return 'channel';
-    }
-    if (normalized === 'chat') {
-      return 'chat';
-    }
-
-    return null;
-  }
-
   private async collectManagedEntitiesForMassAction(
     user: AuthUser,
     entityType: ManagedEntityType,
@@ -4357,7 +4253,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (this.adminManagedEntitiesRefreshQueue) {
-      void this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType).catch(
+      void this.scheduleManagedEntitiesBoundedRefresh(user, entityType).catch(
         (error: unknown) => {
           this.logger.warn(
             {
@@ -4377,9 +4273,17 @@ export class AdminService implements OnModuleDestroy {
   private async bootstrapRecentBotAddedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
+    options: { adminCheckLimit?: number } = {},
   ): Promise<ChatSummary[]> {
     const normalizedUserId = user.userId.trim();
     if (!normalizedUserId) {
+      return [];
+    }
+    const adminCheckLimit = Math.max(
+      0,
+      Math.trunc(options.adminCheckLimit ?? RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS),
+    );
+    if (adminCheckLimit <= 0) {
       return [];
     }
 
@@ -4433,12 +4337,13 @@ export class AdminService implements OnModuleDestroy {
         break;
       }
 
-      if (attemptedAdminChecks >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS) {
+      if (attemptedAdminChecks >= adminCheckLimit) {
         this.logger.debug(
           {
             entityType,
             userId: normalizedUserId,
             attemptedAdminChecks,
+            adminCheckLimit,
             scannedCandidates: seen.size,
           },
           'Stopped recent bot_added bootstrap before completion to keep lightweight chat discovery responsive',
@@ -5177,6 +5082,26 @@ export class AdminService implements OnModuleDestroy {
     return result;
   }
 
+  private withManagedEntitiesAdminCheckCount(
+    result: ManagedEntitiesListResult,
+    count: number,
+  ): ManagedEntitiesListResult {
+    Object.defineProperty(result, 'adminCheckCount', {
+      value: Math.max(0, Math.trunc(count)),
+      enumerable: false,
+      configurable: true,
+    });
+    return result;
+  }
+
+  private readManagedEntitiesAdminCheckCount(result: ManagedEntitiesListResult): number {
+    const value = (result as ManagedEntitiesListResult & { adminCheckCount?: unknown })
+      .adminCheckCount;
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, Math.trunc(value))
+      : 0;
+  }
+
   private async runManagedEntitiesLocalDiscovery(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
@@ -5236,7 +5161,7 @@ export class AdminService implements OnModuleDestroy {
       ? candidateChats.slice(fullScanStartIndex, fullScanEndIndex)
       : candidateChats.filter(
           (chat) => !cachedIds.has(chat.chatId) || prioritizedCandidateIds.has(chat.chatId),
-        );
+        ).slice(0, MANAGED_ENTITIES_FOREGROUND_CANDIDATE_CHECK_LIMIT);
 
     try {
       const resolvedChats = await mapWithConcurrencyLimit(
@@ -5401,12 +5326,16 @@ export class AdminService implements OnModuleDestroy {
                 )
             : null,
       };
+      const resultWithAdminCheckCount = this.withManagedEntitiesAdminCheckCount(
+        result,
+        candidateSlice.length,
+      );
       return options.fullScan === true
         ? this.withManagedEntitiesFullScanCandidateIds(
-            result,
+            resultWithAdminCheckCount,
             candidateChats.map((chat) => chat.chatId),
           )
-        : result;
+        : resultWithAdminCheckCount;
     } catch (error: unknown) {
       if (
         this.isManagedEntitiesRefreshThrottledError(error) ||
@@ -6882,7 +6811,7 @@ export class AdminService implements OnModuleDestroy {
         ? await this.prisma.channelPostViewSnapshot.findMany({
             where: {
               channelPostId: {
-                in: periodPosts.map((post) => post.id),
+                in: periodPosts.map((post: ChannelStatsPostRow) => post.id),
               },
               capturedAt: { gte: from, lte: now },
             },
@@ -13422,7 +13351,7 @@ export class AdminService implements OnModuleDestroy {
     try {
       const chats =
         typeof maxClientWithChatListing.listBotChats === 'function'
-          ? await this.listChatsForMassBroadcast(actor)
+          ? await this.listChatsForMassBroadcast(actor, { discoveryMode: 'cached-first' })
           : await this.listChatsFromAllowlist(actor.userId, 'chat');
       return chats.filter(
         (chat) =>
@@ -16094,7 +16023,7 @@ export class AdminService implements OnModuleDestroy {
         ? await this.prisma.channelPostViewSnapshot.findMany({
             where: {
               channelPostId: {
-                in: periodPosts.map((post) => post.id),
+                in: periodPosts.map((post: ChannelStatsPostRow) => post.id),
               },
               capturedAt: { gte: from, lte: to },
             },

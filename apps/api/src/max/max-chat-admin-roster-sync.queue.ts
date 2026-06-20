@@ -13,6 +13,7 @@ export type MaxChatAdminRosterSyncJob = QueueJobEnvelope<
       | 'webhook_bot_removed'
       | 'webhook_chat_title_changed'
       | 'webhook_membership_churn'
+      | 'handshake_start'
       | 'moderation_destructive_path'
       | 'admin_access_validation'
       | 'discovery_snapshot'

@@ -608,7 +608,7 @@ export class ManagedEntitiesService {
       chatTitle: null,
     };
 
-    return this.legacyAdminService.runManagedEntitiesRemoteFullRefreshForManagedEntities(
+    return this.legacyAdminService.runManagedEntitiesBoundedRefreshForManagedEntities(
       user,
       job.entityType,
       {
