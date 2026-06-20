@@ -233,20 +233,20 @@ export function RequiredSubscriptionSourcePicker({
     ? Math.min(virtualRange.endIndex, filteredChoices.length)
     : filteredChoices.length;
   const statusText = loading
-    ? 'Загружаем список с главной...'
+    ? 'Загружаем...'
     : syncing
-      ? 'Синхронизируем чаты и каналы...'
+      ? 'Обновляем...'
       : error
-        ? `Ошибка загрузки списка: ${error}`
+        ? error
         : backoffActive
-          ? 'MAX временно ограничил обновление. Повторите позже.'
+          ? 'Повторите позже.'
           : hasReachedLimit
-            ? `Лимит ${maxSelectedCount} источников достигнут.`
+            ? `Лимит ${maxSelectedCount}.`
             : shouldVirtualize && filteredChoices.length > 0
-              ? `${formatSourceCount(filteredChoices.length, emptyState)} · показано ${visibleFrom}-${visibleTo}`
+              ? `${formatSourceCount(filteredChoices.length, emptyState)} · ${visibleFrom}-${visibleTo}`
               : formatSourceCount(filteredChoices.length, emptyState);
   const emptySearchText = trimmedQuery
-    ? 'Ничего не нашли. Очистите поиск или добавьте источник ссылкой ниже.'
+    ? 'Очистите поиск или добавьте ссылку ниже.'
     : emptyState;
 
   useEffect(() => {
@@ -307,7 +307,7 @@ export function RequiredSubscriptionSourcePicker({
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Найти по названию, ссылке или ID"
+            placeholder="Поиск"
             autoComplete="off"
           />
         </label>
@@ -340,7 +340,7 @@ export function RequiredSubscriptionSourcePicker({
         <span>{statusText}</span>
         {trimmedQuery ? (
           <button type="button" onClick={() => setQuery('')}>
-            Очистить поиск
+            Очистить
           </button>
         ) : null}
       </div>

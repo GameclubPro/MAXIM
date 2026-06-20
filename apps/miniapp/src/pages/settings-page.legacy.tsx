@@ -4325,32 +4325,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const requiredSubscriptionUnavailableCount =
     unavailableManagedRequiredSubscriptionChannels.length;
   const requiredSubscriptionIsActive = requiredSubscriptionSelectedCount > 0;
-  const requiredSubscriptionStateTone =
-    requiredSubscriptionStaleCount > 0
-      ? 'warning'
-      : requiredSubscriptionIsActive
-        ? 'active'
-        : 'idle';
-  const requiredSubscriptionStateLabel =
-    requiredSubscriptionStaleCount > 0
-      ? 'Проверить'
-      : requiredSubscriptionIsActive
-        ? 'Активна'
-        : 'Не настроена';
   const areChannelsSyncing =
     requiredSubscriptionEntitiesLoading || requiredSubscriptionEntitiesSyncing;
   const requiredSubscriptionPickerEmptyState =
     requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-      ? 'Достигнут лимит выбранных чатов и каналов.'
+      ? 'Лимит выбран.'
       : requiredSubscriptionUnavailableCount > 0
-        ? 'Нет доступных чатов или каналов для добавления. Недоступные элементы показаны ниже.'
-        : 'Нет доступных чатов или каналов в списке. Добавьте ссылку вручную.';
+        ? 'Нет доступных источников.'
+        : 'Добавьте ссылку вручную.';
   const requiredSubscriptionHeaderSummary = areChannelsSyncing
-    ? 'Синхронизируем список чатов и каналов...'
+    ? 'Обновляем...'
     : requiredSubscriptionStaleCount > 0
       ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
       : requiredSubscriptionIsActive
-        ? `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · бессрочно`
+        ? formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)
         : 'Не настроена';
   const requiredSubscriptionCardStatus =
     requiredSubscriptionStaleCount > 0
@@ -10717,43 +10705,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
 	                  {expandedSections.requiredSubscription ? (
 	                    <div className="settings-section__collapse-inner managed-giveaway">
-	                      <div
-	                        className="required-subscription__summary-card"
-	                        data-state={requiredSubscriptionStateTone}
-	                      >
-	                        <div className="required-subscription__summary-main">
-	                          <span className="required-subscription__eyebrow">Правило</span>
-	                          <strong>Обязательная подписка</strong>
-	                          <small>
-	                            {requiredSubscriptionIsActive
-	                              ? 'Работает бессрочно, пока источник остается в списке. Сообщения без подписки удаляются.'
-	                              : 'Выберите чат или канал: правило включится автоматически и без срока действия.'}
-	                          </small>
-	                        </div>
-	                        <span className="required-subscription__state-pill">
-	                          {requiredSubscriptionStateLabel}
-	                        </span>
-	                      </div>
-
 	                      <div className="managed-giveaway__section required-subscription__board">
 	                        <div className="managed-giveaway__title-row">
 	                          <div className="managed-giveaway__section-copy">
 	                            <strong>Источники подписки</strong>
 	                            <small>
 	                              {requiredSubscriptionSelectedCount}/
-	                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано · бессрочно
+	                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
 	                            </small>
 	                          </div>
-
-                          <SettingsHintAnchor
-                            hintKey="requiredSubscriptionChannels"
-                            openHintKey={openHintKey}
-	                            onToggleHint={toggleHint}
-	                            label="Пояснение для обязательной подписки"
-	                          >
-	                            Выберите свои чаты или каналы из списка. Правило включается само,
-	                            работает без срока и выключается только после удаления всех источников.
-	                          </SettingsHintAnchor>
 	                        </div>
 
                         {requiredSubscriptionStaleCount > 0 ? (
@@ -10770,10 +10730,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 	                        {requiredSubscriptionSelectedCount === 0 ? (
 	                          <div className="required-subscription__selection-empty">
 	                            <strong>Источники пока не выбраны</strong>
-	                            <span>
-	                              Добавьте чат или канал ниже, и обязательная подписка сразу станет
-	                              активной.
-	                            </span>
 	                          </div>
 	                        ) : null}
 
@@ -10907,8 +10863,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Эти элементы сейчас не удалось подготовить для выбора. Обновите список
-                              и проверьте права.
+                              Недоступные элементы
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
@@ -10942,13 +10897,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         <div className="required-subscription__external-source">
-                          <div className="required-subscription__external-copy">
-                            <strong>Не нашли в списке?</strong>
-                            <small>
-                              Добавьте публичную ссылку или ID. Бот проверит источник перед
-                              сохранением.
-                            </small>
-                          </div>
                           <div className="managed-giveaway__editor-grid">
                             <label
                               className={cn(
@@ -10993,21 +10941,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={handleResolveRequiredSubscriptionExternalChannel}
                               >
                                 {isResolvingRequiredSubscriptionChannel
-                                  ? 'Проверяем ссылку...'
-                                  : 'Добавить ссылку на чат или канал'}
+                                  ? 'Проверяем...'
+                                  : 'Добавить'}
                               </button>
                             </div>
                           </div>
                         </div>
                       </div>
 
-                      <div
-                        className="settings-subsection-divider"
-                        role="separator"
-                        aria-label="Действия бота для обязательной подписки"
-                      >
-                        <span>Санкции</span>
-                      </div>
+	                      <div
+	                        className="settings-subsection-divider"
+	                        role="separator"
+	                        aria-label="Действия бота для обязательной подписки"
+	                      >
+	                        <span>Действия</span>
+	                      </div>
 
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
@@ -11019,19 +10967,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={() => toggleBotMessageEditor('requiredSubscription')}
                                 isOpen={openBotEditorKey === 'requiredSubscription'}
                               />
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'requiredSubscriptionBotMessage' && 'is-open',
-                                )}
-                                aria-label="Пояснение для объяснения об обязательной подписке"
-                                aria-controls="required-subscription-bot-message-hint"
-                                aria-expanded={openHintKey === 'requiredSubscriptionBotMessage'}
-                                onClick={() => toggleHint('requiredSubscriptionBotMessage')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
                             </div>
                           </div>
 
@@ -11054,17 +10989,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
-
-                        {openHintKey === 'requiredSubscriptionBotMessage' ? (
-                          <p
-                            id="required-subscription-bot-message-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Санкции усиливаются по ступеням, если пользователь повторно пишет без
-                            подписки в течение 24 часов: сначала объяснение, затем предупреждение,
-                            потом мут и далее бан.
-                          </p>
-                        ) : null}
 
                         {draft.requiredSubscriptionBotMessageEnabled &&
                         openBotEditorKey === 'requiredSubscription' ? (
@@ -11102,19 +11026,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={() => toggleWarnMessageEditor('requiredSubscriptionWarn')}
                                 isOpen={openWarnEditorKey === 'requiredSubscriptionWarn'}
                               />
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'requiredSubscriptionWarnMessage' && 'is-open',
-                                )}
-                                aria-label="Пояснение для предупреждения об обязательной подписке"
-                                aria-controls="required-subscription-warn-message-hint"
-                                aria-expanded={openHintKey === 'requiredSubscriptionWarnMessage'}
-                                onClick={() => toggleHint('requiredSubscriptionWarnMessage')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
                             </div>
                           </div>
 
@@ -11138,16 +11049,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
-
-                        {openHintKey === 'requiredSubscriptionWarnMessage' ? (
-                          <p
-                            id="required-subscription-warn-message-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Текст отправляется при 2-м сообщении без подписки за 24 часа, если
-                            ступень включена.
-                          </p>
-                        ) : null}
 
                         {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
                           <LazyWarnMessageEditor
