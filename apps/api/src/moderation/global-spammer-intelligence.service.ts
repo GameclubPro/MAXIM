@@ -102,6 +102,8 @@ export type GlobalSpammerPrivacyPruneResult = {
   cutoff: string;
   scanned: number;
   pruned: number;
+  failed?: number;
+  failedIds?: string[];
 };
 
 type ActiveObservationRow = {
@@ -2040,26 +2042,69 @@ export class GlobalSpammerIntelligenceService {
       };
     }
 
-    const updates = rows.map((row) =>
-      this.prisma.spammerObservation.update({
-        where: {
-          id: row.id,
+    let pruned = 0;
+    const failedIds: string[] = [];
+    const updates = rows.map((row) => this.buildRawEvidencePruneUpdate(row, now));
+    try {
+      const result = await this.prisma.$transaction(updates);
+      pruned = result.length;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          scanned: rows.length,
+          error: error instanceof Error ? error.message : String(error),
         },
-        data: {
-          evidence: this.buildMinimizedEvidence(row.evidence, row.normalizedFeatures, now),
-          privacyClass: 'MINIMIZED',
-          rawEvidenceExpiresAt: null,
-        },
-      }),
-    );
-    const result = await this.prisma.$transaction(updates);
+        'Batch global spammer raw evidence prune failed; retrying rows individually',
+      );
+      for (const row of rows) {
+        try {
+          await this.buildRawEvidencePruneUpdate(row, now);
+          pruned += 1;
+        } catch (rowError: unknown) {
+          failedIds.push(row.id);
+          this.logger.warn(
+            {
+              observationId: row.id,
+              error: rowError instanceof Error ? rowError.message : String(rowError),
+            },
+            'Skipped global spammer raw evidence prune row',
+          );
+        }
+      }
+    }
 
     return {
       ok: true,
       cutoff: now.toISOString(),
       scanned: rows.length,
-      pruned: result.length,
+      pruned,
+      ...(failedIds.length > 0
+        ? {
+            failed: failedIds.length,
+            failedIds: failedIds.slice(0, 20),
+          }
+        : {}),
     };
+  }
+
+  private buildRawEvidencePruneUpdate(
+    row: {
+      id: string;
+      evidence: Prisma.JsonValue | null;
+      normalizedFeatures: Prisma.JsonValue | null;
+    },
+    now: Date,
+  ) {
+    return this.prisma.spammerObservation.update({
+      where: {
+        id: row.id,
+      },
+      data: {
+        evidence: this.buildMinimizedEvidence(row.evidence, row.normalizedFeatures, now),
+        privacyClass: 'MINIMIZED',
+        rawEvidenceExpiresAt: null,
+      },
+    });
   }
 
   private buildMinimizedEvidence(

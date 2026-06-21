@@ -91,9 +91,23 @@ export class GlobalSpammerArchiveRunnerService implements OnModuleInit, OnModule
         this.logger.log(
           {
             reason,
+            scanned: pruneResult.scanned,
             pruned: pruneResult.pruned,
+            failed: pruneResult.failed ?? 0,
           },
           'Pruned expired global spammer raw evidence',
+        );
+      }
+      if ((pruneResult.failed ?? 0) > 0) {
+        this.logger.warn(
+          {
+            reason,
+            scanned: pruneResult.scanned,
+            pruned: pruneResult.pruned,
+            failed: pruneResult.failed,
+            failedIds: pruneResult.failedIds ?? [],
+          },
+          'Some expired global spammer raw evidence rows could not be pruned',
         );
       }
     } catch (error: unknown) {

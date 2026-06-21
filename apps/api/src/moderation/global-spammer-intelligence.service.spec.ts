@@ -1583,6 +1583,75 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('continues pruning raw evidence rows individually after a batch failure', async () => {
+    const prunedRows: any[] = [];
+    let batchMode = true;
+    const update = jest.fn(async ({ where, data }: any) => {
+      if (batchMode) {
+        return { id: where.id };
+      }
+      if (where.id === 'obs-bad-json') {
+        throw new Error('invalid input syntax for type json');
+      }
+      prunedRows.push({ id: where.id, ...data });
+      return prunedRows[prunedRows.length - 1];
+    });
+    const service = new GlobalSpammerIntelligenceService(
+      {
+        spammerObservation: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'obs-good-json',
+              evidence: { text: 'legacy text' },
+              normalizedFeatures: {
+                evidenceHash: 'good-hash',
+                domains: ['example.com'],
+              },
+            },
+            {
+              id: 'obs-bad-json',
+              evidence: { text: 'legacy text' },
+              normalizedFeatures: {
+                evidenceHash: 'bad-hash',
+              },
+            },
+          ]),
+          update,
+        },
+        $transaction: jest.fn(async () => {
+          batchMode = false;
+          throw new Error('invalid input syntax for type json');
+        }),
+      } as never,
+    );
+
+    await expect(
+      service.pruneExpiredRawEvidence({
+        now: new Date('2026-06-20T12:00:00.000Z'),
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        scanned: 2,
+        pruned: 1,
+        failed: 1,
+        failedIds: ['obs-bad-json'],
+      }),
+    );
+
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(prunedRows).toEqual([
+      expect.objectContaining({
+        id: 'obs-good-json',
+        privacyClass: 'MINIMIZED',
+        rawEvidenceExpiresAt: null,
+        evidence: expect.objectContaining({
+          rawEvidencePruned: true,
+          evidenceHash: 'good-hash',
+        }),
+      }),
+    ]);
+  });
+
   it('stores user labels on commercial review candidates', async () => {
     const { candidateChats, candidates, prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
