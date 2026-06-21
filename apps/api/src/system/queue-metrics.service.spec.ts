@@ -159,6 +159,14 @@ describe('QueueMetricsService', () => {
         failed: 0,
         completed: 11,
       }) as never,
+      createQueueMock({
+        waiting: 2,
+        prioritized: 1,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 7,
+      }) as never,
     );
 
     const snapshot = await service.getSnapshot();
@@ -178,6 +186,14 @@ describe('QueueMetricsService', () => {
       delayed: 0,
       failed: 0,
       completed: 11,
+    });
+    expect(snapshot.globalSpammerDenorm).toEqual({
+      waiting: 2,
+      prioritized: 1,
+      active: 1,
+      delayed: 0,
+      failed: 0,
+      completed: 7,
     });
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
       waiting: 1,

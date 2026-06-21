@@ -1,6 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { ActionHealthService } from './action-health.service';
 import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
@@ -22,6 +23,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     AuthModule,
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     BullModule.registerQueue({ name: 'moderation-actions' }),
+    BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
   ],
   controllers: [SystemController, MiniappBootTraceController, MiniappMutationTunnelController],
   providers: [

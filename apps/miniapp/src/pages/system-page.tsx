@@ -236,6 +236,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     { label: 'Webhook background', queue: dashboard.queues.webhookBackground },
     { label: 'Webhook legacy', queue: dashboard.queues.webhookLegacy },
     { label: 'Actions', queue: dashboard.queues.actions },
+    { label: 'Spammer denorm', queue: dashboard.queues.globalSpammerDenorm },
     { label: 'Moderation total', queue: dashboard.queues.moderation },
   ];
   const hotPathStages = dashboard.hotPath?.stages.slice(0, 6) ?? [];

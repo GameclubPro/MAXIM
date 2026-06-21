@@ -70,6 +70,7 @@ export function buildSystemQueueGroupHealth(queues: QueueMetricsSnapshot): Syste
     buildQueueGroup('webhook-background', ['moderation-background'], queues.webhookBackground),
     buildQueueGroup('webhook-legacy', ['moderation-legacy'], queues.webhookLegacy),
     buildQueueGroup('actions', ['moderation-actions'], queues.actions),
+    buildQueueGroup('spammer-denorm', ['global-spammer-denorm'], queues.globalSpammerDenorm),
   ];
 
   return {

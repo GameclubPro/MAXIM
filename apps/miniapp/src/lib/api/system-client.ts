@@ -599,23 +599,32 @@ function parseSystemQueueGroupHealth(value: unknown): SystemQueueGroupHealth {
 }
 
 function parseQueueCounters(value: unknown) {
+  const normalizedValue = value ?? {
+    waiting: 0,
+    prioritized: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  };
   if (
-    !isRecord(value) ||
-    typeof value.waiting !== 'number' ||
-    typeof value.active !== 'number' ||
-    typeof value.delayed !== 'number' ||
-    typeof value.failed !== 'number' ||
-    typeof value.completed !== 'number'
+    !isRecord(normalizedValue) ||
+    typeof normalizedValue.waiting !== 'number' ||
+    typeof normalizedValue.active !== 'number' ||
+    typeof normalizedValue.delayed !== 'number' ||
+    typeof normalizedValue.failed !== 'number' ||
+    typeof normalizedValue.completed !== 'number'
   ) {
     throw new Error('Invalid queue counters');
   }
 
   return {
-    waiting: value.waiting,
-    active: value.active,
-    delayed: value.delayed,
-    failed: value.failed,
-    completed: value.completed,
+    waiting: normalizedValue.waiting,
+    prioritized: typeof normalizedValue.prioritized === 'number' ? normalizedValue.prioritized : 0,
+    active: normalizedValue.active,
+    delayed: normalizedValue.delayed,
+    failed: normalizedValue.failed,
+    completed: normalizedValue.completed,
   };
 }
 
@@ -970,6 +979,7 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       webhookBackground: parseQueueCounters(queues.webhookBackground),
       webhookLegacy: parseQueueCounters(queues.webhookLegacy),
       actions: parseQueueCounters(queues.actions),
+      globalSpammerDenorm: parseQueueCounters(queues.globalSpammerDenorm),
       webhookEvents: {
         received: parseWebhookStatusMetrics(queues.webhookEvents.received),
         queued: parseWebhookStatusMetrics(queues.webhookEvents.queued),

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const queueCountersSchema = z.object({
   waiting: z.number().int().min(0),
+  prioritized: z.number().int().min(0).optional(),
   active: z.number().int().min(0),
   delayed: z.number().int().min(0),
   failed: z.number().int().min(0),
@@ -52,6 +53,13 @@ export const queueMetricsSnapshotSchema = z.object({
   webhookBackground: queueCountersSchema,
   webhookLegacy: queueCountersSchema,
   actions: queueCountersSchema,
+  globalSpammerDenorm: queueCountersSchema.optional().default({
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  }),
   webhookEvents: z.object({
     received: webhookStatusMetricsSchema,
     queued: webhookStatusMetricsSchema,

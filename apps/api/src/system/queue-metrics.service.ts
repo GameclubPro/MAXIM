@@ -5,6 +5,7 @@ import { Prisma, WebhookStatus } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { GLOBAL_SPAMMER_DENORM_QUEUE } from '../moderation/global-spammer-denorm.queue';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookHomeOwnerByQueue,
@@ -112,6 +113,7 @@ export type QueueMetricsSnapshot = {
   webhookBackground: QueueCounters;
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
+  globalSpammerDenorm: QueueCounters;
   webhookEvents: {
     received: WebhookStatusMetrics;
     queued: WebhookStatusMetrics;
@@ -202,6 +204,9 @@ export class QueueMetricsService {
     private readonly webhookBackgroundQueue?: Queue,
     @Optional() @InjectQueue(LEGACY_WEBHOOK_QUEUE) private readonly webhookLegacyQueue?: Queue,
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
+    @Optional()
+    @InjectQueue(GLOBAL_SPAMMER_DENORM_QUEUE)
+    private readonly globalSpammerDenormQueue?: Queue,
   ) {
     this.webhookJoinQueuesByName = Object.fromEntries(
       JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [
@@ -330,6 +335,7 @@ export class QueueMetricsService {
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.actionQueue),
+      this.readQueueCounters(this.globalSpammerDenormQueue),
     ]);
     const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed] =
       await Promise.all([
@@ -355,6 +361,7 @@ export class QueueMetricsService {
     const webhookBackground = restSnapshots[defaultSnapshotOffset] ?? EMPTY_COUNTERS;
     const webhookLegacy = restSnapshots[defaultSnapshotOffset + 1] ?? EMPTY_COUNTERS;
     const actions = restSnapshots[defaultSnapshotOffset + 2] ?? EMPTY_COUNTERS;
+    const globalSpammerDenorm = restSnapshots[defaultSnapshotOffset + 3] ?? EMPTY_COUNTERS;
     const webhookDefaultShards = defaultShardSnapshot.webhookDefaultShards;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
     const webhookDefaultWorkerGroups = defaultShardSnapshot.webhookDefaultWorkerGroups;
@@ -388,6 +395,7 @@ export class QueueMetricsService {
       webhookBackground,
       webhookLegacy,
       actions,
+      globalSpammerDenorm,
       webhookEvents: {
         received,
         queued,

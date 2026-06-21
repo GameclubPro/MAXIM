@@ -390,6 +390,13 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       failed: 0,
       completed: 480,
     },
+    globalSpammerDenorm: {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    },
     webhookEvents: {
       received: {
         count: inDegrade ? 3 : 0,
