@@ -336,12 +336,18 @@ export async function getGlobalSpammerReviewQueue(
   });
   if (query.includeProfiles === false) {
     params.set('includeProfiles', 'false');
+  } else if (query.includeProfiles === true) {
+    params.set('includeProfiles', 'true');
   }
   if (query.includeObservations === false) {
     params.set('includeObservations', 'false');
+  } else if (query.includeObservations === true) {
+    params.set('includeObservations', 'true');
   }
   if (query.profileMode === 'local') {
     params.set('profileMode', 'local');
+  } else if (query.profileMode === 'full') {
+    params.set('profileMode', 'full');
   }
   const response = await api.request(
     `/chats/${chatId}/spammer-review?${params.toString()}`,
@@ -364,6 +370,7 @@ export async function getGlobalSpammerUserDiagnostics(
   chatId: string,
   userId: string,
   query: Partial<{
+    mode: 'shell' | 'full';
     includeProfile: boolean;
     includeObservations: boolean;
     includeGraphSignals: boolean;
@@ -375,26 +382,43 @@ export async function getGlobalSpammerUserDiagnostics(
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<GlobalSpammerUserDiagnostics> {
   const params = new URLSearchParams();
+  if (query.mode === 'full' || query.mode === 'shell') {
+    params.set('mode', query.mode);
+  }
   if (query.includeProfile === false) {
     params.set('includeProfile', 'false');
+  } else if (query.includeProfile === true) {
+    params.set('includeProfile', 'true');
   }
   if (query.includeObservations === false) {
     params.set('includeObservations', 'false');
+  } else if (query.includeObservations === true) {
+    params.set('includeObservations', 'true');
   }
   if (query.includeGraphSignals === false) {
     params.set('includeGraphSignals', 'false');
+  } else if (query.includeGraphSignals === true) {
+    params.set('includeGraphSignals', 'true');
   }
   if (query.includeReputation === false) {
     params.set('includeReputation', 'false');
+  } else if (query.includeReputation === true) {
+    params.set('includeReputation', 'true');
   }
   if (query.includeCampaigns === false) {
     params.set('includeCampaigns', 'false');
+  } else if (query.includeCampaigns === true) {
+    params.set('includeCampaigns', 'true');
   }
   if (query.includeShadow === false) {
     params.set('includeShadow', 'false');
+  } else if (query.includeShadow === true) {
+    params.set('includeShadow', 'true');
   }
   if (query.profileMode === 'local') {
     params.set('profileMode', 'local');
+  } else if (query.profileMode === 'full') {
+    params.set('profileMode', 'full');
   }
   const suffix = params.toString();
   const path = `/chats/${chatId}/spammer-diagnostics/${encodeURIComponent(userId)}`;

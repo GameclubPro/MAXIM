@@ -16,6 +16,7 @@ import { AdminService } from './admin.service';
 import { type ResolvedUserProfile } from './admin.service.support';
 
 type GlobalSpammerProfileMode = 'full' | 'local';
+type GlobalSpammerDiagnosticsMode = 'shell' | 'full';
 
 @Injectable()
 export class ManualModerationService {
@@ -84,10 +85,10 @@ export class ManualModerationService {
       typeof queryRecord.limit === 'string' || typeof queryRecord.limit === 'number'
         ? Number(queryRecord.limit)
         : NaN;
-    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.trunc(rawLimit))) : 50;
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(100, Math.trunc(rawLimit))) : 20;
     const includeProfiles = this.parseBooleanQuery(queryRecord.includeProfiles, true);
-    const includeObservations = this.parseBooleanQuery(queryRecord.includeObservations, true);
-    const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
+    const includeObservations = this.parseBooleanQuery(queryRecord.includeObservations, false);
+    const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode, 'local');
     const queueStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.listReviewQueue({
       chatId,
@@ -173,13 +174,33 @@ export class ManualModerationService {
       queryRecord.includeProfile ?? queryRecord.includeProfiles,
       true,
     );
-    const profileMode = this.parseGlobalSpammerProfileMode(queryRecord.profileMode);
+    const diagnosticsMode = this.parseGlobalSpammerDiagnosticsMode(queryRecord.mode);
+    const includeHeavyDiagnosticsByDefault = diagnosticsMode === 'full';
+    const profileMode = this.parseGlobalSpammerProfileMode(
+      queryRecord.profileMode,
+      includeHeavyDiagnosticsByDefault ? 'full' : 'local',
+    );
     const diagnosticsOptions = {
-      includeObservations: this.parseBooleanQuery(queryRecord.includeObservations, true),
-      includeGraphSignals: this.parseBooleanQuery(queryRecord.includeGraphSignals, true),
-      includeReputation: this.parseBooleanQuery(queryRecord.includeReputation, true),
-      includeCampaigns: this.parseBooleanQuery(queryRecord.includeCampaigns, true),
-      includeShadow: this.parseBooleanQuery(queryRecord.includeShadow, true),
+      includeObservations: this.parseBooleanQuery(
+        queryRecord.includeObservations,
+        includeHeavyDiagnosticsByDefault,
+      ),
+      includeGraphSignals: this.parseBooleanQuery(
+        queryRecord.includeGraphSignals,
+        includeHeavyDiagnosticsByDefault,
+      ),
+      includeReputation: this.parseBooleanQuery(
+        queryRecord.includeReputation,
+        includeHeavyDiagnosticsByDefault,
+      ),
+      includeCampaigns: this.parseBooleanQuery(
+        queryRecord.includeCampaigns,
+        includeHeavyDiagnosticsByDefault,
+      ),
+      includeShadow: this.parseBooleanQuery(
+        queryRecord.includeShadow,
+        includeHeavyDiagnosticsByDefault,
+      ),
     };
     const diagnosticsStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.getUserDiagnostics({
@@ -200,6 +221,7 @@ export class ManualModerationService {
         profileMs: 0,
         zodParseMs: initialParseMs,
         totalMs: Date.now() - startedAtMs,
+        diagnosticsMode,
         profileMode,
         includeProfile,
         ...diagnosticsOptions,
@@ -225,6 +247,7 @@ export class ManualModerationService {
       profileMs,
       zodParseMs: initialParseMs + (Date.now() - finalParseStartedAtMs),
       totalMs: Date.now() - startedAtMs,
+      diagnosticsMode,
       profileMode,
       includeProfile,
       ...diagnosticsOptions,
@@ -292,12 +315,26 @@ export class ManualModerationService {
     return fallback;
   }
 
-  private parseGlobalSpammerProfileMode(value: unknown): GlobalSpammerProfileMode {
+  private parseGlobalSpammerProfileMode(
+    value: unknown,
+    fallback: GlobalSpammerProfileMode,
+  ): GlobalSpammerProfileMode {
     const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
     if (normalized === 'local' || normalized === 'cached') {
       return 'local';
     }
-    return 'full';
+    if (normalized === 'full' || normalized === 'remote') {
+      return 'full';
+    }
+    return fallback;
+  }
+
+  private parseGlobalSpammerDiagnosticsMode(value: unknown): GlobalSpammerDiagnosticsMode {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (normalized === 'full' || normalized === 'details' || normalized === 'heavy') {
+      return 'full';
+    }
+    return 'shell';
   }
 
   private logSpammerSurfaceTiming(surface: string, details: Record<string, unknown>): void {

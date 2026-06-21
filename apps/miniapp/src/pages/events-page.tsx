@@ -91,6 +91,7 @@ const SPAMMER_REVIEW_QUEUE_QUERY = {
   profileMode: 'local',
 } as const;
 const SPAMMER_DIAGNOSTICS_LIGHT_QUERY = {
+  mode: 'shell',
   includeProfile: true,
   includeObservations: false,
   includeGraphSignals: false,
@@ -100,6 +101,7 @@ const SPAMMER_DIAGNOSTICS_LIGHT_QUERY = {
   profileMode: 'local',
 } as const;
 const SPAMMER_DIAGNOSTICS_FULL_QUERY = {
+  mode: 'full',
   includeProfile: false,
   includeReputation: false,
   includeShadow: false,

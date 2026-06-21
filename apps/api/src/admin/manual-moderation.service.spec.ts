@@ -108,7 +108,7 @@ function createGlobalSpammerIntelligenceMock() {
 }
 
 describe('ManualModerationService spammer profiles', () => {
-  it('attaches resolved profile data to spammer review candidates and diagnostics', async () => {
+  it('uses lightweight local data by default for spammer review candidates', async () => {
     const legacyAdminService = createLegacyAdminServiceMock();
     const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
     const service = new ManualModerationService(
@@ -120,8 +120,47 @@ describe('ManualModerationService spammer profiles', () => {
       status: 'PENDING',
       limit: '6',
     });
-    const diagnostics = await service.getGlobalSpammerUserDiagnostics('chat-1', 'user-1', authUser);
 
+    expect(globalSpammerIntelligence.listReviewQueue).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      limit: 6,
+      includeObservations: false,
+      includeLocalProfiles: true,
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(queue.items[0]).toEqual(
+      expect.objectContaining({
+        displayName: 'Старое имя',
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
+      }),
+    );
+  });
+
+  it('attaches resolved remote profile data when full spammer review profiles are requested', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const queue = await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      status: 'PENDING',
+      limit: '6',
+      profileMode: 'full',
+      includeObservations: 'true',
+    });
+
+    expect(globalSpammerIntelligence.listReviewQueue).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      limit: 6,
+      includeObservations: true,
+      includeLocalProfiles: false,
+    });
     expect(queue.items[0]).toEqual(
       expect.objectContaining({
         displayName: profile.displayName,
@@ -130,6 +169,76 @@ describe('ManualModerationService spammer profiles', () => {
         profileHandoffUrl: profile.profileHandoffUrl,
       }),
     );
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).toHaveBeenCalledWith(
+      'chat-1',
+      'chat',
+      ['user-1'],
+      { allowRemoteLookup: true },
+    );
+  });
+
+  it('uses lightweight local profile data by default for spammer dossier diagnostics', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics('chat-1', 'user-1', authUser);
+
+    expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      options: {
+        includeObservations: false,
+        includeGraphSignals: false,
+        includeReputation: false,
+        includeCampaigns: false,
+        includeShadow: false,
+      },
+    });
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(globalSpammerIntelligence.resolveLocalReviewProfiles).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userIds: ['user-1'],
+    });
+    expect(diagnostics).toEqual(
+      expect.objectContaining({
+        displayName: profile.displayName,
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
+      }),
+    );
+  });
+
+  it('attaches resolved profile data to full spammer dossier diagnostics when requested', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics(
+      'chat-1',
+      'user-1',
+      authUser,
+      { mode: 'full' },
+    );
+
+    expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      options: {
+        includeObservations: true,
+        includeGraphSignals: true,
+        includeReputation: true,
+        includeCampaigns: true,
+        includeShadow: true,
+      },
+    });
     expect(diagnostics).toEqual(
       expect.objectContaining({
         displayName: profile.displayName,
@@ -223,7 +332,7 @@ describe('ManualModerationService spammer profiles', () => {
       'chat-1',
       'user-1',
       authUser,
-      { includeProfile: 'false' },
+      { includeProfile: 'false', mode: 'full' },
     );
 
     expect(globalSpammerIntelligence.getUserDiagnostics).toHaveBeenCalledWith({
@@ -314,8 +423,14 @@ describe('ManualModerationService spammer profiles', () => {
     const queue = await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
       status: 'PENDING',
       limit: '6',
+      profileMode: 'full',
     });
-    const diagnostics = await service.getGlobalSpammerUserDiagnostics('chat-1', 'user-1', authUser);
+    const diagnostics = await service.getGlobalSpammerUserDiagnostics(
+      'chat-1',
+      'user-1',
+      authUser,
+      { mode: 'full' },
+    );
 
     expect(queue.items[0]).toEqual(
       expect.objectContaining({

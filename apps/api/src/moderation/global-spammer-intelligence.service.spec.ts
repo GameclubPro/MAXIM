@@ -1173,6 +1173,7 @@ describe('GlobalSpammerIntelligenceService', () => {
 
     const rawSql = prisma.$queryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] };
     expect(rawSql.strings?.join(' ')).toContain('UNION ALL');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(prisma.globalSpammerCandidate.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
