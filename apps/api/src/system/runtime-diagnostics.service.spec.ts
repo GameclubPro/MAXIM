@@ -81,6 +81,9 @@ jest.mock('ioredis', () => ({
         return 'OK';
       }),
       hget: jest.fn(async (key: string, field: string) => hashes.get(key)?.[field] ?? null),
+      hmget: jest.fn(async (key: string, ...fields: string[]) =>
+        fields.map((field) => hashes.get(key)?.[field] ?? null),
+      ),
       mget: jest.fn(async (...keys: string[]) => keys.map((key) => strings.get(key) ?? null)),
       scan: jest.fn(async () => ['0', []]),
       pipeline: jest.fn(() => createPipeline(hashes)),
@@ -196,6 +199,72 @@ describe('RuntimeDiagnosticsService', () => {
         lastSuccessAt: '2026-06-21T12:00:00.000Z',
         lastFailureAt: '2026-06-21T12:00:00.000Z',
       },
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('aggregates spammer admin surface timing percentiles', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-06-21T12:00:00.000Z'));
+    const service = new RuntimeDiagnosticsService(
+      createConfigMock({
+        SYSTEM_RUNTIME_DIAGNOSTICS_SPAMMER_SURFACE_WINDOW_SEC: 900,
+      }) as never,
+    );
+
+    await service.recordSpammerSurfaceTiming({
+      surface: 'spammer-review',
+      timings: {
+        assertAdmin: 12,
+        queue: 220,
+        profile: 35,
+        zodParse: 8,
+        total: 275,
+      },
+    });
+    await service.recordSpammerSurfaceTiming({
+      surface: 'spammer-review',
+      timings: {
+        assertAdmin: 20,
+        queue: 480,
+        total: 540,
+      },
+    });
+    await service.recordSpammerSurfaceTiming({
+      surface: 'spammer-diagnostics',
+      timings: {
+        diagnostics: 1_250,
+        profile: 15,
+        total: 1_310,
+      },
+    });
+
+    const snapshot = await service.getDashboardSnapshot();
+
+    expect(snapshot.spammerSurfaces).toEqual({
+      windowSec: 900,
+      timings: expect.arrayContaining([
+        expect.objectContaining({
+          surface: 'spammer-review',
+          stage: 'total',
+          count: 2,
+          avgMs: 407.5,
+          p95Ms: 750,
+          p99Ms: 750,
+          maxMs: 540,
+          lastObservedAt: '2026-06-21T12:00:00.000Z',
+        }),
+        expect.objectContaining({
+          surface: 'spammer-diagnostics',
+          stage: 'diagnostics',
+          count: 1,
+          avgMs: 1_250,
+          p95Ms: 1_500,
+          p99Ms: 1_500,
+          maxMs: 1_250,
+          lastObservedAt: '2026-06-21T12:00:00.000Z',
+        }),
+      ]),
     });
 
     await service.onModuleDestroy();

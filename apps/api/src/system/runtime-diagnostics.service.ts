@@ -57,6 +57,23 @@ type ProblemChatSummary = {
   lastObservedAt: string;
 };
 
+type SpammerSurfaceTimingSample = {
+  surface: string;
+  stage: string;
+  elapsedMs: number;
+};
+
+type SpammerSurfaceTimingSummary = {
+  surface: string;
+  stage: string;
+  count: number;
+  avgMs: number;
+  p95Ms: number;
+  p99Ms: number;
+  maxMs: number;
+  lastObservedAt: string | null;
+};
+
 export type SpammerReadModelEvent =
   | 'profile_read_hit'
   | 'profile_read_miss'
@@ -146,6 +163,10 @@ export type RuntimeDiagnosticsDashboardSnapshot = {
     windowSec: number;
     items: ProblemChatSummary[];
   };
+  spammerSurfaces: {
+    windowSec: number;
+    timings: SpammerSurfaceTimingSummary[];
+  };
   spammerReadModel: SpammerReadModelSummary;
 };
 
@@ -160,16 +181,21 @@ const MEMBERSHIP_BACKOFF_PREFIX = 'runtime:diag:membership:backoff:v1';
 const MEMBERSHIP_ISSUE_PREFIX = 'runtime:diag:membership:issue:v1';
 const PROBLEM_CHAT_COUNT_BUCKET_PREFIX = 'runtime:diag:problem-chat:count:v1';
 const PROBLEM_CHAT_LAST_BUCKET_PREFIX = 'runtime:diag:problem-chat:last:v1';
+const SPAMMER_SURFACE_BUCKET_PREFIX = 'runtime:diag:spammer-surface:v1';
 const SPAMMER_READ_MODEL_BUCKET_PREFIX = 'runtime:diag:spammer-read-model:v1';
 const BURST_STATE_KEY = 'runtime:diag:burst-state:v1';
 
 const BUCKET_SPAN_SEC = 60;
+const SPAMMER_SURFACE_LATENCY_BUCKETS_MS = [
+  25, 50, 100, 150, 200, 300, 500, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 10_000, 30_000,
+] as const;
 const HOT_PATH_SLOW_ELAPSED_MS = 1_500;
 const DEFAULT_HOT_PATH_WINDOW_SEC = 15 * 60;
 const DEFAULT_HOT_CHAT_WINDOW_SEC = 30 * 60;
 const DEFAULT_BACKGROUND_REASON_WINDOW_SEC = 15 * 60;
 const DEFAULT_MEMBERSHIP_WINDOW_SEC = 15 * 60;
 const DEFAULT_PROBLEM_CHAT_WINDOW_SEC = 60 * 60;
+const DEFAULT_SPAMMER_SURFACE_WINDOW_SEC = 15 * 60;
 const DEFAULT_SPAMMER_READ_MODEL_WINDOW_SEC = 15 * 60;
 const DEFAULT_BURST_LAG_THRESHOLD_SEC = 2;
 const DEFAULT_REDIS_SCAN_COUNT = 250;
@@ -184,6 +210,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
   private readonly backgroundReasonWindowSec: number;
   private readonly membershipWindowSec: number;
   private readonly problemChatWindowSec: number;
+  private readonly spammerSurfaceWindowSec: number;
   private readonly spammerReadModelWindowSec: number;
   private readonly burstLagThresholdSec: number;
   private readonly redisScanCount: number;
@@ -209,6 +236,10 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     this.problemChatWindowSec = this.readPositiveInt(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_PROBLEM_CHAT_WINDOW_SEC'),
       DEFAULT_PROBLEM_CHAT_WINDOW_SEC,
+    );
+    this.spammerSurfaceWindowSec = this.readPositiveInt(
+      configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_SPAMMER_SURFACE_WINDOW_SEC'),
+      DEFAULT_SPAMMER_SURFACE_WINDOW_SEC,
     );
     this.spammerReadModelWindowSec = this.readPositiveInt(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_SPAMMER_READ_MODEL_WINDOW_SEC'),
@@ -525,16 +556,82 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     await this.execPipeline(pipeline, 'recordSpammerReadModelEvents');
   }
 
+  async recordSpammerSurfaceTiming(params: {
+    surface: string;
+    timings: Record<string, number | null | undefined>;
+  }): Promise<void> {
+    const surface = this.normalizeMetricSegment(params.surface);
+    if (!surface) {
+      return;
+    }
+
+    const samples = Object.entries(params.timings)
+      .map(([stage, elapsedMs]) => {
+        const normalizedStage = this.normalizeMetricSegment(stage);
+        if (!normalizedStage || typeof elapsedMs !== 'number' || !Number.isFinite(elapsedMs)) {
+          return null;
+        }
+        return {
+          surface,
+          stage: normalizedStage,
+          elapsedMs: Math.max(0, Math.trunc(elapsedMs)),
+        };
+      })
+      .filter((sample): sample is SpammerSurfaceTimingSample => sample !== null);
+    if (samples.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const bucketKey = this.buildBucketKey(SPAMMER_SURFACE_BUCKET_PREFIX, now);
+    const ttlSec = this.resolveBucketTtlSec(this.spammerSurfaceWindowSec);
+    const maxFields = samples.map((sample) => this.buildSpammerSurfaceField(sample, 'max'));
+    const existingMaxValues = await this.redis.hmget(bucketKey, ...maxFields);
+    const pipeline = this.redis.pipeline();
+
+    samples.forEach((sample, index) => {
+      const bucket = this.resolveLatencyBucket(sample.elapsedMs);
+      const countField = this.buildSpammerSurfaceField(sample, `bucket:${bucket}`);
+      pipeline.hincrby(bucketKey, countField, 1);
+      pipeline.hincrby(bucketKey, this.buildSpammerSurfaceField(sample, 'count'), 1);
+      pipeline.hincrby(
+        bucketKey,
+        this.buildSpammerSurfaceField(sample, 'total'),
+        sample.elapsedMs,
+      );
+      pipeline.hset(
+        bucketKey,
+        this.buildSpammerSurfaceField(sample, 'lastObservedAtMs'),
+        String(now),
+      );
+      const existingMaxMs = this.parseNonNegativeInt(existingMaxValues[index] ?? null);
+      if (sample.elapsedMs >= existingMaxMs) {
+        pipeline.hset(bucketKey, maxFields[index], String(sample.elapsedMs));
+      }
+    });
+
+    pipeline.expire(bucketKey, ttlSec);
+    await this.execPipeline(pipeline, 'recordSpammerSurfaceTiming');
+  }
+
   async getDashboardSnapshot(): Promise<RuntimeDiagnosticsDashboardSnapshot> {
-    const [burst, hotPath, hotChats, membershipLookup, problemChats, spammerReadModel] =
-      await Promise.all([
-        this.getBurstSnapshot(),
-        this.getHotPathSummary(),
-        this.getHotChatsSummary(),
-        this.getMembershipLookupSummary(),
-        this.getProblemChatsSummary(),
-        this.getSpammerReadModelSummary(),
-      ]);
+    const [
+      burst,
+      hotPath,
+      hotChats,
+      membershipLookup,
+      problemChats,
+      spammerSurfaces,
+      spammerReadModel,
+    ] = await Promise.all([
+      this.getBurstSnapshot(),
+      this.getHotPathSummary(),
+      this.getHotChatsSummary(),
+      this.getMembershipLookupSummary(),
+      this.getProblemChatsSummary(),
+      this.getSpammerSurfaceSummary(),
+      this.getSpammerReadModelSummary(),
+    ]);
 
     return {
       burst,
@@ -542,6 +639,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       hotChats,
       membershipLookup,
       problemChats,
+      spammerSurfaces,
       spammerReadModel,
     };
   }
@@ -906,6 +1004,91 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     return {
       windowSec: this.problemChatWindowSec,
       items,
+    };
+  }
+
+  private async getSpammerSurfaceSummary(): Promise<
+    RuntimeDiagnosticsDashboardSnapshot['spammerSurfaces']
+  > {
+    const hashes = await this.readHashes(
+      this.buildWindowBucketKeys(SPAMMER_SURFACE_BUCKET_PREFIX, this.spammerSurfaceWindowSec),
+    );
+    const aggregate = new Map<
+      string,
+      {
+        surface: string;
+        stage: string;
+        count: number;
+        totalMs: number;
+        maxMs: number;
+        lastObservedAtMs: number;
+        buckets: Map<number, number>;
+      }
+    >();
+
+    for (const hash of hashes) {
+      for (const [field, rawValue] of Object.entries(hash)) {
+        const parsed = this.parseSpammerSurfaceField(field);
+        if (!parsed) {
+          continue;
+        }
+        const key = `${parsed.surface}\u0000${parsed.stage}`;
+        const value = this.parseNonNegativeInt(rawValue);
+        const entry = aggregate.get(key) ?? {
+          surface: parsed.surface,
+          stage: parsed.stage,
+          count: 0,
+          totalMs: 0,
+          maxMs: 0,
+          lastObservedAtMs: 0,
+          buckets: new Map<number, number>(),
+        };
+
+        if (parsed.metric === 'count') {
+          entry.count += value;
+        } else if (parsed.metric === 'total') {
+          entry.totalMs += value;
+        } else if (parsed.metric === 'max') {
+          entry.maxMs = Math.max(entry.maxMs, value);
+        } else if (parsed.metric === 'lastObservedAtMs') {
+          entry.lastObservedAtMs = Math.max(entry.lastObservedAtMs, value);
+        } else if (parsed.metric.startsWith('bucket:')) {
+          const bucket = Number(parsed.metric.slice('bucket:'.length));
+          if (Number.isFinite(bucket)) {
+            entry.buckets.set(bucket, (entry.buckets.get(bucket) ?? 0) + value);
+          }
+        }
+
+        aggregate.set(key, entry);
+      }
+    }
+
+    const timings = [...aggregate.values()]
+      .filter((entry) => entry.count > 0)
+      .map((entry) => ({
+        surface: entry.surface,
+        stage: entry.stage,
+        count: entry.count,
+        avgMs: Number((entry.totalMs / entry.count).toFixed(1)),
+        p95Ms: this.estimateLatencyPercentile(entry.buckets, entry.count, 0.95),
+        p99Ms: this.estimateLatencyPercentile(entry.buckets, entry.count, 0.99),
+        maxMs: entry.maxMs,
+        lastObservedAt:
+          entry.lastObservedAtMs > 0 ? new Date(entry.lastObservedAtMs).toISOString() : null,
+      }))
+      .sort(
+        (left, right) =>
+          right.p95Ms - left.p95Ms ||
+          right.maxMs - left.maxMs ||
+          right.count - left.count ||
+          left.surface.localeCompare(right.surface) ||
+          left.stage.localeCompare(right.stage),
+      )
+      .slice(0, 24);
+
+    return {
+      windowSec: this.spammerSurfaceWindowSec,
+      timings,
     };
   }
 
@@ -1363,6 +1546,60 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       return normalized;
     }
     return `${normalized.slice(0, PROBLEM_CHAT_REASON_MAX_LENGTH - 3)}...`;
+  }
+
+  private normalizeMetricSegment(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/gu, '_')
+      .slice(0, 80);
+  }
+
+  private buildSpammerSurfaceField(
+    sample: Pick<SpammerSurfaceTimingSample, 'surface' | 'stage'>,
+    metric: string,
+  ): string {
+    return `${sample.surface}|${sample.stage}|${metric}`;
+  }
+
+  private parseSpammerSurfaceField(
+    value: string,
+  ): { surface: string; stage: string; metric: string } | null {
+    const [surface, stage, ...metricParts] = value.split('|');
+    const metric = metricParts.join('|');
+    if (!surface || !stage || !metric) {
+      return null;
+    }
+    return { surface, stage, metric };
+  }
+
+  private resolveLatencyBucket(elapsedMs: number): number {
+    for (const bucket of SPAMMER_SURFACE_LATENCY_BUCKETS_MS) {
+      if (elapsedMs <= bucket) {
+        return bucket;
+      }
+    }
+    return SPAMMER_SURFACE_LATENCY_BUCKETS_MS[SPAMMER_SURFACE_LATENCY_BUCKETS_MS.length - 1];
+  }
+
+  private estimateLatencyPercentile(
+    buckets: ReadonlyMap<number, number>,
+    totalCount: number,
+    percentile: number,
+  ): number {
+    if (totalCount <= 0) {
+      return 0;
+    }
+    const target = Math.max(1, Math.ceil(totalCount * percentile));
+    let cumulative = 0;
+    for (const [bucket, count] of [...buckets.entries()].sort((left, right) => left[0] - right[0])) {
+      cumulative += count;
+      if (cumulative >= target) {
+        return bucket;
+      }
+    }
+    return 0;
   }
 
   private problemSeverityRank(severity: ProblemChatSeverity): number {

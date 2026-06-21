@@ -644,6 +644,21 @@ describe('SystemDashboardService', () => {
             backoffSample: [],
             issueSample: [],
           },
+          spammerSurfaces: {
+            windowSec: 900,
+            timings: [
+              {
+                surface: 'spammer-review',
+                stage: 'total',
+                count: 4,
+                avgMs: 180,
+                p95Ms: 300,
+                p99Ms: 500,
+                maxMs: 420,
+                lastObservedAt: '2026-03-29T12:00:00.000Z',
+              },
+            ],
+          },
           spammerReadModel: {
             windowSec: 900,
             profileReads: {
@@ -724,6 +739,9 @@ describe('SystemDashboardService', () => {
       },
       membershipLookup: {
         hotChannels: 1,
+      },
+      spammerSurfaces: {
+        timings: [expect.objectContaining({ surface: 'spammer-review', stage: 'total' })],
       },
       spammerReadModel: {
         profileReads: {

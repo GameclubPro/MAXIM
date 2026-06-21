@@ -247,6 +247,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const slo = dashboard.slo ?? dashboard.webhookSlo;
   const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 8) ?? [];
   const spammerReadModel = dashboard.spammerReadModel;
+  const spammerSurfaceTimings = dashboard.spammerSurfaces?.timings.slice(0, 6) ?? [];
   return (
     <div className="page-stack page-enter">
       <GlassCard className="system-hero" elevated>
@@ -320,6 +321,44 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                 ? 'Ручной режим активен. Верните auto после завершения инцидента.'
                 : 'Auto-mode сам реагирует на lag и MAX critical rate.'}
           </p>
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Spammer surfaces</h2>
+              <p>p95 по админским запросам базы спамеров и досье.</p>
+            </div>
+            <span className="chip">
+              {dashboard.spammerSurfaces ? formatWindow(dashboard.spammerSurfaces.windowSec) : 'n/a'}
+            </span>
+          </div>
+          {spammerSurfaceTimings.length > 0 ? (
+            <div className="system-runtime-list">
+              {spammerSurfaceTimings.map((timing) => (
+                <article
+                  key={`${timing.surface}:${timing.stage}`}
+                  className="system-runtime-row"
+                >
+                  <div>
+                    <strong>
+                      {timing.surface} · {timing.stage}
+                    </strong>
+                    <span>
+                      avg {formatMs(timing.avgMs)} · max {formatMs(timing.maxMs)}
+                    </span>
+                  </div>
+                  <div className="system-runtime-row__meta">
+                    <span className="chip">p95 {formatMs(timing.p95Ms)}</span>
+                    <span className="chip">p99 {formatMs(timing.p99Ms)}</span>
+                    <small>{timing.count} samples</small>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="system-panel__hint">Spammer surface timings пока не попадали в окно.</p>
+          )}
         </GlassCard>
 
         <GlassCard className="system-panel" elevated>

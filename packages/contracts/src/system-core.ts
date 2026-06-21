@@ -399,6 +399,28 @@ export const systemDashboardProblemChatsSchema = z.object({
 });
 export type SystemDashboardProblemChats = z.infer<typeof systemDashboardProblemChatsSchema>;
 
+export const systemDashboardSpammerSurfaceTimingSchema = z.object({
+  surface: z.string(),
+  stage: z.string(),
+  count: z.number().int().min(0),
+  avgMs: z.number().min(0),
+  p95Ms: z.number().min(0),
+  p99Ms: z.number().min(0),
+  maxMs: z.number().int().min(0),
+  lastObservedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardSpammerSurfaceTiming = z.infer<
+  typeof systemDashboardSpammerSurfaceTimingSchema
+>;
+
+export const systemDashboardSpammerSurfacesSchema = z.object({
+  windowSec: z.number().int().positive(),
+  timings: z.array(systemDashboardSpammerSurfaceTimingSchema),
+});
+export type SystemDashboardSpammerSurfaces = z.infer<
+  typeof systemDashboardSpammerSurfacesSchema
+>;
+
 export const systemDashboardSpammerReadModelSchema = z.object({
   windowSec: z.number().int().positive(),
   profileReads: z.object({
@@ -597,6 +619,7 @@ export const systemDashboardResponseSchema = z.object({
   backgroundBudget: systemDashboardBackgroundBudgetSchema.optional(),
   membershipLookup: systemDashboardMembershipLookupSchema.optional(),
   problemChats: systemDashboardProblemChatsSchema.optional(),
+  spammerSurfaces: systemDashboardSpammerSurfacesSchema.optional(),
   spammerReadModel: systemDashboardSpammerReadModelSchema.optional(),
   webhookSlo: systemDashboardWebhookSloSchema.optional(),
   slo: systemDashboardWebhookSloSchema.optional(),

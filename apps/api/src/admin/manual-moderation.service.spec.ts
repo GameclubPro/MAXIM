@@ -8,6 +8,10 @@ const authUser = {
   chatTitle: null,
 };
 
+async function flushPromises(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 const profile = {
   displayName: 'Марина Орлова',
   avatarUrl: 'https://cdn.max.ru/u/user-1/avatar.jpg',
@@ -197,6 +201,36 @@ describe('ManualModerationService spammer profiles', () => {
         profileHandoffUrl: null,
       }),
     );
+  });
+
+  it('records spammer surface timing diagnostics without blocking review responses', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const runtimeDiagnostics = {
+      recordSpammerSurfaceTiming: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+      runtimeDiagnostics as never,
+    );
+
+    await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      status: 'PENDING',
+      limit: '6',
+    });
+    await flushPromises();
+
+    expect(runtimeDiagnostics.recordSpammerSurfaceTiming).toHaveBeenCalledWith({
+      surface: 'spammer-review',
+      timings: expect.objectContaining({
+        assertAdmin: expect.any(Number),
+        queue: expect.any(Number),
+        profile: expect.any(Number),
+        zodParse: expect.any(Number),
+        total: expect.any(Number),
+      }),
+    });
   });
 
   it('attaches resolved remote profile data when full spammer review profiles are requested', async () => {

@@ -330,6 +330,7 @@ export class SystemDashboardService {
             hotPath: runtimeDiagnostics.hotPath,
             hotChats: runtimeDiagnostics.hotChats,
             membershipLookup: runtimeDiagnostics.membershipLookup,
+            spammerSurfaces: runtimeDiagnostics.spammerSurfaces,
             spammerReadModel: runtimeDiagnostics.spammerReadModel,
             ...(runtimeDiagnostics.problemChats
               ? { problemChats: runtimeDiagnostics.problemChats }

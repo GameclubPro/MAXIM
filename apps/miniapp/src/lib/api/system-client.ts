@@ -5,6 +5,7 @@ import type {
   SystemDashboardAlert,
   SystemDashboardResponse,
   SystemDashboardSpammerReadModel,
+  SystemDashboardSpammerSurfaces,
   SystemDashboardWebhookSlo,
   SystemModeSnapshot,
   SystemQueueGroupHealth,
@@ -351,6 +352,44 @@ function parseSystemDashboardProblemChats(value: unknown) {
         reason: item.reason,
         count: item.count,
         lastObservedAt: item.lastObservedAt,
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardSpammerSurfaces(value: unknown): SystemDashboardSpammerSurfaces {
+  if (!isRecord(value) || typeof value.windowSec !== 'number' || !Array.isArray(value.timings)) {
+    throw new Error('Invalid system dashboard spammer surfaces');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    timings: value.timings.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.surface !== 'string' ||
+        typeof item.stage !== 'string' ||
+        typeof item.count !== 'number' ||
+        typeof item.avgMs !== 'number' ||
+        typeof item.p95Ms !== 'number' ||
+        typeof item.p99Ms !== 'number' ||
+        typeof item.maxMs !== 'number' ||
+        (item.lastObservedAt !== null &&
+          item.lastObservedAt !== undefined &&
+          typeof item.lastObservedAt !== 'string')
+      ) {
+        throw new Error('Invalid system dashboard spammer surface timing');
+      }
+
+      return {
+        surface: item.surface,
+        stage: item.stage,
+        count: item.count,
+        avgMs: item.avgMs,
+        p95Ms: item.p95Ms,
+        p99Ms: item.p99Ms,
+        maxMs: item.maxMs,
+        lastObservedAt: typeof item.lastObservedAt === 'string' ? item.lastObservedAt : null,
       };
     }),
   };
@@ -1121,6 +1160,9 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       : {}),
     ...(value.problemChats
       ? { problemChats: parseSystemDashboardProblemChats(value.problemChats) }
+      : {}),
+    ...(value.spammerSurfaces
+      ? { spammerSurfaces: parseSystemDashboardSpammerSurfaces(value.spammerSurfaces) }
       : {}),
     ...(value.spammerReadModel
       ? { spammerReadModel: parseSystemDashboardSpammerReadModel(value.spammerReadModel) }

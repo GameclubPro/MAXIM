@@ -9,9 +9,10 @@ import {
   type GlobalSpammerReviewQueue,
   type GlobalSpammerUserDiagnostics,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { GlobalSpammerIntelligenceService } from '../moderation/global-spammer-intelligence.service';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { AdminService } from './admin.service';
 import { type ResolvedUserProfile } from './admin.service.support';
 
@@ -26,6 +27,7 @@ export class ManualModerationService {
   constructor(
     private readonly legacyAdminService: AdminService,
     private readonly globalSpammerIntelligence: GlobalSpammerIntelligenceService,
+    @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
   ) {}
 
   getChannelStats(
@@ -362,6 +364,27 @@ export class ManualModerationService {
       surface,
       ...details,
     });
+    this.recordSpammerSurfaceTiming(surface, details);
+  }
+
+  private recordSpammerSurfaceTiming(surface: string, details: Record<string, unknown>): void {
+    const timings = Object.fromEntries(
+      Object.entries(details)
+        .filter(([key, value]) => key.endsWith('Ms') && typeof value === 'number')
+        .map(([key, value]) => [key.replace(/Ms$/u, ''), value as number]),
+    );
+    void this.runtimeDiagnostics
+      ?.recordSpammerSurfaceTiming({ surface, timings })
+      .catch((error: unknown) => {
+        this.logger.debug(
+          {
+            event: 'admin.spammer_surface_timing_record_failed',
+            surface,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to record spammer surface timing',
+        );
+      });
   }
 
   private async attachGlobalSpammerReviewProfiles(
