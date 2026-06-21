@@ -419,6 +419,12 @@ export const systemDashboardSpammerReadModelSchema = z.object({
     failure: z.number().int().min(0),
   }),
   denormJobs: z.object({
+    enqueued: z.number().int().min(0),
+    enqueueFailed: z.number().int().min(0),
+    fastPathEnqueued: z.number().int().min(0),
+    fastPathFallbacks: z.number().int().min(0),
+    fastPathReplayed: z.number().int().min(0),
+    fastPathReplayMissing: z.number().int().min(0),
     processed: z.number().int().min(0),
     failed: z.number().int().min(0),
     avgAgeMs: z.number().min(0),

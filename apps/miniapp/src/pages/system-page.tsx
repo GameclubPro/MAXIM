@@ -357,6 +357,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                   <strong>{formatMs(spammerReadModel.denormJobs.avgAgeMs)}</strong>
                   <small>
                     max {formatMs(spammerReadModel.denormJobs.maxAgeMs)} ·{' '}
+                    {spammerReadModel.denormJobs.enqueued} queued /{' '}
                     {spammerReadModel.denormJobs.processed} ok /{' '}
                     {spammerReadModel.denormJobs.failed} fail
                   </small>
@@ -376,10 +377,42 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                 </span>
                 <span
                   className={
-                    spammerReadModel.denormJobs.failed > 0 ? 'chip chip--warning' : 'chip'
+                    spammerReadModel.denormJobs.enqueueFailed > 0 ||
+                    spammerReadModel.denormJobs.failed > 0
+                      ? 'chip chip--warning'
+                      : 'chip'
                   }
                 >
-                  denorm failures {spammerReadModel.denormJobs.failed}
+                  enqueue fail {spammerReadModel.denormJobs.enqueueFailed}
+                </span>
+                <span
+                  className={
+                    spammerReadModel.denormJobs.fastPathFallbacks > 0 ||
+                    spammerReadModel.denormJobs.fastPathReplayMissing > 0
+                      ? 'chip chip--warning'
+                      : 'chip'
+                  }
+                >
+                  fast-path {spammerReadModel.denormJobs.fastPathEnqueued}/
+                  {spammerReadModel.denormJobs.fastPathReplayed}
+                </span>
+                <span
+                  className={
+                    spammerReadModel.denormJobs.fastPathReplayMissing > 0
+                      ? 'chip chip--warning'
+                      : 'chip'
+                  }
+                >
+                  replay miss {spammerReadModel.denormJobs.fastPathReplayMissing}
+                </span>
+                <span
+                  className={
+                    spammerReadModel.denormJobs.fastPathFallbacks > 0
+                      ? 'chip chip--warning'
+                      : 'chip'
+                  }
+                >
+                  fallback {spammerReadModel.denormJobs.fastPathFallbacks}
                 </span>
               </div>
               <p className="system-panel__hint">

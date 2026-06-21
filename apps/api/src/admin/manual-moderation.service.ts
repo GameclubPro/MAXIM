@@ -81,7 +81,11 @@ export class ManualModerationService {
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
     const rawStatus = typeof queryRecord.status === 'string' ? queryRecord.status.trim() : '';
-    const status = this.parseGlobalSpammerCandidateStatus(rawStatus);
+    const status =
+      rawStatus === '' ? 'PENDING' : this.parseGlobalSpammerCandidateStatus(rawStatus);
+    if (!status) {
+      throw new BadRequestException({ status: ['Invalid spammer review status'] });
+    }
     const rawLimit =
       typeof queryRecord.limit === 'string' || typeof queryRecord.limit === 'number'
         ? Number(queryRecord.limit)

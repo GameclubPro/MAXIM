@@ -381,6 +381,12 @@ function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSp
     typeof shadow.mismatchRate !== 'number' ||
     typeof profileWrites.success !== 'number' ||
     typeof profileWrites.failure !== 'number' ||
+    typeof denormJobs.enqueued !== 'number' ||
+    typeof denormJobs.enqueueFailed !== 'number' ||
+    typeof denormJobs.fastPathEnqueued !== 'number' ||
+    typeof denormJobs.fastPathFallbacks !== 'number' ||
+    typeof denormJobs.fastPathReplayed !== 'number' ||
+    typeof denormJobs.fastPathReplayMissing !== 'number' ||
     typeof denormJobs.processed !== 'number' ||
     typeof denormJobs.failed !== 'number' ||
     typeof denormJobs.avgAgeMs !== 'number' ||
@@ -415,6 +421,12 @@ function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSp
       failure: profileWrites.failure,
     },
     denormJobs: {
+      enqueued: denormJobs.enqueued,
+      enqueueFailed: denormJobs.enqueueFailed,
+      fastPathEnqueued: denormJobs.fastPathEnqueued,
+      fastPathFallbacks: denormJobs.fastPathFallbacks,
+      fastPathReplayed: denormJobs.fastPathReplayed,
+      fastPathReplayMissing: denormJobs.fastPathReplayMissing,
       processed: denormJobs.processed,
       failed: denormJobs.failed,
       avgAgeMs: denormJobs.avgAgeMs,

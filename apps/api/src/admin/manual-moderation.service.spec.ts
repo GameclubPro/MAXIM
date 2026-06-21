@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { ManualModerationService } from './manual-moderation.service';
 
 const authUser = {
@@ -129,6 +130,44 @@ function createGlobalSpammerIntelligenceMock() {
 }
 
 describe('ManualModerationService spammer profiles', () => {
+  it('defaults spammer review lists to pending candidates when status is omitted', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    await service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+      limit: '6',
+    });
+
+    expect(globalSpammerIntelligence.listReviewQueue).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      status: 'PENDING',
+      limit: 6,
+      includeObservations: false,
+      includeLocalProfiles: true,
+    });
+  });
+
+  it('rejects invalid spammer review status values instead of widening to all candidates', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    await expect(
+      service.getGlobalSpammerReviewQueue('chat-1', authUser, {
+        status: 'everything',
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(globalSpammerIntelligence.listReviewQueue).not.toHaveBeenCalled();
+  });
+
   it('uses lightweight local data by default for spammer review candidates', async () => {
     const legacyAdminService = createLegacyAdminServiceMock();
     const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
