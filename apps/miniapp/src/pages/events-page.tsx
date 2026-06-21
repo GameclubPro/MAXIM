@@ -80,6 +80,7 @@ const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
 const PARTICIPANTS_SEARCH_DEBOUNCE_MS = 350;
 const IDLE_PREFETCH_DELAY_MS = 700;
+const SPAMMER_DIAGNOSTICS_FULL_DELAY_MS = 500;
 const SPAMMER_REVIEW_QUEUE_SCOPE = ['PENDING', 20, 'local-profile'] as const;
 const SPAMMER_DIAGNOSTICS_LIGHT_SCOPE = 'light' as const;
 const SPAMMER_DIAGNOSTICS_FULL_SCOPE = 'full' as const;
@@ -1902,6 +1903,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
+  const [spammerDiagnosticsFullEnabledFor, setSpammerDiagnosticsFullEnabledFor] = useState<
+    string | null
+  >(null);
   const [participantsSearch, setParticipantsSearch] = useState('');
   const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
     chatId: string | null;
@@ -2184,7 +2188,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           signal,
         },
       ),
-    enabled: Boolean(chatId && spammerDiagnosticsUserId),
+    enabled: Boolean(
+      chatId &&
+        spammerDiagnosticsUserId &&
+        spammerDiagnosticsFullEnabledFor === spammerDiagnosticsUserId,
+    ),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
@@ -2199,6 +2207,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : null;
   const spammerDiagnostics =
     spammerDiagnosticsFull ?? spammerDiagnosticsLight ?? null;
+  const isSpammerDiagnosticsFullScheduled = Boolean(
+    spammerDiagnosticsLight &&
+      !spammerDiagnosticsFull &&
+      spammerDiagnosticsUserId &&
+      spammerDiagnosticsFullEnabledFor !== spammerDiagnosticsUserId,
+  );
   const spammerDiagnosticsError =
     spammerDiagnosticsFullQuery.error && spammerDiagnostics
       ? spammerDiagnosticsLightQuery.error
@@ -2212,8 +2226,26 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     (spammerDiagnosticsLightQuery.isFetching || spammerDiagnosticsFullQuery.isFetching);
   const isSpammerDiagnosticsLoadingDetails =
     Boolean(
-      spammerDiagnosticsLight && !spammerDiagnosticsFull && spammerDiagnosticsFullQuery.isFetching,
+      spammerDiagnosticsLight &&
+        !spammerDiagnosticsFull &&
+        (spammerDiagnosticsFullQuery.isFetching || isSpammerDiagnosticsFullScheduled),
     );
+
+  useEffect(() => {
+    setSpammerDiagnosticsFullEnabledFor(null);
+  }, [spammerDiagnosticsUserId]);
+
+  useEffect(() => {
+    if (!chatId || !spammerDiagnosticsUserId || !spammerDiagnosticsLight) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setSpammerDiagnosticsFullEnabledFor(spammerDiagnosticsUserId);
+    }, SPAMMER_DIAGNOSTICS_FULL_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [chatId, spammerDiagnosticsLight, spammerDiagnosticsUserId]);
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
@@ -2531,7 +2563,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       gcTime: 10 * 60_000,
     });
   };
-  const prefetchSpammerDiagnostics = (target: SpammerDiagnosticsTarget) => {
+  const prefetchSpammerDiagnosticsShell = (target: SpammerDiagnosticsTarget) => {
     const targetUserId = target.userId.trim();
     if (!chatId || !targetUserId) {
       return;
@@ -2553,29 +2585,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       staleTime: 60_000,
       gcTime: 10 * 60_000,
     });
-    void queryClient.prefetchQuery({
-      queryKey: queryKeys.globalSpammerUserDiagnostics(
-        chatId,
-        targetUserId,
-        SPAMMER_DIAGNOSTICS_FULL_SCOPE,
-      ),
-      queryFn: ({ signal }) =>
-        getGlobalSpammerUserDiagnostics(
-          api,
-          chatId,
-          targetUserId,
-          SPAMMER_DIAGNOSTICS_FULL_QUERY,
-          { signal },
-        ),
-      staleTime: 60_000,
-      gcTime: 10 * 60_000,
-    });
   };
   const openSpammerDiagnostics = (target: SpammerDiagnosticsTarget) => {
     if (!target.userId.trim()) {
       return;
     }
-    prefetchSpammerDiagnostics(target);
+    prefetchSpammerDiagnosticsShell(target);
     setSpammerDiagnosticsTarget(target);
   };
   const handleSpammerCandidateDiagnostics = (candidate: GlobalSpammerReviewCandidate) => {
@@ -3212,7 +3227,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onRetry={handleSpammerReviewRetry}
         onOpenDiagnostics={handleSpammerCandidateDiagnostics}
         onWarmDiagnostics={(candidate) =>
-          prefetchSpammerDiagnostics({
+          prefetchSpammerDiagnosticsShell({
             userId: candidate.userId,
             displayName: resolveSpammerCandidateName(candidate),
             avatarUrl: candidate.avatarUrl ?? null,
@@ -3242,6 +3257,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         }
         onClose={() => setSpammerDiagnosticsTarget(null)}
         onRetry={() => {
+          if (spammerDiagnosticsUserId) {
+            setSpammerDiagnosticsFullEnabledFor(spammerDiagnosticsUserId);
+          }
           void spammerDiagnosticsLightQuery.refetch();
           void spammerDiagnosticsFullQuery.refetch();
         }}
