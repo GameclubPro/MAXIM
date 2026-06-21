@@ -566,6 +566,7 @@ const RUNTIME_PROFILE_L1_TTL_MS = 5_000;
 const RUNTIME_PROFILE_REDIS_TTL_SEC = 60;
 const RUNTIME_PROFILE_REDIS_NEGATIVE_TTL_SEC = 120;
 const RUNTIME_PROFILE_DEFAULT_STALE_MS = 5 * 60 * 1000;
+const RAW_EVIDENCE_PRUNE_TRANSACTION_CHUNK_SIZE = 100;
 const RECENT_SUPPRESSION_MEMORY_DAYS = 30;
 const GRAPH_SIGNAL_TTL_DAYS = 14;
 const GRAPH_OBSERVATION_TTL_DAYS = 14;
@@ -2044,19 +2045,23 @@ export class GlobalSpammerIntelligenceService {
 
     let pruned = 0;
     const failedIds: string[] = [];
-    const updates = rows.map((row) => this.buildRawEvidencePruneUpdate(row, now));
-    try {
-      const result = await this.prisma.$transaction(updates);
-      pruned = result.length;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          scanned: rows.length,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Batch global spammer raw evidence prune failed; retrying rows individually',
-      );
-      for (const row of rows) {
+    for (let index = 0; index < rows.length; index += RAW_EVIDENCE_PRUNE_TRANSACTION_CHUNK_SIZE) {
+      const chunk = rows.slice(index, index + RAW_EVIDENCE_PRUNE_TRANSACTION_CHUNK_SIZE);
+      const updates = chunk.map((row) => this.buildRawEvidencePruneUpdate(row, now));
+      try {
+        const result = await this.prisma.$transaction(updates);
+        pruned += result.length;
+        continue;
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            scanned: chunk.length,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Batch global spammer raw evidence prune failed; retrying rows individually',
+        );
+      }
+      for (const row of chunk) {
         try {
           await this.buildRawEvidencePruneUpdate(row, now);
           pruned += 1;
