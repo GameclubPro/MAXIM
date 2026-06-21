@@ -20,32 +20,9 @@ const NORMALIZED_IMAGE_MIME_TYPES: Record<string, string> = {
   'image/jpg': 'image/jpeg',
   'image/pjpeg': 'image/jpeg',
 };
-const ORIGINAL_IMAGE_MIME_TYPES = new Set([
-  'image/bmp',
-  'image/gif',
-  'image/heic',
-  'image/jpeg',
-  'image/png',
-  'image/tiff',
-]);
-const CANVAS_BLACK_PIXEL_MAX_VALUE = 8;
-const CANVAS_BLANK_ALPHA_MAX_VALUE = 4;
 
 export function resolveMaxUploadImageTargetMimeTypes(inputMimeType: string): string[] {
   return inputMimeType === 'image/png' ? ['image/png', 'image/jpeg'] : ['image/jpeg', 'image/png'];
-}
-
-export function canUseOriginalBroadcastImage(
-  inputMimeType: string,
-  fileSize: number,
-  maxImageBytes = MAX_PREPARED_IMAGE_BYTES,
-): boolean {
-  return (
-    Number.isFinite(fileSize) &&
-    fileSize > 0 &&
-    fileSize <= maxImageBytes &&
-    ORIGINAL_IMAGE_MIME_TYPES.has(normalizeImageMimeType(inputMimeType))
-  );
 }
 
 export type PreparedBroadcastImage = {
@@ -71,13 +48,6 @@ type LoadedImageSource = {
   ) => void;
   close: () => void;
 };
-
-class SuspiciousCanvasRenderError extends Error {
-  constructor() {
-    super(FALLBACK_IMAGE_ERROR);
-    this.name = 'SuspiciousCanvasRenderError';
-  }
-}
 
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -107,7 +77,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 }
 
 async function loadImageFromBlob(blob: Blob): Promise<LoadedImageSource> {
-  if (typeof createImageBitmap === 'function' && !shouldPreferHtmlImageElementDecode()) {
+  if (typeof createImageBitmap === 'function') {
     try {
       const bitmap = await createImageBitmap(blob, {
         imageOrientation: 'from-image',
@@ -129,13 +99,14 @@ async function loadImageFromBlob(blob: Blob): Promise<LoadedImageSource> {
     const image = new Image();
     const objectUrl = URL.createObjectURL(blob);
     image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
       resolve({
         width: image.naturalWidth || image.width,
         height: image.naturalHeight || image.height,
         draw: (context, width, height) => {
           context.drawImage(image, 0, 0, width, height);
         },
-        close: () => URL.revokeObjectURL(objectUrl),
+        close: () => undefined,
       });
     };
     image.onerror = () => {
@@ -179,26 +150,11 @@ function ensureTypedImageBlob(file: File, mimeType: string): Blob {
 }
 
 function resolveOutputExtension(mimeType: string): string {
-  if (mimeType === 'image/bmp') {
-    return '.bmp';
-  }
   if (mimeType === 'image/png') {
     return '.png';
   }
-  if (mimeType === 'image/webp') {
-    return '.webp';
-  }
   if (mimeType === 'image/gif') {
     return '.gif';
-  }
-  if (mimeType === 'image/heic') {
-    return '.heic';
-  }
-  if (mimeType === 'image/heif') {
-    return '.heif';
-  }
-  if (mimeType === 'image/tiff') {
-    return '.tiff';
   }
 
   return '.jpg';
@@ -227,121 +183,25 @@ function scaleImageSize(
   };
 }
 
-function shouldPreferHtmlImageElementDecode(): boolean {
-  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-  return /\b(iPhone|iPad|iPod)\b/u.test(userAgent) && /AppleWebKit/u.test(userAgent);
-}
-
-function shouldPreferHtmlCanvasElement(): boolean {
-  return (
-    typeof document !== 'undefined' &&
-    (typeof OffscreenCanvas !== 'function' || shouldPreferHtmlImageElementDecode())
-  );
-}
-
-function canReadOriginalImage(file: File, mimeType: string, maxImageBytes: number): boolean {
-  return canUseOriginalBroadcastImage(mimeType, file.size, maxImageBytes);
-}
-
 function renderToCanvas(
   image: LoadedImageSource,
   width: number,
   height: number,
-  mimeType: string,
 ): HTMLCanvasElement | OffscreenCanvas {
   const canvas =
-    shouldPreferHtmlCanvasElement()
-      ? Object.assign(document.createElement('canvas'), { width, height })
-      : new OffscreenCanvas(width, height);
+    typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(width, height)
+      : Object.assign(document.createElement('canvas'), { width, height });
 
-  const context = canvas.getContext('2d', { alpha: true });
+  const context = canvas.getContext('2d', { alpha: false });
   if (!context) {
     throw new Error('Не удалось подготовить изображение.');
   }
 
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
-  if (mimeType === 'image/jpeg') {
-    context.save();
-    context.fillStyle = '#fff';
-    context.fillRect(0, 0, width, height);
-    context.restore();
-  }
   image.draw(context, width, height);
-  assertCanvasHasReadableImage(context, width, height);
   return canvas;
-}
-
-function assertCanvasHasReadableImage(
-  context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
-  width: number,
-  height: number,
-): void {
-  if (width <= 0 || height <= 0) {
-    throw new SuspiciousCanvasRenderError();
-  }
-
-  let opaquePixels = 0;
-  let nonBlackPixels = 0;
-
-  const sampleRects = buildCanvasSampleRects(width, height);
-  for (const rect of sampleRects) {
-    let data: Uint8ClampedArray;
-    try {
-      data = context.getImageData(rect.x, rect.y, rect.width, rect.height).data;
-    } catch {
-      return;
-    }
-
-    for (let index = 0; index < data.length; index += 4) {
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-      const alpha = data[index + 3] ?? 0;
-      if (alpha > CANVAS_BLANK_ALPHA_MAX_VALUE) {
-        opaquePixels += 1;
-        if (
-          red > CANVAS_BLACK_PIXEL_MAX_VALUE ||
-          green > CANVAS_BLACK_PIXEL_MAX_VALUE ||
-          blue > CANVAS_BLACK_PIXEL_MAX_VALUE
-        ) {
-          nonBlackPixels += 1;
-        }
-      }
-    }
-  }
-
-  if (opaquePixels === 0 || nonBlackPixels === 0) {
-    throw new SuspiciousCanvasRenderError();
-  }
-}
-
-function buildCanvasSampleRects(
-  width: number,
-  height: number,
-): { x: number; y: number; width: number; height: number }[] {
-  const sampleWidth = Math.max(1, Math.min(48, width));
-  const sampleHeight = Math.max(1, Math.min(48, height));
-  const maxX = Math.max(0, width - sampleWidth);
-  const maxY = Math.max(0, height - sampleHeight);
-  const points = [
-    [0, 0],
-    [maxX, 0],
-    [Math.round(maxX / 2), Math.round(maxY / 2)],
-    [0, maxY],
-    [maxX, maxY],
-  ] as const;
-  const seen = new Set<string>();
-
-  return points.flatMap(([x, y]) => {
-    const key = `${x}:${y}`;
-    if (seen.has(key)) {
-      return [];
-    }
-
-    seen.add(key);
-    return [{ x, y, width: sampleWidth, height: sampleHeight }];
-  });
 }
 
 function canvasToBlob(
@@ -405,10 +265,6 @@ export async function prepareBroadcastImage(
     throw new Error('Фото слишком большое для обработки на телефоне.');
   }
 
-  if (canReadOriginalImage(file, inputMimeType, maxImageBytes)) {
-    return readOriginalImage(sourceBlob, inputMimeType, file.name);
-  }
-
   try {
     const image = await loadImageFromBlob(sourceBlob);
     const sourceWidth = image.width;
@@ -437,9 +293,9 @@ export async function prepareBroadcastImage(
 
       for (const maxDimension of IMAGE_DIMENSION_STEPS) {
         const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
+        const canvas = renderToCanvas(image, scaled.width, scaled.height);
 
         for (const targetMimeType of targetMimeTypes) {
-          const canvas = renderToCanvas(image, scaled.width, scaled.height, targetMimeType);
           const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
           for (const quality of qualitySteps) {
             const blob = await canvasToBlob(canvas, targetMimeType, quality);
