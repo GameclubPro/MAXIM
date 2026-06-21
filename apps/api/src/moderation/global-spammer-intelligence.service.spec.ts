@@ -1808,7 +1808,58 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
-  it('reports review and false-positive metrics', async () => {
+  it('reports lightweight review and false-positive metrics by default', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          pending: 4n,
+          approved: 7n,
+          suppressed: 3n,
+          reviewed: 5n,
+          falsePositiveCount: 2n,
+          newCandidates24h: 6n,
+          autoApproved24h: 1n,
+          suppressed24h: 2n,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          source: 'FANOUT_REPEAT',
+          observedCount: 12n,
+          suppressedCount: 2n,
+        },
+      ]);
+
+    const metrics = await service.getReviewMetrics({ chatId: 'chat-1' });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.globalSpammer.count).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerArchive.count).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerShadowScore.count).not.toHaveBeenCalled();
+    expect(prisma.spammerCampaignCluster.findMany).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerCandidate.count).not.toHaveBeenCalled();
+    expect(prisma.spammerObservation.groupBy).not.toHaveBeenCalled();
+    expect(metrics).toEqual(
+      expect.objectContaining({
+        pending: 4,
+        approved: 7,
+        suppressed: 3,
+        reviewed: 5,
+        activeRegistry: 0,
+        expiredRegistry: 0,
+        archivedExpired: 0,
+        shadowWouldEnforceCount: 0,
+        falsePositiveCount: 2,
+        falsePositiveRate: 0.4,
+        topCampaigns: [],
+        sourceReputation: [],
+      }),
+    );
+  });
+
+  it('reports full review metrics when requested', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
     prisma.$queryRaw
@@ -1833,6 +1884,14 @@ describe('GlobalSpammerIntelligenceService', () => {
       ])
       .mockResolvedValueOnce([
         {
+          activeRegistry: 9n,
+          expiredRegistry: 1n,
+          archivedExpired: 8n,
+          shadowWouldEnforceCount: 3n,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           source: 'FANOUT_REPEAT',
           observedCount: 12n,
           suppressedCount: 2n,
@@ -1851,19 +1910,25 @@ describe('GlobalSpammerIntelligenceService', () => {
           signalValuePreview: 'example.test',
         },
       ]);
-    prisma.globalSpammer.count.mockResolvedValueOnce(9).mockResolvedValueOnce(1);
-    prisma.globalSpammerArchive.count.mockResolvedValueOnce(8);
 
-    const metrics = await service.getReviewMetrics({ chatId: 'chat-1' });
+    const metrics = await service.getReviewMetrics({ chatId: 'chat-1', mode: 'full' });
 
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
-    const sourceReputationSql = prisma.$queryRaw.mock.calls[2]?.[0] as {
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(5);
+    const registrySql = prisma.$queryRaw.mock.calls[2]?.[0] as {
+      strings?: readonly string[];
+    };
+    expect(registrySql.strings?.join(' ')).toContain('global_spammer_archives');
+    expect(registrySql.strings?.join(' ')).toContain('global_spammer_shadow_scores');
+    const sourceReputationSql = prisma.$queryRaw.mock.calls[3]?.[0] as {
       strings?: readonly string[];
     };
     expect(sourceReputationSql.strings?.join(' ')).toContain('UNION ALL');
-    const topCampaignsSql = prisma.$queryRaw.mock.calls[3]?.[0] as { strings?: readonly string[] };
+    const topCampaignsSql = prisma.$queryRaw.mock.calls[4]?.[0] as { strings?: readonly string[] };
     expect(topCampaignsSql.strings?.join(' ')).toContain('spammer_campaign_cluster_members');
     expect(topCampaignsSql.strings?.join(' ')).toContain('member.last_seen_at');
+    expect(prisma.globalSpammer.count).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerArchive.count).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerShadowScore.count).not.toHaveBeenCalled();
     expect(prisma.globalSpammerCandidate.count).not.toHaveBeenCalled();
     expect(prisma.spammerObservation.groupBy).not.toHaveBeenCalled();
     expect(metrics).toEqual(
@@ -1875,6 +1940,7 @@ describe('GlobalSpammerIntelligenceService', () => {
         activeRegistry: 9,
         expiredRegistry: 1,
         archivedExpired: 8,
+        shadowWouldEnforceCount: 3,
         falsePositiveCount: 2,
         falsePositiveRate: 0.4,
         topCampaigns: [

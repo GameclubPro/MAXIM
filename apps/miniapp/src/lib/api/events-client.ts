@@ -60,6 +60,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function hasRequestSignal(value: unknown): value is Pick<RequestInit, 'signal'> {
+  return Boolean(value && typeof value === 'object' && 'signal' in value);
+}
+
 function parseGlobalSpammerUserDiagnosticsResponse(
   response: unknown,
 ): GlobalSpammerUserDiagnostics {
@@ -359,9 +363,19 @@ export async function getGlobalSpammerReviewQueue(
 export async function getGlobalSpammerReviewMetrics(
   api: ApiTransport,
   chatId: string,
-  request: Pick<RequestInit, 'signal'> = {},
+  queryOrRequest: Partial<{
+    mode: 'summary' | 'full';
+  }> | Pick<RequestInit, 'signal'> = {},
+  request: Pick<RequestInit, 'signal'> = hasRequestSignal(queryOrRequest) ? queryOrRequest : {},
 ): Promise<GlobalSpammerReviewMetrics> {
-  const response = await api.request(`/chats/${chatId}/spammer-review/metrics`, request);
+  const query = hasRequestSignal(queryOrRequest) ? {} : queryOrRequest;
+  const params = new URLSearchParams();
+  if (query.mode === 'summary' || query.mode === 'full') {
+    params.set('mode', query.mode);
+  }
+  const queryString = params.toString();
+  const path = `/chats/${chatId}/spammer-review/metrics${queryString ? `?${queryString}` : ''}`;
+  const response = await api.request(path, request);
   return response as GlobalSpammerReviewMetrics;
 }
 

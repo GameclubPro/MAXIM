@@ -149,6 +149,7 @@ type GlobalSpammerRegistryStatus =
   | 'ADMIN_EXEMPT';
 type GlobalSpammerPolicyAction = 'NONE' | 'DELETE_AND_KICK' | 'SHADOW_DELETE_AND_KICK';
 type GlobalSpammerEnforcementMode = 'enforce' | 'shadow';
+type GlobalSpammerReviewMetricsMode = 'summary' | 'full';
 type SpammerGraphSignalType = 'DOMAIN' | 'PHONE' | 'TEXT' | 'CAMPAIGN' | 'FANOUT_PATTERN';
 type GlobalSpammerPolicyBand = 'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH' | 'CONFIRMED';
 type SpammerPrivacyClass = 'STANDARD' | 'SENSITIVE_TEXT' | 'HIGH_SENSITIVITY' | 'MINIMIZED';
@@ -415,6 +416,20 @@ type ReviewMetricsObservationRow = {
   source: string;
   observedCount: unknown;
   suppressedCount: unknown;
+};
+
+type ReviewRegistryMetrics = {
+  activeRegistry: number;
+  expiredRegistry: number;
+  archivedExpired: number;
+  shadowWouldEnforceCount: number;
+};
+
+type ReviewRegistryMetricsRow = {
+  activeRegistry: unknown;
+  expiredRegistry: unknown;
+  archivedExpired: unknown;
+  shadowWouldEnforceCount: unknown;
 };
 
 type SourceReputationRow = {
@@ -1816,20 +1831,27 @@ export class GlobalSpammerIntelligenceService {
     return result;
   }
 
-  async getReviewMetrics(params: { chatId?: string | null } = {}) {
+  async getReviewMetrics(
+    params: { chatId?: string | null; mode?: GlobalSpammerReviewMetricsMode } = {},
+  ) {
     const startedAtMs = Date.now();
     const timings: Record<string, number> = {};
     const now = new Date();
     const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const mode = params.mode ?? 'summary';
+    const includeHeavy = mode === 'full';
+    const emptyRegistryMetrics: ReviewRegistryMetrics = {
+      activeRegistry: 0,
+      expiredRegistry: 0,
+      archivedExpired: 0,
+      shadowWouldEnforceCount: 0,
+    };
 
     const [
       candidateMetrics,
       observationMetrics,
+      registryMetrics,
       sourceReputation,
-      activeRegistry,
-      expiredRegistry,
-      archivedExpired,
-      shadowWouldEnforceCount,
       topCampaigns,
     ] = await Promise.all([
       this.timeSpammerStage(timings, 'candidateMetricsMs', () =>
@@ -1838,38 +1860,23 @@ export class GlobalSpammerIntelligenceService {
       this.timeSpammerStage(timings, 'observationMetricsMs', () =>
         this.getReviewObservationMetrics({ chatId: params.chatId ?? null, since }),
       ),
-      this.timeSpammerStage(timings, 'sourceReputationMs', () => this.getSourceReputation(now)),
-      this.timeSpammerStage(timings, 'activeRegistryCountMs', () =>
-        this.prisma.globalSpammer.count({
-          where: {
-            expiresAt: {
-              gt: now,
-            },
-          },
-        }),
-      ),
-      this.timeSpammerStage(timings, 'expiredRegistryCountMs', () =>
-        this.prisma.globalSpammer.count({
-          where: this.buildExpiredRegistryWhere(now),
-        }),
-      ),
-      this.timeSpammerStage(timings, 'archiveCountMs', () =>
-        this.prisma.globalSpammerArchive.count(),
-      ),
-      this.timeSpammerStage(timings, 'shadowCountMs', () =>
-        this.prisma.globalSpammerShadowScore.count({
-          where: {
-            createdAt: {
-              gte: since,
-            },
-            wouldPromote: true,
-            ...(params.chatId ? { chatId: params.chatId } : {}),
-          },
-        }),
-      ),
-      this.timeSpammerStage(timings, 'topCampaignsMs', () =>
-        this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
-      ),
+      includeHeavy
+        ? this.timeSpammerStage(timings, 'registryMetricsMs', () =>
+            this.getReviewRegistryMetrics({
+              now,
+              since,
+              chatId: params.chatId ?? null,
+            }),
+          )
+        : Promise.resolve(emptyRegistryMetrics),
+      includeHeavy
+        ? this.timeSpammerStage(timings, 'sourceReputationMs', () => this.getSourceReputation(now))
+        : Promise.resolve([] as SourceReputation[]),
+      includeHeavy
+        ? this.timeSpammerStage(timings, 'topCampaignsMs', () =>
+            this.listTopCampaigns({ since, chatId: params.chatId ?? null, limit: 5 }),
+          )
+        : Promise.resolve([]),
     ]);
     const pending = candidateMetrics.pending;
     const approved = candidateMetrics.approved;
@@ -1900,13 +1907,13 @@ export class GlobalSpammerIntelligenceService {
       approved,
       suppressed,
       reviewed,
-      activeRegistry,
-      expiredRegistry,
-      archivedExpired,
+      activeRegistry: registryMetrics.activeRegistry,
+      expiredRegistry: registryMetrics.expiredRegistry,
+      archivedExpired: registryMetrics.archivedExpired,
       newCandidates24h,
       autoApproved24h,
       suppressed24h,
-      shadowWouldEnforceCount,
+      shadowWouldEnforceCount: registryMetrics.shadowWouldEnforceCount,
       topCampaigns,
       enforcementMode: this.defaultEnforcementMode,
       falsePositiveCount,
@@ -1918,6 +1925,7 @@ export class GlobalSpammerIntelligenceService {
     };
     this.logSpammerIntelligenceTiming('getReviewMetrics', {
       chatId: params.chatId ?? null,
+      mode,
       ...timings,
       totalMs: Date.now() - startedAtMs,
     });
@@ -2930,6 +2938,47 @@ export class GlobalSpammerIntelligenceService {
       observedCount: this.readSqlCount(row.observedCount),
       suppressedCount: this.readSqlCount(row.suppressedCount),
     }));
+  }
+
+  private async getReviewRegistryMetrics(params: {
+    now: Date;
+    since: Date;
+    chatId?: string | null;
+  }): Promise<ReviewRegistryMetrics> {
+    const shadowChatFilter = params.chatId
+      ? Prisma.sql`AND chat_id = ${params.chatId}`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<ReviewRegistryMetricsRow[]>(Prisma.sql`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM global_spammers
+          WHERE expires_at > ${params.now}
+        )::bigint AS "activeRegistry",
+        (
+          SELECT COUNT(*)
+          FROM global_spammers
+          WHERE expires_at IS NULL OR expires_at <= ${params.now}
+        )::bigint AS "expiredRegistry",
+        (
+          SELECT COUNT(*)
+          FROM global_spammer_archives
+        )::bigint AS "archivedExpired",
+        (
+          SELECT COUNT(*)
+          FROM global_spammer_shadow_scores
+          WHERE created_at >= ${params.since}
+            AND would_promote = true
+            ${shadowChatFilter}
+        )::bigint AS "shadowWouldEnforceCount"
+    `);
+    const row = rows[0];
+    return {
+      activeRegistry: this.readSqlCount(row?.activeRegistry),
+      expiredRegistry: this.readSqlCount(row?.expiredRegistry),
+      archivedExpired: this.readSqlCount(row?.archivedExpired),
+      shadowWouldEnforceCount: this.readSqlCount(row?.shadowWouldEnforceCount),
+    };
   }
 
   private async timeSpammerStage<T>(

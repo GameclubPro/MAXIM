@@ -51,6 +51,27 @@ function createGlobalSpammerIntelligenceMock() {
         },
       ],
     })),
+    getReviewMetrics: jest.fn().mockResolvedValue({
+      pending: 1,
+      approved: 2,
+      suppressed: 0,
+      reviewed: 2,
+      activeRegistry: 0,
+      expiredRegistry: 0,
+      archivedExpired: 0,
+      newCandidates24h: 1,
+      autoApproved24h: 0,
+      suppressed24h: 0,
+      shadowWouldEnforceCount: 0,
+      topCampaigns: [],
+      enforcementMode: 'enforce',
+      falsePositiveCount: 0,
+      falsePositiveRate: 0,
+      recentObservations: [],
+      suppressedObservations: [],
+      sourceAlerts: [],
+      sourceReputation: [],
+    }),
     resolveLocalReviewProfiles: jest
       .fn()
       .mockResolvedValue(new Map([['user-1', { userId: 'user-1', displayName: 'Марина Орлова' }]])),
@@ -318,6 +339,39 @@ describe('ManualModerationService spammer profiles', () => {
         lastUserLabel: 'Старое имя',
       }),
     );
+  });
+
+  it('uses lightweight summary mode for spammer review metrics by default', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    const metrics = await service.getGlobalSpammerReviewMetrics('chat-1', authUser);
+
+    expect(globalSpammerIntelligence.getReviewMetrics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      mode: 'summary',
+    });
+    expect(metrics.enforcementMode).toBe('enforce');
+  });
+
+  it('passes full mode through for spammer review metrics when requested', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    await service.getGlobalSpammerReviewMetrics('chat-1', authUser, { mode: 'full' });
+
+    expect(globalSpammerIntelligence.getReviewMetrics).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      mode: 'full',
+    });
   });
 
   it('skips profile enrichment for lightweight spammer dossier diagnostics', async () => {

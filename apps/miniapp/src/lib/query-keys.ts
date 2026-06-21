@@ -5,8 +5,10 @@ export const queryKeys = {
     ['logs-dashboard', chatId, range, ...scope] as const,
   globalSpammerReviewQueue: (chatId: string | null | undefined, ...scope: readonly unknown[]) =>
     ['global-spammer-review-queue', chatId, ...scope] as const,
-  globalSpammerReviewMetrics: (chatId: string | null | undefined) =>
-    ['global-spammer-review-metrics', chatId] as const,
+  globalSpammerReviewMetrics: (
+    chatId: string | null | undefined,
+    ...scope: readonly unknown[]
+  ) => ['global-spammer-review-metrics', chatId, ...scope] as const,
   globalSpammerUserDiagnostics: (
     chatId: string | null | undefined,
     userId: string | null | undefined,

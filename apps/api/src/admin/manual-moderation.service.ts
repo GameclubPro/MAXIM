@@ -17,6 +17,7 @@ import { type ResolvedUserProfile } from './admin.service.support';
 
 type GlobalSpammerProfileMode = 'full' | 'local';
 type GlobalSpammerDiagnosticsMode = 'shell' | 'full';
+type GlobalSpammerReviewMetricsMode = 'summary' | 'full';
 
 @Injectable()
 export class ManualModerationService {
@@ -138,13 +139,18 @@ export class ManualModerationService {
     return finalResponse;
   }
 
-  async getGlobalSpammerReviewMetrics(chatId: string, user: AuthUser) {
+  async getGlobalSpammerReviewMetrics(chatId: string, user: AuthUser, query: unknown = {}) {
     const startedAtMs = Date.now();
     await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
     const assertAdminMs = Date.now() - startedAtMs;
+    const queryRecord =
+      query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
+    const includeHeavy = this.parseBooleanQuery(queryRecord.includeHeavy, false);
+    const mode = includeHeavy ? 'full' : this.parseGlobalSpammerReviewMetricsMode(queryRecord.mode);
     const metricsStartedAtMs = Date.now();
     const response = await this.globalSpammerIntelligence.getReviewMetrics({
       chatId,
+      mode,
     });
     const metricsMs = Date.now() - metricsStartedAtMs;
     const parseStartedAtMs = Date.now();
@@ -155,6 +161,7 @@ export class ManualModerationService {
       metricsMs,
       zodParseMs: Date.now() - parseStartedAtMs,
       totalMs: Date.now() - startedAtMs,
+      mode,
     });
     return parsedResponse;
   }
@@ -335,6 +342,14 @@ export class ManualModerationService {
       return 'full';
     }
     return 'shell';
+  }
+
+  private parseGlobalSpammerReviewMetricsMode(value: unknown): GlobalSpammerReviewMetricsMode {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (normalized === 'full' || normalized === 'details' || normalized === 'heavy') {
+      return 'full';
+    }
+    return 'summary';
   }
 
   private logSpammerSurfaceTiming(surface: string, details: Record<string, unknown>): void {

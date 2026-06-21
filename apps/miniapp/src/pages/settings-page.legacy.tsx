@@ -720,8 +720,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const spammerReviewMetricsQuery = useQuery({
-    queryKey: queryKeys.globalSpammerReviewMetrics(chatId),
-    queryFn: ({ signal }) => getGlobalSpammerReviewMetrics(api, chatId ?? '', { signal }),
+    queryKey: queryKeys.globalSpammerReviewMetrics(chatId, 'summary'),
+    queryFn: ({ signal }) =>
+      getGlobalSpammerReviewMetrics(api, chatId ?? '', { mode: 'summary' }, { signal }),
     enabled: Boolean(chatId) && Boolean(settingsScreenQuery.data),
     staleTime: 30_000,
     refetchOnWindowFocus: false,

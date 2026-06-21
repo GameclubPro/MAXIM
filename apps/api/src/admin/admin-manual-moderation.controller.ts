@@ -128,8 +128,12 @@ export class AdminManualModerationController {
   }
 
   @Get('chats/:chatId/spammer-review/metrics')
-  getGlobalSpammerReviewMetrics(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.moderationService.getGlobalSpammerReviewMetrics(chatId, user);
+  getGlobalSpammerReviewMetrics(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.moderationService.getGlobalSpammerReviewMetrics(chatId, user, query);
   }
 
   @Get('chats/:chatId/spammer-diagnostics/:userId')
