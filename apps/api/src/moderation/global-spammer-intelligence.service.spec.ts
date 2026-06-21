@@ -3154,6 +3154,78 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('treats shadow score drift as matched when the runtime decision outcome is identical', async () => {
+    const { prisma, runtimeProfiles } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+        SPAMMER_READ_MODEL_SHADOW_ENABLED: 'true',
+      }),
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    const expiresAt = new Date(Date.now() + 60_000);
+    const sourceBreakdown = { FANOUT_HIGH: { score: 1 } };
+    runtimeProfiles.set('user-runtime-shadow-score-drift', {
+      userId: 'user-runtime-shadow-score-drift',
+      registryStatus: 'ACTIVE_CONFIRMED',
+      action: 'DELETE_AND_KICK',
+      confidenceScore: 1,
+      shadowScore: 1,
+      policyBand: 'CONFIRMED',
+      reason: 'FANOUT_EPISODE_CONFIRMED',
+      expiresAt,
+      suppressedUntil: null,
+      sourceBreakdown,
+      campaignBreakdown: null,
+      sourceVersion: 2,
+      staleAfter: expiresAt,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce({
+      userId: 'user-runtime-shadow-score-drift',
+      confidenceScore: 1,
+      lastReason: 'FANOUT_EPISODE_CONFIRMED',
+      expiresAt,
+      sourceBreakdown,
+    });
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-1',
+        userId: 'user-runtime-shadow-score-drift',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+      }),
+    );
+
+    await flushPromises();
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'global_spammer_read_model_shadow_compare',
+      }),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'global_spammer_read_model_shadow_compare',
+        matched: true,
+        scoreDrift: true,
+        shadowScoreDelta: 1,
+        mismatches: [],
+      }),
+    );
+  });
+
   it('skips runtime profile shadow comparison outside the configured sample', async () => {
     const { prisma, runtimeProfiles } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(

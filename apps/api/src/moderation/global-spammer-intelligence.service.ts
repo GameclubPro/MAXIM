@@ -3404,11 +3404,13 @@ export class GlobalSpammerIntelligenceService {
         (params.runtimeDecision.shadowScore ?? 0) - (params.fallbackDecision.shadowScore ?? 0),
       ),
     );
-    const matched = mismatches.length === 0 && confidenceDelta < 0.001 && shadowScoreDelta < 0.001;
+    const scoreDrift = confidenceDelta >= 0.001 || shadowScoreDelta >= 0.001;
+    const matched = mismatches.length === 0;
 
     const payload = {
       event: 'global_spammer_read_model_shadow_compare',
       matched,
+      scoreDrift,
       userId: params.fallbackDecision.userId,
       chatId: params.fallbackDecision.chatId,
       trigger: params.fallbackDecision.trigger,
@@ -3434,11 +3436,19 @@ export class GlobalSpammerIntelligenceService {
     };
 
     if (matched) {
-      this.recordSpammerReadModelEvents(['shadow_compared', 'shadow_matched']);
+      this.recordSpammerReadModelEvents([
+        'shadow_compared',
+        'shadow_matched',
+        ...(scoreDrift ? (['shadow_score_drift'] as const) : []),
+      ]);
       this.logger.debug(payload);
       return;
     }
-    this.recordSpammerReadModelEvents(['shadow_compared', 'shadow_mismatched']);
+    this.recordSpammerReadModelEvents([
+      'shadow_compared',
+      'shadow_mismatched',
+      ...(scoreDrift ? (['shadow_score_drift'] as const) : []),
+    ]);
     this.logger.warn(payload);
   }
 

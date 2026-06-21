@@ -378,6 +378,7 @@ function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSp
     typeof shadow.compared !== 'number' ||
     typeof shadow.matched !== 'number' ||
     typeof shadow.mismatched !== 'number' ||
+    (shadow.scoreDrift !== undefined && typeof shadow.scoreDrift !== 'number') ||
     typeof shadow.mismatchRate !== 'number' ||
     typeof profileWrites.success !== 'number' ||
     typeof profileWrites.failure !== 'number' ||
@@ -414,6 +415,7 @@ function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSp
       compared: shadow.compared,
       matched: shadow.matched,
       mismatched: shadow.mismatched,
+      scoreDrift: shadow.scoreDrift ?? 0,
       mismatchRate: shadow.mismatchRate,
     },
     profileWrites: {

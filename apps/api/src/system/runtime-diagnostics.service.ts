@@ -65,6 +65,7 @@ export type SpammerReadModelEvent =
   | 'shadow_compared'
   | 'shadow_matched'
   | 'shadow_mismatched'
+  | 'shadow_score_drift'
   | 'profile_write_success'
   | 'profile_write_failure'
   | 'denorm_job_enqueued'
@@ -89,6 +90,7 @@ type SpammerReadModelSummary = {
     compared: number;
     matched: number;
     mismatched: number;
+    scoreDrift: number;
     mismatchRate: number;
   };
   profileWrites: {
@@ -948,6 +950,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     const compared = counters.get('shadow_compared') ?? 0;
     const matched = counters.get('shadow_matched') ?? 0;
     const mismatched = counters.get('shadow_mismatched') ?? 0;
+    const scoreDrift = counters.get('shadow_score_drift') ?? 0;
     const enqueued = counters.get('denorm_job_enqueued') ?? 0;
     const enqueueFailed = counters.get('denorm_job_enqueue_failed') ?? 0;
     const fastPathEnqueued = counters.get('denorm_fast_path_enqueued') ?? 0;
@@ -973,6 +976,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         compared,
         matched,
         mismatched,
+        scoreDrift,
         mismatchRate: compared > 0 ? Number((mismatched / compared).toFixed(4)) : 0,
       },
       profileWrites: {

@@ -129,6 +129,7 @@ describe('RuntimeDiagnosticsService', () => {
     await service.recordSpammerReadModelEvent({ event: 'shadow_matched' });
     await service.recordSpammerReadModelEvent({ event: 'shadow_compared' });
     await service.recordSpammerReadModelEvent({ event: 'shadow_mismatched' });
+    await service.recordSpammerReadModelEvent({ event: 'shadow_score_drift' });
     await service.recordSpammerReadModelEvent({ event: 'profile_write_success' });
     await service.recordSpammerReadModelEvent({ event: 'profile_write_failure' });
     await service.recordSpammerReadModelEvent({
@@ -173,6 +174,7 @@ describe('RuntimeDiagnosticsService', () => {
         compared: 2,
         matched: 1,
         mismatched: 1,
+        scoreDrift: 1,
         mismatchRate: 0.5,
       },
       profileWrites: {

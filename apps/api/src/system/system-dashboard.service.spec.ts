@@ -657,6 +657,7 @@ describe('SystemDashboardService', () => {
               compared: 10,
               matched: 9,
               mismatched: 1,
+              scoreDrift: 2,
               mismatchRate: 0.1,
             },
             profileWrites: {
