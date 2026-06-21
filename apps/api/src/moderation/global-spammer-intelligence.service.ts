@@ -279,6 +279,11 @@ export type GlobalSpammerUserDiagnosticsOptions = {
   includeShadow?: boolean;
 };
 
+export type GlobalSpammerLocalProfile = {
+  userId: string;
+  displayName: string | null;
+};
+
 type SourceReputation = {
   source: string;
   weight: number;
@@ -585,10 +590,12 @@ export class GlobalSpammerIntelligenceService {
     userId: string;
     messageId: string;
     text: string;
+    userLabel?: string | null;
     topViolation: RuleViolation;
     commercialCampaignContext: CommercialCampaignContext | null;
   }): Promise<GlobalSpammerObservationDecision[]> {
-    const { chatId, userId, messageId, text, topViolation, commercialCampaignContext } = params;
+    const { chatId, userId, messageId, text, userLabel, topViolation, commercialCampaignContext } =
+      params;
     const metadata = this.asRecord(topViolation.metadata);
     const metadataCampaignContext = this.asRecord(metadata?.campaignContext);
     const repeatedLinkDistinctChatCount =
@@ -677,6 +684,7 @@ export class GlobalSpammerIntelligenceService {
           source: observation.source,
           score: observation.score,
           reason: observation.reason,
+          userLabel,
           evidence: observation.evidence,
           ttlDays: observation.ttlDays,
         }),
@@ -1511,6 +1519,7 @@ export class GlobalSpammerIntelligenceService {
     status?: GlobalSpammerCandidateStatus | 'ALL';
     limit?: number;
     includeObservations?: boolean;
+    includeLocalProfiles?: boolean;
   }) {
     const startedAtMs = Date.now();
     const timings: Record<string, number> = {};
@@ -1533,6 +1542,16 @@ export class GlobalSpammerIntelligenceService {
     const candidates = candidateIds
       .map((userId) => candidatesByUserId.get(userId))
       .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+    const localProfilesByUserId =
+      params.includeLocalProfiles === false
+        ? new Map<string, GlobalSpammerLocalProfile>()
+        : await this.timeSpammerStage(timings, 'localProfileQueryMs', () =>
+            this.resolveLocalReviewProfiles({
+              chatId: params.chatId,
+              userIds: candidateIds,
+              candidates,
+            }),
+          );
     const userIds = candidates.map((candidate) => candidate.userId);
     const observations =
       !includeObservations || userIds.length === 0
@@ -1560,6 +1579,7 @@ export class GlobalSpammerIntelligenceService {
     const result = {
       items: candidates.map((candidate) => ({
         userId: candidate.userId,
+        displayName: localProfilesByUserId.get(candidate.userId)?.displayName ?? null,
         status: candidate.status,
         confidenceScore: this.clampScore(candidate.confidenceScore),
         sourceBreakdown: candidate.sourceBreakdown,
@@ -1603,6 +1623,7 @@ export class GlobalSpammerIntelligenceService {
       status: status ?? 'ALL',
       limit,
       includeObservations,
+      includeLocalProfiles: params.includeLocalProfiles !== false,
       itemCount: result.items.length,
       ...timings,
       totalMs: Date.now() - startedAtMs,
@@ -2458,6 +2479,75 @@ export class GlobalSpammerIntelligenceService {
         },
       },
     });
+  }
+
+  async resolveLocalReviewProfiles(params: {
+    chatId: string;
+    userIds: readonly string[];
+    candidates?: ReadonlyArray<{
+      userId: string;
+      lastUserLabel?: string | null;
+      chats?: ReadonlyArray<{
+        chatId: string;
+        lastUserLabel?: string | null;
+        lastDetectedAt?: Date | string | null;
+      }>;
+    }>;
+  }): Promise<Map<string, GlobalSpammerLocalProfile>> {
+    const normalizedUserIds = [...new Set(params.userIds.map((item) => item.trim()).filter(Boolean))];
+    const profiles = new Map<string, GlobalSpammerLocalProfile>();
+    if (normalizedUserIds.length === 0) {
+      return profiles;
+    }
+
+    const candidateByUserId = new Map(
+      (params.candidates ?? []).map((candidate) => [candidate.userId.trim(), candidate]),
+    );
+    for (const userId of normalizedUserIds) {
+      const candidate = candidateByUserId.get(userId);
+      const chatLabel = candidate?.chats
+        ?.filter((chat) => chat.chatId === params.chatId)
+        .sort(
+          (left, right) =>
+            this.readTimestampMs(right.lastDetectedAt) - this.readTimestampMs(left.lastDetectedAt),
+        )
+        .map((chat) => this.normalizeUserFacingName(chat.lastUserLabel, userId))
+        .find((label) => label.length > 0);
+      const candidateLabel = this.normalizeUserFacingName(candidate?.lastUserLabel, userId);
+      const displayName = chatLabel || candidateLabel || null;
+      if (displayName) {
+        profiles.set(userId, { userId, displayName });
+      }
+    }
+
+    const missingUserIds = normalizedUserIds.filter((userId) => !profiles.has(userId));
+    if (missingUserIds.length === 0) {
+      return profiles;
+    }
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{ user_id: string | null; user_display_name: string | null }>
+    >(Prisma.sql`
+      SELECT DISTINCT ON (user_id)
+        user_id,
+        user_display_name
+      FROM chat_moderation_feed_items
+      WHERE chat_id = ${params.chatId}
+        AND user_id IN (${Prisma.join(missingUserIds)})
+        AND COALESCE(BTRIM(user_display_name), '') <> ''
+      ORDER BY user_id, created_at DESC
+    `);
+
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const userId = this.normalizeText(row.user_id);
+      const displayName = this.normalizeUserFacingName(row.user_display_name, userId);
+      if (!userId || !displayName || profiles.has(userId)) {
+        continue;
+      }
+      profiles.set(userId, { userId, displayName });
+    }
+
+    return profiles;
   }
 
   private async getReviewCandidateMetrics(params: {
@@ -5629,6 +5719,41 @@ export class GlobalSpammerIntelligenceService {
 
   private normalizeText(value: string | null | undefined): string {
     return typeof value === 'string' ? value.trim() : '';
+  }
+
+  private normalizeUserFacingName(
+    value: string | null | undefined,
+    userId: string | null | undefined,
+  ): string {
+    const normalizedUserId = this.normalizeText(userId);
+    let normalized = this.normalizeText(value);
+    const mentionMatch = normalized.match(
+      /^\[([^\]]+)\]\((?:max:\/\/user\/|https?:\/\/max\.ru\/)[^)]+\)$/u,
+    );
+    if (mentionMatch?.[1]) {
+      normalized = mentionMatch[1].trim();
+    }
+    if (!normalized) {
+      return '';
+    }
+    if (normalizedUserId && normalized === normalizedUserId) {
+      return '';
+    }
+    if (/^(?:id)?\d{5,}$/iu.test(normalized)) {
+      return '';
+    }
+    return normalized;
+  }
+
+  private readTimestampMs(value: Date | string | null | undefined): number {
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value.getTime() : 0;
+    }
+    if (typeof value === 'string') {
+      const timestamp = Date.parse(value);
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+    return 0;
   }
 
   private normalizeObservationSource(

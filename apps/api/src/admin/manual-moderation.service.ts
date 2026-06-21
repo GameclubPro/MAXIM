@@ -94,6 +94,7 @@ export class ManualModerationService {
       status,
       limit,
       includeObservations,
+      includeLocalProfiles: includeProfiles && profileMode === 'local',
     });
     const queueMs = Date.now() - queueStartedAtMs;
     const parseStartedAtMs = Date.now();
@@ -312,11 +313,14 @@ export class ManualModerationService {
     response: GlobalSpammerReviewQueue,
     options: { allowRemoteLookup?: boolean } = {},
   ): Promise<GlobalSpammerReviewQueue> {
-    const profiles = await this.resolveGlobalSpammerProfiles(
-      chatId,
-      response.items.map((item) => item.userId),
-      options,
-    );
+    const profiles =
+      options.allowRemoteLookup === false
+        ? new Map<string, ResolvedUserProfile>()
+        : await this.resolveGlobalSpammerProfiles(
+            chatId,
+            response.items.map((item) => item.userId),
+            options,
+          );
 
     return {
       ...response,
@@ -348,9 +352,29 @@ export class ManualModerationService {
     response: GlobalSpammerUserDiagnostics,
     options: { allowRemoteLookup?: boolean } = {},
   ): Promise<GlobalSpammerUserDiagnostics> {
-    const profile = (
-      await this.resolveGlobalSpammerProfiles(chatId, [response.userId], options)
-    ).get(response.userId.trim());
+    if (options.allowRemoteLookup === false) {
+      const profile = (
+        await this.globalSpammerIntelligence.resolveLocalReviewProfiles({
+          chatId,
+          userIds: [response.userId],
+        })
+      ).get(response.userId.trim());
+
+      return {
+        ...response,
+        displayName:
+          this.readTrimmedString(profile?.displayName) ??
+          this.readTrimmedString(response.displayName) ??
+          null,
+        avatarUrl: this.sanitizeContractUrl(response.avatarUrl),
+        profileUrl: this.sanitizeContractUrl(response.profileUrl),
+        profileHandoffUrl: this.sanitizeContractUrl(response.profileHandoffUrl),
+      };
+    }
+
+    const profile = (await this.resolveGlobalSpammerProfiles(chatId, [response.userId], options)).get(
+      response.userId.trim(),
+    );
 
     return {
       ...response,

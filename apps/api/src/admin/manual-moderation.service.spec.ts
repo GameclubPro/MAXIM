@@ -25,11 +25,15 @@ function createLegacyAdminServiceMock(resolvedProfile: typeof profile = profile)
 
 function createGlobalSpammerIntelligenceMock() {
   return {
-    listReviewQueue: jest.fn().mockResolvedValue({
+    listReviewQueue: jest.fn().mockImplementation(async (params: { includeLocalProfiles?: boolean }) => ({
       limit: 6,
       items: [
         {
           userId: 'user-1',
+          displayName: params.includeLocalProfiles === false ? null : 'Старое имя',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: null,
           status: 'PENDING',
           confidenceScore: 0.74,
           sourceBreakdown: {},
@@ -46,7 +50,10 @@ function createGlobalSpammerIntelligenceMock() {
           observations: [],
         },
       ],
-    }),
+    })),
+    resolveLocalReviewProfiles: jest
+      .fn()
+      .mockResolvedValue(new Map([['user-1', { userId: 'user-1', displayName: 'Марина Орлова' }]])),
     getUserDiagnostics: jest.fn().mockResolvedValue({
       userId: 'user-1',
       chatId: 'chat-1',
@@ -159,17 +166,14 @@ describe('ManualModerationService spammer profiles', () => {
       status: 'PENDING',
       limit: 20,
       includeObservations: false,
+      includeLocalProfiles: true,
     });
-    expect(legacyAdminService.resolveUserProfilesForAdminSurface).toHaveBeenCalledWith(
-      'chat-1',
-      'chat',
-      ['user-1'],
-      { allowRemoteLookup: false },
-    );
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(globalSpammerIntelligence.resolveLocalReviewProfiles).not.toHaveBeenCalled();
     expect(queue.items[0]).toEqual(
       expect.objectContaining({
-        displayName: profile.displayName,
-        avatarUrl: profile.avatarUrl,
+        displayName: 'Старое имя',
+        avatarUrl: null,
       }),
     );
   });
@@ -194,8 +198,10 @@ describe('ManualModerationService spammer profiles', () => {
       status: 'PENDING',
       limit: 20,
       includeObservations: false,
+      includeLocalProfiles: false,
     });
     expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(globalSpammerIntelligence.resolveLocalReviewProfiles).not.toHaveBeenCalled();
     expect(queue.items[0]).toEqual(
       expect.objectContaining({
         displayName: null,
@@ -276,19 +282,18 @@ describe('ManualModerationService spammer profiles', () => {
         includeShadow: false,
       },
     });
-    expect(legacyAdminService.resolveUserProfilesForAdminSurface).toHaveBeenCalledWith(
-      'chat-1',
-      'chat',
-      ['user-1'],
-      { allowRemoteLookup: false },
-    );
+    expect(legacyAdminService.resolveUserProfilesForAdminSurface).not.toHaveBeenCalled();
+    expect(globalSpammerIntelligence.resolveLocalReviewProfiles).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userIds: ['user-1'],
+    });
     expect(diagnostics).toEqual(
       expect.objectContaining({
         userId: 'user-1',
         displayName: profile.displayName,
-        avatarUrl: profile.avatarUrl,
-        profileUrl: profile.profileUrl,
-        profileHandoffUrl: profile.profileHandoffUrl,
+        avatarUrl: null,
+        profileUrl: null,
+        profileHandoffUrl: null,
       }),
     );
   });

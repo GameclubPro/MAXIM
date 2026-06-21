@@ -1556,6 +1556,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               userId: senderId,
               messageId,
               text,
+              userLabel,
               topViolation,
               commercialCampaignContext,
             });

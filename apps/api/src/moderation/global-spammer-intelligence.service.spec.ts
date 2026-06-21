@@ -1107,6 +1107,64 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(queue.items.map((item) => item.userId)).toEqual(['legacy-high', 'edge-low']);
   });
 
+  it('attaches local review profile names from chat edges and moderation feed rows', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        user_id: 'feed-user',
+        user_display_name: '  Светлана  ',
+      },
+      {
+        user_id: 'id-like-user',
+        user_display_name: '987654321',
+      },
+    ]);
+
+    const profiles = await service.resolveLocalReviewProfiles({
+      chatId: 'chat-1',
+      userIds: ['edge-user', 'feed-user', 'id-like-user', 'mention-user'],
+      candidates: [
+        {
+          userId: 'edge-user',
+          lastUserLabel: 'edge-user',
+          chats: [
+            {
+              chatId: 'chat-1',
+              lastUserLabel: 'Алексей',
+              lastDetectedAt: new Date('2026-06-21T08:00:00.000Z'),
+            },
+          ],
+        },
+        {
+          userId: 'id-like-user',
+          lastUserLabel: '123456789',
+          chats: [],
+        },
+        {
+          userId: 'mention-user',
+          lastUserLabel: '[Мария](max://user/mention-user)',
+          chats: [],
+        },
+      ],
+    });
+
+    expect(profiles.get('edge-user')).toEqual({
+      userId: 'edge-user',
+      displayName: 'Алексей',
+    });
+    expect(profiles.get('feed-user')).toEqual({
+      userId: 'feed-user',
+      displayName: 'Светлана',
+    });
+    expect(profiles.get('mention-user')).toEqual({
+      userId: 'mention-user',
+      displayName: 'Мария',
+    });
+    expect(profiles.has('id-like-user')).toBe(false);
+    expect(prisma.$queryRaw).toHaveBeenCalledWith(expect.anything());
+  });
+
   it('promotes high-confidence fanout to the registry', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
@@ -1229,6 +1287,45 @@ describe('GlobalSpammerIntelligenceService', () => {
         evidence: expect.objectContaining({
           rawEvidencePruned: true,
         }),
+      }),
+    );
+  });
+
+  it('stores user labels on commercial review candidates', async () => {
+    const { candidateChats, candidates, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    const decisions = await service.recordCommercialObservations({
+      chatId: 'chat-1',
+      userId: 'commercial-user',
+      messageId: 'message-1',
+      text: 'Промо https://shop.example/order общий текст кампании',
+      userLabel: 'Коммерческий Автор',
+      topViolation: {
+        ruleCode: 'COMMERCIAL_AD',
+        score: 0.95,
+        reason: 'commercial',
+        metadata: {
+          confidenceScore: 95,
+          actionBand: 'DELETE_AND_ESCALATE',
+          campaignContext: {
+            repeatedLinkDistinctChatCount: 2,
+            repeatedPhoneDistinctChatCount: 0,
+          },
+        },
+      },
+      commercialCampaignContext: null,
+    });
+
+    expect(decisions.some((decision) => decision.outcome === 'candidate')).toBe(true);
+    expect(candidates.get('commercial-user')).toEqual(
+      expect.objectContaining({
+        lastUserLabel: 'Коммерческий Автор',
+      }),
+    );
+    expect(candidateChats.get('commercial-user:chat-1')).toEqual(
+      expect.objectContaining({
+        lastUserLabel: 'Коммерческий Автор',
       }),
     );
   });

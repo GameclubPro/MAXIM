@@ -91,12 +91,13 @@ const SPAMMER_REVIEW_QUEUE_QUERY = {
   profileMode: 'local',
 } as const;
 const SPAMMER_DIAGNOSTICS_LIGHT_QUERY = {
-  includeProfile: false,
+  includeProfile: true,
   includeObservations: false,
   includeGraphSignals: false,
   includeReputation: false,
   includeCampaigns: false,
   includeShadow: false,
+  profileMode: 'local',
 } as const;
 const SPAMMER_DIAGNOSTICS_FULL_QUERY = {
   includeProfile: false,
@@ -738,7 +739,13 @@ function resolveSpammerReasonLabel(reason: string | null | undefined): string {
 }
 
 function readUserFacingName(value: string | null | undefined, userId: string | null | undefined) {
-  const normalized = value?.trim() ?? '';
+  let normalized = value?.trim() ?? '';
+  const mentionMatch = normalized.match(
+    /^\[([^\]]+)\]\((?:max:\/\/user\/|https?:\/\/max\.ru\/)[^)]+\)$/u,
+  );
+  if (mentionMatch?.[1]) {
+    normalized = mentionMatch[1].trim();
+  }
   if (!normalized) {
     return '';
   }
@@ -747,14 +754,22 @@ function readUserFacingName(value: string | null | undefined, userId: string | n
   if (normalizedUserId && normalized === normalizedUserId) {
     return '';
   }
+  if (/^(?:id)?\d{5,}$/iu.test(normalized)) {
+    return '';
+  }
 
   return normalized;
 }
 
 function resolveSpammerCandidateName(candidate: GlobalSpammerReviewCandidate): string {
+  const chatLabel =
+    candidate.chats
+      .map((chat) => readUserFacingName(chat.lastUserLabel, candidate.userId))
+      .find((label) => label.length > 0) || '';
   return (
     readUserFacingName(candidate.displayName, candidate.userId) ||
     readUserFacingName(candidate.lastUserLabel, candidate.userId) ||
+    chatLabel ||
     formatUserReference()
   );
 }
