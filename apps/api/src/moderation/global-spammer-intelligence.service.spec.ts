@@ -11,6 +11,10 @@ function createConfigMock(values: Record<string, string | undefined>): ConfigSer
   } as unknown as ConfigService;
 }
 
+async function flushPromises(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 function createPrismaMock() {
   const registry = new Map<string, any>();
   const observations: any[] = [];
@@ -2844,9 +2848,6 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(prisma.globalSpammer.findUnique).toHaveBeenCalledWith({
       where: { userId: 'user-runtime-shadow' },
     });
-    expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalledWith({
-      where: { userId: 'user-runtime-shadow' },
-    });
     expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenCalledTimes(1);
     expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2857,6 +2858,11 @@ describe('GlobalSpammerIntelligenceService', () => {
         }),
       }),
     );
+    await flushPromises();
+
+    expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalledWith({
+      where: { userId: 'user-runtime-shadow' },
+    });
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'global_spammer_read_model_shadow_compare',
@@ -2930,6 +2936,9 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
 
     expect(prisma.globalSpammer.findUnique).toHaveBeenCalled();
+
+    await flushPromises();
+
     expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalled();
     expect(debugSpy).toHaveBeenCalledWith(
       expect.objectContaining({

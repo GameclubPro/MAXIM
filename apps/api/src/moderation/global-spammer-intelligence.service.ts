@@ -2178,8 +2178,8 @@ export class GlobalSpammerIntelligenceService {
       !this.runtimeProfileReadModelEnabled &&
       this.shouldSampleRuntimeProfileShadow(userId) &&
       params.lookupContext === undefined;
-    const runtimeProfileShadowDecision = shouldCompareRuntimeProfile
-      ? await this.buildPolicyDecisionFromRuntimeProfile({
+    const runtimeProfileShadowDecisionPromise = shouldCompareRuntimeProfile
+      ? this.buildPolicyDecisionFromRuntimeProfile({
           chatId,
           userId,
           trigger: params.trigger,
@@ -2376,10 +2376,13 @@ export class GlobalSpammerIntelligenceService {
         lookupContextProvided: params.lookupContext !== undefined,
       });
     }
-    if (runtimeProfileShadowDecision) {
-      this.logRuntimeProfileShadowComparison({
-        runtimeDecision: runtimeProfileShadowDecision,
+    if (shouldCompareRuntimeProfile) {
+      this.scheduleRuntimeProfileShadowComparison({
+        runtimeDecisionPromise: runtimeProfileShadowDecisionPromise,
         fallbackDecision: decision,
+        userId,
+        chatId,
+        trigger: params.trigger,
       });
     }
     return decision;
@@ -3378,6 +3381,41 @@ export class GlobalSpammerIntelligenceService {
     }
     this.recordSpammerReadModelEvents(['shadow_compared', 'shadow_mismatched']);
     this.logger.warn(payload);
+  }
+
+  private scheduleRuntimeProfileShadowComparison(params: {
+    runtimeDecisionPromise: Promise<GlobalSpammerPolicyDecision | null> | null;
+    fallbackDecision: GlobalSpammerPolicyDecision;
+    userId: string;
+    chatId: string | null;
+    trigger: string;
+  }): void {
+    if (!params.runtimeDecisionPromise) {
+      return;
+    }
+
+    void params.runtimeDecisionPromise
+      .then((runtimeDecision) => {
+        if (!runtimeDecision) {
+          return;
+        }
+        this.logRuntimeProfileShadowComparison({
+          runtimeDecision,
+          fallbackDecision: params.fallbackDecision,
+        });
+      })
+      .catch((error: unknown) => {
+        this.logger.debug(
+          {
+            event: 'global_spammer_read_model_shadow_compare_failed',
+            userId: params.userId,
+            chatId: params.chatId,
+            trigger: params.trigger,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to compare spammer runtime profile shadow decision',
+        );
+      });
   }
 
   private shouldSampleRuntimeProfileShadow(userId: string): boolean {
