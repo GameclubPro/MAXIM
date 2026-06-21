@@ -1,10 +1,12 @@
 import {
+  AUDIT_MESSAGE_EVENT_TYPES,
   derivePolicyCategory,
   deriveSafeContextBucket,
   readCliOptions,
   resolveAuditCandidateScope,
   resolveAuditChatSettings,
   resolveAuditDetectionSettings,
+  sanitizeAuditText,
 } from './audit-commercial-filter';
 import type { ChatSettings } from '../prisma/prisma-client';
 
@@ -84,6 +86,10 @@ describe('audit-commercial-filter CLI options', () => {
 });
 
 describe('audit-commercial-filter scope helpers', () => {
+  it('audits created and edited message events because moderation handles both', () => {
+    expect(AUDIT_MESSAGE_EVENT_TYPES).toEqual(['message_created', 'message_edited']);
+  });
+
   it('keeps the default candidate scope on chats where the filter is enabled', () => {
     expect(resolveAuditCandidateScope({ shadowAllChats: false })).toEqual({
       logLabel: 'enabled-chats',
@@ -201,5 +207,32 @@ describe('derivePolicyCategory', () => {
         },
       }),
     ).toBe('false_positive_candidate');
+  });
+
+  it('does not mark campaign-assisted direct deal detections as campaign-only', () => {
+    expect(
+      derivePolicyCategory({
+        category: 'current_only',
+        current: {
+          ...emptySnapshot,
+          hit: true,
+          actionBand: 'DELETE',
+          evidenceStrength: 'CAMPAIGN',
+          matchedSignals: [
+            'transaction:implied-price',
+            'contact:contextual-phone',
+            'campaign:cross-chat-text',
+          ],
+        },
+      }),
+    ).toBe('hard_delete');
+  });
+});
+
+describe('sanitizeAuditText', () => {
+  it('masks local 10-digit phone numbers in exported audit text', () => {
+    expect(sanitizeAuditText('Звонить 9132349385, цена 750 тр.')).toBe(
+      'Звонить [phone], цена 750 тр.',
+    );
   });
 });

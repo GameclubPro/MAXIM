@@ -12323,6 +12323,200 @@ describe('ModerationService', () => {
     });
   });
 
+  it('records first-step WARN commercial detections without deleting the message', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
+            textFiltersMuteEnabled: true,
+            textFiltersBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.68,
+            reason: 'Detected reviewable commercial ad',
+            metadata: {
+              confidenceScore: 68,
+              decisionBand: 'MEDIUM',
+              actionBand: 'WARN',
+              matchedSignals: ['service-specialty:yard-cleanup-service', 'contact:phone'],
+              negativeSignals: [],
+              appliedThresholds: {
+                warnThreshold: 57,
+                deleteThreshold: 77,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        ruleCode: 'COMMERCIAL_AD',
+      }),
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          actionBand: 'WARN',
+          textFilterViolationCount24h: 1,
+          textFilterEscalationWindowHours: 24,
+        }),
+      }),
+    });
+  });
+
+  it('deletes DELETE_AND_ESCALATE commercial detections without direct first-hit sanction', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
+            textFiltersMuteEnabled: true,
+            textFiltersBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(1),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.96,
+            reason: 'High-risk commercial leadgen',
+            metadata: {
+              confidenceScore: 96,
+              decisionBand: 'HIGH',
+              actionBand: 'DELETE_AND_ESCALATE',
+              matchedSignals: ['risk:loan-leadgen', 'deal-channel:link'],
+              negativeSignals: [],
+              reasonCodes: ['action:DELETE_AND_ESCALATE', 'risk:escalation-grade'],
+              appliedThresholds: {
+                warnThreshold: 45,
+                deleteThreshold: 65,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+        metadata: expect.objectContaining({
+          actionBand: 'DELETE_AND_ESCALATE',
+          reasonCodes: ['action:DELETE_AND_ESCALATE', 'risk:escalation-grade'],
+        }),
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          actionBand: 'DELETE_AND_ESCALATE',
+          textFilterViolationCount24h: 1,
+          textFilterEscalationWindowHours: 24,
+        }),
+      }),
+    });
+  });
+
   it('keeps commercial detections without action band out of user-facing moderation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),

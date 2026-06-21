@@ -20,6 +20,8 @@ const DEFAULT_LIMIT = 1500;
 const DEFAULT_SAMPLE = 6;
 const PROGRESS_EVERY = 250;
 
+export const AUDIT_MESSAGE_EVENT_TYPES = ['message_created', 'message_edited'] as const;
+
 loadEnv({ quiet: true });
 loadEnv({ path: resolve(__dirname, '../../../../.env'), override: false, quiet: true });
 
@@ -44,6 +46,7 @@ type AuditCandidateScope = {
 
 type AuditCandidateRow = {
   webhookEventId: string;
+  eventType: string;
   createdAt: Date;
   botId: string | null;
   chatId: string;
@@ -156,6 +159,7 @@ type AuditRecord = {
   isHardNegative: boolean;
   createdAt: Date;
   webhookEventId: string;
+  eventType: string;
   chatId: string;
   chatTitle: string | null;
   chatEntityType: string | null;
@@ -364,17 +368,20 @@ async function loadCandidates(
   const chatFilterSql = options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``;
   const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
   const scope = resolveAuditCandidateScope(options);
-  const settingsJoinSql = scope.settingsJoin === 'left'
-    ? Prisma.sql`left join chat_settings s on s.chat_id = c.id`
-    : Prisma.sql`join chat_settings s on s.chat_id = c.id`;
+  const settingsJoinSql =
+    scope.settingsJoin === 'left'
+      ? Prisma.sql`left join chat_settings s on s.chat_id = c.id`
+      : Prisma.sql`join chat_settings s on s.chat_id = c.id`;
   const commercialFilterSql = scope.requireCommercialAdsFilterEnabled
     ? Prisma.sql`and s.commercial_ads_filter_enabled = true`
     : Prisma.sql``;
+  const messageEventTypesSql = Prisma.join([...AUDIT_MESSAGE_EVENT_TYPES]);
 
   return prisma.$queryRaw<AuditCandidateRow[]>(Prisma.sql`
     with base as (
       select
         w.id as "webhookEventId",
+        w.normalized_payload ->> 'type' as "eventType",
         w.created_at as "createdAt",
         w.bot_id as "botId",
         c.id as "chatId",
@@ -391,7 +398,7 @@ async function loadCandidates(
       where w.created_at >= ${options.since}
         and w.created_at <= ${options.until}
         and w.status = 'PROCESSED'
-        and w.normalized_payload ->> 'type' = 'message_created'
+        and w.normalized_payload ->> 'type' in (${messageEventTypesSql})
         and coalesce(w.normalized_payload #>> '{message,text}', '') <> ''
         and coalesce(w.normalized_payload #>> '{message,messageId}', '') <> ''
         ${commercialFilterSql}
@@ -460,31 +467,30 @@ async function loadChatContexts(
   });
 
   return new Map(
-    rows
-      .map((row) => {
-        const botIdVariants = new Set<string>();
-        for (const botId of [
-          row.botId,
-          row.primaryBotId,
-          ...row.botMemberships.map((item) => item.botId),
-        ]) {
-          for (const variant of buildIdVariants(botId)) {
-            botIdVariants.add(variant);
-          }
+    rows.map((row) => {
+      const botIdVariants = new Set<string>();
+      for (const botId of [
+        row.botId,
+        row.primaryBotId,
+        ...row.botMemberships.map((item) => item.botId),
+      ]) {
+        for (const variant of buildIdVariants(botId)) {
+          botIdVariants.add(variant);
         }
+      }
 
-        return [
-          row.id,
-          {
-            settings: resolveAuditChatSettings(row.settings),
-            domainAllowlist: row.domains.map((item) => item.domain),
-            adminUserIds: new Set(
-              row.admins.map((item) => item.userId.trim()).filter((item) => item.length > 0),
-            ),
-            botIdVariants,
-          },
-        ] satisfies [string, ChatContext];
-      }),
+      return [
+        row.id,
+        {
+          settings: resolveAuditChatSettings(row.settings),
+          domainAllowlist: row.domains.map((item) => item.domain),
+          adminUserIds: new Set(
+            row.admins.map((item) => item.userId.trim()).filter((item) => item.length > 0),
+          ),
+          botIdVariants,
+        },
+      ] satisfies [string, ChatContext];
+    }),
   );
 }
 
@@ -754,6 +760,23 @@ function deriveCategory(historicalHit: boolean, currentHit: boolean): AuditCateg
   return 'stable_clear';
 }
 
+function hasNonCampaignCommercialDealSignal(signals: readonly string[]): boolean {
+  return signals.some(
+    (signal) =>
+      signal === 'transaction:price' ||
+      signal === 'transaction:implied-price' ||
+      signal === 'combo:contact+price' ||
+      signal === 'transaction:buyout-deal' ||
+      signal === 'transaction:handmade-channel-offer' ||
+      signal === 'contact:phone' ||
+      signal === 'contact:contextual-phone' ||
+      signal === 'contact:masked-phone' ||
+      signal === 'contact:handle' ||
+      signal === 'contact:email' ||
+      signal.startsWith('deal-channel:'),
+  );
+}
+
 export function derivePolicyCategory(params: {
   category: AuditCategory;
   current: CommercialSnapshot;
@@ -778,11 +801,7 @@ export function derivePolicyCategory(params: {
     current.evidenceStrength === 'CAMPAIGN' ||
     current.matchedSignals.some((item) => item.startsWith('campaign:'))
   ) {
-    const hasDirectDeal =
-      current.matchedSignals.includes('transaction:price') ||
-      current.matchedSignals.includes('contact:phone') ||
-      current.matchedSignals.some((item) => item.startsWith('deal-channel:'));
-    if (!hasDirectDeal) {
+    if (!hasNonCampaignCommercialDealSignal(current.matchedSignals)) {
       return 'campaign_only';
     }
   }
@@ -1087,6 +1106,7 @@ async function exportJsonl(pathname: string, records: readonly AuditRecord[]) {
         isHardNegative: record.isHardNegative,
         createdAt: record.createdAt.toISOString(),
         webhookEventId: record.webhookEventId,
+        eventType: record.eventType,
         chatId: record.chatId,
         chatTitle: record.chatTitle,
         chatEntityType: record.chatEntityType,
@@ -1118,6 +1138,7 @@ async function exportCorpusJsonl(pathname: string, records: readonly AuditRecord
         policyCategory: record.policyCategory,
         segment: record.segment,
         safeContextBucket: record.safeContextBucket,
+        eventType: record.eventType,
         text: record.sanitizedText,
         settings: record.settings,
         commercialCampaignContext: record.commercialCampaignContext,
@@ -1137,7 +1158,7 @@ function pickAuditCorpusSettings(settings: ChatSettings): AuditCorpusSettings {
   };
 }
 
-function sanitizeAuditText(value: string): string {
+export function sanitizeAuditText(value: string): string {
   return value
     .replace(/https?:\/\/\S+/giu, '[url]')
     .replace(
@@ -1148,6 +1169,7 @@ function sanitizeAuditText(value: string): string {
       /(?:^|[^\d])(?:\+?7|8)[\s‐‑‒–—―-]*\(?\d{3}\)?[\s‐‑‒–—―-]?\d{3}[\s‐‑‒–—―-]?\d{2}[\s‐‑‒–—―-]?\d{2}(?=$|[^\d])/gu,
       ' [phone] ',
     )
+    .replace(/(^|[^\d])(?:\d[\s‐‑‒–—―-]*){9}\d(?=$|[^\d])/gu, '$1[phone]')
     .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/giu, '[email]')
     .replace(/@[a-z0-9_]{4,32}/giu, '@[handle]')
     .replace(/\s+/gu, ' ')
@@ -1183,7 +1205,11 @@ async function main() {
     const currentReviewReasonCounts = new Map<string, number>();
     const currentClassifierReasonCounts = new Map<string, number>();
     const currentClassifierVersionCounts = new Map<string, number>();
+    const eventTypeCounts = new Map<string, number>();
     let currentReviewRecommendedCount = 0;
+    let deleteFalsePositiveCandidates = 0;
+    let grayDeleteCandidates = 0;
+    let campaignOnlyDeleteCandidates = 0;
     const auditedRecords: AuditRecord[] = [];
 
     console.log(
@@ -1254,6 +1280,7 @@ async function main() {
       pushCount(corpusLabelCounts, corpusLabel.label);
       pushCount(segmentCounts, `${category}:${segment}`);
       pushCount(safeContextBucketCounts, safeContextBucket);
+      pushCount(eventTypeCounts, row.eventType);
       for (const signal of current.matchedSignals) {
         pushCount(currentSignalCounts, signal);
       }
@@ -1273,7 +1300,7 @@ async function main() {
         pushCount(currentClassifierReasonCounts, reason);
       }
 
-      auditedRecords.push({
+      const auditRecord: AuditRecord = {
         category,
         policyCategory,
         segment,
@@ -1281,6 +1308,7 @@ async function main() {
         ...corpusLabel,
         createdAt: row.createdAt,
         webhookEventId: row.webhookEventId,
+        eventType: row.eventType,
         chatId: row.chatId,
         chatTitle: row.chatTitle,
         chatEntityType: row.chatEntityType,
@@ -1290,9 +1318,40 @@ async function main() {
         sanitizedText,
         historical,
         current,
-        settings: pickAuditCorpusSettings(resolveAuditDetectionSettings(chatContext.settings, options)),
+        settings: pickAuditCorpusSettings(
+          resolveAuditDetectionSettings(chatContext.settings, options),
+        ),
         commercialCampaignContext,
-      });
+      };
+      const shouldRetainRecord =
+        options.exportAllCorpus ||
+        (options.includeStableHits
+          ? category !== 'stable_clear'
+          : category === 'historical_only' ||
+            category === 'current_only' ||
+            policyCategory !== 'none');
+      if (shouldRetainRecord) {
+        auditedRecords.push(auditRecord);
+      }
+
+      if (
+        corpusLabel.label === 'negative_candidate' &&
+        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+      ) {
+        deleteFalsePositiveCandidates += 1;
+      }
+      if (
+        corpusLabel.label === 'gray_candidate' &&
+        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+      ) {
+        grayDeleteCandidates += 1;
+      }
+      if (
+        policyCategory === 'campaign_only' &&
+        (current.actionBand === 'DELETE' || current.actionBand === 'DELETE_AND_ESCALATE')
+      ) {
+        campaignOnlyDeleteCandidates += 1;
+      }
 
       if ((index + 1) % PROGRESS_EVERY === 0) {
         console.log(`processed=${index + 1}/${orderedCandidates.length}`);
@@ -1301,37 +1360,7 @@ async function main() {
 
     auditedRecords.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
 
-    const mismatches = auditedRecords.filter(
-      (record) => record.category === 'historical_only' || record.category === 'current_only',
-    );
-    const policyRelevant = auditedRecords.filter((record) => record.policyCategory !== 'none');
-    const exportable = options.exportAllCorpus
-      ? auditedRecords
-      : options.includeStableHits
-        ? auditedRecords.filter((record) => record.category !== 'stable_clear')
-        : [
-            ...new Map(
-              [...mismatches, ...policyRelevant].map((record) => [record.webhookEventId, record]),
-            ).values(),
-          ];
-    const deleteFalsePositiveCandidates = auditedRecords.filter(
-      (record) =>
-        record.label === 'negative_candidate' &&
-        (record.current.actionBand === 'DELETE' ||
-          record.current.actionBand === 'DELETE_AND_ESCALATE'),
-    ).length;
-    const grayDeleteCandidates = auditedRecords.filter(
-      (record) =>
-        record.label === 'gray_candidate' &&
-        (record.current.actionBand === 'DELETE' ||
-          record.current.actionBand === 'DELETE_AND_ESCALATE'),
-    ).length;
-    const campaignOnlyDeleteCandidates = auditedRecords.filter(
-      (record) =>
-        record.policyCategory === 'campaign_only' &&
-        (record.current.actionBand === 'DELETE' ||
-          record.current.actionBand === 'DELETE_AND_ESCALATE'),
-    ).length;
+    const exportable = auditedRecords;
 
     console.log('');
     console.log('Summary');
@@ -1339,6 +1368,7 @@ async function main() {
     console.log(`skipped=${[...skipCounts.values()].reduce((sum, value) => sum + value, 0)}`);
     console.log(`skip_breakdown=${formatCounts(skipCounts) || 'none'}`);
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
+    console.log(`event_type_breakdown=${formatCounts(eventTypeCounts) || 'none'}`);
     console.log(`policy_category_breakdown=${formatCounts(policyCategoryCounts) || 'none'}`);
     console.log(`corpus_label_breakdown=${formatCounts(corpusLabelCounts) || 'none'}`);
     console.log(`safe_context_bucket_breakdown=${formatCounts(safeContextBucketCounts) || 'none'}`);
@@ -1429,6 +1459,7 @@ async function main() {
         console.log(
           [
             `- ${record.createdAt.toISOString()}`,
+            `eventType=${record.eventType}`,
             `chat=${record.chatTitle ?? record.chatId}`,
             `chatId=${record.chatId}`,
             `messageId=${record.messageId}`,
