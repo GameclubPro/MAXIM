@@ -1583,6 +1583,49 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('keeps emoji surrogate pairs intact while pruning raw evidence excerpts', async () => {
+    const { observations } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      {
+        spammerObservation: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'obs-emoji-json',
+              evidence: {
+                excerpt: `x${'😎'.repeat(140)}`,
+              },
+              normalizedFeatures: {
+                evidenceHash: 'emoji-hash',
+              },
+            },
+          ]),
+          update: jest.fn(async ({ where, data }: any) => {
+            observations.push({ id: where.id, ...data });
+            return observations[observations.length - 1];
+          }),
+        },
+        $transaction: jest.fn(async (operations: Array<Promise<unknown>>) =>
+          Promise.all(operations),
+        ),
+      } as never,
+    );
+
+    await expect(
+      service.pruneExpiredRawEvidence({
+        now: new Date('2026-06-20T12:00:00.000Z'),
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        scanned: 1,
+        pruned: 1,
+      }),
+    );
+
+    const excerpt = observations[0].evidence.excerpt as string;
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u.test(excerpt)).toBe(false);
+    expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(excerpt)).toBe(false);
+  });
+
   it('continues pruning raw evidence rows individually after a batch failure', async () => {
     const prunedRows: any[] = [];
     let batchMode = true;

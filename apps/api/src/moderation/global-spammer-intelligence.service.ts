@@ -2131,7 +2131,7 @@ export class GlobalSpammerIntelligenceService {
     return {
       minimizedAt: now.toISOString(),
       rawEvidencePruned: true,
-      excerpt: rawText ? maskText(rawText).slice(0, 240) : null,
+      excerpt: rawText ? maskText(rawText) : null,
       evidenceHash: this.readString(featureRecord?.evidenceHash),
       domains: this.asJsonArray(featureRecord?.domains).slice(0, 10),
       urls: this.asJsonArray(featureRecord?.urls).slice(0, 10),
