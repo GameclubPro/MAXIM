@@ -1013,7 +1013,26 @@ describe('GlobalSpammerIntelligenceService', () => {
       suppressedAt: null,
       suppressionReason: null,
     });
-    prisma.$queryRaw.mockResolvedValueOnce([{ userId: 'user-dirty-confidence' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ userId: 'user-dirty-confidence' }])
+      .mockResolvedValueOnce([
+        {
+          id: 'obs-dirty-confidence',
+          userId: 'user-dirty-confidence',
+          source: 'FANOUT_REPEAT',
+          score: 0.68,
+          confidenceLevel: 'MEDIUM_REVIEW',
+          reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+          chatId: 'chat-1',
+          messageId: null,
+          evidenceHash: 'dirty-confidence-hash',
+          evidence: null,
+          observedAt,
+          expiresAt: new Date('2026-06-12T12:00:00.000Z'),
+          suppressedAt: null,
+          suppressionReason: null,
+        },
+      ]);
     prisma.globalSpammerCandidate.findMany.mockResolvedValueOnce([
       {
         userId: 'user-dirty-confidence',
@@ -1037,6 +1056,7 @@ describe('GlobalSpammerIntelligenceService', () => {
       chatId: 'chat-1',
       status: 'PENDING',
       includeObservations: true,
+      includeLocalProfiles: false,
     });
 
     expect(queue.items[0]?.observations[0]).toEqual(

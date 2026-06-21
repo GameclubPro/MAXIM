@@ -397,6 +397,23 @@ type ReviewMetricsObservationRow = {
   suppressedCount: unknown;
 };
 
+type ReviewQueueObservationRow = {
+  id: string;
+  userId: string;
+  source: string;
+  score: number;
+  confidenceLevel: string;
+  reason: string;
+  chatId: string | null;
+  messageId: string | null;
+  evidenceHash: string;
+  evidence: Prisma.JsonValue | null;
+  observedAt: Date;
+  expiresAt: Date;
+  suppressedAt: Date | null;
+  suppressionReason: string | null;
+};
+
 type RuntimeProfileSnapshot = {
   userId: string;
   registryStatus: GlobalSpammerRegistryStatus;
@@ -1557,17 +1574,7 @@ export class GlobalSpammerIntelligenceService {
       !includeObservations || userIds.length === 0
         ? []
         : await this.timeSpammerStage(timings, 'observationsQueryMs', () =>
-            this.prisma.spammerObservation.findMany({
-              where: {
-                userId: {
-                  in: userIds,
-                },
-              },
-              orderBy: {
-                observedAt: 'desc',
-              },
-              take: limit * 6,
-            }),
+            this.listReviewQueueObservations(userIds, 6),
           );
     const observationsByUserId = new Map<string, typeof observations>();
     for (const observation of observations) {
@@ -1625,6 +1632,8 @@ export class GlobalSpammerIntelligenceService {
       includeObservations,
       includeLocalProfiles: params.includeLocalProfiles !== false,
       itemCount: result.items.length,
+      candidateCount: candidateIds.length,
+      observationCount: observations.length,
       ...timings,
       totalMs: Date.now() - startedAtMs,
     });
@@ -2245,6 +2254,17 @@ export class GlobalSpammerIntelligenceService {
               where: { userId },
               orderBy: { observedAt: 'desc' },
               take: 20,
+              select: {
+                id: true,
+                source: true,
+                score: true,
+                confidenceLevel: true,
+                reason: true,
+                chatId: true,
+                observedAt: true,
+                expiresAt: true,
+                suppressedAt: true,
+              },
             }),
           )
         : Promise.resolve([]),
@@ -2257,6 +2277,14 @@ export class GlobalSpammerIntelligenceService {
               },
               orderBy: { observedAt: 'desc' },
               take: 20,
+              select: {
+                signalType: true,
+                source: true,
+                score: true,
+                chatId: true,
+                observedAt: true,
+                expiresAt: true,
+              },
             }),
           )
         : Promise.resolve([]),
@@ -2481,6 +2509,57 @@ export class GlobalSpammerIntelligenceService {
     });
   }
 
+  private async listReviewQueueObservations(
+    userIds: readonly string[],
+    perUserLimit: number,
+  ): Promise<ReviewQueueObservationRow[]> {
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      return [];
+    }
+    const take = Math.max(1, Math.min(Math.trunc(perUserLimit), 20));
+    return this.prisma.$queryRaw<ReviewQueueObservationRow[]>(Prisma.sql`
+      SELECT
+        observation.id,
+        observation.user_id AS "userId",
+        observation.source,
+        observation.score,
+        observation.confidence_level AS "confidenceLevel",
+        observation.reason,
+        observation.chat_id AS "chatId",
+        observation.message_id AS "messageId",
+        observation.evidence_hash AS "evidenceHash",
+        observation.evidence,
+        observation.observed_at AS "observedAt",
+        observation.expires_at AS "expiresAt",
+        observation.suppressed_at AS "suppressedAt",
+        observation.suppression_reason AS "suppressionReason"
+      FROM unnest(ARRAY[${Prisma.join(normalizedUserIds)}]::text[]) AS selected(user_id)
+      JOIN LATERAL (
+        SELECT
+          id,
+          user_id,
+          source,
+          score,
+          confidence_level,
+          reason,
+          chat_id,
+          message_id,
+          evidence_hash,
+          evidence,
+          observed_at,
+          expires_at,
+          suppressed_at,
+          suppression_reason
+        FROM spammer_observations
+        WHERE user_id = selected.user_id
+        ORDER BY observed_at DESC
+        LIMIT ${take}
+      ) observation ON TRUE
+      ORDER BY selected.user_id, observation.observed_at DESC
+    `);
+  }
+
   async resolveLocalReviewProfiles(params: {
     chatId: string;
     userIds: readonly string[];
@@ -2624,11 +2703,29 @@ export class GlobalSpammerIntelligenceService {
     const rows = await this.prisma.$queryRaw<ReviewMetricsObservationRow[]>(Prisma.sql`
       SELECT
         source,
-        COUNT(*) FILTER (WHERE observed_at >= ${params.since})::bigint AS "observedCount",
-        COUNT(*) FILTER (WHERE suppressed_at >= ${params.since})::bigint AS "suppressedCount"
-      FROM spammer_observations
-      WHERE (observed_at >= ${params.since} OR suppressed_at >= ${params.since})
-        ${chatFilter}
+        SUM("observedCount")::bigint AS "observedCount",
+        SUM("suppressedCount")::bigint AS "suppressedCount"
+      FROM (
+        SELECT
+          source,
+          COUNT(*)::bigint AS "observedCount",
+          0::bigint AS "suppressedCount"
+        FROM spammer_observations
+        WHERE observed_at >= ${params.since}
+          ${chatFilter}
+        GROUP BY source
+
+        UNION ALL
+
+        SELECT
+          source,
+          0::bigint AS "observedCount",
+          COUNT(*)::bigint AS "suppressedCount"
+        FROM spammer_observations
+        WHERE suppressed_at >= ${params.since}
+          ${chatFilter}
+        GROUP BY source
+      ) metrics
       GROUP BY source
       ORDER BY source ASC
     `);

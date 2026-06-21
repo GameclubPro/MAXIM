@@ -101,6 +101,8 @@ const SPAMMER_DIAGNOSTICS_LIGHT_QUERY = {
 } as const;
 const SPAMMER_DIAGNOSTICS_FULL_QUERY = {
   includeProfile: false,
+  includeReputation: false,
+  includeShadow: false,
 } as const;
 
 const actionLabelMap: Record<DisplayAction, string> = {
@@ -1210,6 +1212,7 @@ function SpammerReviewSheet({
   onClose,
   onRetry,
   onOpenDiagnostics,
+  onWarmDiagnostics,
 }: {
   open: boolean;
   candidates: GlobalSpammerReviewCandidate[];
@@ -1219,6 +1222,7 @@ function SpammerReviewSheet({
   onClose: () => void;
   onRetry: () => void;
   onOpenDiagnostics: (candidate: GlobalSpammerReviewCandidate) => void;
+  onWarmDiagnostics?: (candidate: GlobalSpammerReviewCandidate) => void;
 }) {
   const errorMessage = error ? normalizeLoadErrorMessage(error) : null;
   const summary =
@@ -1285,6 +1289,9 @@ function SpammerReviewSheet({
                 key={candidate.userId}
                 type="button"
                 className="spammer-review-sheet__row"
+                onFocus={() => onWarmDiagnostics?.(candidate)}
+                onPointerEnter={() => onWarmDiagnostics?.(candidate)}
+                onPointerDown={() => onWarmDiagnostics?.(candidate)}
                 onClick={() => onOpenDiagnostics(candidate)}
               >
                 <PersonAvatar
@@ -1442,9 +1449,7 @@ function SpammerDiagnosticsSheet({
         </div>
       ) : canShowShell ? (
         <section
-          className={`spammer-diagnostics${
-            isLoading || isRefreshing ? ' spammer-diagnostics--loading' : ''
-          }`}
+          className={`spammer-diagnostics${isRefreshing ? ' spammer-diagnostics--loading' : ''}`}
         >
           <div className="spammer-diagnostics__profile">
             {canOpenProfile ? (
@@ -2170,7 +2175,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           signal,
         },
       ),
-    enabled: Boolean(chatId && spammerDiagnosticsUserId && spammerDiagnosticsLightQuery.data),
+    enabled: Boolean(chatId && spammerDiagnosticsUserId),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
@@ -2186,9 +2191,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const spammerDiagnostics =
     spammerDiagnosticsFull ?? spammerDiagnosticsLight ?? null;
   const spammerDiagnosticsError =
-    spammerDiagnosticsFullQuery.error ?? spammerDiagnosticsLightQuery.error;
+    spammerDiagnosticsFullQuery.error && spammerDiagnostics
+      ? spammerDiagnosticsLightQuery.error
+      : (spammerDiagnosticsFullQuery.error ?? spammerDiagnosticsLightQuery.error);
   const isSpammerDiagnosticsLoading =
-    spammerDiagnosticsLightQuery.isLoading && !spammerDiagnosticsLight;
+    Boolean(spammerDiagnosticsTarget) &&
+    !spammerDiagnostics &&
+    (spammerDiagnosticsLightQuery.isFetching || spammerDiagnosticsFullQuery.isFetching);
   const isSpammerDiagnosticsRefreshing =
     Boolean(spammerDiagnostics) &&
     (spammerDiagnosticsLightQuery.isFetching || spammerDiagnosticsFullQuery.isFetching);
@@ -3158,6 +3167,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onClose={() => setSpammerReviewOpen(false)}
         onRetry={handleSpammerReviewRetry}
         onOpenDiagnostics={handleSpammerCandidateDiagnostics}
+        onWarmDiagnostics={(candidate) =>
+          prefetchSpammerDiagnostics({
+            userId: candidate.userId,
+            displayName: resolveSpammerCandidateName(candidate),
+            avatarUrl: candidate.avatarUrl ?? null,
+            profileUrl: candidate.profileUrl ?? null,
+            profileHandoffUrl: candidate.profileHandoffUrl ?? null,
+          })
+        }
       />
 
       <SpammerDiagnosticsSheet
