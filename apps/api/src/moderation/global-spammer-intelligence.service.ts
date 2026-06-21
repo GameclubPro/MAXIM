@@ -525,6 +525,7 @@ export class GlobalSpammerIntelligenceService {
   private readonly logger = new Logger(GlobalSpammerIntelligenceService.name);
   private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
   private readonly runtimeProfileCacheEnabled: boolean;
+  private readonly runtimeProfileShadowEnabled: boolean;
   private readonly runtimeProfileReadModelEnabled: boolean;
   private readonly runtimeProfileAsyncWriteEnabled: boolean;
   private readonly observationDenormQueueEnabled: boolean;
@@ -550,6 +551,10 @@ export class GlobalSpammerIntelligenceService {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
     this.runtimeProfileCacheEnabled = this.readBooleanConfig(
       configService?.get<boolean | string>('SPAMMER_PROFILE_CACHE_ENABLED'),
+      false,
+    );
+    this.runtimeProfileShadowEnabled = this.readBooleanConfig(
+      configService?.get<boolean | string>('SPAMMER_READ_MODEL_SHADOW_ENABLED'),
       false,
     );
     this.runtimeProfileReadModelEnabled = this.readBooleanConfig(
@@ -1947,6 +1952,25 @@ export class GlobalSpammerIntelligenceService {
       });
     }
 
+    const shouldCompareRuntimeProfile =
+      this.runtimeProfileShadowEnabled &&
+      !this.runtimeProfileReadModelEnabled &&
+      params.lookupContext === undefined;
+    const runtimeProfileShadowDecision = shouldCompareRuntimeProfile
+      ? await this.buildPolicyDecisionFromRuntimeProfile({
+          chatId,
+          userId,
+          trigger: params.trigger,
+          deleteSpammersEnabled: params.deleteSpammersEnabled,
+          adminExempt,
+          enforcementMode,
+          recordDecision: false,
+          messageId: null,
+          enforced: params.enforced,
+          now,
+        })
+      : null;
+
     const runtimeProfileDecision = await this.evaluatePolicyFromRuntimeProfile({
       chatId,
       userId,
@@ -2126,6 +2150,12 @@ export class GlobalSpammerIntelligenceService {
         now,
         source: 'evaluate-policy-fallback',
         lookupContextProvided: params.lookupContext !== undefined,
+      });
+    }
+    if (runtimeProfileShadowDecision) {
+      this.logRuntimeProfileShadowComparison({
+        runtimeDecision: runtimeProfileShadowDecision,
+        fallbackDecision: decision,
       });
     }
     return decision;
@@ -2762,6 +2792,43 @@ export class GlobalSpammerIntelligenceService {
       return null;
     }
 
+    const decision = await this.buildPolicyDecisionFromRuntimeProfile(params);
+    if (!decision) {
+      return null;
+    }
+
+    if (params.recordDecision) {
+      await this.recordPolicyDecision({
+        decision,
+        messageId: params.messageId,
+      });
+    }
+
+    this.logSpammerIntelligenceTiming('evaluatePolicyRuntimeProfileHit', {
+      userId: params.userId,
+      chatId: params.chatId,
+      registryStatus: decision.registryStatus,
+      action: decision.action,
+    });
+    return decision;
+  }
+
+  private async buildPolicyDecisionFromRuntimeProfile(params: {
+    chatId: string | null;
+    userId: string;
+    trigger: string;
+    deleteSpammersEnabled: boolean;
+    adminExempt: boolean;
+    enforcementMode: GlobalSpammerEnforcementMode;
+    recordDecision: boolean;
+    messageId: string | null;
+    enforced?: boolean;
+    now: Date;
+  }): Promise<GlobalSpammerPolicyDecision | null> {
+    if (!this.runtimeProfileCacheEnabled) {
+      return null;
+    }
+
     const snapshot = await this.readRuntimeProfileSnapshot(params.userId, params.now);
     if (!snapshot) {
       return null;
@@ -2802,21 +2869,61 @@ export class GlobalSpammerIntelligenceService {
         campaignBreakdown: snapshot.campaignBreakdown,
       },
     );
-
-    if (params.recordDecision) {
-      await this.recordPolicyDecision({
-        decision,
-        messageId: params.messageId,
-      });
-    }
-
-    this.logSpammerIntelligenceTiming('evaluatePolicyRuntimeProfileHit', {
-      userId: params.userId,
-      chatId: params.chatId,
-      registryStatus: snapshot.registryStatus,
-      action: decision.action,
-    });
     return decision;
+  }
+
+  private logRuntimeProfileShadowComparison(params: {
+    runtimeDecision: GlobalSpammerPolicyDecision;
+    fallbackDecision: GlobalSpammerPolicyDecision;
+  }): void {
+    const comparedFields: Array<keyof GlobalSpammerPolicyDecision> = [
+      'registryStatus',
+      'action',
+      'policyBand',
+      'expiresAt',
+    ];
+    const mismatches = comparedFields.filter(
+      (field) => params.runtimeDecision[field] !== params.fallbackDecision[field],
+    );
+    const confidenceDelta = this.roundScore(
+      Math.abs(
+        (params.runtimeDecision.confidenceScore ?? 0) -
+          (params.fallbackDecision.confidenceScore ?? 0),
+      ),
+    );
+    const shadowScoreDelta = this.roundScore(
+      Math.abs(
+        (params.runtimeDecision.shadowScore ?? 0) - (params.fallbackDecision.shadowScore ?? 0),
+      ),
+    );
+    const matched = mismatches.length === 0 && confidenceDelta < 0.001 && shadowScoreDelta < 0.001;
+
+    this.logger.debug({
+      event: 'global_spammer_read_model_shadow_compare',
+      matched,
+      userId: params.fallbackDecision.userId,
+      chatId: params.fallbackDecision.chatId,
+      trigger: params.fallbackDecision.trigger,
+      mismatches,
+      confidenceDelta,
+      shadowScoreDelta,
+      runtime: {
+        registryStatus: params.runtimeDecision.registryStatus,
+        action: params.runtimeDecision.action,
+        policyBand: params.runtimeDecision.policyBand,
+        confidenceScore: params.runtimeDecision.confidenceScore,
+        shadowScore: params.runtimeDecision.shadowScore,
+        expiresAt: params.runtimeDecision.expiresAt,
+      },
+      fallback: {
+        registryStatus: params.fallbackDecision.registryStatus,
+        action: params.fallbackDecision.action,
+        policyBand: params.fallbackDecision.policyBand,
+        confidenceScore: params.fallbackDecision.confidenceScore,
+        shadowScore: params.fallbackDecision.shadowScore,
+        expiresAt: params.fallbackDecision.expiresAt,
+      },
+    });
   }
 
   private resolveRuntimeProfileAction(params: {

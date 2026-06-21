@@ -249,6 +249,7 @@ const envSchema = z.object({
   GLOBAL_SPAMMER_ARCHIVE_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
   GLOBAL_SPAMMER_ARCHIVE_LIMIT: z.coerce.number().int().min(1).max(5000).default(1000),
   SPAMMER_PROFILE_CACHE_ENABLED: envBoolean(false),
+  SPAMMER_READ_MODEL_SHADOW_ENABLED: envBoolean(false),
   SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED: envBoolean(false),
   SPAMMER_DENORM_ASYNC_ENABLED: envBoolean(true),
   SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: envBoolean(false),

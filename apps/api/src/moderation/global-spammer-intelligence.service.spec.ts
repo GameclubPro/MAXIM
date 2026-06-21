@@ -2298,6 +2298,153 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(prisma.globalSpammer.findUnique).toHaveBeenCalled();
   });
 
+  it('shadow-compares runtime profile decisions without using them for enforcement', async () => {
+    const { prisma, runtimeProfiles } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+        SPAMMER_READ_MODEL_SHADOW_ENABLED: 'true',
+      }),
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+    runtimeProfiles.set('user-runtime-shadow', {
+      userId: 'user-runtime-shadow',
+      registryStatus: 'ACTIVE_CONFIRMED',
+      action: 'DELETE_AND_KICK',
+      confidenceScore: 0.99,
+      shadowScore: null,
+      policyBand: 'CONFIRMED',
+      reason: 'STALE_BUT_FAST',
+      expiresAt: new Date(Date.now() + 60_000),
+      suppressedUntil: null,
+      sourceBreakdown: { FANOUT_HIGH: { score: 0.99 } },
+      campaignBreakdown: null,
+      sourceVersion: 2,
+      staleAfter: new Date(Date.now() + 60_000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce(null);
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-1',
+        userId: 'user-runtime-shadow',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'NONE',
+        action: 'NONE',
+        reason: 'NO_ACTIVE_REGISTRY_ENTRY',
+      }),
+    );
+
+    expect(prisma.globalSpammer.findUnique).toHaveBeenCalledWith({
+      where: { userId: 'user-runtime-shadow' },
+    });
+    expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalledWith({
+      where: { userId: 'user-runtime-shadow' },
+    });
+    expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user-runtime-shadow',
+          decision: 'NONE',
+          registryStatus: 'NONE',
+        }),
+      }),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'global_spammer_read_model_shadow_compare',
+        matched: false,
+        userId: 'user-runtime-shadow',
+        mismatches: expect.arrayContaining(['registryStatus', 'action', 'policyBand']),
+        runtime: expect.objectContaining({
+          registryStatus: 'ACTIVE_CONFIRMED',
+          action: 'DELETE_AND_KICK',
+        }),
+        fallback: expect.objectContaining({
+          registryStatus: 'NONE',
+          action: 'NONE',
+        }),
+      }),
+    );
+  });
+
+  it('logs matching runtime profile shadow comparisons while keeping the heavy-path result', async () => {
+    const { prisma, runtimeProfiles } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+        SPAMMER_READ_MODEL_SHADOW_ENABLED: 'true',
+      }),
+    );
+    const debugSpy = jest
+      .spyOn((service as any).logger, 'debug')
+      .mockImplementation(() => undefined);
+    const expiresAt = new Date(Date.now() + 60_000);
+    const sourceBreakdown = { REVIEW_APPROVED: { score: 1 } };
+    runtimeProfiles.set('user-runtime-shadow-match', {
+      userId: 'user-runtime-shadow-match',
+      registryStatus: 'ACTIVE_CONFIRMED',
+      action: 'DELETE_AND_KICK',
+      confidenceScore: 0.93,
+      shadowScore: null,
+      policyBand: 'CONFIRMED',
+      reason: 'REVIEW_APPROVED',
+      expiresAt,
+      suppressedUntil: null,
+      sourceBreakdown,
+      campaignBreakdown: null,
+      sourceVersion: 2,
+      staleAfter: expiresAt,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce({
+      userId: 'user-runtime-shadow-match',
+      confidenceScore: 0.93,
+      lastReason: 'REVIEW_APPROVED',
+      expiresAt,
+      sourceBreakdown,
+    });
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-1',
+        userId: 'user-runtime-shadow-match',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+        reason: 'REVIEW_APPROVED',
+      }),
+    );
+
+    expect(prisma.globalSpammer.findUnique).toHaveBeenCalled();
+    expect(prisma.globalSpammerRuntimeProfile.findUnique).toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'global_spammer_read_model_shadow_compare',
+        matched: true,
+        userId: 'user-runtime-shadow-match',
+        mismatches: [],
+      }),
+    );
+  });
+
   it('warms the runtime profile read-model from fallback policy decisions', async () => {
     const { prisma, runtimeProfiles } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(
