@@ -1206,6 +1206,7 @@ async function main() {
     const currentClassifierReasonCounts = new Map<string, number>();
     const currentClassifierVersionCounts = new Map<string, number>();
     const eventTypeCounts = new Map<string, number>();
+    let evaluatedCount = 0;
     let currentReviewRecommendedCount = 0;
     let deleteFalsePositiveCandidates = 0;
     let grayDeleteCandidates = 0;
@@ -1255,6 +1256,7 @@ async function main() {
         skipDuplicateState: true,
         commercialCampaignContext,
       });
+      evaluatedCount += 1;
 
       const current = snapshotFromViolation(extractCommercialViolation(detection.violations));
       const historical = snapshotFromHistorical(
@@ -1364,7 +1366,7 @@ async function main() {
 
     console.log('');
     console.log('Summary');
-    console.log(`evaluated=${auditedRecords.length}`);
+    console.log(`evaluated=${evaluatedCount}`);
     console.log(`skipped=${[...skipCounts.values()].reduce((sum, value) => sum + value, 0)}`);
     console.log(`skip_breakdown=${formatCounts(skipCounts) || 'none'}`);
     console.log(`category_breakdown=${formatCounts(categoryCounts) || 'none'}`);
