@@ -397,6 +397,12 @@ type ReviewMetricsObservationRow = {
   suppressedCount: unknown;
 };
 
+type SourceReputationRow = {
+  source: string;
+  observedCount: unknown;
+  suppressedCount: unknown;
+};
+
 type TopCampaignRow = {
   id: string;
   signalType: string;
@@ -2830,35 +2836,38 @@ export class GlobalSpammerIntelligenceService {
     }
 
     const since = new Date(now.getTime() - SOURCE_REPUTATION_WINDOW_DAYS * DAY_MS);
-    const [observed, suppressed] = await Promise.all([
-      this.prisma.spammerObservation.groupBy({
-        by: ['source'],
-        where: {
-          observedAt: {
-            gte: since,
-          },
-        },
-        _count: {
-          _all: true,
-        },
-      }),
-      this.prisma.spammerObservation.groupBy({
-        by: ['source'],
-        where: {
-          suppressedAt: {
-            gte: since,
-          },
-        },
-        _count: {
-          _all: true,
-        },
-      }),
-    ]);
-    const suppressedBySource = new Map(suppressed.map((row) => [row.source, row._count._all]));
-    const rows = observed
+    const reputationRows = await this.prisma.$queryRaw<SourceReputationRow[]>(Prisma.sql`
+      SELECT
+        source,
+        SUM("observedCount")::bigint AS "observedCount",
+        SUM("suppressedCount")::bigint AS "suppressedCount"
+      FROM (
+        SELECT
+          source,
+          COUNT(*)::bigint AS "observedCount",
+          0::bigint AS "suppressedCount"
+        FROM spammer_observations
+        WHERE observed_at >= ${since}
+        GROUP BY source
+
+        UNION ALL
+
+        SELECT
+          source,
+          0::bigint AS "observedCount",
+          COUNT(*)::bigint AS "suppressedCount"
+        FROM spammer_observations
+        WHERE suppressed_at >= ${since}
+        GROUP BY source
+      ) reputation
+      GROUP BY source
+      HAVING SUM("observedCount") > 0
+      ORDER BY source ASC
+    `);
+    const rows = reputationRows
       .map((row) => {
-        const observations = row._count._all;
-        const suppressedCount = suppressedBySource.get(row.source) ?? 0;
+        const observations = this.readSqlCount(row.observedCount);
+        const suppressedCount = this.readSqlCount(row.suppressedCount);
         const falsePositiveRate = observations > 0 ? suppressedCount / observations : 0;
         const weight = this.resolveSourceReputationWeight(
           row.source,

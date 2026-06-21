@@ -1558,14 +1558,13 @@ describe('GlobalSpammerIntelligenceService', () => {
   it('reuses the source reputation rollup for repeated diagnostics', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
-    prisma.spammerObservation.groupBy
-      .mockResolvedValueOnce([
-        {
-          source: 'FANOUT_HIGH',
-          _count: { _all: 12 },
-        },
-      ])
-      .mockResolvedValueOnce([]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        source: 'FANOUT_HIGH',
+        observedCount: 12n,
+        suppressedCount: 0n,
+      },
+    ]);
 
     await service.getUserDiagnostics({
       chatId: 'chat-1',
@@ -1576,7 +1575,10 @@ describe('GlobalSpammerIntelligenceService', () => {
       userId: 'user-cache-2',
     });
 
-    expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const reputationSql = prisma.$queryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] };
+    expect(reputationSql.strings?.join(' ')).toContain('UNION ALL');
+    expect(prisma.spammerObservation.groupBy).not.toHaveBeenCalled();
   });
 
   it('reuses preloaded registry state while building diagnostics policy', async () => {
@@ -1674,6 +1676,13 @@ describe('GlobalSpammerIntelligenceService', () => {
       ])
       .mockResolvedValueOnce([
         {
+          source: 'FANOUT_REPEAT',
+          observedCount: 12n,
+          suppressedCount: 2n,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
           id: 'cluster-1',
           signalType: 'URL',
           status: 'ACTIVE',
@@ -1690,12 +1699,16 @@ describe('GlobalSpammerIntelligenceService', () => {
 
     const metrics = await service.getReviewMetrics({ chatId: 'chat-1' });
 
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
-    const topCampaignsSql = prisma.$queryRaw.mock.calls[2]?.[0] as { strings?: readonly string[] };
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
+    const sourceReputationSql = prisma.$queryRaw.mock.calls[2]?.[0] as {
+      strings?: readonly string[];
+    };
+    expect(sourceReputationSql.strings?.join(' ')).toContain('UNION ALL');
+    const topCampaignsSql = prisma.$queryRaw.mock.calls[3]?.[0] as { strings?: readonly string[] };
     expect(topCampaignsSql.strings?.join(' ')).toContain('spammer_campaign_cluster_members');
     expect(topCampaignsSql.strings?.join(' ')).toContain('member.last_seen_at');
     expect(prisma.globalSpammerCandidate.count).not.toHaveBeenCalled();
-    expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
+    expect(prisma.spammerObservation.groupBy).not.toHaveBeenCalled();
     expect(metrics).toEqual(
       expect.objectContaining({
         pending: 4,
