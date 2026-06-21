@@ -1369,6 +1369,65 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('sanitizes legacy non-finite JSON numbers while pruning raw evidence', async () => {
+    const { observations } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      {
+        spammerObservation: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'obs-legacy-json',
+              evidence: { text: 'legacy text with odd numbers' },
+              normalizedFeatures: {
+                evidenceHash: 'legacy-hash',
+                domains: ['example.com', Number.NaN, undefined, Number.POSITIVE_INFINITY],
+                urls: [Number.NEGATIVE_INFINITY, 'https://example.com'],
+                phoneHashes: [undefined, 'phone-hash'],
+                mediaSignatures: [Number.NaN, 'media-hash'],
+                fanout: {
+                  uniqueChats: Number.POSITIVE_INFINITY,
+                  duplicateCount: 2,
+                },
+              },
+            },
+          ]),
+          update: jest.fn(async ({ where, data }: any) => {
+            observations.push({ id: where.id, ...data });
+            return observations[observations.length - 1];
+          }),
+        },
+        $transaction: jest.fn(async (operations: Array<Promise<unknown>>) =>
+          Promise.all(operations),
+        ),
+      } as never,
+    );
+
+    await expect(
+      service.pruneExpiredRawEvidence({
+        now: new Date('2026-06-20T12:00:00.000Z'),
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        scanned: 1,
+        pruned: 1,
+      }),
+    );
+
+    expect(observations[0].evidence).toEqual(
+      expect.objectContaining({
+        evidenceHash: 'legacy-hash',
+        domains: ['example.com'],
+        urls: ['https://example.com'],
+        phoneHashes: ['phone-hash'],
+        mediaSignatures: ['media-hash'],
+        fanout: {
+          uniqueChats: null,
+          duplicateCount: 2,
+        },
+      }),
+    );
+  });
+
   it('stores user labels on commercial review candidates', async () => {
     const { candidateChats, candidates, prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);

@@ -6185,9 +6185,12 @@ export class GlobalSpammerIntelligenceService {
   }
 
   private asJsonArray(value: unknown): Prisma.InputJsonArray {
-    return Array.isArray(value)
-      ? (value.filter((item) => item !== undefined) as Prisma.InputJsonArray)
-      : [];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .map((item) => this.toInputJsonValue(item))
+      .filter((item): item is Prisma.InputJsonValue => item !== null);
   }
 
   private toInputJsonObject(value: Record<string, unknown>): Prisma.InputJsonObject {
@@ -6205,10 +6208,12 @@ export class GlobalSpammerIntelligenceService {
     if (
       value === null ||
       typeof value === 'string' ||
-      typeof value === 'number' ||
       typeof value === 'boolean'
     ) {
       return value;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
     }
     if (value instanceof Date) {
       return value.toISOString();
