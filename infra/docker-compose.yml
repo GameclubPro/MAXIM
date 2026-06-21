@@ -5,6 +5,7 @@ x-spammer-read-model-shadow-env: &spammer-read-model-shadow-env
   SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED: 'false'
   SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'false'
   SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'false'
+  SPAMMER_OBSERVATION_FAST_PATH_SOURCES: COMMERCIAL_AD,COMMERCIAL_CAMPAIGN,REPEATED_LINK,REPEATED_PHONE
 
 services:
   postgres:
@@ -257,6 +258,8 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-realtime-c
       APP_ROLE: moderation
+      SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true'
+      SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true'
       WEBHOOK_DYNAMIC_LEASES_MODE: canary
       WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: api-moderation-realtime-c
       WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: moderation-default-2,moderation-default-11
@@ -333,6 +336,8 @@ services:
       <<: *spammer-read-model-shadow-env
       APP_SERVICE_NAME: api-moderation-background
       APP_ROLE: moderation
+      SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true'
+      SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true'
       MODERATION_ENABLED_QUEUES: background
       MODERATION_BACKGROUND_TASKS_ENABLED: 'true'
       MODERATION_CONCURRENCY_BACKGROUND: 2

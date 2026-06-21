@@ -789,6 +789,98 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(prisma.globalSpammerShadowScore.create).not.toHaveBeenCalled();
   });
 
+  it('limits fast observation ledger writes to configured sources', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_SOURCES: 'COMMERCIAL_AD,REPEATED_LINK',
+      }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    const commercialResult = await service.recordObservation({
+      userId: 'User-Fast-Allowlist',
+      source: 'COMMERCIAL_AD',
+      score: 0.68,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-1',
+      evidenceHash: 'fast-allowlist-1',
+      evidence: { excerpt: 'promo' },
+    });
+
+    expect(commercialResult.outcome).toBe('observed');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerCandidate.upsert).not.toHaveBeenCalled();
+
+    const fanoutResult = await service.recordObservation({
+      userId: 'User-Fast-Allowlist',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidenceHash: 'fast-allowlist-2',
+      evidence: { uniqueChats: 5 },
+    });
+
+    expect(fanoutResult.outcome).toBe('candidate');
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(prisma.globalSpammerCandidate.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-fast-allowlist',
+          status: 'PENDING',
+        }),
+      }),
+    );
+  });
+
+  it('fails closed for invalid fast observation source configuration', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_SOURCES: 'NOT_A_SOURCE',
+      }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    const result = await service.recordObservation({
+      userId: 'User-Fast-Invalid-Config',
+      source: 'COMMERCIAL_AD',
+      score: 0.68,
+      reason: 'COMMERCIAL_AD_DETECTED',
+      chatId: 'chat-1',
+      evidenceHash: 'fast-invalid-config-1',
+      evidence: { excerpt: 'promo' },
+    });
+
+    expect(result.outcome).toBe('observed');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      GLOBAL_SPAMMER_DENORM_JOB_NAME,
+      expect.not.objectContaining({
+        fastPath: true,
+      }),
+      expect.any(Object),
+    );
+    expect(prisma.globalSpammerShadowScore.create).toHaveBeenCalled();
+  });
+
   it('falls back to synchronous denorm when fast-path enqueue fails', async () => {
     const { prisma } = createPrismaMock();
     const queue = {

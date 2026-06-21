@@ -607,6 +607,7 @@ export class GlobalSpammerIntelligenceService {
   private readonly runtimeProfileAsyncWriteEnabled: boolean;
   private readonly observationDenormQueueEnabled: boolean;
   private readonly observationFastPathEnabled: boolean;
+  private readonly observationFastPathSources: ReadonlySet<GlobalSpammerObservationSource>;
   private readonly runtimeProfileL1Cache = new Map<
     string,
     { snapshot: RuntimeProfileSnapshot | null; expiresAtMs: number }
@@ -654,6 +655,9 @@ export class GlobalSpammerIntelligenceService {
     this.observationFastPathEnabled = this.readBooleanConfig(
       configService?.get<boolean | string>('SPAMMER_OBSERVATION_FAST_PATH_ENABLED'),
       false,
+    );
+    this.observationFastPathSources = this.readObservationFastPathSourcesConfig(
+      configService?.get<string>('SPAMMER_OBSERVATION_FAST_PATH_SOURCES'),
     );
   }
 
@@ -1057,7 +1061,7 @@ export class GlobalSpammerIntelligenceService {
     if (input.forceRegistry || input.registryTtlDays) {
       return false;
     }
-    return OBSERVATION_FAST_PATH_SOURCES.has(input.source);
+    return this.observationFastPathSources.has(input.source);
   }
 
   private async recordObservationDenormSync(
@@ -1545,7 +1549,7 @@ export class GlobalSpammerIntelligenceService {
   private shouldProcessObservationFastDenormJob(source: GlobalSpammerObservationSource): boolean {
     return (
       this.observationFastPathEnabled &&
-      OBSERVATION_FAST_PATH_SOURCES.has(source)
+      this.observationFastPathSources.has(source)
     );
   }
 
@@ -6182,6 +6186,22 @@ export class GlobalSpammerIntelligenceService {
       return this.clampScore(defaultValue);
     }
     return this.clampScore(parsed);
+  }
+
+  private readObservationFastPathSourcesConfig(
+    value: string | null | undefined,
+  ): ReadonlySet<GlobalSpammerObservationSource> {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return OBSERVATION_FAST_PATH_SOURCES;
+    }
+    const sources = new Set<GlobalSpammerObservationSource>();
+    for (const token of value.split(',')) {
+      const source = this.normalizeObservationSource(token);
+      if (source && OBSERVATION_FAST_PATH_SOURCES.has(source)) {
+        sources.add(source);
+      }
+    }
+    return sources;
   }
 
   private normalizeRegistryStatus(value: string | null | undefined): GlobalSpammerRegistryStatus {
