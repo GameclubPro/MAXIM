@@ -1671,13 +1671,29 @@ describe('GlobalSpammerIntelligenceService', () => {
           observedCount: 12n,
           suppressedCount: 2n,
         },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'cluster-1',
+          signalType: 'URL',
+          status: 'ACTIVE',
+          confidenceScore: 0.83,
+          distinctUsersCount: 4,
+          distinctChatsCount: 2,
+          observationsCount: 9,
+          lastSeenAt: new Date('2026-05-29T12:00:00.000Z'),
+          signalValuePreview: 'example.test',
+        },
       ]);
     prisma.globalSpammer.count.mockResolvedValueOnce(9).mockResolvedValueOnce(1);
     prisma.globalSpammerArchive.count.mockResolvedValueOnce(8);
 
     const metrics = await service.getReviewMetrics({ chatId: 'chat-1' });
 
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    const topCampaignsSql = prisma.$queryRaw.mock.calls[2]?.[0] as { strings?: readonly string[] };
+    expect(topCampaignsSql.strings?.join(' ')).toContain('spammer_campaign_cluster_members');
+    expect(topCampaignsSql.strings?.join(' ')).toContain('member.last_seen_at');
     expect(prisma.globalSpammerCandidate.count).not.toHaveBeenCalled();
     expect(prisma.spammerObservation.groupBy).toHaveBeenCalledTimes(2);
     expect(metrics).toEqual(
@@ -1691,6 +1707,12 @@ describe('GlobalSpammerIntelligenceService', () => {
         archivedExpired: 8,
         falsePositiveCount: 2,
         falsePositiveRate: 0.4,
+        topCampaigns: [
+          expect.objectContaining({
+            clusterId: 'cluster-1',
+            confidenceScore: 0.83,
+          }),
+        ],
       }),
     );
   });

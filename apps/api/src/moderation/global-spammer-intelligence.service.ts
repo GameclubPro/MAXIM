@@ -397,6 +397,18 @@ type ReviewMetricsObservationRow = {
   suppressedCount: unknown;
 };
 
+type TopCampaignRow = {
+  id: string;
+  signalType: string;
+  status: string;
+  confidenceScore: number;
+  distinctUsersCount: number;
+  distinctChatsCount: number;
+  observationsCount: number;
+  lastSeenAt: Date;
+  signalValuePreview: string | null;
+};
+
 type ReviewQueueObservationRow = {
   id: string;
   userId: string;
@@ -4354,24 +4366,26 @@ export class GlobalSpammerIntelligenceService {
       preview: string | null;
     }>
   > {
-    const rows = await this.prisma.spammerCampaignCluster.findMany({
-      where: {
-        lastSeenAt: {
-          gte: params.since,
-        },
-        ...(params.chatId
-          ? {
-              members: {
-                some: {
-                  chatId: params.chatId,
-                },
-              },
-            }
-          : {}),
-      },
-      orderBy: [{ confidenceScore: 'desc' }, { observationsCount: 'desc' }, { lastSeenAt: 'desc' }],
-      take: Math.max(1, Math.min(params.limit, 20)),
-    });
+    const limit = Math.max(1, Math.min(params.limit, 20));
+    const rows = params.chatId
+      ? await this.listTopCampaignsForChat({
+          chatId: params.chatId,
+          since: params.since,
+          limit,
+        })
+      : await this.prisma.spammerCampaignCluster.findMany({
+          where: {
+            lastSeenAt: {
+              gte: params.since,
+            },
+          },
+          orderBy: [
+            { confidenceScore: 'desc' },
+            { observationsCount: 'desc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: limit,
+        });
     return rows.map((row) => ({
       clusterId: row.id,
       signalType: row.signalType,
@@ -4384,6 +4398,38 @@ export class GlobalSpammerIntelligenceService {
       lastSeenAt: row.lastSeenAt.toISOString(),
       preview: row.signalValuePreview,
     }));
+  }
+
+  private async listTopCampaignsForChat(params: {
+    chatId: string;
+    since: Date;
+    limit: number;
+  }): Promise<TopCampaignRow[]> {
+    return this.prisma.$queryRaw<TopCampaignRow[]>(Prisma.sql`
+      SELECT
+        cluster.id,
+        cluster.signal_type AS "signalType",
+        cluster.status,
+        cluster.confidence_score AS "confidenceScore",
+        cluster.distinct_users_count AS "distinctUsersCount",
+        cluster.distinct_chats_count AS "distinctChatsCount",
+        cluster.observations_count AS "observationsCount",
+        cluster.last_seen_at AS "lastSeenAt",
+        cluster.signal_value_preview AS "signalValuePreview"
+      FROM (
+        SELECT DISTINCT member.cluster_id
+        FROM spammer_campaign_cluster_members member
+        WHERE member.chat_id = ${params.chatId}
+          AND member.last_seen_at >= ${params.since}
+      ) scoped_campaigns
+      INNER JOIN spammer_campaign_clusters cluster ON cluster.id = scoped_campaigns.cluster_id
+      WHERE cluster.last_seen_at >= ${params.since}
+      ORDER BY
+        cluster.confidence_score DESC,
+        cluster.observations_count DESC,
+        cluster.last_seen_at DESC
+      LIMIT ${params.limit}
+    `);
   }
 
   private async listUserCampaignDiagnostics(userId: string): Promise<

@@ -2159,6 +2159,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
   });
+  const spammerDiagnosticsLightReady =
+    spammerDiagnosticsLightQuery.data?.userId === spammerDiagnosticsUserId ||
+    spammerDiagnosticsLightQuery.isFetched ||
+    spammerDiagnosticsLightQuery.isError;
   const spammerDiagnosticsFullQuery = useQuery({
     queryKey: queryKeys.globalSpammerUserDiagnostics(
       chatId,
@@ -2175,7 +2179,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           signal,
         },
       ),
-    enabled: Boolean(chatId && spammerDiagnosticsUserId),
+    enabled: Boolean(chatId && spammerDiagnosticsUserId && spammerDiagnosticsLightReady),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
@@ -2346,6 +2350,25 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         action,
         ...(reason ? { reason } : {}),
       }),
+    onMutate: async ({ userId }) => {
+      const reviewedUserId = userId.trim();
+      await queryClient.cancelQueries({ queryKey: spammerReviewQueueKey });
+      const previousQueue =
+        queryClient.getQueryData<Awaited<ReturnType<typeof getGlobalSpammerReviewQueue>>>(
+          spammerReviewQueueKey,
+        );
+      queryClient.setQueryData(
+        spammerReviewQueueKey,
+        (current: Awaited<ReturnType<typeof getGlobalSpammerReviewQueue>> | undefined) =>
+          current
+            ? {
+                ...current,
+                items: current.items.filter((item) => item.userId !== reviewedUserId),
+              }
+            : current,
+      );
+      return { previousQueue };
+    },
     onSuccess: (result) => {
       if (spammerDiagnosticsTarget?.userId === result.userId) {
         setSpammerDiagnosticsTarget(null);
@@ -2355,28 +2378,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         title:
           result.status === 'SUPPRESSED' ? 'Не учитывается в спам-базе' : 'Подтверждён в спам-базе',
       });
-      queryClient.setQueryData(
-        spammerReviewQueueKey,
-        (current: Awaited<ReturnType<typeof getGlobalSpammerReviewQueue>> | undefined) =>
-          current
-            ? {
-                ...current,
-                items: current.items.filter((item) => item.userId !== result.userId),
-              }
-            : current,
-      );
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.globalSpammerReviewQueue(chatId),
-      });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.globalSpammerUserDiagnostics(chatId, result.userId),
       });
     },
-    onError: (error: unknown) => {
+    onError: (error: unknown, _variables, context) => {
+      if (context?.previousQueue) {
+        queryClient.setQueryData(spammerReviewQueueKey, context.previousQueue);
+      }
       pushToast({
         tone: 'danger',
         title: 'Не удалось сохранить решение',
         description: normalizeActionErrorMessage(error),
+      });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.globalSpammerReviewQueue(chatId),
       });
     },
   });
