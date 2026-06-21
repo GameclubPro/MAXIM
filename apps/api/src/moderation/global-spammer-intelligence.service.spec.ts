@@ -1,5 +1,9 @@
 import type { ConfigService } from '@nestjs/config';
 import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.service';
+import {
+  buildGlobalSpammerDenormDeduplicationId,
+  GLOBAL_SPAMMER_DENORM_JOB_NAME,
+} from './global-spammer-denorm.queue';
 
 function createConfigMock(values: Record<string, string | undefined>): ConfigService {
   return {
@@ -594,6 +598,141 @@ describe('GlobalSpammerIntelligenceService', () => {
         }),
       }),
     );
+  });
+
+  it('does not enqueue observation denorm work while the queue flag is disabled', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn(),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({ SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'false' }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    await service.recordObservation({
+      userId: 'user-denorm-off',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidence: { uniqueChats: 5 },
+    });
+
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerCandidate.upsert).toHaveBeenCalled();
+  });
+
+  it('enqueues observation denorm jobs with per-user latest-state deduplication', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({ SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true' }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    await service.recordObservation({
+      userId: 'User-Denorm-1',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidenceHash: 'denorm-1',
+      evidence: { uniqueChats: 5 },
+    });
+    await service.recordObservation({
+      userId: 'User-Denorm-1',
+      source: 'FANOUT_REPEAT',
+      score: 0.7,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-2',
+      evidenceHash: 'denorm-2',
+      evidence: { uniqueChats: 6 },
+    });
+
+    const deduplicationId = buildGlobalSpammerDenormDeduplicationId('user-denorm-1');
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(queue.add).toHaveBeenCalledWith(
+      GLOBAL_SPAMMER_DENORM_JOB_NAME,
+      expect.objectContaining({
+        userId: 'user-denorm-1',
+        chatId: 'chat-1',
+        observationId: 'obs-1',
+        source: 'FANOUT_REPEAT',
+      }),
+      expect.objectContaining({
+        deduplication: {
+          id: deduplicationId,
+          keepLastIfActive: true,
+        },
+      }),
+    );
+    expect(queue.add).toHaveBeenLastCalledWith(
+      GLOBAL_SPAMMER_DENORM_JOB_NAME,
+      expect.objectContaining({
+        userId: 'user-denorm-1',
+        chatId: 'chat-2',
+        observationId: 'obs-2',
+        source: 'FANOUT_REPEAT',
+      }),
+      expect.objectContaining({
+        deduplication: {
+          id: deduplicationId,
+          keepLastIfActive: true,
+        },
+      }),
+    );
+  });
+
+  it('refreshes the runtime profile read model from observation denorm jobs', async () => {
+    const { prisma, runtimeProfiles } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce({
+      userId: 'user-denorm-profile',
+      confidenceScore: 0.92,
+      lastReason: 'REVIEW_APPROVED',
+      expiresAt: new Date(Date.now() + 60_000),
+      sourceBreakdown: { REVIEW_APPROVED: { score: 1 } },
+    });
+
+    await service.processObservationDenormJob({
+      userId: 'User-Denorm-Profile',
+      chatId: 'chat-1',
+      observationId: 'obs-profile',
+      source: 'REVIEW_APPROVED',
+      reason: 'REVIEW_APPROVED',
+      observedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(prisma.globalSpammerRuntimeProfile.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { userId: 'user-denorm-profile' },
+        create: expect.objectContaining({
+          registryStatus: 'ACTIVE_CONFIRMED',
+          action: 'DELETE_AND_KICK',
+          confidenceScore: 0.92,
+          reason: 'REVIEW_APPROVED',
+          sourceVersion: 2,
+        }),
+      }),
+    );
+    expect(runtimeProfiles.get('user-denorm-profile')).toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+        reason: 'REVIEW_APPROVED',
+      }),
+    );
+    expect(prisma.globalSpammerEnforcementDecision.create).not.toHaveBeenCalled();
   });
 
   it('normalizes legacy confidence levels when listing the review queue', async () => {

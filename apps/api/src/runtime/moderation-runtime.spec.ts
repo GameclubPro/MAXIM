@@ -8,6 +8,7 @@ import {
   getWebhookDynamicLeasesWorkerGroup,
   moderationBackgroundTasksEnabled,
   moderationProcessorQueueEnabled,
+  spammerDenormProcessorEnabled,
 } from './moderation-runtime';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -115,6 +116,33 @@ describe('moderation-runtime', () => {
     expect(moderationBackgroundTasksEnabled('0')).toBe(false);
     expect(moderationBackgroundTasksEnabled('true')).toBe(true);
     expect(moderationBackgroundTasksEnabled(undefined)).toBe(true);
+  });
+
+  it('enables spammer denorm processing only on explicit background workers', () => {
+    const originalRole = process.env.APP_ROLE;
+    const originalServiceName = process.env.APP_SERVICE_NAME;
+    try {
+      process.env.APP_ROLE = 'moderation';
+      process.env.APP_SERVICE_NAME = 'api-moderation-background';
+      expect(spammerDenormProcessorEnabled({ get: () => 'true' } as never)).toBe(true);
+
+      process.env.APP_SERVICE_NAME = 'api-moderation-realtime-b';
+      expect(spammerDenormProcessorEnabled({ get: () => 'true' } as never)).toBe(false);
+
+      process.env.APP_SERVICE_NAME = 'api-moderation-background';
+      expect(spammerDenormProcessorEnabled({ get: () => 'false' } as never)).toBe(false);
+    } finally {
+      if (originalRole === undefined) {
+        delete process.env.APP_ROLE;
+      } else {
+        process.env.APP_ROLE = originalRole;
+      }
+      if (originalServiceName === undefined) {
+        delete process.env.APP_SERVICE_NAME;
+      } else {
+        process.env.APP_SERVICE_NAME = originalServiceName;
+      }
+    }
   });
 
   it('exposes the default shard ownership map used by realtime workers', () => {

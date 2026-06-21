@@ -1,5 +1,7 @@
+import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
@@ -11,6 +13,14 @@ import { type RuleViolation } from './rule-engine.contract';
 import { maskText } from './text-mask.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { RedisCounterService } from './redis-counter.service';
+import {
+  buildGlobalSpammerDenormDeduplicationId,
+  GLOBAL_SPAMMER_DENORM_JOB_ATTEMPTS,
+  GLOBAL_SPAMMER_DENORM_JOB_BACKOFF_MS,
+  GLOBAL_SPAMMER_DENORM_JOB_NAME,
+  GLOBAL_SPAMMER_DENORM_QUEUE,
+  type GlobalSpammerDenormJob,
+} from './global-spammer-denorm.queue';
 
 export const GLOBAL_SPAMMER_OBSERVATION_SOURCES = [
   'FANOUT_HIGH',
@@ -495,6 +505,7 @@ export class GlobalSpammerIntelligenceService {
   private readonly runtimeProfileCacheEnabled: boolean;
   private readonly runtimeProfileReadModelEnabled: boolean;
   private readonly runtimeProfileAsyncWriteEnabled: boolean;
+  private readonly observationDenormQueueEnabled: boolean;
   private readonly runtimeProfileL1Cache = new Map<
     string,
     { snapshot: RuntimeProfileSnapshot | null; expiresAtMs: number }
@@ -509,6 +520,9 @@ export class GlobalSpammerIntelligenceService {
     @Optional() configService?: ConfigService,
     @Optional() private readonly maxBotRegistry?: MaxBotRegistryService,
     @Optional() private readonly redisCounter?: RedisCounterService,
+    @Optional()
+    @InjectQueue(GLOBAL_SPAMMER_DENORM_QUEUE)
+    private readonly observationDenormQueue?: Queue<GlobalSpammerDenormJob>,
   ) {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
     this.runtimeProfileCacheEnabled = this.readBooleanConfig(
@@ -522,6 +536,10 @@ export class GlobalSpammerIntelligenceService {
     this.runtimeProfileAsyncWriteEnabled = this.readBooleanConfig(
       configService?.get<boolean | string>('SPAMMER_DENORM_ASYNC_ENABLED'),
       true,
+    );
+    this.observationDenormQueueEnabled = this.readBooleanConfig(
+      configService?.get<boolean | string>('SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED'),
+      false,
     );
   }
 
@@ -896,15 +914,25 @@ export class GlobalSpammerIntelligenceService {
       });
       await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
 
-      return {
-        outcome: 'suppressed',
-        userId,
-        aggregateScore: aggregate.score,
-        confidenceLevel: aggregate.confidenceLevel,
-        sourceBreakdown,
-        evidenceHash,
-        suppressedUntil: activeSuppression.suppressedUntil.toISOString(),
-      };
+      return this.finishObservationDecision(
+        {
+          outcome: 'suppressed',
+          userId,
+          aggregateScore: aggregate.score,
+          confidenceLevel: aggregate.confidenceLevel,
+          sourceBreakdown,
+          evidenceHash,
+          suppressedUntil: activeSuppression.suppressedUntil.toISOString(),
+        },
+        {
+          userId,
+          chatId: input.chatId ?? null,
+          observationId: observationRow.id,
+          source: input.source,
+          reason: input.reason,
+          observedAt: now,
+        },
+      );
     }
 
     const thresholdAdjustment = await this.resolveRecentSuppressionThresholdAdjustment(userId, now);
@@ -928,14 +956,24 @@ export class GlobalSpammerIntelligenceService {
         registryTtlDays: input.registryTtlDays ?? null,
       });
       await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
-      return {
-        outcome: 'registry',
-        userId,
-        aggregateScore: aggregate.score,
-        confidenceLevel: aggregate.confidenceLevel,
-        sourceBreakdown,
-        evidenceHash,
-      };
+      return this.finishObservationDecision(
+        {
+          outcome: 'registry',
+          userId,
+          aggregateScore: aggregate.score,
+          confidenceLevel: aggregate.confidenceLevel,
+          sourceBreakdown,
+          evidenceHash,
+        },
+        {
+          userId,
+          chatId: input.chatId ?? null,
+          observationId: observationRow.id,
+          source: input.source,
+          reason: input.reason,
+          observedAt: now,
+        },
+      );
     }
 
     if (aggregate.score >= mediumConfidenceThreshold) {
@@ -954,24 +992,94 @@ export class GlobalSpammerIntelligenceService {
         falsePositive: false,
       });
       await this.scheduleRuntimeProfileRefresh(userId, input.chatId ?? null, 'record-observation');
-      return {
-        outcome: 'candidate',
+      return this.finishObservationDecision(
+        {
+          outcome: 'candidate',
+          userId,
+          aggregateScore: aggregate.score,
+          confidenceLevel: aggregate.confidenceLevel,
+          sourceBreakdown,
+          evidenceHash,
+        },
+        {
+          userId,
+          chatId: input.chatId ?? null,
+          observationId: observationRow.id,
+          source: input.source,
+          reason: input.reason,
+          observedAt: now,
+        },
+      );
+    }
+
+    return this.finishObservationDecision(
+      {
+        outcome: 'observed',
         userId,
         aggregateScore: aggregate.score,
         confidenceLevel: aggregate.confidenceLevel,
         sourceBreakdown,
         evidenceHash,
-      };
+      },
+      {
+        userId,
+        chatId: input.chatId ?? null,
+        observationId: observationRow.id,
+        source: input.source,
+        reason: input.reason,
+        observedAt: now,
+      },
+    );
+  }
+
+  async processObservationDenormJob(job: GlobalSpammerDenormJob): Promise<void> {
+    const userId = this.normalizeUserId(job.userId);
+    if (!userId || this.isKnownRuntimeBotUserId(userId)) {
+      return;
     }
 
-    return {
-      outcome: 'observed',
+    const startedAtMs = Date.now();
+    await this.invalidateRuntimeProfileCaches(userId);
+    const now = new Date();
+    const chatId = this.normalizeText(job.chatId ?? null) || null;
+    const [registry, candidate, activeSuppression, riskContext] = await Promise.all([
+      this.prisma.globalSpammer.findUnique({ where: { userId } }),
+      this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+      this.findActiveSuppression(userId, now),
+      this.buildPolicyDecisionRiskContext(userId),
+    ]);
+    const decision = await this.evaluatePolicy({
+      chatId,
       userId,
-      aggregateScore: aggregate.score,
-      confidenceLevel: aggregate.confidenceLevel,
-      sourceBreakdown,
-      evidenceHash,
-    };
+      trigger: 'runtime-profile:observation-denorm-job',
+      deleteSpammersEnabled: true,
+      enforcementMode: 'enforce',
+      recordDecision: false,
+      riskContext,
+      skipRuntimeProfileWrite: true,
+      lookupContext: {
+        now,
+        registry,
+        candidate,
+        activeSuppression,
+      },
+    });
+    await this.writeRuntimeProfileFromDecision({
+      decision,
+      activeSuppression,
+      registry,
+      candidate,
+      now,
+      source: 'observation-denorm-job',
+      lookupContextProvided: true,
+    });
+    this.logSpammerIntelligenceTiming('processObservationDenormJob', {
+      userId,
+      chatId: job.chatId ?? null,
+      source: job.source,
+      observationId: job.observationId ?? null,
+      totalMs: Date.now() - startedAtMs,
+    });
   }
 
   async recordSuppression(input: GlobalSpammerSuppressionInput): Promise<{ ok: true }> {
@@ -1555,6 +1663,7 @@ export class GlobalSpammerIntelligenceService {
     enforced?: boolean;
     riskContext?: PolicyDecisionRiskContext | null;
     lookupContext?: PolicyDecisionLookupContext;
+    skipRuntimeProfileWrite?: boolean;
   }): Promise<GlobalSpammerPolicyDecision> {
     const userId = this.normalizeUserId(params.userId);
     const chatId = this.normalizeText(params.chatId ?? '') || null;
@@ -1768,15 +1877,17 @@ export class GlobalSpammerIntelligenceService {
         messageId: params.messageId ?? null,
       });
     }
-    await this.scheduleRuntimeProfileWriteFromDecision({
-      decision,
-      activeSuppression,
-      registry,
-      candidate,
-      now,
-      source: 'evaluate-policy-fallback',
-      lookupContextProvided: params.lookupContext !== undefined,
-    });
+    if (!params.skipRuntimeProfileWrite) {
+      await this.scheduleRuntimeProfileWriteFromDecision({
+        decision,
+        activeSuppression,
+        registry,
+        candidate,
+        now,
+        source: 'evaluate-policy-fallback',
+        lookupContextProvided: params.lookupContext !== undefined,
+      });
+    }
     return decision;
   }
 
@@ -2852,6 +2963,75 @@ export class GlobalSpammerIntelligenceService {
       return;
     }
     await task();
+  }
+
+  private async finishObservationDecision<TDecision extends GlobalSpammerObservationDecision>(
+    decision: TDecision,
+    params: {
+      userId: string;
+      chatId: string | null;
+      observationId: string;
+      source: GlobalSpammerObservationSource;
+      reason: string;
+      observedAt: Date;
+    },
+  ): Promise<TDecision> {
+    await this.enqueueObservationDenormJob(params);
+    return decision;
+  }
+
+  private async enqueueObservationDenormJob(params: {
+    userId: string;
+    chatId: string | null;
+    observationId: string;
+    source: GlobalSpammerObservationSource;
+    reason: string;
+    observedAt: Date;
+  }): Promise<void> {
+    if (!this.observationDenormQueueEnabled || !this.observationDenormQueue) {
+      return;
+    }
+
+    const payload: GlobalSpammerDenormJob = {
+      userId: params.userId,
+      chatId: params.chatId,
+      observationId: params.observationId,
+      source: params.source,
+      reason: params.reason,
+      observedAt: params.observedAt.toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+    const deduplicationId = buildGlobalSpammerDenormDeduplicationId(params.userId);
+
+    try {
+      await this.observationDenormQueue.add(GLOBAL_SPAMMER_DENORM_JOB_NAME, payload, {
+        attempts: GLOBAL_SPAMMER_DENORM_JOB_ATTEMPTS,
+        backoff: {
+          type: 'fixed',
+          delay: GLOBAL_SPAMMER_DENORM_JOB_BACKOFF_MS,
+        },
+        deduplication: {
+          id: deduplicationId,
+          keepLastIfActive: true,
+        },
+        removeOnComplete: true,
+        removeOnFail: 1_000,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('job') && message.toLowerCase().includes('exists')) {
+        return;
+      }
+      this.logger.warn(
+        {
+          userId: params.userId,
+          chatId: params.chatId,
+          source: params.source,
+          error: message,
+        },
+        'Failed to enqueue global spammer denorm job',
+      );
+    }
   }
 
   private buildRuntimeProfileSnapshotFromDecision(params: {

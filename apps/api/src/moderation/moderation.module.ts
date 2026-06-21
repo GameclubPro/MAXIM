@@ -7,6 +7,7 @@ import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import {
   getEnabledModerationProcessorQueues,
   getWebhookDynamicLeasesWorkerGroup,
+  spammerDenormProcessorEnabled,
 } from '../runtime/moderation-runtime';
 import {
   MODERATION_EXECUTION_LEGACY,
@@ -14,6 +15,8 @@ import {
 } from './moderation-execution.service';
 import { NightModeTransitionModule } from './night-mode-transition.module';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
+import { GlobalSpammerDenormProcessor } from './global-spammer-denorm.processor';
+import { GLOBAL_SPAMMER_DENORM_QUEUE } from './global-spammer-denorm.queue';
 import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
@@ -76,6 +79,7 @@ const moderationProviders = [
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND) && roleRunsModeration(getAppRole())
           ? [NightModeTransitionProcessor]
           : []),
+        ...(spammerDenormProcessorEnabled() ? [GlobalSpammerDenormProcessor] : []),
       ]
     : []),
 ];
@@ -83,6 +87,7 @@ const moderationProviders = [
 @Module({
   imports: [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
+    BullModule.registerQueue({ name: GLOBAL_SPAMMER_DENORM_QUEUE }),
     MaxModule,
     SystemModule,
     ChatContextModule,

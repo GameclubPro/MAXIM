@@ -1,3 +1,4 @@
+import type { ConfigService } from '@nestjs/config';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -161,6 +162,19 @@ export function moderationBackgroundTasksEnabled(
   rawValue: unknown = process.env.MODERATION_BACKGROUND_TASKS_ENABLED,
 ): boolean {
   return normalizeBooleanEnv(rawValue, true);
+}
+
+export function spammerDenormProcessorEnabled(configService?: ConfigService): boolean {
+  const flag = configService?.get<boolean | string>('SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED');
+  if (!normalizeBooleanEnv(flag ?? process.env.SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED, false)) {
+    return false;
+  }
+
+  const runtimeService = resolveRuntimeServiceProfile();
+  return (
+    runtimeService.service.serviceName === 'api-all' ||
+    runtimeService.service.serviceName === 'api-moderation-background'
+  );
 }
 
 export function getDefaultWebhookWorkerGroupQueues(): Readonly<
