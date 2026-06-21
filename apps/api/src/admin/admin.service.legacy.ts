@@ -140,6 +140,7 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { raceWithTimeout } from '../common/promise-timeout.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -298,6 +299,10 @@ import {
   BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS,
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
+  CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
+  CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
+  CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
+  CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
   LOGS_DASHBOARD_VIOLATIONS_LIMIT,
   MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
   LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
@@ -19991,6 +19996,18 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async processChannelSuggestionDeliveryJob(auditLogId: string): Promise<void> {
+    await raceWithTimeout({
+      operation: this.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId),
+      timeoutMs: CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
+      onTimeout: () => {
+        throw new Error(
+          `Channel suggestion delivery timed out after ${CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS}ms`,
+        );
+      },
+    });
+  }
+
+  private async processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void> {
     const normalizedAuditLogId = auditLogId.trim();
     if (!normalizedAuditLogId) {
       return;
@@ -20164,6 +20181,8 @@ export class AdminService implements OnModuleDestroy {
         (
           await this.maxClient.getChatAdminIds(chatId, {
             trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+            timeoutMs: CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
             ...(deliveryBotId ? { botId: deliveryBotId } : {}),
           })
         ).filter(
@@ -20184,7 +20203,11 @@ export class AdminService implements OnModuleDestroy {
       };
     }
 
-    const channelTitle = await this.resolveChannelTitle(chatId);
+    const channelTitle = await this.resolveChannelTitle(chatId, {
+      sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+      timeoutMs: CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
+      ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+    });
     const actorName = this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
     const baseMessageOptions = await this.buildChannelSuggestionMessageOptions(
@@ -21096,8 +21119,17 @@ export class AdminService implements OnModuleDestroy {
 
     try {
       return botId
-        ? await this.maxClient.uploadImage(imageBuffer, fileName, mimeType, { botId })
-        : await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
+        ? await this.maxClient.uploadImage(imageBuffer, fileName, mimeType, {
+            botId,
+            trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+            timeoutMs: CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
+          })
+        : await this.maxClient.uploadImage(imageBuffer, fileName, mimeType, {
+            trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+            timeoutMs: CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
+          });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -21261,6 +21293,8 @@ export class AdminService implements OnModuleDestroy {
               params.options,
               {
                 trafficClass: 'background',
+                sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+                timeoutMs: CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             )
@@ -21270,6 +21304,8 @@ export class AdminService implements OnModuleDestroy {
               params.options,
               {
                 trafficClass: 'background',
+                sourceTag: MAX_API_SOURCE_TAGS.SUGGESTION_DELIVERY,
+                timeoutMs: CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
                 ...(params.botId ? { botId: params.botId } : {}),
               },
             );
@@ -21393,7 +21429,10 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async resolveChannelTitle(chatId: string): Promise<string> {
+  private async resolveChannelTitle(
+    chatId: string,
+    options: Parameters<MaxClientService['getChatTitle']>[1] = {},
+  ): Promise<string> {
     const local = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: { title: true },
@@ -21402,7 +21441,7 @@ export class AdminService implements OnModuleDestroy {
       return local.title.trim();
     }
 
-    const remote = await this.maxClient.getChatTitle(chatId);
+    const remote = await this.maxClient.getChatTitle(chatId, options);
     if (remote?.trim()) {
       return remote.trim();
     }

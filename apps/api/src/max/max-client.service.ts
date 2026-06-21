@@ -116,6 +116,7 @@ type MaxMessageMarkup = {
 
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
+const MAX_UPLOAD_BINARY_TIMEOUT_MS = 30_000;
 
 class MaxApiRequestRejectedError extends Error {
   readonly response: {
@@ -294,6 +295,7 @@ export const MAX_API_SOURCE_TAGS = {
   MANAGED_BROADCAST: 'managed_broadcast',
   CHANNEL_AUTO_POST: 'channel_auto_post',
   COMMENT_NOTIFICATION: 'comment_notification',
+  SUGGESTION_DELIVERY: 'suggestion_delivery',
   VK_PARSING: 'vk_parsing',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
@@ -1244,6 +1246,7 @@ export class MaxClientService implements OnModuleDestroy {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
+      timeout: requestOptions.timeoutMs ?? MAX_UPLOAD_BINARY_TIMEOUT_MS,
     });
 
     if (!uploadResult || typeof uploadResult !== 'object') {

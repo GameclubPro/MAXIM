@@ -28652,7 +28652,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.webp',
       'image/png',
-      { botId: '777000_bot' },
+      expect.objectContaining({
+        botId: '777000_bot',
+        sourceTag: 'suggestion_delivery',
+        timeoutMs: 12_000,
+        trafficClass: 'background',
+      }),
     );
     expect(result).toMatchObject({
       ok: true,
@@ -29316,7 +29321,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.png',
       'image/png',
-      { botId: '777000_bot' },
+      expect.objectContaining({
+        botId: '777000_bot',
+        sourceTag: 'suggestion_delivery',
+        timeoutMs: 12_000,
+        trafficClass: 'background',
+      }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
@@ -30120,7 +30130,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'entry-bot-suggestion.png',
       'image/png',
-      { botId: '888000_bot' },
+      expect.objectContaining({
+        botId: '888000_bot',
+        sourceTag: 'suggestion_delivery',
+        timeoutMs: 12_000,
+        trafficClass: 'background',
+      }),
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '777001',
@@ -30599,7 +30614,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.png',
       'image/png',
-      { botId: 'channel-bot-2' },
+      expect.objectContaining({
+        botId: 'channel-bot-2',
+        sourceTag: 'suggestion_delivery',
+        timeoutMs: 12_000,
+        trafficClass: 'background',
+      }),
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
