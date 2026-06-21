@@ -925,6 +925,7 @@ export class GlobalSpammerIntelligenceService {
         fastPath: true,
       });
       if (!enqueued) {
+        this.recordSpammerReadModelEvent('denorm_fast_path_fallback');
         return this.recordObservationDenormSync(ledger, { enqueueDenormJob: false });
       }
       return {
@@ -1342,6 +1343,9 @@ export class GlobalSpammerIntelligenceService {
       observationId: params.observationId,
     });
     if (!latest) {
+      if (params.fastPath) {
+        this.recordSpammerReadModelEvent('denorm_fast_path_replay_missing');
+      }
       return;
     }
 
@@ -1366,6 +1370,7 @@ export class GlobalSpammerIntelligenceService {
         score: latest.score,
         activeSuppression: this.buildDenormActiveSuppressionSnapshot(latest),
       });
+      this.recordSpammerReadModelEvent('denorm_fast_path_replayed');
     }
     const [aggregate, activeSuppression] = await Promise.all([
       this.computeAggregateForUser(params.userId, params.now),
@@ -3935,12 +3940,19 @@ export class GlobalSpammerIntelligenceService {
         removeOnComplete: true,
         removeOnFail: 1_000,
       });
+      this.recordSpammerReadModelEvent(
+        params.fastPath === true ? 'denorm_fast_path_enqueued' : 'denorm_job_enqueued',
+      );
       return true;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.toLowerCase().includes('job') && message.toLowerCase().includes('exists')) {
+        this.recordSpammerReadModelEvent(
+          params.fastPath === true ? 'denorm_fast_path_enqueued' : 'denorm_job_enqueued',
+        );
         return true;
       }
+      this.recordSpammerReadModelEvent('denorm_job_enqueue_failed');
       this.logger.warn(
         {
           userId: params.userId,

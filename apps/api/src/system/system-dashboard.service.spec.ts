@@ -664,6 +664,12 @@ describe('SystemDashboardService', () => {
               failure: 0,
             },
             denormJobs: {
+              enqueued: 9,
+              enqueueFailed: 0,
+              fastPathEnqueued: 4,
+              fastPathFallbacks: 0,
+              fastPathReplayed: 4,
+              fastPathReplayMissing: 0,
               processed: 7,
               failed: 0,
               avgAgeMs: 1_200,

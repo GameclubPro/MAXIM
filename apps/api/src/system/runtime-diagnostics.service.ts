@@ -67,6 +67,12 @@ export type SpammerReadModelEvent =
   | 'shadow_mismatched'
   | 'profile_write_success'
   | 'profile_write_failure'
+  | 'denorm_job_enqueued'
+  | 'denorm_job_enqueue_failed'
+  | 'denorm_fast_path_enqueued'
+  | 'denorm_fast_path_fallback'
+  | 'denorm_fast_path_replayed'
+  | 'denorm_fast_path_replay_missing'
   | 'denorm_job_processed'
   | 'denorm_job_failed';
 
@@ -90,6 +96,12 @@ type SpammerReadModelSummary = {
     failure: number;
   };
   denormJobs: {
+    enqueued: number;
+    enqueueFailed: number;
+    fastPathEnqueued: number;
+    fastPathFallbacks: number;
+    fastPathReplayed: number;
+    fastPathReplayMissing: number;
     processed: number;
     failed: number;
     avgAgeMs: number;
@@ -936,6 +948,12 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     const compared = counters.get('shadow_compared') ?? 0;
     const matched = counters.get('shadow_matched') ?? 0;
     const mismatched = counters.get('shadow_mismatched') ?? 0;
+    const enqueued = counters.get('denorm_job_enqueued') ?? 0;
+    const enqueueFailed = counters.get('denorm_job_enqueue_failed') ?? 0;
+    const fastPathEnqueued = counters.get('denorm_fast_path_enqueued') ?? 0;
+    const fastPathFallbacks = counters.get('denorm_fast_path_fallback') ?? 0;
+    const fastPathReplayed = counters.get('denorm_fast_path_replayed') ?? 0;
+    const fastPathReplayMissing = counters.get('denorm_fast_path_replay_missing') ?? 0;
     const processed = counters.get('denorm_job_processed') ?? 0;
     const failed = counters.get('denorm_job_failed') ?? 0;
     const totalReads = hits + misses + stale;
@@ -962,6 +980,12 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         failure: counters.get('profile_write_failure') ?? 0,
       },
       denormJobs: {
+        enqueued,
+        enqueueFailed,
+        fastPathEnqueued,
+        fastPathFallbacks,
+        fastPathReplayed,
+        fastPathReplayMissing,
         processed,
         failed,
         avgAgeMs: totalAgeCount > 0 ? Number((totalAgeMs / totalAgeCount).toFixed(1)) : 0,

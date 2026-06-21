@@ -132,6 +132,24 @@ describe('RuntimeDiagnosticsService', () => {
     await service.recordSpammerReadModelEvent({ event: 'profile_write_success' });
     await service.recordSpammerReadModelEvent({ event: 'profile_write_failure' });
     await service.recordSpammerReadModelEvent({
+      event: 'denorm_job_enqueued',
+    });
+    await service.recordSpammerReadModelEvent({
+      event: 'denorm_job_enqueue_failed',
+    });
+    await service.recordSpammerReadModelEvent({
+      event: 'denorm_fast_path_enqueued',
+    });
+    await service.recordSpammerReadModelEvent({
+      event: 'denorm_fast_path_fallback',
+    });
+    await service.recordSpammerReadModelEvent({
+      event: 'denorm_fast_path_replayed',
+    });
+    await service.recordSpammerReadModelEvent({
+      event: 'denorm_fast_path_replay_missing',
+    });
+    await service.recordSpammerReadModelEvent({
       event: 'denorm_job_processed',
       jobAgeMs: 1_000,
     });
@@ -162,6 +180,12 @@ describe('RuntimeDiagnosticsService', () => {
         failure: 1,
       },
       denormJobs: {
+        enqueued: 1,
+        enqueueFailed: 1,
+        fastPathEnqueued: 1,
+        fastPathFallbacks: 1,
+        fastPathReplayed: 1,
+        fastPathReplayMissing: 1,
         processed: 1,
         failed: 1,
         avgAgeMs: 2_000,
