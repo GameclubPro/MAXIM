@@ -4,6 +4,7 @@ import type {
   SystemCanaryState,
   SystemDashboardAlert,
   SystemDashboardResponse,
+  SystemDashboardSpammerReadModel,
   SystemDashboardWebhookSlo,
   SystemModeSnapshot,
   SystemQueueGroupHealth,
@@ -352,6 +353,77 @@ function parseSystemDashboardProblemChats(value: unknown) {
         lastObservedAt: item.lastObservedAt,
       };
     }),
+  };
+}
+
+function parseSystemDashboardSpammerReadModel(value: unknown): SystemDashboardSpammerReadModel {
+  if (
+    !isRecord(value) ||
+    typeof value.windowSec !== 'number' ||
+    !isRecord(value.profileReads) ||
+    !isRecord(value.shadow) ||
+    !isRecord(value.profileWrites) ||
+    !isRecord(value.denormJobs)
+  ) {
+    throw new Error('Invalid system dashboard spammer read model');
+  }
+
+  const { profileReads, shadow, profileWrites, denormJobs } = value;
+  if (
+    typeof profileReads.hits !== 'number' ||
+    typeof profileReads.misses !== 'number' ||
+    typeof profileReads.stale !== 'number' ||
+    typeof profileReads.fallbacks !== 'number' ||
+    typeof profileReads.hitRate !== 'number' ||
+    typeof shadow.compared !== 'number' ||
+    typeof shadow.matched !== 'number' ||
+    typeof shadow.mismatched !== 'number' ||
+    typeof shadow.mismatchRate !== 'number' ||
+    typeof profileWrites.success !== 'number' ||
+    typeof profileWrites.failure !== 'number' ||
+    typeof denormJobs.processed !== 'number' ||
+    typeof denormJobs.failed !== 'number' ||
+    typeof denormJobs.avgAgeMs !== 'number' ||
+    typeof denormJobs.maxAgeMs !== 'number' ||
+    (denormJobs.lastSuccessAt !== null &&
+      denormJobs.lastSuccessAt !== undefined &&
+      typeof denormJobs.lastSuccessAt !== 'string') ||
+    (denormJobs.lastFailureAt !== null &&
+      denormJobs.lastFailureAt !== undefined &&
+      typeof denormJobs.lastFailureAt !== 'string')
+  ) {
+    throw new Error('Invalid system dashboard spammer read model');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    profileReads: {
+      hits: profileReads.hits,
+      misses: profileReads.misses,
+      stale: profileReads.stale,
+      fallbacks: profileReads.fallbacks,
+      hitRate: profileReads.hitRate,
+    },
+    shadow: {
+      compared: shadow.compared,
+      matched: shadow.matched,
+      mismatched: shadow.mismatched,
+      mismatchRate: shadow.mismatchRate,
+    },
+    profileWrites: {
+      success: profileWrites.success,
+      failure: profileWrites.failure,
+    },
+    denormJobs: {
+      processed: denormJobs.processed,
+      failed: denormJobs.failed,
+      avgAgeMs: denormJobs.avgAgeMs,
+      maxAgeMs: denormJobs.maxAgeMs,
+      lastSuccessAt:
+        typeof denormJobs.lastSuccessAt === 'string' ? denormJobs.lastSuccessAt : null,
+      lastFailureAt:
+        typeof denormJobs.lastFailureAt === 'string' ? denormJobs.lastFailureAt : null,
+    },
   };
 }
 
@@ -1029,6 +1101,9 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       : {}),
     ...(value.problemChats
       ? { problemChats: parseSystemDashboardProblemChats(value.problemChats) }
+      : {}),
+    ...(value.spammerReadModel
+      ? { spammerReadModel: parseSystemDashboardSpammerReadModel(value.spammerReadModel) }
       : {}),
     ...(value.webhookSlo ? { webhookSlo: parseSystemDashboardWebhookSlo(value.webhookSlo) } : {}),
     ...(value.slo ? { slo: parseSystemDashboardWebhookSlo(value.slo) } : {}),

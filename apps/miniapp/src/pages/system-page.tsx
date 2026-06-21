@@ -246,6 +246,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
   const membershipIssues = dashboard.membershipLookup?.issueSample.slice(0, 5) ?? [];
   const slo = dashboard.slo ?? dashboard.webhookSlo;
   const queueGroups = dashboard.queueGroupHealth?.groups.slice(0, 8) ?? [];
+  const spammerReadModel = dashboard.spammerReadModel;
   return (
     <div className="page-stack page-enter">
       <GlassCard className="system-hero" elevated>
@@ -319,6 +320,77 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                 ? 'Ручной режим активен. Верните auto после завершения инцидента.'
                 : 'Auto-mode сам реагирует на lag и MAX critical rate.'}
           </p>
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Spammer read model</h2>
+              <p>Runtime-срез кеша профилей, shadow parity и denorm freshness.</p>
+            </div>
+            <span className="chip">
+              {spammerReadModel ? formatWindow(spammerReadModel.windowSec) : 'n/a'}
+            </span>
+          </div>
+          {spammerReadModel ? (
+            <>
+              <div className="system-runtime-grid">
+                <article className="system-runtime-card">
+                  <span>Profile hit rate</span>
+                  <strong>{formatPercent(spammerReadModel.profileReads.hitRate)}</strong>
+                  <small>
+                    {spammerReadModel.profileReads.hits} hit /{' '}
+                    {spammerReadModel.profileReads.misses} miss /{' '}
+                    {spammerReadModel.profileReads.stale} stale
+                  </small>
+                </article>
+                <article className="system-runtime-card">
+                  <span>Shadow mismatch</span>
+                  <strong>{formatPercent(spammerReadModel.shadow.mismatchRate)}</strong>
+                  <small>
+                    {spammerReadModel.shadow.matched} matched /{' '}
+                    {spammerReadModel.shadow.mismatched} mismatch
+                  </small>
+                </article>
+                <article className="system-runtime-card">
+                  <span>Denorm job age</span>
+                  <strong>{formatMs(spammerReadModel.denormJobs.avgAgeMs)}</strong>
+                  <small>
+                    max {formatMs(spammerReadModel.denormJobs.maxAgeMs)} ·{' '}
+                    {spammerReadModel.denormJobs.processed} ok /{' '}
+                    {spammerReadModel.denormJobs.failed} fail
+                  </small>
+                </article>
+              </div>
+              <div className="system-chip-list">
+                <span className="chip">
+                  fallbacks {spammerReadModel.profileReads.fallbacks}
+                </span>
+                <span
+                  className={
+                    spammerReadModel.profileWrites.failure > 0 ? 'chip chip--warning' : 'chip'
+                  }
+                >
+                  writes {spammerReadModel.profileWrites.success}/
+                  {spammerReadModel.profileWrites.failure}
+                </span>
+                <span
+                  className={
+                    spammerReadModel.denormJobs.failed > 0 ? 'chip chip--warning' : 'chip'
+                  }
+                >
+                  denorm failures {spammerReadModel.denormJobs.failed}
+                </span>
+              </div>
+              <p className="system-panel__hint">
+                {spammerReadModel.denormJobs.lastSuccessAt
+                  ? `Последний denorm ${formatDateTime(spammerReadModel.denormJobs.lastSuccessAt)}`
+                  : 'Denorm jobs ещё не попадали в rolling window.'}
+              </p>
+            </>
+          ) : (
+            <p className="system-panel__hint">Spammer read-model diagnostics пока недоступны.</p>
+          )}
         </GlassCard>
 
         <GlassCard className="system-panel" elevated>

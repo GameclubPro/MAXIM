@@ -644,6 +644,34 @@ describe('SystemDashboardService', () => {
             backoffSample: [],
             issueSample: [],
           },
+          spammerReadModel: {
+            windowSec: 900,
+            profileReads: {
+              hits: 12,
+              misses: 3,
+              stale: 1,
+              fallbacks: 2,
+              hitRate: 0.75,
+            },
+            shadow: {
+              compared: 10,
+              matched: 9,
+              mismatched: 1,
+              mismatchRate: 0.1,
+            },
+            profileWrites: {
+              success: 8,
+              failure: 0,
+            },
+            denormJobs: {
+              processed: 7,
+              failed: 0,
+              avgAgeMs: 1_200,
+              maxAgeMs: 2_400,
+              lastSuccessAt: '2026-03-29T12:00:00.000Z',
+              lastFailureAt: null,
+            },
+          },
         }),
       } as never,
       {
@@ -688,6 +716,14 @@ describe('SystemDashboardService', () => {
       },
       membershipLookup: {
         hotChannels: 1,
+      },
+      spammerReadModel: {
+        profileReads: {
+          hitRate: 0.75,
+        },
+        denormJobs: {
+          avgAgeMs: 1_200,
+        },
       },
     });
   });

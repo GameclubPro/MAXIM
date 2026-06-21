@@ -57,6 +57,48 @@ type ProblemChatSummary = {
   lastObservedAt: string;
 };
 
+export type SpammerReadModelEvent =
+  | 'profile_read_hit'
+  | 'profile_read_miss'
+  | 'profile_read_stale'
+  | 'fallback_after_profile_miss'
+  | 'shadow_compared'
+  | 'shadow_matched'
+  | 'shadow_mismatched'
+  | 'profile_write_success'
+  | 'profile_write_failure'
+  | 'denorm_job_processed'
+  | 'denorm_job_failed';
+
+type SpammerReadModelSummary = {
+  windowSec: number;
+  profileReads: {
+    hits: number;
+    misses: number;
+    stale: number;
+    fallbacks: number;
+    hitRate: number;
+  };
+  shadow: {
+    compared: number;
+    matched: number;
+    mismatched: number;
+    mismatchRate: number;
+  };
+  profileWrites: {
+    success: number;
+    failure: number;
+  };
+  denormJobs: {
+    processed: number;
+    failed: number;
+    avgAgeMs: number;
+    maxAgeMs: number;
+    lastSuccessAt: string | null;
+    lastFailureAt: string | null;
+  };
+};
+
 export type RuntimeDiagnosticsDashboardSnapshot = {
   burst: {
     active: boolean;
@@ -89,6 +131,7 @@ export type RuntimeDiagnosticsDashboardSnapshot = {
     windowSec: number;
     items: ProblemChatSummary[];
   };
+  spammerReadModel: SpammerReadModelSummary;
 };
 
 const HOT_PATH_BUCKET_PREFIX = 'runtime:diag:hot-path:v1';
@@ -102,6 +145,7 @@ const MEMBERSHIP_BACKOFF_PREFIX = 'runtime:diag:membership:backoff:v1';
 const MEMBERSHIP_ISSUE_PREFIX = 'runtime:diag:membership:issue:v1';
 const PROBLEM_CHAT_COUNT_BUCKET_PREFIX = 'runtime:diag:problem-chat:count:v1';
 const PROBLEM_CHAT_LAST_BUCKET_PREFIX = 'runtime:diag:problem-chat:last:v1';
+const SPAMMER_READ_MODEL_BUCKET_PREFIX = 'runtime:diag:spammer-read-model:v1';
 const BURST_STATE_KEY = 'runtime:diag:burst-state:v1';
 
 const BUCKET_SPAN_SEC = 60;
@@ -111,6 +155,7 @@ const DEFAULT_HOT_CHAT_WINDOW_SEC = 30 * 60;
 const DEFAULT_BACKGROUND_REASON_WINDOW_SEC = 15 * 60;
 const DEFAULT_MEMBERSHIP_WINDOW_SEC = 15 * 60;
 const DEFAULT_PROBLEM_CHAT_WINDOW_SEC = 60 * 60;
+const DEFAULT_SPAMMER_READ_MODEL_WINDOW_SEC = 15 * 60;
 const DEFAULT_BURST_LAG_THRESHOLD_SEC = 2;
 const DEFAULT_REDIS_SCAN_COUNT = 250;
 const PROBLEM_CHAT_REASON_MAX_LENGTH = 180;
@@ -124,6 +169,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
   private readonly backgroundReasonWindowSec: number;
   private readonly membershipWindowSec: number;
   private readonly problemChatWindowSec: number;
+  private readonly spammerReadModelWindowSec: number;
   private readonly burstLagThresholdSec: number;
   private readonly redisScanCount: number;
 
@@ -148,6 +194,10 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     this.problemChatWindowSec = this.readPositiveInt(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_PROBLEM_CHAT_WINDOW_SEC'),
       DEFAULT_PROBLEM_CHAT_WINDOW_SEC,
+    );
+    this.spammerReadModelWindowSec = this.readPositiveInt(
+      configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_SPAMMER_READ_MODEL_WINDOW_SEC'),
+      DEFAULT_SPAMMER_READ_MODEL_WINDOW_SEC,
     );
     this.burstLagThresholdSec = this.readPositiveNumber(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_BURST_LAG_SEC'),
@@ -419,14 +469,57 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     );
   }
 
+  async recordSpammerReadModelEvent(params: {
+    event: SpammerReadModelEvent;
+    jobAgeMs?: number | null;
+  }): Promise<void> {
+    await this.recordSpammerReadModelEvents({
+      events: [params.event],
+      jobAgeMs: params.jobAgeMs,
+    });
+  }
+
+  async recordSpammerReadModelEvents(params: {
+    events: readonly SpammerReadModelEvent[];
+    jobAgeMs?: number | null;
+  }): Promise<void> {
+    if (params.events.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const bucketKey = this.buildBucketKey(SPAMMER_READ_MODEL_BUCKET_PREFIX, now);
+    const ttlSec = this.resolveBucketTtlSec(this.spammerReadModelWindowSec);
+    const pipeline = this.redis.pipeline();
+    params.events.forEach((event) => {
+      pipeline.hincrby(bucketKey, event, 1);
+      pipeline.hset(bucketKey, `${event}|lastObservedAtMs`, String(now));
+    });
+    if (typeof params.jobAgeMs === 'number' && Number.isFinite(params.jobAgeMs)) {
+      const ageMs = Math.max(0, Math.trunc(params.jobAgeMs));
+      pipeline.hincrby(bucketKey, 'denorm_job_age_total_ms', ageMs);
+      pipeline.hincrby(bucketKey, 'denorm_job_age_count', 1);
+      const existingMaxAge = this.parseNonNegativeInt(
+        await this.redis.hget(bucketKey, 'denorm_job_age_max_ms'),
+      );
+      if (ageMs >= existingMaxAge) {
+        pipeline.hset(bucketKey, 'denorm_job_age_max_ms', String(ageMs));
+      }
+    }
+    pipeline.expire(bucketKey, ttlSec);
+    await this.execPipeline(pipeline, 'recordSpammerReadModelEvents');
+  }
+
   async getDashboardSnapshot(): Promise<RuntimeDiagnosticsDashboardSnapshot> {
-    const [burst, hotPath, hotChats, membershipLookup, problemChats] = await Promise.all([
-      this.getBurstSnapshot(),
-      this.getHotPathSummary(),
-      this.getHotChatsSummary(),
-      this.getMembershipLookupSummary(),
-      this.getProblemChatsSummary(),
-    ]);
+    const [burst, hotPath, hotChats, membershipLookup, problemChats, spammerReadModel] =
+      await Promise.all([
+        this.getBurstSnapshot(),
+        this.getHotPathSummary(),
+        this.getHotChatsSummary(),
+        this.getMembershipLookupSummary(),
+        this.getProblemChatsSummary(),
+        this.getSpammerReadModelSummary(),
+      ]);
 
     return {
       burst,
@@ -434,6 +527,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       hotChats,
       membershipLookup,
       problemChats,
+      spammerReadModel,
     };
   }
 
@@ -797,6 +891,84 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     return {
       windowSec: this.problemChatWindowSec,
       items,
+    };
+  }
+
+  private async getSpammerReadModelSummary(): Promise<
+    RuntimeDiagnosticsDashboardSnapshot['spammerReadModel']
+  > {
+    const hashes = await this.readHashes(
+      this.buildWindowBucketKeys(
+        SPAMMER_READ_MODEL_BUCKET_PREFIX,
+        this.spammerReadModelWindowSec,
+      ),
+    );
+    const counters = new Map<string, number>();
+    let lastSuccessAtMs = 0;
+    let lastFailureAtMs = 0;
+
+    for (const hash of hashes) {
+      for (const [field, rawValue] of Object.entries(hash)) {
+        const value = this.parseNonNegativeInt(rawValue);
+        if (field === 'denorm_job_processed|lastObservedAtMs') {
+          lastSuccessAtMs = Math.max(lastSuccessAtMs, value);
+          continue;
+        }
+        if (field === 'denorm_job_failed|lastObservedAtMs') {
+          lastFailureAtMs = Math.max(lastFailureAtMs, value);
+          continue;
+        }
+        if (field.includes('|lastObservedAtMs')) {
+          continue;
+        }
+        if (field === 'denorm_job_age_max_ms') {
+          counters.set(field, Math.max(counters.get(field) ?? 0, value));
+          continue;
+        }
+        counters.set(field, (counters.get(field) ?? 0) + value);
+      }
+    }
+
+    const hits = counters.get('profile_read_hit') ?? 0;
+    const misses = counters.get('profile_read_miss') ?? 0;
+    const stale = counters.get('profile_read_stale') ?? 0;
+    const fallbacks = counters.get('fallback_after_profile_miss') ?? 0;
+    const compared = counters.get('shadow_compared') ?? 0;
+    const matched = counters.get('shadow_matched') ?? 0;
+    const mismatched = counters.get('shadow_mismatched') ?? 0;
+    const processed = counters.get('denorm_job_processed') ?? 0;
+    const failed = counters.get('denorm_job_failed') ?? 0;
+    const totalReads = hits + misses + stale;
+    const totalAgeMs = counters.get('denorm_job_age_total_ms') ?? 0;
+    const totalAgeCount = counters.get('denorm_job_age_count') ?? 0;
+
+    return {
+      windowSec: this.spammerReadModelWindowSec,
+      profileReads: {
+        hits,
+        misses,
+        stale,
+        fallbacks,
+        hitRate: totalReads > 0 ? Number((hits / totalReads).toFixed(4)) : 0,
+      },
+      shadow: {
+        compared,
+        matched,
+        mismatched,
+        mismatchRate: compared > 0 ? Number((mismatched / compared).toFixed(4)) : 0,
+      },
+      profileWrites: {
+        success: counters.get('profile_write_success') ?? 0,
+        failure: counters.get('profile_write_failure') ?? 0,
+      },
+      denormJobs: {
+        processed,
+        failed,
+        avgAgeMs: totalAgeCount > 0 ? Number((totalAgeMs / totalAgeCount).toFixed(1)) : 0,
+        maxAgeMs: counters.get('denorm_job_age_max_ms') ?? 0,
+        lastSuccessAt: lastSuccessAtMs > 0 ? new Date(lastSuccessAtMs).toISOString() : null,
+        lastFailureAt: lastFailureAtMs > 0 ? new Date(lastFailureAtMs).toISOString() : null,
+      },
     };
   }
 

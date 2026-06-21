@@ -12,6 +12,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { type RuleViolation } from './rule-engine.contract';
 import { maskText } from './text-mask.util';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import {
+  RuntimeDiagnosticsService,
+  type SpammerReadModelEvent,
+} from '../system/runtime-diagnostics.service';
 import { RedisCounterService } from './redis-counter.service';
 import {
   buildGlobalSpammerDenormDeduplicationId,
@@ -588,6 +592,7 @@ export class GlobalSpammerIntelligenceService {
     @Optional()
     @InjectQueue(GLOBAL_SPAMMER_DENORM_QUEUE)
     private readonly observationDenormQueue?: Queue<GlobalSpammerDenormJob>,
+    @Optional() private readonly runtimeDiagnostics?: RuntimeDiagnosticsService,
   ) {
     this.defaultEnforcementMode = this.resolveDefaultEnforcementMode(configService);
     this.runtimeProfileCacheEnabled = this.readBooleanConfig(
@@ -1211,57 +1216,67 @@ export class GlobalSpammerIntelligenceService {
     }
 
     const startedAtMs = Date.now();
-    await this.invalidateRuntimeProfileCaches(userId);
-    const now = new Date();
-    const chatId = this.normalizeText(job.chatId ?? null) || null;
-    const jobSource = this.normalizeObservationSource(job.source);
-    if (jobSource && this.shouldProcessObservationFastDenormJob(jobSource)) {
-      await this.recomputeObservationDenormForUser({
-        userId,
+    try {
+      await this.invalidateRuntimeProfileCaches(userId);
+      const now = new Date();
+      const chatId = this.normalizeText(job.chatId ?? null) || null;
+      const jobSource = this.normalizeObservationSource(job.source);
+      if (jobSource && this.shouldProcessObservationFastDenormJob(jobSource)) {
+        await this.recomputeObservationDenormForUser({
+          userId,
+          chatId,
+          source: jobSource,
+          reason: this.normalizeText(job.reason ?? null),
+          now,
+        });
+      }
+      const [registry, candidate, activeSuppression, riskContext] = await Promise.all([
+        this.prisma.globalSpammer.findUnique({ where: { userId } }),
+        this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
+        this.findActiveSuppression(userId, now),
+        this.buildPolicyDecisionRiskContext(userId),
+      ]);
+      const decision = await this.evaluatePolicy({
         chatId,
-        source: jobSource,
-        reason: this.normalizeText(job.reason ?? null),
-        now,
+        userId,
+        trigger: 'runtime-profile:observation-denorm-job',
+        deleteSpammersEnabled: true,
+        enforcementMode: 'enforce',
+        recordDecision: false,
+        riskContext,
+        skipRuntimeProfileWrite: true,
+        lookupContext: {
+          now,
+          registry,
+          candidate,
+          activeSuppression,
+        },
       });
-    }
-    const [registry, candidate, activeSuppression, riskContext] = await Promise.all([
-      this.prisma.globalSpammer.findUnique({ where: { userId } }),
-      this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
-      this.findActiveSuppression(userId, now),
-      this.buildPolicyDecisionRiskContext(userId),
-    ]);
-    const decision = await this.evaluatePolicy({
-      chatId,
-      userId,
-      trigger: 'runtime-profile:observation-denorm-job',
-      deleteSpammersEnabled: true,
-      enforcementMode: 'enforce',
-      recordDecision: false,
-      riskContext,
-      skipRuntimeProfileWrite: true,
-      lookupContext: {
-        now,
+      await this.writeRuntimeProfileFromDecision({
+        decision,
+        activeSuppression,
         registry,
         candidate,
-        activeSuppression,
-      },
-    });
-    await this.writeRuntimeProfileFromDecision({
-      decision,
-      activeSuppression,
-      registry,
-      candidate,
-      now,
-      source: 'observation-denorm-job',
-      lookupContextProvided: true,
-    });
-    this.logSpammerIntelligenceTiming('processObservationDenormJob', {
-      userId,
-      chatId: job.chatId ?? null,
-      source: job.source,
-      observationId: job.observationId ?? null,
-      totalMs: Date.now() - startedAtMs,
-    });
+        now,
+        source: 'observation-denorm-job',
+        lookupContextProvided: true,
+      });
+      this.recordSpammerReadModelEvent('denorm_job_processed', {
+        jobAgeMs: this.resolveDenormJobAgeMs(job),
+      });
+      this.logSpammerIntelligenceTiming('processObservationDenormJob', {
+        userId,
+        chatId: job.chatId ?? null,
+        source: job.source,
+        observationId: job.observationId ?? null,
+        totalMs: Date.now() - startedAtMs,
+      });
+    } catch (error: unknown) {
+      this.recordSpammerReadModelEvent('denorm_job_failed', {
+        jobAgeMs: this.resolveDenormJobAgeMs(job),
+      });
+      throw error;
+    }
   }
 
   private async recomputeObservationDenormForUser(params: {
@@ -3027,6 +3042,7 @@ export class GlobalSpammerIntelligenceService {
 
     const decision = await this.buildPolicyDecisionFromRuntimeProfile(params);
     if (!decision) {
+      this.recordSpammerReadModelEvent('fallback_after_profile_miss');
       return null;
     }
 
@@ -3159,9 +3175,11 @@ export class GlobalSpammerIntelligenceService {
     };
 
     if (matched) {
+      this.recordSpammerReadModelEvents(['shadow_compared', 'shadow_matched']);
       this.logger.debug(payload);
       return;
     }
+    this.recordSpammerReadModelEvents(['shadow_compared', 'shadow_mismatched']);
     this.logger.warn(payload);
   }
 
@@ -3199,13 +3217,21 @@ export class GlobalSpammerIntelligenceService {
   ): Promise<RuntimeProfileSnapshot | null> {
     const cached = this.readRuntimeProfileFromL1(userId);
     if (cached !== undefined) {
-      return this.isFreshRuntimeProfileSnapshot(cached, now) ? cached : null;
+      const fresh = this.isFreshRuntimeProfileSnapshot(cached, now);
+      this.recordSpammerReadModelEvent(
+        fresh ? 'profile_read_hit' : cached ? 'profile_read_stale' : 'profile_read_miss',
+      );
+      return fresh ? cached : null;
     }
 
     const redisSnapshot = await this.readRuntimeProfileFromRedis(userId);
     if (redisSnapshot !== undefined) {
       this.writeRuntimeProfileToL1(userId, redisSnapshot);
-      return this.isFreshRuntimeProfileSnapshot(redisSnapshot, now) ? redisSnapshot : null;
+      const fresh = this.isFreshRuntimeProfileSnapshot(redisSnapshot, now);
+      this.recordSpammerReadModelEvent(
+        fresh ? 'profile_read_hit' : redisSnapshot ? 'profile_read_stale' : 'profile_read_miss',
+      );
+      return fresh ? redisSnapshot : null;
     }
 
     const row = await this.prisma.globalSpammerRuntimeProfile.findUnique({
@@ -3215,7 +3241,11 @@ export class GlobalSpammerIntelligenceService {
     });
     const snapshot = row ? this.runtimeProfileRowToSnapshot(row) : null;
     await this.writeRuntimeProfileToCaches(userId, snapshot);
-    return this.isFreshRuntimeProfileSnapshot(snapshot, now) ? snapshot : null;
+    const fresh = this.isFreshRuntimeProfileSnapshot(snapshot, now);
+    this.recordSpammerReadModelEvent(
+      fresh ? 'profile_read_hit' : snapshot ? 'profile_read_stale' : 'profile_read_miss',
+    );
+    return fresh ? snapshot : null;
   }
 
   private readRuntimeProfileFromL1(userId: string): RuntimeProfileSnapshot | null | undefined {
@@ -3316,6 +3346,41 @@ export class GlobalSpammerIntelligenceService {
 
   private buildRuntimeProfileCacheKey(userId: string): string {
     return `spammer:profile:v2:${userId}`;
+  }
+
+  private recordSpammerReadModelEvent(
+    event: SpammerReadModelEvent,
+    params: { jobAgeMs?: number | null } = {},
+  ): void {
+    this.recordSpammerReadModelEvents([event], params);
+  }
+
+  private recordSpammerReadModelEvents(
+    events: readonly SpammerReadModelEvent[],
+    params: { jobAgeMs?: number | null } = {},
+  ): void {
+    void this.runtimeDiagnostics
+      ?.recordSpammerReadModelEvents({
+        events,
+        jobAgeMs: params.jobAgeMs,
+      })
+      .catch((error: unknown) => {
+        this.logger.debug(
+          {
+            events,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to record spammer read model diagnostics',
+        );
+      });
+  }
+
+  private resolveDenormJobAgeMs(job: GlobalSpammerDenormJob): number | null {
+    const createdAtMs = this.readTimestampMs(job.createdAt);
+    if (createdAtMs <= 0) {
+      return null;
+    }
+    return Math.max(0, Date.now() - createdAtMs);
   }
 
   private isFreshRuntimeProfileSnapshot(
@@ -3468,41 +3533,47 @@ export class GlobalSpammerIntelligenceService {
   }): Promise<void> {
     const snapshot = this.buildRuntimeProfileSnapshotFromDecision(params);
     const staleAfter = snapshot.staleAfter ? new Date(snapshot.staleAfter) : null;
-    await this.prisma.globalSpammerRuntimeProfile.upsert({
-      where: {
-        userId: snapshot.userId,
-      },
-      create: {
-        userId: snapshot.userId,
-        registryStatus: snapshot.registryStatus,
-        action: snapshot.action,
-        confidenceScore: snapshot.confidenceScore,
-        shadowScore: snapshot.shadowScore,
-        policyBand: snapshot.policyBand,
-        reason: snapshot.reason,
-        expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
-        suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
-        sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
-        campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
-        sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
-        staleAfter,
-      },
-      update: {
-        registryStatus: snapshot.registryStatus,
-        action: snapshot.action,
-        confidenceScore: snapshot.confidenceScore,
-        shadowScore: snapshot.shadowScore,
-        policyBand: snapshot.policyBand,
-        reason: snapshot.reason,
-        expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
-        suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
-        sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
-        campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
-        sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
-        staleAfter,
-      },
-    });
-    await this.writeRuntimeProfileToCaches(snapshot.userId, snapshot);
+    try {
+      await this.prisma.globalSpammerRuntimeProfile.upsert({
+        where: {
+          userId: snapshot.userId,
+        },
+        create: {
+          userId: snapshot.userId,
+          registryStatus: snapshot.registryStatus,
+          action: snapshot.action,
+          confidenceScore: snapshot.confidenceScore,
+          shadowScore: snapshot.shadowScore,
+          policyBand: snapshot.policyBand,
+          reason: snapshot.reason,
+          expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
+          suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
+          sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
+          campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
+          sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
+          staleAfter,
+        },
+        update: {
+          registryStatus: snapshot.registryStatus,
+          action: snapshot.action,
+          confidenceScore: snapshot.confidenceScore,
+          shadowScore: snapshot.shadowScore,
+          policyBand: snapshot.policyBand,
+          reason: snapshot.reason,
+          expiresAt: snapshot.expiresAt ? new Date(snapshot.expiresAt) : null,
+          suppressedUntil: snapshot.suppressedUntil ? new Date(snapshot.suppressedUntil) : null,
+          sourceBreakdown: snapshot.sourceBreakdown ?? Prisma.JsonNull,
+          campaignBreakdown: snapshot.campaignBreakdown ?? Prisma.JsonNull,
+          sourceVersion: RUNTIME_PROFILE_SOURCE_VERSION,
+          staleAfter,
+        },
+      });
+      await this.writeRuntimeProfileToCaches(snapshot.userId, snapshot);
+      this.recordSpammerReadModelEvent('profile_write_success');
+    } catch (error: unknown) {
+      this.recordSpammerReadModelEvent('profile_write_failure');
+      throw error;
+    }
   }
 
   private async scheduleRuntimeProfileRefresh(

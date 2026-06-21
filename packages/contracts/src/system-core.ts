@@ -399,6 +399,38 @@ export const systemDashboardProblemChatsSchema = z.object({
 });
 export type SystemDashboardProblemChats = z.infer<typeof systemDashboardProblemChatsSchema>;
 
+export const systemDashboardSpammerReadModelSchema = z.object({
+  windowSec: z.number().int().positive(),
+  profileReads: z.object({
+    hits: z.number().int().min(0),
+    misses: z.number().int().min(0),
+    stale: z.number().int().min(0),
+    fallbacks: z.number().int().min(0),
+    hitRate: z.number().min(0).max(1),
+  }),
+  shadow: z.object({
+    compared: z.number().int().min(0),
+    matched: z.number().int().min(0),
+    mismatched: z.number().int().min(0),
+    mismatchRate: z.number().min(0).max(1),
+  }),
+  profileWrites: z.object({
+    success: z.number().int().min(0),
+    failure: z.number().int().min(0),
+  }),
+  denormJobs: z.object({
+    processed: z.number().int().min(0),
+    failed: z.number().int().min(0),
+    avgAgeMs: z.number().min(0),
+    maxAgeMs: z.number().int().min(0),
+    lastSuccessAt: z.string().datetime().nullable(),
+    lastFailureAt: z.string().datetime().nullable(),
+  }),
+});
+export type SystemDashboardSpammerReadModel = z.infer<
+  typeof systemDashboardSpammerReadModelSchema
+>;
+
 export const systemDashboardWebhookSloStatusSchema = z.enum(['healthy', 'warning', 'critical']);
 export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebhookSloStatusSchema>;
 
@@ -557,6 +589,7 @@ export const systemDashboardResponseSchema = z.object({
   backgroundBudget: systemDashboardBackgroundBudgetSchema.optional(),
   membershipLookup: systemDashboardMembershipLookupSchema.optional(),
   problemChats: systemDashboardProblemChatsSchema.optional(),
+  spammerReadModel: systemDashboardSpammerReadModelSchema.optional(),
   webhookSlo: systemDashboardWebhookSloSchema.optional(),
   slo: systemDashboardWebhookSloSchema.optional(),
   runtimeProfile: systemRuntimeProfileSchema.optional(),
