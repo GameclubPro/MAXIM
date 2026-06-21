@@ -271,7 +271,6 @@ import {
   isMaxApiThrottleError,
   isMaxApiTimeoutError,
   isPrivateDialogChatUnavailableError,
-  isPrivateDirectChat,
   isPrismaKnownError,
   isUnsupportedManagedChat,
   mapWithConcurrencyLimit,
@@ -3529,7 +3528,17 @@ export class AdminService implements OnModuleDestroy {
       accessDiagnostics: {
         state: 'ok',
         lastDetectedAt: null,
+        lastCheckedAt: null,
+        freshUntil: null,
+        source: 'unknown',
+        activeBotCount: assignedBots.length,
         lostBots: [],
+      },
+      viewerAccess: {
+        state: 'checking',
+        reason: null,
+        checkedAt: null,
+        canEdit: false,
       },
     };
   }
@@ -5393,6 +5402,7 @@ export class AdminService implements OnModuleDestroy {
       revalidateCachedChats?: boolean;
       resetRefreshCursor?: boolean;
       throwOnFailure?: boolean;
+      allowRemoteListBotChats?: boolean;
     },
   ): Promise<ManagedEntitiesListResult> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
@@ -5427,6 +5437,7 @@ export class AdminService implements OnModuleDestroy {
           revalidateCachedChats: options.revalidateCachedChats === true,
           resetRefreshCursor: options.resetRefreshCursor === true,
           throwOnFailure: options.throwOnFailure === true,
+          allowRemoteListBotChats: options.allowRemoteListBotChats === true,
         });
 
       if (!inFlight) {
@@ -5464,6 +5475,7 @@ export class AdminService implements OnModuleDestroy {
       revalidateCachedChats?: boolean;
       resetRefreshCursor?: boolean;
       throwOnFailure?: boolean;
+      allowRemoteListBotChats?: boolean;
     },
   ): Promise<ManagedEntitiesListResult> {
     try {
@@ -5517,6 +5529,7 @@ export class AdminService implements OnModuleDestroy {
             trafficClass: discoveryTrafficClass,
             bypassCache: options.bypassRemoteCache === true,
             timeoutMs: snapshotTimeoutMs,
+            allowRemoteListBotChats: options.allowRemoteListBotChats === true,
           });
           const priorityCandidates = await this.loadManagedEntitiesDeltaPrioritySnapshot(
             user,
@@ -5541,6 +5554,7 @@ export class AdminService implements OnModuleDestroy {
           trafficClass: discoveryTrafficClass,
           bypassCache: options.bypassRemoteCache === true,
           timeoutMs: snapshotTimeoutMs,
+          allowRemoteListBotChats: options.allowRemoteListBotChats === true,
         });
         const priorityCandidates = await this.loadManagedEntitiesDeltaPrioritySnapshot(
           user,
@@ -5889,10 +5903,30 @@ export class AdminService implements OnModuleDestroy {
       trafficClass: 'critical' | 'interactive' | 'background';
       bypassCache?: boolean;
       timeoutMs?: number;
+      allowRemoteListBotChats?: boolean;
     },
   ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    if (options.allowRemoteListBotChats !== true) {
+      const localChats = await this.loadManagedBotChatCatalogSnapshot(null);
+      const candidateChats =
+        entityType === 'all'
+          ? localChats
+          : localChats.filter((chat) => chat.entityType === entityType);
+      const supportedChats = candidateChats.filter(
+        (chat) => !isUnsupportedManagedChat(chat.chatId, chat.entityType),
+      );
+      this.scheduleManagedEntitiesDiscoveryHeaderPrime(supportedChats, `local:${entityType}`);
+      this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
+      return supportedChats;
+    }
+
     if (typeof this.maxClient.listBotChats !== 'function') {
-      return [];
+      const localChats = await this.loadManagedBotChatCatalogSnapshot(null);
+      const candidateChats =
+        entityType === 'all'
+          ? localChats
+          : localChats.filter((chat) => chat.entityType === entityType);
+      return candidateChats.filter((chat) => !isUnsupportedManagedChat(chat.chatId, chat.entityType));
     }
 
     const discoveryBots = this.maxBotRegistry?.getDiscoveryBots() ?? [];
@@ -8990,34 +9024,6 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Укажите корректную ссылку чата или канала MAX.');
     }
 
-    try {
-      const discoveryAttempts: Array<{ bypassCache?: boolean }> = [{}, { bypassCache: true }];
-      for (const attempt of discoveryAttempts) {
-        const chats = await this.loadManagedEntitiesDiscoverySnapshot('all', {
-          trafficClass: 'interactive',
-          ...(attempt.bypassCache === true ? { bypassCache: true } : {}),
-        });
-        const matched = chats.find(
-          (chat) => this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
-        );
-
-        if (matched?.chatId) {
-          return matched;
-        }
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          link: normalizedLink,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve required subscription entity by public link',
-      );
-      throw new ServiceUnavailableException(
-        'Не удалось проверить публичную ссылку чата или канала в MAX. Повторите попытку.',
-      );
-    }
-
     let locallyKnownChannel: MaxBotChat | null = null;
     try {
       locallyKnownChannel = await resolveRequiredSubscriptionChannelByKnownLink({
@@ -9043,9 +9049,73 @@ export class AdminService implements OnModuleDestroy {
       return locallyKnownChannel;
     }
 
+    const channelLink = this.extractRequiredSubscriptionPublicChannelLink(normalizedLink);
+    if (channelLink && typeof this.maxClient.getChannelSnapshotByLink === 'function') {
+      try {
+        const snapshot = await this.maxClient.getChannelSnapshotByLink(channelLink, {
+          trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+        });
+        return {
+          chatId: snapshot.chatId,
+          title: snapshot.title,
+          entityType: snapshot.entityType,
+          link: snapshot.link ?? normalizedLink,
+          avatarUrl: snapshot.avatarUrl,
+          lastEventTime: snapshot.lastEventAt ? Date.parse(snapshot.lastEventAt) : null,
+        };
+      } catch (error: unknown) {
+        if (isBotAdminLookupDeniedError(error)) {
+          throw new BadRequestException(
+            'Чат или канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит там администратором.',
+          );
+        }
+        this.logger.warn(
+          {
+            link: normalizedLink,
+            channelLink,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve required subscription channel by targeted public link lookup',
+        );
+        throw new ServiceUnavailableException(
+          'Не удалось проверить публичную ссылку канала MAX. Повторите попытку.',
+        );
+      }
+    }
+
     throw new BadRequestException(
       'Чат или канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит там администратором.',
     );
+  }
+
+  private extractRequiredSubscriptionPublicChannelLink(normalizedLink: string): string | null {
+    try {
+      const parsed = new URL(normalizedLink);
+      const hostname = parsed.hostname.trim().toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return null;
+      }
+
+      const pathSegments = parsed.pathname
+        .split('/')
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+      if (pathSegments.length !== 1) {
+        return null;
+      }
+
+      const slug = pathSegments[0];
+      const reservedSegments = new Set(['chat', 'chats', 'c', 'join']);
+      if (reservedSegments.has(slug.toLowerCase())) {
+        return null;
+      }
+
+      return slug;
+    } catch {
+      return null;
+    }
   }
 
   private async resolveRequiredSubscriptionChannelById(
@@ -16577,12 +16647,6 @@ export class AdminService implements OnModuleDestroy {
 
       for (const row of sorted) {
         const seededFromPublication = previousViews === null && row.publishedAt >= last48hFrom;
-        const viewsDelta =
-          previousViews === null
-            ? seededFromPublication
-              ? row.views
-              : 0
-            : Math.max(0, row.views - previousViews);
         const reactionsDelta =
           previousReactions === null
             ? seededFromPublication

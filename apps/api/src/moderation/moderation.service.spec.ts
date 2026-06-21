@@ -4723,6 +4723,16 @@ describe('ModerationService', () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: '-70000000000001',
+            title: 'Тестовый чат 1',
+          },
+          {
+            id: '-70000000000002',
+            title: 'Тестовый чат 2',
+          },
+        ]),
       },
       violation: {
         create: jest.fn(),
@@ -4774,6 +4784,16 @@ describe('ModerationService', () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: '-70000000000001',
+            title: 'Тестовый чат 1',
+          },
+          {
+            id: '-70000000000002',
+            title: 'Тестовый чат 2',
+          },
+        ]),
       },
       violation: {
         create: jest.fn(),
@@ -5324,6 +5344,16 @@ describe('ModerationService', () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: '-70000000000001',
+            title: 'Тестовый чат 1',
+          },
+          {
+            id: '-70000000000002',
+            title: 'Тестовый чат 2',
+          },
+        ]),
       },
       violation: {
         create: jest.fn(),
@@ -5350,18 +5380,7 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
       answerCallback: jest.fn(),
-      listBotChats: jest.fn().mockResolvedValue([
-        {
-          chatId: '-70000000000001',
-          title: 'Тестовый чат 1',
-          lastEventTime: null,
-        },
-        {
-          chatId: '-70000000000002',
-          title: 'Тестовый чат 2',
-          lastEventTime: null,
-        },
-      ]),
+      listBotChats: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -5381,7 +5400,21 @@ describe('ModerationService', () => {
         ignoreFailureMetricStatuses: [400, 404],
       },
     );
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(prisma.chat.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          catalogKind: 'MANAGED',
+          entityType: 'CHAT',
+          id: { startsWith: '-' },
+          botMemberships: {
+            some: {
+              status: 'ACTIVE',
+            },
+          },
+        }),
+      }),
+    );
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
       expect.stringContaining('Чаты с ботом: 2'),
@@ -17044,21 +17077,23 @@ describe('ModerationService', () => {
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
-      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
-        id: 'channel-1',
-        title: 'Новости MAX',
-        entityType: 'channel',
-        link: 'https://max.ru/channels/news-max',
-        participantsCount: 100,
-        primaryBotId: null,
-        assignedBots: [],
-        sharedMode: 'owned',
-        accessDiagnostics: {
-          state: 'ok',
-          lastDetectedAt: null,
-          lostBots: [],
-        },
-      });
+      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+          accessDiagnostics: expect.objectContaining({
+            state: 'ok',
+            lastDetectedAt: null,
+            lostBots: [],
+          }),
+        }),
+      );
       expect(channels).toEqual([
         {
           id: 'channel-1',
@@ -17133,21 +17168,23 @@ describe('ModerationService', () => {
         sourceTag: 'required_subscription_metadata',
         botId: 'id613002203036_bot',
       });
-      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
-        id: 'channel-1',
-        title: 'Новости MAX',
-        entityType: 'channel',
-        link: 'https://max.ru/channels/news-max',
-        participantsCount: 100,
-        primaryBotId: 'id613002203036_bot',
-        assignedBots: [],
-        sharedMode: 'owned',
-        accessDiagnostics: {
-          state: 'ok',
-          lastDetectedAt: null,
-          lostBots: [],
-        },
-      });
+      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          primaryBotId: 'id613002203036_bot',
+          assignedBots: [],
+          sharedMode: 'owned',
+          accessDiagnostics: expect.objectContaining({
+            state: 'ok',
+            lastDetectedAt: null,
+            lostBots: [],
+          }),
+        }),
+      );
       expect(channels).toEqual([
         {
           id: 'channel-1',

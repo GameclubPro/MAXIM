@@ -17,6 +17,7 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
+import { buildBotAccessSnapshotPersistence } from '../max/bot-access-snapshot.util';
 import {
   ManagedEntityHandshakeService,
   MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
@@ -27,6 +28,18 @@ import { PrismaService } from '../prisma/prisma.service';
 type WebhookIngestResult = {
   accepted: boolean;
   duplicate: boolean;
+};
+
+type ExecutionOwnerFailoverRecheckParams = {
+  update: MaxUpdate;
+  chatId: string;
+  incomingBotId: string | null;
+  currentOwnerBotId: string | null;
+};
+
+type ChatBotBindingSyncResult = {
+  executionOwnerBotId: string | null;
+  pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null;
 };
 
 type BotSelfAccessCacheEntry = {
@@ -109,8 +122,8 @@ export class WebhookService {
       'membership cache invalidation',
       update,
     );
-    const executionOwnerBotId = await this.syncChatBotBindingFromWebhook(update);
-    this.attachExecutionOwnerBotId(update, executionOwnerBotId);
+    const bindingSync = await this.syncChatBotBindingFromWebhook(update);
+    this.attachExecutionOwnerBotId(update, bindingSync.executionOwnerBotId);
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
@@ -118,6 +131,7 @@ export class WebhookService {
     try {
       await this.persistEvent(update, sourceIp, rawPayload);
       await this.stageManagedEntityPendingBootstrap(update);
+      this.schedulePendingExecutionOwnerFailoverRecheck(bindingSync.pendingExecutionOwnerRecheck);
       this.deferBotAddedStartHint(update);
       this.deferManagedEntityHandshake(update);
 
@@ -135,6 +149,9 @@ export class WebhookService {
         try {
           await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
           await this.stageManagedEntityPendingBootstrap(sanitizedUpdate);
+          this.schedulePendingExecutionOwnerFailoverRecheck(
+            bindingSync.pendingExecutionOwnerRecheck,
+          );
           this.deferBotAddedStartHint(sanitizedUpdate);
           this.deferManagedEntityHandshake(sanitizedUpdate);
           this.logger.warn(
@@ -477,14 +494,15 @@ export class WebhookService {
     });
   }
 
-  private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<string | null> {
+  private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<ChatBotBindingSyncResult> {
     const chatId = update.message?.chatId?.trim() ?? '';
     if (!chatId) {
-      return null;
+      return this.buildChatBotBindingSyncResult(null);
     }
 
     const entityType = this.readWebhookChatEntityType(update);
     const normalizedType = update.type.trim().toLowerCase();
+    let pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null = null;
     try {
       if (this.isBotRemovalUpdate(update)) {
         const removedBotId = this.resolveRemovedChatBotId(update);
@@ -495,7 +513,7 @@ export class WebhookService {
           botId: removedBotId,
         });
         this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
-        return nextOwnerBotId;
+        return this.buildChatBotBindingSyncResult(nextOwnerBotId);
       }
 
       if (STORED_CHAT_BINDING_REUSE_UPDATE_TYPES.has(normalizedType)) {
@@ -508,22 +526,20 @@ export class WebhookService {
             storedOwnerBotId,
           );
           if (shouldRefreshExecutionOwner) {
-            const allowLiveCheck = this.shouldPerformInlineExecutionOwnerLiveRefresh(update);
             executionOwnerBotId = await this.maybeFailOverExecutionOwner({
               update,
               chatId,
               incomingBotId: update.botId ?? null,
               currentOwnerBotId: storedOwnerBotId,
-              allowLiveCheck,
-              bypassLiveCache: allowLiveCheck,
+              allowLiveCheck: false,
             });
-            if (!allowLiveCheck && executionOwnerBotId === storedOwnerBotId) {
-              this.scheduleExecutionOwnerFailoverRecheck({
+            if (executionOwnerBotId === storedOwnerBotId) {
+              pendingExecutionOwnerRecheck = {
                 update,
                 chatId,
                 incomingBotId: update.botId ?? null,
                 currentOwnerBotId: storedOwnerBotId,
-              });
+              };
             }
           }
           if (
@@ -540,7 +556,10 @@ export class WebhookService {
             });
           }
           this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
-          return executionOwnerBotId;
+          return this.buildChatBotBindingSyncResult(
+            executionOwnerBotId,
+            pendingExecutionOwnerRecheck,
+          );
         }
       }
 
@@ -556,26 +575,24 @@ export class WebhookService {
         boundBotId,
       );
       if (shouldRefreshExecutionOwner) {
-        const allowLiveCheck = this.shouldPerformInlineExecutionOwnerLiveRefresh(update);
         executionOwnerBotId = await this.maybeFailOverExecutionOwner({
           update,
           chatId,
           incomingBotId: update.botId ?? null,
           currentOwnerBotId: boundBotId,
-          allowLiveCheck,
-          bypassLiveCache: allowLiveCheck,
+          allowLiveCheck: false,
         });
-        if (!allowLiveCheck && executionOwnerBotId === boundBotId) {
-          this.scheduleExecutionOwnerFailoverRecheck({
+        if (executionOwnerBotId === boundBotId) {
+          pendingExecutionOwnerRecheck = {
             update,
             chatId,
             incomingBotId: update.botId ?? null,
             currentOwnerBotId: boundBotId,
-          });
+          };
         }
       }
       this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
-      return executionOwnerBotId;
+      return this.buildChatBotBindingSyncResult(executionOwnerBotId, pendingExecutionOwnerRecheck);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -586,8 +603,18 @@ export class WebhookService {
         },
         'Failed to bind chat to bot during webhook ingest',
       );
-      return null;
+      return this.buildChatBotBindingSyncResult(null);
     }
+  }
+
+  private buildChatBotBindingSyncResult(
+    executionOwnerBotId: string | null,
+    pendingExecutionOwnerRecheck: ExecutionOwnerFailoverRecheckParams | null = null,
+  ): ChatBotBindingSyncResult {
+    return {
+      executionOwnerBotId,
+      pendingExecutionOwnerRecheck,
+    };
   }
 
   private async maybeFailOverExecutionOwner(params: {
@@ -725,16 +752,11 @@ export class WebhookService {
     update: MaxUpdate,
     currentOwnerBotId: string | null,
   ): Promise<boolean> {
-    const normalizedType = update.type.trim().toLowerCase();
     if (this.shouldPerformInlineExecutionOwnerLiveRefresh(update)) {
       return true;
     }
 
-    if (
-      normalizedType !== 'message_created' &&
-      normalizedType !== 'message_edited' &&
-      normalizedType !== 'message_callback'
-    ) {
+    if (!this.shouldScheduleExecutionOwnerFailoverRecheck(update)) {
       return false;
     }
 
@@ -1111,24 +1133,16 @@ export class WebhookService {
     access: MaxChatMemberAccess | null,
   ): Promise<void> {
     try {
+      const snapshot = buildBotAccessSnapshotPersistence(access, {
+        source: 'webhook_owner_failover',
+      });
       await this.prisma.chatBotMembership.updateMany({
         where: {
           chatId,
           botId,
         },
         data: {
-          permissionsSnapshot: {
-            checkedAt: new Date().toISOString(),
-            isAdmin: access?.isAdmin === true,
-            isOwner: access?.isOwner === true,
-            permissions: Array.from(
-              new Set(
-                (access?.permissions ?? [])
-                  .map((permission) => permission.trim())
-                  .filter((permission) => permission.length > 0),
-              ),
-            ),
-          } satisfies Prisma.InputJsonValue,
+          ...snapshot,
         },
       });
     } catch (error: unknown) {
@@ -1372,12 +1386,7 @@ export class WebhookService {
       return;
     }
 
-    const normalizedType = params.update.type.trim().toLowerCase();
-    if (
-      normalizedType !== 'message_created' &&
-      normalizedType !== 'message_edited' &&
-      normalizedType !== 'message_callback'
-    ) {
+    if (!this.shouldScheduleExecutionOwnerFailoverRecheck(params.update)) {
       return;
     }
 
@@ -1403,6 +1412,7 @@ export class WebhookService {
       backoffKey,
       Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
     );
+    const bypassLiveCache = this.shouldPerformInlineExecutionOwnerLiveRefresh(params.update);
     setTimeout(() => {
       void this.maybeFailOverExecutionOwner({
         update: params.update,
@@ -1410,6 +1420,7 @@ export class WebhookService {
         incomingBotId,
         currentOwnerBotId,
         allowLiveCheck: true,
+        bypassLiveCache,
       }).catch((error: unknown) => {
         this.logger.debug(
           {
@@ -1422,6 +1433,27 @@ export class WebhookService {
         );
       });
     }, 0);
+  }
+
+  private schedulePendingExecutionOwnerFailoverRecheck(
+    params: ExecutionOwnerFailoverRecheckParams | null,
+  ): void {
+    if (!params) {
+      return;
+    }
+
+    this.scheduleExecutionOwnerFailoverRecheck(params);
+  }
+
+  private shouldScheduleExecutionOwnerFailoverRecheck(update: MaxUpdate): boolean {
+    const normalizedType = update.type.trim().toLowerCase();
+    return (
+      normalizedType === 'message_created' ||
+      normalizedType === 'message_edited' ||
+      normalizedType === 'message_callback' ||
+      INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES.has(normalizedType) ||
+      this.isPotentialGroupAdminModerationCommand(update)
+    );
   }
 
   private scheduleChatAdminRosterSyncFromWebhook(update: MaxUpdate, chatId: string): void {

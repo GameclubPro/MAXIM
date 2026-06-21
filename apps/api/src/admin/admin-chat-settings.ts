@@ -20,7 +20,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException, type Logger } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   CHAT_SETTINGS_BUTTON_GROUPS,
@@ -508,6 +508,7 @@ export async function readChatSettings(params: {
       id: params.chatId,
       title: `Chat ${params.chatId}`,
       entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.MANAGED,
       ...params.botAssignmentData,
       settings: {
         create: {},
@@ -515,6 +516,7 @@ export async function readChatSettings(params: {
     },
     update: {
       ...params.botAssignmentData,
+      catalogKind: ChatCatalogKind.MANAGED,
       settings: {
         upsert: {
           update: {},
@@ -617,6 +619,7 @@ export async function saveChatSettings(params: {
       id: params.chatId,
       title: `Chat ${params.chatId}`,
       entityType: ChatEntityType.CHAT,
+      catalogKind: ChatCatalogKind.MANAGED,
       ...botAssignmentData,
       settings: {
         create: {
@@ -626,6 +629,7 @@ export async function saveChatSettings(params: {
     },
     update: {
       ...botAssignmentData,
+      catalogKind: ChatCatalogKind.MANAGED,
       settings: {
         upsert: {
           update: {

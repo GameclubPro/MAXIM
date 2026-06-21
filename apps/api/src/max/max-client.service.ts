@@ -317,6 +317,9 @@ const MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES = new Set([
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
+const DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_ADMIN_CACHE_SEC = 300;
+const DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_MEMBER_CACHE_SEC = 45;
+const DEFAULT_MAX_API_CHAT_ADMIN_IDS_CACHE_SEC = 60;
 const DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS = 1_000;
 const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
@@ -370,6 +373,9 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly managedRefreshRpsLimit: number;
   private readonly managedRefreshStackRpsLimit: number;
   private readonly chatRpsLimit: number;
+  private readonly chatMemberAccessAdminCacheTtlSec: number;
+  private readonly chatMemberAccessMemberCacheTtlSec: number;
+  private readonly chatAdminIdsCacheTtlSec: number;
   private readonly criticalRateLimitWaitMs: number;
   private readonly interactiveRateLimitWaitMs: number;
   private readonly backgroundRateLimitWaitMs: number;
@@ -385,6 +391,15 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly circuitOpenUntilMsByBot = new Map<string, number>();
   private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
+  private readonly currentChatMemberAccessInFlight = new Map<
+    string,
+    Promise<MaxChatMemberAccess>
+  >();
+  private readonly chatMembersAccessInFlight = new Map<
+    string,
+    Promise<Map<string, MaxChatMemberAccess>>
+  >();
+  private readonly chatAdminIdsInFlight = new Map<string, Promise<string[]>>();
 
   constructor(
     private readonly httpService: HttpService,
@@ -430,6 +445,21 @@ export class MaxClientService implements OnModuleDestroy {
       0,
     );
     this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
+    this.chatMemberAccessAdminCacheTtlSec = this.readConfigInt(
+      configService.get('MAX_API_CHAT_MEMBER_ACCESS_ADMIN_CACHE_SEC'),
+      DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_ADMIN_CACHE_SEC,
+      0,
+    );
+    this.chatMemberAccessMemberCacheTtlSec = this.readConfigInt(
+      configService.get('MAX_API_CHAT_MEMBER_ACCESS_MEMBER_CACHE_SEC'),
+      DEFAULT_MAX_API_CHAT_MEMBER_ACCESS_MEMBER_CACHE_SEC,
+      0,
+    );
+    this.chatAdminIdsCacheTtlSec = this.readConfigInt(
+      configService.get('MAX_API_CHAT_ADMIN_IDS_CACHE_SEC'),
+      DEFAULT_MAX_API_CHAT_ADMIN_IDS_CACHE_SEC,
+      0,
+    );
     this.criticalRateLimitWaitMs = this.readConfigInt(
       configService.get('MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL'),
       DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS,
@@ -1584,10 +1614,106 @@ export class MaxClientService implements OnModuleDestroy {
     return snapshot;
   }
 
+  async getChannelSnapshotByLink(
+    chatLink: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatSnapshot> {
+    const normalizedChatLink = chatLink.trim().replace(/^\/+/u, '');
+    const botId = this.resolveBot(options.botId).id;
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
+    if (!normalizedChatLink) {
+      throw new Error('MAX chat link is required');
+    }
+
+    const data = await this.executeGlobalRequest(
+      () =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/chats/${encodeURIComponent(normalizedChatLink)}`,
+          {
+            ...(timeoutMs ? { timeout: timeoutMs } : {}),
+          },
+        ),
+      options,
+    );
+    const chatId = data.chat_id ?? data.chatId ?? data.id;
+    const normalizedChatId =
+      typeof chatId === 'string' || typeof chatId === 'number'
+        ? String(chatId).trim()
+        : normalizedChatLink;
+    const link = this.parseChatLink(data);
+    const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
+    const snapshot: MaxChatSnapshot = {
+      chatId: normalizedChatId,
+      title: this.readTrimmedString(data.title ?? data.name),
+      participantsCount: this.readNullableInteger(
+        data.participants_count ??
+          data.participantsCount ??
+          data.members_count ??
+          data.membersCount,
+      ),
+      status: this.readLowerString(data.status),
+      isPublic: isPublic ?? (link ? true : null),
+      link,
+      lastEventAt: this.readIsoDateTime(
+        data.last_event_time ?? data.lastEventTime ?? data.updated_at ?? data.updatedAt,
+      ),
+      entityType: this.parseChatEntityType(data),
+      avatarUrl: this.parseChatAvatarUrl(data),
+    };
+
+    if (!options.bypassCache && normalizedChatId) {
+      await this.writeJsonCache(
+        this.buildChatSnapshotCacheKey(botId, normalizedChatId),
+        snapshot,
+        this.chatSnapshotCacheTtlSec,
+      );
+    }
+
+    return snapshot;
+  }
+
   async getChatAdminIds(chatId: string, options: MaxApiRequestOptions = {}): Promise<string[]> {
+    const normalizedChatId = chatId.trim();
+    const botId = this.resolveBot(options.botId).id;
+    const cacheKey = this.buildChatAdminIdsCacheKey(botId, normalizedChatId);
+    if (!options.bypassCache) {
+      const cachedAdminIds = await this.readJsonCache(cacheKey, (value): value is string[] =>
+        this.isStringArray(value),
+      );
+      if (cachedAdminIds) {
+        return [...cachedAdminIds];
+      }
+
+      const existingInFlight = this.chatAdminIdsInFlight.get(cacheKey);
+      if (existingInFlight) {
+        return [...(await existingInFlight)];
+      }
+    }
+
+    const pending = this.fetchChatAdminIdsUncached(normalizedChatId, botId, options).finally(() => {
+      if (this.chatAdminIdsInFlight.get(cacheKey) === pending) {
+        this.chatAdminIdsInFlight.delete(cacheKey);
+      }
+    });
+    if (!options.bypassCache) {
+      this.chatAdminIdsInFlight.set(cacheKey, pending);
+    }
+
+    return [...(await pending)];
+  }
+
+  private async fetchChatAdminIdsUncached(
+    chatId: string,
+    botId: string,
+    options: MaxApiRequestOptions,
+  ): Promise<string[]> {
     const members = await this.listChatAdminMembers(chatId, options);
 
-    return members
+    const adminIds = members
       .map((member) => {
         if (!member || typeof member !== 'object') {
           return null;
@@ -1605,11 +1731,69 @@ export class MaxClientService implements OnModuleDestroy {
         return null;
       })
       .filter((value): value is string => value !== null);
+
+    if (!options.bypassCache) {
+      await this.writeJsonCache(
+        this.buildChatAdminIdsCacheKey(botId, chatId),
+        adminIds,
+        this.chatAdminIdsCacheTtlSec,
+      );
+    }
+
+    return adminIds;
   }
 
   async getCurrentChatMemberAccess(
     chatId: string,
     options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatMemberAccess> {
+    const normalizedChatId = chatId.trim();
+    const botId = this.resolveBot(options.botId).id;
+    const cacheKey = this.buildCurrentChatMemberAccessCacheKey(botId, normalizedChatId);
+    if (!options.bypassCache) {
+      const cachedAccess = await this.readJsonCache(
+        cacheKey,
+        (value): value is MaxChatMemberAccess => this.isMaxChatMemberAccess(value),
+      );
+      if (cachedAccess) {
+        return { ...cachedAccess, permissions: [...cachedAccess.permissions] };
+      }
+
+      const existingInFlight = this.currentChatMemberAccessInFlight.get(cacheKey);
+      if (existingInFlight) {
+        const access = await existingInFlight;
+        return { ...access, permissions: [...access.permissions] };
+      }
+    }
+
+    const pending = this.fetchCurrentChatMemberAccessUncached(normalizedChatId, botId, options)
+      .then(async (access) => {
+        if (!options.bypassCache) {
+          await this.writeJsonCache(
+            cacheKey,
+            access,
+            this.resolveChatMemberAccessCacheTtlSec(access),
+          );
+        }
+        return access;
+      })
+      .finally(() => {
+        if (this.currentChatMemberAccessInFlight.get(cacheKey) === pending) {
+          this.currentChatMemberAccessInFlight.delete(cacheKey);
+        }
+      });
+    if (!options.bypassCache) {
+      this.currentChatMemberAccessInFlight.set(cacheKey, pending);
+    }
+
+    const access = await pending;
+    return { ...access, permissions: [...access.permissions] };
+  }
+
+  private async fetchCurrentChatMemberAccessUncached(
+    chatId: string,
+    _botId: string,
+    options: MaxApiRequestOptions,
   ): Promise<MaxChatMemberAccess> {
     const timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
@@ -1644,6 +1828,8 @@ export class MaxClientService implements OnModuleDestroy {
     userIds: readonly string[],
     options: MaxApiRequestOptions = {},
   ): Promise<Map<string, MaxChatMemberAccess>> {
+    const normalizedChatId = chatId.trim();
+    const botId = this.resolveBot(options.botId).id;
     const timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? Math.max(1, Math.trunc(options.timeoutMs))
@@ -1658,9 +1844,86 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const accessByUserId = new Map<string, MaxChatMemberAccess>();
+    const missingUserIds: string[] = [];
 
-    for (let index = 0; index < normalizedUserIds.length; index += 100) {
-      const chunk = normalizedUserIds.slice(index, index + 100);
+    if (!options.bypassCache) {
+      const cachedRows = await Promise.all(
+        normalizedUserIds.map(async (userId) => ({
+          userId,
+          access: await this.readJsonCache(
+            this.buildChatMemberAccessCacheKey(botId, normalizedChatId, userId),
+            (value): value is MaxChatMemberAccess => this.isMaxChatMemberAccess(value),
+          ),
+        })),
+      );
+      for (const row of cachedRows) {
+        if (row.access) {
+          accessByUserId.set(row.userId, {
+            ...row.access,
+            permissions: [...row.access.permissions],
+          });
+        } else {
+          missingUserIds.push(row.userId);
+        }
+      }
+    } else {
+      missingUserIds.push(...normalizedUserIds);
+    }
+
+    for (let index = 0; index < missingUserIds.length; index += 100) {
+      const chunk = missingUserIds.slice(index, index + 100);
+      const inFlightKey = this.buildChatMembersAccessInFlightKey(botId, normalizedChatId, chunk);
+      let fetchedAccess: Map<string, MaxChatMemberAccess>;
+      if (!options.bypassCache && this.chatMembersAccessInFlight.has(inFlightKey)) {
+        fetchedAccess = await this.chatMembersAccessInFlight.get(inFlightKey)!;
+      } else {
+        const pending = this.fetchChatMembersAccessChunkUncached(
+          normalizedChatId,
+          chunk,
+          options,
+          timeoutMs,
+        ).finally(() => {
+          if (this.chatMembersAccessInFlight.get(inFlightKey) === pending) {
+            this.chatMembersAccessInFlight.delete(inFlightKey);
+          }
+        });
+        if (!options.bypassCache) {
+          this.chatMembersAccessInFlight.set(inFlightKey, pending);
+        }
+        fetchedAccess = await pending;
+      }
+
+      for (const [userId, access] of fetchedAccess.entries()) {
+        accessByUserId.set(userId, {
+          ...access,
+          permissions: [...access.permissions],
+        });
+        if (!options.bypassCache) {
+          await this.writeJsonCache(
+            this.buildChatMemberAccessCacheKey(botId, normalizedChatId, userId),
+            access,
+            this.resolveChatMemberAccessCacheTtlSec(access),
+          );
+        }
+      }
+    }
+
+    return accessByUserId;
+  }
+
+  private async fetchChatMembersAccessChunkUncached(
+    chatId: string,
+    userIds: readonly string[],
+    options: MaxApiRequestOptions,
+    timeoutMs?: number,
+  ): Promise<Map<string, MaxChatMemberAccess>> {
+    const accessByUserId = new Map<string, MaxChatMemberAccess>();
+    if (userIds.length === 0) {
+      return accessByUserId;
+    }
+
+    for (let index = 0; index < userIds.length; index += 100) {
+      const chunk = userIds.slice(index, index + 100);
       const query = new URLSearchParams({ user_ids: chunk.join(',') });
 
       const data = await this.executeChatRequest(
@@ -2005,6 +2268,26 @@ export class MaxClientService implements OnModuleDestroy {
     return `maxapi:cache:v1:chat-snapshot:${botId}:${chatId}`;
   }
 
+  private buildCurrentChatMemberAccessCacheKey(botId: string, chatId: string): string {
+    return `maxapi:cache:v1:chat-member-access:${botId}:${chatId}:__self`;
+  }
+
+  private buildChatMemberAccessCacheKey(botId: string, chatId: string, userId: string): string {
+    return `maxapi:cache:v1:chat-member-access:${botId}:${chatId}:${userId}`;
+  }
+
+  private buildChatMembersAccessInFlightKey(
+    botId: string,
+    chatId: string,
+    userIds: readonly string[],
+  ): string {
+    return `${botId}:${chatId}:${userIds.join(',')}`;
+  }
+
+  private buildChatAdminIdsCacheKey(botId: string, chatId: string): string {
+    return `maxapi:cache:v1:chat-admin-ids:${botId}:${chatId}`;
+  }
+
   private async readJsonCache<T>(
     key: string,
     guard: (value: unknown) => value is T,
@@ -2072,6 +2355,31 @@ export class MaxClientService implements OnModuleDestroy {
       (row.entityType === 'chat' || row.entityType === 'channel') &&
       (typeof row.avatarUrl === 'string' || row.avatarUrl === null)
     );
+  }
+
+  private isStringArray(value: unknown): value is string[] {
+    return Array.isArray(value) && value.every((item) => typeof item === 'string');
+  }
+
+  private isMaxChatMemberAccess(value: unknown): value is MaxChatMemberAccess {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    return (
+      (typeof row.userId === 'string' || row.userId === null) &&
+      typeof row.isAdmin === 'boolean' &&
+      typeof row.isOwner === 'boolean' &&
+      Array.isArray(row.permissions) &&
+      row.permissions.every((permission) => typeof permission === 'string')
+    );
+  }
+
+  private resolveChatMemberAccessCacheTtlSec(access: MaxChatMemberAccess): number {
+    return access.isAdmin || access.isOwner
+      ? this.chatMemberAccessAdminCacheTtlSec
+      : this.chatMemberAccessMemberCacheTtlSec;
   }
 
   private async getMessageById(

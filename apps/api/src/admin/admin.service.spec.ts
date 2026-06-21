@@ -90,7 +90,17 @@ function createManagedEntityHeaderFixture(
     accessDiagnostics: overrides.accessDiagnostics ?? {
       state: 'ok',
       lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: overrides.assignedBots?.length ?? 0,
       lostBots: [],
+    },
+    viewerAccess: overrides.viewerAccess ?? {
+      state: 'checking',
+      reason: null,
+      checkedAt: null,
+      canEdit: false,
     },
   };
 }
@@ -1450,7 +1460,60 @@ describe('AdminService managed bot chat catalog', () => {
     });
   });
 
-  it('keeps partial multi-bot discovery when one bot has no remote or catalog fallback', async () => {
+  it('uses local catalog snapshots for managed entities discovery by default', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    service.chatContextCache = {};
+    service.maxChatAdminRosterSyncService = null;
+    service.managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map();
+    service.managedEntitiesDiscoveryHeaderPrimeRuns = new Map();
+    service.managedEntitiesCatalogSyncCursorByScope = new Map();
+    service.maxBotRegistry = {
+      getBotById: jest
+        .fn()
+        .mockImplementation((botId: string | null | undefined) => (botId ? { id: botId } : null)),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            botId: 'bot-1',
+            chatId: 'chat-local',
+            entityType: ChatEntityType.CHAT,
+            title: 'Локальный чат',
+            link: null,
+            avatarUrl: null,
+            lastEventTime: '1778090000123',
+            lastSeenAt: new Date('2026-05-06T12:00:00.000Z'),
+          },
+        ]),
+      },
+      chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockRejectedValue(new Error('remote list must stay unused')),
+    };
+
+    await expect(
+      service.loadManagedEntitiesDiscoverySnapshot('chat', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'chat-local',
+        title: 'Локальный чат',
+        lastEventTime: 1778090000123,
+        entityType: 'chat',
+        link: null,
+        avatarUrl: null,
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(service.maxClient.listBotChats).not.toHaveBeenCalled();
+  });
+
+  it('keeps partial multi-bot remote discovery when explicitly allowed and one bot fails', async () => {
     const service = createBareAdminServiceForCatalogTests();
     service.chatContextCache = {};
     service.maxChatAdminRosterSyncService = null;
@@ -1489,7 +1552,10 @@ describe('AdminService managed bot chat catalog', () => {
     };
 
     await expect(
-      service.loadManagedEntitiesDiscoverySnapshot('chat', { trafficClass: 'background' }),
+      service.loadManagedEntitiesDiscoverySnapshot('chat', {
+        trafficClass: 'background',
+        allowRemoteListBotChats: true,
+      }),
     ).resolves.toEqual([
       {
         chatId: 'chat-1',
@@ -1518,7 +1584,7 @@ describe('AdminService managed bot chat catalog', () => {
     );
   });
 
-  it('keeps all-bot discovery failure visible when no bot has remote or catalog data', async () => {
+  it('keeps all-bot remote discovery failure visible when explicitly allowed and no fallback exists', async () => {
     const service = createBareAdminServiceForCatalogTests();
     service.maxBotRegistry = {
       getBotById: jest
@@ -1536,7 +1602,10 @@ describe('AdminService managed bot chat catalog', () => {
     };
 
     await expect(
-      service.loadManagedEntitiesDiscoverySnapshot('chat', { trafficClass: 'background' }),
+      service.loadManagedEntitiesDiscoverySnapshot('chat', {
+        trafficClass: 'background',
+        allowRemoteListBotChats: true,
+      }),
     ).rejects.toThrow('MAX unavailable');
   });
 });
@@ -2361,8 +2430,8 @@ describe('AdminService required subscription settings', () => {
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: {
-          settings: {
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
             upsert: {
               update: expect.objectContaining({
                 requiredSubscriptionEnabled: true,
@@ -2383,8 +2452,8 @@ describe('AdminService required subscription settings', () => {
                 requiredSubscriptionBanEnabled: true,
               }),
             },
-          },
-        },
+          }),
+        }),
       }),
     );
   });
@@ -2430,8 +2499,8 @@ describe('AdminService required subscription settings', () => {
       expect(result.requiredSubscriptionExpiresAt).toBe('');
       expect(prisma.chat.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          update: {
-            settings: {
+          update: expect.objectContaining({
+            settings: expect.objectContaining({
               upsert: {
                 update: expect.objectContaining({
                   requiredSubscriptionDurationDays: 10,
@@ -2442,8 +2511,8 @@ describe('AdminService required subscription settings', () => {
                   requiredSubscriptionExpiresAt: '',
                 }),
               },
-            },
-          },
+            }),
+          }),
         }),
       );
     } finally {
@@ -2612,15 +2681,17 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      listBotChats: jest.fn().mockResolvedValue([
-        {
-          chatId: 'channel-ext-1',
-          title: 'Партнерские новости',
-          lastEventTime: 1,
-          entityType: 'channel',
-          link: 'https://max.ru/channels/partner-news',
-        },
-      ]),
+      listBotChats: jest.fn(),
+      getChannelSnapshotByLink: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-1',
+        title: 'Партнерские новости',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-1',
         title: 'Партнерские новости',
@@ -2653,7 +2724,13 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 318,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChannelSnapshotByLink).toHaveBeenCalledWith(
+      'partner-news',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
     expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
       createManagedEntityHeaderFixture({
         id: 'channel-ext-1',
@@ -2750,15 +2827,17 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      listBotChats: jest.fn().mockResolvedValue([
-        {
-          chatId: 'channel-ext-2',
-          title: 'Канал партнера',
-          lastEventTime: 1,
-          entityType: 'channel',
-          link: 'https://max.ru/channels/partner-feed',
-        },
-      ]),
+      listBotChats: jest.fn(),
+      getChannelSnapshotByLink: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-2',
+        title: 'Канал партнера',
+        participantsCount: 207,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-feed',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-2',
         title: 'Канал партнера',
@@ -2791,7 +2870,13 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 207,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChannelSnapshotByLink).toHaveBeenCalledWith(
+      'partner-feed',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
   it('resolves an external required subscription channel from a root MAX public slug', async () => {
@@ -2810,15 +2895,17 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      listBotChats: jest.fn().mockResolvedValue([
-        {
-          chatId: 'channel-auto-market',
-          title: 'Авторынок ДНР ЛНР',
-          lastEventTime: 1,
-          entityType: 'channel',
-          link: 'https://max.ru/channels/aavtorynok_dnr_lnr',
-        },
-      ]),
+      listBotChats: jest.fn(),
+      getChannelSnapshotByLink: jest.fn().mockResolvedValue({
+        chatId: 'channel-auto-market',
+        title: 'Авторынок ДНР ЛНР',
+        participantsCount: 1024,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/aavtorynok_dnr_lnr',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-auto-market',
         title: 'Авторынок ДНР ЛНР',
@@ -2851,7 +2938,13 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 1024,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChannelSnapshotByLink).toHaveBeenCalledWith(
+      'aavtorynok_dnr_lnr',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
   it('resolves an external required subscription channel from a locally known root link when discovery misses it', async () => {
@@ -2915,7 +3008,7 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 4096,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
     expect(prisma.managedBotChatCatalog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -2953,15 +3046,17 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      listBotChats: jest.fn().mockResolvedValue([
-        {
-          chatId: 'channel-ext-5',
-          title: 'Публичный пост канала',
-          lastEventTime: 1,
-          entityType: 'channel',
-          link: 'https://max.ru/channels/public-feed',
-        },
-      ]),
+      listBotChats: jest.fn(),
+      getChannelSnapshotByLink: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-5',
+        title: 'Публичный пост канала',
+        participantsCount: 511,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/public-feed',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-5',
         title: 'Публичный пост канала',
@@ -2994,10 +3089,16 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 511,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChannelSnapshotByLink).toHaveBeenCalledWith(
+      'public-feed',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
-  it('retries external required subscription channel discovery without cache when the first lookup misses the channel', async () => {
+  it('resolves a fresh external required subscription channel by targeted public link lookup', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
@@ -3013,18 +3114,17 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      listBotChats: jest
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([
-          {
-            chatId: 'channel-ext-3',
-            title: 'Свежий канал',
-            lastEventTime: 1,
-            entityType: 'channel',
-            link: 'https://max.ru/channels/fresh-channel',
-          },
-        ]),
+      listBotChats: jest.fn(),
+      getChannelSnapshotByLink: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-3',
+        title: 'Свежий канал',
+        participantsCount: 88,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/fresh-channel',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-3',
         title: 'Свежий канал',
@@ -3057,21 +3157,14 @@ describe('AdminService required subscription settings', () => {
         participantsCount: 88,
       }),
     });
-    expect(maxClient.listBotChats).toHaveBeenNthCalledWith(
-      1,
+    expect(maxClient.getChannelSnapshotByLink).toHaveBeenCalledWith(
+      'fresh-channel',
       expect.objectContaining({
         trafficClass: 'interactive',
-        sourceTag: 'managed_refresh',
+        sourceTag: 'required_subscription_metadata',
       }),
     );
-    expect(maxClient.listBotChats).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        trafficClass: 'interactive',
-        sourceTag: 'managed_refresh',
-        bypassCache: true,
-      }),
-    );
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
   it('resolves an external required subscription channel from a MAX chat post link', async () => {
@@ -3570,8 +3663,8 @@ describe('AdminService required subscription settings', () => {
     expect(result.requiredSubscriptionExpiresAt).toBe('');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: {
-          settings: {
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
             upsert: {
               update: expect.objectContaining({
                 requiredSubscriptionEnabled: false,
@@ -3584,8 +3677,8 @@ describe('AdminService required subscription settings', () => {
                 requiredSubscriptionExpiresAt: '',
               }),
             },
-          },
-        },
+          }),
+        }),
       }),
     );
   });
@@ -10375,7 +10468,7 @@ describe('AdminService.listChannels', () => {
     });
   });
 
-  it('prioritizes locally observed chats when starting a new remote full scan snapshot', async () => {
+  it('prioritizes locally observed chats when starting an explicitly remote diagnostic scan', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([
       createLocalManagedEntityRow({
@@ -10445,6 +10538,7 @@ describe('AdminService.listChannels', () => {
         revalidateCachedChats: false,
         resetRefreshCursor: false,
         throwOnFailure: true,
+        allowRemoteListBotChats: true,
       },
     );
 
@@ -10494,7 +10588,7 @@ describe('AdminService.listChannels', () => {
     ]);
   });
 
-  it('prunes cached managed entities missing from a fresh remote revalidation', async () => {
+  it('prunes cached managed entities missing from an explicitly remote revalidation', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -10569,6 +10663,7 @@ describe('AdminService.listChannels', () => {
         revalidateCachedChats: true,
         resetRefreshCursor: false,
         throwOnFailure: true,
+        allowRemoteListBotChats: true,
       },
     );
 
@@ -16850,21 +16945,12 @@ describe('AdminService settings screen endpoints', () => {
     expect(result).toEqual({
       settings,
       rules,
-      header: {
+      header: createManagedEntityHeaderFixture({
         id: 'chat-1',
         title: 'Команда MAX',
         entityType: 'chat',
-        link: null,
         participantsCount: 128,
-        primaryBotId: null,
-        assignedBots: [],
-        sharedMode: 'owned',
-        accessDiagnostics: {
-          state: 'ok',
-          lastDetectedAt: null,
-          lostBots: [],
-        },
-      },
+      }),
       requiredSubscriptionChannels: [],
       domains: [
         {
@@ -19963,16 +20049,16 @@ describe('AdminService.updateChannelSettings', () => {
     expect(result.autoPostButtonsMode).toBe('BOTH');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: {
+        update: expect.objectContaining({
           entityType: 'CHANNEL',
-          channelSettings: {
+          channelSettings: expect.objectContaining({
             upsert: expect.objectContaining({
               update: expect.objectContaining({
                 autoPostButtonsMode: 'BOTH',
               }),
             }),
-          },
-        },
+          }),
+        }),
       }),
     );
   });

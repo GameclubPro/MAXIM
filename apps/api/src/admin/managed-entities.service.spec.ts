@@ -40,6 +40,9 @@ function createPrismaMock() {
     chatBotMembership: {
       findMany: jest.fn().mockResolvedValue([]),
     },
+    managedEntityAdminMember: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     managedEntityAccessEdge: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -785,7 +788,17 @@ describe('ManagedEntitiesService headers', () => {
       accessDiagnostics: {
         state: 'ok',
         lastDetectedAt: null,
+        lastCheckedAt: null,
+        freshUntil: null,
+        source: 'unknown',
+        activeBotCount: 0,
         lostBots: [],
+      },
+      viewerAccess: {
+        state: 'checking',
+        reason: null,
+        checkedAt: null,
+        canEdit: false,
       },
     });
     expect(legacyAdminService.assertManagedEntityReadAccess).toHaveBeenCalledWith(
@@ -841,7 +854,17 @@ describe('ManagedEntitiesService headers', () => {
       accessDiagnostics: {
         state: 'ok',
         lastDetectedAt: null,
+        lastCheckedAt: null,
+        freshUntil: null,
+        source: 'unknown',
+        activeBotCount: 0,
         lostBots: [],
+      },
+      viewerAccess: {
+        state: 'checking',
+        reason: null,
+        checkedAt: null,
+        canEdit: false,
       },
     });
 
@@ -879,6 +902,10 @@ describe('ManagedEntitiesService headers', () => {
     expect(result.accessDiagnostics).toEqual({
       state: 'bot_access_lost',
       lastDetectedAt: '2026-05-31T09:59:00.000Z',
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 0,
       lostBots: [
         {
           botId: 'bot-1',
@@ -950,10 +977,85 @@ describe('ManagedEntitiesService headers', () => {
     const result = await service.getChatHeader('chat-1', user as never);
 
     expect(result.accessDiagnostics).toEqual({
-      state: 'ok',
+      state: 'checking',
       lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 1,
       lostBots: [],
     });
+  });
+
+  it('surfaces active denied bot access snapshots as bot access loss diagnostics', async () => {
+    const { prisma, service } = createService();
+    prisma.chatBotMembership.findMany.mockResolvedValueOnce([
+      {
+        botId: 'bot-1',
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-06-01T10:00:01.000Z'),
+        permissionsSnapshot: {
+          checkedAt: '2026-06-01T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+        botAccessState: 'DENIED',
+        botAccessCheckedAt: new Date('2026-06-01T10:00:00.000Z'),
+        botAccessExpiresAt: new Date('2026-06-01T10:05:00.000Z'),
+        botAccessSource: 'admin_roster_sync',
+        botAccessLastErrorCode: 'chat.denied',
+      },
+    ]);
+
+    const result = await service.getChatHeader('chat-1', user as never);
+
+    expect(result.accessDiagnostics).toEqual({
+      state: 'bot_access_lost',
+      lastDetectedAt: '2026-06-01T10:00:00.000Z',
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 1,
+      lostBots: [
+        {
+          botId: 'bot-1',
+          botLabel: 'Основной бот',
+          reason: 'bot_denied',
+          detectedAt: '2026-06-01T10:00:00.000Z',
+          source: 'admin_roster_sync',
+          lastMaxErrorCode: 'chat.denied',
+          lastMaxErrorMessage: null,
+          lastMaxStatusCode: null,
+        },
+      ],
+    });
+  });
+
+  it('lets a fresh granted edge win over a fresher denied edge from another bot', async () => {
+    const { prisma, service } = createService();
+    prisma.managedEntityAccessEdge.findFirst
+      .mockResolvedValueOnce({
+        checkedAt: new Date('2026-06-01T10:00:00.000Z'),
+      })
+      .mockResolvedValueOnce(null);
+
+    const result = await service.getChatHeader('chat-1', user as never);
+
+    expect(result.viewerAccess).toEqual({
+      state: 'granted',
+      reason: null,
+      checkedAt: '2026-06-01T10:00:00.000Z',
+      canEdit: true,
+    });
+    expect(prisma.managedEntityAccessEdge.findFirst).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          state: 'GRANTED',
+        }),
+      }),
+    );
   });
 });
 
@@ -1084,7 +1186,7 @@ describe('ManagedEntitiesService bot execution plan', () => {
   it('schedules a roster access recheck when persisted admins need diagnostics recovery', async () => {
     const { legacyAdminService, maxChatAdminRosterSyncService, prisma, service } = createService();
     legacyAdminService.assertManagedEntityAdminAccess.mockRejectedValueOnce(new Error('lost'));
-    prisma.chatAdminAllowlist.findMany.mockResolvedValueOnce([{ chatId: 'chat-1' }]);
+    prisma.managedEntityAdminMember.findFirst.mockResolvedValueOnce({ chatId: 'chat-1' });
     prisma.managedEntityAccessEdge.findMany.mockImplementation((args: unknown) => {
       const state = (args as { where?: { state?: unknown } })?.where?.state;
       if (state === 'BOT_DENIED') {

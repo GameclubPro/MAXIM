@@ -41,7 +41,17 @@ function createManagedEntityHeader(params: {
     accessDiagnostics: {
       state: 'ok',
       lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: assignedBots.length,
       lostBots: [],
+    },
+    viewerAccess: {
+      state: 'checking',
+      reason: null,
+      checkedAt: null,
+      canEdit: false,
     },
   };
 }

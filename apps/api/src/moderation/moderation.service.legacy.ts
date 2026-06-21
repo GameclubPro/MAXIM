@@ -34,6 +34,7 @@ import {
 } from '@maxim/contracts/bot-speech';
 import {
   ChatBotMembershipStatus,
+  ChatCatalogKind,
   ChatEntityType,
   EventType,
   Operator,
@@ -9890,7 +9891,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             accessDiagnostics: {
               state: 'ok',
               lastDetectedAt: null,
+              lastCheckedAt: null,
+              freshUntil: null,
+              source: 'unknown',
+              activeBotCount: 0,
               lostBots: [],
+            },
+            viewerAccess: {
+              state: 'checking',
+              reason: null,
+              checkedAt: null,
+              canEdit: false,
             },
           });
           return this.rememberRequiredSubscriptionChannelMetadata({
@@ -10903,12 +10914,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     entityType: 'chat' | 'channel',
   ): Promise<void> {
     try {
-      const chats = await this.maxClient.listBotChats();
-      const entities = chats.filter((chat) => {
-        const numericChatId = this.parseChatIdAsBigInt(chat.chatId);
-        const isGroup = numericChatId !== null && numericChatId < 0n;
-        return entityType === 'channel' ? chat.entityType === 'channel' : isGroup;
-      });
+      const entities = await this.loadPrivateMenuManagedEntities(entityType);
 
       if (entities.length === 0) {
         await this.sendPrivateMenu(
@@ -10922,7 +10928,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const preview = entities.slice(0, PRIVATE_BOT_CHATS_PREVIEW_LIMIT);
       const lines = preview.map((chat, index) => {
-        const title = (chat.title ?? `Чат ${chat.chatId}`).replace(/\s+/g, ' ').trim();
+        const title = (chat.title ?? `Чат ${chat.id}`).replace(/\s+/g, ' ').trim();
         return `${index + 1}. ${title}`;
       });
 
@@ -10959,6 +10965,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Не удалось получить список чатов. Повторите запрос через несколько секунд.',
       );
     }
+  }
+
+  private async loadPrivateMenuManagedEntities(
+    entityType: 'chat' | 'channel',
+  ): Promise<Array<{ id: string; title: string | null }>> {
+    if (typeof this.prisma.chat?.findMany !== 'function') {
+      return [];
+    }
+
+    const chats = await this.prisma.chat.findMany({
+      where: {
+        catalogKind: ChatCatalogKind.MANAGED,
+        entityType: entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT,
+        ...(entityType === 'chat' ? { id: { startsWith: '-' } } : {}),
+        botMemberships: {
+          some: {
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+        },
+      },
+      select: {
+        id: true,
+        title: true,
+      },
+      orderBy: [{ updatedAt: 'desc' }, { title: 'asc' }],
+      take: PRIVATE_BOT_CHATS_PREVIEW_LIMIT + 1,
+    });
+
+    return chats.filter((chat) => {
+      if (entityType === 'channel') {
+        return true;
+      }
+
+      const numericChatId = this.parseChatIdAsBigInt(chat.id);
+      return numericChatId !== null && numericChatId < 0n;
+    });
   }
 
   private async sendPrivateMenu(chatId: string, text: string): Promise<void> {

@@ -1,6 +1,7 @@
 import {
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
+  ChatCatalogKind,
   ChatEntityType,
 } from '../prisma/prisma-client';
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
@@ -33,6 +34,7 @@ type ChatRow = {
   title?: string;
   botId: string | null;
   primaryBotId: string | null;
+  catalogKind?: ChatCatalogKind;
 };
 
 type MembershipRow = {
@@ -79,6 +81,7 @@ function createPrismaMock(params: {
             (chat.entityType === ChatEntityType.CHANNEL ? `Channel ${chat.id}` : `Chat ${chat.id}`),
           botId: chat.botId,
           primaryBotId: chat.primaryBotId,
+          catalogKind: chat.catalogKind ?? ChatCatalogKind.MANAGED,
         })),
       ),
       update: jest.fn(
@@ -260,30 +263,35 @@ describe('MaxBotOwnershipFoundationService', () => {
           entityType: ChatEntityType.CHAT,
           botId: 'id613002203036_bot',
           primaryBotId: null,
+          catalogKind: ChatCatalogKind.MANAGED,
         },
         {
           id: 'channel-membership',
           entityType: ChatEntityType.CHANNEL,
           botId: null,
           primaryBotId: null,
+          catalogKind: ChatCatalogKind.MANAGED,
         },
         {
           id: 'chat-ok',
           entityType: ChatEntityType.CHAT,
           botId: 'id613002203036_bot',
           primaryBotId: 'id613002203036_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
         },
         {
           id: 'chat-unknown-primary',
           entityType: ChatEntityType.CHAT,
           botId: null,
           primaryBotId: 'unknown_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
         },
         {
           id: 'chat-local-activity',
           entityType: ChatEntityType.CHAT,
           botId: null,
           primaryBotId: null,
+          catalogKind: ChatCatalogKind.MANAGED,
         },
         {
           id: 'chat-webhook-signal',
@@ -291,6 +299,7 @@ describe('MaxBotOwnershipFoundationService', () => {
           title: 'Chat chat-webhook-signal',
           botId: null,
           primaryBotId: null,
+          catalogKind: ChatCatalogKind.MANAGED,
         },
       ],
       memberships: [
@@ -433,6 +442,7 @@ describe('MaxBotOwnershipFoundationService', () => {
           entityType: ChatEntityType.CHAT,
           botId: 'id613002203036_bot',
           primaryBotId: 'id613002203036_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
         },
       ],
       memberships: [
@@ -476,6 +486,91 @@ describe('MaxBotOwnershipFoundationService', () => {
     await service.onModuleDestroy();
   });
 
+  it('excludes private and context-only chats from ownership coverage and unknown membership anomalies', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const prisma = createPrismaMock({
+      chats: [
+        {
+          id: '-100-managed',
+          entityType: ChatEntityType.CHAT,
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
+        },
+        {
+          id: '214007512',
+          entityType: ChatEntityType.CHAT,
+          botId: null,
+          primaryBotId: null,
+          catalogKind: ChatCatalogKind.PRIVATE_DIRECT,
+        },
+        {
+          id: '-100-context',
+          entityType: ChatEntityType.CHAT,
+          botId: null,
+          primaryBotId: null,
+          catalogKind: ChatCatalogKind.CONTEXT_ONLY,
+        },
+      ],
+      memberships: [
+        {
+          chatId: '-100-managed',
+          botId: 'id613002203036_bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        {
+          chatId: '214007512',
+          botId: 'unknown_bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        {
+          chatId: '-100-context',
+          botId: 'unknown_bot',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+      ],
+    });
+
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([{ id: 'id613002203036_bot', state: 'active' }]),
+        getAdminVisibleBots: jest
+          .fn()
+          .mockReturnValue([{ id: 'id613002203036_bot', state: 'active' }]),
+      } as never,
+      {
+        rememberChatBotBinding: jest.fn(),
+      } as never,
+    );
+
+    await service.onModuleInit();
+    const snapshot = await service.getSnapshot(0);
+
+    expect(snapshot.entities.total).toMatchObject({
+      total: 1,
+      withPrimary: 1,
+      withoutPrimary: 0,
+    });
+    expect(snapshot.anomalies).toMatchObject({
+      activeMembershipBotUnknown: 0,
+      noPrimary: 0,
+      unbound: 0,
+    });
+    expect(prisma.chat.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: '214007512' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('repairs primary assignment to the active bot with stronger permissions', async () => {
     process.env.APP_ROLE = 'admin';
 
@@ -486,6 +581,7 @@ describe('MaxBotOwnershipFoundationService', () => {
           entityType: ChatEntityType.CHAT,
           botId: 'id613002203036_bot',
           primaryBotId: 'id613002203036_bot',
+          catalogKind: ChatCatalogKind.MANAGED,
         },
       ],
       memberships: [

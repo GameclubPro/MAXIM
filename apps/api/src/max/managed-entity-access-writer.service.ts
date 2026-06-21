@@ -6,7 +6,6 @@ import {
   ChatEntityType,
   ManagedEntityAccessRole,
   ManagedEntityAccessState,
-  Prisma,
 } from '../prisma/prisma-client';
 import {
   ChatContextCacheService,
@@ -15,6 +14,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import type { MaxChatMemberAccess } from './max-client.service';
+import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 
 export const MANAGED_ENTITY_HANDSHAKE_SOURCE = 'handshake_start';
 
@@ -98,6 +98,10 @@ export class ManagedEntityAccessWriter {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + HANDSHAKE_ACCESS_EDGE_GRANTED_TTL_MS);
+    const botAccessSnapshot = buildBotAccessSnapshotPersistence(botAccess, {
+      source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
+      now,
+    });
     const existing = await this.prisma.managedEntityAccessEdge.findUnique({
       where: {
         chatId_userId_botId: {
@@ -122,13 +126,13 @@ export class ManagedEntityAccessWriter {
           botId: context.botId,
           role: ChatBotMembershipRole.PRIMARY,
           status: ChatBotMembershipStatus.ACTIVE,
-          permissionsSnapshot: this.buildPermissionsSnapshot(botAccess),
+          ...botAccessSnapshot,
           lastSeenAt: now,
           lastWebhookAt: now,
         },
         update: {
           status: ChatBotMembershipStatus.ACTIVE,
-          permissionsSnapshot: this.buildPermissionsSnapshot(botAccess),
+          ...botAccessSnapshot,
           lastSeenAt: now,
           lastWebhookAt: now,
         },
@@ -145,6 +149,34 @@ export class ManagedEntityAccessWriter {
           userId: context.senderId,
         },
         update: {},
+      }),
+      this.prisma.managedEntityAdminMember.upsert({
+        where: {
+          chatId_userId_observedByBotId: {
+            chatId: context.chatId,
+            userId: context.senderId,
+            observedByBotId: context.botId,
+          },
+        },
+        create: {
+          chatId: context.chatId,
+          userId: context.senderId,
+          observedByBotId: context.botId,
+          entityType: context.prismaEntityType,
+          role: this.toAccessRole(userAccess),
+          permissions: this.normalizePermissions(userAccess.permissions),
+          checkedAt: now,
+          expiresAt,
+          source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
+        },
+        update: {
+          entityType: context.prismaEntityType,
+          role: this.toAccessRole(userAccess),
+          permissions: this.normalizePermissions(userAccess.permissions),
+          checkedAt: now,
+          expiresAt,
+          source: MANAGED_ENTITY_HANDSHAKE_SOURCE,
+        },
       }),
       this.prisma.managedEntityAccessEdge.upsert({
         where: {
@@ -265,15 +297,6 @@ export class ManagedEntityAccessWriter {
       .slice(0, 64);
   }
 
-  private buildPermissionsSnapshot(access: MaxChatMemberAccess): Prisma.InputJsonObject {
-    return {
-      isAdmin: access.isAdmin,
-      isOwner: access.isOwner,
-      permissions: access.permissions,
-      checkedAt: new Date().toISOString(),
-    };
-  }
-
   private toAccessRole(access: MaxChatMemberAccess): ManagedEntityAccessRole {
     if (access.isOwner) {
       return ManagedEntityAccessRole.OWNER;
@@ -282,5 +305,15 @@ export class ManagedEntityAccessWriter {
       return ManagedEntityAccessRole.ADMIN;
     }
     return ManagedEntityAccessRole.MEMBER;
+  }
+
+  private normalizePermissions(permissions: readonly string[]): string[] {
+    return Array.from(
+      new Set(
+        permissions
+          .map((permission) => permission.trim())
+          .filter((permission) => permission.length > 0),
+      ),
+    );
   }
 }

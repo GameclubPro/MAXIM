@@ -13,13 +13,16 @@ async function main() {
     const logger = app.get(Logger);
     const service = app.get(MaxChatAdminRosterSyncService);
     const bypassCache = process.argv.includes('--bypass-cache');
+    const allowRemoteListBotChats = process.argv.includes('--remote-list-bot-chats');
     const result = await service.backfillManagedEntitiesIndex({
       ...(bypassCache ? { bypassCache: true } : {}),
+      ...(allowRemoteListBotChats ? { allowRemoteListBotChats: true } : {}),
     });
 
     logger.log(
       {
         bypassCache,
+        allowRemoteListBotChats,
         discoveredChats: result.discoveredChats,
         syncedChats: result.syncedChats,
       },

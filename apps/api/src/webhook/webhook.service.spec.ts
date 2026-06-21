@@ -2,6 +2,7 @@ import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
   const flushDeferredWebhookWork = async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
 
@@ -875,7 +876,7 @@ describe('WebhookService', () => {
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
   });
 
-  it('refreshes the execution owner inline for group admin moderation commands', async () => {
+  it('defers execution owner live refresh for group admin moderation commands until after persist', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-command-failover' }),
@@ -935,7 +936,24 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_4_bot',
+          }),
+        }),
+      }),
+    );
+    const persistOrder = prisma.webhookEvent.create.mock.invocationCallOrder[0];
+
+    await flushDeferredWebhookWork();
+
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(persistOrder).toBeLessThan(
+      maxClient.getCurrentChatMemberAccess.mock.invocationCallOrder[0],
+    );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
       1,
       '-73729721862151',
@@ -961,19 +979,10 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          normalizedPayload: expect.objectContaining({
-            executionOwnerBotId: 'id613002203036_bot',
-          }),
-        }),
-      }),
-    );
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
   });
 
-  it('refreshes the execution owner inline for custom linked admin commands', async () => {
+  it('defers execution owner live refresh for custom linked admin commands', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-custom-command-failover' }),
@@ -1043,6 +1052,19 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_4_bot',
+          }),
+        }),
+      }),
+    );
+
+    await flushDeferredWebhookWork();
+
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1051,18 +1073,9 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          normalizedPayload: expect.objectContaining({
-            executionOwnerBotId: 'id613002203036_bot',
-          }),
-        }),
-      }),
-    );
   });
 
-  it('refreshes the execution owner inline for developer super ban commands', async () => {
+  it('defers execution owner live refresh for developer super ban commands', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-super-ban-failover' }),
@@ -1122,6 +1135,10 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+
+    await flushDeferredWebhookWork();
+
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1132,7 +1149,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('bypasses stale cached bot access states for group admin moderation commands', async () => {
+  it('bypasses stale cached bot access states in deferred group admin command rechecks', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-command-cache-bypass' }),
@@ -1200,6 +1217,20 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+
+    await flushDeferredWebhookWork();
+
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
       1,
@@ -1226,19 +1257,10 @@ describe('WebhookService', () => {
         allowReassign: true,
       }),
     );
-    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          normalizedPayload: expect.objectContaining({
-            executionOwnerBotId: 'id613002203036_4_bot',
-          }),
-        }),
-      }),
-    );
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
   });
 
-  it('promotes the incoming bot inline on membership churn when the stored owner lost admin rights', async () => {
+  it('defers membership churn owner live refresh until after persist', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-membership-failover' }),
@@ -1308,6 +1330,25 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
+      chatId: '-73729721862151',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+    });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+
+    await flushDeferredWebhookWork();
+
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
       1,
@@ -1332,16 +1373,6 @@ describe('WebhookService', () => {
         chatId: '-73729721862151',
         botId: 'id613002203036_4_bot',
         allowReassign: true,
-      }),
-    );
-    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
-    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          normalizedPayload: expect.objectContaining({
-            executionOwnerBotId: 'id613002203036_4_bot',
-          }),
-        }),
       }),
     );
     expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
@@ -1530,7 +1561,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('re-evaluates execution owner on bot lifecycle updates', async () => {
+  it('defers execution owner live refresh on bot lifecycle updates', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-6b' }),
@@ -1590,6 +1621,20 @@ describe('WebhookService', () => {
         '127.0.0.1',
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+
+    await flushDeferredWebhookWork();
 
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(maxBotLinkService.bindChatToBot).toHaveBeenNthCalledWith(

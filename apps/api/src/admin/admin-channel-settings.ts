@@ -1,6 +1,6 @@
 import { channelSettingsSchema, type ChannelSettings } from '@maxim/contracts';
 import { BadRequestException, type Logger } from '@nestjs/common';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import {
   CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY,
@@ -164,6 +164,7 @@ export async function readChannelSettings(params: {
       id: params.chatId,
       title: `Channel ${params.chatId}`,
       entityType: ChatEntityType.CHANNEL,
+      catalogKind: ChatCatalogKind.MANAGED,
       ...params.botAssignmentData,
       channelSettings: {
         create: {
@@ -174,6 +175,7 @@ export async function readChannelSettings(params: {
     update: {
       ...params.botAssignmentData,
       entityType: ChatEntityType.CHANNEL,
+      catalogKind: ChatCatalogKind.MANAGED,
       channelSettings: {
         upsert: {
           update: {},
@@ -251,6 +253,7 @@ export async function saveChannelSettings(params: {
       id: params.chatId,
       title: `Channel ${params.chatId}`,
       entityType: ChatEntityType.CHANNEL,
+      catalogKind: ChatCatalogKind.MANAGED,
       ...botAssignmentData,
       channelSettings: {
         create: {
@@ -261,6 +264,7 @@ export async function saveChannelSettings(params: {
     update: {
       ...botAssignmentData,
       entityType: ChatEntityType.CHANNEL,
+      catalogKind: ChatCatalogKind.MANAGED,
       channelSettings: {
         upsert: {
           update: {

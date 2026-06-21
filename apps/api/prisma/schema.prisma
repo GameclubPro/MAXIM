@@ -71,6 +71,13 @@ enum ChatEntityType {
   CHANNEL
 }
 
+enum ChatCatalogKind {
+  MANAGED
+  PRIVATE_DIRECT
+  CONTEXT_ONLY
+  UNKNOWN
+}
+
 enum ChatBotMembershipRole {
   PRIMARY
   STANDBY
@@ -79,6 +86,16 @@ enum ChatBotMembershipRole {
 enum ChatBotMembershipStatus {
   ACTIVE
   REMOVED
+}
+
+enum ChatBotAccessState {
+  UNKNOWN
+  CONFIRMED_OWNER
+  CONFIRMED_ADMIN
+  CONFIRMED_MEMBER
+  DENIED
+  LOST
+  STALE
 }
 
 enum ManagedEntityAccessState {
@@ -171,13 +188,14 @@ enum DialogNotificationMode {
 }
 
 model Chat {
-  id           String         @id
-  botId        String?        @map("bot_id")
-  primaryBotId String?        @map("primary_bot_id")
+  id           String          @id
+  botId        String?         @map("bot_id")
+  primaryBotId String?         @map("primary_bot_id")
   title        String
-  entityType   ChatEntityType @default(CHAT) @map("entity_type")
-  createdAt    DateTime       @default(now()) @map("created_at")
-  updatedAt    DateTime       @updatedAt @map("updated_at")
+  entityType   ChatEntityType  @default(CHAT) @map("entity_type")
+  catalogKind  ChatCatalogKind @default(UNKNOWN) @map("catalog_kind")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
 
   settings                        ChatSettings?
   rules                           ChatRules?
@@ -197,6 +215,7 @@ model Chat {
   vkParsingPosts                  VkParsingPost[]
   botMemberships                  ChatBotMembership[]
   accessEdges                     ManagedEntityAccessEdge[]
+  adminMembers                    ManagedEntityAdminMember[]
   favorites                       ManagedEntityFavorite[]
   dialogNotificationSubscriptions DialogNotificationSubscription[]
   participantImmunities           ChatParticipantModerationImmunity[]
@@ -206,27 +225,36 @@ model Chat {
 
   @@index([botId], map: "chats_bot_id_idx")
   @@index([primaryBotId], map: "chats_primary_bot_id_idx")
+  @@index([catalogKind, entityType], map: "chats_catalog_kind_entity_type_idx")
   @@map("chats")
 }
 
 model ChatBotMembership {
-  id                  String                  @id @default(cuid())
-  chatId              String                  @map("chat_id")
-  botId               String                  @map("bot_id")
-  role                ChatBotMembershipRole   @default(STANDBY)
-  status              ChatBotMembershipStatus @default(ACTIVE)
-  capabilities        Json                    @default("[]")
-  permissionsSnapshot Json?                   @map("permissions_snapshot")
-  lastSeenAt          DateTime?               @map("last_seen_at")
-  lastWebhookAt       DateTime?               @map("last_webhook_at")
-  createdAt           DateTime                @default(now()) @map("created_at")
-  updatedAt           DateTime                @updatedAt @map("updated_at")
+  id                     String                  @id @default(cuid())
+  chatId                 String                  @map("chat_id")
+  botId                  String                  @map("bot_id")
+  role                   ChatBotMembershipRole   @default(STANDBY)
+  status                 ChatBotMembershipStatus @default(ACTIVE)
+  capabilities           Json                    @default("[]")
+  permissionsSnapshot    Json?                   @map("permissions_snapshot")
+  botAccessState         ChatBotAccessState      @default(UNKNOWN) @map("bot_access_state")
+  botAccessCheckedAt     DateTime?               @map("bot_access_checked_at")
+  botAccessExpiresAt     DateTime?               @map("bot_access_expires_at")
+  botAccessSource        String?                 @map("bot_access_source")
+  botAccessLastErrorCode String?                 @map("bot_access_last_error_code")
+  permissionsHash        String?                 @map("permissions_hash")
+  lastSeenAt             DateTime?               @map("last_seen_at")
+  lastWebhookAt          DateTime?               @map("last_webhook_at")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@unique([chatId, botId], map: "chat_bot_memberships_chat_id_bot_id_key")
   @@index([botId, role, status], map: "chat_bot_memberships_bot_id_role_status_idx")
   @@index([chatId, status], map: "chat_bot_memberships_chat_id_status_idx")
+  @@index([chatId, botAccessState, botAccessCheckedAt(sort: Desc)], map: "chat_bot_memberships_chat_access_state_checked_idx")
+  @@index([botId, botAccessState, botAccessCheckedAt(sort: Desc)], map: "chat_bot_memberships_bot_access_state_checked_idx")
   @@map("chat_bot_memberships")
 }
 
@@ -542,6 +570,30 @@ model ChatAdminAllowlist {
 
   @@id([chatId, userId])
   @@map("chat_admin_allowlist")
+}
+
+model ManagedEntityAdminMember {
+  chatId          String                  @map("chat_id")
+  userId          String                  @map("user_id")
+  observedByBotId String                  @map("observed_by_bot_id")
+  entityType      ChatEntityType          @default(CHAT) @map("entity_type")
+  role            ManagedEntityAccessRole @default(ADMIN)
+  permissions     Json                    @default("[]")
+  displayName     String?                 @map("display_name")
+  checkedAt       DateTime                @default(now()) @map("checked_at")
+  expiresAt       DateTime?               @map("expires_at")
+  source          String                  @default("unknown")
+  sourceVersion   String?                 @map("source_version")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, userId, observedByBotId])
+  @@index([userId, entityType, checkedAt(sort: Desc)], map: "managed_entity_admin_members_user_type_checked_idx")
+  @@index([chatId, checkedAt(sort: Desc)], map: "managed_entity_admin_members_chat_checked_idx")
+  @@index([observedByBotId, checkedAt(sort: Desc)], map: "managed_entity_admin_members_bot_checked_idx")
+  @@map("managed_entity_admin_members")
 }
 
 model ManagedEntityAccessEdge {

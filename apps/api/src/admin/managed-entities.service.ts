@@ -40,6 +40,7 @@ import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxClientService } from '../max/max-client.service';
 import {
+  ChatBotAccessState,
   ChatBotMembershipStatus,
   ManagedEntityAccessState,
   ManagedEntityHandshakeOutcomeStatus,
@@ -465,6 +466,7 @@ export class ManagedEntitiesService {
     return {
       ...header,
       accessDiagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
+      viewerAccess: await this.getManagedEntityViewerAccess(chatId, user.userId, entityType),
     };
   }
 
@@ -848,6 +850,11 @@ export class ManagedEntitiesService {
           botId: true,
           status: true,
           permissionsSnapshot: true,
+          botAccessState: true,
+          botAccessCheckedAt: true,
+          botAccessExpiresAt: true,
+          botAccessSource: true,
+          botAccessLastErrorCode: true,
           updatedAt: true,
         },
       }),
@@ -887,13 +894,19 @@ export class ManagedEntitiesService {
       membershipRows,
       grantedAccessEdgeRows,
     );
+    const freshness = this.resolveBotAccessFreshness(membershipRows);
 
     const diagnosticsByBotId = new Map<string, ManagedEntityAccessLossDiagnosticItem>();
     for (const row of membershipRows) {
-      if (row.status !== ChatBotMembershipStatus.REMOVED) {
+      if (activeAccessBotIds.size > 0) {
         continue;
       }
-      if (activeAccessBotIds.size > 0) {
+      const botAccessLoss = this.readBotAccessLossDiagnostic(row);
+      if (botAccessLoss) {
+        this.upsertAccessLossDiagnostic(diagnosticsByBotId, botAccessLoss);
+      }
+
+      if (row.status !== ChatBotMembershipStatus.REMOVED) {
         continue;
       }
       const snapshot = this.readAccessLossSnapshot(row.permissionsSnapshot);
@@ -938,10 +951,177 @@ export class ManagedEntitiesService {
     );
 
     return {
-      state: lostBots.length > 0 ? 'bot_access_lost' : 'ok',
+      state:
+        lostBots.length > 0
+          ? 'bot_access_lost'
+          : freshness.activeBotCount > 0 && freshness.freshUntil && Date.parse(freshness.freshUntil) < Date.now()
+            ? 'stale'
+            : freshness.activeBotCount > 0 && !freshness.lastCheckedAt
+              ? 'checking'
+              : 'ok',
       lastDetectedAt: lostBots[0]?.detectedAt ?? null,
+      lastCheckedAt: freshness.lastCheckedAt,
+      freshUntil: freshness.freshUntil,
+      source: freshness.source,
+      activeBotCount: freshness.activeBotCount,
       lostBots,
     };
+  }
+
+  private async getManagedEntityViewerAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntityHeader['viewerAccess']> {
+    const now = new Date();
+    const freshWhere = {
+      chatId,
+      userId,
+      entityType: toPrismaEntityType(entityType),
+      OR: [
+        { expiresAt: { gt: now } },
+        {
+          expiresAt: null,
+          checkedAt: { gt: new Date(Date.now() - MANAGED_ENTITY_ACCESS_EDGE_LEGACY_GRACE_MS) },
+        },
+      ],
+    };
+    const grantedEdge = await this.prisma.managedEntityAccessEdge.findFirst({
+      where: {
+        ...freshWhere,
+        state: ManagedEntityAccessState.GRANTED,
+      },
+      orderBy: { checkedAt: 'desc' },
+      select: {
+        checkedAt: true,
+      },
+    });
+    if (grantedEdge) {
+      return {
+        state: 'granted',
+        reason: null,
+        checkedAt: grantedEdge.checkedAt.toISOString(),
+        canEdit: true,
+      };
+    }
+
+    const edge = await this.prisma.managedEntityAccessEdge.findFirst({
+      where: freshWhere,
+      orderBy: { checkedAt: 'desc' },
+      select: {
+        state: true,
+        checkedAt: true,
+        deniedReason: true,
+      },
+    });
+    if (edge) {
+      return {
+        state: 'denied',
+        reason:
+          edge.state === ManagedEntityAccessState.BOT_DENIED
+            ? 'bot_not_admin'
+            : edge.deniedReason === 'bot_denied'
+              ? 'bot_access_lost'
+              : 'user_not_admin',
+        checkedAt: edge.checkedAt.toISOString(),
+        canEdit: false,
+      };
+    }
+
+    const staleEdge = await this.prisma.managedEntityAccessEdge.findFirst({
+      where: {
+        chatId,
+        userId,
+        entityType: toPrismaEntityType(entityType),
+        state: ManagedEntityAccessState.GRANTED,
+      },
+      orderBy: { checkedAt: 'desc' },
+      select: {
+        checkedAt: true,
+      },
+    });
+    if (staleEdge) {
+      return {
+        state: 'stale',
+        reason: 'unknown',
+        checkedAt: staleEdge.checkedAt.toISOString(),
+        canEdit: false,
+      };
+    }
+
+    return {
+      state: 'checking',
+      reason: null,
+      checkedAt: null,
+      canEdit: false,
+    };
+  }
+
+  private resolveBotAccessFreshness(
+    membershipRows: Array<{
+      botId: string;
+      status: ChatBotMembershipStatus;
+      permissionsSnapshot: unknown;
+      botAccessState?: ChatBotAccessState | null;
+      botAccessCheckedAt?: Date | null;
+      botAccessExpiresAt?: Date | null;
+      botAccessSource?: string | null;
+    }>,
+  ): {
+    lastCheckedAt: string | null;
+    freshUntil: string | null;
+    source: ManagedEntityAccessDiagnostics['source'];
+    activeBotCount: number;
+  } {
+    let lastCheckedAt: Date | null = null;
+    let freshUntil: Date | null = null;
+    let source: ManagedEntityAccessDiagnostics['source'] = 'unknown';
+    let activeBotCount = 0;
+
+    for (const row of membershipRows) {
+      if (row.status !== ChatBotMembershipStatus.ACTIVE || !this.isRuntimeBotId(row.botId)) {
+        continue;
+      }
+      activeBotCount += 1;
+      const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
+      const checkedAt = row.botAccessCheckedAt ?? this.readSnapshotCheckedAt(row.permissionsSnapshot);
+      const expiresAt = row.botAccessExpiresAt ?? null;
+      const hasConfirmedAccess =
+        row.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        row.botAccessState === ChatBotAccessState.CONFIRMED_OWNER ||
+        snapshot?.isAdmin === true ||
+        snapshot?.isOwner === true;
+
+      if (!hasConfirmedAccess || !checkedAt) {
+        continue;
+      }
+      if (!lastCheckedAt || checkedAt > lastCheckedAt) {
+        lastCheckedAt = checkedAt;
+        source = 'membership_snapshot';
+      }
+      if (expiresAt && (!freshUntil || expiresAt > freshUntil)) {
+        freshUntil = expiresAt;
+      }
+    }
+
+    return {
+      lastCheckedAt: lastCheckedAt?.toISOString() ?? null,
+      freshUntil: freshUntil?.toISOString() ?? null,
+      source,
+      activeBotCount,
+    };
+  }
+
+  private readSnapshotCheckedAt(value: unknown): Date | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const checkedAt = readTrimmedString((value as Record<string, unknown>).checkedAt);
+    if (!checkedAt) {
+      return null;
+    }
+    const checkedAtMs = Date.parse(checkedAt);
+    return Number.isFinite(checkedAtMs) ? new Date(checkedAtMs) : null;
   }
 
   private resolveActiveManagedEntityBotIds(
@@ -949,6 +1129,7 @@ export class ManagedEntitiesService {
       botId: string;
       status: ChatBotMembershipStatus;
       permissionsSnapshot: unknown;
+      botAccessState?: ChatBotAccessState | null;
     }>,
     grantedAccessEdgeRows: Array<{ botId: string }>,
   ): Set<string> {
@@ -958,6 +1139,13 @@ export class ManagedEntitiesService {
         continue;
       }
       if (!this.isRuntimeBotId(row.botId)) {
+        continue;
+      }
+      if (
+        row.botAccessState === ChatBotAccessState.CONFIRMED_ADMIN ||
+        row.botAccessState === ChatBotAccessState.CONFIRMED_OWNER
+      ) {
+        activeAccessBotIds.add(row.botId);
         continue;
       }
       const snapshot = normalizeMembershipAccessSnapshot(row.permissionsSnapshot);
@@ -975,6 +1163,42 @@ export class ManagedEntitiesService {
     }
 
     return activeAccessBotIds;
+  }
+
+  private readBotAccessLossDiagnostic(row: {
+    botId: string;
+    status: ChatBotMembershipStatus;
+    botAccessState?: ChatBotAccessState | null;
+    botAccessCheckedAt?: Date | null;
+    botAccessSource?: string | null;
+    botAccessLastErrorCode?: string | null;
+    updatedAt?: Date | null;
+  }): ManagedEntityAccessLossDiagnosticItem | null {
+    if (row.status !== ChatBotMembershipStatus.ACTIVE) {
+      return null;
+    }
+    if (
+      row.botAccessState !== ChatBotAccessState.DENIED &&
+      row.botAccessState !== ChatBotAccessState.LOST
+    ) {
+      return null;
+    }
+
+    const detectedAt = row.botAccessCheckedAt ?? row.updatedAt ?? null;
+    if (!detectedAt) {
+      return null;
+    }
+
+    return {
+      botId: row.botId,
+      botLabel: this.maxBotRegistry?.getBotById(row.botId)?.label ?? null,
+      reason: row.botAccessState === ChatBotAccessState.LOST ? 'chat_inaccessible' : 'bot_denied',
+      detectedAt: detectedAt.toISOString(),
+      source: readTrimmedString(row.botAccessSource) ?? 'membership_snapshot',
+      lastMaxErrorCode: readTrimmedString(row.botAccessLastErrorCode),
+      lastMaxErrorMessage: null,
+      lastMaxStatusCode: null,
+    };
   }
 
   private upsertAccessLossDiagnostic(
@@ -1051,11 +1275,15 @@ export class ManagedEntitiesService {
     userId: string,
     entityType: ManagedEntityType,
   ): Promise<boolean> {
-    const rows = await this.prisma.chatAdminAllowlist.findMany({
+    const now = new Date();
+    const adminMember = await this.prisma.managedEntityAdminMember.findFirst({
       where: {
         chatId,
         userId,
+        entityType: toPrismaEntityType(entityType),
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
         chat: {
+          catalogKind: 'MANAGED',
           entityType: toPrismaEntityType(entityType),
         },
       },
@@ -1064,7 +1292,25 @@ export class ManagedEntitiesService {
       },
       take: 1,
     });
-    return rows.length > 0;
+    if (adminMember) {
+      return true;
+    }
+
+    const legacyRows = await this.prisma.chatAdminAllowlist.findMany({
+      where: {
+        chatId,
+        userId,
+        chat: {
+          entityType: toPrismaEntityType(entityType),
+          OR: [{ catalogKind: 'MANAGED' }, { catalogKind: 'UNKNOWN' }],
+        },
+      },
+      select: {
+        chatId: true,
+      },
+      take: 1,
+    });
+    return legacyRows.length > 0;
   }
 
   private requireBotExecutionPlanner(): MaxBotExecutionPlannerService {

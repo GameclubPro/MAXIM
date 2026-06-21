@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
+  ChatBotAccessState,
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
   ChatEntityType,
@@ -205,6 +206,7 @@ export class MaxBotExecutionPlannerService {
       data: {
         capabilities: nextCapabilities,
         permissionsSnapshot: nextPermissionsSnapshot ?? Prisma.JsonNull,
+        ...this.toBotAccessStateUpdate(nextPermissionsSnapshot, 'execution_planner_assist'),
       },
     });
 
@@ -246,6 +248,7 @@ export class MaxBotExecutionPlannerService {
         },
         data: {
           permissionsSnapshot: snapshot ?? Prisma.JsonNull,
+          ...this.toBotAccessStateUpdate(snapshot, 'execution_planner_refresh'),
         },
       });
     }
@@ -631,6 +634,48 @@ export class MaxBotExecutionPlannerService {
         new Set(access.permissions.map((item) => item.trim()).filter(Boolean)),
       ),
     };
+  }
+
+  private toBotAccessStateUpdate(
+    snapshot: PermissionsSummary | null,
+    source: string,
+  ): {
+    botAccessState: ChatBotAccessState;
+    botAccessCheckedAt: Date | null;
+    botAccessExpiresAt: Date | null;
+    botAccessSource: string;
+    botAccessLastErrorCode: null;
+    permissionsHash: string | null;
+  } {
+    const checkedAtMs = snapshot?.checkedAt ? Date.parse(snapshot.checkedAt) : NaN;
+    const checkedAt = Number.isFinite(checkedAtMs) ? new Date(checkedAtMs) : null;
+    return {
+      botAccessState: this.resolveBotAccessState(snapshot),
+      botAccessCheckedAt: checkedAt,
+      botAccessExpiresAt: checkedAt
+        ? new Date(checkedAt.getTime() + ACCESS_SNAPSHOT_REFRESH_DEBOUNCE_MS)
+        : null,
+      botAccessSource: source,
+      botAccessLastErrorCode: null,
+      permissionsHash: snapshot ? this.hashPermissionsSummary(snapshot) : null,
+    };
+  }
+
+  private resolveBotAccessState(snapshot: PermissionsSummary | null): ChatBotAccessState {
+    if (!snapshot) {
+      return ChatBotAccessState.UNKNOWN;
+    }
+    if (snapshot.isOwner) {
+      return ChatBotAccessState.CONFIRMED_OWNER;
+    }
+    if (snapshot.isAdmin) {
+      return ChatBotAccessState.CONFIRMED_ADMIN;
+    }
+    return ChatBotAccessState.CONFIRMED_MEMBER;
+  }
+
+  private hashPermissionsSummary(snapshot: PermissionsSummary): string {
+    return Buffer.from(JSON.stringify(snapshot)).toString('base64url').slice(0, 128);
   }
 
   private readFreshPermissionsSummary(value: unknown, now = Date.now()): PermissionsSummary | null {

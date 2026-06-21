@@ -6,6 +6,7 @@ import {
   Prisma,
 } from '../prisma/prisma-client';
 import type { ManagedEntityBotCapability } from '@maxim/contracts';
+import { resolveChatCatalogKind } from '../common/chat-catalog-kind.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
@@ -475,6 +476,11 @@ export class MaxBotLinkService {
     const botId = explicitBotId ?? defaultRoute.botId ?? this.getDefaultBotId();
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
+    const catalogKind = resolveChatCatalogKind({
+      chatId,
+      entityType: entityType ?? null,
+      managedHint: true,
+    });
     const now = new Date();
 
     try {
@@ -485,6 +491,7 @@ export class MaxBotLinkService {
           botId,
           primaryBotId: botId,
           ...(entityType ? { entityType } : {}),
+          catalogKind,
         },
       });
       await this.upsertChatBotMembership(chatId, botId, {
@@ -517,6 +524,7 @@ export class MaxBotLinkService {
         botId: nextPrimaryBotId,
         primaryBotId: nextPrimaryBotId,
         ...(entityType ? { entityType } : {}),
+        catalogKind,
       },
     });
 
@@ -717,10 +725,20 @@ export class MaxBotLinkService {
         id: chatId,
         title,
         ...(entityType ? { entityType } : {}),
+        catalogKind: resolveChatCatalogKind({
+          chatId,
+          entityType: entityType ?? null,
+          contextOnlyHint: true,
+        }),
       },
       update: {
         title,
         ...(entityType ? { entityType } : {}),
+        catalogKind: resolveChatCatalogKind({
+          chatId,
+          entityType: entityType ?? null,
+          contextOnlyHint: true,
+        }),
       },
     });
 
@@ -783,6 +801,11 @@ export class MaxBotLinkService {
     const existingPrimaryBotId =
       this.botRegistry.getBotById(existing?.primaryBotId ?? existing?.botId ?? null)?.id ?? null;
     const nextPrimaryBotId = existingPrimaryBotId ?? normalizedPrimaryBotId;
+    const catalogKind = resolveChatCatalogKind({
+      chatId,
+      entityType: entityType ?? null,
+      contextOnlyHint: true,
+    });
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -792,11 +815,13 @@ export class MaxBotLinkService {
         botId: nextPrimaryBotId,
         primaryBotId: nextPrimaryBotId,
         ...(entityType ? { entityType } : {}),
+        catalogKind,
       },
       update: {
         title,
         ...(nextPrimaryBotId ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId } : {}),
         ...(entityType ? { entityType } : {}),
+        catalogKind,
       },
     });
 

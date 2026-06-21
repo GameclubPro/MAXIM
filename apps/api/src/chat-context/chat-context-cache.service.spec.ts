@@ -948,7 +948,17 @@ describe('ChatContextCacheService', () => {
       accessDiagnostics: {
         state: 'ok' as const,
         lastDetectedAt: null,
+        lastCheckedAt: null,
+        freshUntil: null,
+        source: 'unknown' as const,
+        activeBotCount: 0,
         lostBots: [],
+      },
+      viewerAccess: {
+        state: 'checking' as const,
+        reason: null,
+        checkedAt: null,
+        canEdit: false,
       },
     };
 

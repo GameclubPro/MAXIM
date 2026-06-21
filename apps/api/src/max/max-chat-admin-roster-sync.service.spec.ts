@@ -5,6 +5,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({}),
       },
       chatAdminAllowlist: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -13,9 +14,14 @@ describe('MaxChatAdminRosterSyncService', () => {
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       chatBotMembership: {
+        findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       managedEntityAccessEdge: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      managedEntityAdminMember: {
         upsert: jest.fn().mockResolvedValue(undefined),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
@@ -168,6 +174,45 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('backfills managed entity roster jobs from local memberships by default', async () => {
+    const { service, prisma, maxClient } = createService();
+    prisma.chatBotMembership.findMany = jest.fn().mockResolvedValue([
+      {
+        botId: 'bot-1',
+        lastSeenAt: new Date('2026-05-14T09:00:00.000Z'),
+        lastWebhookAt: null,
+        chat: {
+          id: '-100123',
+          title: 'Shared chat',
+          entityType: 'CHAT',
+          primaryBotId: 'bot-1',
+          botId: null,
+        },
+      },
+    ]);
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(service.backfillManagedEntitiesIndex()).resolves.toEqual({
+      discoveredChats: 1,
+      syncedChats: 1,
+    });
+
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(prisma.chatBotMembership.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: 'ACTIVE',
+        },
+      }),
+    );
+  });
+
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
     const {
@@ -286,6 +331,28 @@ describe('MaxChatAdminRosterSyncService', () => {
         }),
       }),
     );
+    expect(prisma.managedEntityAdminMember.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId_observedByBotId: {
+            chatId: '-100123',
+            userId: 'user-1',
+            observedByBotId: 'bot-1',
+          },
+        },
+        update: expect.objectContaining({
+          role: 'ADMIN',
+          expiresAt: new Date('2026-05-17T09:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(prisma.chat.update).toHaveBeenCalledWith({
+      where: { id: '-100123' },
+      data: {
+        catalogKind: 'MANAGED',
+        entityType: 'CHAT',
+      },
+    });
     expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
       '-100123',
       'chat',

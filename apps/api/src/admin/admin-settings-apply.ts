@@ -12,7 +12,7 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
-import { ChatEntityType } from '../prisma/prisma-client';
+import { ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { PrismaService } from '../prisma/prisma.service';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
 import type { ResolvedBotAssignmentData } from './admin-chat-settings';
@@ -191,6 +191,7 @@ export async function applySettingsToAllChats(params: {
             id: chatId,
             title: `Chat ${chatId}`,
             entityType: ChatEntityType.CHAT,
+            catalogKind: ChatCatalogKind.MANAGED,
             ...botAssignmentData,
             settings: {
               create: {
@@ -200,6 +201,7 @@ export async function applySettingsToAllChats(params: {
           },
           update: {
             ...botAssignmentData,
+            catalogKind: ChatCatalogKind.MANAGED,
             settings: {
               upsert: {
                 update: {

@@ -48,7 +48,17 @@ function toManagedEntityHeader(channel: ChatSummary): ManagedEntityHeader {
     accessDiagnostics: {
       state: 'ok',
       lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: channel.assignedBots?.length ?? 0,
       lostBots: [],
+    },
+    viewerAccess: {
+      state: 'checking',
+      reason: null,
+      checkedAt: null,
+      canEdit: false,
     },
   };
 }

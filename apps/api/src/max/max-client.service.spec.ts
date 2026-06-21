@@ -2225,6 +2225,42 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('single-flights concurrent current bot member access checks and shares the Redis cache', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValue(
+        from(
+          Promise.resolve({
+            status: 200,
+            data: {
+              user_id: 'bot-1',
+              role: 'admin',
+              is_admin: true,
+              permissions: ['delete_message'],
+            },
+          }),
+        ),
+      ),
+    };
+    const service = createService(httpService);
+
+    const [first, second] = await Promise.all([
+      service.getCurrentChatMemberAccess('chat-1'),
+      service.getCurrentChatMemberAccess('chat-1'),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    const secondHttpService = { request: jest.fn() };
+    const secondService = createService(secondHttpService);
+
+    await expect(secondService.getCurrentChatMemberAccess('chat-1')).resolves.toEqual(first);
+    expect(secondHttpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
   it('passes timeout override to targeted chat member lookups', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -2294,6 +2330,63 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('caches targeted chat member access and respects bypassCache', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              members: [
+                {
+                  user_id: 'user-1',
+                  role: 'admin',
+                  is_admin: true,
+                  permissions: ['delete_message'],
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              members: [
+                {
+                  user_id: 'user-1',
+                  role: 'member',
+                },
+              ],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const first = await service.getChatMembersAccess('chat-1', ['user-1']);
+    const cached = await service.getChatMembersAccess('chat-1', ['user-1']);
+    const fresh = await service.getChatMembersAccess('chat-1', ['user-1'], { bypassCache: true });
+
+    expect(first.get('user-1')).toEqual(
+      expect.objectContaining({
+        isAdmin: true,
+        permissions: ['delete_message'],
+      }),
+    );
+    expect(cached.get('user-1')).toEqual(first.get('user-1'));
+    expect(fresh.get('user-1')).toEqual(
+      expect.objectContaining({
+        isAdmin: false,
+        permissions: [],
+      }),
+    );
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
   it('passes timeout override to chat admin lookups', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -2327,6 +2420,39 @@ describe('MaxClientService inline keyboard guardrails', () => {
     );
 
     await service.onModuleDestroy();
+  });
+
+  it('caches chat admin id lookups per bot and shares them through Redis', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                role: 'admin',
+                is_admin: true,
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getChatAdminIds('chat-1')).resolves.toEqual(['user-1']);
+    await expect(service.getChatAdminIds('chat-1')).resolves.toEqual(['user-1']);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    const secondHttpService = { request: jest.fn() };
+    const secondService = createService(secondHttpService);
+
+    await expect(secondService.getChatAdminIds('chat-1')).resolves.toEqual(['user-1']);
+    expect(secondHttpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+    await secondService.onModuleDestroy();
   });
 
   it('paginates chat admin lookups until MAX stops returning a marker', async () => {
@@ -2972,6 +3098,43 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(cachedSnapshot.title).toBe('Chat 1');
     expect(freshSnapshot.title).toBe('Chat 1 Updated');
     expect(httpService.request).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
+  it('resolves channel snapshots by public chat link without listing bot chats', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            chat_id: 'channel-1',
+            title: 'Новости MAX',
+            participants_count: 10,
+            status: 'active',
+            is_public: true,
+            link: 'https://max.ru/channels/news-max',
+            type: 'channel',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getChannelSnapshotByLink('news-max')).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/news-max',
+      }),
+    );
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/news-max',
+      }),
+    );
 
     await service.onModuleDestroy();
   });

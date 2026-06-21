@@ -39,7 +39,10 @@ export function ManagedEntityAccessDiagnosticsBanner({
         <span>
           {entityLabel} недоступен · {REASON_LABELS[latest.reason]}
         </span>
-        <span>{formatDateTime(latest.detectedAt)}</span>
+        <span>
+          Верните бота в администраторы MAX, затем поставьте проверку в очередь ·{' '}
+          {formatDateTime(latest.detectedAt)}
+        </span>
       </div>
       <button
         type="button"
@@ -50,7 +53,7 @@ export function ManagedEntityAccessDiagnosticsBanner({
         disabled={isRechecking}
         onClick={onRecheck}
       >
-        {isRechecking ? 'Проверяем' : 'Перепроверить'}
+        {isRechecking ? 'Ставим в очередь' : 'Проверить снова'}
       </button>
     </section>
   );

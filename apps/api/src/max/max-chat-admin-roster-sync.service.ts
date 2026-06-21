@@ -2,7 +2,11 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
-import { ChatBotMembershipStatus, ChatEntityType, Prisma } from '../prisma/prisma-client';
+import {
+  ChatBotMembershipStatus,
+  ChatCatalogKind,
+  ChatEntityType,
+} from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import {
   ChatContextCacheService,
@@ -14,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
@@ -148,12 +153,34 @@ export class MaxChatAdminRosterSyncService {
     return this.syncChatAdminRoster(job);
   }
 
-  async backfillManagedEntitiesIndex(options: { bypassCache?: boolean } = {}): Promise<{
+  async backfillManagedEntitiesIndex(
+    options: { bypassCache?: boolean; allowRemoteListBotChats?: boolean } = {},
+  ): Promise<{
     discoveredChats: number;
     syncedChats: number;
   }> {
-    const mergedByChatId = new Map<string, MaxChatAdminRosterSyncJob>();
+    const mergedByChatId =
+      options.allowRemoteListBotChats === true
+        ? await this.loadRemoteBackfillJobs(options)
+        : await this.loadLocalBackfillJobs();
 
+    let syncedChats = 0;
+    for (const job of mergedByChatId.values()) {
+      if (await this.syncChatAdminRoster(job)) {
+        syncedChats += 1;
+      }
+    }
+
+    return {
+      discoveredChats: mergedByChatId.size,
+      syncedChats,
+    };
+  }
+
+  private async loadRemoteBackfillJobs(options: {
+    bypassCache?: boolean;
+  }): Promise<Map<string, MaxChatAdminRosterSyncJob>> {
+    const mergedByChatId = new Map<string, MaxChatAdminRosterSyncJob>();
     for (const bot of this.maxBotRegistry.getDiscoveryBots()) {
       const chats = await this.maxClient.listBotChats({
         trafficClass: 'background',
@@ -182,17 +209,71 @@ export class MaxChatAdminRosterSyncService {
       }
     }
 
-    let syncedChats = 0;
-    for (const job of mergedByChatId.values()) {
-      if (await this.syncChatAdminRoster(job)) {
-        syncedChats += 1;
+    return mergedByChatId;
+  }
+
+  private async loadLocalBackfillJobs(): Promise<Map<string, MaxChatAdminRosterSyncJob>> {
+    const mergedByChatId = new Map<string, MaxChatAdminRosterSyncJob>();
+    const memberships = await this.prisma.chatBotMembership.findMany({
+      where: {
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      select: {
+        botId: true,
+        lastSeenAt: true,
+        lastWebhookAt: true,
+        chat: {
+          select: {
+            id: true,
+            title: true,
+            entityType: true,
+            primaryBotId: true,
+            botId: true,
+          },
+        },
+      },
+      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+      take: 20_000,
+    });
+
+    for (const membership of memberships) {
+      const chatId = this.readTrimmedString(membership.chat.id);
+      if (!chatId) {
+        continue;
       }
+      const entityType = this.fromPrismaEntityType(membership.chat.entityType);
+      if (this.isUnsupportedManagedRosterSyncChat(chatId, entityType)) {
+        continue;
+      }
+
+      const existing = mergedByChatId.get(chatId);
+      const nextBotIds = Array.from(
+        new Set(
+          [
+            ...(existing?.botIds ?? []),
+            membership.botId,
+            membership.chat.primaryBotId,
+            membership.chat.botId,
+          ]
+            .map((botId) => this.maxBotRegistry.getBotById(botId)?.id ?? null)
+            .filter((botId): botId is string => Boolean(botId)),
+        ),
+      );
+      if (nextBotIds.length === 0) {
+        continue;
+      }
+
+      mergedByChatId.set(chatId, {
+        chatId,
+        botIds: nextBotIds,
+        title: existing?.title ?? this.readTrimmedString(membership.chat.title),
+        entityType: existing?.entityType ?? entityType,
+        source: 'discovery_snapshot',
+        retryUntilMs: null,
+      });
     }
 
-    return {
-      discoveredChats: mergedByChatId.size,
-      syncedChats,
-    };
+    return mergedByChatId;
   }
 
   private async syncChatAdminRoster(job: MaxChatAdminRosterSyncJob): Promise<boolean> {
@@ -242,6 +323,7 @@ export class MaxChatAdminRosterSyncService {
           botId,
           botRole: this.resolveManagedEntityAccessRole(access),
         });
+        await this.markCatalogManagedAfterConfirmedRoster(normalized);
         await this.reconcileNightModeAfterConfirmedAccess(normalized.chatId, botId);
         return true;
       } catch (error: unknown) {
@@ -608,12 +690,26 @@ export class MaxChatAdminRosterSyncService {
       botRole: accessContext.botRole,
       source: job.source ?? 'admin_roster_sync',
     });
+    await this.upsertManagedEntityAdminMembers({
+      chatId,
+      userIds: normalizedAdminUserIds,
+      botId: accessContext.botId,
+      entityType: job.entityType ?? null,
+      role: 'ADMIN',
+      source: job.source ?? 'admin_roster_sync',
+    });
     await this.markManagedEntityAccessEdgesDenied({
       chatId,
       userIds: usersToRemove,
       botId: accessContext.botId,
       state: 'USER_DENIED',
       deniedReason: 'user_removed_from_admin_roster',
+      source: job.source ?? 'admin_roster_sync',
+    });
+    await this.expireManagedEntityAdminMembers({
+      chatId,
+      userIds: usersToRemove,
+      botId: accessContext.botId,
       source: job.source ?? 'admin_roster_sync',
     });
 
@@ -628,6 +724,34 @@ export class MaxChatAdminRosterSyncService {
       chatId,
       job.entityType ?? null,
     );
+  }
+
+  private async markCatalogManagedAfterConfirmedRoster(
+    job: Pick<MaxChatAdminRosterSyncJob, 'chatId' | 'entityType'>,
+  ): Promise<void> {
+    const chatId = this.readTrimmedString(job.chatId);
+    if (!chatId || this.isUnsupportedManagedRosterSyncChat(chatId, job.entityType ?? null)) {
+      return;
+    }
+
+    try {
+      const entityType = job.entityType ? this.toPrismaEntityType(job.entityType) : null;
+      await this.prisma.chat.update({
+        where: { id: chatId },
+        data: {
+          catalogKind: ChatCatalogKind.MANAGED,
+          ...(entityType ? { entityType } : {}),
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to mark chat catalog kind as managed after confirmed roster sync',
+      );
+    }
   }
 
   private async clearAllowlist(
@@ -674,6 +798,11 @@ export class MaxChatAdminRosterSyncService {
       deniedReason: deniedState,
       source: 'admin_roster_sync_clear',
     });
+    await this.expireManagedEntityAdminMembers({
+      chatId,
+      userIds: existingUserIds,
+      source: 'admin_roster_sync_clear',
+    });
 
     await this.patchManagedEntitiesPublishedSnapshots({
       chatId,
@@ -705,6 +834,124 @@ export class MaxChatAdminRosterSyncService {
     return typeof candidate.upsert === 'function' || typeof candidate.updateMany === 'function'
       ? candidate
       : null;
+  }
+
+  private async upsertManagedEntityAdminMembers(params: {
+    chatId: string;
+    userIds: readonly string[];
+    botId: string;
+    entityType: ManagedEntityType | null;
+    role: Exclude<ManagedEntityAccessRoleValue, 'MEMBER' | 'UNKNOWN'>;
+    source: string;
+  }): Promise<void> {
+    if (!params.entityType) {
+      return;
+    }
+
+    const client = (this.prisma as PrismaService & {
+      managedEntityAdminMember?: {
+        upsert?: (args: unknown) => Promise<unknown>;
+      };
+    }).managedEntityAdminMember;
+    if (typeof client?.upsert !== 'function') {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const botId =
+      this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId);
+    if (!chatId || !botId) {
+      return;
+    }
+
+    const userIds = Array.from(
+      new Set(
+        params.userIds
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + MANAGED_ENTITY_ACCESS_EDGE_GRANTED_TTL_MS);
+    await this.mapWithConcurrencyLimit(
+      userIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await client.upsert?.({
+          where: {
+            chatId_userId_observedByBotId: {
+              chatId,
+              userId,
+              observedByBotId: botId,
+            },
+          },
+          create: {
+            chatId,
+            userId,
+            observedByBotId: botId,
+            entityType: this.toPrismaEntityType(params.entityType),
+            role: params.role,
+            permissions: [],
+            checkedAt: now,
+            expiresAt,
+            source: params.source,
+          },
+          update: {
+            entityType: this.toPrismaEntityType(params.entityType),
+            role: params.role,
+            checkedAt: now,
+            expiresAt,
+            source: params.source,
+          },
+        });
+        return null;
+      },
+    );
+  }
+
+  private async expireManagedEntityAdminMembers(params: {
+    chatId: string;
+    userIds: readonly string[];
+    botId?: string | null;
+    source: string;
+  }): Promise<void> {
+    const client = (this.prisma as PrismaService & {
+      managedEntityAdminMember?: {
+        updateMany?: (args: unknown) => Promise<unknown>;
+      };
+    }).managedEntityAdminMember;
+    if (typeof client?.updateMany !== 'function') {
+      return;
+    }
+
+    const chatId = this.readTrimmedString(params.chatId);
+    const userIds = Array.from(
+      new Set(
+        params.userIds
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    if (!chatId || userIds.length === 0) {
+      return;
+    }
+
+    const botId = params.botId
+      ? (this.maxBotRegistry.getBotById(params.botId)?.id ?? this.readTrimmedString(params.botId))
+      : null;
+    await client.updateMany({
+      where: {
+        chatId,
+        userId: {
+          in: userIds,
+        },
+        ...(botId ? { observedByBotId: botId } : {}),
+      },
+      data: {
+        expiresAt: new Date(),
+        source: params.source,
+      },
+    });
   }
 
   private resolveManagedEntityAccessRole(access: {
@@ -1292,25 +1539,19 @@ export class MaxChatAdminRosterSyncService {
     } | null,
   ): Promise<void> {
     try {
+      const now = new Date();
+      const snapshot = buildBotAccessSnapshotPersistence(access, {
+        source: 'admin_roster_sync',
+        now,
+      });
       await this.prisma.chatBotMembership.updateMany({
         where: {
           chatId: job.chatId,
           botId,
         },
         data: {
-          lastSeenAt: new Date(),
-          permissionsSnapshot: {
-            checkedAt: new Date().toISOString(),
-            isAdmin: access?.isAdmin === true,
-            isOwner: access?.isOwner === true,
-            permissions: Array.from(
-              new Set(
-                (access?.permissions ?? [])
-                  .map((permission) => permission.trim())
-                  .filter((permission) => permission.length > 0),
-              ),
-            ),
-          } satisfies Prisma.InputJsonValue,
+          lastSeenAt: now,
+          ...snapshot,
         },
       });
       await this.maxBotLinkService.reconcileChatPrimaryByAccess({

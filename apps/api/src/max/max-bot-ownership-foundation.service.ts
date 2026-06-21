@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   ChatBotMembershipRole,
   ChatBotMembershipStatus,
+  ChatCatalogKind,
   ChatEntityType,
   Prisma,
 } from '../prisma/prisma-client';
@@ -42,6 +43,7 @@ type ChatRecord = {
   title: string;
   botId: string | null;
   primaryBotId: string | null;
+  catalogKind: ChatCatalogKind;
 };
 
 type MembershipRecord = {
@@ -221,6 +223,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           title: true,
           botId: true,
           primaryBotId: true,
+          catalogKind: true,
         },
         orderBy: { createdAt: 'asc' },
       }),
@@ -255,6 +258,10 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     let appliedChanges = 0;
 
     for (const chat of chats) {
+      if (!this.isManagedOwnershipChat(chat)) {
+        continue;
+      }
+
       if (appliedChanges >= this.repairBatchSize) {
         break;
       }
@@ -676,6 +683,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           title: true,
           botId: true,
           primaryBotId: true,
+          catalogKind: true,
         },
       }),
       this.prisma.chatBotMembership.findMany({
@@ -697,6 +705,10 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     const channelCoverage = this.createCoverageAccumulator();
 
     for (const chat of chats) {
+      if (!this.isManagedOwnershipChat(chat)) {
+        continue;
+      }
+
       const chatMemberships = membershipsByChat.get(chat.id) ?? [];
       const activeKnownMemberships = chatMemberships.filter(
         (membership) =>
@@ -818,6 +830,13 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         totalAppliedChanges: this.runtimeState.totalAppliedChanges,
       },
     };
+  }
+
+  private isManagedOwnershipChat(chat: ChatRecord): boolean {
+    return (
+      chat.catalogKind === ChatCatalogKind.MANAGED ||
+      (chat.catalogKind === ChatCatalogKind.UNKNOWN && chat.entityType === ChatEntityType.CHANNEL)
+    );
   }
 
   private async readSnapshotFromRedis(): Promise<BotOwnershipFoundationSnapshot | null> {

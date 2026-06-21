@@ -250,13 +250,32 @@ export type ManagedEntityAccessLossDiagnosticItem = z.infer<
 >;
 
 export const managedEntityAccessDiagnosticsSchema = z.object({
-  state: z.enum(['ok', 'bot_access_lost']),
+  state: z.enum(['ok', 'checking', 'stale', 'bot_access_lost']),
   lastDetectedAt: z.string().datetime().nullable().optional().default(null),
+  lastCheckedAt: z.string().datetime().nullable().optional().default(null),
+  freshUntil: z.string().datetime().nullable().optional().default(null),
+  source: z
+    .enum(['live', 'access_edge', 'membership_snapshot', 'cache', 'unknown'])
+    .optional()
+    .default('unknown'),
+  activeBotCount: z.number().int().min(0).optional().default(0),
   lostBots: z.array(managedEntityAccessLossDiagnosticItemSchema).optional().default([]),
 });
 export type ManagedEntityAccessDiagnostics = z.infer<
   typeof managedEntityAccessDiagnosticsSchema
 >;
+
+export const managedEntityViewerAccessSchema = z.object({
+  state: z.enum(['granted', 'denied', 'stale', 'checking']),
+  reason: z
+    .enum(['user_not_admin', 'bot_not_admin', 'bot_access_lost', 'unknown'])
+    .nullable()
+    .optional()
+    .default(null),
+  checkedAt: z.string().datetime().nullable().optional().default(null),
+  canEdit: z.boolean().default(false),
+});
+export type ManagedEntityViewerAccess = z.infer<typeof managedEntityViewerAccessSchema>;
 
 export const managedEntityHeaderSchema = z.object({
   id: z.string(),
@@ -270,7 +289,18 @@ export const managedEntityHeaderSchema = z.object({
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
   accessDiagnostics: managedEntityAccessDiagnosticsSchema
     .optional()
-    .default({ state: 'ok', lastDetectedAt: null, lostBots: [] }),
+    .default({
+      state: 'ok',
+      lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 0,
+      lostBots: [],
+    }),
+  viewerAccess: managedEntityViewerAccessSchema
+    .optional()
+    .default({ state: 'checking', reason: null, checkedAt: null, canEdit: false }),
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
 
