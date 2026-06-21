@@ -324,6 +324,22 @@ export class CommercialSecondStageScorer {
     }
 
     if (
+      adjustedConfidenceScore < appliedThresholds.warnThreshold &&
+      decisionBand === 'LOW' &&
+      confidenceScore >= appliedThresholds.warnThreshold - commercialLogitConfig.rescueWindowBelowWarn &&
+      evidence.hasStructuredServicePhoneEvidence &&
+      state.hasServiceSpecialtyContext &&
+      state.hasPhoneContact &&
+      !state.hasSearchRequestContext &&
+      !state.hasJobSeekingContext &&
+      !state.hasStrongNegativeContext &&
+      state.negativeSignals.length === 0
+    ) {
+      adjustedConfidenceScore = appliedThresholds.warnThreshold;
+      classifierReasons.push('rescued-structured-service-phone');
+    }
+
+    if (
       adjustedConfidenceScore >= appliedThresholds.warnThreshold &&
       commercialProbability <= commercialLogitConfig.suppressPrivateLikeProbability &&
       (classification.primarySubtype === 'GOODS' || classification.primarySubtype === 'GENERIC') &&

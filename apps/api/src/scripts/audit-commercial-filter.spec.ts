@@ -2,7 +2,11 @@ import {
   derivePolicyCategory,
   deriveSafeContextBucket,
   readCliOptions,
+  resolveAuditCandidateScope,
+  resolveAuditChatSettings,
+  resolveAuditDetectionSettings,
 } from './audit-commercial-filter';
+import type { ChatSettings } from '../prisma/prisma-client';
 
 const emptySnapshot = {
   hit: false,
@@ -61,6 +65,14 @@ describe('audit-commercial-filter CLI options', () => {
     expect(readCliOptions(['--sample', '0']).sample).toBe(0);
   });
 
+  it('keeps the default audit scoped to chats where the filter is enabled', () => {
+    expect(readCliOptions([]).shadowAllChats).toBe(false);
+  });
+
+  it('can run a shadow commercial pass across all chats', () => {
+    expect(readCliOptions(['--shadow-all-chats']).shadowAllChats).toBe(true);
+  });
+
   it('rejects non-integer sample values instead of truncating them', () => {
     expect(() => readCliOptions(['--sample', '2x'])).toThrow(
       '--sample must be a non-negative integer',
@@ -68,6 +80,49 @@ describe('audit-commercial-filter CLI options', () => {
     expect(() => readCliOptions(['--sample', '1e6'])).toThrow(
       '--sample must be a non-negative integer',
     );
+  });
+});
+
+describe('audit-commercial-filter scope helpers', () => {
+  it('keeps the default candidate scope on chats where the filter is enabled', () => {
+    expect(resolveAuditCandidateScope({ shadowAllChats: false })).toEqual({
+      logLabel: 'enabled-chats',
+      settingsJoin: 'inner',
+      requireCommercialAdsFilterEnabled: true,
+    });
+  });
+
+  it('uses a left settings join for all-chat shadow audits', () => {
+    expect(resolveAuditCandidateScope({ shadowAllChats: true })).toEqual({
+      logLabel: 'shadow-all-chats',
+      settingsJoin: 'left',
+      requireCommercialAdsFilterEnabled: false,
+    });
+  });
+
+  it('uses default commercial settings when a shadow-audited chat has no settings row', () => {
+    const settings = resolveAuditChatSettings(null);
+
+    expect(settings.commercialAdsFilterEnabled).toBe(false);
+    expect(settings.commercialAdsSensitivity).toBe('BALANCED');
+    expect(settings.commercialAdsWarnThreshold).toBe(45);
+    expect(settings.commercialAdsDeleteThreshold).toBe(65);
+  });
+
+  it('enables commercial detection only inside the shadow audit pass', () => {
+    const settings = {
+      commercialAdsFilterEnabled: false,
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 45,
+      commercialAdsDeleteThreshold: 65,
+    } as ChatSettings;
+
+    expect(
+      resolveAuditDetectionSettings(settings, { shadowAllChats: false }).commercialAdsFilterEnabled,
+    ).toBe(false);
+    expect(
+      resolveAuditDetectionSettings(settings, { shadowAllChats: true }).commercialAdsFilterEnabled,
+    ).toBe(true);
   });
 });
 

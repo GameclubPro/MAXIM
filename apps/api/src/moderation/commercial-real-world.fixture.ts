@@ -2073,6 +2073,66 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       commercialAdsDeleteThreshold: 55,
     },
   },
+  {
+    label: 'balanced yard mowing service phone from fresh 48h audit miss',
+    text: `Покос травы триммером. Там где мы там чисто. +7 900 000 00 00`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: ['service-specialty:yard-cleanup-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced stretch ceiling phone from fresh 48h audit miss',
+    text: `Натяжные потолки, рулонные шторы, жалюзи. Бесплатный замер, завтра монтаж. +7 900 000 00 00`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: true,
+    expectedSignals: ['service-specialty:stretch-ceiling-service', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced honeysuckle volume price table from fresh 48h audit miss',
+    text: `Жимолость Бакчарский питомник: ручной сбор в контейнерах по 2 л - 400 ₽ / литр, механический сбор в коробках по 5 л - 350 ₽ / литр. +7 900 000 00 00`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['goods-retail:wholesale-produce', 'transaction:price', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced brick rubble delivery from fresh 48h audit miss',
+    text: `Бой кирпича с доставкой камазом. Чем ближе к району, тем дешевле. Принимаю заявки +7 900 000 00 00`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: true,
+    expectedSignals: ['goods-retail:bulk-materials', 'contact:phone'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'balanced home broiler price from fresh 48h audit miss',
+    text: `Продам домашних кур бройлеров. Цена 450 рублей за килограмм.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: true,
+    expectedSignals: ['goods-retail:farm-livestock-retail', 'transaction:price'],
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
 ];
 
 export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCase[] = [
@@ -2083,6 +2143,60 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
       commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'yard mowing recommendation request from fresh 48h guard',
+    text: `Кто делает покос травы триммером, подскажите телефон.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'buyer strawberry route order request from fresh 48h guard',
+    text: `Добрый день, а можно сделать заказ на клубнику Азию по маршруту автобуса, может быть будет кому-то удобно попутно?`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'private house sale still not poultry property false positive guard',
+    text: `Продам дом, цена 450000 рублей, участок 6 соток.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'generic completed repair phone reference is not a service ad',
+    text: `Ремонт в доме закончен. Телефон мастера +7 900 000 00 00, если нужны документы по работам.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'generic brigade status phone reference is not a service ad',
+    text: `Бригада приехала и работает на объекте. Телефон прораба +7 900 000 00 00.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    },
+  },
+  {
+    label: 'generic planned electrical work phone reference is not a service ad',
+    text: `Плановый электромонтаж завершён. Телефон администрации +7 900 000 00 00.`,
+    overrides: {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
     },
   },
   {

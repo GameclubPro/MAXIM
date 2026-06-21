@@ -1,8 +1,8 @@
 # Commercial Filter Upgrade Plan
 
-Дата ревизии: 2026-06-13.
+Дата ревизии: 2026-06-21.
 
-Документ описывает практический план дальнейшего апгрейда commercial ad filter после точечных runtime-исправлений по 24h-аудиту. Цель: поднять precision на safe-context сообщениях, сохранить recall по явной коммерции и сделать каждую блокировку объяснимой для аудита.
+Документ описывает практический план дальнейшего апгрейда commercial ad filter после точечных runtime-исправлений по 48h-аудиту. Цель: поднять precision на safe-context сообщениях, сохранить recall по явной коммерции и сделать каждую блокировку объяснимой для аудита.
 
 ## Scope
 
@@ -25,21 +25,25 @@
 - упоминания брендов и маркетплейсов без оффера;
 - обычные вакансии, обучение, муниципальная/социальная помощь.
 
-## 24h Audit Loop
+## 48h Audit Loop
 
-1. Выгрузить 24 часа кандидатов на VPS из `api-admin`:
+1. Выгрузить 48 часов кандидатов на VPS из `api-admin`:
 
 ```bash
 docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
   node apps/api/dist/apps/api/src/scripts/audit-commercial-filter.js \
-  --since <iso-24h-ago> \
+  --since <iso-48h-ago> \
   --until <iso-now> \
-  --limit 5000 \
+  --limit all \
   --sample 0 \
-  --export-jsonl /tmp/commercial-audit-24h.jsonl \
-  --export-corpus-jsonl /tmp/commercial-corpus-24h.jsonl \
+  --export-jsonl /tmp/commercial-audit-48h.jsonl \
+  --export-corpus-jsonl /tmp/commercial-corpus-48h.jsonl \
   --export-all-corpus
 ```
+
+Для shadow-проверки всех чатов, включая те, где фильтр выключен, добавлять
+`--shadow-all-chats`. Этот режим только принудительно включает commercial
+settings внутри audit pass и не меняет runtime-настройки чатов.
 
 2. Разобрать выборку по `policyCategory`, `segment`, `current.actionBand`, `current.reasonCodes`, `current.matchedSignals`, `current.negativeSignals`.
 3. Отдельно разметить buckets:
@@ -52,9 +56,43 @@ docker compose -p infra -f infra/docker-compose.yml exec -T api-admin \
    - `public_training_or_help`;
    - `true_commercial`.
 4. Для каждого false-positive кандидата сохранить минимальный sanitized текст, expected action, expected subtype, current signals и желаемый suppressor/threshold.
-5. Повторить audit после каждого изменения фильтра на новом 24h окне и на frozen corpus.
+5. Повторить audit после каждого изменения фильтра на новом 48h окне и на frozen corpus.
 
-## Latest 24h Audit Baseline
+## Latest 48h Audit Baseline
+
+Окно `2026-06-19T02:23:02Z..2026-06-21T02:23:02Z`, prod
+`api-admin`, `--limit all --sample 0`, enabled-chats scope:
+
+- candidates: `41245`;
+- evaluated after bot/admin/service skips: `31694`;
+- skipped: `9551`;
+- stable hit: `1784`;
+- current only: `1963`;
+- historical only: `10`;
+- dangerous action counters: `delete_false_positive_candidates=0`,
+  `gray_delete_candidates=0`, `campaign_only_delete_candidates=0`.
+
+Fresh corrections from this slice:
+
+- structured service+phone rescue for explicit local services stays
+  `REVIEW_ONLY`, not delete: yard mowing, stretch ceilings, appliance repair;
+- narrow goods-retail recall for honeysuckle/berry price tables, brick rubble
+  delivery by KamAZ/application wording, and home broiler price messages;
+- property-private suppressor boundary now treats `домашних` as poultry/goods
+  wording, not as `дом` real-estate context;
+- new audit option `--shadow-all-chats` allows running the same detector across
+  chats where the commercial filter is disabled, without changing runtime state;
+- ambiguous short service/private-sale leftovers remain intentionally narrow
+  until there is product, contact, inventory, campaign, or repeat-context
+  evidence.
+
+Local frozen-corpus validation against
+`artifacts/commercial-audit/current/commercial-48h-corpus-20260621T022302Z.jsonl`
+passed with hard recall `0.9992`, false-positive rate `0`, and subtype accuracy
+`1.0`. This validates the exported corpus snapshots; a true recalculation with
+the new detector requires running the deployed code against prod data.
+
+## Previous 24h Baseline
 
 Окно `2026-06-14T17:13:57Z..2026-06-15T17:13:57Z`, prod `api-admin`,
 `--limit all`, aggregate summary plus sanitized miss extraction:
@@ -123,7 +161,7 @@ The remaining productless shorthand `400р.кг + phone` is intentionally pinned
 `null` in regression tests until a product noun or repeated product context is
 available.
 
-Do not interpret every `safeContextBucket` hit as a false positive. The 24h
+Do not interpret every `safeContextBucket` hit as a false positive. The 48h
 audit showed wide buckets such as `news_or_analytics` and
 `private_one_off_sale` can contain true ads because the bucket classifier is a
 triage heuristic, not a labeler. Use sanitized samples plus matched signals and
@@ -133,8 +171,13 @@ action evidence before adding broad suppressors.
 
 ```bash
 npm run moderation:audit-commercial --workspace @maxim/api -- \
-  --since <iso> --until <iso> --limit 5000 \
+  --since <iso> --until <iso> --limit all \
   --export-corpus-jsonl src/moderation/commercial-corpus.next.jsonl \
+  --export-all-corpus
+
+npm run moderation:audit-commercial --workspace @maxim/api -- \
+  --since <iso> --until <iso> --limit all --shadow-all-chats \
+  --export-corpus-jsonl src/moderation/commercial-corpus.shadow.jsonl \
   --export-all-corpus
 
 npm run moderation:validate-commercial-corpus --workspace @maxim/api -- \
@@ -287,6 +330,8 @@ Extraction boundaries should keep current facades:
 Longer-term options:
 
 - maintain a small curated safe-context corpus separate from broad production JSONL;
+- add a shadow-all-chats daily sample so disabled-chat misses are measured before
+  changing defaults or recommending chat-level enablement;
 - add perf guards for near-misses around the widest commercial regex patterns
   and keep cold-start/warm-up coverage in `commercial-benchmark.spec.ts`;
 - add per-chat calibration profiles only after global suppressors stabilize;
@@ -295,7 +340,7 @@ Longer-term options:
 
 ## Done Criteria
 
-- 24h audit loop is repeatable locally and on VPS.
+- 48h audit loop is repeatable locally and on VPS.
 - Corpus gates pass with no delete false positives.
 - Safe-context buckets are represented in regression tests.
 - Every delete action has understandable direct/high-risk evidence.

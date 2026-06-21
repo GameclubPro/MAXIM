@@ -1,4 +1,4 @@
-import type { MaxUpdate } from '@maxim/contracts';
+import { chatSettingsSchema, type MaxUpdate } from '@maxim/contracts';
 import {
   createPrismaClient,
   Prisma,
@@ -33,6 +33,13 @@ type CliOptions = {
   exportCorpusJsonlPath?: string;
   includeStableHits: boolean;
   exportAllCorpus: boolean;
+  shadowAllChats: boolean;
+};
+
+type AuditCandidateScope = {
+  logLabel: 'enabled-chats' | 'shadow-all-chats';
+  settingsJoin: 'inner' | 'left';
+  requireCommercialAdsFilterEnabled: boolean;
 };
 
 type AuditCandidateRow = {
@@ -58,6 +65,8 @@ type ChatContext = {
   adminUserIds: Set<string>;
   botIdVariants: Set<string>;
 };
+
+const DEFAULT_AUDIT_CHAT_SETTINGS = chatSettingsSchema.parse({}) as unknown as ChatSettings;
 
 type AuditSkipReason =
   | 'missing-chat-context'
@@ -207,6 +216,7 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
   const exportCorpusJsonlPath = readStringOption(args, '--export-corpus-jsonl');
   const includeStableHits = args.includes('--include-stable-hits');
   const exportAllCorpus = args.includes('--export-all-corpus');
+  const shadowAllChats = args.includes('--shadow-all-chats');
 
   if (since.getTime() > until.getTime()) {
     throw new Error('--since must be earlier than or equal to --until');
@@ -222,7 +232,35 @@ export function readCliOptions(argv: readonly string[]): CliOptions {
     ...(exportCorpusJsonlPath ? { exportCorpusJsonlPath } : {}),
     includeStableHits,
     exportAllCorpus,
+    shadowAllChats,
   };
+}
+
+export function resolveAuditCandidateScope(
+  options: Pick<CliOptions, 'shadowAllChats'>,
+): AuditCandidateScope {
+  return options.shadowAllChats
+    ? {
+        logLabel: 'shadow-all-chats',
+        settingsJoin: 'left',
+        requireCommercialAdsFilterEnabled: false,
+      }
+    : {
+        logLabel: 'enabled-chats',
+        settingsJoin: 'inner',
+        requireCommercialAdsFilterEnabled: true,
+      };
+}
+
+export function resolveAuditChatSettings(settings: ChatSettings | null | undefined): ChatSettings {
+  return settings ?? DEFAULT_AUDIT_CHAT_SETTINGS;
+}
+
+export function resolveAuditDetectionSettings(
+  settings: ChatSettings,
+  options: Pick<CliOptions, 'shadowAllChats'>,
+): ChatSettings {
+  return options.shadowAllChats ? { ...settings, commercialAdsFilterEnabled: true } : settings;
 }
 
 function readDateOption(args: readonly string[], name: string): Date | undefined {
@@ -325,6 +363,13 @@ async function loadCandidates(
 ): Promise<AuditCandidateRow[]> {
   const chatFilterSql = options.chatId ? Prisma.sql`and c.id = ${options.chatId}` : Prisma.sql``;
   const limitSql = options.limit === null ? Prisma.sql`` : Prisma.sql`limit ${options.limit}`;
+  const scope = resolveAuditCandidateScope(options);
+  const settingsJoinSql = scope.settingsJoin === 'left'
+    ? Prisma.sql`left join chat_settings s on s.chat_id = c.id`
+    : Prisma.sql`join chat_settings s on s.chat_id = c.id`;
+  const commercialFilterSql = scope.requireCommercialAdsFilterEnabled
+    ? Prisma.sql`and s.commercial_ads_filter_enabled = true`
+    : Prisma.sql``;
 
   return prisma.$queryRaw<AuditCandidateRow[]>(Prisma.sql`
     with base as (
@@ -342,15 +387,14 @@ async function loadCandidates(
       from webhook_events w
       join chats c
         on c.id = w.normalized_payload #>> '{message,chatId}'
-      join chat_settings s
-        on s.chat_id = c.id
+      ${settingsJoinSql}
       where w.created_at >= ${options.since}
         and w.created_at <= ${options.until}
         and w.status = 'PROCESSED'
         and w.normalized_payload ->> 'type' = 'message_created'
         and coalesce(w.normalized_payload #>> '{message,text}', '') <> ''
         and coalesce(w.normalized_payload #>> '{message,messageId}', '') <> ''
-        and s.commercial_ads_filter_enabled = true
+        ${commercialFilterSql}
         ${chatFilterSql}
       order by w.created_at desc
       ${limitSql}
@@ -417,7 +461,6 @@ async function loadChatContexts(
 
   return new Map(
     rows
-      .filter((row): row is typeof row & { settings: ChatSettings } => row.settings !== null)
       .map((row) => {
         const botIdVariants = new Set<string>();
         for (const botId of [
@@ -433,7 +476,7 @@ async function loadChatContexts(
         return [
           row.id,
           {
-            settings: row.settings,
+            settings: resolveAuditChatSettings(row.settings),
             domainAllowlist: row.domains.map((item) => item.domain),
             adminUserIds: new Set(
               row.admins.map((item) => item.userId.trim()).filter((item) => item.length > 0),
@@ -1119,6 +1162,7 @@ async function main() {
   try {
     await prisma.$connect();
     const candidates = await loadCandidates(prisma, options);
+    const auditScope = resolveAuditCandidateScope(options);
     const orderedCandidates = [...candidates].sort(
       (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
     );
@@ -1149,6 +1193,7 @@ async function main() {
         `limit=${options.limit === null ? 'all' : options.limit}`,
         `sample=${options.sample}`,
         `chatId=${options.chatId ?? 'ALL'}`,
+        `scope=${auditScope.logLabel}`,
         `candidates=${candidates.length}`,
       ].join(' '),
     );
@@ -1178,7 +1223,7 @@ async function main() {
         chatId: row.chatId,
         userId: senderId,
         text,
-        settings: chatContext.settings,
+        settings: resolveAuditDetectionSettings(chatContext.settings, options),
         domainAllowlist: chatContext.domainAllowlist,
         effectiveLength: text.length,
         skipDuplicateState: true,
@@ -1245,7 +1290,7 @@ async function main() {
         sanitizedText,
         historical,
         current,
-        settings: pickAuditCorpusSettings(chatContext.settings),
+        settings: pickAuditCorpusSettings(resolveAuditDetectionSettings(chatContext.settings, options)),
         commercialCampaignContext,
       });
 

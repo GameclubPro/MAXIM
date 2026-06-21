@@ -54,6 +54,7 @@ const BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS = new Set([
   'intent:construction-multi-service',
   'intent:занимаюсь-услугами',
   'service-specialty:appliance-repair',
+  'service-specialty:stretch-ceiling-service',
   'service-specialty:custom-handmade-order',
   'service-specialty:custom-art-order',
   'service-specialty:crane-beam-installation',

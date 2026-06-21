@@ -714,7 +714,6 @@ describe('commercial pattern regressions', () => {
       text: 'Сдаю бюджетное жильё на Ольхоне: домики, душ, мангал. Телефон +7 900 000 10 20',
       subtype: 'PROPERTY_AGENT',
       signals: ['property-agent:short-stay-domiki-booking', 'contact:phone'],
-      negativeSignals: ['private:property-sale'],
     },
     {
       label: 'bare question sauna kit self promo from agent recall sweep',
@@ -1779,5 +1778,126 @@ describe('commercial pattern regressions', () => {
     expect(moving?.matchedSignals).toContain('service-specialty:moving-cargo-service');
     expect(strawberry?.primarySubtype).toBe('GOODS_RETAIL');
     expect(strawberry?.matchedSignals).toContain('goods-retail:wholesale-produce');
+  });
+
+  it('rescues explicit service-phone ads at balanced thresholds without deleting them', () => {
+    const settings = {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    } as const;
+    const cases = [
+      {
+        text: 'Покос травы триммером. Там где мы там чисто. +7 900 000 00 00',
+        signal: 'service-specialty:yard-cleanup-service',
+      },
+      {
+        text: 'НАТЯЖНЫЕ ПОТОЛКИ, рулонные шторы, жалюзи. Бесплатный замер, завтра монтаж. +7 900 000 00 00',
+        signal: 'service-specialty:stretch-ceiling-service',
+      },
+      {
+        text: 'Ремонт стиральных машин НА ДОМУ. Я лично отвечаю на звонки и сам приезжаю на ремонт. Опыт более 15 лет. +7 900 000 00 00',
+        signal: 'service-specialty:appliance-repair',
+      },
+    ];
+
+    for (const { text, signal } of cases) {
+      const result = detect(text, { settings });
+
+      expect(result?.primarySubtype).toBe('SERVICES');
+      expect(result?.actionBand).toBe('REVIEW_ONLY');
+      expect(result?.matchedSignals).toContain(signal);
+      expect(result?.matchedSignals).toContain('contact:phone');
+      expect(result?.classifierReasons).toContain('rescued-structured-service-phone');
+    }
+  });
+
+  it('detects fresh 48h goods retail misses without escalating private-like sales', () => {
+    const berry = detect(
+      'Жимолость Бакчарский питомник: ручной сбор в контейнерах по 2 л - 400 ₽ / литр, механический сбор в коробках по 5 л - 350 ₽ / литр. +7 900 000 00 00',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+    const brick = detect(
+      'Бой кирпича с доставкой камазом. Чем ближе к району, тем дешевле. Принимаю заявки +7 900 000 00 00',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+    const poultry = detect(
+      'Продам домашних кур бройлеров. Цена 450 рублей за килограмм.',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+
+    expect(berry?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(berry?.actionBand).toBe('DELETE');
+    expect(berry?.matchedSignals).toContain('goods-retail:wholesale-produce');
+    expect(berry?.matchedSignals).toContain('combo:contact+price');
+
+    expect(brick?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(brick?.actionBand).toBe('REVIEW_ONLY');
+    expect(brick?.matchedSignals).toContain('goods-retail:bulk-materials');
+
+    expect(poultry?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(poultry?.actionBand).toBe('REVIEW_ONLY');
+    expect(poultry?.matchedSignals).toContain('goods-retail:farm-livestock-retail');
+    expect(poultry?.negativeSignals).not.toContain('private:property-sale');
+  });
+
+  it('keeps neighboring request and private-real-estate wording suppressed', () => {
+    expect(
+      detect('Кто делает покос травы триммером, подскажите телефон', {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      detect(
+        'Добрый день, а можно сделать заказ на клубнику Азию по маршруту автобуса, может быть будет кому-то удобно попутно?',
+      ),
+    ).toBeNull();
+    expect(
+      detect('Продам дом, цена 450000 рублей, участок 6 соток', {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('does not rescue generic service mentions with phone-like references', () => {
+    const settings = {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    } as const;
+
+    for (const text of [
+      'Ремонт в доме закончен. Телефон мастера +7 900 000 00 00, если нужны документы по работам.',
+      'Бригада приехала и работает на объекте. Телефон прораба +7 900 000 00 00.',
+      'Плановый электромонтаж завершён. Телефон администрации +7 900 000 00 00.',
+    ]) {
+      expect(detect(text, { settings })).toBeNull();
+    }
   });
 });
