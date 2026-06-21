@@ -349,8 +349,8 @@ export function SystemPage({ api }: { api: ApiTransport }) {
                   <strong>{formatPercent(spammerReadModel.shadow.mismatchRate)}</strong>
                   <small>
                     {spammerReadModel.shadow.matched} matched /{' '}
-                    {spammerReadModel.shadow.mismatched} mismatch /{' '}
-                    {spammerReadModel.shadow.scoreDrift} score drift
+                    {spammerReadModel.shadow.mismatched} mismatch;{' '}
+                    {formatPercent(spammerReadModel.shadow.scoreDriftRate)} score drift
                   </small>
                 </article>
                 <article className="system-runtime-card">

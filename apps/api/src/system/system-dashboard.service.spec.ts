@@ -658,6 +658,7 @@ describe('SystemDashboardService', () => {
               matched: 9,
               mismatched: 1,
               scoreDrift: 2,
+              scoreDriftRate: 0.2,
               mismatchRate: 0.1,
             },
             profileWrites: {
@@ -727,6 +728,10 @@ describe('SystemDashboardService', () => {
       spammerReadModel: {
         profileReads: {
           hitRate: 0.75,
+        },
+        shadow: {
+          scoreDrift: 2,
+          scoreDriftRate: 0.2,
         },
         denormJobs: {
           avgAgeMs: 1_200,

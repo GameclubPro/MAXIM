@@ -91,6 +91,7 @@ type SpammerReadModelSummary = {
     matched: number;
     mismatched: number;
     scoreDrift: number;
+    scoreDriftRate: number;
     mismatchRate: number;
   };
   profileWrites: {
@@ -977,6 +978,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         matched,
         mismatched,
         scoreDrift,
+        scoreDriftRate: compared > 0 ? Number((scoreDrift / compared).toFixed(4)) : 0,
         mismatchRate: compared > 0 ? Number((mismatched / compared).toFixed(4)) : 0,
       },
       profileWrites: {

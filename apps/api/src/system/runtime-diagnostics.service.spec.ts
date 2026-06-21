@@ -175,6 +175,7 @@ describe('RuntimeDiagnosticsService', () => {
         matched: 1,
         mismatched: 1,
         scoreDrift: 1,
+        scoreDriftRate: 0.5,
         mismatchRate: 0.5,
       },
       profileWrites: {

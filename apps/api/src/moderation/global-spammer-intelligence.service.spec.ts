@@ -3156,12 +3156,19 @@ describe('GlobalSpammerIntelligenceService', () => {
 
   it('treats shadow score drift as matched when the runtime decision outcome is identical', async () => {
     const { prisma, runtimeProfiles } = createPrismaMock();
+    const runtimeDiagnostics = {
+      recordSpammerReadModelEvents: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new GlobalSpammerIntelligenceService(
       prisma as never,
       createConfigMock({
         SPAMMER_PROFILE_CACHE_ENABLED: 'true',
         SPAMMER_READ_MODEL_SHADOW_ENABLED: 'true',
       }),
+      undefined,
+      undefined,
+      undefined,
+      runtimeDiagnostics as never,
     );
     const debugSpy = jest
       .spyOn((service as any).logger, 'debug')
@@ -3224,6 +3231,10 @@ describe('GlobalSpammerIntelligenceService', () => {
         mismatches: [],
       }),
     );
+    expect(runtimeDiagnostics.recordSpammerReadModelEvents).toHaveBeenCalledWith({
+      events: ['shadow_compared', 'shadow_matched', 'shadow_score_drift'],
+      jobAgeMs: undefined,
+    });
   });
 
   it('skips runtime profile shadow comparison outside the configured sample', async () => {

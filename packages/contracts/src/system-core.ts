@@ -413,6 +413,7 @@ export const systemDashboardSpammerReadModelSchema = z.object({
     matched: z.number().int().min(0),
     mismatched: z.number().int().min(0),
     scoreDrift: z.number().int().min(0),
+    scoreDriftRate: z.number().min(0).max(1),
     mismatchRate: z.number().min(0).max(1),
   }),
   profileWrites: z.object({
