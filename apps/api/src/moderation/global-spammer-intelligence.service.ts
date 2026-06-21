@@ -2644,23 +2644,43 @@ export class GlobalSpammerIntelligenceService {
   }> {
     const chatScopedCandidates = params.chatId
       ? Prisma.sql`
-          SELECT DISTINCT ON (user_id) *
+          SELECT DISTINCT ON (user_id)
+            user_id,
+            status,
+            first_detected_at,
+            reviewed_at,
+            false_positive
           FROM (
-            SELECT c.*
+            SELECT
+              c.user_id,
+              c.status,
+              c.first_detected_at,
+              c.reviewed_at,
+              c.false_positive
             FROM global_spammer_candidate_chats edge
             INNER JOIN global_spammer_candidates c ON c.user_id = edge.candidate_user_id
             WHERE edge.chat_id = ${params.chatId}
 
             UNION ALL
 
-            SELECT c.*
+            SELECT
+              c.user_id,
+              c.status,
+              c.first_detected_at,
+              c.reviewed_at,
+              c.false_positive
             FROM global_spammer_candidates c
             WHERE c.last_chat_id = ${params.chatId}
           ) scoped
           ORDER BY user_id
         `
       : Prisma.sql`
-          SELECT c.*
+          SELECT
+            c.user_id,
+            c.status,
+            c.first_detected_at,
+            c.reviewed_at,
+            c.false_positive
           FROM global_spammer_candidates c
         `;
     const rows = await this.prisma.$queryRaw<ReviewMetricsCountRow[]>(Prisma.sql`
