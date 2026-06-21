@@ -985,7 +985,6 @@ export class GlobalSpammerIntelligenceService {
         suppressionReason: activeSuppression?.reason ?? null,
       },
     });
-    this.invalidateSourceReputationCache();
     await this.invalidateRuntimeProfileCaches(userId);
 
     return {

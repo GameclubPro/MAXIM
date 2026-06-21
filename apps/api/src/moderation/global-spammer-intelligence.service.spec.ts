@@ -1555,7 +1555,7 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
-  it('reuses the source reputation rollup for repeated diagnostics', async () => {
+  it('reuses the source reputation rollup across diagnostics and observation writes', async () => {
     const { prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
     prisma.$queryRaw.mockResolvedValueOnce([
@@ -1569,6 +1569,14 @@ describe('GlobalSpammerIntelligenceService', () => {
     await service.getUserDiagnostics({
       chatId: 'chat-1',
       userId: 'user-cache-1',
+    });
+    await service.recordObservation({
+      userId: 'user-cache-observation',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidence: { uniqueChats: 5 },
     });
     await service.getUserDiagnostics({
       chatId: 'chat-1',
