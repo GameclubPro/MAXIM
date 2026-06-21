@@ -252,6 +252,7 @@ const envSchema = z.object({
   SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED: envBoolean(false),
   SPAMMER_DENORM_ASYNC_ENABLED: envBoolean(true),
   SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: envBoolean(false),
+  SPAMMER_OBSERVATION_FAST_PATH_ENABLED: envBoolean(false),
   ACTION_CONCURRENCY: z.coerce.number().int().positive().default(8),
   CHANNEL_STATS_STARTUP_SYNC_ENABLED: envBoolean(false),
   CHANNEL_STATS_STARTUP_MAX_CHANNELS: z.coerce.number().int().min(0).default(6),

@@ -15,6 +15,7 @@ function createPrismaMock() {
   const registry = new Map<string, any>();
   const observations: any[] = [];
   const candidates = new Map<string, any>();
+  const candidateChats = new Map<string, any>();
   const suppressions: any[] = [];
   const localAdminDecisions: any[] = [];
   const chatAdminAllowlistRows: any[] = [];
@@ -92,7 +93,16 @@ function createPrismaMock() {
     count: jest.fn().mockResolvedValue(0),
   };
   const globalSpammerCandidateChat = {
-    upsert: jest.fn().mockResolvedValue({}),
+    upsert: jest.fn(async ({ where, create, update }: any) => {
+      const key = `${where.candidateUserId_chatId.candidateUserId}:${where.candidateUserId_chatId.chatId}`;
+      const existing = candidateChats.get(key);
+      const next = {
+        ...(existing ?? {}),
+        ...(existing ? applyData(existing, update) : create),
+      };
+      candidateChats.set(key, next);
+      return next;
+    }),
   };
   const globalSpammerSuppression = {
     findFirst: jest.fn(async ({ where }: any) => {
@@ -271,6 +281,23 @@ function createPrismaMock() {
       }
       return { count };
     }),
+    count: jest.fn(async ({ where }: any) =>
+      observations.filter((row) => {
+        if (typeof where.userId === 'string' && row.userId !== where.userId) {
+          return false;
+        }
+        if (typeof where.chatId === 'string' && row.chatId !== where.chatId) {
+          return false;
+        }
+        if (where.expiresAt?.gt && !(row.expiresAt > where.expiresAt.gt)) {
+          return false;
+        }
+        if ('suppressedAt' in where && row.suppressedAt !== where.suppressedAt) {
+          return false;
+        }
+        return true;
+      }).length,
+    ),
     groupBy: jest.fn().mockResolvedValue([]),
   };
   const spammerCampaignCluster = {
@@ -442,6 +469,7 @@ function createPrismaMock() {
     registry,
     observations,
     candidates,
+    candidateChats,
     campaignClusters,
     campaignMembers,
     shadowScores,
@@ -688,6 +716,235 @@ describe('GlobalSpammerIntelligenceService', () => {
           id: deduplicationId,
           keepLastIfActive: true,
         },
+      }),
+    );
+  });
+
+  it('uses fast observation ledger writes without immediate denorm when explicitly enabled', async () => {
+    const { observations, prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+      }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    const result = await service.recordObservation({
+      userId: 'User-Fast-Path',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidenceHash: 'fast-path-1',
+      evidence: { uniqueChats: 5 },
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: 'observed',
+        userId: 'user-fast-path',
+        aggregateScore: 0.68,
+      }),
+    );
+    expect(observations).toEqual([
+      expect.objectContaining({
+        userId: 'user-fast-path',
+        source: 'FANOUT_REPEAT',
+        evidenceHash: 'fast-path-1',
+      }),
+    ]);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerCandidate.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(prisma.spammerCampaignCluster.upsert).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerShadowScore.create).not.toHaveBeenCalled();
+  });
+
+  it('falls back to synchronous denorm when fast-path enqueue fails', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockRejectedValue(new Error('redis down')),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+      }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+
+    const result = await service.recordObservation({
+      userId: 'User-Fast-Fallback',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidenceHash: 'fast-fallback-1',
+      evidence: { uniqueChats: 5 },
+    });
+
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe('candidate');
+    expect(prisma.globalSpammerCandidate.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-fast-fallback',
+          status: 'PENDING',
+        }),
+      }),
+    );
+  });
+
+  it('keeps manual/admin observation sources synchronous even during active suppression', async () => {
+    const { prisma } = createPrismaMock();
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+      }),
+      undefined,
+      undefined,
+      queue as never,
+    );
+    await service.recordSuppression({
+      userId: 'User-Manual-Sync',
+      source: 'MANUAL_UNBAN',
+      reason: 'false positive',
+      adminUserId: 'admin-1',
+    });
+    jest.clearAllMocks();
+
+    const result = await service.recordManualBanObservation({
+      chatId: 'chat-1',
+      targetUserId: 'User-Manual-Sync',
+      actorUserId: 'admin-2',
+      source: 'miniapp',
+      executionMode: 'ban',
+    });
+
+    expect(result.outcome).toBe('suppressed');
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.globalSpammerCandidate.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          userId: 'user-manual-sync',
+          status: 'SUPPRESSED',
+          falsePositive: true,
+        }),
+      }),
+    );
+  });
+
+  it('recomputes observation denorm jobs idempotently from the ledger', async () => {
+    const { candidateChats, candidates, prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({
+        SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
+      }),
+    );
+    const observedAt = new Date(Date.now() - 1_000);
+
+    await service.recordObservation({
+      userId: 'User-Denorm-Idempotent',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      messageId: 'message-1',
+      evidenceHash: 'denorm-idempotent-1',
+      evidence: { uniqueChats: 5, excerpt: 'spam text' },
+      observedAt,
+    });
+    prisma.globalSpammerCandidate.upsert.mockClear();
+    prisma.globalSpammerCandidateChat.upsert.mockClear();
+
+    const job = {
+      userId: 'User-Denorm-Idempotent',
+      chatId: 'chat-1',
+      observationId: 'obs-1',
+      source: 'FANOUT_REPEAT',
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      observedAt: observedAt.toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+
+    await service.processObservationDenormJob(job);
+    const firstCandidate = candidates.get('user-denorm-idempotent');
+    const firstEdge = candidateChats.get('user-denorm-idempotent:chat-1');
+    await service.processObservationDenormJob(job);
+
+    expect(candidates.get('user-denorm-idempotent')).toEqual(
+      expect.objectContaining({
+        status: 'PENDING',
+        detectionsCount: firstCandidate?.detectionsCount,
+        confidenceScore: firstCandidate?.confidenceScore,
+      }),
+    );
+    expect(candidateChats.get('user-denorm-idempotent:chat-1')).toEqual(
+      expect.objectContaining({
+        detectionsCount: firstEdge?.detectionsCount,
+        lastMessageId: 'message-1',
+      }),
+    );
+    const updateCalls = prisma.globalSpammerCandidate.upsert.mock.calls.map(
+      (call) => call[0]?.update,
+    );
+    for (const update of updateCalls) {
+      expect(update?.detectionsCount).not.toEqual(
+        expect.objectContaining({ increment: expect.any(Number) }),
+      );
+    }
+  });
+
+  it('leaves queued observation denorm jobs as runtime-profile refresh only while fast path is off', async () => {
+    const { candidates, prisma, runtimeProfiles } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(
+      prisma as never,
+      createConfigMock({ SPAMMER_PROFILE_CACHE_ENABLED: 'true' }),
+    );
+
+    await service.recordObservation({
+      userId: 'User-Denorm-Flag-Off',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidenceHash: 'denorm-flag-off-1',
+      evidence: { uniqueChats: 5 },
+    });
+    candidates.clear();
+    prisma.globalSpammerCandidate.upsert.mockClear();
+
+    await service.processObservationDenormJob({
+      userId: 'User-Denorm-Flag-Off',
+      chatId: 'chat-1',
+      observationId: 'obs-1',
+      source: 'FANOUT_REPEAT',
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      observedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(prisma.globalSpammerCandidate.upsert).not.toHaveBeenCalled();
+    expect(runtimeProfiles.get('user-denorm-flag-off')).toEqual(
+      expect.objectContaining({
+        registryStatus: 'NONE',
       }),
     );
   });
