@@ -1322,6 +1322,7 @@ function SpammerDiagnosticsSheet({
   target,
   diagnostics,
   isLoading,
+  isLoadingDetails,
   isRefreshing,
   error,
   reviewingAction,
@@ -1336,6 +1337,7 @@ function SpammerDiagnosticsSheet({
   target: SpammerDiagnosticsTarget | null;
   diagnostics: GlobalSpammerUserDiagnostics | null;
   isLoading: boolean;
+  isLoadingDetails: boolean;
   isRefreshing: boolean;
   error: unknown;
   reviewingAction: GlobalSpammerReviewAction | null;
@@ -1366,6 +1368,7 @@ function SpammerDiagnosticsSheet({
   const verdictTone = diagnostics ? resolveDiagnosticsVerdictTone(diagnostics) : 'neutral';
   const canShowShell = Boolean(target || diagnostics);
   const canShowError = Boolean(errorMessage && !diagnostics);
+  const isSignalsLoading = isLoading || isLoadingDetails;
   const isReviewing = Boolean(reviewingAction);
   const isActionBusy = isReviewing || isBanning;
   const footer = diagnostics ? (
@@ -1555,7 +1558,11 @@ function SpammerDiagnosticsSheet({
             <div className="spammer-diagnostics__section-head">
               <span>Сигналы</span>
               <strong>
-                {signalCount > 0 ? formatDiagnosticsSignalCount(signalCount) : 'Сигналов нет'}
+                {signalCount > 0
+                  ? formatDiagnosticsSignalCount(signalCount)
+                  : isSignalsLoading
+                    ? 'Загружаем'
+                    : 'Сигналов нет'}
               </strong>
             </div>
             {signalGroups.length > 0 ? (
@@ -1574,9 +1581,9 @@ function SpammerDiagnosticsSheet({
               </div>
             ) : (
               <div className="spammer-diagnostics__empty">
-                <strong>{isLoading ? 'Загружаем сигналы' : 'Пока нет сигналов'}</strong>
+                <strong>{isSignalsLoading ? 'Загружаем сигналы' : 'Пока нет сигналов'}</strong>
                 <span>
-                  {isLoading
+                  {isSignalsLoading
                     ? 'Профиль уже открыт, подробная диагностика появится следом.'
                     : 'Можно внести пользователя вручную или закрыть досье.'}
                 </span>
@@ -2159,10 +2166,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
   });
-  const spammerDiagnosticsLightReady =
-    spammerDiagnosticsLightQuery.data?.userId === spammerDiagnosticsUserId ||
-    spammerDiagnosticsLightQuery.isFetched ||
-    spammerDiagnosticsLightQuery.isError;
   const spammerDiagnosticsFullQuery = useQuery({
     queryKey: queryKeys.globalSpammerUserDiagnostics(
       chatId,
@@ -2179,7 +2182,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           signal,
         },
       ),
-    enabled: Boolean(chatId && spammerDiagnosticsUserId && spammerDiagnosticsLightReady),
+    enabled: Boolean(chatId && spammerDiagnosticsUserId),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
@@ -2205,6 +2208,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const isSpammerDiagnosticsRefreshing =
     Boolean(spammerDiagnostics) &&
     (spammerDiagnosticsLightQuery.isFetching || spammerDiagnosticsFullQuery.isFetching);
+  const isSpammerDiagnosticsLoadingDetails =
+    Boolean(
+      spammerDiagnosticsLight && !spammerDiagnosticsFull && spammerDiagnosticsFullQuery.isFetching,
+    );
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
@@ -2539,6 +2546,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           chatId,
           targetUserId,
           SPAMMER_DIAGNOSTICS_LIGHT_QUERY,
+          { signal },
+        ),
+      staleTime: 60_000,
+      gcTime: 10 * 60_000,
+    });
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.globalSpammerUserDiagnostics(
+        chatId,
+        targetUserId,
+        SPAMMER_DIAGNOSTICS_FULL_SCOPE,
+      ),
+      queryFn: ({ signal }) =>
+        getGlobalSpammerUserDiagnostics(
+          api,
+          chatId,
+          targetUserId,
+          SPAMMER_DIAGNOSTICS_FULL_QUERY,
           { signal },
         ),
       staleTime: 60_000,
@@ -3201,6 +3225,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         target={spammerDiagnosticsTarget}
         diagnostics={spammerDiagnostics}
         isLoading={isSpammerDiagnosticsLoading}
+        isLoadingDetails={isSpammerDiagnosticsLoadingDetails}
         isRefreshing={isSpammerDiagnosticsRefreshing}
         error={spammerDiagnosticsError}
         reviewingAction={

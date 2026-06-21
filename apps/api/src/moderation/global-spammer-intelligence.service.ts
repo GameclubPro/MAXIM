@@ -105,15 +105,15 @@ export type GlobalSpammerPrivacyPruneResult = {
 };
 
 type ActiveObservationRow = {
-  id: string;
-  userId: string;
+  id?: string;
+  userId?: string;
   source: string;
   score: number;
   reason: string;
-  chatId: string | null;
-  messageId: string | null;
-  evidenceHash: string;
-  evidence: Prisma.JsonValue | null;
+  chatId?: string | null;
+  messageId?: string | null;
+  evidenceHash?: string;
+  evidence?: Prisma.JsonValue | null;
   observedAt: Date;
   expiresAt: Date;
 };
@@ -378,6 +378,22 @@ type SpammerObservationLedgerResult = {
   confidenceLevel: GlobalSpammerConfidenceLevel;
   activeSuppression: GlobalSpammerSuppressionRow | null;
   observationId: string;
+};
+
+type DenormObservationSnapshot = {
+  id: string;
+  userId: string;
+  source: string;
+  score: number;
+  reason: string;
+  chatId: string | null;
+  messageId: string | null;
+  evidenceHash: string;
+  evidence: Prisma.JsonValue | null;
+  normalizedFeatures: Prisma.JsonValue;
+  observedAt: Date;
+  suppressedAt: Date | null;
+  suppressionReason: string | null;
 };
 
 type ReviewQueueCandidateIdRow = {
@@ -884,7 +900,9 @@ export class GlobalSpammerIntelligenceService {
         observationId: ledger.observationId,
         source: input.source,
         reason: input.reason,
+        userLabel: input.userLabel ?? null,
         observedAt: ledger.observedAt,
+        fastPath: true,
       });
       if (!enqueued) {
         return this.recordObservationDenormSync(ledger, { enqueueDenormJob: false });
@@ -943,6 +961,13 @@ export class GlobalSpammerIntelligenceService {
       expiresAt,
       evidenceHash,
     });
+    const normalizedUserLabel = this.normalizeUserFacingName(input.userLabel ?? null, userId);
+    if (normalizedUserLabel) {
+      ledgerMetadata.normalizedFeatures = {
+        ...ledgerMetadata.normalizedFeatures,
+        userLabel: normalizedUserLabel,
+      };
+    }
 
     const observationRow = await this.prisma.spammerObservation.upsert({
       where: {
@@ -1227,6 +1252,9 @@ export class GlobalSpammerIntelligenceService {
           chatId,
           source: jobSource,
           reason: this.normalizeText(job.reason ?? null),
+          userLabel: this.normalizeText(job.userLabel ?? null) || null,
+          observationId: this.normalizeText(job.observationId ?? null) || null,
+          fastPath: job.fastPath === true,
           now,
         });
       }
@@ -1284,22 +1312,15 @@ export class GlobalSpammerIntelligenceService {
     chatId: string | null;
     source: GlobalSpammerObservationSource;
     reason: string;
+    userLabel: string | null;
+    observationId: string | null;
+    fastPath: boolean;
     now: Date;
   }): Promise<void> {
-    const [latestObservation, aggregate, activeSuppression] = await Promise.all([
-      this.prisma.spammerObservation.findMany({
-        where: {
-          userId: params.userId,
-        },
-        orderBy: {
-          observedAt: 'desc',
-        },
-        take: 1,
-      }),
-      this.computeAggregateForUser(params.userId, params.now),
-      this.findActiveSuppression(params.userId, params.now),
-    ]);
-    const latest = latestObservation[0] ?? null;
+    const latest = await this.resolveDenormObservationSnapshot({
+      userId: params.userId,
+      observationId: params.observationId,
+    });
     if (!latest) {
       return;
     }
@@ -1316,8 +1337,23 @@ export class GlobalSpammerIntelligenceService {
       evidenceHash: latest.evidenceHash,
       observedAt: latest.observedAt,
     };
+    if (params.fastPath) {
+      await this.replayObservationSideEffects({
+        userId: params.userId,
+        input: latestInput,
+        observationId: latest.id,
+        observedAt: latest.observedAt,
+        score: latest.score,
+        activeSuppression: this.buildDenormActiveSuppressionSnapshot(latest),
+      });
+    }
+    const [aggregate, activeSuppression] = await Promise.all([
+      this.computeAggregateForUser(params.userId, params.now),
+      this.findActiveSuppression(params.userId, params.now),
+    ]);
     const reason = params.reason || latest.reason;
     const chatId = params.chatId ?? latest.chatId ?? null;
+    const userLabel = this.resolveDenormUserLabel(latest, params.userLabel, params.userId);
     const evidence = this.buildCandidateEvidence(latestInput, aggregate, latest.evidenceHash);
 
     if (activeSuppression) {
@@ -1327,7 +1363,7 @@ export class GlobalSpammerIntelligenceService {
         reason,
         chatId,
         messageId: latest.messageId,
-        userLabel: null,
+        userLabel,
         evidence,
         aggregate,
         suppressedUntil: activeSuppression.suppressedUntil,
@@ -1370,7 +1406,7 @@ export class GlobalSpammerIntelligenceService {
         reason,
         chatId,
         messageId: latest.messageId,
-        userLabel: null,
+        userLabel,
         evidence,
         aggregate,
         suppressedUntil: null,
@@ -1380,6 +1416,114 @@ export class GlobalSpammerIntelligenceService {
         detectedAt: latest.observedAt,
       });
     }
+  }
+
+  private async resolveDenormObservationSnapshot(params: {
+    userId: string;
+    observationId: string | null;
+  }): Promise<DenormObservationSnapshot | null> {
+    const select = {
+      id: true,
+      userId: true,
+      source: true,
+      score: true,
+      reason: true,
+      chatId: true,
+      messageId: true,
+      evidenceHash: true,
+      evidence: true,
+      normalizedFeatures: true,
+      observedAt: true,
+      suppressedAt: true,
+      suppressionReason: true,
+    } satisfies Prisma.SpammerObservationSelect;
+    if (params.observationId) {
+      const rows = await this.prisma.spammerObservation.findMany({
+        where: {
+          userId: params.userId,
+          id: params.observationId,
+        },
+        select,
+        take: 1,
+      });
+      const row = rows[0] ?? null;
+      if (row) {
+        return row;
+      }
+    }
+
+    const rows = await this.prisma.spammerObservation.findMany({
+      where: {
+        userId: params.userId,
+      },
+      select,
+      orderBy: {
+        observedAt: 'desc',
+      },
+      take: 1,
+    });
+    return rows[0] ?? null;
+  }
+
+  private async replayObservationSideEffects(params: {
+    userId: string;
+    input: GlobalSpammerObservationInput;
+    observationId: string;
+    observedAt: Date;
+    score: number;
+    activeSuppression: { reason: string } | null;
+  }): Promise<void> {
+    const campaignSummaries = await this.recordCampaignClustersForObservation({
+      userId: params.userId,
+      input: params.input,
+      observationId: params.observationId,
+      observedAt: params.observedAt,
+      score: params.score,
+      incrementExisting: false,
+    });
+
+    if (!this.isGraphObservationSource(params.input.source)) {
+      await this.recordGraphSignalsForObservation({
+        userId: params.userId,
+        input: params.input,
+        observedAt: params.observedAt,
+        activeSuppression: params.activeSuppression,
+      });
+    }
+
+    const aggregate = await this.computeAggregateForUser(params.userId, params.observedAt);
+    await this.recordShadowScoreForObservation({
+      userId: params.userId,
+      input: params.input,
+      observationId: params.observationId,
+      aggregate,
+      campaignSummaries,
+      activeSuppression: Boolean(params.activeSuppression),
+      skipExistingObservation: true,
+    });
+  }
+
+  private buildDenormActiveSuppressionSnapshot(
+    observation: DenormObservationSnapshot,
+  ): { reason: string } | null {
+    return observation.suppressedAt
+      ? { reason: observation.suppressionReason || 'ACTIVE_SUPPRESSION' }
+      : null;
+  }
+
+  private resolveDenormUserLabel(
+    observation: DenormObservationSnapshot,
+    jobUserLabel: string | null,
+    userId: string,
+  ): string | null {
+    return (
+      this.normalizeUserFacingName(jobUserLabel, userId) ||
+      this.normalizeUserFacingName(
+        this.readString(this.asRecord(observation.normalizedFeatures)?.userLabel),
+        userId,
+      ) ||
+      null
+    );
   }
 
   private shouldProcessObservationFastDenormJob(source: GlobalSpammerObservationSource): boolean {
@@ -3656,7 +3800,9 @@ export class GlobalSpammerIntelligenceService {
     observationId: string;
     source: GlobalSpammerObservationSource;
     reason: string;
+    userLabel?: string | null;
     observedAt: Date;
+    fastPath?: boolean;
   }): Promise<boolean> {
     if (!this.observationDenormQueueEnabled || !this.observationDenormQueue) {
       return false;
@@ -3668,7 +3814,9 @@ export class GlobalSpammerIntelligenceService {
       observationId: params.observationId,
       source: params.source,
       reason: params.reason,
+      userLabel: params.userLabel ?? null,
       observedAt: params.observedAt.toISOString(),
+      fastPath: params.fastPath === true,
       createdAt: new Date().toISOString(),
     };
     const deduplicationId = buildGlobalSpammerDenormDeduplicationId(params.userId);
@@ -3970,6 +4118,7 @@ export class GlobalSpammerIntelligenceService {
     observationId: string;
     observedAt: Date;
     score: number;
+    incrementExisting?: boolean;
   }): Promise<CampaignClusterSummary[]> {
     const signals = this.extractCampaignSignals(params.input);
     if (signals.length === 0) {
@@ -4007,6 +4156,7 @@ export class GlobalSpammerIntelligenceService {
     observedAt: Date;
     score: number;
     signal: ExtractedCampaignSignal;
+    incrementExisting?: boolean;
   }): Promise<CampaignClusterSummary | null> {
     const signalHash = this.buildEvidenceHash({
       type: params.signal.signalType,
@@ -4027,6 +4177,7 @@ export class GlobalSpammerIntelligenceService {
         reasons: [params.signal.reason],
       },
     } satisfies Prisma.InputJsonObject;
+    const incrementExisting = params.incrementExisting !== false;
     const cluster = await this.prisma.spammerCampaignCluster.upsert({
       where: {
         clusterKey,
@@ -4051,9 +4202,7 @@ export class GlobalSpammerIntelligenceService {
         signalValuePreview: params.signal.preview,
         lastSeenAt: params.observedAt,
         lastObservationId: params.observationId,
-        observationsCount: {
-          increment: 1,
-        },
+        ...(incrementExisting ? { observationsCount: { increment: 1 } } : {}),
         expiresAt,
       },
     });
@@ -4081,9 +4230,7 @@ export class GlobalSpammerIntelligenceService {
       update: {
         chatId: params.input.chatId ?? null,
         lastSeenAt: params.observedAt,
-        observationsCount: {
-          increment: 1,
-        },
+        ...(incrementExisting ? { observationsCount: { increment: 1 } } : {}),
         lastObservationId: params.observationId,
         lastSource: params.signal.source,
         lastReason: params.signal.reason,
@@ -4210,11 +4357,26 @@ export class GlobalSpammerIntelligenceService {
     aggregate: AggregateResult;
     campaignSummaries: readonly CampaignClusterSummary[];
     activeSuppression: boolean;
+    skipExistingObservation?: boolean;
   }): Promise<ShadowScoreSummary | null> {
     try {
       const summary = this.buildShadowScoreSummary(params.aggregate, params.campaignSummaries, {
         activeSuppression: params.activeSuppression,
       });
+      if (params.skipExistingObservation) {
+        const existing = await this.prisma.globalSpammerShadowScore.findFirst({
+          where: {
+            userId: params.userId,
+            observationId: params.observationId,
+          },
+          orderBy: {
+            createdAt: 'desc',
+          },
+        });
+        if (existing) {
+          return summary;
+        }
+      }
       await this.prisma.globalSpammerShadowScore.create({
         data: {
           userId: params.userId,
@@ -5088,6 +5250,13 @@ export class GlobalSpammerIntelligenceService {
         observedAt: 'desc',
       },
       take: 100,
+      select: {
+        source: true,
+        score: true,
+        reason: true,
+        observedAt: true,
+        expiresAt: true,
+      },
     });
 
     const sourceReputation = await this.getSourceReputationMap(now);

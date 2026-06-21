@@ -24,6 +24,16 @@ function createPrismaMock() {
   const shadowScores: any[] = [];
   const reviewFeedback: any[] = [];
   const runtimeProfiles = new Map<string, any>();
+  const applySelect = (row: any, select: any) => {
+    if (!select) {
+      return row;
+    }
+    return Object.fromEntries(
+      Object.entries(select)
+        .filter(([, enabled]) => enabled)
+        .map(([key]) => [key, row[key]]),
+    );
+  };
   const applyData = (row: any, data: any) => {
     const next = { ...row };
     for (const [key, value] of Object.entries(data ?? {})) {
@@ -222,12 +232,15 @@ function createPrismaMock() {
       }
       return next;
     }),
-    findMany: jest.fn(async ({ where, orderBy, take }: any) => {
+    findMany: jest.fn(async ({ where, orderBy, take, select }: any) => {
       let rows = observations.filter((row) => {
         if (where.userId?.in && !where.userId.in.includes(row.userId)) {
           return false;
         }
         if (typeof where.userId === 'string' && row.userId !== where.userId) {
+          return false;
+        }
+        if (typeof where.id === 'string' && row.id !== where.id) {
           return false;
         }
         if (where.expiresAt?.gt && !(row.expiresAt > where.expiresAt.gt)) {
@@ -257,7 +270,8 @@ function createPrismaMock() {
             (right.rawEvidenceExpiresAt?.getTime() ?? 0),
         );
       }
-      return typeof take === 'number' ? rows.slice(0, take) : rows;
+      const limitedRows = typeof take === 'number' ? rows.slice(0, take) : rows;
+      return limitedRows.map((row) => applySelect(row, select));
     }),
     update: jest.fn(async ({ where, data }: any) => {
       const index = observations.findIndex((row) => row.id === where.id);
@@ -420,7 +434,11 @@ function createPrismaMock() {
     findFirst: jest.fn(
       async ({ where }: any) =>
         [...shadowScores]
-          .filter((row) => row.userId === where.userId)
+          .filter(
+            (row) =>
+              row.userId === where.userId &&
+              (!where.observationId || row.observationId === where.observationId),
+          )
           .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0] ?? null,
     ),
     updateMany: jest.fn(async ({ where, data }: any) => {
@@ -849,14 +867,19 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
-  it('recomputes observation denorm jobs idempotently from the ledger', async () => {
-    const { candidateChats, candidates, prisma } = createPrismaMock();
+  it('replays fast-path observation denorm jobs idempotently from the ledger', async () => {
+    const { campaignClusters, campaignMembers, candidateChats, candidates, prisma, shadowScores } =
+      createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(
       prisma as never,
       createConfigMock({
         SPAMMER_PROFILE_CACHE_ENABLED: 'true',
+        SPAMMER_OBSERVATION_DENORM_QUEUE_ENABLED: 'true',
         SPAMMER_OBSERVATION_FAST_PATH_ENABLED: 'true',
       }),
+      undefined,
+      undefined,
+      { add: jest.fn().mockResolvedValue(undefined) } as never,
     );
     const observedAt = new Date(Date.now() - 1_000);
 
@@ -867,12 +890,21 @@ describe('GlobalSpammerIntelligenceService', () => {
       reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
       chatId: 'chat-1',
       messageId: 'message-1',
+      userLabel: 'Быстрый Автор',
       evidenceHash: 'denorm-idempotent-1',
-      evidence: { uniqueChats: 5, excerpt: 'spam text' },
+      evidence: {
+        uniqueChats: 5,
+        windowSec: 120,
+        excerpt: 'Промо https://replay.example/order общий текст кампании сегодня',
+      },
       observedAt,
     });
+    expect(prisma.globalSpammerCandidate.upsert).not.toHaveBeenCalled();
     prisma.globalSpammerCandidate.upsert.mockClear();
     prisma.globalSpammerCandidateChat.upsert.mockClear();
+    prisma.spammerCampaignCluster.upsert.mockClear();
+    prisma.spammerCampaignClusterMember.upsert.mockClear();
+    prisma.globalSpammerShadowScore.create.mockClear();
 
     const job = {
       userId: 'User-Denorm-Idempotent',
@@ -880,13 +912,17 @@ describe('GlobalSpammerIntelligenceService', () => {
       observationId: 'obs-1',
       source: 'FANOUT_REPEAT',
       reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      userLabel: 'Быстрый Автор',
       observedAt: observedAt.toISOString(),
+      fastPath: true,
       createdAt: new Date().toISOString(),
     };
 
     await service.processObservationDenormJob(job);
     const firstCandidate = candidates.get('user-denorm-idempotent');
     const firstEdge = candidateChats.get('user-denorm-idempotent:chat-1');
+    const firstCluster = campaignClusters[0];
+    const firstMember = campaignMembers[0];
     await service.processObservationDenormJob(job);
 
     expect(candidates.get('user-denorm-idempotent')).toEqual(
@@ -894,12 +930,34 @@ describe('GlobalSpammerIntelligenceService', () => {
         status: 'PENDING',
         detectionsCount: firstCandidate?.detectionsCount,
         confidenceScore: firstCandidate?.confidenceScore,
+        lastUserLabel: 'Быстрый Автор',
       }),
     );
     expect(candidateChats.get('user-denorm-idempotent:chat-1')).toEqual(
       expect.objectContaining({
         detectionsCount: firstEdge?.detectionsCount,
         lastMessageId: 'message-1',
+        lastUserLabel: 'Быстрый Автор',
+      }),
+    );
+    expect(campaignClusters[0]).toEqual(
+      expect.objectContaining({
+        id: firstCluster?.id,
+        observationsCount: firstCluster?.observationsCount,
+      }),
+    );
+    expect(campaignMembers[0]).toEqual(
+      expect.objectContaining({
+        clusterId: firstMember?.clusterId,
+        observationsCount: firstMember?.observationsCount,
+      }),
+    );
+    expect(shadowScores).toHaveLength(1);
+    expect(shadowScores[0]).toEqual(
+      expect.objectContaining({
+        userId: 'user-denorm-idempotent',
+        observationId: 'obs-1',
+        campaignBreakdown: expect.any(Object),
       }),
     );
     const updateCalls = prisma.globalSpammerCandidate.upsert.mock.calls.map(
@@ -1587,6 +1645,37 @@ describe('GlobalSpammerIntelligenceService', () => {
     const reputationSql = prisma.$queryRaw.mock.calls[0]?.[0] as { strings?: readonly string[] };
     expect(reputationSql.strings?.join(' ')).toContain('UNION ALL');
     expect(prisma.spammerObservation.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('uses a narrow observation select for aggregate recomputation', async () => {
+    const { prisma } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+
+    await service.recordObservation({
+      userId: 'user-aggregate-select',
+      source: 'FANOUT_REPEAT',
+      score: 0.68,
+      reason: 'HIGH_FANOUT_5_CHATS_REPEAT',
+      chatId: 'chat-1',
+      evidence: { uniqueChats: 5, rawPayload: 'wide-value' },
+    });
+
+    const aggregateCalls = prisma.spammerObservation.findMany.mock.calls.filter(
+      ([args]) =>
+        args?.where?.userId === 'user-aggregate-select' && args?.where?.suppressedAt === null,
+    );
+    expect(aggregateCalls.length).toBeGreaterThan(0);
+    expect(aggregateCalls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        select: {
+          source: true,
+          score: true,
+          reason: true,
+          observedAt: true,
+          expiresAt: true,
+        },
+      }),
+    );
   });
 
   it('reuses preloaded registry state while building diagnostics policy', async () => {

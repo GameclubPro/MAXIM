@@ -13,7 +13,9 @@ export type GlobalSpammerDenormJob = QueueJobEnvelope<{
   observationId?: string | null;
   source: string;
   reason?: string | null;
+  userLabel?: string | null;
   observedAt?: string | null;
+  fastPath?: boolean;
   createdAt: string;
 }>;
 
