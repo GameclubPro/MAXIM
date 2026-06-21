@@ -526,6 +526,7 @@ export class GlobalSpammerIntelligenceService {
   private readonly defaultEnforcementMode: GlobalSpammerEnforcementMode;
   private readonly runtimeProfileCacheEnabled: boolean;
   private readonly runtimeProfileShadowEnabled: boolean;
+  private readonly runtimeProfileShadowSampleRate: number;
   private readonly runtimeProfileReadModelEnabled: boolean;
   private readonly runtimeProfileAsyncWriteEnabled: boolean;
   private readonly observationDenormQueueEnabled: boolean;
@@ -556,6 +557,10 @@ export class GlobalSpammerIntelligenceService {
     this.runtimeProfileShadowEnabled = this.readBooleanConfig(
       configService?.get<boolean | string>('SPAMMER_READ_MODEL_SHADOW_ENABLED'),
       false,
+    );
+    this.runtimeProfileShadowSampleRate = this.readSampleRateConfig(
+      configService?.get<number | string>('SPAMMER_READ_MODEL_SHADOW_SAMPLE_RATE'),
+      1,
     );
     this.runtimeProfileReadModelEnabled = this.readBooleanConfig(
       configService?.get<boolean | string>('SPAMMER_READ_MODEL_ENFORCEMENT_ENABLED'),
@@ -1955,6 +1960,7 @@ export class GlobalSpammerIntelligenceService {
     const shouldCompareRuntimeProfile =
       this.runtimeProfileShadowEnabled &&
       !this.runtimeProfileReadModelEnabled &&
+      this.shouldSampleRuntimeProfileShadow(userId) &&
       params.lookupContext === undefined;
     const runtimeProfileShadowDecision = shouldCompareRuntimeProfile
       ? await this.buildPolicyDecisionFromRuntimeProfile({
@@ -2898,7 +2904,7 @@ export class GlobalSpammerIntelligenceService {
     );
     const matched = mismatches.length === 0 && confidenceDelta < 0.001 && shadowScoreDelta < 0.001;
 
-    this.logger.debug({
+    const payload = {
       event: 'global_spammer_read_model_shadow_compare',
       matched,
       userId: params.fallbackDecision.userId,
@@ -2923,7 +2929,25 @@ export class GlobalSpammerIntelligenceService {
         shadowScore: params.fallbackDecision.shadowScore,
         expiresAt: params.fallbackDecision.expiresAt,
       },
-    });
+    };
+
+    if (matched) {
+      this.logger.debug(payload);
+      return;
+    }
+    this.logger.warn(payload);
+  }
+
+  private shouldSampleRuntimeProfileShadow(userId: string): boolean {
+    if (this.runtimeProfileShadowSampleRate >= 1) {
+      return true;
+    }
+    if (this.runtimeProfileShadowSampleRate <= 0) {
+      return false;
+    }
+    const hashPrefix = createHash('sha1').update(userId).digest('hex').slice(0, 8);
+    const bucket = Number.parseInt(hashPrefix, 16) / 0xffffffff;
+    return bucket < this.runtimeProfileShadowSampleRate;
   }
 
   private resolveRuntimeProfileAction(params: {
@@ -5549,6 +5573,18 @@ export class GlobalSpammerIntelligenceService {
       return false;
     }
     return defaultValue;
+  }
+
+  private readSampleRateConfig(
+    value: number | string | null | undefined,
+    defaultValue: number,
+  ): number {
+    const parsed =
+      typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    if (!Number.isFinite(parsed)) {
+      return this.clampScore(defaultValue);
+    }
+    return this.clampScore(parsed);
   }
 
   private normalizeRegistryStatus(value: string | null | undefined): GlobalSpammerRegistryStatus {
