@@ -2350,7 +2350,9 @@ export class GlobalSpammerIntelligenceService {
 
     const riskContext =
       params.riskContext ??
-      (userId && params.recordDecision ? await this.buildPolicyDecisionRiskContext(userId) : null);
+      (userId && params.recordDecision
+        ? await this.buildPolicyDecisionRiskContext(userId, { allowCampaignFallback: false })
+        : null);
     if (riskContext) {
       decision = this.attachPolicyRiskContext(decision, riskContext);
     }

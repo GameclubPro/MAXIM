@@ -2505,6 +2505,69 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
+  it('keeps policy decision hot path off campaign fallback queries', async () => {
+    const { prisma, shadowScores } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    const expiresAt = new Date(Date.now() + 60_000);
+    shadowScores.push({
+      id: 'shadow-policy-light',
+      userId: 'user-policy-light',
+      chatId: 'chat-policy',
+      messageId: null,
+      observationId: 'obs-policy-light',
+      trigger: 'test',
+      currentScore: 0.7,
+      v2Score: 0.86,
+      scoreDelta: 0.16,
+      currentBand: 'HIGH',
+      v2Band: 'CONFIRMED',
+      wouldPromote: true,
+      wouldSuppress: false,
+      humanReviewOutcome: null,
+      reviewedAt: null,
+      reviewedByUserId: null,
+      sourceBreakdown: {},
+      campaignBreakdown: {},
+      createdAt: new Date(),
+    });
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce({
+      userId: 'user-policy-light',
+      confidenceScore: 0.94,
+      lastReason: 'FANOUT_EPISODE_CONFIRMED',
+      expiresAt,
+      sourceBreakdown: { FANOUT_HIGH: { score: 0.94 } },
+    });
+
+    await expect(
+      service.evaluatePolicy({
+        chatId: 'chat-policy',
+        userId: 'user-policy-light',
+        trigger: 'message',
+        deleteSpammersEnabled: true,
+        recordDecision: true,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        action: 'DELETE_AND_KICK',
+        shadowScore: 0.86,
+        campaignBreakdown: null,
+      }),
+    );
+
+    expect(prisma.spammerCampaignClusterMember.findMany).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user-policy-light',
+          decision: 'DELETE_AND_KICK',
+          shadowScore: 0.86,
+          campaignBreakdown: expect.any(Object),
+        }),
+      }),
+    );
+  });
+
   it('records review feedback and marks shadow scores with human outcomes', async () => {
     const { candidates, prisma, reviewFeedback, shadowScores } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
