@@ -1277,7 +1277,7 @@ export class GlobalSpammerIntelligenceService {
         this.prisma.globalSpammer.findUnique({ where: { userId } }),
         this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
         this.findActiveSuppression(userId, now),
-        this.buildPolicyDecisionRiskContext(userId),
+        this.buildPolicyDecisionRiskContext(userId, { allowCampaignFallback: false }),
       ]);
       const decision = await this.evaluatePolicy({
         chatId,
@@ -3656,7 +3656,10 @@ export class GlobalSpammerIntelligenceService {
     };
   }
 
-  private async buildPolicyDecisionRiskContext(userId: string): Promise<PolicyDecisionRiskContext> {
+  private async buildPolicyDecisionRiskContext(
+    userId: string,
+    options: { allowCampaignFallback?: boolean } = {},
+  ): Promise<PolicyDecisionRiskContext> {
     const latestShadowScore = await this.prisma.globalSpammerShadowScore.findFirst({
       where: {
         userId,
@@ -3676,7 +3679,9 @@ export class GlobalSpammerIntelligenceService {
     const campaignBreakdown =
       shadowCampaignBreakdown && Object.keys(shadowCampaignBreakdown).length > 0
         ? this.toInputJsonObject(shadowCampaignBreakdown)
-        : await this.buildCampaignBreakdownForUser(userId);
+        : options.allowCampaignFallback === false
+          ? null
+          : await this.buildCampaignBreakdownForUser(userId);
 
     return {
       shadowScore:
@@ -3783,7 +3788,7 @@ export class GlobalSpammerIntelligenceService {
         this.prisma.globalSpammer.findUnique({ where: { userId } }),
         this.prisma.globalSpammerCandidate.findUnique({ where: { userId } }),
         this.findActiveSuppression(userId, now),
-        this.buildPolicyDecisionRiskContext(userId),
+        this.buildPolicyDecisionRiskContext(userId, { allowCampaignFallback: false }),
       ]);
       const decision = await this.evaluatePolicy({
         chatId,

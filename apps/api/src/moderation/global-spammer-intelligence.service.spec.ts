@@ -1050,6 +1050,64 @@ describe('GlobalSpammerIntelligenceService', () => {
     expect(prisma.globalSpammerEnforcementDecision.create).not.toHaveBeenCalled();
   });
 
+  it('keeps denorm runtime profile refresh off campaign fallback queries', async () => {
+    const { prisma, runtimeProfiles, shadowScores } = createPrismaMock();
+    const service = new GlobalSpammerIntelligenceService(prisma as never);
+    shadowScores.push({
+      id: 'shadow-denorm-light',
+      userId: 'user-denorm-light',
+      chatId: 'chat-1',
+      messageId: null,
+      observationId: 'obs-denorm-light',
+      trigger: 'test',
+      currentScore: 0.5,
+      v2Score: 0.81,
+      scoreDelta: 0.31,
+      currentBand: 'MEDIUM',
+      v2Band: 'HIGH',
+      wouldPromote: true,
+      wouldSuppress: false,
+      humanReviewOutcome: null,
+      reviewedAt: null,
+      reviewedByUserId: null,
+      sourceBreakdown: {},
+      campaignBreakdown: {},
+      createdAt: new Date(),
+    });
+    prisma.globalSpammer.findUnique.mockResolvedValueOnce({
+      userId: 'user-denorm-light',
+      confidenceScore: 0.91,
+      lastReason: 'REVIEW_APPROVED',
+      expiresAt: new Date(Date.now() + 60_000),
+      sourceBreakdown: { REVIEW_APPROVED: { score: 1 } },
+    });
+
+    await service.processObservationDenormJob({
+      userId: 'User-Denorm-Light',
+      chatId: 'chat-1',
+      observationId: 'obs-denorm-light',
+      source: 'REVIEW_APPROVED',
+      reason: 'REVIEW_APPROVED',
+      observedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(prisma.spammerCampaignClusterMember.findMany).not.toHaveBeenCalled();
+    expect(prisma.globalSpammerRuntimeProfile.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          campaignBreakdown: expect.any(Object),
+        }),
+      }),
+    );
+    expect(runtimeProfiles.get('user-denorm-light')).toEqual(
+      expect.objectContaining({
+        registryStatus: 'ACTIVE_CONFIRMED',
+        shadowScore: 0.81,
+      }),
+    );
+  });
+
   it('normalizes legacy confidence levels when listing the review queue', async () => {
     const { observations, prisma } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
