@@ -353,6 +353,7 @@ type PolicyDecisionRiskContext = {
   shadowScore: number | null;
   campaignBreakdown: Prisma.InputJsonValue | null;
 };
+type PolicyDecisionRiskContextMode = 'light' | 'full';
 
 type GlobalSpammerRow = Prisma.GlobalSpammerGetPayload<Record<string, never>>;
 type GlobalSpammerCandidateRow = Prisma.GlobalSpammerCandidateGetPayload<Record<string, never>>;
@@ -2126,6 +2127,7 @@ export class GlobalSpammerIntelligenceService {
     recordDecision?: boolean;
     enforced?: boolean;
     riskContext?: PolicyDecisionRiskContext | null;
+    riskContextMode?: PolicyDecisionRiskContextMode;
     lookupContext?: PolicyDecisionLookupContext;
     skipRuntimeProfileWrite?: boolean;
   }): Promise<GlobalSpammerPolicyDecision> {
@@ -2350,8 +2352,8 @@ export class GlobalSpammerIntelligenceService {
 
     const riskContext =
       params.riskContext ??
-      (userId && params.recordDecision
-        ? await this.buildPolicyDecisionRiskContext(userId, { allowCampaignFallback: false })
+      (userId && params.recordDecision && params.riskContextMode === 'full'
+        ? await this.buildPolicyDecisionRiskContext(userId)
         : null);
     if (riskContext) {
       decision = this.attachPolicyRiskContext(decision, riskContext);

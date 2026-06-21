@@ -2484,6 +2484,7 @@ describe('GlobalSpammerIntelligenceService', () => {
         trigger: 'message',
         deleteSpammersEnabled: true,
         recordDecision: true,
+        riskContextMode: 'full',
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -2505,7 +2506,7 @@ describe('GlobalSpammerIntelligenceService', () => {
     );
   });
 
-  it('keeps policy decision hot path off campaign fallback queries', async () => {
+  it('keeps policy decision hot path off shadow and campaign risk queries by default', async () => {
     const { prisma, shadowScores } = createPrismaMock();
     const service = new GlobalSpammerIntelligenceService(prisma as never);
     const expiresAt = new Date(Date.now() + 60_000);
@@ -2550,18 +2551,19 @@ describe('GlobalSpammerIntelligenceService', () => {
       expect.objectContaining({
         registryStatus: 'ACTIVE_CONFIRMED',
         action: 'DELETE_AND_KICK',
-        shadowScore: 0.86,
+        shadowScore: null,
         campaignBreakdown: null,
       }),
     );
 
+    expect(prisma.globalSpammerShadowScore.findFirst).not.toHaveBeenCalled();
     expect(prisma.spammerCampaignClusterMember.findMany).not.toHaveBeenCalled();
     expect(prisma.globalSpammerEnforcementDecision.create).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           userId: 'user-policy-light',
           decision: 'DELETE_AND_KICK',
-          shadowScore: 0.86,
+          shadowScore: null,
           campaignBreakdown: expect.any(Object),
         }),
       }),
