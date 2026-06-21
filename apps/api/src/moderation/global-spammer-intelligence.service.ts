@@ -2931,6 +2931,7 @@ export class GlobalSpammerIntelligenceService {
         enforcementMode: 'enforce',
         recordDecision: false,
         riskContext,
+        skipRuntimeProfileWrite: true,
         lookupContext: {
           now,
           registry,
