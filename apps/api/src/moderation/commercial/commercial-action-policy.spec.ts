@@ -1,5 +1,6 @@
 import { resolveCommercialActionPolicy } from './commercial-action-policy';
 import type { CommercialActionPolicyInput } from './commercial-action-policy';
+import type { CommercialSafeContextBucket } from './commercial-safe-context';
 
 const BASE_INPUT: CommercialActionPolicyInput = {
   confidenceScore: 80,
@@ -223,41 +224,40 @@ describe('commercial action policy', () => {
     ).toBe('REVIEW_ONLY');
   });
 
-  it('suppresses delete in safe context buckets even with direct evidence', () => {
+  it.each<CommercialSafeContextBucket>([
+    'rules_or_moderation_context',
+    'spam_complaint_or_fraud_warning',
+    'news_or_analytics',
+    'brand_mention_only',
+    'private_one_off_sale',
+    'ordinary_recruitment',
+    'public_training_or_help',
+    'request_or_recommendation',
+  ])('suppresses delete in safe context bucket %s even with strong risk evidence', (bucket) => {
     const decision = resolveCommercialActionPolicy({
       ...BASE_INPUT,
-      evidenceTier: 'DIRECT',
-      safeContextBucket: 'news_or_analytics',
+      confidenceScore: 100,
+      evidenceTier: 'HIGH_RISK',
+      subtype: 'GOODS_RETAIL',
+      safeContextBucket: bucket,
+      campaignStrength: 'STRONG',
+      hasCampaignContext: true,
       hasDirectDealEvidence: true,
       hasNonCampaignDirectDealEvidence: true,
+      hasHighRiskEvidence: true,
+      hasEscalationRiskEvidence: true,
+      featureVector: {
+        ...BASE_INPUT.featureVector,
+        businessContext: 1,
+        massDistribution: 1,
+        highRisk: 1,
+      },
     });
 
     expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.reviewPriority).toBe('URGENT');
     expect(decision.deleteSuppressed).toBe(true);
-    expect(decision.suppressionReasons).toContain('safe-context:news_or_analytics');
-  });
-
-  it('keeps private one-off sales out of hard delete unless risk or strong business campaign exists', () => {
-    expect(
-      actionOf({
-        evidenceTier: 'DIRECT',
-        subtype: 'GOODS_RETAIL',
-        safeContextBucket: 'private_one_off_sale',
-        hasDirectDealEvidence: true,
-        hasNonCampaignDirectDealEvidence: true,
-      }),
-    ).toBe('REVIEW_ONLY');
-    expect(
-      actionOf({
-        evidenceTier: 'HIGH_RISK',
-        subtype: 'GOODS',
-        safeContextBucket: 'private_one_off_sale',
-        hasDirectDealEvidence: true,
-        hasNonCampaignDirectDealEvidence: true,
-        hasHighRiskEvidence: true,
-        hasEscalationRiskEvidence: true,
-      }),
-    ).toBe('DELETE_AND_ESCALATE');
+    expect(decision.suppressionReasons).toContain(`safe-context:${bucket}`);
   });
 
   it('suppresses hard delete when subtype required anchors are missing', () => {

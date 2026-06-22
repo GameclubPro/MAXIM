@@ -5,11 +5,15 @@ import { mkdir } from 'node:fs/promises';
 type AuditSnapshot = {
   hit?: unknown;
   actionBand?: unknown;
+  campaignStrength?: unknown;
+  evidenceTier?: unknown;
+  evidenceStrength?: unknown;
   primarySubtype?: unknown;
   subtype?: unknown;
   reasonCodes?: unknown;
   matchedSignals?: unknown;
   negativeSignals?: unknown;
+  featureVector?: unknown;
   safeContextBucket?: unknown;
   deleteSuppressed?: unknown;
   suppressionReasons?: unknown;
@@ -95,6 +99,7 @@ export function summarizeCommercialAuditRecords(
     const matchedSignals = readStringArray(current.matchedSignals);
     const negativeSignals = readStringArray(current.negativeSignals);
     const isDelete = DELETE_ACTIONS.has(action);
+    const deleteProfile = readDeleteProfile(current, reasonCodes, matchedSignals);
 
     pushCount(labels, label);
     pushCount(actions, action);
@@ -118,14 +123,17 @@ export function summarizeCommercialAuditRecords(
     if (label === 'negative_candidate' && isDelete) {
       deleteFalsePositiveCandidates += 1;
     }
-    if (isDelete && (subtype === 'GOODS' || subtype === 'GENERIC')) {
+    if (
+      isDelete &&
+      (subtype === 'GOODS' || subtype === 'GENERIC') &&
+      isWeakGenericGoodsDelete(deleteProfile)
+    ) {
       genericGoodsDeletes += 1;
     }
     if (
       isDelete &&
       subtype === 'RECRUITMENT' &&
-      !reasonCodes.includes('risk:escalation-grade') &&
-      !matchedSignals.some((signal) => signal.startsWith('risk:'))
+      isWeakRecruitmentDelete(deleteProfile)
     ) {
       recruitmentDeleteWithoutRisk += 1;
     }
@@ -239,6 +247,88 @@ function readSnapshot(value: unknown): AuditSnapshot {
   return asRecord(value) ?? {};
 }
 
+type DeleteProfile = {
+  campaignStrength: string | null;
+  evidenceTier: string | null;
+  reasonCodes: readonly string[];
+  matchedSignals: readonly string[];
+  featureVector: Record<string, number>;
+};
+
+function readDeleteProfile(
+  current: AuditSnapshot,
+  reasonCodes: readonly string[],
+  matchedSignals: readonly string[],
+): DeleteProfile {
+  return {
+    campaignStrength: readString(current.campaignStrength),
+    evidenceTier: readString(current.evidenceTier) ?? readString(current.evidenceStrength),
+    reasonCodes,
+    matchedSignals,
+    featureVector: readNumericRecord(current.featureVector),
+  };
+}
+
+function isWeakGenericGoodsDelete(profile: DeleteProfile): boolean {
+  if (hasRiskEvidence(profile)) {
+    return false;
+  }
+  const hasDirectEvidence =
+    profile.evidenceTier === 'DIRECT' || profile.reasonCodes.includes('evidence:action-direct');
+  const hasDealContact =
+    numericFeature(profile, 'dealEvidence') > 0 && numericFeature(profile, 'contactEvidence') > 0;
+  const hasDistributionOrBusiness =
+    isStandardOrStrongCampaign(profile.campaignStrength) ||
+    numericFeature(profile, 'massDistribution') > 0 ||
+    numericFeature(profile, 'businessContext') > 0;
+  const hasPriceOrLink =
+    numericFeature(profile, 'priceStructure') > 0 ||
+    profile.matchedSignals.some((signal) => signal.startsWith('deal-channel:'));
+  return !(hasDirectEvidence && hasDealContact && hasDistributionOrBusiness && hasPriceOrLink);
+}
+
+function isWeakRecruitmentDelete(profile: DeleteProfile): boolean {
+  if (hasRiskEvidence(profile)) {
+    return false;
+  }
+  const hasDirectEvidence =
+    profile.evidenceTier === 'DIRECT' || profile.reasonCodes.includes('evidence:action-direct');
+  const hasDealContact =
+    numericFeature(profile, 'dealEvidence') > 0 && numericFeature(profile, 'contactEvidence') > 0;
+  const hasRecruitmentSignal = profile.matchedSignals.some((signal) =>
+    signal.startsWith('recruitment:'),
+  );
+  const hasConditions =
+    numericFeature(profile, 'priceStructure') > 0 ||
+    profile.reasonCodes.some((reason) => reason.startsWith('evidence:direct:'));
+  const hasDistributionOrBusiness =
+    isStandardOrStrongCampaign(profile.campaignStrength) ||
+    numericFeature(profile, 'massDistribution') > 0 ||
+    numericFeature(profile, 'businessContext') > 0;
+  return !(
+    hasDirectEvidence &&
+    hasDealContact &&
+    hasRecruitmentSignal &&
+    hasConditions &&
+    hasDistributionOrBusiness
+  );
+}
+
+function hasRiskEvidence(profile: DeleteProfile): boolean {
+  return (
+    profile.reasonCodes.includes('risk:escalation-grade') ||
+    profile.matchedSignals.some((signal) => signal.startsWith('risk:'))
+  );
+}
+
+function isStandardOrStrongCampaign(campaignStrength: string | null): boolean {
+  return campaignStrength === 'STANDARD' || campaignStrength === 'STRONG';
+}
+
+function numericFeature(profile: DeleteProfile, key: string): number {
+  return profile.featureVector[key] ?? 0;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -257,6 +347,18 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+}
+
+function readNumericRecord(value: unknown): Record<string, number> {
+  const record = asRecord(value);
+  if (!record) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(record).flatMap(([key, item]) =>
+      typeof item === 'number' && Number.isFinite(item) ? [[key, item]] : [],
+    ),
+  );
 }
 
 function pushCount(map: Map<string, number>, key: string) {

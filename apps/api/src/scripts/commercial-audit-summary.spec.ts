@@ -12,9 +12,14 @@ describe('commercial-audit-summary', () => {
           hit: true,
           actionBand: 'DELETE',
           primarySubtype: 'GOODS',
-          matchedSignals: ['risk:betting-gambling'],
+          evidenceTier: 'DIRECT',
+          matchedSignals: ['contact:phone'],
           negativeSignals: ['context:public-fraud-warning'],
           reasonCodes: ['action:DELETE'],
+          featureVector: {
+            dealEvidence: 1,
+            contactEvidence: 1,
+          },
         },
       },
       {
@@ -39,8 +44,13 @@ describe('commercial-audit-summary', () => {
           hit: true,
           actionBand: 'DELETE',
           primarySubtype: 'RECRUITMENT',
+          evidenceTier: 'DIRECT',
           matchedSignals: ['recruitment:ваканси'],
           reasonCodes: ['action:DELETE'],
+          featureVector: {
+            dealEvidence: 1,
+            contactEvidence: 1,
+          },
         },
       },
     ]);
@@ -79,6 +89,69 @@ describe('commercial-audit-summary', () => {
     ]);
 
     expect(summary.deleteSuppressed).toBe(1);
+    expect(summary.alerts).toEqual([]);
+  });
+
+  it('keeps structured goods and recruitment deletes out of weak-delete warnings', () => {
+    const summary = summarizeCommercialAuditRecords([
+      {
+        label: 'positive_candidate',
+        policyCategory: 'hard_delete',
+        segment: 'GOODS',
+        safeContextBucket: 'none',
+        current: {
+          hit: true,
+          actionBand: 'DELETE',
+          campaignStrength: 'STRONG',
+          evidenceTier: 'DIRECT',
+          primarySubtype: 'GOODS',
+          matchedSignals: [
+            'campaign:cross-chat-phone',
+            'contact:phone',
+            'transaction:price',
+          ],
+          reasonCodes: [
+            'action:DELETE',
+            'evidence:action-direct',
+            'evidence:direct:price-contact',
+          ],
+          featureVector: {
+            dealEvidence: 1,
+            contactEvidence: 1,
+            massDistribution: 1,
+            priceStructure: 1,
+          },
+        },
+      },
+      {
+        label: 'positive_candidate',
+        policyCategory: 'hard_delete',
+        segment: 'RECRUITMENT',
+        safeContextBucket: 'none',
+        current: {
+          hit: true,
+          actionBand: 'DELETE',
+          campaignStrength: 'STANDARD',
+          evidenceTier: 'DIRECT',
+          primarySubtype: 'RECRUITMENT',
+          matchedSignals: ['recruitment:вахт', 'contact:phone', 'transaction:price'],
+          reasonCodes: [
+            'action:DELETE',
+            'evidence:action-direct',
+            'evidence:direct:price-contact',
+          ],
+          featureVector: {
+            dealEvidence: 1,
+            contactEvidence: 1,
+            businessContext: 1,
+            priceStructure: 1,
+          },
+        },
+      },
+    ]);
+
+    expect(summary.genericGoodsDeletes).toBe(0);
+    expect(summary.recruitmentDeleteWithoutRisk).toBe(0);
     expect(summary.alerts).toEqual([]);
   });
 });

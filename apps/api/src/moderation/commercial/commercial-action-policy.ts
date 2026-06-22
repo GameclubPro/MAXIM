@@ -256,15 +256,8 @@ function shouldSuppressDeleteForSafeContext(input: CommercialActionPolicyInput):
     case 'public_training_or_help':
     case 'request_or_recommendation':
     case 'ordinary_recruitment':
-      return true;
     case 'private_one_off_sale':
-      return !(
-        input.hasEscalationRiskEvidence ||
-        input.hasHighRiskEvidence ||
-        (input.campaignStrength === 'STRONG' &&
-          input.hasDirectDealEvidence &&
-          input.featureVector.businessContext > 0)
-      );
+      return true;
   }
 }
 
