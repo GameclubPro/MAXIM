@@ -7,6 +7,7 @@ import {
   type ResolvedMaxBotConfig,
 } from './max-bot-config.util';
 import {
+  canAuthenticateInitDataForBotState,
   canDiscoverChatsForBotState,
   canExecuteActionsForBotState,
   isOperationalBotState,
@@ -103,12 +104,14 @@ export class MaxBotRegistryService {
   }
 
   getValidationTokens(): readonly string[] {
-    return this.getOperationalBots().flatMap((bot) => bot.tokenValidationSecrets);
+    return this.bots
+      .filter((bot) => canAuthenticateInitDataForBotState(bot.state))
+      .flatMap((bot) => bot.tokenValidationSecrets);
   }
 
   getValidationTokensForBot(botId: string | null | undefined): readonly string[] {
     const bot = this.getBotById(botId) ?? this.defaultBot;
-    if (!isOperationalBotState(bot.state)) {
+    if (!canAuthenticateInitDataForBotState(bot.state)) {
       return [];
     }
     return bot.tokenValidationSecrets;

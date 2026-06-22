@@ -5,6 +5,7 @@ type MaxBotLifecyclePolicy = {
   operational: boolean;
   executable: boolean;
   discoverable: boolean;
+  initDataAuthenticatable: boolean;
   adminVisibleByDefault: boolean;
 };
 
@@ -18,24 +19,28 @@ const MAX_BOT_LIFECYCLE_POLICY = {
     operational: true,
     executable: true,
     discoverable: true,
+    initDataAuthenticatable: true,
     adminVisibleByDefault: true,
   },
   draining: {
     operational: true,
     executable: false,
     discoverable: true,
+    initDataAuthenticatable: true,
     adminVisibleByDefault: true,
   },
   dormant: {
     operational: false,
     executable: false,
     discoverable: false,
+    initDataAuthenticatable: true,
     adminVisibleByDefault: true,
   },
   disabled: {
     operational: false,
     executable: false,
     discoverable: false,
+    initDataAuthenticatable: false,
     adminVisibleByDefault: false,
   },
 } satisfies Record<MaxBotLifecycleState, MaxBotLifecyclePolicy>;
@@ -50,6 +55,10 @@ export function canExecuteActionsForBotState(state: MaxBotLifecycleState): boole
 
 export function canDiscoverChatsForBotState(state: MaxBotLifecycleState): boolean {
   return MAX_BOT_LIFECYCLE_POLICY[state].discoverable;
+}
+
+export function canAuthenticateInitDataForBotState(state: MaxBotLifecycleState): boolean {
+  return MAX_BOT_LIFECYCLE_POLICY[state].initDataAuthenticatable;
 }
 
 export function isAdminVisibleByDefaultForBotState(state: MaxBotLifecycleState): boolean {

@@ -1,4 +1,5 @@
 import {
+  canAuthenticateInitDataForBotState,
   canDiscoverChatsForBotState,
   canExecuteActionsForBotState,
   createBotLifecycleStats,
@@ -17,6 +18,11 @@ describe('max bot lifecycle policy', () => {
     expect(canExecuteActionsForBotState('draining')).toBe(false);
     expect(canDiscoverChatsForBotState('draining')).toBe(true);
     expect(canDiscoverChatsForBotState('dormant')).toBe(false);
+
+    expect(canAuthenticateInitDataForBotState('active')).toBe(true);
+    expect(canAuthenticateInitDataForBotState('draining')).toBe(true);
+    expect(canAuthenticateInitDataForBotState('dormant')).toBe(true);
+    expect(canAuthenticateInitDataForBotState('disabled')).toBe(false);
   });
 
   it('builds lifecycle stats from the same visibility policy used by config parsing', () => {

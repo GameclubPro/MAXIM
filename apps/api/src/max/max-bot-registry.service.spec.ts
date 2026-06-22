@@ -104,6 +104,54 @@ describe('MaxBotRegistryService webhook base URL', () => {
     expect(service.isKnownBotUserId('700000000001')).toBe(true);
   });
 
+  it('accepts dormant bot tokens for init data without making them operational', () => {
+    const service = createService({
+      MAX_BOTS_JSON: JSON.stringify([
+        {
+          id: 'id613070470872_5_bot',
+          label: 'Майор Максимова',
+          token: 'token-majorova-123456',
+          webhookSecretPath: 'majorova-secret',
+          webhookHeaderSecret: 'majorova-header',
+          state: 'dormant',
+        },
+        {
+          id: 'id613070470872_6_bot',
+          label: 'Рэкс',
+          token: 'token-rex-123456',
+          webhookSecretPath: 'rex-secret',
+          webhookHeaderSecret: 'rex-header',
+          state: 'dormant',
+        },
+        {
+          id: 'disabled-helper-bot',
+          token: 'token-disabled-123456',
+          webhookSecretPath: 'disabled-secret',
+          webhookHeaderSecret: 'disabled-header',
+          state: 'disabled',
+        },
+      ]),
+    });
+
+    expect(service.getOperationalBots().map((bot) => bot.id)).toEqual(['777000_bot']);
+    expect(service.getValidationTokens()).toEqual([
+      'token-1234567890',
+      'token-majorova-123456',
+      'token-rex-123456',
+    ]);
+    expect(service.getValidationTokensForBot('id613070470872_5_bot')).toEqual([
+      'token-majorova-123456',
+    ]);
+    expect(service.getValidationTokensForBot('id613070470872_6_bot')).toEqual([
+      'token-rex-123456',
+    ]);
+    expect(service.getValidationTokensForBot('disabled-helper-bot')).toEqual([]);
+    expect(service.getConfiguredWebhookSubscriptionTarget('id613070470872_6_bot')).toEqual({
+      url: null,
+      maskedUrl: null,
+    });
+  });
+
   it('keeps registry webhook requirements aligned with the shared subscription constants', () => {
     const service = createService();
 

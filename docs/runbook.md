@@ -7,7 +7,7 @@
 3. `docker compose -f infra/docker-compose.yml up -d --build`
 4. `docker compose -f infra/docker-compose.yml exec -T api npm run prisma:migrate:deploy --workspace @maxim/api`
 5. Register MAX webhook URL:
-   `https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/<MAX_WEBHOOK_SECRET_PATH>`
+   `https://maxim.play-team.ru/api/webhook/max/id613070470872_9_bot/<MAX_WEBHOOK_SECRET_PATH>`
 
 ## Health checks
 
