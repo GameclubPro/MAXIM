@@ -339,7 +339,14 @@ describe('WebhookOutboxService', () => {
     expect(queues['moderation-default-0'].add).toHaveBeenCalledWith(
       'process-webhook-event',
       { webhookEventId: 'evt-fast-default' },
-      expect.objectContaining({ jobId: 'evt-fast-default' }),
+      expect.objectContaining({
+        jobId: 'evt-fast-default',
+        removeOnComplete: true,
+        removeOnFail: {
+          age: 7 * 24 * 60 * 60,
+          count: 5_000,
+        },
+      }),
     );
   });
 

@@ -642,6 +642,10 @@ export class SystemDashboardService {
       snapshot.underTargetRatio === null
         ? 'n/a'
         : `${(snapshot.underTargetRatio * 100).toFixed(1)}%`;
+    const enqueueUnderTarget =
+      snapshot.enqueue?.underTargetRatio === null || snapshot.enqueue?.underTargetRatio === undefined
+        ? 'n/a'
+        : `${(snapshot.enqueue.underTargetRatio * 100).toFixed(1)}%`;
     return {
       code: 'webhook-slo',
       level: snapshot.status === 'critical' ? 'critical' : 'warning',
@@ -649,7 +653,7 @@ export class SystemDashboardService {
         snapshot.status === 'critical'
           ? 'Webhook SLO просел критично'
           : 'Webhook SLO требует внимания',
-      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек.`,
+      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, p99 ${snapshot.p99ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек, enqueue p95 ${snapshot.enqueue?.p95LatencyMs ?? 0} мс, enqueue under target ${enqueueUnderTarget}, oldest pending enqueue ${snapshot.enqueue?.oldestPendingLagSec.toFixed(1) ?? '0.0'} сек.`,
       recommendedAction:
         'Проверьте backlog, MAX API rate limit и последние failed webhook events до расширения фоновых задач.',
     };

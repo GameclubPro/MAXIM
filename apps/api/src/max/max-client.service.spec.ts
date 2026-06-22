@@ -3704,7 +3704,14 @@ describe('MaxClientService delayed member actions', () => {
         messageId: 'mid-delete-1',
         botId: 'id613002203036_4_bot',
       }),
-      expect.any(Object),
+      expect.objectContaining({
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: {
+          age: 7 * 24 * 60 * 60,
+          count: 1_000,
+        },
+      }),
     );
 
     await service.onModuleDestroy();
@@ -3732,6 +3739,11 @@ describe('MaxClientService delayed member actions', () => {
       expect.objectContaining({
         jobId: expectedJobId,
         delay: 60_000,
+        removeOnComplete: true,
+        removeOnFail: {
+          age: 7 * 24 * 60 * 60,
+          count: 1_000,
+        },
       }),
     );
     expect(expectedJobId.includes(':')).toBe(false);

@@ -17,11 +17,24 @@ export type WebhookSloSnapshot = {
   oldestUnprocessedLagSec: number;
   oldestUnprocessedEventId: string | null;
   lastProcessedAt: string | null;
+  enqueue: WebhookEnqueueSloSnapshot;
   generatedAt: string;
+};
+
+export type WebhookEnqueueSloSnapshot = {
+  targetMs: number;
+  sampledEvents: number;
+  p95LatencyMs: number | null;
+  p99LatencyMs: number | null;
+  underTargetRatio: number | null;
+  oldestPendingLagSec: number;
+  oldestPendingEventId: string | null;
+  lastQueuedAt: string | null;
 };
 
 const DEFAULT_WEBHOOK_SLO_WINDOW_SEC = 15 * 60;
 const DEFAULT_WEBHOOK_SLO_TARGET_MS = 400;
+const DEFAULT_WEBHOOK_ENQUEUE_SLO_TARGET_MS = 1_000;
 const DEFAULT_WEBHOOK_SLO_SAMPLE_LIMIT = 5_000;
 const WARNING_UNDER_TARGET_RATIO = 0.95;
 const CRITICAL_UNDER_TARGET_RATIO = 0.85;
@@ -32,6 +45,7 @@ const CRITICAL_UNPROCESSED_LAG_SEC = 15;
 export class WebhookSloService {
   private readonly windowSec: number;
   private readonly targetProcessingMs: number;
+  private readonly targetEnqueueMs: number;
   private readonly sampleLimit: number;
 
   constructor(
@@ -45,6 +59,10 @@ export class WebhookSloService {
     this.targetProcessingMs = this.readPositiveInt(
       configService.get('SYSTEM_WEBHOOK_SLO_TARGET_MS'),
       DEFAULT_WEBHOOK_SLO_TARGET_MS,
+    );
+    this.targetEnqueueMs = this.readPositiveInt(
+      configService.get('SYSTEM_WEBHOOK_ENQUEUE_SLO_TARGET_MS'),
+      DEFAULT_WEBHOOK_ENQUEUE_SLO_TARGET_MS,
     );
     this.sampleLimit = this.readPositiveInt(
       configService.get('SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT'),
@@ -60,8 +78,11 @@ export class WebhookSloService {
       processedEvents,
       failedEvents,
       processedSample,
+      enqueueSample,
       oldestUnprocessed,
+      oldestPendingEnqueue,
       lastProcessed,
+      lastQueued,
     ] = await Promise.all([
       this.prisma.webhookEvent.count({
         where: {
@@ -95,12 +116,40 @@ export class WebhookSloService {
         },
         take: this.sampleLimit,
       }),
+      this.prisma.webhookEvent.findMany({
+        where: {
+          createdAt: { gte: from },
+          queuedAt: { not: null },
+        },
+        select: {
+          createdAt: true,
+          queuedAt: true,
+        },
+        orderBy: {
+          queuedAt: 'desc',
+        },
+        take: this.sampleLimit,
+      }),
       this.prisma.webhookEvent.findFirst({
         where: {
           createdAt: { gte: from },
           status: {
             in: [WebhookStatus.RECEIVED, WebhookStatus.QUEUED],
           },
+        },
+        select: {
+          id: true,
+          createdAt: true,
+        },
+        orderBy: {
+          createdAt: 'asc',
+        },
+      }),
+      this.prisma.webhookEvent.findFirst({
+        where: {
+          createdAt: { gte: from },
+          status: WebhookStatus.RECEIVED,
+          queuedAt: null,
         },
         select: {
           id: true,
@@ -121,6 +170,18 @@ export class WebhookSloService {
         },
         orderBy: {
           processedAt: 'desc',
+        },
+      }),
+      this.prisma.webhookEvent.findFirst({
+        where: {
+          createdAt: { gte: from },
+          queuedAt: { not: null },
+        },
+        select: {
+          queuedAt: true,
+        },
+        orderBy: {
+          queuedAt: 'desc',
         },
       }),
     ]);
@@ -145,8 +206,31 @@ export class WebhookSloService {
             ).toFixed(3),
           )
         : null;
+    const enqueueDurations = enqueueSample
+      .map((event) => {
+        if (!event.queuedAt) {
+          return null;
+        }
+        return Math.max(0, event.queuedAt.getTime() - event.createdAt.getTime());
+      })
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+      .sort((left, right) => left - right);
+    const enqueueUnderTargetRatio =
+      enqueueDurations.length > 0
+        ? Number(
+            (
+              enqueueDurations.filter((durationMs) => durationMs <= this.targetEnqueueMs).length /
+              enqueueDurations.length
+            ).toFixed(3),
+          )
+        : null;
     const oldestUnprocessedLagSec = oldestUnprocessed
       ? Number(Math.max(0, (nowMs - oldestUnprocessed.createdAt.getTime()) / 1_000).toFixed(3))
+      : 0;
+    const oldestPendingEnqueueLagSec = oldestPendingEnqueue
+      ? Number(
+          Math.max(0, (nowMs - oldestPendingEnqueue.createdAt.getTime()) / 1_000).toFixed(3),
+        )
       : 0;
     const status = this.resolveStatus({
       failedEvents,
@@ -170,6 +254,16 @@ export class WebhookSloService {
       oldestUnprocessedLagSec,
       oldestUnprocessedEventId: oldestUnprocessed?.id ?? null,
       lastProcessedAt: lastProcessed?.processedAt?.toISOString() ?? null,
+      enqueue: {
+        targetMs: this.targetEnqueueMs,
+        sampledEvents: enqueueDurations.length,
+        p95LatencyMs: this.percentile(enqueueDurations, 0.95),
+        p99LatencyMs: this.percentile(enqueueDurations, 0.99),
+        underTargetRatio: enqueueUnderTargetRatio,
+        oldestPendingLagSec: oldestPendingEnqueueLagSec,
+        oldestPendingEventId: oldestPendingEnqueue?.id ?? null,
+        lastQueuedAt: lastQueued?.queuedAt?.toISOString() ?? null,
+      },
       generatedAt: new Date(nowMs).toISOString(),
     };
   }

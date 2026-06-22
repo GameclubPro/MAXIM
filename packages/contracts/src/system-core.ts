@@ -464,6 +464,20 @@ export type SystemDashboardSpammerReadModel = z.infer<
 export const systemDashboardWebhookSloStatusSchema = z.enum(['healthy', 'warning', 'critical']);
 export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebhookSloStatusSchema>;
 
+export const systemDashboardWebhookEnqueueSloSchema = z.object({
+  targetMs: z.number().int().positive(),
+  sampledEvents: z.number().int().min(0),
+  p95LatencyMs: z.number().min(0).nullable(),
+  p99LatencyMs: z.number().min(0).nullable(),
+  underTargetRatio: z.number().min(0).max(1).nullable(),
+  oldestPendingLagSec: z.number().min(0),
+  oldestPendingEventId: z.string().nullable(),
+  lastQueuedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardWebhookEnqueueSlo = z.infer<
+  typeof systemDashboardWebhookEnqueueSloSchema
+>;
+
 export const systemDashboardWebhookSloSchema = z.object({
   status: systemDashboardWebhookSloStatusSchema,
   windowSec: z.number().int().positive(),
@@ -478,6 +492,7 @@ export const systemDashboardWebhookSloSchema = z.object({
   oldestUnprocessedLagSec: z.number().min(0),
   oldestUnprocessedEventId: z.string().nullable(),
   lastProcessedAt: z.string().datetime().nullable(),
+  enqueue: systemDashboardWebhookEnqueueSloSchema.optional(),
   generatedAt: z.string().datetime(),
 });
 export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;

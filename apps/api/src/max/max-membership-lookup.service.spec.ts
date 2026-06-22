@@ -610,6 +610,86 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('short-circuits terminal required subscription access denials during strict retries', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
+
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: { status: 403, data: { message: 'Request failed with status code 403' } },
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValueOnce(deniedError)
+        .mockResolvedValueOnce(new Map([['user-2', { userId: 'user-2', isAdmin: false }]])),
+    };
+    const runtimeDiagnosticsService = {
+      recordMembershipBackoff: jest.fn(),
+      recordMembershipIssue: jest.fn(),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({
+        MAX_MEMBERSHIP_LOOKUP_REQUIRED_SUBSCRIPTION_TERMINAL_BACKOFF_MS: 60_000,
+      }) as never,
+      undefined,
+      undefined,
+      runtimeDiagnosticsService as never,
+    );
+
+    await expect(
+      service.getMembership('channel-denied', 'user-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.getMembership('channel-denied', 'user-2', 'moderation_required_subscription', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(service.getLookupIssue('channel-denied', 'moderation_required_subscription')).toEqual(
+      expect.objectContaining({
+        chatId: 'channel-denied',
+        policyName: 'moderation_required_subscription',
+        kind: 'terminal',
+        retryAfterMs: 60_000,
+        statusCode: 403,
+      }),
+    );
+    expect(runtimeDiagnosticsService.recordMembershipBackoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-denied',
+        policyName: 'moderation_required_subscription',
+        retryAfterMs: 60_000,
+      }),
+    );
+    expect(runtimeDiagnosticsService.recordMembershipIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-denied',
+        policyName: 'moderation_required_subscription',
+        kind: 'terminal',
+        retryAfterMs: 60_000,
+      }),
+    );
+
+    jest.advanceTimersByTime(60_001);
+
+    await expect(
+      service.getMembership('channel-denied', 'user-2', 'moderation_required_subscription', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('fails open instead of hanging the caller when a membership batch lookup never resolves', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:30.000Z'));
 

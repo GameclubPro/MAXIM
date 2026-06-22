@@ -345,6 +345,7 @@ type RequiredSubscriptionMembershipResolution = {
 type RequiredSubscriptionMembershipResult = {
   missingChannelIds: string[];
   unresolvedChannelIds: string[];
+  terminalChannelIds: string[];
 };
 
 type BotSpeechResolvedMedia = {
@@ -8513,6 +8514,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       requiredChannelIds,
       missingChannelIds: membership.missingChannelIds,
       unresolvedChannelIds: membership.unresolvedChannelIds,
+      terminalChannelIds: membership.terminalChannelIds,
       requiredSubscriptionConservativeEnforcement:
         conservativeRequiredSubscriptionEnforcement,
     };
@@ -9481,11 +9483,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const unresolvedChannelIds = requiredChannelIds.filter(
       (channelId) => membershipsByChannelId.get(channelId) === null,
     );
+    const terminalChannelIds = this.resolveRequiredSubscriptionTerminalChannelIds(
+      unresolvedChannelIds,
+    );
     if (unresolvedChannelIds.length > 0) {
       this.logRequiredSubscriptionUnresolved({
         chatId,
         userId,
         unresolvedChannelIds,
+        terminalChannelIds,
         checkedChannelCount: requiredChannelIds.length,
       });
     }
@@ -9494,7 +9500,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (channelId) => membershipsByChannelId.get(channelId) !== true,
     );
 
-    return { missingChannelIds, unresolvedChannelIds };
+    return { missingChannelIds, unresolvedChannelIds, terminalChannelIds };
+  }
+
+  private resolveRequiredSubscriptionTerminalChannelIds(
+    channelIds: readonly string[],
+  ): string[] {
+    if (!this.membershipLookupService || channelIds.length === 0) {
+      return [];
+    }
+
+    const lookupService = this.membershipLookupService as Partial<
+      Pick<MaxMembershipLookupService, 'getLookupIssue'>
+    >;
+    if (typeof lookupService.getLookupIssue !== 'function') {
+      return [];
+    }
+
+    return channelIds.filter(
+      (channelId) =>
+        lookupService.getLookupIssue?.(channelId, 'moderation_required_subscription')?.kind ===
+        'terminal',
+    );
   }
 
   private async resolveRequiredSubscriptionNoticeChannels(params: {
@@ -9523,6 +9550,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     userId: string;
     unresolvedChannelIds: string[];
+    terminalChannelIds: string[];
     checkedChannelCount: number;
   }): void {
     const cacheKey = [
@@ -9542,6 +9570,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: params.chatId,
         userId: params.userId,
         unresolvedChannelIds: params.unresolvedChannelIds,
+        terminalChannelIds: params.terminalChannelIds,
         checkedChannelCount: params.checkedChannelCount,
       },
       'Required subscription checks remained unresolved after strict retry; enforcing conservatively',

@@ -331,6 +331,10 @@ const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
 const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
+const MAX_ACTION_FAILED_JOB_RETENTION = {
+  age: 7 * 24 * 60 * 60,
+  count: 1_000,
+} as const;
 const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
 local ttlMs = tonumber(ARGV[#ARGV])
 local keyCount = #KEYS
@@ -3333,7 +3337,7 @@ export class MaxClientService implements OnModuleDestroy {
         jobId: job.idempotencyKey,
         attempts: 5,
         removeOnComplete: true,
-        removeOnFail: false,
+        removeOnFail: MAX_ACTION_FAILED_JOB_RETENTION,
         ...(delayMs > 0 ? { delay: delayMs } : {}),
         backoff: {
           type: 'exponential',

@@ -16724,7 +16724,64 @@ describe('ModerationService', () => {
       await expect(lookupPromise).resolves.toEqual({
         missingChannelIds: [],
         unresolvedChannelIds: [],
+        terminalChannelIds: [],
       });
+    });
+
+    it('surfaces terminal required subscription lookup issues in the membership result', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const membershipLookupService = {
+        getMembership: jest.fn().mockResolvedValue(null),
+        getLookupIssue: jest.fn().mockReturnValue({
+          chatId: 'channel-1',
+          policyName: 'moderation_required_subscription',
+          kind: 'terminal',
+          retryAfterMs: 60_000,
+          observedAtMs: Date.now(),
+          expiresAtMs: Date.now() + 60_000,
+          statusCode: 403,
+          message: 'Request failed with status code 403',
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+      );
+
+      await expect(
+        (
+          service as unknown as {
+            resolveRequiredSubscriptionMembership: (
+              chatId: string,
+              userId: string,
+              requiredChannelIds: string[],
+            ) => Promise<{
+              missingChannelIds: string[];
+              unresolvedChannelIds: string[];
+              terminalChannelIds: string[];
+            }>;
+          }
+        ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', ['channel-1']),
+      ).resolves.toEqual({
+        missingChannelIds: ['channel-1'],
+        unresolvedChannelIds: ['channel-1'],
+        terminalChannelIds: ['channel-1'],
+      });
+      expect(membershipLookupService.getMembership).toHaveBeenCalledTimes(2);
+      expect(membershipLookupService.getLookupIssue).toHaveBeenCalledWith(
+        'channel-1',
+        'moderation_required_subscription',
+      );
     });
 
     it('checks every configured required subscription chat or channel before passing the message', async () => {
@@ -18644,6 +18701,7 @@ describe('ModerationService', () => {
                   requiredChannelIds: ['channel-1'],
                   missingChannelIds: ['channel-1'],
                   unresolvedChannelIds: ['channel-1'],
+                  terminalChannelIds: [],
                   requiredSubscriptionConservativeEnforcement: true,
                 }),
               }),
@@ -18658,6 +18716,7 @@ describe('ModerationService', () => {
                   requiredChannelIds: ['channel-1'],
                   missingChannelIds: ['channel-1'],
                   unresolvedChannelIds: ['channel-1'],
+                  terminalChannelIds: [],
                   requiredSubscriptionConservativeEnforcement: true,
                 }),
               }),

@@ -31,6 +31,10 @@ const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
 const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
 const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
+const WEBHOOK_FAILED_JOB_RETENTION = {
+  age: 7 * 24 * 60 * 60,
+  count: 5_000,
+} as const;
 
 type WebhookEnqueueCandidate = {
   id: string;
@@ -526,7 +530,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           priority,
           attempts: 1,
           removeOnComplete: true,
-          removeOnFail: false,
+          removeOnFail: WEBHOOK_FAILED_JOB_RETENTION,
         },
       );
 

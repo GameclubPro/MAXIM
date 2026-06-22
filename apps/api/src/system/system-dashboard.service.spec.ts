@@ -1122,6 +1122,94 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('surfaces webhook enqueue SLO details in dashboard aliases and alert detail', async () => {
+    const webhookSlo = {
+      status: 'warning' as const,
+      windowSec: 900,
+      targetProcessingMs: 400,
+      totalEvents: 12,
+      processedEvents: 12,
+      failedEvents: 0,
+      sampledProcessedEvents: 12,
+      p95ProcessingMs: 420,
+      p99ProcessingMs: 650,
+      underTargetRatio: 0.917,
+      oldestUnprocessedLagSec: 0,
+      oldestUnprocessedEventId: null,
+      lastProcessedAt: '2026-03-31T00:10:00.000Z',
+      enqueue: {
+        targetMs: 1_000,
+        sampledEvents: 12,
+        p95LatencyMs: 1_800,
+        p99LatencyMs: 2_100,
+        underTargetRatio: 0.833,
+        oldestPendingLagSec: 7.5,
+        oldestPendingEventId: 'evt-pending-enqueue',
+        lastQueuedAt: '2026-03-31T00:09:59.000Z',
+      },
+      generatedAt: '2026-03-31T00:10:00.000Z',
+    };
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createHealthyQueueSnapshot()),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-31T00:10:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getSnapshot: jest.fn().mockResolvedValue(webhookSlo),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: {
+        status: 'warning',
+      },
+      alerts: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'webhook-slo',
+          level: 'warning',
+          detail: expect.stringContaining('enqueue p95 1800 мс'),
+        }),
+      ]),
+      webhookSlo: {
+        enqueue: {
+          p95LatencyMs: 1_800,
+          oldestPendingEventId: 'evt-pending-enqueue',
+        },
+      },
+      slo: {
+        enqueue: {
+          p95LatencyMs: 1_800,
+          oldestPendingEventId: 'evt-pending-enqueue',
+        },
+      },
+    });
+  });
+
   it('does not treat primary bots without admin rights as ownership blockers', () => {
     const service = new SystemDashboardService(
       {} as never,

@@ -197,11 +197,15 @@ function buildQueueGroup(
 }
 
 function resolveQueueGroupStatus(counters: QueueCounters): SystemQueueGroupStatus {
-  if (counters.failed > 0 || counters.waiting >= QUEUE_GROUP_WAITING_CRITICAL) {
+  if (counters.waiting >= QUEUE_GROUP_WAITING_CRITICAL) {
     return 'critical';
   }
 
-  if (counters.waiting >= QUEUE_GROUP_WAITING_WARNING || counters.delayed > 0) {
+  if (
+    counters.waiting >= QUEUE_GROUP_WAITING_WARNING ||
+    counters.delayed > 0 ||
+    counters.failed > 0
+  ) {
     return 'warning';
   }
 

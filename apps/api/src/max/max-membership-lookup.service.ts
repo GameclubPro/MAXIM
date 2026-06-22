@@ -140,6 +140,7 @@ const MEMBERSHIP_REDIS_READ_TIMEOUT_MS = 100;
 const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 400;
 const MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
 const GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS = 30 * 60 * 1_000;
+const REQUIRED_SUBSCRIPTION_TERMINAL_CHAT_BACKOFF_MS = 60_000;
 const MEMBERSHIP_CACHE_LEGACY_KEY_PREFIX = 'max:membership:v1';
 const MEMBERSHIP_CACHE_BOT_SCOPED_KEY_PREFIX = 'max:membership:v2';
 
@@ -156,6 +157,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly hotChannelDurationMs: number;
   private readonly hotChannelPositiveFreshTtlSec: number;
   private readonly hotChannelBatchWindowMs: number;
+  private readonly requiredSubscriptionTerminalChatBackoffMs: number;
   private readonly lookupTimeoutMsByTrafficClass: Record<MaxApiTrafficClass, number>;
   private readonly membershipRetentionPositiveTtlSec: number;
   private readonly membershipRetentionNegativeTtlSec: number;
@@ -218,6 +220,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_BATCH_WINDOW_MS'),
       25,
       this.membershipLookupBatchWindowMs,
+    );
+    this.requiredSubscriptionTerminalChatBackoffMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_REQUIRED_SUBSCRIPTION_TERMINAL_BACKOFF_MS'),
+      REQUIRED_SUBSCRIPTION_TERMINAL_CHAT_BACKOFF_MS,
+      1_000,
     );
     this.lookupTimeoutMsByTrafficClass = {
       critical: this.readConfigInt(
@@ -1443,6 +1450,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private resolveTerminalChatBackoffMs(policyName: MaxMembershipLookupPolicy): number {
     switch (policyName) {
+      case 'moderation_required_subscription':
+        return this.requiredSubscriptionTerminalChatBackoffMs;
       case 'giveaway_draw_background':
         return GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS;
       default:
