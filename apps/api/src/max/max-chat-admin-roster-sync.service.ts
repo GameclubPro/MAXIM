@@ -2,11 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
-import {
-  ChatBotMembershipStatus,
-  ChatCatalogKind,
-  ChatEntityType,
-} from '../prisma/prisma-client';
+import { ChatBotMembershipStatus, ChatCatalogKind, ChatEntityType } from '../prisma/prisma-client';
 import type { Queue } from 'bullmq';
 import {
   ChatContextCacheService,
@@ -18,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
+import { canDiscoverChatsForBotState } from './max-bot-state.util';
 import { buildBotAccessSnapshotPersistence } from './bot-access-snapshot.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
@@ -255,7 +252,7 @@ export class MaxChatAdminRosterSyncService {
             membership.chat.primaryBotId,
             membership.chat.botId,
           ]
-            .map((botId) => this.maxBotRegistry.getBotById(botId)?.id ?? null)
+            .map((botId) => this.resolveDiscoveryBotId(botId))
             .filter((botId): botId is string => Boolean(botId)),
         ),
       );
@@ -405,10 +402,10 @@ export class MaxChatAdminRosterSyncService {
       new Set(
         [
           ...(incoming.botIds ?? []),
-          this.readTrimmedString(persisted?.primaryBotId),
-          this.readTrimmedString(persisted?.botId),
+          this.resolveDiscoveryBotId(persisted?.primaryBotId),
+          this.resolveDiscoveryBotId(persisted?.botId),
           ...((persisted?.botMemberships ?? []).map((membership) =>
-            this.readTrimmedString(membership.botId),
+            this.resolveDiscoveryBotId(membership.botId),
           ) as Array<string | null>),
         ].filter((botId): botId is string => Boolean(botId)),
       ),
@@ -435,7 +432,7 @@ export class MaxChatAdminRosterSyncService {
     const botIds = Array.from(
       new Set(
         (params?.botIds ?? [])
-          .map((botId) => this.maxBotRegistry.getBotById(botId)?.id ?? null)
+          .map((botId) => this.resolveDiscoveryBotId(botId))
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
@@ -524,7 +521,7 @@ export class MaxChatAdminRosterSyncService {
   private async resolveCandidateBotIds(job: MaxChatAdminRosterSyncJob): Promise<string[]> {
     const resolved = new Set(
       (job.botIds ?? [])
-        .map((botId) => this.maxBotRegistry.getBotById(botId)?.id ?? null)
+        .map((botId) => this.resolveDiscoveryBotId(botId))
         .filter((botId): botId is string => Boolean(botId)),
     );
 
@@ -546,15 +543,14 @@ export class MaxChatAdminRosterSyncService {
       });
 
       for (const botId of [
-        this.readTrimmedString(persisted?.primaryBotId),
-        this.readTrimmedString(persisted?.botId),
+        this.resolveDiscoveryBotId(persisted?.primaryBotId),
+        this.resolveDiscoveryBotId(persisted?.botId),
         ...((persisted?.botMemberships ?? []).map((membership) =>
-          this.readTrimmedString(membership.botId),
+          this.resolveDiscoveryBotId(membership.botId),
         ) as Array<string | null>),
       ]) {
-        const normalizedBotId = this.maxBotRegistry.getBotById(botId)?.id ?? null;
-        if (normalizedBotId) {
-          resolved.add(normalizedBotId);
+        if (botId) {
+          resolved.add(botId);
         }
       }
     }
@@ -848,11 +844,13 @@ export class MaxChatAdminRosterSyncService {
       return;
     }
 
-    const client = (this.prisma as PrismaService & {
-      managedEntityAdminMember?: {
-        upsert?: (args: unknown) => Promise<unknown>;
-      };
-    }).managedEntityAdminMember;
+    const client = (
+      this.prisma as PrismaService & {
+        managedEntityAdminMember?: {
+          upsert?: (args: unknown) => Promise<unknown>;
+        };
+      }
+    ).managedEntityAdminMember;
     if (typeof client?.upsert !== 'function') {
       return;
     }
@@ -915,11 +913,13 @@ export class MaxChatAdminRosterSyncService {
     botId?: string | null;
     source: string;
   }): Promise<void> {
-    const client = (this.prisma as PrismaService & {
-      managedEntityAdminMember?: {
-        updateMany?: (args: unknown) => Promise<unknown>;
-      };
-    }).managedEntityAdminMember;
+    const client = (
+      this.prisma as PrismaService & {
+        managedEntityAdminMember?: {
+          updateMany?: (args: unknown) => Promise<unknown>;
+        };
+      }
+    ).managedEntityAdminMember;
     if (typeof client?.updateMany !== 'function') {
       return;
     }
@@ -1706,6 +1706,11 @@ export class MaxChatAdminRosterSyncService {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private resolveDiscoveryBotId(botId: unknown): string | null {
+    const bot = this.maxBotRegistry.getBotById(this.readTrimmedString(botId));
+    return bot && canDiscoverChatsForBotState(bot.state) ? bot.id : null;
   }
 
   private async mapWithConcurrencyLimit<T, R>(

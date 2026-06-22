@@ -11,7 +11,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
-import { canDiscoverChatsForBotState, canExecuteActionsForBotState } from './max-bot-state.util';
+import {
+  canDiscoverChatsForBotState,
+  canExecuteActionsForBotState,
+  isOperationalBotState,
+} from './max-bot-state.util';
 import {
   membershipExplicitlyLacksAccess,
   normalizeMembershipAccessSnapshot,
@@ -177,13 +181,13 @@ export class MaxBotLinkService {
   }
 
   getContextOrDefaultBotId(): string {
-    return this.botContext.getActiveBotId() ?? this.getDefaultBotId();
+    return this.resolveOperationalBotId(this.botContext.getActiveBotId()) ?? this.getDefaultBotId();
   }
 
   getResolvedBotSync(botId?: string | null): MaxBotDefinition {
     return (
-      this.botRegistry.getBotById(botId) ??
-      this.botRegistry.getBotById(this.botContext.getActiveBotId()) ??
+      this.getOperationalBotById(botId) ??
+      this.getOperationalBotById(this.botContext.getActiveBotId()) ??
       this.botRegistry.getDefaultBot()
     );
   }
@@ -193,7 +197,7 @@ export class MaxBotLinkService {
   }
 
   resolveBotIdSync(botId?: string | null, chatId?: string | null): string {
-    const explicitBot = this.botRegistry.getBotById(botId);
+    const explicitBot = this.getOperationalBotById(botId);
     if (explicitBot) {
       return explicitBot.id;
     }
@@ -203,7 +207,7 @@ export class MaxBotLinkService {
       return cachedBotId;
     }
 
-    const contextBotId = this.botContext.getActiveBotId();
+    const contextBotId = this.resolveOperationalBotId(this.botContext.getActiveBotId());
     if (contextBotId) {
       return contextBotId;
     }
@@ -291,7 +295,7 @@ export class MaxBotLinkService {
       select: { primaryBotId: true, botId: true },
     });
     const resolvedBotId =
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+      this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null) ?? null;
     if (resolvedBotId) {
       this.rememberChatBotBinding(normalizedChatId, resolvedBotId);
     }
@@ -305,8 +309,8 @@ export class MaxBotLinkService {
     botId?: string | null;
   }): Promise<void> {
     const chatId = params.chatId.trim();
-    const primaryBotId = this.botRegistry.getBotById(params.primaryBotId)?.id ?? null;
-    const observedBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const primaryBotId = this.resolveOperationalBotId(params.primaryBotId);
+    const observedBotId = this.resolveOperationalBotId(params.botId);
     if (!chatId || !observedBotId) {
       return;
     }
@@ -375,7 +379,7 @@ export class MaxBotLinkService {
 
   rememberChatBotBinding(chatId: string, botId: string | null | undefined): void {
     const normalizedChatId = chatId.trim();
-    const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+    const normalizedBotId = this.resolveOperationalBotId(botId);
     if (!normalizedChatId || !normalizedBotId) {
       return;
     }
@@ -467,7 +471,7 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const explicitBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const explicitBotId = this.resolveOperationalBotId(params.botId);
     const defaultRoute = await this.resolveBotRoute({
       purpose: 'default',
       chatId,
@@ -512,8 +516,9 @@ export class MaxBotLinkService {
       where: { id: chatId },
       select: { primaryBotId: true, botId: true },
     });
-    const existingPrimaryBotId =
-      this.botRegistry.getBotById(existing?.primaryBotId ?? existing?.botId ?? null)?.id ?? null;
+    const existingPrimaryBotId = this.resolveOperationalBotId(
+      existing?.primaryBotId ?? existing?.botId ?? null,
+    );
     const nextPrimaryBotId =
       params.allowReassign === true ? botId : (existingPrimaryBotId ?? botId);
 
@@ -568,7 +573,7 @@ export class MaxBotLinkService {
     activeBotId?: string | null;
   }): Promise<ChatBotExecutionBinding> {
     const chatId = params.chatId.trim();
-    const activeBotId = this.botRegistry.getBotById(params.activeBotId)?.id ?? null;
+    const activeBotId = this.resolveOperationalBotId(params.activeBotId);
     if (!chatId) {
       return {
         chatId,
@@ -598,14 +603,14 @@ export class MaxBotLinkService {
     const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
-        Boolean(this.botRegistry.getBotById(membership.botId)),
+        Boolean(this.resolveOperationalBotId(membership.botId)),
     );
     const primaryBotId =
       resolvePreferredPrimaryBotId(
-        this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null,
+        this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null),
         activeKnownMemberships,
       ) ??
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ??
+      this.resolveOperationalBotId(chat?.primaryBotId ?? chat?.botId ?? null) ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
       activeKnownMemberships[0]?.botId ??
@@ -695,7 +700,7 @@ export class MaxBotLinkService {
     lastMaxStatusCode?: number | null;
   }): Promise<string | null> {
     const chatId = params.chatId.trim();
-    const botId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const botId = this.resolveOperationalBotId(params.botId);
     if (!chatId || !botId) {
       return null;
     }
@@ -785,12 +790,12 @@ export class MaxBotLinkService {
     const observedBotIds = Array.from(
       new Set(
         (params.botIds ?? [])
-          .map((botId) => this.botRegistry.getBotById(botId)?.id ?? null)
+          .map((botId) => this.resolveOperationalBotId(botId))
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
     const normalizedPrimaryBotId =
-      this.botRegistry.getBotById(params.primaryBotId)?.id ?? observedBotIds[0] ?? null;
+      this.resolveOperationalBotId(params.primaryBotId) ?? observedBotIds[0] ?? null;
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
@@ -798,8 +803,9 @@ export class MaxBotLinkService {
       where: { id: chatId },
       select: { primaryBotId: true, botId: true },
     });
-    const existingPrimaryBotId =
-      this.botRegistry.getBotById(existing?.primaryBotId ?? existing?.botId ?? null)?.id ?? null;
+    const existingPrimaryBotId = this.resolveOperationalBotId(
+      existing?.primaryBotId ?? existing?.botId ?? null,
+    );
     const nextPrimaryBotId = existingPrimaryBotId ?? normalizedPrimaryBotId;
     const catalogKind = resolveChatCatalogKind({
       chatId,
@@ -935,7 +941,7 @@ export class MaxBotLinkService {
     botId?: string | null;
   }): Promise<MaxBotRoute> {
     const chatId = typeof params.chatId === 'string' ? params.chatId.trim() : '';
-    const explicitBot = this.botRegistry.getBotById(params.botId);
+    const explicitBot = this.getOperationalBotById(params.botId);
     if (explicitBot) {
       return this.buildRoute({
         purpose: 'default',
@@ -1276,7 +1282,9 @@ export class MaxBotLinkService {
       Boolean(this.botRegistry.getBotById(membership.botId)),
     );
     const activeKnownMemberships = memberships.filter(
-      (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        Boolean(this.resolveOperationalBotId(membership.botId)),
     );
     const activeOperationalMemberships = activeKnownMemberships.filter((membership) => {
       const bot = this.botRegistry.getBotById(membership.botId);
@@ -1286,8 +1294,9 @@ export class MaxBotLinkService {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(bot && canExecuteActionsForBotState(bot.state));
     });
-    const storedPrimaryBotId =
-      this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ?? null;
+    const storedPrimaryBotId = this.resolveOperationalBotId(
+      chat.primaryBotId ?? chat.botId ?? null,
+    );
     const primaryBotId =
       resolvePreferredPrimaryBotId(
         storedPrimaryBotId,
@@ -1322,7 +1331,7 @@ export class MaxBotLinkService {
   ): string[] {
     const candidateBotIds: string[] = [];
     const pushCandidate = (botId: string | null | undefined) => {
-      const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+      const normalizedBotId = this.resolveOperationalBotId(botId);
       if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
         return;
       }
@@ -1379,7 +1388,7 @@ export class MaxBotLinkService {
 
     if (fallbackToPrimary !== false) {
       const pushFallbackCandidate = (botId: string | null | undefined) => {
-        const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+        const normalizedBotId = this.resolveOperationalBotId(botId);
         if (!normalizedBotId) {
           return;
         }
@@ -1469,12 +1478,12 @@ export class MaxBotLinkService {
       typeof params.chatId === 'string' && params.chatId.trim().length > 0
         ? params.chatId.trim()
         : null;
-    const normalizedPrimaryBotId = this.botRegistry.getBotById(params.primaryBotId)?.id ?? null;
-    const normalizedBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const normalizedPrimaryBotId = this.resolveOperationalBotId(params.primaryBotId);
+    const normalizedBotId = this.resolveOperationalBotId(params.botId);
     const normalizedCandidateBotIds = Array.from(
       new Set(
         (params.candidateBotIds ?? [])
-          .map((botId) => this.botRegistry.getBotById(botId)?.id ?? null)
+          .map((botId) => this.resolveOperationalBotId(botId))
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
@@ -1661,7 +1670,7 @@ export class MaxBotLinkService {
     const activeMemberships = memberships.filter(
       (membership) =>
         membership.status === ChatBotMembershipStatus.ACTIVE &&
-        this.botRegistry.getBotById(membership.botId),
+        this.resolveOperationalBotId(membership.botId),
     );
     const nextPrimaryBotId =
       resolvePreferredPrimaryBotId(null, activeMemberships) ??
@@ -1719,7 +1728,17 @@ export class MaxBotLinkService {
       lastWebhookAt?: Date | null;
     },
   ): Promise<void> {
-    if (params.status === ChatBotMembershipStatus.ACTIVE) {
+    const isActiveOperational =
+      params.status === ChatBotMembershipStatus.ACTIVE &&
+      Boolean(this.resolveOperationalBotId(botId));
+    const nextStatus = isActiveOperational
+      ? ChatBotMembershipStatus.ACTIVE
+      : params.status === ChatBotMembershipStatus.ACTIVE
+        ? ChatBotMembershipStatus.REMOVED
+        : params.status;
+    const nextRole = isActiveOperational ? params.role : ChatBotMembershipRole.STANDBY;
+
+    if (nextStatus === ChatBotMembershipStatus.ACTIVE) {
       await this.clearRemovedChatBotAccessLossSnapshot(chatId, botId);
     }
 
@@ -1733,21 +1752,33 @@ export class MaxBotLinkService {
       create: {
         chatId,
         botId,
-        role: params.role,
-        status: params.status,
+        role: nextRole,
+        status: nextStatus,
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
       },
       update: {
-        role: params.role,
-        status: params.status,
+        role: nextRole,
+        status: nextStatus,
         ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
         ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
       },
     });
   }
 
-  private async clearRemovedChatBotAccessLossSnapshot(chatId: string, botId: string): Promise<void> {
+  private getOperationalBotById(botId: string | null | undefined): MaxBotDefinition | null {
+    const bot = this.botRegistry.getBotById(botId);
+    return bot && isOperationalBotState(bot.state) ? bot : null;
+  }
+
+  private resolveOperationalBotId(botId: string | null | undefined): string | null {
+    return this.getOperationalBotById(botId)?.id ?? null;
+  }
+
+  private async clearRemovedChatBotAccessLossSnapshot(
+    chatId: string,
+    botId: string,
+  ): Promise<void> {
     await this.prisma.chatBotMembership.updateMany({
       where: {
         chatId,

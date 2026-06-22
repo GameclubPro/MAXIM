@@ -36,8 +36,13 @@ describe('MaxChatAdminRosterSyncService', () => {
       reconcileChatPrimaryByAccess: jest.fn().mockResolvedValue('bot-1'),
     };
     const maxBotRegistry = {
-      getBotById: jest.fn((botId?: string | null) => (botId ? { id: botId } : null)),
-      getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+      getBotById: jest.fn((botId?: string | null) =>
+        botId ? { id: botId, state: botId.includes('dormant') ? 'dormant' : 'active' } : null,
+      ),
+      getDiscoveryBots: jest.fn().mockReturnValue([
+        { id: 'bot-1', state: 'active' },
+        { id: 'bot-2', state: 'active' },
+      ]),
     };
     const chatContextCache = {
       replaceChatAdminUsers: jest.fn().mockResolvedValue(undefined),
@@ -211,6 +216,32 @@ describe('MaxChatAdminRosterSyncService', () => {
         },
       }),
     );
+  });
+
+  it('skips dormant local bot memberships during managed entity roster backfill', async () => {
+    const { service, prisma, maxClient, maxBotLinkService } = createService();
+    prisma.chatBotMembership.findMany = jest.fn().mockResolvedValue([
+      {
+        botId: 'bot-dormant',
+        lastSeenAt: new Date('2026-05-14T09:00:00.000Z'),
+        lastWebhookAt: null,
+        chat: {
+          id: '-100125',
+          title: 'Dormant chat',
+          entityType: 'CHAT',
+          primaryBotId: 'bot-dormant',
+          botId: null,
+        },
+      },
+    ]);
+
+    await expect(service.backfillManagedEntitiesIndex()).resolves.toEqual({
+      discoveredChats: 0,
+      syncedChats: 0,
+    });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
   });
 
   it('syncs admin allowlist from the first admin-capable bot', async () => {

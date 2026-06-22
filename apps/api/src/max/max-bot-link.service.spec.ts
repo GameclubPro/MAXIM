@@ -331,7 +331,9 @@ describe('MaxBotLinkService', () => {
       lastMaxStatusCode: 403,
     });
 
-    expect(fixture.memberships.find((membership) => membership.chatId === 'chat-access-lost')).toEqual(
+    expect(
+      fixture.memberships.find((membership) => membership.chatId === 'chat-access-lost'),
+    ).toEqual(
       expect.objectContaining({
         status: ChatBotMembershipStatus.REMOVED,
         permissionsSnapshot: expect.objectContaining({
