@@ -619,6 +619,49 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
+  it('treats MAX 403 during bot access lookup as a rate-limited bot denial', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 403'), {
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+          },
+        },
+      }),
+    );
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
+    await expect(
+      fixture.service.handleWebhookUpdate(createUpdate({ updateId: 'u-start-1-duplicate' })),
+    ).resolves.toBe('rate_limited');
+
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100',
+      expect.objectContaining({
+        sourceTag: 'managed_handshake',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
+    expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+        reason: 'bot_access_denied',
+      }),
+    );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
+  });
+
   it('refreshes an existing granted edge when the chat is already connected', async () => {
     const fixture = createFixture();
     fixture.prisma.managedEntityAccessEdge.findUnique.mockResolvedValueOnce({

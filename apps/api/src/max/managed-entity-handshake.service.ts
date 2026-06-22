@@ -86,6 +86,7 @@ export class ManagedEntityHandshakeService {
         actionHealthLane: 'background',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
         timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
       });
       if (!this.isAdminOrOwner(botAccess)) {
         await this.replySafely(
@@ -126,6 +127,7 @@ export class ManagedEntityHandshakeService {
           actionHealthLane: 'background',
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
           timeoutMs: HANDSHAKE_ACCESS_TIMEOUT_MS,
+          ignoreFailureMetricStatuses: [403, 404],
         },
       );
       const userAccess = accessByUser.get(context.senderId) ?? null;
@@ -167,6 +169,21 @@ export class ManagedEntityHandshakeService {
       this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
       return wasConnected ? 'already_connected' : 'connected';
     } catch (error: unknown) {
+      if (this.isBotAccessDeniedError(error)) {
+        await this.replySafely(
+          context,
+          this.buildBotDeniedReply(context),
+          this.buildRetryButton(),
+        );
+        await this.recordOutcome(
+          context,
+          ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
+          'bot_access_denied',
+        );
+        this.logOutcome(context, 'bot_denied');
+        return 'denied';
+      }
+
       this.releaseRateLimitSlot(context);
       await this.recordOutcome(context, ManagedEntityHandshakeOutcomeStatus.FAILED, 'exception');
       this.logger.warn(
@@ -317,6 +334,35 @@ export class ManagedEntityHandshakeService {
 
   private isAdminOrOwner(access: MaxChatMemberAccess | null): boolean {
     return access?.isOwner === true || access?.isAdmin === true;
+  }
+
+  private isBotAccessDeniedError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status !== 403 && status !== 404) {
+      return false;
+    }
+
+    const code = this.extractErrorCode(error);
+    if (!code) {
+      return true;
+    }
+
+    return code === 'chat.denied' || code === 'chat.not.found' || code === 'bot.denied';
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const status = (error as { response?: { status?: unknown } } | null)?.response?.status;
+    return typeof status === 'number' && Number.isInteger(status) ? status : null;
+  }
+
+  private extractErrorCode(error: unknown): string | null {
+    const data = (error as { response?: { data?: unknown } } | null)?.response?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return null;
+    }
+
+    const code = (data as Record<string, unknown>).code;
+    return typeof code === 'string' && code.trim().length > 0 ? code.trim() : null;
   }
 
   private buildRosterSyncJob(context: ManagedEntityHandshakeContext): MaxChatAdminRosterSyncJob {
