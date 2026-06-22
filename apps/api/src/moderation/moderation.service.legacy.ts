@@ -1531,11 +1531,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         topViolation.ruleCode === 'COMMERCIAL_AD'
           ? this.readString(this.asRecord(topViolation.metadata)?.actionBand)
           : null;
+      const commercialMetadata =
+        topViolation.ruleCode === 'COMMERCIAL_AD'
+          ? this.asRecord(topViolation.metadata)
+          : null;
+      const commercialRecordable =
+        topViolation.ruleCode === 'COMMERCIAL_AD'
+          ? this.readBoolean(commercialMetadata?.recordable) ??
+            (commercialActionBand !== null &&
+              commercialActionBand !== 'ALLOW' &&
+              commercialActionBand !== 'REVIEW_ONLY')
+          : true;
+      const commercialActionable =
+        topViolation.ruleCode === 'COMMERCIAL_AD'
+          ? this.readBoolean(commercialMetadata?.actionable) ??
+            (commercialActionBand !== null &&
+              commercialActionBand !== 'ALLOW' &&
+              commercialActionBand !== 'REVIEW_ONLY')
+          : true;
       const isCommercialReviewOnly =
-        topViolation.ruleCode === 'COMMERCIAL_AD' &&
-        (commercialActionBand === null ||
-          commercialActionBand === 'ALLOW' ||
-          commercialActionBand === 'REVIEW_ONLY');
+        topViolation.ruleCode === 'COMMERCIAL_AD' && !commercialRecordable;
 
       if (!isCommercialReviewOnly) {
         this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
@@ -1569,8 +1584,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
       const shouldDeleteByCommercialPolicy =
         topViolation.ruleCode !== 'COMMERCIAL_AD' ||
-        commercialActionBand === 'DELETE' ||
-        commercialActionBand === 'DELETE_AND_ESCALATE';
+        (commercialActionable &&
+          (commercialActionBand === 'DELETE' || commercialActionBand === 'DELETE_AND_ESCALATE'));
       const shouldDeleteViolationMessage = canDeleteMessage && shouldDeleteByCommercialPolicy;
       let messageDeleted = false;
 
@@ -15481,6 +15496,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private readString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private readBoolean(value: unknown): boolean | null {
+    return typeof value === 'boolean' ? value : null;
   }
 
   private extractStatusCode(error: unknown): number | null {

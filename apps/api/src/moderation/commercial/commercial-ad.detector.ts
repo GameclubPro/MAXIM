@@ -34,6 +34,7 @@ let commercialDetectorWarmUpComplete = false;
 let commercialDetectorWarmUpInProgress = false;
 
 export type CommercialDetection = {
+  rawText: string;
   confidenceScore: number;
   decisionBand: CommercialDecisionBand;
   matchedSignals: string[];
@@ -59,11 +60,19 @@ export type CommercialDetection = {
   hasEscalationRiskEvidence?: boolean;
   decisionVersion?: string;
   score?: number;
+  actionScore?: number;
   fpRisk?: number;
   policyFpRisk?: number;
   evidenceTier?: string;
   subtype?: CommercialSubtype;
   actionBand?: string;
+  reviewPriority?: string;
+  campaignStrength?: string;
+  safeContextBucket?: string;
+  actionable?: boolean;
+  recordable?: boolean;
+  deleteSuppressed?: boolean;
+  suppressionReasons?: string[];
   reasonCodes?: string[];
   featureVector?: Record<string, number>;
 };
@@ -296,6 +305,7 @@ export class CommercialAdDetector {
     }
 
     return {
+      rawText: params.rawLoweredText,
       confidenceScore,
       decisionBand,
       matchedSignals: state.matchedSignals,

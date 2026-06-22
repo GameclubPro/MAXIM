@@ -1,5 +1,6 @@
 export { CommercialAdDetector, type CommercialDetection } from './commercial-ad.detector';
 export { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
+export { resolveCommercialCampaignStrength } from './commercial-campaign';
 export {
   COMMERCIAL_PATTERN_POLICY_VERSION,
   COMMERCIAL_PATTERN_RULES,
@@ -21,8 +22,14 @@ export {
   isCommercialDeleteAction,
   resolveMissingCommercialAnchors,
 } from './commercial-subtypes';
+export {
+  deriveCommercialSafeContextBucket,
+  hasCommercialDirectDealSignal,
+  type CommercialSafeContextBucket,
+} from './commercial-safe-context';
 export type {
   CommercialActionBand,
+  CommercialActionPolicyDecision,
   CommercialClassification,
   CommercialEvidenceTier,
   CommercialExplainableDecision,
@@ -31,6 +38,7 @@ export type {
   CommercialPatternEvidence,
   CommercialPatternRule,
   CommercialRequiredAnchor,
+  CommercialReviewPriority,
   CommercialSignalState,
   CommercialSubtypePolicy,
   CommercialTaxonomyClass,

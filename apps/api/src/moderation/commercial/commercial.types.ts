@@ -1,4 +1,6 @@
 import type { CommercialCampaignContext } from '../commercial-campaign.util';
+import type { CommercialCampaignStrength } from './commercial-campaign';
+import type { CommercialSafeContextBucket } from './commercial-safe-context';
 import type { CommercialDecisionBand, CommercialSubtype } from '../rule-engine.contract';
 
 export type CommercialTaxonomyClass = 'TRUE_AD' | 'HARD_NEGATIVE' | 'GRAY';
@@ -124,14 +126,34 @@ export type CommercialFeatureVector = {
   highRisk: number;
 };
 
+export type CommercialReviewPriority = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+export type CommercialActionPolicyDecision = {
+  actionBand: CommercialActionBand;
+  actionScore: number;
+  reviewPriority: CommercialReviewPriority;
+  actionable: boolean;
+  recordable: boolean;
+  deleteSuppressed: boolean;
+  suppressionReasons: string[];
+};
+
 export type CommercialExplainableDecision = {
   decisionVersion: string;
   score: number;
+  actionScore: number;
   fpRisk: number;
   policyFpRisk?: number;
   evidenceTier: CommercialEvidenceTier;
   subtype: CommercialSubtype;
   actionBand: CommercialActionBand;
+  reviewPriority: CommercialReviewPriority;
+  campaignStrength: CommercialCampaignStrength;
+  safeContextBucket: CommercialSafeContextBucket;
+  actionable: boolean;
+  recordable: boolean;
+  deleteSuppressed: boolean;
+  suppressionReasons: string[];
   reasonCodes: string[];
   featureVector: CommercialFeatureVector;
   campaignContext: CommercialCampaignContext | null;

@@ -1588,13 +1588,13 @@ describe('commercial pattern regressions', () => {
     expect(result).toBeNull();
   });
 
-  it('keeps ordinary pc sale out of betting high risk', () => {
+  it('keeps ordinary pc sale out of betting high risk and auto-delete', () => {
     const result = detect(
       'Полный комплект ПК для работы и учебы, игр, тянет GTA V и прочие. 4-ядерный процессор AMD A10. Возможна доставка. Цена 10500 +7 900 000 10 13. Звоните, тут не могу ответить.',
     );
 
     expect(result?.primarySubtype).toBe('GOODS');
-    expect(result?.actionBand).toBe('DELETE');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
     expect(result?.matchedSignals).not.toContain('risk:betting-gambling');
     expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
   });
@@ -1845,7 +1845,8 @@ describe('commercial pattern regressions', () => {
     );
 
     expect(berry?.primarySubtype).toBe('GOODS_RETAIL');
-    expect(berry?.actionBand).toBe('DELETE');
+    expect(berry?.actionBand).toBe('REVIEW_ONLY');
+    expect(berry?.safeContextBucket).toBe('private_one_off_sale');
     expect(berry?.matchedSignals).toContain('goods-retail:wholesale-produce');
     expect(berry?.matchedSignals).toContain('combo:contact+price');
 

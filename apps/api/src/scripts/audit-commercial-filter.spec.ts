@@ -13,6 +13,7 @@ import type { ChatSettings } from '../prisma/prisma-client';
 const emptySnapshot = {
   hit: false,
   score: null,
+  actionScore: null,
   confidenceScore: null,
   decisionBand: null,
   primarySubtype: null,
@@ -31,6 +32,13 @@ const emptySnapshot = {
   evidenceTier: null,
   subtype: null,
   actionBand: null,
+  reviewPriority: null,
+  campaignStrength: null,
+  safeContextBucket: null,
+  actionable: false,
+  recordable: false,
+  deleteSuppressed: false,
+  suppressionReasons: [],
   reasonCodes: [],
   featureVector: {},
 };

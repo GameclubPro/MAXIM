@@ -3,6 +3,19 @@ export const COMMERCIAL_ENGINE_CONFIG = {
   patternPolicyVersion: 'commercial-patterns-v1',
   actionPolicy: {
     highFpRiskThreshold: 70,
+    hardDeleteScoreThreshold: 65,
+    scoreAdjustments: {
+      directDeal: 4,
+      highRisk: 6,
+      escalationRisk: 10,
+      weakCampaign: 0,
+      standardCampaign: 2,
+      strongCampaign: 4,
+      reviewRecommended: 6,
+      missingAnchor: 18,
+      highFpRisk: 22,
+      safeContext: 16,
+    },
   },
   fpRisk: {
     reviewRecommended: 20,
@@ -234,4 +247,3 @@ export const COMMERCIAL_ENGINE_CONFIG = {
     },
   },
 } as const;
-

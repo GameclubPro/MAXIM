@@ -1,14 +1,21 @@
 import type { CommercialDetection } from './commercial-ad.detector';
 import { resolveCommercialActionPolicy } from './commercial-action-policy';
+import { resolveCommercialCampaignStrength } from './commercial-campaign';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import {
   resolveCommercialSignalEvidence,
   type CommercialSignalEvidenceProfile,
 } from './commercial-evidence';
+import {
+  deriveCommercialSafeContextBucket,
+  type CommercialSafeContextBucket,
+} from './commercial-safe-context';
+import { resolveMissingCommercialAnchors } from './commercial-subtypes';
 import type {
   CommercialEvidenceTier,
   CommercialExplainableDecision,
   CommercialFeatureVector,
+  CommercialReviewPriority,
 } from './commercial.types';
 
 export const COMMERCIAL_DECISION_VERSION = COMMERCIAL_ENGINE_CONFIG.decisionVersion;
@@ -41,13 +48,31 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     hasHighRiskEvidence: evidence.hasHighRiskEvidence,
     hasDirectDealEvidence: hasActionDirectDealEvidence,
   });
-  const actionBand = resolveCommercialActionPolicy({
+  const campaignStrength = resolveCommercialCampaignStrength(detection.campaignContext);
+  const safeContextBucket = deriveCommercialSafeContextBucket({
+    text: detection.rawText ?? '',
+    matchedSignals,
+    negativeSignals,
+    hasCommercialHit: true,
+  });
+  const missingRequiredAnchors = resolveMissingCommercialAnchors({
+    subtype: detection.primarySubtype,
+    featureVector,
+    matchedSignals,
+  });
+  const actionPolicy = resolveCommercialActionPolicy({
     confidenceScore: detection.confidenceScore,
     deleteThreshold: detection.appliedThresholds.deleteThreshold,
     warnThreshold: detection.appliedThresholds.warnThreshold,
     fpRisk: policyFpRisk,
     evidenceTier,
+    subtype: detection.primarySubtype,
     reviewRecommended: detection.reviewRecommended,
+    reviewReasons: detection.reviewReasons,
+    missingRequiredAnchors,
+    featureVector,
+    safeContextBucket,
+    campaignStrength,
     hasCampaignContext: detection.campaignContext !== null,
     hasDirectDealEvidence: hasActionDirectDealEvidence,
     hasNonCampaignDirectDealEvidence:
@@ -62,19 +87,33 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     signalEvidence: evidence,
     fpRisk,
     policyFpRisk,
-    actionBand,
+    actionBand: actionPolicy.actionBand,
     evidenceTier,
     hasActionDirectDealEvidence,
+    actionScore: actionPolicy.actionScore,
+    reviewPriority: actionPolicy.reviewPriority,
+    campaignStrength,
+    safeContextBucket,
+    missingRequiredAnchors,
+    suppressionReasons: actionPolicy.suppressionReasons,
   });
 
   return Object.assign(detection, {
     decisionVersion: COMMERCIAL_DECISION_VERSION,
     score: detection.confidenceScore,
+    actionScore: actionPolicy.actionScore,
     fpRisk,
     policyFpRisk,
     evidenceTier,
     subtype: detection.primarySubtype,
-    actionBand,
+    actionBand: actionPolicy.actionBand,
+    reviewPriority: actionPolicy.reviewPriority,
+    campaignStrength,
+    safeContextBucket,
+    actionable: actionPolicy.actionable,
+    recordable: actionPolicy.recordable,
+    deleteSuppressed: actionPolicy.deleteSuppressed,
+    suppressionReasons: actionPolicy.suppressionReasons,
     reasonCodes,
     featureVector,
   });
@@ -213,13 +252,32 @@ function buildReasonCodes(params: {
   fpRisk: number;
   policyFpRisk: number;
   actionBand: string;
+  actionScore: number;
+  reviewPriority: CommercialReviewPriority;
+  campaignStrength: string;
+  safeContextBucket: CommercialSafeContextBucket;
+  missingRequiredAnchors: readonly string[];
+  suppressionReasons: readonly string[];
   evidenceTier: CommercialEvidenceTier;
   hasActionDirectDealEvidence: boolean;
 }): string[] {
   const reasonCodes = new Set<string>();
   reasonCodes.add(`action:${params.actionBand}`);
+  reasonCodes.add(`action-score:${params.actionScore}`);
+  reasonCodes.add(`review-priority:${params.reviewPriority}`);
   reasonCodes.add(`evidence:${params.evidenceTier}`);
   reasonCodes.add(`subtype:${params.detection.primarySubtype}`);
+  reasonCodes.add(`campaign-strength:${params.campaignStrength}`);
+
+  if (params.safeContextBucket !== 'none') {
+    reasonCodes.add(`safe-context:${params.safeContextBucket}`);
+  }
+  for (const anchor of params.missingRequiredAnchors) {
+    reasonCodes.add(`missing-anchor:${anchor}`);
+  }
+  for (const reason of params.suppressionReasons) {
+    reasonCodes.add(`suppressed:${reason}`);
+  }
 
   if (params.featureVector.highRisk > 0) {
     reasonCodes.add('high-risk-signal');

@@ -1,12 +1,30 @@
 import { resolveCommercialActionPolicy } from './commercial-action-policy';
+import type { CommercialActionPolicyInput } from './commercial-action-policy';
 
-const BASE_INPUT = {
+const BASE_INPUT: CommercialActionPolicyInput = {
   confidenceScore: 80,
   deleteThreshold: 55,
   warnThreshold: 38,
   fpRisk: 10,
-  evidenceTier: 'BORDERLINE' as const,
+  evidenceTier: 'BORDERLINE',
+  subtype: 'SERVICES',
   reviewRecommended: false,
+  reviewReasons: [],
+  missingRequiredAnchors: [],
+  featureVector: {
+    commercialIntent: 1,
+    dealEvidence: 1,
+    contactEvidence: 1,
+    businessContext: 1,
+    massDistribution: 0,
+    priceStructure: 1,
+    cta: 0,
+    negativePrivateContext: 0,
+    questionContext: 0,
+    highRisk: 0,
+  },
+  safeContextBucket: 'none',
+  campaignStrength: 'NONE',
   hasCampaignContext: false,
   hasDirectDealEvidence: false,
   hasNonCampaignDirectDealEvidence: false,
@@ -14,29 +32,28 @@ const BASE_INPUT = {
   hasEscalationRiskEvidence: false,
 };
 
+const actionOf = (input: Partial<CommercialActionPolicyInput>) =>
+  resolveCommercialActionPolicy({ ...BASE_INPUT, ...input }).actionBand;
+
 describe('commercial action policy', () => {
   it('allows messages below warn threshold', () => {
-    expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
-        confidenceScore: 37,
-      }),
-    ).toBe('ALLOW');
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      confidenceScore: 37,
+    });
+
+    expect(decision.actionBand).toBe('ALLOW');
+    expect(decision.actionable).toBe(false);
+    expect(decision.recordable).toBe(false);
   });
 
   it('starts warning exactly at the warn threshold', () => {
-    expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
-        confidenceScore: BASE_INPUT.warnThreshold,
-      }),
-    ).toBe('WARN');
+    expect(actionOf({ confidenceScore: BASE_INPUT.warnThreshold })).toBe('WARN');
   });
 
   it('starts deleting exactly at the delete threshold with action-direct evidence', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         confidenceScore: BASE_INPUT.deleteThreshold,
         evidenceTier: 'DIRECT',
         hasDirectDealEvidence: true,
@@ -47,16 +64,16 @@ describe('commercial action policy', () => {
 
   it('keeps campaign-only detections out of delete actions', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         hasCampaignContext: true,
+        campaignStrength: 'STRONG',
         reviewRecommended: false,
       }),
     ).toBe('WARN');
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         hasCampaignContext: true,
+        campaignStrength: 'STRONG',
         reviewRecommended: true,
       }),
     ).toBe('REVIEW_ONLY');
@@ -64,24 +81,24 @@ describe('commercial action policy', () => {
 
   it('keeps campaign-only escalation-grade detections out of delete actions', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         confidenceScore: 100,
         fpRisk: 0,
         evidenceTier: 'HIGH_RISK',
         hasCampaignContext: true,
+        campaignStrength: 'STRONG',
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
         reviewRecommended: false,
       }),
-    ).toBe('WARN');
+    ).toBe('REVIEW_ONLY');
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         confidenceScore: 100,
         fpRisk: 0,
         evidenceTier: 'HIGH_RISK',
         hasCampaignContext: true,
+        campaignStrength: 'STRONG',
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: true,
         reviewRecommended: true,
@@ -91,8 +108,7 @@ describe('commercial action policy', () => {
 
   it('does not delete classifier-direct evidence without action-direct deal evidence', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'DIRECT',
         hasDirectDealEvidence: false,
         hasNonCampaignDirectDealEvidence: true,
@@ -100,11 +116,10 @@ describe('commercial action policy', () => {
     ).toBe('WARN');
   });
 
-  it('deletes when direct action evidence is present', () => {
+  it('deletes when direct action evidence and subtype anchors are present', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
-        evidenceTier: 'STRUCTURED',
+      actionOf({
+        evidenceTier: 'DIRECT',
         hasDirectDealEvidence: true,
         hasNonCampaignDirectDealEvidence: true,
       }),
@@ -113,9 +128,8 @@ describe('commercial action policy', () => {
 
   it('keeps reviewRecommended from blocking high-confidence direct delete by itself', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
-        evidenceTier: 'STRUCTURED',
+      actionOf({
+        evidenceTier: 'DIRECT',
         reviewRecommended: true,
         hasDirectDealEvidence: true,
         hasNonCampaignDirectDealEvidence: true,
@@ -123,12 +137,15 @@ describe('commercial action policy', () => {
     ).toBe('DELETE');
   });
 
-  it('escalates high-risk detections above delete threshold', () => {
+  it('escalates escalation-grade high-risk detections above delete threshold', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         fpRisk: 90,
+        evidenceTier: 'HIGH_RISK',
+        subtype: 'GOODS',
         hasHighRiskEvidence: true,
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
         hasEscalationRiskEvidence: true,
       }),
     ).toBe('DELETE_AND_ESCALATE');
@@ -136,8 +153,7 @@ describe('commercial action policy', () => {
 
   it('does not escalate non-escalation risk evidence by itself', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'HIGH_RISK',
         hasHighRiskEvidence: true,
         hasEscalationRiskEvidence: false,
@@ -145,10 +161,9 @@ describe('commercial action policy', () => {
     ).toBe('WARN');
   });
 
-  it('keeps high false-positive risk without high-risk evidence out of delete actions', () => {
+  it('keeps high false-positive risk without escalation evidence out of delete actions', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'DIRECT',
         fpRisk: 90,
         hasDirectDealEvidence: true,
@@ -159,8 +174,7 @@ describe('commercial action policy', () => {
 
   it('routes high false-positive review detections to review-only', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'DIRECT',
         fpRisk: 90,
         reviewRecommended: true,
@@ -172,8 +186,7 @@ describe('commercial action policy', () => {
 
   it('keeps the high false-positive guard boundary at 70 for direct evidence', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'DIRECT',
         fpRisk: 69,
         hasDirectDealEvidence: true,
@@ -181,8 +194,7 @@ describe('commercial action policy', () => {
       }),
     ).toBe('DELETE');
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         evidenceTier: 'DIRECT',
         fpRisk: 70,
         hasDirectDealEvidence: true,
@@ -191,24 +203,9 @@ describe('commercial action policy', () => {
     ).toBe('WARN');
   });
 
-  it('keeps non-escalation risk evidence under high false-positive guard', () => {
-    expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
-        evidenceTier: 'HIGH_RISK',
-        fpRisk: 90,
-        hasDirectDealEvidence: true,
-        hasNonCampaignDirectDealEvidence: true,
-        hasHighRiskEvidence: true,
-        hasEscalationRiskEvidence: false,
-      }),
-    ).toBe('WARN');
-  });
-
   it('warns or reviews medium-band detections even with direct evidence', () => {
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         confidenceScore: 54,
         evidenceTier: 'DIRECT',
         hasDirectDealEvidence: true,
@@ -216,8 +213,7 @@ describe('commercial action policy', () => {
       }),
     ).toBe('WARN');
     expect(
-      resolveCommercialActionPolicy({
-        ...BASE_INPUT,
+      actionOf({
         confidenceScore: 54,
         evidenceTier: 'DIRECT',
         reviewRecommended: true,
@@ -225,5 +221,66 @@ describe('commercial action policy', () => {
         hasNonCampaignDirectDealEvidence: true,
       }),
     ).toBe('REVIEW_ONLY');
+  });
+
+  it('suppresses delete in safe context buckets even with direct evidence', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      safeContextBucket: 'news_or_analytics',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.deleteSuppressed).toBe(true);
+    expect(decision.suppressionReasons).toContain('safe-context:news_or_analytics');
+  });
+
+  it('keeps private one-off sales out of hard delete unless risk or strong business campaign exists', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        subtype: 'GOODS_RETAIL',
+        safeContextBucket: 'private_one_off_sale',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+      }),
+    ).toBe('REVIEW_ONLY');
+    expect(
+      actionOf({
+        evidenceTier: 'HIGH_RISK',
+        subtype: 'GOODS',
+        safeContextBucket: 'private_one_off_sale',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+        hasHighRiskEvidence: true,
+        hasEscalationRiskEvidence: true,
+      }),
+    ).toBe('DELETE_AND_ESCALATE');
+  });
+
+  it('suppresses hard delete when subtype required anchors are missing', () => {
+    const decision = resolveCommercialActionPolicy({
+      ...BASE_INPUT,
+      evidenceTier: 'DIRECT',
+      hasDirectDealEvidence: true,
+      hasNonCampaignDirectDealEvidence: true,
+      missingRequiredAnchors: ['serviceSpecialty'],
+    });
+
+    expect(decision.actionBand).toBe('REVIEW_ONLY');
+    expect(decision.suppressionReasons).toContain('missing-subtype-anchor');
+  });
+
+  it('keeps generic goods delete conservative without high-risk or strong campaign evidence', () => {
+    expect(
+      actionOf({
+        evidenceTier: 'DIRECT',
+        subtype: 'GOODS',
+        hasDirectDealEvidence: true,
+        hasNonCampaignDirectDealEvidence: true,
+      }),
+    ).toBe('WARN');
   });
 });

@@ -12,6 +12,10 @@ import {
   InMemoryCommercialCampaignTracker,
   type CommercialCampaignContext,
 } from '../moderation/commercial-campaign.util';
+import {
+  deriveCommercialSafeContextBucket,
+  type CommercialSafeContextBucket,
+} from '../moderation/commercial/commercial-safe-context';
 import { COMMERCIAL_HARD_NEGATIVE_REASON_PREFIXES } from '../moderation/commercial/commercial-suppressors';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
 
@@ -98,16 +102,7 @@ type AuditSegment =
   | 'SERVICES'
   | 'OTHER';
 
-type AuditSafeContextBucket =
-  | 'rules_or_moderation_context'
-  | 'spam_complaint_or_fraud_warning'
-  | 'news_or_analytics'
-  | 'brand_mention_only'
-  | 'private_one_off_sale'
-  | 'ordinary_recruitment'
-  | 'public_training_or_help'
-  | 'request_or_recommendation'
-  | 'none';
+type AuditSafeContextBucket = CommercialSafeContextBucket;
 
 type AuditCorpusLabel =
   | 'positive_candidate'
@@ -125,6 +120,7 @@ type AuditCorpusSettings = Pick<
 type CommercialSnapshot = {
   hit: boolean;
   score: number | null;
+  actionScore: number | null;
   confidenceScore: number | null;
   decisionBand: string | null;
   primarySubtype: string | null;
@@ -143,6 +139,13 @@ type CommercialSnapshot = {
   evidenceTier: string | null;
   subtype: string | null;
   actionBand: string | null;
+  reviewPriority: string | null;
+  campaignStrength: string | null;
+  safeContextBucket: string | null;
+  actionable: boolean;
+  recordable: boolean;
+  deleteSuppressed: boolean;
+  suppressionReasons: string[];
   reasonCodes: string[];
   featureVector: Record<string, number>;
 };
@@ -196,13 +199,6 @@ const RECRUITMENT_SEGMENT_PATTERNS = [
 
 const INFO_PRODUCT_SEGMENT_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_-])(?:курс|вебинар|марафон|обучен|наставнич|разбор|созвон|урок)(?=[\p{L}\p{N}_-]|$)/iu,
-] as const;
-
-const RULES_OR_MODERATION_CONTEXT_PATTERNS = [
-  /(?:^|[^\p{L}\p{N}_-])(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,80})(?:запрещ[её]н[\p{L}\p{N}_-]*|нельзя|удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр[\p{L}\p{N}_-]*)/iu,
-  /(?:^|[^\p{L}\p{N}_-])(?:запрещ[её]н[\p{L}\p{N}_-]*|нельзя|удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|модерац[\p{L}\p{N}_-]*|модератор[\p{L}\p{N}_-]*|админ[\p{L}\p{N}_-]*|фильтр[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,80})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)/iu,
-  /(?:^|[^\p{L}\p{N}_-])(?:пример|образец|цитат[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)/iu,
-  /(?:^|[^\p{L}\p{N}_-])(?:бот|фильтр[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:удал[яи][\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*|мут[\p{L}\p{N}_-]*|блокир[\p{L}\p{N}_-]*|фильтру[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;!?'"«»()/%+-]{0,60})(?:реклам[\p{L}\p{N}_-]*|объявлен[\p{L}\p{N}_-]*|ссылк[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*)?/iu,
 ] as const;
 
 export function readCliOptions(argv: readonly string[]): CliOptions {
@@ -651,6 +647,7 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     return {
       hit: false,
       score: null,
+      actionScore: null,
       confidenceScore: null,
       decisionBand: null,
       primarySubtype: null,
@@ -669,6 +666,13 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       evidenceTier: null,
       subtype: null,
       actionBand: null,
+      reviewPriority: null,
+      campaignStrength: null,
+      safeContextBucket: null,
+      actionable: false,
+      recordable: false,
+      deleteSuppressed: false,
+      suppressionReasons: [],
       reasonCodes: [],
       featureVector: {},
     };
@@ -678,6 +682,7 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
   return {
     hit: true,
     score: Number.isFinite(violation.score) ? violation.score : null,
+    actionScore: readOptionalNumber(metadata?.actionScore),
     confidenceScore: readOptionalNumber(metadata?.confidenceScore),
     decisionBand: readOptionalString(metadata?.decisionBand),
     primarySubtype: readOptionalString(metadata?.primarySubtype),
@@ -696,6 +701,13 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     evidenceTier: readOptionalString(metadata?.evidenceTier),
     subtype: readOptionalString(metadata?.subtype),
     actionBand: readOptionalString(metadata?.actionBand),
+    reviewPriority: readOptionalString(metadata?.reviewPriority),
+    campaignStrength: readOptionalString(metadata?.campaignStrength),
+    safeContextBucket: readOptionalString(metadata?.safeContextBucket),
+    actionable: readOptionalBoolean(metadata?.actionable),
+    recordable: readOptionalBoolean(metadata?.recordable),
+    deleteSuppressed: readOptionalBoolean(metadata?.deleteSuppressed),
+    suppressionReasons: readStringArray(metadata?.suppressionReasons),
     reasonCodes: readStringArray(metadata?.reasonCodes),
     featureVector: readNumericRecord(metadata?.featureVector),
   };
@@ -710,6 +722,7 @@ function snapshotFromHistorical(
   return {
     hit: hasHistoricalCommercialEvent,
     score: typeof score === 'number' && Number.isFinite(score) ? score : null,
+    actionScore: readOptionalNumber(normalizedMetadata?.actionScore),
     confidenceScore: readOptionalNumber(normalizedMetadata?.confidenceScore),
     decisionBand: readOptionalString(normalizedMetadata?.decisionBand),
     primarySubtype: readOptionalString(normalizedMetadata?.primarySubtype),
@@ -728,6 +741,13 @@ function snapshotFromHistorical(
     evidenceTier: readOptionalString(normalizedMetadata?.evidenceTier),
     subtype: readOptionalString(normalizedMetadata?.subtype),
     actionBand: readOptionalString(normalizedMetadata?.actionBand),
+    reviewPriority: readOptionalString(normalizedMetadata?.reviewPriority),
+    campaignStrength: readOptionalString(normalizedMetadata?.campaignStrength),
+    safeContextBucket: readOptionalString(normalizedMetadata?.safeContextBucket),
+    actionable: readOptionalBoolean(normalizedMetadata?.actionable),
+    recordable: readOptionalBoolean(normalizedMetadata?.recordable),
+    deleteSuppressed: readOptionalBoolean(normalizedMetadata?.deleteSuppressed),
+    suppressionReasons: readStringArray(normalizedMetadata?.suppressionReasons),
     reasonCodes: readStringArray(normalizedMetadata?.reasonCodes),
     featureVector: readNumericRecord(normalizedMetadata?.featureVector),
   };
@@ -989,78 +1009,12 @@ export function deriveSafeContextBucket(params: {
   current: CommercialSnapshot;
   historical: CommercialSnapshot;
 }): AuditSafeContextBucket {
-  const negativeSignals = [...params.current.negativeSignals, ...params.historical.negativeSignals];
-  const text = params.text.toLowerCase();
-  const hasCommercialHit = params.current.hit || params.historical.hit;
-  const hasSignal = (signal: string): boolean => negativeSignals.includes(signal);
-  const hasSignalPrefix = (prefix: string): boolean =>
-    negativeSignals.some((signal) => signal.startsWith(prefix));
-
-  if (hasSignal('context:moderation-ad-discussion') || hasSignal('context:quoted-ad-example')) {
-    return 'rules_or_moderation_context';
-  }
-
-  if (
-    !hasCommercialHit &&
-    RULES_OR_MODERATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(text))
-  ) {
-    return 'rules_or_moderation_context';
-  }
-
-  if (
-    hasSignal('context:public-fraud-warning') ||
-    /(?:^|[^\p{L}\p{N}_-])(?:мошенник[\p{L}\p{N}_-]*|спам[\p{L}\p{N}_-]*|спамер[\p{L}\p{N}_-]*|жалоб[\p{L}\p{N}_-]*|полици[\p{L}\p{N}_-]*|мвд|предупрежда(?:ет|ют|ем)|осторожн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      text,
-    )
-  ) {
-    return 'spam_complaint_or_fraud_warning';
-  }
-
-  if (
-    hasSignal('context:local-news-subscribe') ||
-    hasSignal('context:channel-metrics-not-selling') ||
-    /(?:^|[^\p{L}\p{N}_-])(?:новост[\p{L}\p{N}_-]*|отчет|отч[её]т|аналитик[\p{L}\p{N}_-]*|статистик[\p{L}\p{N}_-]*|обзор|рынк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      text,
-    )
-  ) {
-    return 'news_or_analytics';
-  }
-
-  if (
-    hasSignal('context:official-civic-instruction') ||
-    hasSignal('context:public-voting-contest') ||
-    /(?:^|[^\p{L}\p{N}_-])(?:администраци[\p{L}\p{N}_-]*|госуслуг[\p{L}\p{N}_-]*|компенсаци[\p{L}\p{N}_-]*|голосовани[\p{L}\p{N}_-]*|обучени[\p{L}\p{N}_-]*\s+бесплатн[\p{L}\p{N}_-]*|центр\s+занятост[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      text,
-    )
-  ) {
-    return 'public_training_or_help';
-  }
-
-  if (hasSignalPrefix('job-seeking:')) {
-    return 'ordinary_recruitment';
-  }
-
-  if (hasSignalPrefix('search:') || hasSignalPrefix('search-pattern:')) {
-    return 'request_or_recommendation';
-  }
-
-  if (
-    hasSignalPrefix('private:') ||
-    hasSignalPrefix('private-single:') ||
-    hasSignalPrefix('private-goods:')
-  ) {
-    return 'private_one_off_sale';
-  }
-
-  if (
-    /(?:^|[^\p{L}\p{N}_-])(?:отзыв|жалоба|подскажите|посоветуйте|кто\s+знает)(?:[\p{L}\p{N}\s.,:;()/%+-]{0,100})(?:wildberries|wb|вб|ozon|озон|авито|банк|маркетплейс[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
-      text,
-    )
-  ) {
-    return 'brand_mention_only';
-  }
-
-  return 'none';
+  return deriveCommercialSafeContextBucket({
+    text: params.text,
+    matchedSignals: [...params.current.matchedSignals, ...params.historical.matchedSignals],
+    negativeSignals: [...params.current.negativeSignals, ...params.historical.negativeSignals],
+    hasCommercialHit: params.current.hit || params.historical.hit,
+  });
 }
 
 function makeExcerpt(text: string, limit = 220): string {
