@@ -1,4 +1,5 @@
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
+import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 
 type WebhookQueueRetryPolicyName = Extract<
   QueueRetryPolicyName,
@@ -51,6 +52,7 @@ export type AnyWebhookQueueName = (typeof ALL_WEBHOOK_QUEUE_NAMES)[number];
 
 export const WEBHOOK_JOB_PRIORITY = {
   callback: 1,
+  handshakeStart: 1,
   membershipJoin: 2,
   manualCloseMessage: 3,
   message: 5,
@@ -72,6 +74,12 @@ export function resolveWebhookJobPriority(
     case 'bot_started':
       return WEBHOOK_JOB_PRIORITY.membershipJoin;
     case 'message_created':
+      if (isManagedEntityHandshakeStartCommand(payload)) {
+        return WEBHOOK_JOB_PRIORITY.handshakeStart;
+      }
+      return options?.manualCloseMessage
+        ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
+        : WEBHOOK_JOB_PRIORITY.message;
     case 'message_edited':
       return options?.manualCloseMessage
         ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
@@ -96,6 +104,9 @@ export function resolveWebhookQueueName(payload: unknown): ActiveWebhookQueueNam
     case 'bot_removed':
       return WEBHOOK_QUEUE_BACKGROUND;
     case 'message_created':
+      return isManagedEntityHandshakeStartCommand(payload)
+        ? WEBHOOK_QUEUE_CRITICAL
+        : resolveDefaultWebhookQueueName(payload);
     case 'message_edited':
     default:
       return resolveDefaultWebhookQueueName(payload);

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '../prisma/prisma-client';
+import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   getDefaultWebhookWorkerGroupQueues,
@@ -108,6 +109,10 @@ export class WebhookRoutingService {
       case 'bot_removed':
         return WEBHOOK_QUEUE_BACKGROUND;
       case 'message_created':
+        if (isManagedEntityHandshakeStartCommand(payload)) {
+          return WEBHOOK_QUEUE_CRITICAL;
+        }
+        return this.resolveDefaultQueueName(webhookEventId, payload, options);
       case 'message_edited':
       default:
         return this.resolveDefaultQueueName(webhookEventId, payload, options);

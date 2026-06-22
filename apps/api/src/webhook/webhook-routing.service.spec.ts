@@ -169,6 +169,23 @@ describe('WebhookRoutingService', () => {
     expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
   });
 
+  it('routes managed entity Старт commands to critical without adaptive chat routing', async () => {
+    const { service, prisma, queueMetricsService } = createService();
+
+    await expect(
+      service.resolveQueueName('evt-start', {
+        type: 'message_created',
+        message: {
+          chatId: '-100500',
+          text: 'Старт',
+        },
+      }),
+    ).resolves.toBe('moderation-critical');
+
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();
+  });
+
   it('keeps a fresh chat assignment stable during its lease window', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-30T17:00:00.000Z'));
 

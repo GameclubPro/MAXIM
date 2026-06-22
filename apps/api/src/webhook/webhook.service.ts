@@ -9,6 +9,7 @@ import {
 } from '../prisma/prisma-client';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -304,7 +305,9 @@ export class WebhookService {
     }
 
     const normalizedType = update.type.trim().toLowerCase();
-    if (normalizedType !== 'bot_added') {
+    const isPendingBootstrapEvent =
+      normalizedType === 'bot_added' || isManagedEntityHandshakeStartCommand(update);
+    if (!isPendingBootstrapEvent) {
       return;
     }
 

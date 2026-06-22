@@ -4,7 +4,9 @@ import {
   resolveDefaultWebhookQueueIndexForChatId,
   resolveDefaultWebhookQueueNameForChatId,
   resolveJoinWebhookQueueNameForChatId,
+  resolveWebhookJobPriority,
   resolveWebhookQueueName,
+  WEBHOOK_JOB_PRIORITY,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
@@ -17,6 +19,19 @@ describe('webhook-queues', () => {
         message: { chatId: '-69202557471483' },
       }),
     );
+  });
+
+  it('routes managed entity Старт commands through the critical queue', () => {
+    const payload = {
+      type: 'message_created',
+      message: {
+        chatId: '-69202557471483',
+        text: ' Старт ',
+      },
+    };
+
+    expect(resolveWebhookQueueName(payload)).toBe(WEBHOOK_QUEUE_CRITICAL);
+    expect(resolveWebhookJobPriority(payload)).toBe(WEBHOOK_JOB_PRIORITY.handshakeStart);
   });
 
   it('routes message_edited updates through the same default shard as message_created', () => {

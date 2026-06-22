@@ -2,11 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { ManagedEntityType, MaxUpdate } from '@maxim/contracts';
 import { ChatEntityType, ManagedEntityHandshakeOutcomeStatus } from '../prisma/prisma-client';
 import { isPrivateDirectChatId } from '../common/chat-id.util';
+import { isManagedEntityHandshakeStartCommand } from '../common/managed-entity-handshake-command.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxChatMemberAccess,
 } from './max-client.service';
+import { normalizePermissionName } from './max-bot-access-policy.util';
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
@@ -18,7 +20,6 @@ import {
 } from './managed-entity-access-writer.service';
 import { ManagedEntityHandshakeOutcomeService } from './managed-entity-handshake-outcome.service';
 
-const HANDSHAKE_COMMAND = 'старт';
 export const MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD =
   'managed_entity_handshake:start_hint';
 export const MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT = 'Проверить подключение';
@@ -27,6 +28,18 @@ const HANDSHAKE_ACCESS_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SEND_TIMEOUT_MS = 1_500;
 const HANDSHAKE_DELETE_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SOURCE = MANAGED_ENTITY_HANDSHAKE_SOURCE;
+const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
+  'delete',
+  'delete_message',
+  'delete_messages',
+  'can_delete_message',
+  'can_delete_messages',
+  'post_edit_delete_message',
+  'post_edit_delete_messages',
+  'can_post_edit_delete_message',
+  'can_post_edit_delete_messages',
+  'write',
+]);
 
 export type ManagedEntityHandshakeResult =
   | 'ignored'
@@ -144,7 +157,7 @@ export class ManagedEntityHandshakeService {
       );
       await this.accessWriter.patchUserVisibleState(writeContext);
       await this.refreshRosterSync(context);
-      await this.deleteCommandMessageSafely(context);
+      await this.deleteCommandMessageSafely(context, botAccess);
       await this.replySafely(
         context,
         wasConnected ? 'Уже подключен. Я обновил доступ и настройки.' : 'Готово, чат подключен.',
@@ -191,8 +204,7 @@ export class ManagedEntityHandshakeService {
     }
 
     if (updateType === 'message_created') {
-      const text = update.message?.text?.trim().toLowerCase() ?? '';
-      if (text !== HANDSHAKE_COMMAND) {
+      if (!isManagedEntityHandshakeStartCommand(update)) {
         return null;
       }
     } else if (this.readCallbackPayload(update) !== MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD) {
@@ -382,8 +394,24 @@ export class ManagedEntityHandshakeService {
     await this.maxChatAdminRosterSyncService.scheduleChatAdminRosterSync(job);
   }
 
-  private async deleteCommandMessageSafely(context: ManagedEntityHandshakeContext): Promise<void> {
+  private async deleteCommandMessageSafely(
+    context: ManagedEntityHandshakeContext,
+    botAccess: MaxChatMemberAccess,
+  ): Promise<void> {
     if (!context.commandMessageId) {
+      return;
+    }
+
+    if (!this.canDeleteMessages(botAccess)) {
+      this.logger.debug(
+        {
+          updateId: context.update.updateId,
+          chatId: context.chatId,
+          botId: context.botId,
+          permissions: botAccess.permissions,
+        },
+        'Skipped managed entity handshake command deletion because bot lacks delete permission',
+      );
       return;
     }
 
@@ -409,6 +437,25 @@ export class ManagedEntityHandshakeService {
         'Failed to delete managed entity handshake command message',
       );
     }
+  }
+
+  private canDeleteMessages(access: MaxChatMemberAccess): boolean {
+    if (access.isOwner === true) {
+      return true;
+    }
+
+    if (access.isAdmin !== true) {
+      return false;
+    }
+
+    const permissions = access.permissions
+      .map((permission) => normalizePermissionName(permission))
+      .filter((permission): permission is string => permission.length > 0);
+    if (permissions.length === 0) {
+      return true;
+    }
+
+    return permissions.some((permission) => DELETE_MESSAGE_PERMISSION_ALIASES.has(permission));
   }
 
   private async replySafely(

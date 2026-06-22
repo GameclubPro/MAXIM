@@ -1,3 +1,4 @@
+import type { MaxUpdate } from '@maxim/contracts';
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
@@ -101,6 +102,70 @@ describe('WebhookService', () => {
       accepted: true,
       duplicate: false,
     });
+    await flushDeferredWebhookWork();
+
+    expect(handshake.handleWebhookUpdate).toHaveBeenCalledWith(update);
+  });
+
+  it('stages a user-scoped managed entity bootstrap for Старт messages before deferred handshake completes', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-start-bootstrap' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(0),
+    };
+    const chatContextCache = {
+      upsertManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue(undefined),
+    };
+    const handshake = {
+      handleWebhookUpdate: jest.fn().mockResolvedValue('connected'),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+      handshake as never,
+    );
+    const update: MaxUpdate = {
+      updateId: 'u-start-bootstrap-1',
+      botId: 'bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'm-start-bootstrap-1',
+        chatId: '-100',
+        chatTitle: 'Команда MAX',
+        entityType: 'chat',
+        senderId: 'admin-1',
+        text: 'Старт',
+        createdAt: '2026-06-20T12:00:00.000Z',
+      },
+    };
+
+    await expect(service.ingest(update, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+
+    expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '-100',
+        title: 'Команда MAX',
+        entityType: 'chat',
+        primaryBotId: 'bot-1',
+      }),
+      expect.any(Number),
+      'admin-1',
+    );
+    expect(handshake.handleWebhookUpdate).not.toHaveBeenCalled();
+
     await flushDeferredWebhookWork();
 
     expect(handshake.handleWebhookUpdate).toHaveBeenCalledWith(update);

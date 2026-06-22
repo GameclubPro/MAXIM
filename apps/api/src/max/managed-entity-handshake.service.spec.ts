@@ -62,7 +62,7 @@ function createFixture() {
       userId: 'bot-1',
       isAdmin: true,
       isOwner: false,
-      permissions: ['change_chat_info'],
+      permissions: ['delete_messages'],
     }),
     getChatMembersAccess: jest.fn().mockResolvedValue(
       new Map([
@@ -707,6 +707,64 @@ describe('ManagedEntityHandshakeService', () => {
         userId: 'bot-1',
         status: ManagedEntityHandshakeOutcomeStatus.BOOTSTRAPPED_WITHOUT_USER,
         reason: 'sender_missing',
+      }),
+    );
+  });
+
+  it('connects but leaves the Старт message when the bot lacks delete permission', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['change_chat_info'],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          state: ManagedEntityAccessState.GRANTED,
+          source: 'handshake_start',
+        }),
+      }),
+    );
+    expect(fixture.chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: '-100', title: 'Команда MAX' })],
+      }),
+      expect.any(Number),
+    );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100',
+      'Готово, чат подключен.',
+      expect.anything(),
+      expect.objectContaining({ botId: 'bot-1', sourceTag: 'managed_handshake' }),
+    );
+  });
+
+  it('treats MAX write permission as enough to delete the Старт message', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getCurrentChatMemberAccess.mockResolvedValueOnce({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['write'],
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      '-100',
+      'm-start-1',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-1',
+        sourceTag: 'managed_handshake',
       }),
     );
   });
