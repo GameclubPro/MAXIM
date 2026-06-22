@@ -10,6 +10,7 @@ import {
 import { MaxBotLinkService } from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
+import type { MaxChatAdminRosterSyncJob } from './max-chat-admin-roster-sync.queue';
 import {
   ManagedEntityAccessWriter,
   MANAGED_ENTITY_HANDSHAKE_SOURCE,
@@ -24,6 +25,7 @@ export const MANAGED_ENTITY_HANDSHAKE_START_BUTTON_TEXT = 'Проверить п
 const HANDSHAKE_RATE_LIMIT_MS = 3 * 60 * 1_000;
 const HANDSHAKE_ACCESS_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SEND_TIMEOUT_MS = 1_500;
+const HANDSHAKE_DELETE_TIMEOUT_MS = 1_500;
 const HANDSHAKE_SOURCE = MANAGED_ENTITY_HANDSHAKE_SOURCE;
 
 export type ManagedEntityHandshakeResult =
@@ -44,6 +46,7 @@ type ManagedEntityHandshakeContext = {
   entityType: ManagedEntityType;
   prismaEntityType: ChatEntityType;
   createdAt: string | null;
+  commandMessageId: string | null;
 };
 
 @Injectable()
@@ -150,7 +153,8 @@ export class ManagedEntityHandshakeService {
         userAccess,
       );
       await this.accessWriter.patchUserVisibleState(writeContext);
-      await this.enqueueRosterSync(context);
+      await this.refreshRosterSync(context);
+      await this.deleteCommandMessageSafely(context);
       await this.replySafely(
         context,
         wasConnected ? 'Уже подключен. Я обновил доступ и настройки.' : 'Готово, чат подключен.',
@@ -163,6 +167,7 @@ export class ManagedEntityHandshakeService {
           : ManagedEntityHandshakeOutcomeStatus.CONNECTED,
       );
       this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
+      this.releaseRateLimitSlot(context);
       return wasConnected ? 'already_connected' : 'connected';
     } catch (error: unknown) {
       this.releaseRateLimitSlot(context);
@@ -226,6 +231,8 @@ export class ManagedEntityHandshakeService {
       entityType,
       prismaEntityType,
       createdAt: update.message?.createdAt?.trim() || null,
+      commandMessageId:
+        updateType === 'message_created' ? (update.message?.messageId?.trim() || null) : null,
     };
   }
 
@@ -312,14 +319,65 @@ export class ManagedEntityHandshakeService {
     return access?.isOwner === true || access?.isAdmin === true;
   }
 
-  private async enqueueRosterSync(context: ManagedEntityHandshakeContext): Promise<void> {
-    await this.maxChatAdminRosterSyncService.scheduleChatAdminRosterSync({
+  private buildRosterSyncJob(context: ManagedEntityHandshakeContext): MaxChatAdminRosterSyncJob {
+    return {
       chatId: context.chatId,
       botIds: [context.botId],
       title: context.title,
       entityType: context.entityType,
       source: HANDSHAKE_SOURCE,
-    });
+    };
+  }
+
+  private async refreshRosterSync(context: ManagedEntityHandshakeContext): Promise<void> {
+    const job = this.buildRosterSyncJob(context);
+    try {
+      const refreshed = await this.maxChatAdminRosterSyncService.processJob(job);
+      if (refreshed) {
+        return;
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: context.update.updateId,
+          chatId: context.chatId,
+          botId: context.botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh managed entity roster directly after handshake',
+      );
+    }
+
+    await this.maxChatAdminRosterSyncService.scheduleChatAdminRosterSync(job);
+  }
+
+  private async deleteCommandMessageSafely(context: ManagedEntityHandshakeContext): Promise<void> {
+    if (!context.commandMessageId) {
+      return;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(context.chatId, context.commandMessageId, {
+        immediate: true,
+        botId: context.botId,
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_HANDSHAKE,
+        timeoutMs: HANDSHAKE_DELETE_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: [403, 404],
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: context.update.updateId,
+          chatId: context.chatId,
+          botId: context.botId,
+          messageId: context.commandMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to delete managed entity handshake command message',
+      );
+    }
   }
 
   private async replySafely(

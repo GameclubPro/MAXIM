@@ -42,6 +42,9 @@ function createFixture() {
     chatAdminAllowlist: {
       upsert: jest.fn((args) => ({ operation: 'allowlist.upsert', args })),
     },
+    managedEntityAdminMember: {
+      upsert: jest.fn((args) => ({ operation: 'adminMember.upsert', args })),
+    },
     managedBotChatCatalog: {
       upsert: jest.fn().mockResolvedValue(undefined),
     },
@@ -78,6 +81,7 @@ function createFixture() {
       messageId: 'reply-1',
       url: null,
     }),
+    deleteMessage: jest.fn().mockResolvedValue(undefined),
   };
   const maxBotLinkService = {
     bindDiscoveredChatBots: jest.fn().mockResolvedValue('bot-1'),
@@ -98,6 +102,7 @@ function createFixture() {
     rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
   };
   const rosterSync = {
+    processJob: jest.fn().mockResolvedValue(true),
     scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
   };
   const handshakeOutcomes = {
@@ -199,13 +204,25 @@ describe('ManagedEntityHandshakeService', () => {
     ).toBeLessThan(
       fixture.chatContextCache.setManagedEntitiesPublishedSnapshot.mock.invocationCallOrder[0],
     );
-    expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+    const rosterJob = {
       chatId: '-100',
       botIds: ['bot-1'],
       title: 'Команда MAX',
       entityType: 'chat',
       source: 'handshake_start',
-    });
+    };
+    expect(fixture.rosterSync.processJob).toHaveBeenCalledWith(rosterJob);
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).not.toHaveBeenCalled();
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      '-100',
+      'm-start-1',
+      expect.objectContaining({
+        immediate: true,
+        botId: 'bot-1',
+        sourceTag: 'managed_handshake',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100',
       'Готово, чат подключен.',
@@ -304,6 +321,7 @@ describe('ManagedEntityHandshakeService', () => {
         }),
       }),
     );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('uses the callback user when MAX does not expose message senderId', async () => {
@@ -457,6 +475,29 @@ describe('ManagedEntityHandshakeService', () => {
         reason: 'user_not_admin',
       }),
     );
+    expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('queues a roster sync fallback when direct database refresh fails', async () => {
+    const fixture = createFixture();
+    fixture.rosterSync.processJob.mockRejectedValueOnce(new Error('MAX timeout'));
+
+    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+
+    const rosterJob = {
+      chatId: '-100',
+      botIds: ['bot-1'],
+      title: 'Команда MAX',
+      entityType: 'chat',
+      source: 'handshake_start',
+    };
+    expect(fixture.rosterSync.processJob).toHaveBeenCalledWith(rosterJob);
+    expect(fixture.rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith(rosterJob);
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      '-100',
+      'm-start-1',
+      expect.objectContaining({ immediate: true, botId: 'bot-1' }),
+    );
   });
 
   it('does not rate limit a retry after a transient bot access denial', async () => {
@@ -547,21 +588,27 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
-  it('rate limits duplicate Старт commands per chat and user', async () => {
+  it('allows repeated successful Старт commands to refresh access again', async () => {
     const fixture = createFixture();
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
-    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('rate_limited');
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          updateId: 'u-start-2',
+          message: {
+            messageId: 'm-start-2',
+          },
+        }),
+      ),
+    ).resolves.toBe('connected');
 
-    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
-    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        chatId: '-100',
-        userId: 'admin-1',
-        botId: 'bot-1',
-        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
-        reason: 'duplicate_recently',
-      }),
+    expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(2);
+    expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
+      '-100',
+      'm-start-2',
+      expect.objectContaining({ immediate: true, botId: 'bot-1' }),
     );
   });
 });
