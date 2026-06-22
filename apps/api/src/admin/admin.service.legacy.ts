@@ -645,9 +645,11 @@ export class AdminService implements OnModuleDestroy {
       maxBotRegistry: this.maxBotRegistry,
     });
     const registryBotIds =
-      typeof this.maxBotRegistry?.getAllBots === 'function'
-        ? this.maxBotRegistry.getAllBots().map((bot) => bot.id)
-        : [];
+      typeof this.maxBotRegistry?.getOperationalBots === 'function'
+        ? this.maxBotRegistry.getOperationalBots().map((bot) => bot.id)
+        : typeof this.maxBotRegistry?.getAllBots === 'function'
+          ? this.maxBotRegistry.getAllBots().map((bot) => bot.id)
+          : [];
     this.managedEntitiesRuntimeBotIds = new Set(
       [...registryBotIds, this.readTrimmedString(configService.get<string>('MAX_BOT_ID'))].filter(
         (botId): botId is string => Boolean(botId),

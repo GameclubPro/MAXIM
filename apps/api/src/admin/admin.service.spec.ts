@@ -10982,6 +10982,90 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
+  it('excludes dormant configured bots from the managed entity runtime scope', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 2,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-active',
+            title: 'Новый бот',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'active-bot',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-dormant',
+            title: 'Старый бот',
+            createdAt: '2026-04-02T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'dormant-bot',
+          }),
+        ],
+      }),
+    });
+    const maxBotRegistry = {
+      getOperationalBots: jest.fn().mockReturnValue([{ id: 'active-bot', state: 'active' }]),
+      getAllBots: jest.fn().mockReturnValue([
+        { id: 'active-bot', state: 'active' },
+        { id: 'dormant-bot', state: 'dormant' },
+      ]),
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        if (botId === 'active-bot') {
+          return { id: 'active-bot', state: 'active' };
+        }
+        if (botId === 'dormant-bot') {
+          return { id: 'dormant-bot', state: 'dormant' };
+        }
+        return null;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'active-bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.map((chat) => chat.id)).toEqual(['chat-active']);
+    expect(maxBotRegistry.getOperationalBots).toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chat: expect.objectContaining({
+            OR: expect.arrayContaining([
+              { primaryBotId: { in: ['active-bot'] } },
+              { botId: { in: ['active-bot'] } },
+            ]),
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(prisma.chatAdminAllowlist.findMany.mock.calls)).not.toContain(
+      'dormant-bot',
+    );
+  });
+
   it('filters cached denied chats out of published snapshot responses and patches the snapshot', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({
