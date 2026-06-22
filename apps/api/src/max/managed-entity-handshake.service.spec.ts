@@ -449,10 +449,15 @@ describe('ManagedEntityHandshakeService', () => {
     );
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
+    await expect(
+      fixture.service.handleWebhookUpdate(createUpdate({ updateId: 'u-start-1-duplicate' })),
+    ).resolves.toBe('rate_limited');
 
     expect(fixture.maxBotLinkService.bindDiscoveredChatBots).not.toHaveBeenCalled();
     expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
     expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '-100',
       'Подключить чат может только администратор или владелец. Попросите такого пользователя нажать кнопку ниже.',
@@ -475,7 +480,80 @@ describe('ManagedEntityHandshakeService', () => {
         reason: 'user_not_admin',
       }),
     );
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it('rate limits repeated denied callback clicks to avoid group spam', async () => {
+    const fixture = createFixture();
+    fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(
+      new Map([
+        [
+          'admin-1',
+          {
+            userId: 'admin-1',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        ],
+      ]),
+    );
+    const callbackUpdate = createUpdate({
+      type: 'message_callback',
+      message: {
+        chatId: '-100',
+        senderId: 'bot-1',
+        text: '',
+      },
+      raw: {
+        callback: {
+          callback_id: 'cb-denied-1',
+          payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+          user: {
+            user_id: 'admin-1',
+          },
+        },
+      },
+    });
+
+    await expect(fixture.service.handleWebhookUpdate(callbackUpdate)).resolves.toBe('denied');
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          type: 'message_callback',
+          updateId: 'u-start-callback-denied-duplicate',
+          message: {
+            chatId: '-100',
+            senderId: 'bot-1',
+            text: '',
+          },
+          raw: {
+            callback: {
+              callback_id: 'cb-denied-2',
+              payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
+              user: {
+                user_id: 'admin-1',
+              },
+            },
+          },
+        }),
+      ),
+    ).resolves.toBe('rate_limited');
+
+    expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
   });
 
   it('queues a roster sync fallback when direct database refresh fails', async () => {
@@ -500,7 +578,7 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
-  it('does not rate limit a retry after a transient bot access denial', async () => {
+  it('rate limits duplicate bot access denials but allows a new Старт message to retry', async () => {
     const fixture = createFixture();
     fixture.maxClient.getCurrentChatMemberAccess
       .mockResolvedValueOnce({
@@ -517,10 +595,28 @@ describe('ManagedEntityHandshakeService', () => {
       });
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('denied');
-    await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+    await expect(
+      fixture.service.handleWebhookUpdate(createUpdate({ updateId: 'u-start-1-duplicate' })),
+    ).resolves.toBe('rate_limited');
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          updateId: 'u-start-2',
+          message: {
+            messageId: 'm-start-2',
+          },
+        }),
+      ),
+    ).resolves.toBe('connected');
 
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(1);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
   });
 
   it('refreshes an existing granted edge when the chat is already connected', async () => {

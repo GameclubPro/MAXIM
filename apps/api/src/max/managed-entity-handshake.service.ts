@@ -99,7 +99,6 @@ export class ManagedEntityHandshakeService {
           'bot_not_admin',
         );
         this.logOutcome(context, 'bot_denied');
-        this.releaseRateLimitSlot(context);
         return 'denied';
       }
 
@@ -142,7 +141,6 @@ export class ManagedEntityHandshakeService {
           'user_not_admin',
         );
         this.logOutcome(context, 'user_denied');
-        this.releaseRateLimitSlot(context);
         return 'denied';
       }
 
