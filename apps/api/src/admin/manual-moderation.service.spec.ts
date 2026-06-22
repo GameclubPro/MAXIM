@@ -77,6 +77,11 @@ function createGlobalSpammerIntelligenceMock() {
       sourceAlerts: [],
       sourceReputation: [],
     }),
+    reviewCandidate: jest.fn().mockResolvedValue({
+      ok: true,
+      userId: 'user-1',
+      status: 'APPROVED',
+    }),
     resolveLocalReviewProfiles: jest
       .fn()
       .mockResolvedValue(new Map([['user-1', { userId: 'user-1', displayName: 'Марина Орлова' }]])),
@@ -134,6 +139,50 @@ function createGlobalSpammerIntelligenceMock() {
 }
 
 describe('ManualModerationService spammer profiles', () => {
+  it('uses chat-scoped admin checks for spammer review surfaces', async () => {
+    const legacyAdminService = createLegacyAdminServiceMock();
+    const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      globalSpammerIntelligence as never,
+    );
+
+    await service.getGlobalSpammerReviewQueue('chat-1', authUser, {});
+    await service.getGlobalSpammerReviewMetrics('chat-1', authUser);
+    await service.getGlobalSpammerUserDiagnostics('chat-1', 'user-1', authUser, {
+      includeProfile: 'false',
+    });
+    await service.reviewGlobalSpammerCandidate('chat-1', 'user-1', authUser, {
+      action: 'APPROVE',
+    });
+
+    expect(legacyAdminService.assertChatAdmin).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      authUser.userId,
+      'chat',
+    );
+    expect(legacyAdminService.assertChatAdmin).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      authUser.userId,
+      'chat',
+    );
+    expect(legacyAdminService.assertChatAdmin).toHaveBeenNthCalledWith(
+      3,
+      'chat-1',
+      authUser.userId,
+      'chat',
+    );
+    expect(legacyAdminService.assertChatAdmin).toHaveBeenNthCalledWith(
+      4,
+      'chat-1',
+      authUser.userId,
+      'chat',
+      { trafficClass: 'critical' },
+    );
+  });
+
   it('defaults spammer review lists to pending candidates when status is omitted', async () => {
     const legacyAdminService = createLegacyAdminServiceMock();
     const globalSpammerIntelligence = createGlobalSpammerIntelligenceMock();

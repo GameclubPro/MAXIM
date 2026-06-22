@@ -78,7 +78,7 @@ export class ManualModerationService {
 
   async getGlobalSpammerReviewQueue(chatId: string, user: AuthUser, query: unknown) {
     const startedAtMs = Date.now();
-    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, 'chat');
     const assertAdminMs = Date.now() - startedAtMs;
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
@@ -147,7 +147,7 @@ export class ManualModerationService {
 
   async getGlobalSpammerReviewMetrics(chatId: string, user: AuthUser, query: unknown = {}) {
     const startedAtMs = Date.now();
-    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, 'chat');
     const assertAdminMs = Date.now() - startedAtMs;
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
@@ -179,7 +179,7 @@ export class ManualModerationService {
     query: unknown = {},
   ) {
     const startedAtMs = Date.now();
-    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null);
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, 'chat');
     const assertAdminMs = Date.now() - startedAtMs;
     const queryRecord =
       query && typeof query === 'object' ? (query as Record<string, unknown>) : {};
@@ -274,7 +274,7 @@ export class ManualModerationService {
     user: AuthUser,
     body: unknown,
   ) {
-    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, null, {
+    await this.legacyAdminService.assertChatAdmin(chatId, user.userId, 'chat', {
       trafficClass: 'critical',
     });
     const row = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
