@@ -457,23 +457,7 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.chatContextCache.upsertManagedEntitiesRecentBootstrap).not.toHaveBeenCalled();
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
-      '-100',
-      'Подключить чат может только администратор или владелец. Попросите такого пользователя нажать кнопку ниже.',
-      expect.objectContaining({
-        buttons: [
-          [
-            expect.objectContaining({
-              type: 'callback',
-              text: 'Проверить подключение',
-              payload: MANAGED_ENTITY_HANDSHAKE_START_CALLBACK_PAYLOAD,
-            }),
-          ],
-        ],
-      }),
-      expect.anything(),
-    );
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         status: ManagedEntityHandshakeOutcomeStatus.USER_DENIED,
@@ -489,7 +473,7 @@ describe('ManagedEntityHandshakeService', () => {
     expect(fixture.maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('rate limits repeated denied callback clicks to avoid group spam', async () => {
+  it('silently rate limits repeated denied callback clicks to avoid group spam', async () => {
     const fixture = createFixture();
     fixture.maxClient.getChatMembersAccess.mockResolvedValueOnce(
       new Map([
@@ -547,7 +531,7 @@ describe('ManagedEntityHandshakeService', () => {
     ).resolves.toBe('rate_limited');
 
     expect(fixture.maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
@@ -647,7 +631,7 @@ describe('ManagedEntityHandshakeService', () => {
     );
     expect(fixture.maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(fixture.prisma.managedEntityAccessEdge.upsert).not.toHaveBeenCalled();
-    expect(fixture.maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(fixture.maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         status: ManagedEntityHandshakeOutcomeStatus.BOT_DENIED,
