@@ -387,7 +387,7 @@ export class WebhookService {
       return;
     }
 
-    const backoffKey = `${chatId}:${botId}`;
+    const backoffKey = `${chatId}:${entityType}`;
     const now = Date.now();
     const blockedUntil = this.botAddedStartHintBackoffUntilMs.get(backoffKey) ?? 0;
     if (blockedUntil > now) {

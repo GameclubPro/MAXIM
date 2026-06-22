@@ -1888,6 +1888,77 @@ describe('WebhookService', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
   });
 
+  it('throttles Старт hints per chat when several bots are added together', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-multi-bot-hint' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'hint-1', url: null }),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+    const update = {
+      updateId: 'u-bot-added-multi-hint-1',
+      type: 'bot_added',
+      botId: 'id613070470872_5_bot',
+      message: {
+        messageId: 'bot_added:u-bot-added-multi-hint-1',
+        chatId: '-100131',
+        chatTitle: 'Чат с несколькими ботами',
+        entityType: 'chat',
+        senderId: 'id613070470872_5_bot',
+        text: '',
+        createdAt: new Date('2026-04-03T12:05:00.000Z').toISOString(),
+      },
+    };
+
+    await expect(service.ingest(update as never, '127.0.0.1')).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await expect(
+      service.ingest(
+        {
+          ...update,
+          updateId: 'u-bot-added-multi-hint-2',
+          botId: 'id613070470872_6_bot',
+          message: {
+            ...update.message,
+            messageId: 'bot_added:u-bot-added-multi-hint-2',
+            senderId: 'id613070470872_6_bot',
+          },
+        } as never,
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    await flushDeferredWebhookWork();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '-100131',
+      expect.stringContaining('Чат почти подключен'),
+      expect.anything(),
+      expect.objectContaining({
+        botId: 'id613070470872_5_bot',
+        sourceTag: 'managed_handshake',
+      }),
+    );
+  });
+
   it('uses channel wording in the Старт hint after channel bot_added webhooks', async () => {
     const prisma = {
       webhookEvent: {
