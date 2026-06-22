@@ -19851,6 +19851,70 @@ describe('AdminService.getChatParticipantsPage', () => {
     });
   });
 
+  it('returns an empty participant page when MAX denies roster access', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+    prisma.chatSettings.findUnique.mockResolvedValue({
+      nightModeTimezone: 'Europe/Moscow',
+    });
+
+    const rosterError = Object.assign(new Error('Request failed with status code 403'), {
+      response: {
+        status: 403,
+        data: {
+          code: 'chat.denied',
+          message: 'access denied',
+        },
+      },
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMembersPage: jest.fn().mockRejectedValue(rosterError),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: '2026-04-14T10:00:00.000Z',
+        entityType: 'chat',
+        avatarUrl: null,
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatParticipantsPage(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { limit: 10, range: '7d' },
+    );
+
+    expect(result).toEqual({
+      items: [],
+      totalCount: 1200,
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(prisma.moderationEvent.groupBy).not.toHaveBeenCalled();
+    expect(prisma.chatParticipantModerationImmunity.findMany).not.toHaveBeenCalled();
+  });
+
   it('upserts participant immunity and returns a compact summary', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T09:00:00.000Z'));
     try {

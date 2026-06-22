@@ -15402,10 +15402,34 @@ export class AdminService implements OnModuleDestroy {
     const resolvedBotId = (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(query.range, now);
-    const [membersPage, header, settings] = await Promise.all([
+    const membersPagePromise = (
       search
         ? this.searchChatParticipantsMembersPage(chatId, query, search, resolvedBotId)
-        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId),
+        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId)
+    ).catch((error: unknown) => {
+      if (!this.isTerminalChatParticipantsRosterAccessError(error)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        {
+          chatId,
+          entityType,
+          search: search ? true : undefined,
+          statusCode: this.extractHttpStatusCode(error),
+          code: this.extractMaxApiErrorCode(error),
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Returning empty participant page after MAX denied roster access',
+      );
+
+      return {
+        items: [],
+        nextMarker: null,
+      };
+    });
+    const [membersPage, header, settings] = await Promise.all([
+      membersPagePromise,
       this.getManagedEntityHeader(
         chatId,
         {
@@ -15541,6 +15565,31 @@ export class AdminService implements OnModuleDestroy {
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       },
     );
+  }
+
+  private isTerminalChatParticipantsRosterAccessError(error: unknown): boolean {
+    const code = this.extractMaxApiErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'account.blocked') {
+      return true;
+    }
+
+    const status = this.extractHttpStatusCode(error);
+    return status === 403 || status === 404;
+  }
+
+  private extractHttpStatusCode(error: unknown): number | null {
+    const status = (error as { response?: { status?: unknown } })?.response?.status;
+    if (typeof status === 'number' && Number.isFinite(status)) {
+      return status;
+    }
+
+    const directStatus = (error as { status?: unknown })?.status;
+    return typeof directStatus === 'number' && Number.isFinite(directStatus) ? directStatus : null;
+  }
+
+  private extractMaxApiErrorCode(error: unknown): string | null {
+    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof code === 'string' && code.trim().length > 0 ? code.trim().toLowerCase() : null;
   }
 
   private async searchChatParticipantsMembersPage(
