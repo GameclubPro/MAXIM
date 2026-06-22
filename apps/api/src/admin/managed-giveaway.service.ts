@@ -288,6 +288,27 @@ export class ManagedGiveawayService {
     return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(row));
   }
 
+  async refreshManagedGiveawayPublication(
+    sourceChatId: string,
+    giveawayId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    source: GiveawayActionSource = 'miniapp',
+  ): Promise<ManagedGiveawayDetails> {
+    await this.assertAdminEntityAccess(sourceChatId, user, entityType);
+
+    const giveaway = await this.findGiveawayForSource(sourceChatId, giveawayId, entityType);
+    await this.editGiveawayPublicationIfNeeded(giveaway, giveaway.status);
+    await this.writeAuditLog(sourceChatId, user.userId, 'REFRESH_GIVEAWAY_PUBLICATION', {
+      giveawayId,
+      entityType,
+      status: giveaway.status,
+      source,
+    });
+
+    return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(giveaway));
+  }
+
   async updateManagedGiveaway(
     sourceChatId: string,
     giveawayId: string,
@@ -1712,7 +1733,7 @@ export class ManagedGiveawayService {
     text: string,
   ): Promise<MaxMessageButton | null> {
     const botId = await this.resolveGiveawayButtonBotId(sourceChatId);
-    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId, botId);
+    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
 
     if (launchUrl) {
       return {
@@ -3294,7 +3315,7 @@ export class ManagedGiveawayService {
     return user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
   }
 
-  private buildGiveawayLaunchUrl(giveawayId: string, botId?: string | null): string | null {
+  private buildGiveawayLaunchUrl(giveawayId: string): string | null {
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -3310,11 +3331,11 @@ export class ManagedGiveawayService {
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam, botId) ??
-      (botId || this.ownBotUserId
-        ? `https://max.ru/${encodeURIComponent(
-            botId || this.ownBotUserId || '',
-          )}?startapp=${encodeURIComponent(startParam)}`
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
+      (this.ownBotUserId
+        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(
+            startParam,
+          )}`
         : null)
     );
   }

@@ -79,6 +79,20 @@ export class AdminGiveawayController {
     return this.managedGiveawayService.closeManagedGiveaway(chatId, giveawayId, user, 'chat');
   }
 
+  @Post('chats/:chatId/giveaways/:giveawayId/refresh-publication')
+  refreshChatGiveawayPublication(
+    @Param('chatId') chatId: string,
+    @Param('giveawayId') giveawayId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.managedGiveawayService.refreshManagedGiveawayPublication(
+      chatId,
+      giveawayId,
+      user,
+      'chat',
+    );
+  }
+
   @Post('chats/:chatId/giveaways/:giveawayId/reroll')
   rerollChatGiveawayWinner(
     @Param('chatId') chatId: string,
@@ -198,6 +212,20 @@ export class AdminGiveawayController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.managedGiveawayService.closeManagedGiveaway(chatId, giveawayId, user, 'channel');
+  }
+
+  @Post('channels/:chatId/giveaways/:giveawayId/refresh-publication')
+  refreshChannelGiveawayPublication(
+    @Param('chatId') chatId: string,
+    @Param('giveawayId') giveawayId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.managedGiveawayService.refreshManagedGiveawayPublication(
+      chatId,
+      giveawayId,
+      user,
+      'channel',
+    );
   }
 
   @Post('channels/:chatId/giveaways/:giveawayId/reroll')

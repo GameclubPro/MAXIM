@@ -119,6 +119,41 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it('allows refreshing a published giveaway keyboard through the mutation tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'POST',
+        path: '/channels/-75313361194252/giveaways/cmqh0qohe02jk01pohd5l12ax/refresh-publication',
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/channels/-75313361194252/giveaways/cmqh0qohe02jk01pohd5l12ax/refresh-publication',
+      expect.objectContaining({
+        method: 'POST',
+        body: undefined,
+        headers: expect.objectContaining({
+          Authorization: 'InitData auth_date=1&hash=test',
+          'X-Miniapp-Mutation-Tunnel': '1',
+        }),
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('accepts gzip-compressed tunnel bodies', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

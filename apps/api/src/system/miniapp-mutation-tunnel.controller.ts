@@ -124,6 +124,12 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
       `^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaways/${ENTITY_ID_SEGMENT}/(publish|close|reroll|deliver|cancel)$`,
     ),
   },
+  {
+    method: 'POST',
+    pattern: new RegExp(
+      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/giveaways/${ENTITY_ID_SEGMENT}/refresh-publication$`,
+    ),
+  },
   { method: 'POST', pattern: new RegExp(`^/giveaways/${ENTITY_ID_SEGMENT}/(enter|claim)$`) },
   {
     method: 'POST',

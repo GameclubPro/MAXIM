@@ -110,11 +110,13 @@ function createManagedEntityAccessLossMock() {
 function createMaxBotLinkMock(
   options: {
     resolvedBotId?: string;
+    entryBotId?: string;
     contactId?: string | null;
     token?: string;
   } = {},
 ) {
   const resolvedBotId = options.resolvedBotId ?? 'id613002203036_4_bot';
+  const entryBotId = options.entryBotId ?? resolvedBotId;
   const contactId = options.contactId ?? '613002203040';
   const token = options.token ?? 'test-token';
 
@@ -126,9 +128,8 @@ function createMaxBotLinkMock(
     resolveContactIdSync: jest.fn((botId?: string | null) =>
       botId === resolvedBotId || botId == null ? contactId : null,
     ),
-    buildEntryMiniappStartUrlSync: jest.fn((startParam: string, botId?: string | null) => {
-      const targetBotId = botId?.trim() || resolvedBotId;
-      return `https://max.ru/${encodeURIComponent(targetBotId)}?startapp=${encodeURIComponent(startParam)}`;
+    buildEntryMiniappStartUrlSync: jest.fn((startParam: string) => {
+      return `https://max.ru/${encodeURIComponent(entryBotId)}?startapp=${encodeURIComponent(startParam)}`;
     }),
     buildMiniappStartUrlSync: jest.fn((startParam: string, botId?: string | null) => {
       const targetBotId = botId?.trim() || resolvedBotId;
@@ -1168,7 +1169,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('uses the source chat bot binding for giveaway mini app deep links', async () => {
+  it('uses the entry bot for giveaway mini app deep links and the source bot for publication', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:35:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1178,7 +1179,10 @@ describe('ManagedGiveawayService', () => {
       getChannelSettings: jest.fn().mockResolvedValue({}),
       getSettings: jest.fn().mockResolvedValue({}),
     };
-    const maxBotLinkService = createMaxBotLinkMock();
+    const maxBotLinkService = createMaxBotLinkMock({
+      resolvedBotId: 'id613002203036_4_bot',
+      entryBotId: 'entry_bot',
+    });
     const service = new ManagedGiveawayService(
       prisma as never,
       maxClient as never,
@@ -1213,10 +1217,10 @@ describe('ManagedGiveawayService', () => {
     await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
 
     expect(maxBotLinkService.resolveBotIdForRead).toHaveBeenCalledWith({ chatId: 'source-1' });
-    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.stringMatching(/^gg-/u),
-      'id613002203036_4_bot',
     );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(maxBotLinkService.resolveContactIdSync).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
@@ -1227,7 +1231,7 @@ describe('ManagedGiveawayService', () => {
             expect.objectContaining({
               type: 'link',
               text: 'Участвовать · 0',
-              url: expect.stringContaining('https://max.ru/id613002203036_4_bot?startapp=gg-'),
+              url: expect.stringContaining('https://max.ru/entry_bot?startapp=gg-'),
             }),
           ],
         ],
@@ -1236,7 +1240,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('uses the unified read route for giveaway mini app buttons when available', async () => {
+  it('uses the unified read route for giveaway publication sends when available', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:36:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1296,10 +1300,10 @@ describe('ManagedGiveawayService', () => {
       chatId: 'source-route-1',
     });
     expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
-    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.stringMatching(/^gg-/u),
-      'id613002203036_4_bot',
     );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-route-1',
       'Текст публикации',
