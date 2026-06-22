@@ -392,8 +392,15 @@ describe('MaxChatAdminRosterSyncService', () => {
   });
 
   it('clears stale allowlist rows when no bot keeps admin access', async () => {
-    const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
-      createService();
+    const {
+      service,
+      prisma,
+      maxClient,
+      maxBotRegistry,
+      chatContextCache,
+      nightModeTransitionScheduler,
+    } = createService();
+    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       { userId: 'user-7' },
       { userId: 'user-8' },
@@ -432,9 +439,85 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
   });
 
+  it('keeps allowlist visible and records bot-scoped denied edges when roster candidates are incomplete', async () => {
+    const { service, prisma, maxClient, chatContextCache, nightModeTransitionScheduler } =
+      createService();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Partial chat',
+      entityType: 'CHANNEL',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      botMemberships: [],
+    });
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+
+    await expect(
+      service.processJob({
+        chatId: '-100-partial',
+        botIds: ['bot-1'],
+        title: 'Partial chat',
+        entityType: 'channel',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(false);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100-partial',
+      expect.objectContaining({
+        botId: 'bot-1',
+      }),
+    );
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith('-100-partial', []);
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalledWith(
+      '-100-partial',
+      'user-7',
+      'bot_denied',
+    );
+    expect(prisma.managedEntityAccessEdge.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId: '-100-partial',
+          userId: {
+            in: ['user-7'],
+          },
+          botId: 'bot-1',
+        },
+        data: expect.objectContaining({
+          state: 'BOT_DENIED',
+          deniedReason: 'bot_denied',
+          source: 'admin_roster_sync_bot_scoped',
+        }),
+      }),
+    );
+    expect(prisma.managedEntityAdminMember.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: '-100-partial',
+          userId: {
+            in: ['user-7'],
+          },
+        }),
+      }),
+    );
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
+      '-100-partial',
+      null,
+    );
+    expect(nightModeTransitionScheduler.reconcileChat).not.toHaveBeenCalled();
+  });
+
   it('backs off repeated terminal bot access failures before clearing allowlist again', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-14T09:00:00.000Z'));
-    const { service, prisma, maxClient, chatContextCache } = createService();
+    const { service, prisma, maxClient, maxBotRegistry, chatContextCache } = createService();
+    maxBotRegistry.getDiscoveryBots.mockReturnValue([{ id: 'bot-1', state: 'active' }]);
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
     const deniedError = Object.assign(new Error('Request failed with status code 403'), {
       response: {

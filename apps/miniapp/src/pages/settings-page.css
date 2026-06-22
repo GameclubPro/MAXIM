@@ -289,6 +289,28 @@
   color: #9f3412;
 }
 
+.managed-access-alert__bots {
+  flex-basis: 100%;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.managed-access-alert__bots li {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--text-muted);
+}
+
+.managed-access-alert__bots li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .managed-access-alert__error {
   color: var(--text-muted);
 }

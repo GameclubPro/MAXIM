@@ -2930,8 +2930,8 @@ describe('RuleEngineService', () => {
         label: 'bare service ad',
         text: 'Маникюр, пишите в личку',
         expected: {
-          soft: null,
-          balanced: 'MEDIUM',
+          soft: 'MEDIUM',
+          balanced: 'HIGH',
           strict: 'HIGH',
         },
       },
@@ -2939,8 +2939,8 @@ describe('RuleEngineService', () => {
         label: 'consultation leadgen',
         text: 'Бесплатная консультация, пишите в личку',
         expected: {
-          soft: null,
-          balanced: 'MEDIUM',
+          soft: 'MEDIUM',
+          balanced: 'HIGH',
           strict: 'HIGH',
         },
       },

@@ -1305,6 +1305,9 @@ export class MaxBotLinkService {
           : activeOperationalMemberships.length > 0
             ? activeOperationalMemberships
             : activeKnownMemberships,
+        {
+          requireFreshSnapshotForPromotion: true,
+        },
       ) ??
       storedPrimaryBotId ??
       activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
@@ -1673,7 +1676,9 @@ export class MaxBotLinkService {
         this.resolveOperationalBotId(membership.botId),
     );
     const nextPrimaryBotId =
-      resolvePreferredPrimaryBotId(null, activeMemberships) ??
+      resolvePreferredPrimaryBotId(null, activeMemberships, {
+        requireFreshSnapshotForPromotion: true,
+      }) ??
       activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
         ?.botId ??
       activeMemberships[0]?.botId ??

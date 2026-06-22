@@ -11,7 +11,6 @@ import {
   type ChatSummary,
   type Me,
   type ManagedEntityAccessDiagnostics,
-  type ManagedEntityAccessLossDiagnosticItem,
   type ManagedEntityAccessLossReason,
   type ManagedEntityAccessRecheckResponse,
   type ManagedEntityBotExecutionPlan,
@@ -21,10 +20,12 @@ import {
   type ManagedEntityOnboardingDiagnostics,
   type ManagedEntitiesListResponse,
   type ManagedEntitiesResponseDiff,
+  type ManagedEntityPrivateAccessLossDiagnosticItem,
   type ManagedEntityType,
 } from '@maxim/contracts';
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   Optional,
@@ -251,7 +252,8 @@ export class ManagedEntitiesService {
           entityType,
           listOptions,
         ),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+      attachFavoriteTypes: async (userId, items) =>
+        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
     });
   }
 
@@ -269,7 +271,8 @@ export class ManagedEntitiesService {
           entityType,
           listOptions,
         ),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+      attachFavoriteTypes: async (userId, items) =>
+        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
       attachFavoriteTypesToDiff: (userId, diff) =>
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
       createIdleRefreshState: () =>
@@ -291,7 +294,8 @@ export class ManagedEntitiesService {
           entityType,
           listOptions,
         ),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+      attachFavoriteTypes: async (userId, items) =>
+        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
     });
   }
 
@@ -309,7 +313,8 @@ export class ManagedEntitiesService {
           entityType,
           listOptions,
         ),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
+      attachFavoriteTypes: async (userId, items) =>
+        this.sanitizePublicChatSummaries(await this.attachManagedEntityFavoriteTypes(userId, items)),
       attachFavoriteTypesToDiff: (userId, diff) =>
         this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
       createIdleRefreshState: () =>
@@ -463,11 +468,11 @@ export class ManagedEntitiesService {
         this.legacyAdminService.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
     });
 
-    return {
+    return this.sanitizePublicManagedEntityHeader({
       ...header,
       accessDiagnostics: await this.getManagedEntityAccessDiagnostics(chatId),
       viewerAccess: await this.getManagedEntityViewerAccess(chatId, user.userId, entityType),
-    };
+    });
   }
 
   getChatBotExecutionPlan(
@@ -699,8 +704,61 @@ export class ManagedEntitiesService {
 
     return {
       ...diff,
-      added,
-      updated,
+      added: this.sanitizePublicChatSummaries(added),
+      updated: this.sanitizePublicChatSummaries(updated),
+    };
+  }
+
+  private sanitizePublicChatSummaries(items: readonly ChatSummary[]): ChatSummary[] {
+    return items.map((item) => this.sanitizePublicChatSummary(item));
+  }
+
+  private sanitizePublicChatSummary(item: ChatSummary): ChatSummary {
+    const assignedBots = Array.isArray(item.assignedBots) ? item.assignedBots : [];
+    const activeBotCount = assignedBots.filter(
+      (bot) => bot.membershipStatus === 'active',
+    ).length;
+    const botCount =
+      typeof item.botCount === 'number' && item.botCount > 0
+        ? item.botCount
+        : activeBotCount > 0
+          ? activeBotCount
+          : assignedBots.length;
+    const hasSharedAutomation =
+      item.hasSharedAutomation === true || botCount > 1 || item.sharedMode !== 'owned';
+
+    return {
+      ...item,
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
+      ...(botCount > 0 ? { botCount } : {}),
+      ...(hasSharedAutomation ? { hasSharedAutomation } : {}),
+    };
+  }
+
+  private sanitizePublicManagedEntityHeader(header: ManagedEntityHeader): ManagedEntityHeader {
+    const assignedBots = Array.isArray(header.assignedBots) ? header.assignedBots : [];
+    const activeBotCount =
+      header.accessDiagnostics.activeBotCount > 0
+        ? header.accessDiagnostics.activeBotCount
+        : assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
+    const botCount =
+      typeof header.botCount === 'number' && header.botCount > 0
+        ? header.botCount
+        : activeBotCount > 0
+          ? activeBotCount
+          : assignedBots.filter((bot) => bot.membershipStatus === 'active').length;
+    const hasSharedAutomation =
+      header.hasSharedAutomation === true || botCount > 1 || header.sharedMode !== 'owned';
+
+    return {
+      ...header,
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
+      ...(botCount > 0 ? { botCount } : {}),
+      ...(hasSharedAutomation ? { hasSharedAutomation } : {}),
     };
   }
 
@@ -757,6 +815,7 @@ export class ManagedEntitiesService {
     entityType: ManagedEntityType,
     options: { refresh?: boolean } = {},
   ): Promise<ManagedEntityBotExecutionPlan> {
+    this.assertSystemAccess(user);
     await this.assertManagedEntityAdminAccess(chatId, user, entityType);
 
     return managedEntityBotExecutionPlanSchema.parse(
@@ -774,6 +833,7 @@ export class ManagedEntitiesService {
     entityType: ManagedEntityType,
     body: unknown,
   ): Promise<ManagedEntityBotExecutionPlan> {
+    this.assertSystemAccess(user);
     await this.assertManagedEntityAdminAccess(chatId, user, entityType);
 
     const request = updateManagedEntityPrimaryBotRequestSchema.parse(body);
@@ -792,6 +852,7 @@ export class ManagedEntitiesService {
     entityType: ManagedEntityType,
     body: unknown,
   ): Promise<ManagedEntityBotExecutionPlan> {
+    this.assertSystemAccess(user);
     await this.assertManagedEntityAdminAccess(chatId, user, entityType);
 
     const request = updateManagedEntityPartnerAssistRequestSchema.parse(body);
@@ -811,6 +872,7 @@ export class ManagedEntitiesService {
     entityType: ManagedEntityType,
     body: unknown,
   ): Promise<ManagedEntityBotExecutionPlan> {
+    this.assertSystemAccess(user);
     await this.assertManagedEntityAdminAccess(chatId, user, entityType);
 
     const request = promoteManagedEntityStandbyRequestSchema.parse(body);
@@ -833,6 +895,12 @@ export class ManagedEntitiesService {
       user.userId,
       entityType,
     );
+  }
+
+  private assertSystemAccess(user: AuthUser): void {
+    if (!canUserAccessSystem(user.userId, this.systemAccessConfig)) {
+      throw new ForbiddenException('System administrator access is required.');
+    }
   }
 
   private async getManagedEntityAccessDiagnostics(
@@ -896,7 +964,7 @@ export class ManagedEntitiesService {
     );
     const freshness = this.resolveBotAccessFreshness(membershipRows);
 
-    const diagnosticsByBotId = new Map<string, ManagedEntityAccessLossDiagnosticItem>();
+    const diagnosticsByBotId = new Map<string, ManagedEntityPrivateAccessLossDiagnosticItem>();
     for (const row of membershipRows) {
       if (activeAccessBotIds.size > 0) {
         continue;
@@ -964,7 +1032,10 @@ export class ManagedEntitiesService {
       freshUntil: freshness.freshUntil,
       source: freshness.source,
       activeBotCount: freshness.activeBotCount,
-      lostBots,
+      lostBots: lostBots.map((item) => ({
+        reason: item.reason,
+        detectedAt: item.detectedAt,
+      })),
     };
   }
 
@@ -1173,7 +1244,7 @@ export class ManagedEntitiesService {
     botAccessSource?: string | null;
     botAccessLastErrorCode?: string | null;
     updatedAt?: Date | null;
-  }): ManagedEntityAccessLossDiagnosticItem | null {
+  }): ManagedEntityPrivateAccessLossDiagnosticItem | null {
     if (row.status !== ChatBotMembershipStatus.ACTIVE) {
       return null;
     }
@@ -1202,8 +1273,8 @@ export class ManagedEntitiesService {
   }
 
   private upsertAccessLossDiagnostic(
-    diagnosticsByBotId: Map<string, ManagedEntityAccessLossDiagnosticItem>,
-    item: ManagedEntityAccessLossDiagnosticItem,
+    diagnosticsByBotId: Map<string, ManagedEntityPrivateAccessLossDiagnosticItem>,
+    item: ManagedEntityPrivateAccessLossDiagnosticItem,
   ): void {
     const current = diagnosticsByBotId.get(item.botId);
     if (!current || item.detectedAt > current.detectedAt) {

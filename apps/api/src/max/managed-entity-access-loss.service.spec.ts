@@ -229,6 +229,7 @@ describe('ManagedEntityAccessLossService', () => {
         findUnique: jest.fn().mockResolvedValue({
           status: 'ACTIVE',
           permissionsSnapshot: {
+            checkedAt: new Date().toISOString(),
             isAdmin: true,
             isOwner: false,
             permissions: [],
@@ -318,6 +319,114 @@ describe('ManagedEntityAccessLossService', () => {
     expect(rosterSyncQueue.getJob).not.toHaveBeenCalled();
     expect(prisma.managedBroadcast.updateMany).not.toHaveBeenCalled();
     expect(prisma.vkParsingSource.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('cleans runtime work when the replacement bot only has stale snapshot access', async () => {
+    const staleCheckedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1_000).toISOString();
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Managed chat',
+          entityType: ChatEntityType.CHANNEL,
+        }),
+      },
+      chatBotMembership: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'ACTIVE',
+          permissionsSnapshot: {
+            checkedAt: staleCheckedAt,
+            isAdmin: true,
+            isOwner: true,
+            permissions: ['delete_messages', 'add_remove_members'],
+          },
+        }),
+      },
+      managedEntityAccessEdge: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      managedBroadcast: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedBroadcastDelivery: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      managedBroadcastOccurrence: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      vkParsingPost: {
+        updateMany: jest.fn().mockResolvedValue({ count: 3 }),
+      },
+      vkParsingSource: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const maxBotLinkService = {
+      markChatBotRemoved: jest.fn().mockResolvedValue('bot-3'),
+      resolveBotId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+      invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const nightModeTransitionScheduler = {
+      clearChatJobs: jest.fn().mockResolvedValue(undefined),
+    };
+    const rosterSyncQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = new ManagedEntityAccessLossService(
+      prisma as never,
+      maxBotLinkService as never,
+      chatContextCache as never,
+      nightModeTransitionScheduler as never,
+      rosterSyncQueue as never,
+    );
+
+    await expect(
+      service.recordManagedEntityAccessLost({
+        chatId: 'channel-1',
+        botId: 'bot-1',
+        reason: 'bot_denied',
+        source: 'unit-test',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        botId: 'bot-1',
+        nextOwnerBotId: 'bot-3',
+        cleanup: expect.objectContaining({
+          nightModeJobsCleared: true,
+          canceledBroadcasts: 1,
+          canceledBroadcastDeliveries: 2,
+          canceledBroadcastOccurrences: 1,
+          clearedVkPublishPosts: 3,
+          pausedVkSources: 1,
+          removedRosterSyncJobs: 0,
+        }),
+      }),
+    );
+
+    expect(prisma.chatBotMembership.findUnique).toHaveBeenCalledWith({
+      where: {
+        chatId_botId: {
+          chatId: 'channel-1',
+          botId: 'bot-3',
+        },
+      },
+      select: {
+        status: true,
+        permissionsSnapshot: true,
+      },
+    });
+    expect(nightModeTransitionScheduler.clearChatJobs).toHaveBeenCalledWith('channel-1');
+    expect(prisma.managedBroadcast.updateMany).toHaveBeenCalled();
+    expect(prisma.vkParsingSource.updateMany).toHaveBeenCalled();
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
+      'channel-1',
+      'channel',
+    );
   });
 
   it('does not mutate private direct dialogs', async () => {

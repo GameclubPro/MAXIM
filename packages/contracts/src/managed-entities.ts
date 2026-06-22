@@ -121,6 +121,8 @@ export const chatSummarySchema = z.object({
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
+  botCount: z.number().int().min(0).optional(),
+  hasSharedAutomation: z.boolean().optional(),
   favoriteTypes: z.array(managedEntityFavoriteTypeSchema).optional(),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
@@ -236,17 +238,24 @@ export const managedEntityAccessLossReasonSchema = z.enum([
 export type ManagedEntityAccessLossReason = z.infer<typeof managedEntityAccessLossReasonSchema>;
 
 export const managedEntityAccessLossDiagnosticItemSchema = z.object({
-  botId: z.string(),
-  botLabel: z.string().nullable().optional().default(null),
   reason: managedEntityAccessLossReasonSchema,
   detectedAt: z.string().datetime(),
-  source: z.string().trim().min(1),
-  lastMaxErrorCode: z.string().trim().min(1).nullable().optional().default(null),
-  lastMaxErrorMessage: z.string().trim().min(1).nullable().optional().default(null),
-  lastMaxStatusCode: z.number().int().nullable().optional().default(null),
 });
 export type ManagedEntityAccessLossDiagnosticItem = z.infer<
   typeof managedEntityAccessLossDiagnosticItemSchema
+>;
+
+export const managedEntityPrivateAccessLossDiagnosticItemSchema =
+  managedEntityAccessLossDiagnosticItemSchema.extend({
+    botId: z.string(),
+    botLabel: z.string().nullable().optional().default(null),
+    source: z.string().trim().min(1),
+    lastMaxErrorCode: z.string().trim().min(1).nullable().optional().default(null),
+    lastMaxErrorMessage: z.string().trim().min(1).nullable().optional().default(null),
+    lastMaxStatusCode: z.number().int().nullable().optional().default(null),
+  });
+export type ManagedEntityPrivateAccessLossDiagnosticItem = z.infer<
+  typeof managedEntityPrivateAccessLossDiagnosticItemSchema
 >;
 
 export const managedEntityAccessDiagnosticsSchema = z.object({
@@ -287,6 +296,8 @@ export const managedEntityHeaderSchema = z.object({
   primaryBotId: z.string().nullable().optional().default(null),
   assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
   sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
+  botCount: z.number().int().min(0).optional(),
+  hasSharedAutomation: z.boolean().optional(),
   accessDiagnostics: managedEntityAccessDiagnosticsSchema
     .optional()
     .default({

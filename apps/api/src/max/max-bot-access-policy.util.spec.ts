@@ -12,11 +12,13 @@ describe('max bot access policy', () => {
     expect(normalizePermissionName('Can Edit-Link')).toBe('can_edit_link');
     expect(
       normalizeMembershipAccessSnapshot({
+        checkedAt: '2026-05-09T10:00:00.000Z',
         isAdmin: true,
         isOwner: false,
         permissions: ['Delete Messages', 'delete-messages', '', null, 'Can Edit-Link'],
       }),
     ).toEqual({
+      checkedAt: '2026-05-09T10:00:00.000Z',
       isAdmin: true,
       isOwner: false,
       permissions: ['delete_messages', 'can_edit_link'],
@@ -84,6 +86,95 @@ describe('max bot access policy', () => {
         },
       ]),
     ).toBe('standby-bot');
+  });
+
+  it('does not promote a standby from a stale permissions snapshot when freshness is required', () => {
+    const nowMs = Date.parse('2026-05-11T10:00:00.000Z');
+
+    expect(
+      resolvePreferredPrimaryBotId(
+        'primary-bot',
+        [
+          {
+            botId: 'primary-bot',
+            role: ChatBotMembershipRole.PRIMARY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-11T09:59:00.000Z',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['read_all_messages'],
+            },
+          },
+          {
+            botId: 'stale-standby-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-09T10:00:00.000Z',
+              isAdmin: true,
+              isOwner: true,
+              permissions: ['delete_messages', 'add_remove_members'],
+            },
+          },
+          {
+            botId: 'fresh-weak-standby-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-11T09:58:00.000Z',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          },
+        ],
+        {
+          requireFreshSnapshotForPromotion: true,
+          nowMs,
+          freshMs: 60 * 60 * 1_000,
+        },
+      ),
+    ).toBe('primary-bot');
+  });
+
+  it('uses a fresh replacement instead of a stale fallback when the current primary is gone', () => {
+    const nowMs = Date.parse('2026-05-11T10:00:00.000Z');
+
+    expect(
+      resolvePreferredPrimaryBotId(
+        null,
+        [
+          {
+            botId: 'stale-owner-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-09T10:00:00.000Z',
+              isAdmin: true,
+              isOwner: true,
+              permissions: ['delete_messages', 'add_remove_members'],
+            },
+          },
+          {
+            botId: 'fresh-admin-bot',
+            role: ChatBotMembershipRole.STANDBY,
+            status: ChatBotMembershipStatus.ACTIVE,
+            permissionsSnapshot: {
+              checkedAt: '2026-05-11T09:58:00.000Z',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['read_all_messages'],
+            },
+          },
+        ],
+        {
+          requireFreshSnapshotForPromotion: true,
+          nowMs,
+          freshMs: 60 * 60 * 1_000,
+        },
+      ),
+    ).toBe('fresh-admin-bot');
   });
 
   it('prefers owner access and ignores removed memberships', () => {

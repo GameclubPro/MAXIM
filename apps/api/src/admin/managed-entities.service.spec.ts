@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { ManagedEntitiesService } from './managed-entities.service';
 
 const user = {
@@ -66,7 +66,12 @@ function createPrismaMock() {
 }
 
 function createConfigMock(
-  options: { previousToken?: string; botId?: string | null; token?: string } = {},
+  options: {
+    previousToken?: string;
+    botId?: string | null;
+    token?: string;
+    systemAdminUserIds?: string | null;
+  } = {},
 ) {
   return {
     getOrThrow: jest.fn((key: string) => {
@@ -89,7 +94,10 @@ function createConfigMock(
         return options.previousToken ?? null;
       }
       if (key === 'NODE_ENV') {
-        return 'test';
+        return options.systemAdminUserIds !== undefined ? 'production' : 'test';
+      }
+      if (key === 'SYSTEM_ADMIN_USER_IDS') {
+        return options.systemAdminUserIds ?? null;
       }
       return null;
     }),
@@ -456,7 +464,42 @@ describe('ManagedEntitiesService list flow', () => {
     link: 'https://max.ru/chat-1',
     participantsCount: 12,
     channelOverview: null,
+    primaryBotId: 'bot-1',
+    assignedBots: [
+      {
+        botId: 'bot-1',
+        label: 'Primary Bot',
+        role: 'primary',
+        membershipStatus: 'active',
+        lifecycleState: 'active',
+        speechPersona: 'male',
+        characterName: null,
+        avatarUrl: null,
+        capabilities: [],
+        permissionsSummary: null,
+      },
+      {
+        botId: 'bot-2',
+        label: 'Standby Bot',
+        role: 'standby',
+        membershipStatus: 'active',
+        lifecycleState: 'active',
+        speechPersona: 'female',
+        characterName: null,
+        avatarUrl: null,
+        capabilities: [],
+        permissionsSummary: null,
+      },
+    ],
+    sharedMode: 'shared-standby',
+  };
+  const publicChatSummary = {
+    ...chatSummary,
+    primaryBotId: null,
     assignedBots: [],
+    sharedMode: 'owned',
+    botCount: 2,
+    hasSharedAutomation: true,
   };
 
   const channelSummary = {
@@ -496,7 +539,7 @@ describe('ManagedEntitiesService list flow', () => {
 
     await expect(service.listChats(user as never, { fresh: true })).resolves.toEqual([
       {
-        ...chatSummary,
+        ...publicChatSummary,
         favoriteTypes: ['watch'],
       },
     ]);
@@ -531,7 +574,16 @@ describe('ManagedEntitiesService list flow', () => {
       refresh: null,
     });
 
-    await expect(service.listChannels(user as never)).resolves.toEqual([channelSummary]);
+    await expect(service.listChannels(user as never)).resolves.toEqual([
+      {
+        ...channelSummary,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+        botCount: 2,
+        hasSharedAutomation: true,
+      },
+    ]);
 
     expect(legacyAdminService.listChannels).not.toHaveBeenCalled();
     expect(legacyAdminService.listManagedEntitiesDetailedForManagedEntities).toHaveBeenCalledWith(
@@ -596,6 +648,11 @@ describe('ManagedEntitiesService list flow', () => {
       items: [
         {
           ...chatSummary,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+          botCount: 2,
+          hasSharedAutomation: true,
           favoriteTypes: ['broadcast'],
         },
       ],
@@ -617,6 +674,11 @@ describe('ManagedEntitiesService list flow', () => {
         added: [
           {
             ...chatSummary,
+            primaryBotId: null,
+            assignedBots: [],
+            sharedMode: 'owned',
+            botCount: 2,
+            hasSharedAutomation: true,
             favoriteTypes: ['watch'],
           },
         ],
@@ -782,7 +844,7 @@ describe('ManagedEntitiesService headers', () => {
       link: 'https://max.ru/chat-1',
       participantsCount: 12,
       avatarUrl: 'https://cdn.max/chat-1.png',
-      primaryBotId: 'bot-1',
+      primaryBotId: null,
       assignedBots: [],
       sharedMode: 'owned',
       accessDiagnostics: {
@@ -830,7 +892,12 @@ describe('ManagedEntitiesService headers', () => {
         title: 'Живой чат',
       }),
     );
-    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(result);
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'chat-1',
+        primaryBotId: 'bot-1',
+      }),
+    );
   });
 
   it('returns fresh cached channel header without routing through legacy getChannelHeader', async () => {
@@ -841,8 +908,21 @@ describe('ManagedEntitiesService headers', () => {
       link: 'https://max.ru/channel-1',
       participantsCount: 120,
       avatarUrl: 'https://cdn.max/channel-1.png',
-      primaryBotId: null,
-      assignedBots: [],
+      primaryBotId: 'bot-1',
+      assignedBots: [
+        {
+          botId: 'bot-1',
+          label: 'Primary Bot',
+          role: 'primary',
+          membershipStatus: 'active',
+          lifecycleState: 'active',
+          speechPersona: 'male',
+          characterName: null,
+          avatarUrl: null,
+          capabilities: [],
+          permissionsSummary: null,
+        },
+      ],
       sharedMode: 'owned',
     };
     const { chatContextCache, legacyAdminService, maxClient, service } = createService();
@@ -850,7 +930,9 @@ describe('ManagedEntitiesService headers', () => {
 
     await expect(service.getChannelHeader('channel-1', user as never)).resolves.toEqual({
       ...cachedHeader,
-      primaryBotId: 'bot-1',
+      primaryBotId: null,
+      assignedBots: [],
+      botCount: 1,
       accessDiagnostics: {
         state: 'ok',
         lastDetectedAt: null,
@@ -908,14 +990,8 @@ describe('ManagedEntitiesService headers', () => {
       activeBotCount: 0,
       lostBots: [
         {
-          botId: 'bot-1',
-          botLabel: 'Основной бот',
           reason: 'bot_denied',
           detectedAt: '2026-05-31T09:59:00.000Z',
-          source: 'night_mode_transition:open',
-          lastMaxErrorCode: 'chat.denied',
-          lastMaxErrorMessage: 'Forbidden',
-          lastMaxStatusCode: 403,
         },
       ],
     });
@@ -1019,14 +1095,8 @@ describe('ManagedEntitiesService headers', () => {
       activeBotCount: 1,
       lostBots: [
         {
-          botId: 'bot-1',
-          botLabel: 'Основной бот',
           reason: 'bot_denied',
           detectedAt: '2026-06-01T10:00:00.000Z',
-          source: 'admin_roster_sync',
-          lastMaxErrorCode: 'chat.denied',
-          lastMaxErrorMessage: null,
-          lastMaxStatusCode: null,
         },
       ],
     });
@@ -1062,6 +1132,37 @@ describe('ManagedEntitiesService headers', () => {
 describe('ManagedEntitiesService bot execution plan', () => {
   it('loads chat bot plans through the managed entities boundary', async () => {
     const { legacyAdminService, maxBotExecutionPlanner, service } = createService();
+
+    await service.getChatBotExecutionPlan('chat-1', user as never, { refresh: true });
+
+    expect(legacyAdminService.assertManagedEntityAdminAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'admin-1',
+      'chat',
+    );
+    expect(maxBotExecutionPlanner?.getManagedEntityExecutionPlan).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      refreshCapabilities: true,
+    });
+  });
+
+  it('keeps raw bot plans behind system access in production mode', async () => {
+    const { legacyAdminService, maxBotExecutionPlanner, service } = createService({
+      config: { systemAdminUserIds: 'system-admin' },
+    });
+
+    await expect(service.getChatBotExecutionPlan('chat-1', user as never)).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(legacyAdminService.assertManagedEntityAdminAccess).not.toHaveBeenCalled();
+    expect(maxBotExecutionPlanner?.getManagedEntityExecutionPlan).not.toHaveBeenCalled();
+  });
+
+  it('allows system admins to inspect raw bot plans in production mode', async () => {
+    const { legacyAdminService, maxBotExecutionPlanner, service } = createService({
+      config: { systemAdminUserIds: 'admin-1' },
+    });
 
     await service.getChatBotExecutionPlan('chat-1', user as never, { refresh: true });
 

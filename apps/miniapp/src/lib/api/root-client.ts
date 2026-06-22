@@ -50,74 +50,6 @@ function parseChannelOverview(value: unknown): ChatSummary['channelOverview'] {
   };
 }
 
-function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const assignedBots: ChatSummary['assignedBots'] = [];
-  for (const item of value) {
-    if (!isRecord(item) || typeof item.botId !== 'string' || typeof item.label !== 'string') {
-      continue;
-    }
-
-    assignedBots.push({
-      botId: item.botId,
-      label: item.label,
-      role: item.role === 'standby' ? 'standby' : 'primary',
-      membershipStatus: item.membershipStatus === 'removed' ? 'removed' : 'active',
-      lifecycleState:
-        item.lifecycleState === 'dormant' ||
-        item.lifecycleState === 'draining' ||
-        item.lifecycleState === 'disabled'
-          ? item.lifecycleState
-          : 'active',
-      speechPersona:
-        item.speechPersona === 'female' || item.speechPersona === 'neutral'
-          ? item.speechPersona
-          : 'male',
-      characterName:
-        typeof item.characterName === 'string' && item.characterName.trim().length > 0
-          ? item.characterName.trim()
-          : null,
-      avatarUrl:
-        typeof item.avatarUrl === 'string' && item.avatarUrl.trim().length > 0
-          ? item.avatarUrl.trim()
-          : null,
-      capabilities: Array.isArray(item.capabilities)
-        ? (Array.from(
-            new Set(
-              item.capabilities
-                .map((value) => (typeof value === 'string' ? value.trim() : ''))
-                .filter((value): value is string => value.length > 0),
-            ),
-          ) as ChatSummary['assignedBots'][number]['capabilities'])
-        : [],
-      permissionsSummary:
-        isRecord(item.permissionsSummary) && Array.isArray(item.permissionsSummary.permissions)
-          ? {
-              checkedAt:
-                typeof item.permissionsSummary.checkedAt === 'string' &&
-                item.permissionsSummary.checkedAt.trim().length > 0
-                  ? item.permissionsSummary.checkedAt.trim()
-                  : null,
-              isAdmin: item.permissionsSummary.isAdmin === true,
-              isOwner: item.permissionsSummary.isOwner === true,
-              permissions: Array.from(
-                new Set(
-                  item.permissionsSummary.permissions
-                    .map((value) => (typeof value === 'string' ? value.trim() : ''))
-                    .filter((value): value is string => value.length > 0),
-                ),
-              ),
-            }
-          : null,
-    });
-  }
-
-  return assignedBots;
-}
-
 function parseFavoriteTypes(value: unknown): ManagedEntityFavoriteType[] {
   if (!Array.isArray(value)) {
     return [];
@@ -156,14 +88,10 @@ function parseChatSummary(value: unknown): ChatSummary {
   const entityType = value.entityType === 'channel' ? 'channel' : 'chat';
   const link = typeof value.link === 'string' ? value.link.trim() || null : null;
   const avatarUrl = typeof value.avatarUrl === 'string' ? value.avatarUrl.trim() || null : null;
-  const primaryBotId =
-    typeof value.primaryBotId === 'string' ? value.primaryBotId.trim() || null : null;
-  const sharedMode =
-    value.sharedMode === 'shared-standby' ||
-    value.sharedMode === 'shared-assist' ||
-    value.sharedMode === 'shared-failover'
-      ? value.sharedMode
-      : 'owned';
+  const botCount =
+    typeof value.botCount === 'number' && Number.isInteger(value.botCount) && value.botCount >= 0
+      ? value.botCount
+      : undefined;
 
   if (
     typeof value.id !== 'string' ||
@@ -182,9 +110,11 @@ function parseChatSummary(value: unknown): ChatSummary {
     link,
     avatarUrl,
     channelOverview: parseChannelOverview(value.channelOverview),
-    primaryBotId,
-    assignedBots: parseAssignedBots(value.assignedBots),
-    sharedMode,
+    primaryBotId: null,
+    assignedBots: [],
+    sharedMode: 'owned',
+    ...(botCount !== undefined ? { botCount } : {}),
+    ...(value.hasSharedAutomation === true ? { hasSharedAutomation: true } : {}),
     ...(favoriteTypes.length > 0 ? { favoriteTypes } : {}),
   };
 }

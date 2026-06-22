@@ -416,6 +416,9 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     const strongestAccessBotId = resolvePreferredPrimaryBotId(
       nextPrimaryBotId,
       activeKnownMemberships,
+      {
+        requireFreshSnapshotForPromotion: true,
+      },
     );
     if (strongestAccessBotId) {
       nextPrimaryBotId = strongestAccessBotId;

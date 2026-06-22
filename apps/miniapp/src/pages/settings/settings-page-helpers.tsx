@@ -13,10 +13,7 @@ import {
   formatDeleteBotMessagesDelayLabel,
 } from '@maxim/contracts/settings';
 import { type BroadcastImage, type SendBroadcastResult } from '@maxim/contracts/broadcast';
-import {
-  type ManagedEntityAssignedBot,
-  type ManagedEntityHeader,
-} from '@maxim/contracts/managed-entities';
+import { type ManagedEntityHeader } from '@maxim/contracts/managed-entities';
 import {
   BOT_SPEECH_STYLE_OPTIONS,
   getBotSpeechEditableTemplate,
@@ -39,7 +36,6 @@ import { buildBroadcastAudiencePresentation } from '../../lib/broadcast-audience
 import { sortAndUniqueBroadcastSlots } from '../../lib/broadcast-schedule';
 import type { SendBroadcastPayload } from '../../lib/api/shared-types';
 import { cn } from '../../lib/cn';
-import { HEALTH_BASE } from '../../lib/public-config';
 import type { SettingsWorkspaceState } from '../../lib/settings-workspace-state';
 import type { ApplySectionKey } from '../settings-page-state';
 
@@ -881,14 +877,6 @@ export type BotSpeechPreviewContext = {
   characterName: string;
 };
 
-export type HeaderBotLoadSnapshot = {
-  queueLagSec: number;
-  queuedEvents: number;
-  failedEvents: number;
-  actionErrorRate: number;
-  maxApiLoad: number | null;
-};
-
 export const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
   persona: 'neutral',
   characterName: 'Чат-бот',
@@ -898,131 +886,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function resolveHeaderAssignedBots(
-  header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'> | null | undefined,
-): ManagedEntityAssignedBot[] {
-  if (!header?.assignedBots?.length) {
-    return [];
-  }
-
-  return [...header.assignedBots].sort((left, right) => {
-    const leftPrimary = left.botId === header.primaryBotId ? 1 : 0;
-    const rightPrimary = right.botId === header.primaryBotId ? 1 : 0;
-    if (leftPrimary !== rightPrimary) {
-      return rightPrimary - leftPrimary;
-    }
-
-    if (left.role !== right.role) {
-      return left.role === 'primary' ? -1 : 1;
-    }
-
-    return left.label.localeCompare(right.label, 'ru-RU');
-  });
-}
-
-export function parseHeaderBotLoadSnapshots(value: unknown): Record<string, HeaderBotLoadSnapshot> {
-  if (!isRecord(value) || !isRecord(value.bots)) {
-    throw new Error('Invalid bot load snapshot');
-  }
-
-  return Object.fromEntries(
-    Object.entries(value.bots)
-      .map(([botId, snapshot]) => {
-        if (!isRecord(snapshot)) {
-          return null;
-        }
-        if (
-          snapshot.load !== null &&
-          snapshot.load !== undefined &&
-          typeof snapshot.load !== 'number'
-        ) {
-          return null;
-        }
-
-        return [
-          botId,
-          {
-            queueLagSec: 0,
-            queuedEvents: 0,
-            failedEvents: 0,
-            actionErrorRate: 0,
-            maxApiLoad:
-              typeof snapshot.load === 'number' && Number.isFinite(snapshot.load)
-                ? snapshot.load
-                : null,
-          },
-        ] satisfies [string, HeaderBotLoadSnapshot];
-      })
-      .filter((entry): entry is [string, HeaderBotLoadSnapshot] => entry !== null),
-  );
-}
-
-export async function getHeaderBotLoadSnapshots(
-  botIds: readonly string[],
-): Promise<Record<string, HeaderBotLoadSnapshot>> {
-  const params = new URLSearchParams();
-  if (botIds.length > 0) {
-    params.set('bots', botIds.join(','));
-  }
-
-  const response = await fetch(`${HEALTH_BASE}/health/bot-load?${params.toString()}`, {
-    headers: {
-      Accept: 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Bot load request failed: ${response.status}`);
-  }
-
-  const payload = (await response.json()) as unknown;
-  return parseHeaderBotLoadSnapshots(payload);
-}
-
-export function resolveHeaderBotLoadLevel(snapshot: HeaderBotLoadSnapshot | undefined): {
-  value: number;
-  tone: 'cool' | 'warm' | 'hot';
-} {
-  if (!snapshot) {
-    return {
-      value: 0.18,
-      tone: 'cool',
-    };
-  }
-
-  if (typeof snapshot.maxApiLoad === 'number') {
-    const value = Math.max(0.14, Math.min(1, snapshot.maxApiLoad));
-    if (value >= 0.85) {
-      return { value, tone: 'hot' };
-    }
-    if (value >= 0.55) {
-      return { value, tone: 'warm' };
-    }
-    return { value, tone: 'cool' };
-  }
-
-  const lagScore = Math.min(1, snapshot.queueLagSec / 10);
-  const queueScore = Math.min(1, snapshot.queuedEvents / 6);
-  const failedScore = Math.min(1, snapshot.failedEvents / 2);
-  const errorScore = Math.min(1, snapshot.actionErrorRate / 0.2);
-  const value = Math.max(
-    0.14,
-    Math.min(1, lagScore * 0.58 + queueScore * 0.22 + failedScore * 0.1 + errorScore * 0.1),
-  );
-
-  if (value >= 0.72) {
-    return { value, tone: 'hot' };
-  }
-
-  if (value >= 0.4) {
-    return { value, tone: 'warm' };
-  }
-
-  return { value, tone: 'cool' };
-}
-
 export function resolveBotSpeechPreviewContext(
-  _header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'> | null | undefined,
+  _header: ManagedEntityHeader | null | undefined,
 ): BotSpeechPreviewContext {
   return DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT;
 }

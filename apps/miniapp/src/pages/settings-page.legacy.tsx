@@ -298,9 +298,6 @@ import {
   RUSSIAN_TIMEZONE_OPTIONS,
   BOT_SPEECH_SYNC_SETTING_KEYS,
   BOT_SPEECH_STYLE_SELECTOR_LABELS,
-  resolveHeaderAssignedBots,
-  getHeaderBotLoadSnapshots,
-  resolveHeaderBotLoadLevel,
   resolveBotSpeechPreviewContext,
   mergeBotSpeechStyleSettings,
   buildSpeechStylePreviewSamples,
@@ -832,30 +829,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatHeaderQuery = {
     data: settingsScreenQuery.data?.header,
   };
-  const headerAssignedBots = useMemo(
-    () => resolveHeaderAssignedBots(chatHeaderQuery.data ?? null),
-    [chatHeaderQuery.data],
-  );
-  const botLoadQuery = useQuery({
-    queryKey: ['settings-header-bot-load', headerAssignedBots.map((bot) => bot.botId).join(':')],
-    queryFn: () => getHeaderBotLoadSnapshots(headerAssignedBots.map((bot) => bot.botId)),
-    enabled: headerAssignedBots.length > 0,
-    staleTime: 10_000,
-    refetchInterval: 20_000,
-    refetchOnWindowFocus: false,
-    retry: 0,
-  });
   const botSpeechPreviewContext = useMemo(
     () => resolveBotSpeechPreviewContext(chatHeaderQuery.data ?? null),
     [chatHeaderQuery.data],
-  );
-  const headerBotLoadItems = useMemo(
-    () =>
-      headerAssignedBots.map((bot) => ({
-        bot,
-        load: resolveHeaderBotLoadLevel(botLoadQuery.data?.[bot.botId]),
-      })),
-    [botLoadQuery.data, headerAssignedBots],
   );
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
@@ -4399,19 +4375,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         link: chatHeaderQuery.data?.link ?? null,
         avatarUrl: chatHeaderQuery.data?.avatarUrl ?? null,
         channelOverview: null,
-        primaryBotId: chatHeaderQuery.data?.primaryBotId ?? null,
-        assignedBots: chatHeaderQuery.data?.assignedBots ?? [],
-        sharedMode: chatHeaderQuery.data?.sharedMode ?? 'owned',
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+        botCount: chatHeaderQuery.data?.botCount,
+        hasSharedAutomation: chatHeaderQuery.data?.hasSharedAutomation,
       });
     }
 
     return [...choicesById.values()];
   }, [
-    chatHeaderQuery.data?.assignedBots,
     chatHeaderQuery.data?.avatarUrl,
+    chatHeaderQuery.data?.botCount,
+    chatHeaderQuery.data?.hasSharedAutomation,
     chatHeaderQuery.data?.link,
-    chatHeaderQuery.data?.primaryBotId,
-    chatHeaderQuery.data?.sharedMode,
     chatId,
     chatTitle,
     chatsList.data,
@@ -5237,47 +5214,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 onRecheck={() => recheckAccessMutation.mutate()}
               />
             </Suspense>
-          ) : null}
-
-          {headerBotLoadItems.length > 0 ? (
-            <div className="settings-bot-load-strip stagger-in" aria-label="Состояние ботов">
-              <div className="settings-bot-load">
-                {headerBotLoadItems.map(({ bot, load }) => {
-                  const botTitle = bot.characterName?.trim() || bot.label;
-                  return (
-                    <div
-                      key={bot.botId}
-                      className={cn(
-                        'settings-bot-load__item',
-                        bot.speechPersona === 'female'
-                          ? 'settings-bot-load__item--female'
-                          : 'settings-bot-load__item--male',
-                        load.tone === 'warm'
-                          ? 'settings-bot-load__item--warm'
-                          : load.tone === 'hot'
-                            ? 'settings-bot-load__item--hot'
-                            : 'settings-bot-load__item--cool',
-                      )}
-                      title={botTitle}
-                      aria-label={botTitle}
-                    >
-                      <EntityAvatar
-                        title={botTitle}
-                        entityType="chat"
-                        avatarUrl={bot.avatarUrl ?? null}
-                        className="settings-bot-load__avatar"
-                      />
-                      <span className="settings-bot-load__meter" aria-hidden="true">
-                        <span
-                          className="settings-bot-load__meter-fill"
-                          style={{ width: `${Math.round(load.value * 100)}%` }}
-                        />
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
           ) : null}
 
           <SettingsDrilldownPanel

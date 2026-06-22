@@ -168,6 +168,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ).__store.clear();
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   function createService(
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, string>> = {},
@@ -500,6 +504,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
   });
 
   it('answers callback with notification and inline keyboard update in one request', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:35.000Z'));
+
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -514,6 +520,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
       ),
     };
     const service = createService(httpService);
+    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
 
     await service.answerCallback('callback-1', 'Действие выполнено', {
       text: 'Обновление\n\n1. Вариант - 1 (100%)',
@@ -548,6 +556,38 @@ describe('MaxClientService inline keyboard guardrails', () => {
         },
       }),
     );
+    await expect(
+      limiterRedis.get(`maxapi:rps:source:v1:777000_bot:critical:callback_answer:${nowSec}`),
+    ).resolves.toBe('1');
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves explicit source tags and action health lanes for callback answers', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:45.000Z'));
+
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            success: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    await service.answerCallback('callback-2', 'Открываю', undefined, {
+      actionHealthLane: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
+    });
+
+    await expect(
+      limiterRedis.get(`maxapi:rps:source:v1:777000_bot:critical:moderation_notice:${nowSec}`),
+    ).resolves.toBe('1');
 
     await service.onModuleDestroy();
   });

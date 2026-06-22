@@ -25,4 +25,41 @@ describe('managed entities contract exports', () => {
 
     expect(result.favoriteTypes).toEqual(['broadcast', 'important', 'service']);
   });
+
+  it('keeps access-loss diagnostics public and strips private bot internals', () => {
+    const result = managedEntityHeaderSchema.parse({
+      id: 'chat-1',
+      title: 'Рабочий чат',
+      entityType: 'chat',
+      link: null,
+      participantsCount: null,
+      accessDiagnostics: {
+        state: 'bot_access_lost',
+        lastDetectedAt: '2026-06-01T10:00:00.000Z',
+        lastCheckedAt: null,
+        freshUntil: null,
+        source: 'unknown',
+        activeBotCount: 2,
+        lostBots: [
+          {
+            botId: 'bot-1',
+            botLabel: 'Primary Bot',
+            reason: 'bot_denied',
+            detectedAt: '2026-06-01T10:00:00.000Z',
+            source: 'admin_roster_sync',
+            lastMaxErrorCode: 'chat.denied',
+            lastMaxErrorMessage: 'Forbidden',
+            lastMaxStatusCode: 403,
+          },
+        ],
+      },
+    });
+
+    expect(result.accessDiagnostics.lostBots).toEqual([
+      {
+        reason: 'bot_denied',
+        detectedAt: '2026-06-01T10:00:00.000Z',
+      },
+    ]);
+  });
 });

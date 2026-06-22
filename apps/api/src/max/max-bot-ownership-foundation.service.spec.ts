@@ -242,10 +242,12 @@ describe('MaxBotOwnershipFoundationService', () => {
   const originalAppRole = process.env.APP_ROLE;
 
   beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-09T10:05:00.000Z'));
     redisStore.clear();
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     if (originalAppRole === undefined) {
       delete process.env.APP_ROLE;
     } else {
@@ -645,6 +647,98 @@ describe('MaxBotOwnershipFoundationService', () => {
     expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-stronger-standby',
       'id613002203036_4_bot',
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not move primary to a stronger standby with a stale permissions snapshot', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const prisma = createPrismaMock({
+      chats: [
+        {
+          id: 'chat-stale-standby',
+          entityType: ChatEntityType.CHAT,
+          botId: 'bot-primary',
+          primaryBotId: 'bot-primary',
+          catalogKind: ChatCatalogKind.MANAGED,
+        },
+      ],
+      memberships: [
+        {
+          chatId: 'chat-stale-standby',
+          botId: 'bot-primary',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:04:00.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['read_all_messages'],
+          },
+        },
+        {
+          chatId: 'chat-stale-standby',
+          botId: 'bot-stale-owner',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-07T10:00:00.000Z',
+            isAdmin: true,
+            isOwner: true,
+            permissions: ['delete_messages', 'add_remove_members'],
+          },
+        },
+        {
+          chatId: 'chat-stale-standby',
+          botId: 'bot-fresh-standby',
+          role: ChatBotMembershipRole.STANDBY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-05-09T10:04:30.000Z',
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+      ],
+    });
+    const maxBotLinkService = {
+      rememberChatBotBinding: jest.fn(),
+    };
+
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([
+          { id: 'bot-primary', state: 'active' },
+          { id: 'bot-stale-owner', state: 'active' },
+          { id: 'bot-fresh-standby', state: 'active' },
+        ]),
+        getAdminVisibleBots: jest.fn().mockReturnValue([
+          { id: 'bot-primary', state: 'active' },
+          { id: 'bot-stale-owner', state: 'active' },
+          { id: 'bot-fresh-standby', state: 'active' },
+        ]),
+      } as never,
+      maxBotLinkService as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(prisma.chat.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-stale-standby' },
+        data: expect.objectContaining({
+          primaryBotId: 'bot-stale-owner',
+        }),
+      }),
+    );
+    expect(maxBotLinkService.rememberChatBotBinding).not.toHaveBeenCalledWith(
+      'chat-stale-standby',
+      'bot-stale-owner',
     );
 
     await service.onModuleDestroy();

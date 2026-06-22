@@ -14,7 +14,10 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import { isPrivateDirectChatId } from '../common/chat-id.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { NightModeTransitionSchedulerService } from '../moderation/night-mode-transition-scheduler.service';
-import { normalizeMembershipAccessSnapshot } from './max-bot-access-policy.util';
+import {
+  isFreshMembershipAccessSnapshot,
+  normalizeMembershipAccessSnapshot,
+} from './max-bot-access-policy.util';
 import {
   MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE,
   type MaxChatAdminRosterSyncJob,
@@ -303,7 +306,11 @@ export class ManagedEntityAccessLossService {
       }
 
       const snapshot = normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-      return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+      return Boolean(
+        snapshot &&
+          isFreshMembershipAccessSnapshot(snapshot) &&
+          (snapshot.isAdmin || snapshot.isOwner),
+      );
     } catch (error: unknown) {
       this.logger.debug(
         {

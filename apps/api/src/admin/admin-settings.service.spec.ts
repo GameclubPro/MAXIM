@@ -74,7 +74,17 @@ function createManagedEntityHeader(overrides: Record<string, unknown> = {}) {
     accessDiagnostics: {
       state: 'ok',
       lastDetectedAt: null,
+      lastCheckedAt: null,
+      freshUntil: null,
+      source: 'unknown',
+      activeBotCount: 0,
       lostBots: [],
+    },
+    viewerAccess: {
+      state: 'checking',
+      reason: null,
+      checkedAt: null,
+      canEdit: false,
     },
     ...overrides,
   };
@@ -462,6 +472,7 @@ describe('AdminSettingsService chat rules', () => {
         id: 'chat-1',
         title: 'Chat chat-1',
         entityType: 'CHAT',
+        catalogKind: 'MANAGED',
         botId: 'bot-1',
         primaryBotId: 'bot-1',
         settings: {
@@ -469,6 +480,7 @@ describe('AdminSettingsService chat rules', () => {
         },
       },
       update: {
+        catalogKind: 'MANAGED',
         botId: 'bot-1',
         primaryBotId: 'bot-1',
         settings: {

@@ -1,6 +1,7 @@
 import { ChatBotMembershipRole, ChatBotMembershipStatus } from '../prisma/prisma-client';
 
 export type MembershipAccessSnapshot = {
+  checkedAt: string | null;
   isAdmin: boolean;
   isOwner: boolean;
   permissions: string[];
@@ -16,6 +17,7 @@ export type PrimaryBotMembershipCandidate = {
 const PRIMARY_UNKNOWN_ACCESS_SCORE = 50_000;
 const PRIMARY_ADMIN_BASE_SCORE = 100_000;
 const PRIMARY_OWNER_BASE_SCORE = 1_000_000;
+export const DEFAULT_PRIMARY_ACCESS_SNAPSHOT_FRESH_MS = 24 * 60 * 60 * 1_000;
 const PRIMARY_PERMISSION_WEIGHTS = new Map<string, number>([
   ['add_remove_members', 20_000],
   ['can_add_remove_members', 20_000],
@@ -71,6 +73,10 @@ export function normalizeMembershipAccessSnapshot(value: unknown): MembershipAcc
   }
 
   const row = value as Record<string, unknown>;
+  const checkedAt =
+    typeof row.checkedAt === 'string' && row.checkedAt.trim().length > 0
+      ? row.checkedAt.trim()
+      : null;
   const permissions = Array.isArray(row.permissions)
     ? Array.from(
         new Set(
@@ -81,6 +87,7 @@ export function normalizeMembershipAccessSnapshot(value: unknown): MembershipAcc
       )
     : [];
   return {
+    checkedAt,
     isAdmin: row.isAdmin === true,
     isOwner: row.isOwner === true,
     permissions,
@@ -90,6 +97,30 @@ export function normalizeMembershipAccessSnapshot(value: unknown): MembershipAcc
 export function membershipExplicitlyLacksAccess(value: unknown): boolean {
   const snapshot = normalizeMembershipAccessSnapshot(value);
   return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
+}
+
+export function isFreshMembershipAccessSnapshot(
+  snapshot: MembershipAccessSnapshot | null,
+  options: { nowMs?: number; freshMs?: number } = {},
+): boolean {
+  if (!snapshot?.checkedAt) {
+    return false;
+  }
+
+  const checkedAtMs = Date.parse(snapshot.checkedAt);
+  if (!Number.isFinite(checkedAtMs)) {
+    return false;
+  }
+
+  const nowMs =
+    typeof options.nowMs === 'number' && Number.isFinite(options.nowMs)
+      ? options.nowMs
+      : Date.now();
+  const freshMs =
+    typeof options.freshMs === 'number' && Number.isFinite(options.freshMs)
+      ? Math.max(0, Math.trunc(options.freshMs))
+      : DEFAULT_PRIMARY_ACCESS_SNAPSHOT_FRESH_MS;
+  return checkedAtMs <= nowMs && checkedAtMs + freshMs > nowMs;
 }
 
 export function calculatePrimaryAccessScore(snapshot: MembershipAccessSnapshot | null): number {
@@ -118,6 +149,11 @@ export function calculatePrimaryPermissionScore(permissions: readonly string[]):
 export function resolvePreferredPrimaryBotId(
   currentPrimaryBotId: string | null,
   memberships: readonly PrimaryBotMembershipCandidate[],
+  options: {
+    requireFreshSnapshotForPromotion?: boolean;
+    nowMs?: number;
+    freshMs?: number;
+  } = {},
 ): string | null {
   const activeMemberships = memberships.filter(
     (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
@@ -141,6 +177,7 @@ export function resolvePreferredPrimaryBotId(
       membership,
       index,
       hasSnapshot: snapshot !== null,
+      hasFreshSnapshot: isFreshMembershipAccessSnapshot(snapshot, options),
       score: calculatePrimaryAccessScore(snapshot),
     };
   });
@@ -149,7 +186,22 @@ export function resolvePreferredPrimaryBotId(
     return fallback;
   }
 
-  scored.sort((left, right) => {
+  const selectable =
+    options.requireFreshSnapshotForPromotion === true
+      ? scored.filter(
+          (candidate) =>
+            (currentPrimaryBotId !== null &&
+              currentPrimaryBotId !== undefined &&
+              candidate.membership.botId === fallback) ||
+            candidate.hasFreshSnapshot === true,
+        )
+      : scored;
+
+  if (selectable.length === 0 || !selectable.some((candidate) => candidate.hasSnapshot)) {
+    return fallback;
+  }
+
+  selectable.sort((left, right) => {
     const scoreDiff = right.score - left.score;
     if (scoreDiff !== 0) {
       return scoreDiff;
@@ -172,5 +224,5 @@ export function resolvePreferredPrimaryBotId(
     return left.index - right.index;
   });
 
-  return scored[0]?.membership.botId ?? fallback;
+  return selectable[0]?.membership.botId ?? fallback;
 }

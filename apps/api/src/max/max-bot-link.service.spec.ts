@@ -189,6 +189,7 @@ function createServiceFixture() {
   const bots = [
     { id: 'id613002203036_bot', token: 'token-1', state: 'active' },
     { id: 'id613002203036_4_bot', token: 'token-2', state: 'active' },
+    { id: 'id613002203036_5_bot', token: 'token-3', state: 'active' },
   ];
   const botRegistry = {
     getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
@@ -210,6 +211,14 @@ function createServiceFixture() {
 }
 
 describe('MaxBotLinkService', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-09T10:05:00.000Z'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('promotes an active standby bot to primary when the current primary bot is removed', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-1', {
@@ -263,6 +272,97 @@ describe('MaxBotLinkService', () => {
     );
     expect(
       fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
+  });
+
+  it('promotes a fresh standby over a stale stronger standby when primary access is lost', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-3bot-lost-primary', {
+      id: 'chat-3bot-lost-primary',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-3bot-lost-primary',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-09T10:00:00.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-3bot-lost-primary',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-07T10:00:00.000Z',
+          isAdmin: true,
+          isOwner: true,
+          permissions: ['delete_messages', 'add_remove_members'],
+        },
+        createdAt: new Date('2026-05-09T10:00:01.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:01.000Z'),
+      },
+      {
+        chatId: 'chat-3bot-lost-primary',
+        botId: 'id613002203036_5_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-05-09T10:04:30.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-05-09T10:00:02.000Z'),
+        updatedAt: new Date('2026-05-09T10:00:02.000Z'),
+        lastSeenAt: new Date('2026-05-09T10:00:02.000Z'),
+        lastWebhookAt: new Date('2026-05-09T10:00:02.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.markChatBotRemoved({
+        chatId: 'chat-3bot-lost-primary',
+        botId: 'id613002203036_bot',
+        title: 'Shared chat',
+      }),
+    ).resolves.toBe('id613002203036_5_bot');
+
+    expect(fixture.chats.get('chat-3bot-lost-primary')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_5_bot',
+        primaryBotId: 'id613002203036_5_bot',
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_5_bot'),
     ).toEqual(
       expect.objectContaining({
         role: ChatBotMembershipRole.PRIMARY,
@@ -787,10 +887,10 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'read',
       chatId: 'channel-read-route-1',
-      primaryBotId: 'id613002203036_4_bot',
+      primaryBotId: 'id613002203036_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
-      reason: 'primary_confirmed',
+      reason: 'alternate_confirmed',
     });
   });
 
@@ -1296,10 +1396,10 @@ describe('MaxBotLinkService', () => {
     ).resolves.toMatchObject({
       purpose: 'moderation_action',
       chatId: 'chat-route-7',
-      primaryBotId: 'id613002203036_4_bot',
+      primaryBotId: 'id613002203036_bot',
       botId: 'id613002203036_4_bot',
       candidateBotIds: ['id613002203036_4_bot'],
-      reason: 'primary_confirmed',
+      reason: 'alternate_confirmed',
       action: 'delete_message',
     });
   });

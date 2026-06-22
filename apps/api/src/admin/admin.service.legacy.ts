@@ -1158,6 +1158,7 @@ export class AdminService implements OnModuleDestroy {
       const filteredItems = await this.filterManagedEntitiesByCachedDeniedAccess(
         userId,
         edgeVisibleItems,
+        { ignoreBotDenied: true },
       );
       const responseItems = await this.mergeManagedEntitiesPublishedSnapshotWithAllowlistItems(
         userId,
@@ -1229,12 +1230,15 @@ export class AdminService implements OnModuleDestroy {
     items: readonly ChatSummary[],
   ): Promise<ChatSummary[]> {
     const strictVisibleItems = await this.filterManagedEntitiesByStrictAccessEdges(userId, items);
-    return this.filterManagedEntitiesByCachedDeniedAccess(userId, strictVisibleItems);
+    return this.filterManagedEntitiesByCachedDeniedAccess(userId, strictVisibleItems, {
+      ignoreBotDenied: true,
+    });
   }
 
   private async filterManagedEntitiesByCachedDeniedAccess(
     userId: string,
     items: readonly ChatSummary[],
+    options: { ignoreBotDenied?: boolean } = {},
   ): Promise<ChatSummary[]> {
     if (items.length === 0 || typeof this.chatContextCache.getAdminAccess !== 'function') {
       return items.map((item) => this.cloneManagedEntitySummary(item));
@@ -1257,7 +1261,10 @@ export class AdminService implements OnModuleDestroy {
     );
 
     return accessStates
-      .filter(({ access }) => access !== 'user_denied' && access !== 'bot_denied')
+      .filter(
+        ({ access }) =>
+          access !== 'user_denied' && (options.ignoreBotDenied === true || access !== 'bot_denied'),
+      )
       .map(({ item }) => this.cloneManagedEntitySummary(item));
   }
 

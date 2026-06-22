@@ -11,8 +11,6 @@ const REASON_LABELS: Record<ManagedEntityAccessLossReason, string> = {
   chat_inaccessible: 'чат недоступен',
 };
 
-const FALLBACK_BOT_LABEL = 'Бот модерации';
-
 export function ManagedEntityAccessDiagnosticsBanner({
   diagnostics,
   entityLabel,
@@ -28,20 +26,30 @@ export function ManagedEntityAccessDiagnosticsBanner({
     return null;
   }
 
-  const latest = diagnostics.lostBots[0];
-  const botLabel = latest.botLabel?.trim() || FALLBACK_BOT_LABEL;
+  const lostBots = diagnostics.lostBots;
+  const lostCount = lostBots.length;
+  const pluralBot = formatBotCount(lostCount);
 
   return (
     <section className="managed-access-alert" aria-live="polite">
       <div className="managed-access-alert__copy">
-        <span className="managed-access-alert__kicker">Бот потерял доступ</span>
-        <strong>{botLabel}</strong>
-        <span>
-          {entityLabel} недоступен · {REASON_LABELS[latest.reason]}
+        <span className="managed-access-alert__kicker">
+          {lostCount > 1 ? 'Боты потеряли доступ' : 'Бот потерял доступ'}
         </span>
+        <strong>
+          {pluralBot} · {entityLabel} недоступен
+        </strong>
+        <ul className="managed-access-alert__bots" aria-label="Причины потери доступа">
+          {lostBots.map((item, index) => (
+            <li key={`${item.reason}:${item.detectedAt}:${index}`}>
+              <span>{REASON_LABELS[item.reason]}</span>
+              <span>{formatDateTime(item.detectedAt)}</span>
+            </li>
+          ))}
+        </ul>
         <span>
-          Верните бота в администраторы MAX, затем поставьте проверку в очередь ·{' '}
-          {formatDateTime(latest.detectedAt)}
+          Верните {lostCount > 1 ? 'ботов' : 'бота'} в администраторы MAX, затем поставьте
+          проверку в очередь
         </span>
       </div>
       <button
@@ -57,6 +65,18 @@ export function ManagedEntityAccessDiagnosticsBanner({
       </button>
     </section>
   );
+}
+
+function formatBotCount(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const noun =
+    mod10 === 1 && mod100 !== 11
+      ? 'бот'
+      : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+        ? 'бота'
+        : 'ботов';
+  return `${count} ${noun}`;
 }
 
 function formatDateTime(value: string): string {

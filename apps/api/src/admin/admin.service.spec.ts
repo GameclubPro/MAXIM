@@ -11194,6 +11194,81 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
+  it('keeps fresh access-edge chats visible when legacy cache says bot_denied', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-bot-denied') {
+          return 'bot_denied';
+        }
+        if (chatId === 'chat-user-denied') {
+          return 'user_denied';
+        }
+        return null;
+      }),
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 2,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-bot-denied',
+            title: 'Свежий edge через другого бота',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-user-denied',
+            title: 'Пользователь больше не админ',
+            createdAt: '2026-04-02T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.map((item) => item.id)).toEqual(['chat-bot-denied']);
+    expect(chatContextCache.getAdminAccess).toHaveBeenCalledWith('chat-bot-denied', 'admin-1');
+    expect(chatContextCache.getAdminAccess).toHaveBeenCalledWith('chat-user-denied', 'admin-1');
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        itemCount: 1,
+        items: [expect.objectContaining({ id: 'chat-bot-denied' })],
+      }),
+      expect.any(Number),
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      'snapshot-v1',
+      expect.objectContaining({
+        removedIds: ['chat-user-denied'],
+      }),
+      expect.any(Number),
+    );
+  });
+
   it('returns the published snapshot during refresh requests instead of a partial in-progress list', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({
@@ -30197,6 +30272,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       ),
       getDefaultBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
       getEntryBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
+      getOperationalBots: jest.fn().mockReturnValue([
+        { id: 'id613002203036_bot' },
+        { id: 'id613002203036_4_bot' },
+      ]),
     };
 
     const service = new AdminService(

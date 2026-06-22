@@ -46,6 +46,10 @@ type ManagedEntityAccessEdgeClient = {
   upsert?: (args: unknown) => Promise<unknown>;
   updateMany?: (args: unknown) => Promise<unknown>;
 };
+type ResolvedRosterCandidates = {
+  botIds: string[];
+  completeEnoughForGlobalDeny: boolean;
+};
 
 class PendingBotAdminGrantError extends Error {
   constructor(readonly chatId: string) {
@@ -281,7 +285,9 @@ export class MaxChatAdminRosterSyncService {
 
     await this.persistCatalogBinding(normalized);
 
-    const candidateBotIds = await this.resolveCandidateBotIds(normalized);
+    const candidateResolution = await this.resolveCandidateBotIds(normalized);
+    const candidateBotIds = candidateResolution.botIds;
+    const deniedBotIds: string[] = [];
     let recoverableError: unknown = null;
     let attemptedCandidate = false;
     let skippedDueToTerminalBackoff = false;
@@ -309,6 +315,7 @@ export class MaxChatAdminRosterSyncService {
         await this.persistBotSelfAccessSnapshot(normalized, botId, access);
 
         if (!access.isAdmin && !access.isOwner) {
+          deniedBotIds.push(botId);
           continue;
         }
 
@@ -326,6 +333,7 @@ export class MaxChatAdminRosterSyncService {
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
           await this.persistBotSelfAccessSnapshot(normalized, botId, null);
+          deniedBotIds.push(botId);
           this.markTerminalBotBackoff(normalized.chatId, botId);
           continue;
         }
@@ -366,6 +374,11 @@ export class MaxChatAdminRosterSyncService {
         'Retrying chat admin roster sync while fresh bot_added admin rights propagate',
       );
       throw new PendingBotAdminGrantError(normalized.chatId);
+    }
+
+    if (!candidateResolution.completeEnoughForGlobalDeny) {
+      await this.markAllowlistBotDeniedForCandidates(normalized.chatId, deniedBotIds);
+      return false;
     }
 
     await this.clearAllowlist(normalized.chatId, 'bot_denied');
@@ -518,12 +531,23 @@ export class MaxChatAdminRosterSyncService {
     return `chat-admin-roster-sync__${chatId}`;
   }
 
-  private async resolveCandidateBotIds(job: MaxChatAdminRosterSyncJob): Promise<string[]> {
+  private async resolveCandidateBotIds(
+    job: MaxChatAdminRosterSyncJob,
+  ): Promise<ResolvedRosterCandidates> {
+    const discoveryBotIds = Array.from(
+      new Set(
+        this.maxBotRegistry
+          .getDiscoveryBots()
+          .map((bot) => this.resolveDiscoveryBotId(bot.id))
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
     const resolved = new Set(
       (job.botIds ?? [])
         .map((botId) => this.resolveDiscoveryBotId(botId))
         .filter((botId): botId is string => Boolean(botId)),
     );
+    let loadedPersistedCandidates = false;
 
     if (resolved.size === 0) {
       const persisted = await this.prisma.chat.findUnique({
@@ -541,6 +565,7 @@ export class MaxChatAdminRosterSyncService {
           },
         },
       });
+      loadedPersistedCandidates = true;
 
       for (const botId of [
         this.resolveDiscoveryBotId(persisted?.primaryBotId),
@@ -556,12 +581,18 @@ export class MaxChatAdminRosterSyncService {
     }
 
     if (resolved.size === 0) {
-      for (const bot of this.maxBotRegistry.getDiscoveryBots()) {
-        resolved.add(bot.id);
+      for (const botId of discoveryBotIds) {
+        resolved.add(botId);
       }
     }
 
-    return [...resolved];
+    return {
+      botIds: [...resolved],
+      completeEnoughForGlobalDeny:
+        discoveryBotIds.length > 0
+          ? discoveryBotIds.every((botId) => resolved.has(botId))
+          : loadedPersistedCandidates,
+    };
   }
 
   private async persistCatalogBinding(job: MaxChatAdminRosterSyncJob): Promise<void> {
@@ -807,6 +838,48 @@ export class MaxChatAdminRosterSyncService {
       userIdsToUpsert: [],
       userIdsToRemove: existingUserIds,
     });
+    await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null);
+  }
+
+  private async markAllowlistBotDeniedForCandidates(
+    chatId: string,
+    candidateBotIds: readonly string[],
+  ): Promise<void> {
+    const existingRows = await this.prisma.chatAdminAllowlist.findMany({
+      where: {
+        chatId,
+      },
+      select: {
+        userId: true,
+      },
+    });
+    const existingUserIds = Array.from(
+      new Set(
+        existingRows
+          .map((row) => this.readTrimmedString(row.userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    const botIds = Array.from(
+      new Set(
+        candidateBotIds
+          .map((botId) => this.resolveDiscoveryBotId(botId))
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+
+    await Promise.all(
+      botIds.map((botId) =>
+        this.markManagedEntityAccessEdgesDenied({
+          chatId,
+          userIds: existingUserIds,
+          botId,
+          state: 'BOT_DENIED',
+          deniedReason: 'bot_denied',
+          source: 'admin_roster_sync_bot_scoped',
+        }),
+      ),
+    );
     await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null);
   }
 

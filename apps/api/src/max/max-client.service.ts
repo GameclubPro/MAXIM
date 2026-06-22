@@ -296,6 +296,7 @@ export const MAX_API_SOURCE_TAGS = {
   CHANNEL_AUTO_POST: 'channel_auto_post',
   COMMENT_NOTIFICATION: 'comment_notification',
   SUGGESTION_DELIVERY: 'suggestion_delivery',
+  CALLBACK_ANSWER: 'callback_answer',
   VK_PARSING: 'vk_parsing',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
@@ -3254,6 +3255,9 @@ export class MaxClientService implements OnModuleDestroy {
         }),
       {
         trafficClass: 'critical',
+        actionHealthLane: requestOptions.actionHealthLane,
+        sourceTag:
+          this.normalizeMetricSourceTag(requestOptions.sourceTag) ?? MAX_API_SOURCE_TAGS.CALLBACK_ANSWER,
         ignoreFailureMetricStatuses: requestOptions.ignoreFailureMetricStatuses,
         timeoutMs: requestOptions.timeoutMs,
         botId: requestOptions.botId,
