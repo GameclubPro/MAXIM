@@ -301,17 +301,7 @@ function isWeakRecruitmentDelete(profile: DeleteProfile): boolean {
   const hasConditions =
     numericFeature(profile, 'priceStructure') > 0 ||
     profile.reasonCodes.some((reason) => reason.startsWith('evidence:direct:'));
-  const hasDistributionOrBusiness =
-    isStandardOrStrongCampaign(profile.campaignStrength) ||
-    numericFeature(profile, 'massDistribution') > 0 ||
-    numericFeature(profile, 'businessContext') > 0;
-  return !(
-    hasDirectEvidence &&
-    hasDealContact &&
-    hasRecruitmentSignal &&
-    hasConditions &&
-    hasDistributionOrBusiness
-  );
+  return !(hasDirectEvidence && hasDealContact && hasRecruitmentSignal && hasConditions);
 }
 
 function hasRiskEvidence(profile: DeleteProfile): boolean {

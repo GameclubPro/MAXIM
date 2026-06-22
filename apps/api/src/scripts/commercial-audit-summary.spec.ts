@@ -148,6 +148,30 @@ describe('commercial-audit-summary', () => {
           },
         },
       },
+      {
+        label: 'positive_candidate',
+        policyCategory: 'hard_delete',
+        segment: 'RECRUITMENT',
+        safeContextBucket: 'none',
+        current: {
+          hit: true,
+          actionBand: 'DELETE',
+          campaignStrength: 'NONE',
+          evidenceTier: 'DIRECT',
+          primarySubtype: 'RECRUITMENT',
+          matchedSignals: ['recruitment:требуется', 'contact:phone', 'transaction:price'],
+          reasonCodes: [
+            'action:DELETE',
+            'evidence:action-direct',
+            'evidence:direct:price-contact',
+          ],
+          featureVector: {
+            dealEvidence: 1,
+            contactEvidence: 1,
+            priceStructure: 1,
+          },
+        },
+      },
     ]);
 
     expect(summary.genericGoodsDeletes).toBe(0);
