@@ -2936,7 +2936,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private normalizeRuntimeManagedEntityBotId(botId: string | null | undefined): string | null {
-    return this.maxBotRegistry?.getBotById(botId)?.id ?? this.readTrimmedString(botId) ?? null;
+    const configuredBot =
+      typeof this.maxBotRegistry?.getBotById === 'function'
+        ? this.maxBotRegistry.getBotById(botId)
+        : null;
+    return configuredBot?.id ?? this.readTrimmedString(botId) ?? null;
   }
 
   private isManagedEntityRuntimeBotId(botId: string | null | undefined): boolean {
@@ -2945,7 +2949,10 @@ export class AdminService implements OnModuleDestroy {
       return false;
     }
 
-    const configuredBot = this.maxBotRegistry?.getBotById(normalizedBotId) ?? null;
+    const configuredBot =
+      typeof this.maxBotRegistry?.getBotById === 'function'
+        ? this.maxBotRegistry.getBotById(normalizedBotId)
+        : null;
     if (!configuredBot) {
       return true;
     }
@@ -3768,6 +3775,9 @@ export class AdminService implements OnModuleDestroy {
     for (const bot of header.assignedBots) {
       const normalizedBotId = this.readTrimmedString(bot.botId);
       if (!normalizedBotId) {
+        continue;
+      }
+      if (!this.isManagedEntityRuntimeBotId(normalizedBotId)) {
         continue;
       }
 

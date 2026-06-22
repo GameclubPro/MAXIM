@@ -17013,6 +17013,105 @@ describe('AdminService.listChats', () => {
       },
     );
   });
+
+  it('does not fetch remote avatars for dormant assigned bots', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      {
+        id: 'chat-1',
+        botId: 'active-bot',
+        primaryBotId: 'active-bot',
+        botMemberships: [
+          {
+            botId: 'active-bot',
+            role: 'PRIMARY',
+            status: 'ACTIVE',
+            capabilities: [],
+            permissionsSnapshot: null,
+          },
+          {
+            botId: 'dormant-bot',
+            role: 'STANDBY',
+            status: 'REMOVED',
+            capabilities: [],
+            permissionsSnapshot: null,
+          },
+        ],
+      },
+    ]);
+    const maxClient = {
+      getOwnProfile: jest.fn().mockResolvedValue({
+        userId: 'active-bot',
+        avatarUrl: 'https://cdn.max.ru/u/active/avatar.jpg',
+      }),
+    };
+    const chatContextCache = createChatContextCacheMock();
+    const maxBotRegistry = {
+      getOperationalBots: jest.fn().mockReturnValue([{ id: 'active-bot', state: 'active' }]),
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: 'active-bot',
+          label: 'Active',
+          state: 'active',
+          speechPersona: 'male',
+        },
+        {
+          id: 'dormant-bot',
+          label: 'Dormant',
+          state: 'dormant',
+          speechPersona: 'female',
+        },
+      ]),
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        if (botId === 'active-bot') {
+          return { id: 'active-bot', state: 'active' };
+        }
+        if (botId === 'dormant-bot') {
+          return { id: 'dormant-bot', state: 'dormant' };
+        }
+        return null;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'active-bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const result = await (service as any).attachManagedEntityHeaderBotAssignments(
+      createManagedEntityHeaderFixture({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'chat',
+        primaryBotId: 'active-bot',
+      }),
+    );
+
+    expect(result.assignedBots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          botId: 'dormant-bot',
+          lifecycleState: 'dormant',
+          membershipStatus: 'removed',
+          avatarUrl: null,
+        }),
+      ]),
+    );
+    expect(maxClient.getOwnProfile).toHaveBeenCalledTimes(1);
+    expect(maxClient.getOwnProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'active-bot' }),
+    );
+    expect(maxClient.getOwnProfile).not.toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'dormant-bot' }),
+    );
+  });
 });
 
 describe('AdminService settings screen endpoints', () => {
