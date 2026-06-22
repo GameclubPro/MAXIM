@@ -2939,6 +2939,22 @@ export class AdminService implements OnModuleDestroy {
     return this.maxBotRegistry?.getBotById(botId)?.id ?? this.readTrimmedString(botId) ?? null;
   }
 
+  private isManagedEntityRuntimeBotId(botId: string | null | undefined): boolean {
+    const normalizedBotId = this.normalizeRuntimeManagedEntityBotId(botId);
+    if (!normalizedBotId) {
+      return false;
+    }
+
+    const configuredBot = this.maxBotRegistry?.getBotById(normalizedBotId) ?? null;
+    if (!configuredBot) {
+      return true;
+    }
+
+    return this.managedEntitiesRuntimeBotIds.size === 0
+      ? true
+      : this.managedEntitiesRuntimeBotIds.has(configuredBot.id);
+  }
+
   private normalizeRuntimeManagedEntityBotIds(
     botIds: ReadonlyArray<string | null | undefined>,
   ): string[] {
@@ -2946,7 +2962,10 @@ export class AdminService implements OnModuleDestroy {
       new Set(
         botIds
           .map((botId) => this.normalizeRuntimeManagedEntityBotId(botId))
-          .filter((botId): botId is string => Boolean(botId)),
+          .filter(
+            (botId): botId is string =>
+              Boolean(botId) && this.isManagedEntityRuntimeBotId(botId),
+          ),
       ),
     );
   }
@@ -2965,7 +2984,9 @@ export class AdminService implements OnModuleDestroy {
           ...(chat.assignedBots ?? []).map((bot) =>
             this.normalizeRuntimeManagedEntityBotId(bot.botId),
           ),
-        ].filter((botId): botId is string => Boolean(botId)),
+        ].filter(
+          (botId): botId is string => Boolean(botId) && this.isManagedEntityRuntimeBotId(botId),
+        ),
       ),
     );
     if (explicitBotIds.length > 0) {
@@ -22260,7 +22281,7 @@ export class AdminService implements OnModuleDestroy {
       ) as Array<string | null>),
     ]) {
       const normalizedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? null;
-      if (normalizedBotId) {
+      if (normalizedBotId && this.isManagedEntityRuntimeBotId(normalizedBotId)) {
         resolved.add(normalizedBotId);
       }
     }

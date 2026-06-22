@@ -11066,6 +11066,49 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('excludes dormant persisted bot memberships from remote admin access candidates', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValueOnce({
+      primaryBotId: 'dormant-bot',
+      botId: null,
+      botMemberships: [{ botId: 'dormant-bot' }, { botId: 'active-bot' }],
+    });
+    const maxBotRegistry = {
+      getOperationalBots: jest.fn().mockReturnValue([{ id: 'active-bot', state: 'active' }]),
+      getAllBots: jest.fn().mockReturnValue([
+        { id: 'active-bot', state: 'active' },
+        { id: 'dormant-bot', state: 'dormant' },
+      ]),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'active-bot', state: 'active' }]),
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        if (botId === 'active-bot') {
+          return { id: 'active-bot', state: 'active' };
+        }
+        if (botId === 'dormant-bot') {
+          return { id: 'dormant-bot', state: 'dormant' };
+        }
+        return null;
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock({ botId: 'active-bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect((service as any).resolveCandidateBotIdsForChat('chat-1')).resolves.toEqual([
+      'active-bot',
+    ]);
+    expect(JSON.stringify(maxBotRegistry.getBotById.mock.calls)).toContain('dormant-bot');
+  });
+
   it('filters cached denied chats out of published snapshot responses and patches the snapshot', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({
