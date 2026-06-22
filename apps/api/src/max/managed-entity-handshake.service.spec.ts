@@ -588,10 +588,17 @@ describe('ManagedEntityHandshakeService', () => {
     );
   });
 
-  it('allows repeated successful Старт commands to refresh access again', async () => {
+  it('allows a new Старт message to refresh access but rate limits duplicate deliveries', async () => {
     const fixture = createFixture();
 
     await expect(fixture.service.handleWebhookUpdate(createUpdate())).resolves.toBe('connected');
+    await expect(
+      fixture.service.handleWebhookUpdate(
+        createUpdate({
+          updateId: 'u-start-1-duplicate',
+        }),
+      ),
+    ).resolves.toBe('rate_limited');
     await expect(
       fixture.service.handleWebhookUpdate(
         createUpdate({
@@ -605,6 +612,15 @@ describe('ManagedEntityHandshakeService', () => {
 
     expect(fixture.maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
     expect(fixture.prisma.managedEntityAccessEdge.upsert).toHaveBeenCalledTimes(2);
+    expect(fixture.handshakeOutcomes.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100',
+        userId: 'admin-1',
+        botId: 'bot-1',
+        status: ManagedEntityHandshakeOutcomeStatus.RATE_LIMITED,
+        reason: 'duplicate_recently',
+      }),
+    );
     expect(fixture.maxClient.deleteMessage).toHaveBeenCalledWith(
       '-100',
       'm-start-2',

@@ -167,7 +167,6 @@ export class ManagedEntityHandshakeService {
           : ManagedEntityHandshakeOutcomeStatus.CONNECTED,
       );
       this.logOutcome(context, wasConnected ? 'already_connected' : 'connected');
-      this.releaseRateLimitSlot(context);
       return wasConnected ? 'already_connected' : 'connected';
     } catch (error: unknown) {
       this.releaseRateLimitSlot(context);
@@ -282,7 +281,10 @@ export class ManagedEntityHandshakeService {
   }
 
   private buildRateLimitKey(context: ManagedEntityHandshakeContext): string {
-    return `${context.chatId}:${context.senderId ?? context.botId}`;
+    const actorId = context.senderId ?? context.botId;
+    return context.commandMessageId
+      ? `${context.chatId}:${actorId}:${context.commandMessageId}`
+      : `${context.chatId}:${actorId}`;
   }
 
   private async recordOutcome(
