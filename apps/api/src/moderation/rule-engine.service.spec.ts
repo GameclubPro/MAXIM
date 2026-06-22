@@ -842,6 +842,27 @@ describe('RuleEngineService', () => {
     }
   });
 
+  it('detects PROFANITY for third-person targeted russian insults', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      'он полный баран и лошара',
+      'она просто крыса, не верьте ей',
+      'они настоящие козлы',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    }
+  });
+
   it('does not detect PROFANITY for safe exception words', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -861,9 +882,13 @@ describe('RuleEngineService', () => {
       'Вы продаете барана или только петухов?',
       'Фонд помогает семьям, где есть ребенок с синдромом Дауна.',
       'Психолог объяснил, как поддержать аутиста в школе.',
+      'Он аутист, ему нужна спокойная среда и понятные инструкции.',
+      'Она алкоголик в ремиссии, семья ищет группу поддержки.',
+      'Он психиатр, а не псих, прием ведет по записи.',
       'В редакторе выбран жирный шрифт для заголовка.',
       'На ферме овцы, козлы, петухи и свиньи.',
       'Книга Идиот Достоевского есть в школьной программе.',
+      'Конченный файл выгрузки помечен как завершенный, документы готовы.',
     ];
 
     for (const text of samples) {

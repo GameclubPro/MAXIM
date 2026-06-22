@@ -34,6 +34,8 @@ import { detectTopicFilterMismatch } from './rule-engine-topic-filter';
 type ProfanityCandidate = {
   value: string;
   joined: boolean;
+  rawValue?: string;
+  rawIndex?: number;
 };
 
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
@@ -41,14 +43,14 @@ type ProfanityCandidate = {
 const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^бля(?:[дт][а-я0-9]*)?$/u,
   /^пизд[а-я0-9]*$/u,
-  /^(?:на|по|до|о|за|ни|вы)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
-  /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её]б(?:а(?:л|ть|н|ш|ч)|е(?:т|шь|м|те)|у(?:т|ч|н)|и(?:сь|т|те)|л(?:ан|о|и)?|н(?:у|ут)|уч)[а-я0-9]*$/u,
+  /^(?:на|по|до|о|а|за|ни|вы|при|под|пере|раз|об)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
+  /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?(?:[её]|йо|йе)б(?:а(?:л|ть|н|ш|ч)|е(?:т|шь|м|те)|у(?:т|ч|н)|и(?:сь|т|те)|л(?:ан|о|и)?|н(?:у|ут)|о(?:н|ны)|щ|уч)[а-я0-9]*$/u,
   /^долбо(?:[её]б)[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
   /^pizd[a-z0-9]*$/i,
-  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo)(?:y|i|e|ya|yu)[a-z0-9]*$/i,
+  /^(?:na|po|do|o|a|za|ni|vy|pri|pod|pere|raz|ob)?(?:h|x)(?:u|oo|y)(?:y|j|i|e|ya|yu)[a-z0-9]*$/i,
   /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a(?:l|t|n|sh|ch)|e(?:t|sh|m|te)|u(?:t|ch|n)|i(?:s|t|te)|l(?:an|o|i)?|n(?:u|ut)|uch)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
 ];
@@ -90,6 +92,18 @@ const PROFANITY_CANINE_CONTEXT_MARKERS = [
   'кошк',
   'котят',
   'питомник',
+];
+const PROFANITY_CANINE_STRONG_CONTEXT_MARKERS = [
+  'собак',
+  'щен',
+  'овчарк',
+  'терьер',
+  'йоркшир',
+  'стерилиз',
+  'кастрир',
+  'привит',
+  'питомник',
+  'родословн',
 ];
 const PROFANITY_REACH_TYPO_CONTEXT_MARKERS = [
   'охват',
@@ -135,11 +149,37 @@ const PROFANITY_LIVESTOCK_CONTEXT_MARKERS = [
   'комбикорм',
   'надой',
 ];
+const PROFANITY_LIVESTOCK_STRONG_CONTEXT_MARKERS = [
+  'ферм',
+  'крс',
+  'выпас',
+  'пастбищ',
+  'коров',
+  'быч',
+  'телят',
+  'овц',
+  'коз',
+  'свин',
+  'хозяйств',
+  'ветеринар',
+  'привит',
+];
 const PROFANITY_PARASITE_FORMS = new Set(['гнида', 'гниды', 'гниде', 'гниду', 'гнидой', 'гнидою']);
 const PROFANITY_PARASITE_CONTEXT_MARKERS = [
   'мошк',
   'комар',
   'укус',
+  'укус',
+  'насеком',
+  'вош',
+  'вши',
+  'клещ',
+  'паразит',
+  'личин',
+];
+const PROFANITY_PARASITE_STRONG_CONTEXT_MARKERS = [
+  'мошк',
+  'комар',
   'укус',
   'насеком',
   'вош',
@@ -167,6 +207,16 @@ const PROFANITY_GARDEN_PEST_CONTEXT_MARKERS = [
   'напали',
   'актар',
   'избавиться',
+  'урожай',
+  'листв',
+];
+const PROFANITY_GARDEN_PEST_STRONG_CONTEXT_MARKERS = [
+  'клубник',
+  'огород',
+  'сад',
+  'растен',
+  'вредител',
+  'насеком',
   'урожай',
   'листв',
 ];
@@ -343,6 +393,37 @@ const PROFANITY_CLINICAL_CONTEXT_MARKERS = [
   'заключени',
   'справк',
 ];
+const PROFANITY_COMPLETION_FORMS = new Set([
+  'конченый',
+  'конченая',
+  'конченое',
+  'конченые',
+  'конченный',
+  'конченная',
+  'конченное',
+  'конченные',
+  'конченного',
+  'конченному',
+  'конченную',
+  'конченным',
+  'конченных',
+]);
+const PROFANITY_COMPLETION_CONTEXT_MARKERS = [
+  'заверш',
+  'готов',
+  'файл',
+  'выгрузк',
+  'документ',
+  'работ',
+  'ремонт',
+  'проект',
+  'этап',
+  'процесс',
+  'заказ',
+  'архив',
+  'строк',
+  'статус',
+];
 const PROFANITY_LITERARY_TITLE_FORMS = new Set(['идиот', 'идиота', 'идиоту', 'идиотом']);
 const PROFANITY_LITERARY_TITLE_CONTEXT_MARKERS = [
   'роман',
@@ -387,6 +468,11 @@ const PROFANITY_LATIN_CULTURAL_NAME_CONTEXT_MARKERS = [
   'бренд',
   'блюдо',
   'рис',
+  'открыл',
+  'открыт',
+  'рядом',
+  'меню',
+  'доставк',
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -514,7 +600,7 @@ const PROFANITY_LATIN_JOINABLE_TOKENS = new Set([
 ]);
 const PROFANITY_JOIN_WINDOW_SEGMENTS = 14;
 const PROFANITY_JOIN_MAX_FRAGMENTS = 8;
-const PROFANITY_JOIN_NOISE_BUDGET = 5;
+const PROFANITY_JOIN_NOISE_BUDGET = 12;
 const PROFANITY_DIRECT_ADDRESS_MARKERS = new Set([
   'ты',
   'вы',
@@ -582,6 +668,83 @@ const PROFANITY_TARGET_BRIDGE_TOKENS = new Set([
   'polnaya',
 ]);
 const PROFANITY_DEMONSTRATIVE_TARGET_MARKERS = new Set(['этот', 'эта', 'эти', 'тот', 'та', 'те']);
+const PROFANITY_NEUTRAL_MODIFIER_FORMS = new Set([
+  'жирный',
+  'жирная',
+  'жирное',
+  'жирные',
+  'глупый',
+  'глупая',
+  'глупое',
+  'глупые',
+  'тупой',
+  'тупая',
+  'тупое',
+  'тупые',
+]);
+const PROFANITY_NEUTRAL_MODIFIER_NOUNS = new Set([
+  'шрифт',
+  'текст',
+  'вопрос',
+  'ответ',
+  'угол',
+  'уголок',
+  'инструмент',
+  'предмет',
+  'вариант',
+  'пример',
+  'запрос',
+]);
+const PROFANITY_THIRD_PERSON_TARGET_MARKERS = new Set([
+  'он',
+  'она',
+  'оно',
+  'они',
+  'его',
+  'ее',
+  'её',
+  'их',
+]);
+const PROFANITY_THIRD_PERSON_SAFE_TOKENS = new Set([
+  'диагноз',
+  'синдром',
+  'расстройство',
+  'термин',
+  'порода',
+  'ферма',
+  'питомник',
+  'скот',
+]);
+const PROFANITY_NEUTRAL_IDENTITY_FORMS = new Set([
+  'аутист',
+  'аутиста',
+  'аутисту',
+  'аутистом',
+  'аутисты',
+  'аутистов',
+  'аутистам',
+  'аутистами',
+  'аутистах',
+  'псих',
+  'психа',
+  'психу',
+  'психом',
+  'психи',
+  'психов',
+  'психам',
+  'психами',
+  'психах',
+  'алкоголик',
+  'алкоголика',
+  'алкоголику',
+  'алкоголиком',
+  'алкоголики',
+  'наркоман',
+  'наркомана',
+  'наркоману',
+  'наркоманом',
+  'наркоманы',
+]);
 const PROFANITY_HOSTILE_AFTER_TARGET_TOKENS = new Set([
   'уйди',
   'вали',
@@ -618,8 +781,27 @@ const PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP: Record<string, string> = {
   '|': 'и',
   '@': 'я',
   '9': 'я',
+  p: 'р',
   u: 'и',
   y: 'я',
+};
+const PROFANITY_PHONETIC_MIXED_CHAR_MAP: Record<string, string> = {
+  ...PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP,
+  p: 'п',
+};
+const PROFANITY_LEET_MIXED_CHAR_MAP: Record<string, string> = {
+  ...PROFANITY_AMBIGUOUS_MIXED_CHAR_MAP,
+  '3': 'е',
+  '4': 'ч',
+  '€': 'е',
+  '₽': 'р',
+  '¥': 'у',
+};
+const PROFANITY_EXTRA_CHAR_MAP: Record<string, string> = {
+  і: 'и',
+  ї: 'и',
+  є: 'е',
+  ґ: 'г',
 };
 const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
   '0': 'o',
@@ -635,6 +817,9 @@ const PROFANITY_LATIN_LEET_CHAR_MAP: Record<string, string> = {
   '7': 't',
   '8': 'b',
   '9': 'g',
+  '€': 'e',
+  '₽': 'p',
+  '¥': 'y',
 };
 
 @Injectable()
@@ -944,7 +1129,11 @@ export class RuleEngineService {
           continue;
         }
 
-        if (this.isContextualProfanityException(normalizedCandidate, normalizedContext)) {
+        if (
+          this.isContextualProfanityException(normalizedCandidate, normalizedContext) ||
+          this.matchesJoinedNotationException(normalizedCandidate, normalizedContext, candidate) ||
+          this.matchesProperNameCapitalizationException(normalizedCandidate, text, candidate)
+        ) {
           continue;
         }
 
@@ -1007,7 +1196,21 @@ export class RuleEngineService {
         token,
         normalizedContext,
         PROFANITY_CANINE_FEMALE_FORMS,
+        PROFANITY_CANINE_STRONG_CONTEXT_MARKERS,
+        1,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_CANINE_FEMALE_FORMS,
         PROFANITY_CANINE_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_LIVESTOCK_FORMS,
+        PROFANITY_LIVESTOCK_STRONG_CONTEXT_MARKERS,
+        1,
       ) ||
       this.matchesProfanityContextException(
         token,
@@ -1019,7 +1222,21 @@ export class RuleEngineService {
         token,
         normalizedContext,
         PROFANITY_PARASITE_FORMS,
+        PROFANITY_PARASITE_STRONG_CONTEXT_MARKERS,
+        1,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_PARASITE_FORMS,
         PROFANITY_PARASITE_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_GARDEN_PEST_FORMS,
+        PROFANITY_GARDEN_PEST_STRONG_CONTEXT_MARKERS,
+        1,
       ) ||
       this.matchesProfanityContextException(
         token,
@@ -1053,6 +1270,13 @@ export class RuleEngineService {
         PROFANITY_CLINICAL_FORMS,
         PROFANITY_CLINICAL_CONTEXT_MARKERS,
         1,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_COMPLETION_FORMS,
+        PROFANITY_COMPLETION_CONTEXT_MARKERS,
+        2,
       ) ||
       this.matchesProfanityContextException(
         token,
@@ -1120,6 +1344,71 @@ export class RuleEngineService {
     return false;
   }
 
+  private matchesJoinedNotationException(
+    token: string,
+    normalizedContext: string,
+    candidate: ProfanityCandidate,
+  ): boolean {
+    const isNotationLikeToken =
+      token === 'бля' ||
+      token.startsWith('хуй') ||
+      token.startsWith('хуи');
+    if (!candidate.joined || !isNotationLikeToken) {
+      return false;
+    }
+
+    const hasNotationContext =
+      normalizedContext.includes('инициал') ||
+      normalizedContext.includes('маркировк') ||
+      normalizedContext.includes('схем') ||
+      normalizedContext.includes('анкете') ||
+      normalizedContext.includes('код ');
+
+    if (!hasNotationContext) {
+      return false;
+    }
+
+    return !this.hasDirectProfanityAddressContext(normalizedContext);
+  }
+
+  private hasDirectProfanityAddressContext(normalizedContext: string): boolean {
+    const tokens = normalizedContext
+      .replace(/[^\p{L}\p{N}-]+/gu, ' ')
+      .split(/\s+/u)
+      .filter(Boolean);
+
+    return tokens.some(
+      (token) =>
+        PROFANITY_DIRECT_ADDRESS_MARKERS.has(token) ||
+        PROFANITY_HOSTILE_AFTER_TARGET_TOKENS.has(token),
+    );
+  }
+
+  private matchesProperNameCapitalizationException(
+    token: string,
+    rawText: string,
+    candidate: ProfanityCandidate,
+  ): boolean {
+    if (
+      candidate.joined ||
+      candidate.rawIndex === undefined ||
+      !PROFANITY_PROPER_NAME_FORMS.has(token)
+    ) {
+      return false;
+    }
+
+    const before = rawText.slice(0, candidate.rawIndex);
+    const after = rawText.slice(candidate.rawIndex + (candidate.rawValue?.length ?? 0));
+    const previousWord = before.match(/[\p{L}][\p{L}-]*\s*$/u)?.[0]?.trim() ?? '';
+    const nextWord = after.match(/^\s*[\p{L}][\p{L}-]*/u)?.[0]?.trim() ?? '';
+
+    return this.isCapitalizedCyrillicName(previousWord) || this.isCapitalizedCyrillicName(nextWord);
+  }
+
+  private isCapitalizedCyrillicName(value: string): boolean {
+    return /^[А-ЯЁ][а-яё]{1,}(?:-[А-ЯЁ][а-яё]{1,})?$/u.test(value);
+  }
+
   private matchesTargetedInsultContext(
     token: string,
     normalizedContext: string,
@@ -1138,10 +1427,15 @@ export class RuleEngineService {
         continue;
       }
 
+      if (this.isNeutralTargetedModifier(tokens, index, token)) {
+        continue;
+      }
+
       if (
         this.hasDirectAddressBeforeTarget(tokens, index) ||
         this.hasDirectAddressAfterTarget(tokens, index) ||
         this.hasDemonstrativeHostileTarget(tokens, index) ||
+        this.hasThirdPersonInsultTarget(tokens, index, token) ||
         this.hasHostileCommandAfterTarget(tokens, index)
       ) {
         return true;
@@ -1149,6 +1443,19 @@ export class RuleEngineService {
     }
 
     return false;
+  }
+
+  private isNeutralTargetedModifier(
+    tokens: readonly string[],
+    targetIndex: number,
+    token: string,
+  ): boolean {
+    if (!PROFANITY_NEUTRAL_MODIFIER_FORMS.has(token)) {
+      return false;
+    }
+
+    const next = tokens[targetIndex + 1];
+    return Boolean(next && PROFANITY_NEUTRAL_MODIFIER_NOUNS.has(next));
   }
 
   private hasDirectAddressBeforeTarget(tokens: readonly string[], targetIndex: number): boolean {
@@ -1211,6 +1518,39 @@ export class RuleEngineService {
     }
 
     return false;
+  }
+
+  private hasThirdPersonInsultTarget(
+    tokens: readonly string[],
+    targetIndex: number,
+    token: string,
+  ): boolean {
+    if (PROFANITY_NEUTRAL_IDENTITY_FORMS.has(token)) {
+      return false;
+    }
+
+    let sawTargetMarker = false;
+    for (let index = targetIndex - 1; index >= Math.max(0, targetIndex - 4); index -= 1) {
+      const current = tokens[index];
+      if (!current) {
+        continue;
+      }
+
+      if (PROFANITY_THIRD_PERSON_SAFE_TOKENS.has(current)) {
+        return false;
+      }
+
+      if (PROFANITY_THIRD_PERSON_TARGET_MARKERS.has(current)) {
+        sawTargetMarker = true;
+        continue;
+      }
+
+      if (!PROFANITY_TARGET_BRIDGE_TOKENS.has(current)) {
+        break;
+      }
+    }
+
+    return sawTargetMarker;
   }
 
   private hasHostileCommandAfterTarget(tokens: readonly string[], targetIndex: number): boolean {
@@ -1298,11 +1638,9 @@ export class RuleEngineService {
       return [];
     }
 
-    const stripped = stripUrlsFromText(value.toLowerCase());
-    const whitespaceSegments = stripped
-      .split(/\s+/u)
-      .map((segment) => segment.trim())
-      .filter(Boolean);
+    const rawStripped = this.normalizeProfanityUnicode(stripUrlsFromText(value));
+    const stripped = rawStripped.toLowerCase();
+    const whitespaceSegments = [...rawStripped.matchAll(/\S+/gu)];
     const candidates: ProfanityCandidate[] = [];
     const seenCandidates = new Set<string>();
     const pushCandidate = (candidate: ProfanityCandidate) => {
@@ -1315,8 +1653,14 @@ export class RuleEngineService {
       candidates.push(candidate);
     };
 
-    for (const segment of whitespaceSegments) {
-      pushCandidate({ value: segment, joined: false });
+    for (const match of whitespaceSegments) {
+      const rawSegment = match[0];
+      pushCandidate({
+        value: rawSegment.toLowerCase(),
+        joined: false,
+        rawValue: rawSegment,
+        rawIndex: match.index,
+      });
     }
 
     const joinSegments =
@@ -1338,7 +1682,7 @@ export class RuleEngineService {
           joinedCandidate += normalizedToken;
           joinedCount += 1;
           if (joinedCount >= 2) {
-            pushCandidate({ value: joinedCandidate, joined: true });
+            pushCandidate({ value: joinedCandidate, joined: true, rawValue: joinedCandidate });
           }
           if (joinedCount >= PROFANITY_JOIN_MAX_FRAGMENTS) {
             break;
@@ -1365,7 +1709,7 @@ export class RuleEngineService {
       return '';
     }
 
-    let normalized = value.toLowerCase();
+    let normalized = this.normalizeProfanityUnicode(value.toLowerCase());
     normalized = this.normalizeMixedWritingForProfanity(normalized);
     normalized = normalized.replace(/ё/g, 'е');
     normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
@@ -1398,13 +1742,29 @@ export class RuleEngineService {
       if (ambiguous) {
         candidates.add(ambiguous);
       }
+
+      const phonetic = this.normalizeProfanityCandidateWithMap(
+        value,
+        PROFANITY_PHONETIC_MIXED_CHAR_MAP,
+      );
+      if (phonetic) {
+        candidates.add(phonetic);
+      }
+
+      const leet = this.normalizeProfanityCandidateWithMap(value, PROFANITY_LEET_MIXED_CHAR_MAP);
+      if (leet) {
+        candidates.add(leet);
+      }
     }
 
     return [...candidates];
   }
 
   private shouldBuildAmbiguousProfanityCandidate(value: string): boolean {
-    return /[а-яё@!|9]/iu.test(value) && /[a-z0-9@!|]/iu.test(value);
+    return (
+      /[а-яёіїєґ@!|€₽¥]/iu.test(value) &&
+      /[a-z0-9@!|€₽¥]/iu.test(value)
+    );
   }
 
   private normalizeProfanityCandidateWithMap(
@@ -1416,7 +1776,7 @@ export class RuleEngineService {
     }
 
     let normalized = '';
-    for (const char of value.toLowerCase()) {
+    for (const char of this.normalizeProfanityUnicode(value.toLowerCase())) {
       const mapped = charMap[char] ?? char;
       if (/[\p{L}\p{N}]/u.test(mapped)) {
         normalized += mapped;
@@ -1433,7 +1793,7 @@ export class RuleEngineService {
       return '';
     }
 
-    let normalized = value.toLowerCase();
+    let normalized = this.normalizeProfanityUnicode(value.toLowerCase());
     normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
     normalized = normalized.replace(/[^a-z0-9]+/g, '');
     return normalized;
@@ -1444,7 +1804,7 @@ export class RuleEngineService {
       return '';
     }
 
-    let normalized = value.toLowerCase();
+    let normalized = this.normalizeProfanityUnicode(value.toLowerCase());
     normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
     normalized = normalized.replace(/[^a-z0-9-]+/g, ' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
@@ -1486,7 +1846,7 @@ export class RuleEngineService {
     }
 
     let normalized = '';
-    for (const char of value.toLowerCase()) {
+    for (const char of this.normalizeProfanityUnicode(value.toLowerCase())) {
       const mapped = PROFANITY_LATIN_LEET_CHAR_MAP[char] ?? char;
       if (/[a-z0-9]/i.test(mapped)) {
         normalized += mapped;
@@ -1536,7 +1896,7 @@ export class RuleEngineService {
   }
 
   private normalizeProfanityToken(token: string): string {
-    const lowered = token.toLowerCase();
+    const lowered = this.normalizeProfanityUnicode(token.toLowerCase());
     const hasCyrillic = /[а-яё]/iu.test(lowered);
     const hasLatin = /[a-z]/iu.test(lowered);
     const hasLetter = /[\p{L}]/u.test(token);
@@ -1553,10 +1913,20 @@ export class RuleEngineService {
         continue;
       }
 
-      result += MIXED_CHAR_MAP[char] ?? char;
+      result += MIXED_CHAR_MAP[char] ?? PROFANITY_EXTRA_CHAR_MAP[char] ?? char;
     }
 
     return result;
+  }
+
+  private normalizeProfanityUnicode(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    return value
+      .normalize('NFKC')
+      .replace(/[\u0300-\u036f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, '');
   }
 
   private normalizeMixedWriting(value: string): string {
