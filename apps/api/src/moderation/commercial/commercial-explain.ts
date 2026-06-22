@@ -28,37 +28,50 @@ export function enrichCommercialDetection<T extends CommercialDetection>(
     primarySubtype: detection.primarySubtype,
   });
   const evidence = resolveCommercialSignalEvidence(matchedSignals);
+  const hasActionDirectDealEvidence =
+    detection.hasActionDirectDealEvidence ?? evidence.hasActionDirectDealEvidence;
+  const policyFpRisk = estimateCommercialPolicyFpRisk({
+    baseFpRisk: fpRisk,
+    detection,
+    signalEvidence: evidence,
+    hasActionDirectDealEvidence,
+  });
   const evidenceTier = resolveEvidenceTier({
     legacyStrength: detection.evidenceStrength,
     hasHighRiskEvidence: evidence.hasHighRiskEvidence,
-    hasDirectDealEvidence: evidence.hasActionDirectDealEvidence,
+    hasDirectDealEvidence: hasActionDirectDealEvidence,
   });
   const actionBand = resolveCommercialActionPolicy({
     confidenceScore: detection.confidenceScore,
     deleteThreshold: detection.appliedThresholds.deleteThreshold,
     warnThreshold: detection.appliedThresholds.warnThreshold,
-    fpRisk,
+    fpRisk: policyFpRisk,
     evidenceTier,
     reviewRecommended: detection.reviewRecommended,
     hasCampaignContext: detection.campaignContext !== null,
-    hasDirectDealEvidence: evidence.hasActionDirectDealEvidence,
-    hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
+    hasDirectDealEvidence: hasActionDirectDealEvidence,
+    hasNonCampaignDirectDealEvidence:
+      detection.hasNonCampaignDirectDealEvidence ?? evidence.hasNonCampaignDirectDealEvidence,
     hasHighRiskEvidence: evidence.hasHighRiskEvidence,
-    hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
+    hasEscalationRiskEvidence:
+      detection.hasEscalationRiskEvidence ?? evidence.hasEscalationRiskEvidence,
   });
   const reasonCodes = buildReasonCodes({
     detection,
     featureVector,
     signalEvidence: evidence,
     fpRisk,
+    policyFpRisk,
     actionBand,
     evidenceTier,
+    hasActionDirectDealEvidence,
   });
 
   return Object.assign(detection, {
     decisionVersion: COMMERCIAL_DECISION_VERSION,
     score: detection.confidenceScore,
     fpRisk,
+    policyFpRisk,
     evidenceTier,
     subtype: detection.primarySubtype,
     actionBand,
@@ -139,6 +152,46 @@ export function estimateCommercialFpRisk(params: {
   return Math.max(config.min, Math.min(config.max, risk));
 }
 
+function estimateCommercialPolicyFpRisk(params: {
+  baseFpRisk: number;
+  detection: CommercialDetection;
+  signalEvidence: CommercialSignalEvidenceProfile;
+  hasActionDirectDealEvidence: boolean;
+}): number {
+  let risk = params.baseFpRisk;
+  const { detection, signalEvidence } = params;
+  const hasPolicyGuardedDirectEvidence =
+    signalEvidence.hasRawActionDirectDealEvidence && !params.hasActionDirectDealEvidence;
+  const hasLocalPrivateLikeSignal =
+    detection.matchedSignals.some((signal) =>
+      LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal),
+    ) ||
+    detection.negativeSignals.some(
+      (signal) =>
+        signal.startsWith('private:') ||
+        signal.startsWith('private-single:') ||
+        signal.startsWith('private-goods:'),
+    );
+
+  if (hasPolicyGuardedDirectEvidence) {
+    risk += 70;
+  } else if (
+    hasLocalPrivateLikeSignal &&
+    detection.primarySubtype === 'GOODS_RETAIL' &&
+    signalEvidence.hasPriceEvidence &&
+    signalEvidence.hasPhoneEvidence &&
+    !signalEvidence.hasLinkEvidence &&
+    !signalEvidence.hasHighRiskEvidence
+  ) {
+    risk += 30;
+  }
+
+  return Math.max(
+    COMMERCIAL_ENGINE_CONFIG.fpRisk.min,
+    Math.min(COMMERCIAL_ENGINE_CONFIG.fpRisk.max, risk),
+  );
+}
+
 function resolveEvidenceTier(params: {
   legacyStrength: CommercialDetection['evidenceStrength'];
   hasHighRiskEvidence: boolean;
@@ -158,8 +211,10 @@ function buildReasonCodes(params: {
   featureVector: CommercialFeatureVector;
   signalEvidence: CommercialSignalEvidenceProfile;
   fpRisk: number;
+  policyFpRisk: number;
   actionBand: string;
   evidenceTier: CommercialEvidenceTier;
+  hasActionDirectDealEvidence: boolean;
 }): string[] {
   const reasonCodes = new Set<string>();
   reasonCodes.add(`action:${params.actionBand}`);
@@ -172,14 +227,17 @@ function buildReasonCodes(params: {
   if (params.signalEvidence.hasEscalationRiskEvidence) {
     reasonCodes.add('risk:escalation-grade');
   }
-  if (params.signalEvidence.hasActionDirectDealEvidence) {
+  if (params.hasActionDirectDealEvidence) {
     reasonCodes.add('evidence:action-direct');
   }
   if (
     params.signalEvidence.hasHighRiskEvidence &&
-    !params.signalEvidence.hasActionDirectDealEvidence
+    !params.hasActionDirectDealEvidence
   ) {
     reasonCodes.add('evidence:high-risk-only');
+  }
+  if (params.signalEvidence.hasRawActionDirectDealEvidence && !params.hasActionDirectDealEvidence) {
+    reasonCodes.add('policy:guarded-local-direct');
   }
   if (params.signalEvidence.hasPriceEvidence && params.signalEvidence.hasStrongContactEvidence) {
     reasonCodes.add('evidence:direct:price-contact');
@@ -205,6 +263,12 @@ function buildReasonCodes(params: {
   if (params.fpRisk >= COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold) {
     reasonCodes.add('fp-risk-high');
   }
+  if (
+    params.policyFpRisk >= COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold &&
+    params.fpRisk < COMMERCIAL_ENGINE_CONFIG.actionPolicy.highFpRiskThreshold
+  ) {
+    reasonCodes.add('fp-risk-policy-high');
+  }
   for (const reason of params.detection.reviewReasons) {
     reasonCodes.add(`review:${reason}`);
   }
@@ -214,3 +278,15 @@ function buildReasonCodes(params: {
 
   return [...reasonCodes];
 }
+
+const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([
+  'goods-retail:wholesale-produce',
+  'goods-retail:collectible-flower-retail',
+  'goods-retail:flower-herb-unit-price-retail',
+  'goods-retail:plant-nursery-stock',
+  'goods-retail:plant-nursery-clearance-stock',
+  'goods-retail:farm-livestock-retail',
+  'goods-retail:poultry-farm-order',
+  'goods-retail:home-food-order',
+  'goods-retail:home-dairy-retail',
+]);

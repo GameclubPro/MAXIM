@@ -77,6 +77,7 @@ import {
   ADS_HANDLE_CONTACT_PATTERN,
   ADS_EMAIL_CONTACT_PATTERN,
   ADS_SOFT_RESPONSE_CTA_PATTERN,
+  ADS_PRICE_CAPTURE_GLOBAL_PATTERN,
   ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
   ADS_MULTI_SKU_PRICE_LINE_PATTERN,
 } from './commercial-patterns';
@@ -807,6 +808,11 @@ export function collectCommercialSignals(params: {
     ADS_MULTI_SKU_PRICE_LINE_PATTERN,
     4,
   );
+  const retailPricePointCount = countPatternMatches(
+    rawLoweredText,
+    ADS_PRICE_CAPTURE_GLOBAL_PATTERN,
+    4,
+  );
   const goodsVariantMarkerCount = countPatternMatches(
     rawLoweredText,
     ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
@@ -814,7 +820,8 @@ export function collectCommercialSignals(params: {
   );
   if (
     multiSkuPriceLineCount >= 2 ||
-    (multiSkuPriceLineCount >= 1 && goodsVariantMarkerCount >= 1)
+    (multiSkuPriceLineCount >= 1 && goodsVariantMarkerCount >= 1) ||
+    (hasGoodsRetailContext && retailPricePointCount >= 2)
   ) {
     addPositive('goods-retail:multi-sku', weights.goodsRetailMultiSku);
     hasGoodsRetailContext = true;
@@ -890,6 +897,18 @@ export function collectCommercialSignals(params: {
       addPositive('transaction:handmade-channel-offer', weights.transactionalKeyword);
       hasTransactional = true;
     }
+  }
+  if (
+    hasChannelPlacementContext &&
+    !hasTransactional &&
+    !hasDealChannel &&
+    /(?:^|[^\p{L}\p{N}_-])(?:свободн[\p{L}\p{N}_-]*\s+(?:окн[\p{L}\p{N}_-]*|мест[\p{L}\p{N}_-]*)|места\s+на\s+(?:завтра|ближайшие\s+дни)|стат[ау][\p{L}\p{N}_-]*\s+скину|охват[\p{L}\p{N}_-]*|размещени[\p{L}\p{N}_-]*|прайс|цена\s+за\s+пост|(?:вп|оп)(?=$|[^\p{L}\p{N}_-]))/iu.test(
+      rawLoweredText,
+    )
+  ) {
+    addPositive('transaction:channel-placement-offer', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
   }
 
   if (ADS_MASS_INVITE_LINK_PATTERN.test(rawLoweredText)) {
@@ -1251,6 +1270,47 @@ export function collectCommercialSignals(params: {
     negativeSignals.every((signal) => signal === 'context:question');
   const hasBlockingSearchRequestContext =
     hasSearchRequestContext && !hasOnlyBareQuestionSearchContext;
+
+  if (
+    !hasTransactional &&
+    (hasServiceSpecialtyContext || hasServiceOfferContext || hasServiceContext) &&
+    !hasBlockingSearchRequestContext &&
+    !(
+      ADS_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_CONTEXTUAL_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_MASKED_PHONE_PATTERN.test(rawLoweredText)
+    ) &&
+    !(
+      hasPrivateGoodsItemContext &&
+      !hasBusinessContext &&
+      !hasDealChannel &&
+      !hasPrice &&
+      !hasPhoneContact
+    ) &&
+    /(?:^|[^\p{L}\p{N}_-])(?:звон(?:ите|ить)?|пишите?|запис[\p{L}\p{N}_-]*|выезд|замер|гаранти[\p{L}\p{N}_-]*|под\s+ключ|ежедневн[\p{L}\p{N}_-]*|круглосуточн[\p{L}\p{N}_-]*|принима(?:ю|ем)\s+заявк[\p{L}\p{N}_-]*|адрес|режим|консультац[\p{L}\p{N}_-]*|договор)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
+  ) {
+    addPositive('transaction:structured-service-offer', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+    hasServiceOfferContext = true;
+    hasServiceContext = true;
+    hasCommercialContext = true;
+  }
+
+  if (
+    !hasTransactional &&
+    (hasPropertyAgentContext || hasCommercialPropertyContext) &&
+    !hasBlockingSearchRequestContext &&
+    /(?:^|[^\p{L}\p{N}_-])(?:брон[\p{L}\p{N}_-]*|заброниру[\p{L}\p{N}_-]*|свободн[\p{L}\p{N}_-]*|заселени[\p{L}\p{N}_-]*|показ|договор|предоплат[\p{L}\p{N}_-]*|отч[её]тн[\p{L}\p{N}_-]*|календар[\p{L}\p{N}_-]*|заявк[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      rawLoweredText,
+    )
+  ) {
+    addPositive('transaction:property-booking-offer', weights.transactionalKeyword);
+    hasTransactional = true;
+    hasDealSignal = true;
+  }
 
   if (
     ADS_SOFT_RESPONSE_CTA_PATTERN.test(rawLoweredText) &&

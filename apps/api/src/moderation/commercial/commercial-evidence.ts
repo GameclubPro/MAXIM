@@ -72,6 +72,18 @@ const BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS = new Set([
   'service-specialty:paving-landscaping-service',
 ]);
 
+const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([
+  'goods-retail:wholesale-produce',
+  'goods-retail:collectible-flower-retail',
+  'goods-retail:flower-herb-unit-price-retail',
+  'goods-retail:plant-nursery-stock',
+  'goods-retail:plant-nursery-clearance-stock',
+  'goods-retail:farm-livestock-retail',
+  'goods-retail:poultry-farm-order',
+  'goods-retail:home-food-order',
+  'goods-retail:home-dairy-retail',
+]);
+
 export type CommercialSignalEvidenceProfile = {
   hasPriceEvidence: boolean;
   hasStrongContactEvidence: boolean;
@@ -82,6 +94,7 @@ export type CommercialSignalEvidenceProfile = {
   hasTransactionalDirectDealEvidence: boolean;
   hasNonCampaignDirectDealEvidence: boolean;
   hasActionDirectDealEvidence: boolean;
+  hasRawActionDirectDealEvidence: boolean;
 };
 
 export type CommercialStateEvidenceProfile = CommercialSignalEvidenceProfile & {
@@ -91,6 +104,7 @@ export type CommercialStateEvidenceProfile = CommercialSignalEvidenceProfile & {
   hasStructuredVacancyContactEvidence: boolean;
   hasStructuredBuyoutPhoneEvidence: boolean;
   hasStructuredServicePhoneEvidence: boolean;
+  hasStructuredServiceTransactionalEvidence: boolean;
   hasStructuredPropertyContactEvidence: boolean;
   hasStructuredRetailTransactionalEvidence: boolean;
   hasStrongCampaignEvidence: boolean;
@@ -139,6 +153,7 @@ export function resolveCommercialSignalEvidence(
     hasTransactionalDirectDealEvidence,
     hasNonCampaignDirectDealEvidence,
     hasActionDirectDealEvidence,
+    hasRawActionDirectDealEvidence: hasActionDirectDealEvidence,
   };
 }
 
@@ -189,8 +204,13 @@ export function resolveCommercialEvidenceProfile(params: {
   const { state, appliedThresholds, commercialCampaignContext } = params;
   const signalEvidence = resolveCommercialSignalEvidence(state.matchedSignals);
   const hasSignal = (signal: string): boolean => state.matchedSignals.includes(signal);
+  const hasSignalPrefix = (prefix: string): boolean =>
+    state.matchedSignals.some((signal) => signal.startsWith(prefix));
   const hasBalancedStructuredServicePhoneAnchor = state.matchedSignals.some((signal) =>
     BALANCED_STRUCTURED_SERVICE_PHONE_ANCHOR_SIGNALS.has(signal),
+  );
+  const hasLocalPrivateLikeRetailSignal = state.matchedSignals.some((signal) =>
+    LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal),
   );
   const hasClassifierDirectDealEvidence =
     (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
@@ -227,6 +247,14 @@ export function resolveCommercialEvidenceProfile(params: {
     !state.hasPrivateSaleContext &&
     !state.hasPrivateGoodsItemContext &&
     ((appliedThresholds?.strictness ?? 1) >= 0.2 || hasBalancedStructuredServicePhoneAnchor);
+  const hasStructuredServiceTransactionalEvidence =
+    state.hasServiceContext &&
+    state.hasTransactional &&
+    !state.hasSearchRequestContext &&
+    !state.hasJobSeekingContext &&
+    !state.hasPrivateSaleContext &&
+    !state.hasPrivateGoodsItemContext &&
+    hasSignal('transaction:structured-service-offer');
   const hasStructuredPropertyContactEvidence =
     (state.hasPropertyAgentContext || state.hasCommercialPropertyContext) &&
     state.hasContact &&
@@ -245,6 +273,52 @@ export function resolveCommercialEvidenceProfile(params: {
     commercialCampaignContext,
     state,
   );
+  const hasOnlyPricePhoneActionDirectEvidence =
+    signalEvidence.hasRawActionDirectDealEvidence &&
+    signalEvidence.hasPriceEvidence &&
+    signalEvidence.hasPhoneEvidence &&
+    !signalEvidence.hasLinkEvidence &&
+    !signalEvidence.hasHighRiskEvidence &&
+    !signalEvidence.hasTransactionalDirectDealEvidence &&
+    !hasSignal('contact:handle') &&
+    !hasSignal('contact:email');
+  const hasStrongerLocalListingAnchor =
+    state.hasDealChannel ||
+    state.hasBusinessContext ||
+    state.hasChannelPlacementContext ||
+    state.hasCommercialAudienceContext ||
+    state.hasGroupPromoContext ||
+    state.hasInfoProductContext ||
+    state.hasRecruitmentContext ||
+    state.hasBuyoutContext ||
+    state.hasCommercialPropertyContext ||
+    state.hasPropertyAgentContext ||
+    signalEvidence.hasHighRiskEvidence ||
+    signalEvidence.hasTransactionalDirectDealEvidence ||
+    hasStrongCampaignEvidence ||
+    hasSignalPrefix('campaign:cross-chat-link') ||
+    hasSignalPrefix('campaign:cross-chat-domain') ||
+    hasSignalPrefix('campaign:cross-chat-handle') ||
+    hasSignal('goods-retail:multi-sku') ||
+    hasSignal('goods-retail:sizes-and-colors') ||
+    hasSignal('goods-retail:catalog-media') ||
+    hasSignal('goods-retail:manufacturer') ||
+    hasSignal('goods-retail:commercial-use') ||
+    hasSignal('goods-retail:volume-price-table') ||
+    hasSignal('goods-retail:apparel-retail-order-flow') ||
+    hasSignal('goods-retail:plant-nursery-shipping') ||
+    hasSignal('goods-retail:clearance-stock-retail');
+  const shouldConstrainLocalPrivateLikePricePhone =
+    hasOnlyPricePhoneActionDirectEvidence &&
+    !hasStrongerLocalListingAnchor &&
+    (state.hasPrivateSaleContext ||
+      state.hasPrivateGoodsItemContext ||
+      state.hasPropertyPrivateContext ||
+      hasLocalPrivateLikeRetailSignal ||
+      (state.hasGoodsRetailContext && !state.hasBusinessContext) ||
+      (state.hasServiceContext && state.hasStrongNegativeContext));
+  const hasActionDirectDealEvidence =
+    signalEvidence.hasActionDirectDealEvidence && !shouldConstrainLocalPrivateLikePricePhone;
   const hasStrongCommercialEvidence =
     state.hasPrice ||
     state.hasDealChannel ||
@@ -252,6 +326,7 @@ export function resolveCommercialEvidenceProfile(params: {
     hasStructuredVacancyContactEvidence ||
     hasStructuredBuyoutPhoneEvidence ||
     hasStructuredServicePhoneEvidence ||
+    hasStructuredServiceTransactionalEvidence ||
     hasStructuredPropertyContactEvidence ||
     hasStructuredRetailTransactionalEvidence ||
     hasStructuredChannelOfferEvidence ||
@@ -283,12 +358,14 @@ export function resolveCommercialEvidenceProfile(params: {
 
   return {
     ...signalEvidence,
+    hasActionDirectDealEvidence,
     hasClassifierDirectDealEvidence,
     hasStructuredEvidence,
     hasStandardCommercialEvidence,
     hasStructuredVacancyContactEvidence,
     hasStructuredBuyoutPhoneEvidence,
     hasStructuredServicePhoneEvidence,
+    hasStructuredServiceTransactionalEvidence,
     hasStructuredPropertyContactEvidence,
     hasStructuredRetailTransactionalEvidence,
     hasStrongCampaignEvidence,

@@ -294,6 +294,39 @@ describe('commercial evidence profile', () => {
     expect(evidence.hasStructuredCommercialContext).toBe(true);
   });
 
+  it('keeps local price-phone retail evidence reviewable unless stronger anchors exist', () => {
+    const localRetail = resolveCommercialEvidenceProfile({
+      state: buildState({
+        hasGoodsRetailContext: true,
+        hasPrice: true,
+        hasContact: true,
+        hasPhoneContact: true,
+        matchedSignals: ['goods-retail:home-dairy-retail', 'transaction:price', 'contact:phone'],
+      }),
+      appliedThresholds: STRICT_THRESHOLDS,
+    });
+    const anchoredRetail = resolveCommercialEvidenceProfile({
+      state: buildState({
+        hasGoodsRetailContext: true,
+        hasPrice: true,
+        hasContact: true,
+        hasPhoneContact: true,
+        hasDealChannel: true,
+        matchedSignals: [
+          'goods-retail:home-dairy-retail',
+          'transaction:price',
+          'contact:phone',
+          'deal-channel:link',
+        ],
+      }),
+      appliedThresholds: STRICT_THRESHOLDS,
+    });
+
+    expect(localRetail.hasRawActionDirectDealEvidence).toBe(true);
+    expect(localRetail.hasActionDirectDealEvidence).toBe(false);
+    expect(anchoredRetail.hasActionDirectDealEvidence).toBe(true);
+  });
+
   it('keeps private-sale suppression unless a commercial override is present', () => {
     const privateOnly = resolveCommercialEvidenceProfile({
       state: buildState({

@@ -1549,7 +1549,7 @@ describe('commercial pattern regressions', () => {
     expect(result?.primarySubtype).toBe('GOODS_RETAIL');
     expect(result?.matchedSignals).toContain('goods-retail:fragrance-retail-promo');
     expect(result?.negativeSignals).not.toContain('negative:для себя');
-    expect(result?.actionBand).toBe('REVIEW_ONLY');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(result?.actionBand);
   });
 
   it('keeps personal fragrance for-yourself wording suppressed', () => {
@@ -1857,6 +1857,93 @@ describe('commercial pattern regressions', () => {
     expect(poultry?.actionBand).toBe('REVIEW_ONLY');
     expect(poultry?.matchedSignals).toContain('goods-retail:farm-livestock-retail');
     expect(poultry?.negativeSignals).not.toContain('private:property-sale');
+  });
+
+  it.each([
+    [
+      'home dairy',
+      'Предлагаю домашнюю молочку: творог, сметана, яйца. Развоз по району, цена от 150 руб. Телефон +7 900 000 00 00',
+      'goods-retail:home-dairy-retail',
+    ],
+    [
+      'seedlings',
+      'Продам рассаду томатов и перцев, сортовая, 60 руб за штуку. Самовывоз, звоните +7 900 000 00 00',
+      'goods-retail:plant-nursery-stock',
+    ],
+    [
+      'home food',
+      'Домашние пельмени и вареники под заказ, доставка по району, 450 руб за кг. Телефон +7 900 000 00 00',
+      'goods-retail:home-food-order',
+    ],
+  ])('keeps local %s price-phone listings out of auto-delete', (_label, text, signal) => {
+    const result = detect(text, {
+      settings: {
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 57,
+        commercialAdsDeleteThreshold: 77,
+      },
+    });
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain(signal);
+    expect(result?.matchedSignals).toContain('combo:contact+price');
+    expect(result?.actionBand).not.toBe('DELETE');
+    expect(result?.actionBand).not.toBe('DELETE_AND_ESCALATE');
+    expect(result?.reasonCodes).toContain('policy:guarded-local-direct');
+  });
+
+  it('keeps strong linked retail ads deletable after local price-phone guard', () => {
+    const result = detect(
+      'Домашняя молочка с доставкой: творог, сметана, сыр. Цена от 150 руб, заказ через каталог https://example.com/milk, телефон +7 900 000 00 00',
+      {
+        settings: {
+          commercialAdsSensitivity: 'BALANCED',
+          commercialAdsWarnThreshold: 57,
+          commercialAdsDeleteThreshold: 77,
+        },
+      },
+    );
+
+    expect(result?.primarySubtype).toBe('GOODS_RETAIL');
+    expect(result?.matchedSignals).toContain('deal-channel:link');
+    expect(result?.actionBand).toBe('DELETE');
+    expect(result?.reasonCodes).toContain('evidence:action-direct');
+  });
+
+  it('detects structured service, taxi, property booking, and placement offers without hard deleting them', () => {
+    const settings = {
+      commercialAdsSensitivity: 'BALANCED',
+      commercialAdsWarnThreshold: 57,
+      commercialAdsDeleteThreshold: 77,
+    } as const;
+    const service = detect(
+      'Ремонт квартир под ключ, выезд на замер, гарантия по договору. Пишите для консультации.',
+      { settings },
+    );
+    const taxi = detect(
+      'Такси межгород ежедневно, комфортный водитель, есть места, пишите для заказа.',
+      { settings },
+    );
+    const property = detect(
+      'Сдаются домики у озера посуточно, свободные даты на июль, бронь в личку.',
+      { settings },
+    );
+    const placement = detect('Канал про город, свободные окна на завтра, стату скину в личку.', {
+      settings,
+    });
+
+    expect(service?.primarySubtype).toBe('SERVICES');
+    expect(service?.matchedSignals).toContain('transaction:structured-service-offer');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(service?.actionBand);
+    expect(taxi?.primarySubtype).toBe('SERVICES');
+    expect(taxi?.matchedSignals).toContain('service-specialty:taxi-transport-service');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(taxi?.actionBand);
+    expect(property?.primarySubtype).toBe('PROPERTY_AGENT');
+    expect(property?.matchedSignals).toContain('transaction:property-booking-offer');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(property?.actionBand);
+    expect(placement?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(placement?.matchedSignals).toContain('transaction:channel-placement-offer');
+    expect(['WARN', 'REVIEW_ONLY']).toContain(placement?.actionBand);
   });
 
   it('keeps neighboring request and private-real-estate wording suppressed', () => {

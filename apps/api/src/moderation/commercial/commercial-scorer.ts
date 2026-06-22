@@ -189,6 +189,21 @@ export class CommercialSecondStageScorer {
       state.matchedSignals.includes('combo:service-offer+deal') ||
       state.matchedSignals.includes('combo:group-promo+deal') ||
       state.matchedSignals.includes('combo:campaign+deal');
+    const hasLocalPrivateLikeRetailSignal = state.matchedSignals.some((signal) =>
+      LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS.has(signal),
+    );
+    const hasOnlyLocalRetailPricePhoneEvidence =
+      hasLocalPrivateLikeRetailSignal &&
+      state.hasPrice &&
+      state.hasPhoneContact &&
+      !state.hasDealChannel &&
+      !state.matchedSignals.includes('contact:handle') &&
+      !state.matchedSignals.includes('contact:email') &&
+      !state.matchedSignals.some((signal) => signal.startsWith('risk:')) &&
+      !strongCampaignEvidence &&
+      !hasMultiSkuGoodsStructure &&
+      !state.matchedSignals.includes('goods-retail:multi-sku') &&
+      !state.matchedSignals.includes('goods-retail:volume-price-table');
     const scoreMargin = confidenceScore - appliedThresholds.warnThreshold;
 
     let commercialLogit =
@@ -337,6 +352,23 @@ export class CommercialSecondStageScorer {
     ) {
       adjustedConfidenceScore = appliedThresholds.warnThreshold;
       classifierReasons.push('rescued-structured-service-phone');
+    }
+
+    if (
+      adjustedConfidenceScore < appliedThresholds.warnThreshold &&
+      decisionBand === 'LOW' &&
+      confidenceScore >=
+        appliedThresholds.warnThreshold - commercialLogitConfig.rescueWindowBelowWarn &&
+      evidence.hasStructuredServiceTransactionalEvidence &&
+      state.hasServiceSpecialtyContext &&
+      state.hasTransactional &&
+      !state.hasSearchRequestContext &&
+      !state.hasJobSeekingContext &&
+      !state.hasStrongNegativeContext &&
+      state.negativeSignals.length === 0
+    ) {
+      adjustedConfidenceScore = appliedThresholds.warnThreshold;
+      classifierReasons.push('rescued-structured-service-offer');
     }
 
     if (
@@ -493,7 +525,8 @@ export class CommercialSecondStageScorer {
     if (
       (primarySubtype === 'GOODS_RETAIL' || primarySubtype === 'PROPERTY_COMMERCIAL') &&
       adjustedConfidenceScore >= appliedThresholds.deleteThreshold &&
-      directDealEvidence
+      directDealEvidence &&
+      !hasOnlyLocalRetailPricePhoneEvidence
     ) {
       reviewReasons = reviewReasons.filter(
         (reason) =>
@@ -537,7 +570,8 @@ export class CommercialSecondStageScorer {
       reviewProbability <= reviewLogitConfig.clearReviewProbability &&
       adjustedDecisionBand === 'HIGH' &&
       structuredEvidence &&
-      directDealEvidence
+      directDealEvidence &&
+      !hasOnlyLocalRetailPricePhoneEvidence
     ) {
       reviewRecommended = false;
       reviewReasons = [];
@@ -571,3 +605,15 @@ export class CommercialSecondStageScorer {
     return decision;
   }
 }
+
+const LOCAL_PRIVATE_LIKE_RETAIL_SIGNALS = new Set([
+  'goods-retail:wholesale-produce',
+  'goods-retail:collectible-flower-retail',
+  'goods-retail:flower-herb-unit-price-retail',
+  'goods-retail:plant-nursery-stock',
+  'goods-retail:plant-nursery-clearance-stock',
+  'goods-retail:farm-livestock-retail',
+  'goods-retail:poultry-farm-order',
+  'goods-retail:home-food-order',
+  'goods-retail:home-dairy-retail',
+]);

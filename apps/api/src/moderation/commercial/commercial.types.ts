@@ -128,6 +128,7 @@ export type CommercialExplainableDecision = {
   decisionVersion: string;
   score: number;
   fpRisk: number;
+  policyFpRisk?: number;
   evidenceTier: CommercialEvidenceTier;
   subtype: CommercialSubtype;
   actionBand: CommercialActionBand;

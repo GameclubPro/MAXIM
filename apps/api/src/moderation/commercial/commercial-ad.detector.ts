@@ -54,9 +54,13 @@ export type CommercialDetection = {
   commercialProbability: number | null;
   reviewProbability: number | null;
   classifierReasons: string[];
+  hasActionDirectDealEvidence?: boolean;
+  hasNonCampaignDirectDealEvidence?: boolean;
+  hasEscalationRiskEvidence?: boolean;
   decisionVersion?: string;
   score?: number;
   fpRisk?: number;
+  policyFpRisk?: number;
   evidenceTier?: string;
   subtype?: CommercialSubtype;
   actionBand?: string;
@@ -307,6 +311,9 @@ export class CommercialAdDetector {
       commercialProbability: secondStage?.commercialProbability ?? null,
       reviewProbability: secondStage?.reviewProbability ?? null,
       classifierReasons: secondStage?.classifierReasons ?? [],
+      hasActionDirectDealEvidence: evidence.hasActionDirectDealEvidence,
+      hasNonCampaignDirectDealEvidence: evidence.hasNonCampaignDirectDealEvidence,
+      hasEscalationRiskEvidence: evidence.hasEscalationRiskEvidence,
     };
   }
 }
