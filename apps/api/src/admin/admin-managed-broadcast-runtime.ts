@@ -300,6 +300,7 @@ import {
   normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
+import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
   hasRetriableManagedBroadcastAttachment,
@@ -556,19 +557,19 @@ type ManagedBroadcastCommentDialogReference = {
 export class AdminManagedBroadcastRuntime {
   [key: string]: any;
 
-  constructor(private readonly context: any) {
+  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {
     return new Proxy(this, {
       get: (target, prop, receiver) => {
         if (prop in target) {
           return Reflect.get(target, prop, receiver);
         }
-        return this.context[prop as keyof typeof this.context];
+        return this.context.read(prop);
       },
       set: (target, prop, value, receiver) => {
         if (prop in target) {
           return Reflect.set(target, prop, value, receiver);
         }
-        this.context[prop as keyof typeof this.context] = value;
+        this.context.write(prop, value);
         return true;
       },
     });

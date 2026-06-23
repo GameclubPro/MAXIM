@@ -256,6 +256,7 @@ import {
   normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
+import { createAdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
   hasRetriableManagedBroadcastAttachment,
@@ -440,7 +441,9 @@ const DEVELOPER_SUPER_BAN_PRIVATE_DIALOG_ID_PREFIXES = [
 @Injectable()
 export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
-  private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(this);
+  private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(
+    createAdminManagedBroadcastRuntimeContext(this),
+  );
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(this);
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(this);
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
