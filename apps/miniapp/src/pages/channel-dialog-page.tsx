@@ -16,9 +16,15 @@ import {
   Attachment as IconoirAttachment,
   Bell as IconoirBell,
   BellOff as IconoirBellOff,
+  Bold as IconoirBold,
   BubbleStar as IconoirEmoji,
   Camera as IconoirCamera,
+  Code as IconoirCode,
+  Italic as IconoirItalic,
   Link as IconoirLink,
+  Strikethrough as IconoirStrikethrough,
+  Type as IconoirType,
+  Underline as IconoirUnderline,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -1118,6 +1124,25 @@ function SuggestionRequirements({ text }: { text: string }) {
       </div>
     </section>
   );
+}
+
+function SuggestMarkdownToolIcon({ tool }: { tool: MaxMarkdownTool }) {
+  switch (tool) {
+    case 'heading':
+      return <IconoirType aria-hidden focusable="false" />;
+    case 'bold':
+      return <IconoirBold aria-hidden focusable="false" />;
+    case 'italic':
+      return <IconoirItalic aria-hidden focusable="false" />;
+    case 'underline':
+      return <IconoirUnderline aria-hidden focusable="false" />;
+    case 'strike':
+      return <IconoirStrikethrough aria-hidden focusable="false" />;
+    case 'code':
+      return <IconoirCode aria-hidden focusable="false" />;
+    case 'link':
+      return <IconoirLink aria-hidden focusable="false" />;
+  }
 }
 
 function SendArrowIcon() {
@@ -3675,7 +3700,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                             {tool.id === 'link' ? (
                               <IconoirLink aria-hidden focusable="false" />
                             ) : (
-                              tool.label
+                              <SuggestMarkdownToolIcon tool={tool.id} />
                             )}
                           </button>
                         ))}

@@ -12,6 +12,7 @@ export type MaxSharePayload =
 
 type MaxBackButtonHandler = () => void;
 export type MaxPlatform = 'ios' | 'android' | 'desktop' | 'web' | 'unknown';
+export type MaxTheme = 'light' | 'dark';
 
 const LEGACY_ANDROID_MAJOR_MAX = 9;
 const LEGACY_ANDROID_CHROMIUM_MAJOR_MAX = 99;
@@ -223,6 +224,100 @@ function normalizePlatform(
   return 'unknown';
 }
 
+function normalizeTheme(value: unknown): MaxTheme | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'dark' || normalized === 'night') {
+    return 'dark';
+  }
+  if (normalized === 'light' || normalized === 'day') {
+    return 'light';
+  }
+
+  return null;
+}
+
+function parseHexColor(value: unknown): [number, number, number] | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().replace(/^#/u, '');
+  const expanded =
+    normalized.length === 3
+      ? normalized
+          .split('')
+          .map((part) => `${part}${part}`)
+          .join('')
+      : normalized;
+
+  if (!/^[0-9a-f]{6}$/iu.test(expanded)) {
+    return null;
+  }
+
+  return [
+    Number.parseInt(expanded.slice(0, 2), 16),
+    Number.parseInt(expanded.slice(2, 4), 16),
+    Number.parseInt(expanded.slice(4, 6), 16),
+  ];
+}
+
+function isDarkHexColor(value: unknown): boolean | null {
+  const rgb = parseHexColor(value);
+  if (!rgb) {
+    return null;
+  }
+
+  const [red, green, blue] = rgb.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * (red ?? 0) + 0.7152 * (green ?? 0) + 0.0722 * (blue ?? 0);
+
+  return luminance < 0.42;
+}
+
+function resolveThemeFromBridge(bridge: ReturnType<typeof resolveBridge>): MaxTheme | null {
+  const explicitTheme =
+    normalizeTheme(bridge?.colorScheme) ??
+    normalizeTheme(bridge?.color_scheme) ??
+    normalizeTheme(bridge?.theme);
+  if (explicitTheme) {
+    return explicitTheme;
+  }
+
+  const themeParams = bridge?.themeParams ?? bridge?.theme_params;
+  if (themeParams) {
+    const darkBackground =
+      isDarkHexColor(themeParams.bg_color) ??
+      isDarkHexColor(themeParams.background_color) ??
+      isDarkHexColor(themeParams.secondary_bg_color);
+    if (darkBackground !== null) {
+      return darkBackground ? 'dark' : 'light';
+    }
+  }
+
+  return null;
+}
+
+function resolvePreferredTheme(bridge: ReturnType<typeof resolveBridge>): MaxTheme {
+  const bridgeTheme = resolveThemeFromBridge(bridge);
+  if (bridgeTheme) {
+    return bridgeTheme;
+  }
+
+  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+    return 'dark';
+  }
+
+  return 'light';
+}
+
 function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } = {}) {
   const root = document.documentElement;
   const bridge = resolveBridge();
@@ -238,9 +333,11 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
     ? getPreviewDevicePreset(options.previewDevice)
     : null;
   const platform = normalizePlatform(bridge?.platform, options.previewDevice);
+  const theme = resolvePreferredTheme(bridge);
   const forceNativeVisualMode = window.__MAXIM_FORCE_NATIVE_VISUAL_MODE__ === true;
 
   root.dataset.maxPlatform = platform;
+  root.dataset.maxTheme = theme;
   root.dataset.maxClient = forceNativeVisualMode
     ? 'native'
     : previewPreset
@@ -302,17 +399,20 @@ export function syncMaxNativeEnvironment(
   const apply = () => {
     applyRootEnvironment(options);
   };
+  const colorSchemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)');
 
   apply();
 
   window.addEventListener('resize', apply, { passive: true });
   window.visualViewport?.addEventListener('resize', apply);
   window.visualViewport?.addEventListener('scroll', apply);
+  colorSchemeMedia?.addEventListener?.('change', apply);
 
   return () => {
     window.removeEventListener('resize', apply);
     window.visualViewport?.removeEventListener('resize', apply);
     window.visualViewport?.removeEventListener('scroll', apply);
+    colorSchemeMedia?.removeEventListener?.('change', apply);
   };
 }
 

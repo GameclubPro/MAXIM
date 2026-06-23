@@ -51,8 +51,14 @@ export async function applyNativeVisualMode(page, profile) {
       .design-preview .app-shell--immersive {
         width: 100% !important;
         max-width: none !important;
-        height: var(--app-viewport-height) !important;
-        min-height: var(--app-viewport-height) !important;
+        height: calc(
+          var(--app-viewport-height) + var(--immersive-top-bleed, 0px) +
+            var(--immersive-bottom-bleed, 0px)
+        ) !important;
+        min-height: calc(
+          var(--app-viewport-height) + var(--immersive-top-bleed, 0px) +
+            var(--immersive-bottom-bleed, 0px)
+        ) !important;
         padding: 0 !important;
         overflow: hidden !important;
       }

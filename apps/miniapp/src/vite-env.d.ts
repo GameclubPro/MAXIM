@@ -14,6 +14,19 @@ interface ImportMetaEnv {
 type MaxWebAppBridge = {
   version?: string;
   platform?: string;
+  colorScheme?: string;
+  color_scheme?: string;
+  theme?: string;
+  themeParams?: {
+    bg_color?: string;
+    background_color?: string;
+    secondary_bg_color?: string;
+  };
+  theme_params?: {
+    bg_color?: string;
+    background_color?: string;
+    secondary_bg_color?: string;
+  };
   initData?: string;
   init_data?: string;
   initDataUnsafe?: {

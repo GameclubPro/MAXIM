@@ -1345,6 +1345,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   }
   if (maxBridgeShimEnabled) {
     await installMaxBridgeShimInitScript(context, profile, {
+      colorScheme: colorScheme === 'dark' ? 'dark' : 'light',
       startParam: process.env.MINIAPP_SCREENSHOT_START_PARAM?.trim() || '',
       version: process.env.MINIAPP_SCREENSHOT_MAX_VERSION?.trim() || '',
     });

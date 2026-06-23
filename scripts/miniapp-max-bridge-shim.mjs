@@ -29,6 +29,23 @@ export async function installMaxBridgeShimInitScript(context, profile, options =
     ({ profile: bridgeProfile, options: bridgeOptions }) => {
       const platform =
         bridgeOptions.platform || (bridgeProfile?.platform === 'ios' ? 'ios' : 'android');
+      const colorScheme =
+        bridgeOptions.colorScheme ||
+        (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const themeParams =
+        colorScheme === 'dark'
+          ? {
+              bg_color: '#10171b',
+              secondary_bg_color: '#121c22',
+              text_color: '#f2f6f8',
+              hint_color: '#becfd8',
+            }
+          : {
+              bg_color: '#f4f8f8',
+              secondary_bg_color: '#ffffff',
+              text_color: '#172535',
+              hint_color: '#445462',
+            };
       const user = {
         first_name: 'Майор',
         last_name: 'Максимов',
@@ -127,6 +144,11 @@ export async function installMaxBridgeShimInitScript(context, profile, options =
       const bridge = {
         version: bridgeOptions.version || '26.6.0-preview',
         platform,
+        colorScheme,
+        color_scheme: colorScheme,
+        theme: colorScheme,
+        themeParams,
+        theme_params: themeParams,
         initData,
         init_data: initData,
         initDataUnsafe: {
@@ -229,6 +251,7 @@ export async function installMaxBridgeShimInitScript(context, profile, options =
       },
       options: {
         initData: options.initData || '',
+        colorScheme: options.colorScheme || '',
         platform: options.platform || normalizePlatform(profile),
         startParam: options.startParam || '',
         user: options.user || DEFAULT_USER,
