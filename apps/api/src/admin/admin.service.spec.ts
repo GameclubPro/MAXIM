@@ -21122,8 +21122,9 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
     const processSpy = jest
-      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
 
     await service.processDueManagedBroadcasts('scheduled');
@@ -21173,8 +21174,9 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
     const processSpy = jest
-      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
 
     await service.processDueManagedBroadcasts('scheduled');
@@ -21224,8 +21226,9 @@ describe('AdminService.sendBroadcast', () => {
       { invalidate: jest.fn() } as never,
       createConfigMock() as never,
     );
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
     const processSpy = jest
-      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
 
     await service.processDueManagedBroadcasts('scheduled');
@@ -21264,8 +21267,9 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
       backgroundRuntimeGovernorService as never,
     );
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
     const processSpy = jest
-      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
 
     await service.processDueManagedBroadcasts('scheduled');
@@ -21319,8 +21323,9 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
       backgroundRuntimeGovernorService as never,
     );
+    const runtime = service.getManagedBroadcastRuntimeForBroadcastService() as any;
     const processSpy = jest
-      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .spyOn(runtime, 'processManagedBroadcastOccurrence')
       .mockResolvedValue(undefined);
 
     await service.processDueManagedBroadcasts('scheduled');

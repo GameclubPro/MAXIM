@@ -16,6 +16,7 @@ import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.pr
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
 import { AdminSuperBanProcessor } from './admin-super-ban.processor';
 import { ADMIN_SUPER_BAN_QUEUE } from './admin-super-ban.queue';
+import { AdminManagedBroadcastRuntime } from './admin-managed-broadcast-runtime';
 import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
@@ -81,6 +82,12 @@ import { VkSyncService } from './vk-sync.service';
     ManualModerationService,
     RedisCounterService,
     GlobalSpammerIntelligenceService,
+    {
+      provide: AdminManagedBroadcastRuntime,
+      useFactory: (adminService: AdminService) =>
+        adminService.getManagedBroadcastRuntimeForBroadcastService(),
+      inject: [AdminService],
+    },
     ManagedBroadcastService,
     ManagedEntityCandidateSyncService,
     ManagedEntitiesService,

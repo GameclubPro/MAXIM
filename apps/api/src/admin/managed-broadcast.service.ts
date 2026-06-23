@@ -7,7 +7,7 @@ import {
 } from '@maxim/contracts';
 import { Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { AdminService, type AdminActionSource } from './admin.service';
+import { AdminManagedBroadcastRuntime, type AdminActionSource } from './admin-managed-broadcast-runtime';
 
 type AdminReadBypassOptions = {
   skipAdminCheck?: boolean;
@@ -16,11 +16,7 @@ type AdminReadBypassOptions = {
 
 @Injectable()
 export class ManagedBroadcastService {
-  constructor(private readonly legacyAdminService: AdminService) {}
-
-  private get runtime() {
-    return this.legacyAdminService.getManagedBroadcastRuntimeForBroadcastService();
-  }
+  constructor(private readonly runtime: AdminManagedBroadcastRuntime) {}
 
   sendBroadcast(
     sourceChatId: string,
