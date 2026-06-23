@@ -197,6 +197,7 @@ import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
+import { createAdminLogsDashboardRuntimeContext } from './admin-logs-dashboard-runtime-context';
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
 import { createAdminManualModerationRuntimeContext } from './admin-manual-moderation-runtime-context';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
@@ -462,7 +463,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(
     createAdminDomainAllowlistRuntimeContext(this),
   );
-  private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(this);
+  private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(
+    createAdminLogsDashboardRuntimeContext(this),
+  );
   private readonly manualModerationRuntime = new AdminManualModerationRuntime(
     createAdminManualModerationRuntimeContext(this),
   );
@@ -12410,7 +12413,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private buildEmptyModerationFeedPage(): ModerationFeedPage {
-    return (this.logsDashboardRuntime as any).buildEmptyModerationFeedPage();
+    return this.logsDashboardRuntime.buildEmptyModerationFeedPage();
   }
 
   private buildEmptyMembershipActivityPage(): MembershipActivityPage {

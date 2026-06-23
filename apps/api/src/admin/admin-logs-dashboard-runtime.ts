@@ -15,13 +15,16 @@ import {
   type ModerationFeedQuery,
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { Prisma, SanctionAction } from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
 import {
   buildLogsDashboardResponseCacheKey,
   buildMembershipActivityFeedPageCacheKey,
   buildModerationFeedPageCacheKey,
 } from './admin-legacy-utils';
+import type { AdminLogsDashboardRuntimeContext } from './admin-logs-dashboard-runtime-context';
 import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
@@ -33,32 +36,98 @@ import {
   LOGS_DASHBOARD_VIOLATIONS_LIMIT,
   MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
   SLOW_LOGS_DASHBOARD_THRESHOLD_MS,
+  type AssertChatAdminOptions,
   type MembershipEventRow,
   type ModerationFeedCursor,
   type ModerationViolationRow,
   type ResolvedUserProfile,
   type ResolveUserProfilesOptions,
+  type TimedPromiseCacheEntry,
 } from './admin.service.support';
 
 export class AdminLogsDashboardRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminLogsDashboardRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get logger(): AdminLogsDashboardRuntimeContext['logger'] {
+    return this.context.logger;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private get logsDashboardResponseCache(): Map<
+    string,
+    TimedPromiseCacheEntry<LogsDashboardResponse>
+  > {
+    return this.context.logsDashboardResponseCache;
+  }
+
+  private get moderationFeedPageCache(): Map<string, TimedPromiseCacheEntry<ModerationFeedPage>> {
+    return this.context.moderationFeedPageCache;
+  }
+
+  private get membershipActivityFeedPageCache(): Map<
+    string,
+    TimedPromiseCacheEntry<MembershipActivityPage>
+  > {
+    return this.context.membershipActivityFeedPageCache;
+  }
+
+  private assertChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: AssertChatAdminOptions,
+  ): Promise<void> {
+    return this.context.assertChatAdmin(chatId, userId, entityType, options);
+  }
+
+  private assertReadOnlyChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: Parameters<AdminLogsDashboardRuntimeContext['assertReadOnlyChatAdmin']>[3],
+  ): Promise<void> {
+    return this.context.assertReadOnlyChatAdmin(chatId, userId, entityType, options);
+  }
+
+  private buildProfileMentionHandoffUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userId: string,
+    displayName: string | null,
+  ): string | null {
+    return this.context.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName);
+  }
+
+  private ensureEntityType(
+    chatId: string,
+    userId: string,
+    expectedEntityType: ManagedEntityType,
+  ): Promise<void> {
+    return this.context.ensureEntityType(chatId, userId, expectedEntityType);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
+  }
+
+  private resolveUserProfiles(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userIds: readonly string[],
+    options?: ResolveUserProfilesOptions,
+  ): Promise<Map<string, ResolvedUserProfile>> {
+    return this.context.resolveUserProfiles(chatId, entityType, userIds, options);
+  }
+
+  private toIsoString(value: unknown): string | null {
+    return this.context.toIsoString(value);
   }
 
   async getLogsDashboard(
@@ -689,7 +758,7 @@ export class AdminLogsDashboardRuntime {
     return pending;
   }
 
-  private buildEmptyModerationFeedPage(): ModerationFeedPage {
+  buildEmptyModerationFeedPage(): ModerationFeedPage {
     return moderationFeedPageSchema.parse({
       items: [],
       hasMore: false,
