@@ -1,40 +1,93 @@
 import {
   BadRequestException,
   ServiceUnavailableException,
+  type Logger,
 } from '@nestjs/common';
 import type { ChatSettings, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
-import { MAX_API_SOURCE_TAGS, type MaxBotChat } from '../max/max-client.service';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import type { MaxBotLinkService } from '../max/max-bot-link.service';
+import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  type MaxBotChat,
+  type MaxClientService,
+} from '../max/max-client.service';
+import type { PrismaService } from '../prisma/prisma.service';
 import {
   fromPrismaEntityType,
   isBotAdminLookupDeniedError,
   mapWithConcurrencyLimit,
 } from './admin-legacy-utils';
+import type {
+  AdminRequiredSubscriptionRuntimeContext,
+  CreateRequiredSubscriptionManagedEntityHeaderParams,
+  ResolveRequiredSubscriptionCandidateBotIdsOptions,
+} from './admin-required-subscription-runtime-context';
 import { resolveRequiredSubscriptionChannelByKnownLink } from './admin-required-subscription-catalog';
 import {
   ADMIN_ACTION_HEALTH_LANE,
   REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+  type ManagedBotChatCatalogSnapshotRow,
+  type ManagedEntitiesDiscoverySnapshot,
   mapManagedEntityTypeToChatEntityType,
 } from './admin.service.support';
 
 export class AdminRequiredSubscriptionRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminRequiredSubscriptionRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private get logger(): Logger {
+    return this.context.logger;
+  }
+
+  private get maxBotLinkService(): MaxBotLinkService | undefined {
+    return this.context.maxBotLinkService;
+  }
+
+  private get maxBotRegistry(): MaxBotRegistryService | undefined {
+    return this.context.maxBotRegistry;
+  }
+
+  private createManagedEntityHeader(
+    params: CreateRequiredSubscriptionManagedEntityHeaderParams,
+  ): ManagedEntityHeader {
+    return this.context.createManagedEntityHeader(params);
+  }
+
+  private mergeManagedBotChatCatalogRows(
+    rows: readonly ManagedBotChatCatalogSnapshotRow[],
+  ): ManagedEntitiesDiscoverySnapshot {
+    return this.context.mergeManagedBotChatCatalogRows(rows);
+  }
+
+  private resolveBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.context.resolveBotAssignment(chatId);
+  }
+
+  private resolveCandidateBotIdsForChat(
+    chatId: string,
+    options?: ResolveRequiredSubscriptionCandidateBotIdsOptions,
+  ): Promise<string[]> {
+    return this.context.resolveCandidateBotIdsForChat(chatId, options);
+  }
+
+  private refreshManagedEntityBotAccessSnapshots(
+    chatId: string,
+    entityType: ManagedEntityType,
+    reason: string,
+  ): Promise<void> {
+    return this.context.refreshManagedEntityBotAccessSnapshots(chatId, entityType, reason);
   }
 
   async resolveRequiredSubscriptionChannelHeaders(
