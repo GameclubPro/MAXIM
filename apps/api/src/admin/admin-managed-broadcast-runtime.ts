@@ -292,6 +292,7 @@ import {
   normalizeAppBaseUrl,
   normalizeBotContactId,
   normalizeOwnBotUserId,
+  readTrimmedString as readTrimmedStringValue,
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
@@ -302,6 +303,10 @@ import {
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
 import type { AdminManagedBroadcastRuntimeContext } from './admin-managed-broadcast-runtime-context';
+import type {
+  ManagedBroadcastButtonContextOptions,
+  ManagedBroadcastButtonContextResult,
+} from './admin-managed-broadcast-runtime-context';
 import {
   decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
   hasRetriableManagedBroadcastAttachment,
@@ -556,25 +561,7 @@ type ManagedBroadcastCommentDialogReference = {
 };
 
 export class AdminManagedBroadcastRuntime {
-  [key: string]: any;
-
-  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context.read(prop);
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context.write(prop, value);
-        return true;
-      },
-    });
-  }
+  constructor(private readonly context: AdminManagedBroadcastRuntimeContext) {}
 
   private get prisma(): PrismaService {
     return this.context.prisma;
@@ -606,6 +593,71 @@ export class AdminManagedBroadcastRuntime {
 
   private resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
     return this.context.resolveSystemModeSnapshot();
+  }
+
+  private resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.context.resolveDeliveryBotAssignment(chatId);
+  }
+
+  private resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
+    return this.context.resolvePrivateDeliveryBotId(botId);
+  }
+
+  private resolvePrivateDialogChatId(
+    user: AuthUser,
+    botId?: string | null,
+  ): Promise<string | null> {
+    return this.context.resolvePrivateDialogChatId(user, botId);
+  }
+
+  private listChatsForMassBroadcast(
+    user: AuthUser,
+    options: {
+      discoveryMode?: 'full' | 'cached-first';
+    } = {},
+  ): Promise<ChatSummary[]> {
+    return this.context.listChatsForMassBroadcast(user, options);
+  }
+
+  private assertManagedEntityAdminAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    return this.context.assertManagedEntityAdminAccess(chatId, userId, entityType);
+  }
+
+  private assertManagedEntityReadAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    options: AdminReadBypassOptions = {},
+  ): Promise<void> {
+    return this.context.assertManagedEntityReadAccess(chatId, userId, entityType, options);
+  }
+
+  private resolveBroadcastButtonContext(
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: ManagedBroadcastButtonContextOptions,
+    botId?: string,
+  ): Promise<ManagedBroadcastButtonContextResult> {
+    return this.context.resolveBroadcastButtonContext(chatId, entityType, options, botId);
+  }
+
+  private extractMaxApiErrorMessage(error: unknown): string {
+    return extractMaxApiErrorMessageValue(error);
+  }
+
+  private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return readTrimmedStringValue(value);
   }
 
   async sendBroadcast(
@@ -920,12 +972,7 @@ export class AdminManagedBroadcastRuntime {
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(sourceChatId, user.userId, entityType);
-    }
+    await this.assertManagedEntityReadAccess(sourceChatId, user.userId, entityType, options);
 
     const baseWhere = {
       sourceChatId,
@@ -1032,8 +1079,7 @@ export class AdminManagedBroadcastRuntime {
     entityType: ManagedEntityType,
     query: unknown,
   ): Promise<ManagedBroadcastCalendarResponse> {
-    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    await this.assertManagedEntityReadAccess(sourceChatId, user.userId, entityType);
 
     const parsedQuery = this.parseManagedBroadcastCalendarQuery(query);
     const targetChatIds =
@@ -1169,8 +1215,7 @@ export class AdminManagedBroadcastRuntime {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    await this.assertManagedEntityReadAccess(sourceChatId, user.userId, entityType);
 
     const row = await this.prisma.managedBroadcast.findFirst({
       where: {
@@ -1204,8 +1249,7 @@ export class AdminManagedBroadcastRuntime {
     body: unknown,
     entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
@@ -1384,8 +1428,7 @@ export class AdminManagedBroadcastRuntime {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
@@ -1472,8 +1515,7 @@ export class AdminManagedBroadcastRuntime {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
@@ -1816,8 +1858,7 @@ export class AdminManagedBroadcastRuntime {
       resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
     },
   ): Promise<PreparedManagedBroadcastRequest> {
-    await this.assertChatAdmin(sourceChatId, user.userId, options.entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, options.entityType);
+    await this.assertManagedEntityAdminAccess(sourceChatId, user.userId, options.entityType);
 
     const parsed = sendBroadcastRequestSchema.safeParse(body);
     if (!parsed.success) {

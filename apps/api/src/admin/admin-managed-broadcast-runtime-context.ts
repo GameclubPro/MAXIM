@@ -1,10 +1,42 @@
 import type { Logger } from '@nestjs/common';
+import type {
+  BroadcastLinkButton,
+  ChannelSettings,
+  ChatSummary,
+  ManagedEntityType,
+} from '@maxim/contracts';
 
-import type { MaxClientService } from '../max/max-client.service';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import type { MaxClientService, MaxMessageButton } from '../max/max-client.service';
 import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import type { SystemModeSnapshot } from '../system/system-mode.service';
+import type { AdminReadBypassOptions } from './admin.service.support';
+
+export type ManagedBroadcastButtonContextOptions = {
+  customButtons?: BroadcastLinkButton[];
+  buttonEnabled?: boolean;
+  buttonUrl?: string;
+  buttonText?: string;
+  includeCustomButton: boolean;
+  customButtonText: string;
+  customButtonUrl: string;
+};
+
+export type ManagedBroadcastButtonContextResult = {
+  buttons: MaxMessageButton[][];
+  commentDialogReference: {
+    entityType: ManagedEntityType;
+    threadId: string;
+    includeCommentsButton: boolean;
+    includeSuggestButton: boolean;
+    suggestButtonText: string | null;
+    autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'] | null;
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] | null;
+    botId: string | null;
+  } | null;
+};
 
 export type AdminManagedBroadcastRuntimeContext = {
   readonly prisma: PrismaService;
@@ -14,8 +46,30 @@ export type AdminManagedBroadcastRuntimeContext = {
   readonly managedEntityAccessLossService?: ManagedEntityAccessLossService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
-  read(prop: PropertyKey): unknown;
-  write(prop: PropertyKey, value: unknown): void;
+  resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
+  resolvePrivateDeliveryBotId(botId?: string | null): string | undefined;
+  resolvePrivateDialogChatId(user: AuthUser, botId?: string | null): Promise<string | null>;
+  listChatsForMassBroadcast(
+    user: AuthUser,
+    options?: { discoveryMode?: 'full' | 'cached-first' },
+  ): Promise<ChatSummary[]>;
+  assertManagedEntityAdminAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<void>;
+  assertManagedEntityReadAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    options?: AdminReadBypassOptions,
+  ): Promise<void>;
+  resolveBroadcastButtonContext(
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: ManagedBroadcastButtonContextOptions,
+    botId?: string,
+  ): Promise<ManagedBroadcastButtonContextResult>;
 };
 
 type AdminManagedBroadcastRuntimeContextTarget = {
@@ -26,12 +80,35 @@ type AdminManagedBroadcastRuntimeContextTarget = {
   managedEntityAccessLossService?: ManagedEntityAccessLossService;
   managedBroadcastDegradePauseLogAtMs: number;
   resolveSystemModeSnapshot(): Promise<SystemModeSnapshot>;
+  resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined>;
+  resolvePrivateDeliveryBotId(botId?: string | null): string | undefined;
+  resolvePrivateDialogChatId(user: AuthUser, botId?: string | null): Promise<string | null>;
+  listChatsForMassBroadcast(
+    user: AuthUser,
+    options?: { discoveryMode?: 'full' | 'cached-first' },
+  ): Promise<ChatSummary[]>;
+  assertManagedEntityAdminAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<void>;
+  assertManagedEntityReadAccess(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    options?: AdminReadBypassOptions,
+  ): Promise<void>;
+  resolveBroadcastButtonContext(
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: ManagedBroadcastButtonContextOptions,
+    botId?: string,
+  ): Promise<ManagedBroadcastButtonContextResult>;
 };
 
 export function createAdminManagedBroadcastRuntimeContext(
   target: object,
 ): AdminManagedBroadcastRuntimeContext {
-  const targetRecord = target as Record<PropertyKey, unknown>;
   const typedTarget = target as AdminManagedBroadcastRuntimeContextTarget;
 
   return {
@@ -59,11 +136,43 @@ export function createAdminManagedBroadcastRuntimeContext(
     resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
       return typedTarget.resolveSystemModeSnapshot();
     },
-    read(prop: PropertyKey): unknown {
-      return targetRecord[prop];
+    resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
+      return typedTarget.resolveDeliveryBotAssignment(chatId);
     },
-    write(prop: PropertyKey, value: unknown): void {
-      targetRecord[prop] = value;
+    resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
+      return typedTarget.resolvePrivateDeliveryBotId(botId);
+    },
+    resolvePrivateDialogChatId(user: AuthUser, botId?: string | null): Promise<string | null> {
+      return typedTarget.resolvePrivateDialogChatId(user, botId);
+    },
+    listChatsForMassBroadcast(
+      user: AuthUser,
+      options?: { discoveryMode?: 'full' | 'cached-first' },
+    ): Promise<ChatSummary[]> {
+      return typedTarget.listChatsForMassBroadcast(user, options);
+    },
+    assertManagedEntityAdminAccess(
+      chatId: string,
+      userId: string,
+      entityType: ManagedEntityType,
+    ): Promise<void> {
+      return typedTarget.assertManagedEntityAdminAccess(chatId, userId, entityType);
+    },
+    assertManagedEntityReadAccess(
+      chatId: string,
+      userId: string,
+      entityType: ManagedEntityType,
+      options?: AdminReadBypassOptions,
+    ): Promise<void> {
+      return typedTarget.assertManagedEntityReadAccess(chatId, userId, entityType, options);
+    },
+    resolveBroadcastButtonContext(
+      chatId: string,
+      entityType: ManagedEntityType,
+      options: ManagedBroadcastButtonContextOptions,
+      botId?: string,
+    ): Promise<ManagedBroadcastButtonContextResult> {
+      return typedTarget.resolveBroadcastButtonContext(chatId, entityType, options, botId);
     },
   };
 }
