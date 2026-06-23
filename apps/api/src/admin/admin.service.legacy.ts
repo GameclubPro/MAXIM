@@ -193,6 +193,7 @@ import {
   saveChatRulesDraft,
 } from './admin-chat-rules';
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
+import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
@@ -432,6 +433,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
   private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(this);
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(this);
+  private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(this);
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(this);
   private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(this);
@@ -13668,104 +13670,12 @@ export class AdminService implements OnModuleDestroy {
     currentUserId?: string | null,
     adminUserIds?: ReadonlySet<string>,
   ): ChannelDialogMessage {
-    const payload = this.readObjectPayload(row.payload);
-    const normalizedCurrentUserId = this.readTrimmedString(currentUserId);
-    const rawType = this.readLowerString(payload.type);
-    const type: ChannelDialogType =
-      rawType === 'suggest' || rawType === 'comments' ? rawType : fallbackType;
-    const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
-    const avatarUrl = this.readTrimmedString(payload.authorAvatarUrl);
-    const text = this.readTrimmedString(payload.text) ?? '';
-    const textFormat = this.normalizeBroadcastTextFormat(
-      this.readTrimmedString(payload.textFormat) ?? 'plain',
+    return this.channelDialogMappingRuntime.mapChannelDialogAuditLog(
+      row,
+      fallbackType,
+      currentUserId,
+      adminUserIds,
     );
-    const editedAt = this.readTrimmedString(payload.editedAt);
-    const replyTo = this.readDialogReplyPreview(payload.replyTo);
-    const attachments = this.buildChannelDialogCommentAttachments(
-      this.readChannelDialogAttachmentAssets(payload.attachments),
-    );
-    const delivered = payload.delivered === true;
-    const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
-    const reviewStatus = this.readChannelDialogSuggestionReviewStatus(payload.reviewStatus);
-    const publishedUrl = this.readTrimmedString(payload.publishedUrl);
-    const suggestionImages = this.normalizeChannelSuggestionImages({
-      images: this.readChannelSuggestionImageAssets(payload.images),
-      imageBase64: this.readTrimmedString(payload.imageBase64),
-      imageMimeType: this.readTrimmedString(payload.imageMimeType),
-      imageFileName: this.readTrimmedString(payload.imageFileName),
-      mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
-      mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
-      mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
-      mediaFileName: this.readTrimmedString(payload.mediaFileName),
-    });
-    const hasImage =
-      payload.hasImage === true ||
-      suggestionImages.length > 0 ||
-      Boolean(this.readTrimmedString(payload.imageBase64));
-    const imageFileNames = Array.from(
-      new Set(
-        suggestionImages
-          .map((image) => image.fileName?.trim() ?? '')
-          .filter((fileName): fileName is string => fileName.length > 0),
-      ),
-    );
-    const legacyImageFileName = this.readTrimmedString(payload.imageFileName);
-    const resolvedImageFileNames =
-      imageFileNames.length > 0 ? imageFileNames : legacyImageFileName ? [legacyImageFileName] : [];
-    const imageFileName = resolvedImageFileNames[0] ?? null;
-    const imageCount = hasImage
-      ? Math.max(
-          suggestionImages.length,
-          resolvedImageFileNames.length,
-          this.toSafeInteger(payload.imageCount),
-          this.readChannelSuggestionMediaType(payload.mediaType) === 'image' ? 1 : 0,
-        )
-      : 0;
-    const hasVideo =
-      payload.hasVideo === true ||
-      this.readChannelSuggestionMediaType(payload.mediaType) === 'video';
-    const videoFileName =
-      this.readTrimmedString(payload.videoFileName) ??
-      this.readTrimmedString(payload.mediaFileName);
-    const isOwnMessage = normalizedCurrentUserId === row.actorUserId;
-    const canDeleteAsAdmin =
-      type === 'comments' &&
-      !isOwnMessage &&
-      Boolean(normalizedCurrentUserId && adminUserIds?.has(normalizedCurrentUserId));
-
-    return {
-      id: row.id,
-      type,
-      text,
-      authorUserId: row.actorUserId,
-      authorDisplayName,
-      isAdmin: adminUserIds?.has(row.actorUserId) ?? false,
-      avatarUrl: avatarUrl ?? null,
-      createdAt: row.createdAt.toISOString(),
-      editedAt: editedAt ?? null,
-      replyToMessageId: replyTo?.messageId ?? null,
-      replyTo: replyTo ?? null,
-      attachments,
-      reactionGroups: this.readDialogReactionGroups(payload.reactions, currentUserId),
-      canEdit: type === 'comments' && isOwnMessage,
-      canDelete: type === 'comments' && isOwnMessage,
-      canDeleteAsAdmin,
-      ...(type === 'suggest'
-        ? {
-            delivered,
-            deliveredToUserId: deliveredToUserId ?? null,
-            reviewStatus: reviewStatus ?? 'pending',
-            publishedUrl: publishedUrl ?? null,
-            textFormat,
-            hasImage,
-            imageCount,
-            imageFileName,
-            imageFileNames: resolvedImageFileNames,
-            hasVideo,
-            videoFileName: videoFileName ?? null,
-          }
-        : {}),
-    };
   }
 
   private readChannelDialogAttachmentAssets(value: unknown): ChannelDialogAttachmentAsset[] {
