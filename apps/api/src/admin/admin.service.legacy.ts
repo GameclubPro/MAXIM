@@ -192,6 +192,7 @@ import {
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
+import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-dialog-mapping-runtime-context';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
@@ -451,7 +452,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(
     createAdminChatRulesTextRuntimeContext(this),
   );
-  private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(this);
+  private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(
+    createAdminChannelDialogMappingRuntimeContext(this),
+  );
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(
     createAdminDomainAllowlistRuntimeContext(this),

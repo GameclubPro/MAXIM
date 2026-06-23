@@ -1,6 +1,13 @@
 import type { ChannelDialogMessage, ChannelDialogType } from '@maxim/contracts';
 import type { Prisma } from '../prisma/prisma-client';
-import type { ChannelSuggestionImageAsset } from './admin.service.support';
+import type {
+  ChannelDialogAttachmentAsset,
+  ChannelSuggestionImageAsset,
+} from './admin.service.support';
+import type {
+  AdminChannelDialogMappingRuntimeContext,
+  NormalizeChannelSuggestionImagesParams,
+} from './admin-channel-dialog-mapping-runtime-context';
 
 type ChannelDialogAuditLogRow = {
   id: string;
@@ -10,24 +17,64 @@ type ChannelDialogAuditLogRow = {
 };
 
 export class AdminChannelDialogMappingRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminChannelDialogMappingRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {
+    return this.context.readObjectPayload(value);
+  }
+
+  private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
+    return this.context.readObjectPayloadOrNull(value);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
+  }
+
+  private readLowerString(value: unknown): string | null {
+    return this.context.readLowerString(value);
+  }
+
+  private normalizeBroadcastTextFormat(value: string) {
+    return this.context.normalizeBroadcastTextFormat(value);
+  }
+
+  private readDialogReplyPreview(value: unknown) {
+    return this.context.readDialogReplyPreview(value);
+  }
+
+  private readDialogReactionGroups(value: unknown, currentUserId?: string | null) {
+    return this.context.readDialogReactionGroups(value, currentUserId);
+  }
+
+  private readChannelDialogAttachmentAssets(value: unknown): ChannelDialogAttachmentAsset[] {
+    return this.context.readChannelDialogAttachmentAssets(value);
+  }
+
+  private buildChannelDialogCommentAttachments(attachments: ChannelDialogAttachmentAsset[]) {
+    return this.context.buildChannelDialogCommentAttachments(attachments);
+  }
+
+  private readChannelSuggestionImageAssets(value: unknown): ChannelSuggestionImageAsset[] {
+    return this.context.readChannelSuggestionImageAssets(value);
+  }
+
+  private normalizeChannelSuggestionImages(
+    params: NormalizeChannelSuggestionImagesParams,
+  ): ChannelSuggestionImageAsset[] {
+    return this.context.normalizeChannelSuggestionImages(params);
+  }
+
+  private readChannelSuggestionMediaType(value: unknown): 'image' | 'video' | null {
+    return this.context.readChannelSuggestionMediaType(value);
+  }
+
+  private readChannelDialogSuggestionReviewStatus(value: unknown) {
+    return this.context.readChannelDialogSuggestionReviewStatus(value);
+  }
+
+  private toSafeInteger(value: unknown): number {
+    return this.context.toSafeInteger(value);
   }
 
   mapChannelDialogAuditLog(
