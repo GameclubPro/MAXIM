@@ -111,7 +111,6 @@ import {
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { raceWithTimeout } from '../common/promise-timeout.util';
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
@@ -200,6 +199,7 @@ import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
+import { AdminSuggestionDeliveryRuntime } from './admin-suggestion-delivery-runtime';
 import {
   publishChannelEngagementMessage as publishChannelEngagementMessageValue,
   type BuildChannelEngagementDialogArtifactsParams,
@@ -260,7 +260,6 @@ import {
   BROADCAST_THROTTLE_RETRY_DELAYS_MS,
   BROADCAST_TIMEOUT_RETRY_DELAYS_MS,
   CHANNEL_SUGGESTION_ADMIN_LOOKUP_TIMEOUT_MS,
-  CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
   CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
   CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
   CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
@@ -439,6 +438,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly manualModerationRuntime = new AdminManualModerationRuntime(this);
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(this);
   private readonly participantsRuntime = new AdminParticipantsRuntime(this);
+  private readonly suggestionDeliveryRuntime = new AdminSuggestionDeliveryRuntime(this);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
@@ -15845,15 +15845,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async processChannelSuggestionDeliveryJob(auditLogId: string): Promise<void> {
-    await raceWithTimeout({
-      operation: this.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId),
-      timeoutMs: CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
-      onTimeout: () => {
-        throw new Error(
-          `Channel suggestion delivery timed out after ${CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS}ms`,
-        );
-      },
-    });
+    await this.suggestionDeliveryRuntime.processChannelSuggestionDeliveryJob(auditLogId);
   }
 
   private async processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void> {
@@ -15921,38 +15913,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async enqueueChannelSuggestionDelivery(auditLogId: string): Promise<boolean> {
-    if (!this.adminSuggestionDeliveryQueue) {
-      return false;
-    }
-
-    try {
-      await this.adminSuggestionDeliveryQueue.add(
-        'deliver-channel-suggestion',
-        {
-          auditLogId,
-        },
-        {
-          jobId: `channel-suggestion-delivery__${auditLogId}`,
-          attempts: 5,
-          removeOnComplete: true,
-          removeOnFail: false,
-          backoff: {
-            type: 'exponential',
-            delay: 1_000,
-          },
-        },
-      );
-      return true;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          auditLogId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to enqueue channel suggestion delivery',
-      );
-      return false;
-    }
+    return this.suggestionDeliveryRuntime.enqueueChannelSuggestionDelivery(auditLogId);
   }
 
   private async applyChannelSuggestionDeliveryResult(
