@@ -296,6 +296,7 @@ import {
   normalizeAppBaseUrl,
   normalizeBotContactId,
   normalizeOwnBotUserId,
+  readTrimmedString,
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
@@ -547,24 +548,58 @@ export type {
 
 
 export class AdminChatRulesTextRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminChatRulesTextRuntimeContext) {}
 
-  constructor(private readonly context: AdminChatRulesTextRuntimeContext) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context.read(prop);
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context.write(prop, value);
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get logger(): Logger {
+    return this.context.logger;
+  }
+
+  private get maxBotTokenValidationSecrets(): readonly string[] {
+    return this.context.maxBotTokenValidationSecrets;
+  }
+
+  private getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
+    return this.context.getSettings(chatId, user);
+  }
+
+  private getDomainAllowlistDetails(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<DomainAllowlistEntry[]> {
+    return this.context.getDomainAllowlistDetails(chatId, user);
+  }
+
+  private isRequiredSubscriptionCurrentlyActive(settings: ChatSettings): boolean {
+    return this.context.isRequiredSubscriptionCurrentlyActive(settings);
+  }
+
+  private resolveRequiredSubscriptionChannelHeaders(
+    channelIds: readonly string[],
+  ): Promise<ManagedEntityHeader[]> {
+    return this.context.resolveRequiredSubscriptionChannelHeaders(channelIds);
+  }
+
+  private resolveUserDisplayNames(
+    chatId: string,
+    userIds: string[],
+  ): Promise<Map<string, string>> {
+    return this.context.resolveUserDisplayNames(chatId, userIds);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return readTrimmedString(value);
   }
 
   private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
