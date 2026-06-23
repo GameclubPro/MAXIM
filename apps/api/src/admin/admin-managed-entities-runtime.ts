@@ -2,14 +2,23 @@ import type {
   ChatSummary,
   ManagedEntitiesListResponse,
   ManagedEntitiesRefreshState,
+  ManagedEntitiesResponseDiff,
   ManagedEntityAssignedBot,
   ManagedEntityBotCapability,
   ManagedEntityHeader,
   ManagedEntityType,
 } from '@maxim/contracts';
 import { managedEntityBotCapabilitySchema } from '@maxim/contracts';
+import type { Logger } from '@nestjs/common';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
+import type { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import type { PrismaService } from '../prisma/prisma.service';
+import type {
+  AdminManagedEntitiesRuntimeContext,
+  ManagedEntitiesRefreshRunOptions,
+} from './admin-managed-entities-runtime-context';
 import type { AdminManagedEntitiesRefreshJob } from './admin-managed-entities-refresh.queue';
 import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
 import {
@@ -18,9 +27,11 @@ import {
 } from './admin-managed-entities-list';
 import type {
   AdminReadBypassOptions,
+  AssertChatAdminOptions,
   ManagedEntitiesListOptions,
   ManagedEntitiesListResult,
   ManagedEntitiesRefreshJobOutcome,
+  ManagedEntitiesRefreshPresentation,
   ManagedEntityBotAssignmentsRow,
   ManagedEntityBotProfileSnapshot,
   ManagedEntityTypeFilter,
@@ -42,24 +53,129 @@ type ManagedEntityBotAssignmentsQueryRow = {
 };
 
 export class AdminManagedEntitiesRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminManagedEntitiesRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get logger(): Logger {
+    return this.context.logger;
+  }
+
+  private get maxBotRegistry(): MaxBotRegistryService | undefined {
+    return this.context.maxBotRegistry;
+  }
+
+  private assertChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: AssertChatAdminOptions,
+  ): Promise<void> {
+    return this.context.assertChatAdmin(chatId, userId, entityType, options);
+  }
+
+  private assertReadOnlyChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: {
+      forceRemote?: boolean;
+      timeoutMs?: number;
+    },
+  ): Promise<void> {
+    return this.context.assertReadOnlyChatAdmin(chatId, userId, entityType, options);
+  }
+
+  private attachManagedEntityFavoriteTypes(
+    userId: string,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    return this.context.attachManagedEntityFavoriteTypes(userId, items);
+  }
+
+  private attachManagedEntityFavoriteTypesToDiff(
+    userId: string,
+    diff: ManagedEntitiesResponseDiff | null | undefined,
+  ): Promise<ManagedEntitiesResponseDiff | null | undefined> {
+    return this.context.attachManagedEntityFavoriteTypesToDiff(userId, diff);
+  }
+
+  private collectManagedEntitiesForMassAction(
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    options?: {
+      discoveryMode?: 'full' | 'cached-first';
+    },
+  ): Promise<ChatSummary[]> {
+    return this.context.collectManagedEntitiesForMassAction(user, entityType, options);
+  }
+
+  private createManagedEntitiesRefreshState(
+    cursor: number | null,
+    backoffActive: boolean,
+    nextPollAfterMsOverride?: number,
+    presentation?: ManagedEntitiesRefreshPresentation,
+  ): ManagedEntitiesRefreshState {
+    return this.context.createManagedEntitiesRefreshState(
+      cursor,
+      backoffActive,
+      nextPollAfterMsOverride,
+      presentation,
+    );
+  }
+
+  private ensureEntityType(
+    chatId: string,
+    userId: string,
+    expectedEntityType: ManagedEntityType,
+  ): Promise<void> {
+    return this.context.ensureEntityType(chatId, userId, expectedEntityType);
+  }
+
+  private isManagedEntityRuntimeBotId(botId: string | null | undefined): boolean {
+    return this.context.isManagedEntityRuntimeBotId(botId);
+  }
+
+  private listManagedEntitiesDetailed(
+    user: AuthUser,
+    entityType?: ManagedEntityTypeFilter,
+    options?: ManagedEntitiesListOptions,
+  ): Promise<ManagedEntitiesListResult> {
+    return this.context.listManagedEntitiesDetailed(user, entityType, options);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
+  }
+
+  private resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.context.resolveBackgroundReadBotAssignment(chatId);
+  }
+
+  private runManagedEntitiesBoundedRefreshJob(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options?: ManagedEntitiesRefreshRunOptions,
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    return this.context.runManagedEntitiesBoundedRefreshJob(user, entityType, options);
+  }
+
+  private runManagedEntitiesRemoteFullRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options?: ManagedEntitiesRefreshRunOptions,
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    return this.context.runManagedEntitiesRemoteFullRefresh(user, entityType, options);
   }
 
   listChats(
