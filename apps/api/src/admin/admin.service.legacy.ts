@@ -15,7 +15,6 @@ import {
   dateRangeQuerySchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
-  managedEntityBotCapabilitySchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
@@ -198,6 +197,7 @@ import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
+import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
 import {
   publishChannelEngagementMessage as publishChannelEngagementMessageValue,
@@ -225,11 +225,6 @@ import {
   sanitizeStoredChatSettings,
   type ResolvedBotAssignmentData,
 } from './admin-chat-settings';
-import { getManagedEntityHeaderValue } from './admin-managed-entity-header';
-import {
-  listManagedEntitiesValue,
-  listManagedEntitiesWithRefreshStateValue,
-} from './admin-managed-entities-list';
 import {
   buildProfileMentionHandoffUrl,
   buildUserProfileUrl,
@@ -382,12 +377,10 @@ import {
   type ManagedEntitiesDiscoverySnapshot,
   type ManagedBotChatCatalogSnapshotRow,
   type ManagedBotChatMembershipSnapshotRow,
-  type ManagedEntityBotProfileSnapshot,
   type AssertChatAdminOptions,
   type AdminReadBypassOptions,
   type TimedPromiseCacheEntry,
   type TimedValueCacheEntry,
-  type ManagedEntityBotAssignmentsRow,
   type AdminAccessResolution,
   type ManagedEntityAccessRoleValue,
   type ManagedEntityAccessStateValue,
@@ -443,6 +436,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(this);
   private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(this);
+  private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(this);
   private readonly participantsRuntime = new AdminParticipantsRuntime(this);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
@@ -662,7 +656,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'chat', options);
+    return this.managedEntitiesRuntime.listChats(user, options);
   }
 
   async listChatsForMassBroadcast(
@@ -671,48 +665,28 @@ export class AdminService implements OnModuleDestroy {
       discoveryMode?: 'full' | 'cached-first';
     } = {},
   ): Promise<ChatSummary[]> {
-    return this.collectManagedEntitiesForMassAction(user, 'chat', {
-      discoveryMode: options.discoveryMode ?? 'cached-first',
-    });
+    return this.managedEntitiesRuntime.listChatsForMassBroadcast(user, options);
   }
 
   async listChannels(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'channel', options);
+    return this.managedEntitiesRuntime.listChannels(user, options);
   }
 
   async listChatsWithRefreshState(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    return this.listManagedEntitiesWithRefreshStateForType(user, 'chat', options);
+    return this.managedEntitiesRuntime.listChatsWithRefreshState(user, options);
   }
 
   async listChannelsWithRefreshState(
     user: AuthUser,
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
-    return this.listManagedEntitiesWithRefreshStateForType(user, 'channel', options);
-  }
-
-  private listManagedEntitiesWithRefreshStateForType(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-    options: ManagedEntitiesListOptions = {},
-  ): Promise<ManagedEntitiesListResponse> {
-    return listManagedEntitiesWithRefreshStateValue({
-      user,
-      entityType,
-      options,
-      listDetailed: (listUser, entityType, listOptions) =>
-        this.listManagedEntitiesDetailed(listUser, entityType, listOptions),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
-      attachFavoriteTypesToDiff: (userId, diff) =>
-        this.attachManagedEntityFavoriteTypesToDiff(userId, diff),
-      createIdleRefreshState: () => this.createManagedEntitiesRefreshState(null, false),
-    });
+    return this.managedEntitiesRuntime.listChannelsWithRefreshState(user, options);
   }
 
   async listManagedEntities(
@@ -720,14 +694,7 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
-    return listManagedEntitiesValue({
-      user,
-      entityType,
-      options,
-      listDetailed: (listUser, listEntityType, listOptions) =>
-        this.listManagedEntitiesDetailed(listUser, listEntityType, listOptions),
-      attachFavoriteTypes: (userId, items) => this.attachManagedEntityFavoriteTypes(userId, items),
-    });
+    return this.managedEntitiesRuntime.listManagedEntities(user, entityType, options);
   }
 
   listManagedEntitiesDetailedForManagedEntities(
@@ -735,11 +702,15 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
-    return this.listManagedEntitiesDetailed(user, entityType, options);
+    return this.managedEntitiesRuntime.listManagedEntitiesDetailedForManagedEntities(
+      user,
+      entityType,
+      options,
+    );
   }
 
   createIdleManagedEntitiesRefreshStateForManagedEntities(): ManagedEntitiesRefreshState {
-    return this.createManagedEntitiesRefreshState(null, false);
+    return this.managedEntitiesRuntime.createIdleManagedEntitiesRefreshStateForManagedEntities();
   }
 
   async previewApplySettingsSectionTarget(
@@ -761,7 +732,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
-    return this.getManagedEntityHeader(chatId, user, 'chat', options);
+    return this.managedEntitiesRuntime.getChatHeader(chatId, user, options);
   }
 
   async getChannelHeader(
@@ -769,7 +740,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
-    return this.getManagedEntityHeader(chatId, user, 'channel', options);
+    return this.managedEntitiesRuntime.getChannelHeader(chatId, user, options);
   }
 
   private async listManagedEntitiesDetailed(
@@ -2312,17 +2283,7 @@ export class AdminService implements OnModuleDestroy {
   async processManagedEntitiesRefreshJob(
     job: AdminManagedEntitiesRefreshJob,
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
-    const user: AuthUser = {
-      userId: job.userId,
-      username: null,
-      displayName: null,
-      chatTitle: null,
-    };
-
-    return this.runManagedEntitiesBoundedRefreshForManagedEntities(user, job.entityType, {
-      bypassRemoteCache: job.bypassRemoteCache,
-      resetRefreshCursor: job.resetRefreshCursor,
-    });
+    return this.managedEntitiesRuntime.processManagedEntitiesRefreshJob(job);
   }
 
   runManagedEntitiesBoundedRefreshForManagedEntities(
@@ -2333,10 +2294,11 @@ export class AdminService implements OnModuleDestroy {
       resetRefreshCursor?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
-    return this.runManagedEntitiesBoundedRefreshJob(user, entityType, {
-      bypassRemoteCache: options.bypassRemoteCache,
-      resetRefreshCursor: options.resetRefreshCursor,
-    });
+    return this.managedEntitiesRuntime.runManagedEntitiesBoundedRefreshForManagedEntities(
+      user,
+      entityType,
+      options,
+    );
   }
 
   runManagedEntitiesRemoteFullRefreshForManagedEntities(
@@ -2347,10 +2309,11 @@ export class AdminService implements OnModuleDestroy {
       resetRefreshCursor?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
-    return this.runManagedEntitiesRemoteFullRefresh(user, entityType, {
-      bypassRemoteCache: options.bypassRemoteCache,
-      resetRefreshCursor: options.resetRefreshCursor,
-    });
+    return this.managedEntitiesRuntime.runManagedEntitiesRemoteFullRefreshForManagedEntities(
+      user,
+      entityType,
+      options,
+    );
   }
 
   private buildManagedEntitiesRefreshJobId(
@@ -3520,335 +3483,13 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async attachManagedEntityBotAssignments(chats: ChatSummary[]): Promise<ChatSummary[]> {
-    if (chats.length === 0) {
-      return chats;
-    }
-
-    const assignmentsByChatId = await this.readManagedEntityBotAssignments(
-      chats.map((chat) => chat.id),
-    );
-
-    return chats.map((chat) => this.applyManagedEntityBotAssignments(chat, assignmentsByChatId));
+    return this.managedEntitiesRuntime.attachManagedEntityBotAssignments(chats);
   }
 
   private async attachManagedEntityHeaderBotAssignments(
     header: ManagedEntityHeader,
   ): Promise<ManagedEntityHeader> {
-    const assignmentsByChatId = await this.readManagedEntityBotAssignments([header.id]);
-    const enrichedHeader = this.applyManagedEntityBotAssignments(header, assignmentsByChatId);
-    return this.attachManagedEntityBotProfiles(enrichedHeader);
-  }
-
-  private async readManagedEntityBotAssignments(
-    chatIds: readonly string[],
-  ): Promise<Map<string, ManagedEntityBotAssignmentsRow>> {
-    if (typeof this.prisma.chat.findMany !== 'function') {
-      return new Map();
-    }
-
-    const normalizedChatIds = Array.from(
-      new Set(chatIds.map((chatId) => chatId.trim()).filter((chatId) => chatId.length > 0)),
-    );
-    if (normalizedChatIds.length === 0) {
-      return new Map();
-    }
-
-    const rows = await this.prisma.chat.findMany({
-      where: {
-        id: {
-          in: normalizedChatIds,
-        },
-      },
-      select: {
-        id: true,
-        botId: true,
-        primaryBotId: true,
-        botMemberships: {
-          select: {
-            botId: true,
-            role: true,
-            status: true,
-            capabilities: true,
-            permissionsSnapshot: true,
-          },
-        },
-      },
-    });
-
-    return new Map(
-      rows.map((row) => [
-        row.id,
-        {
-          id: row.id,
-          botId: row.botId,
-          primaryBotId: row.primaryBotId,
-          botMemberships: row.botMemberships.map((membership) => ({
-            botId: membership.botId,
-            role: membership.role,
-            status: membership.status,
-            capabilities: membership.capabilities,
-            permissionsSnapshot: membership.permissionsSnapshot,
-          })),
-        } satisfies ManagedEntityBotAssignmentsRow,
-      ]),
-    );
-  }
-
-  private applyManagedEntityBotAssignments<T extends ChatSummary | ManagedEntityHeader>(
-    entity: T,
-    assignmentsByChatId: Map<string, ManagedEntityBotAssignmentsRow>,
-  ): T {
-    const persisted = assignmentsByChatId.get(entity.id) ?? null;
-    const primaryBotId =
-      this.readTrimmedString(persisted?.primaryBotId) ??
-      this.readTrimmedString(persisted?.botId) ??
-      null;
-    const botMetaById = new Map(
-      (this.maxBotRegistry?.getAllBots() ?? []).map((bot) => [bot.id, bot] as const),
-    );
-    const existingBotProfilesById = new Map(
-      (Array.isArray(entity.assignedBots) ? entity.assignedBots : [])
-        .map((bot) => {
-          const normalizedBotId = this.readTrimmedString(bot.botId);
-          if (!normalizedBotId) {
-            return null;
-          }
-
-          return [
-            normalizedBotId,
-            {
-              avatarUrl: this.readTrimmedString(bot.avatarUrl) ?? null,
-            } satisfies ManagedEntityBotProfileSnapshot,
-          ] as const;
-        })
-        .filter(
-          (entry): entry is readonly [string, ManagedEntityBotProfileSnapshot] => entry !== null,
-        ),
-    );
-    const seenBotIds = new Set<string>();
-    const assignedBots: ManagedEntityAssignedBot[] = [];
-
-    for (const membership of persisted?.botMemberships ?? []) {
-      const normalizedBotId = this.readTrimmedString(membership.botId);
-      if (!normalizedBotId || seenBotIds.has(normalizedBotId)) {
-        continue;
-      }
-
-      seenBotIds.add(normalizedBotId);
-      const botMeta = botMetaById.get(normalizedBotId);
-      const existingProfile = existingBotProfilesById.get(normalizedBotId);
-      assignedBots.push({
-        botId: normalizedBotId,
-        label: botMeta?.label ?? normalizedBotId,
-        role: membership.role === 'PRIMARY' ? 'primary' : 'standby',
-        membershipStatus: membership.status === 'REMOVED' ? 'removed' : 'active',
-        lifecycleState: botMeta?.state ?? 'disabled',
-        speechPersona: botMeta?.speechPersona ?? 'male',
-        characterName: botMeta?.characterName ?? null,
-        avatarUrl: existingProfile?.avatarUrl ?? null,
-        capabilities: this.normalizeManagedEntityBotCapabilities(membership.capabilities),
-        permissionsSummary: this.readManagedEntityPermissionsSummary(
-          membership.permissionsSnapshot,
-        ),
-      });
-    }
-
-    if (primaryBotId && !seenBotIds.has(primaryBotId)) {
-      const botMeta = botMetaById.get(primaryBotId);
-      const existingProfile = existingBotProfilesById.get(primaryBotId);
-      assignedBots.unshift({
-        botId: primaryBotId,
-        label: botMeta?.label ?? primaryBotId,
-        role: 'primary',
-        membershipStatus: 'active',
-        lifecycleState: botMeta?.state ?? 'disabled',
-        speechPersona: botMeta?.speechPersona ?? 'male',
-        characterName: botMeta?.characterName ?? null,
-        avatarUrl: existingProfile?.avatarUrl ?? null,
-        capabilities: [],
-        permissionsSummary: null,
-      });
-    }
-
-    assignedBots.sort((left, right) => {
-      if (left.role !== right.role) {
-        return left.role === 'primary' ? -1 : 1;
-      }
-      return left.label.localeCompare(right.label, 'ru');
-    });
-
-    const sharedMode = this.resolveManagedEntitySharedMode(assignedBots);
-
-    return {
-      ...entity,
-      primaryBotId,
-      assignedBots,
-      sharedMode,
-    };
-  }
-
-  private normalizeManagedEntityBotCapabilities(value: unknown): ManagedEntityBotCapability[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return Array.from(
-      new Set(
-        value
-          .map((item) => (typeof item === 'string' ? item.trim() : ''))
-          .flatMap((item) => {
-            const parsed = managedEntityBotCapabilitySchema.safeParse(item);
-            return parsed.success ? [parsed.data] : [];
-          }),
-      ),
-    );
-  }
-
-  private async attachManagedEntityBotProfiles(
-    header: ManagedEntityHeader,
-  ): Promise<ManagedEntityHeader> {
-    if (
-      !Array.isArray(header.assignedBots) ||
-      header.assignedBots.length === 0 ||
-      typeof this.maxClient.getOwnProfile !== 'function'
-    ) {
-      return header;
-    }
-
-    const cachedProfilesByBotId = new Map<string, ManagedEntityBotProfileSnapshot>();
-    const missingBotIds: string[] = [];
-
-    for (const bot of header.assignedBots) {
-      const normalizedBotId = this.readTrimmedString(bot.botId);
-      if (!normalizedBotId) {
-        continue;
-      }
-      if (!this.isManagedEntityRuntimeBotId(normalizedBotId)) {
-        continue;
-      }
-
-      const existingAvatarUrl = this.readTrimmedString(bot.avatarUrl) ?? null;
-      if (existingAvatarUrl) {
-        cachedProfilesByBotId.set(normalizedBotId, {
-          avatarUrl: existingAvatarUrl,
-        });
-        continue;
-      }
-
-      const cachedProfile =
-        await this.chatContextCache.getManagedEntityBotProfile?.(normalizedBotId);
-      if (cachedProfile) {
-        cachedProfilesByBotId.set(normalizedBotId, {
-          avatarUrl: this.readTrimmedString(cachedProfile.avatarUrl) ?? null,
-        });
-        continue;
-      }
-
-      missingBotIds.push(normalizedBotId);
-    }
-
-    if (missingBotIds.length > 0 && typeof this.maxClient.getOwnProfile === 'function') {
-      const results = await Promise.allSettled(
-        missingBotIds.map(async (botId) => {
-          const profile = await this.maxClient.getOwnProfile({
-            botId,
-            trafficClass: 'interactive',
-            timeoutMs: 2_500,
-            sourceTag: MAX_API_SOURCE_TAGS.SETTINGS_BOT_PROFILE,
-          });
-          const snapshot = {
-            avatarUrl: this.readTrimmedString(profile.avatarUrl) ?? null,
-          } satisfies ManagedEntityBotProfileSnapshot;
-          cachedProfilesByBotId.set(botId, snapshot);
-          await this.chatContextCache.setManagedEntityBotProfile?.(botId, snapshot);
-        }),
-      );
-
-      const rejectedProfiles = results
-        .map((result, index) =>
-          result.status === 'rejected'
-            ? {
-                botId: missingBotIds[index] ?? 'unknown',
-                err: result.reason instanceof Error ? result.reason.message : String(result.reason),
-              }
-            : null,
-        )
-        .filter((entry): entry is { botId: string; err: string } => entry !== null);
-      if (rejectedProfiles.length > 0) {
-        this.logger.warn(
-          {
-            chatId: header.id,
-            botIds: rejectedProfiles.map((entry) => entry.botId),
-            errors: rejectedProfiles.map((entry) => entry.err),
-          },
-          'Failed to resolve some managed entity bot avatars from MAX',
-        );
-      }
-    }
-
-    return {
-      ...header,
-      assignedBots: header.assignedBots.map((bot) => {
-        const normalizedBotId = this.readTrimmedString(bot.botId);
-        if (!normalizedBotId) {
-          return bot;
-        }
-
-        const cachedProfile = cachedProfilesByBotId.get(normalizedBotId);
-        return {
-          ...bot,
-          avatarUrl: cachedProfile?.avatarUrl ?? this.readTrimmedString(bot.avatarUrl) ?? null,
-        };
-      }),
-    };
-  }
-
-  private readManagedEntityPermissionsSummary(
-    value: unknown,
-  ): ManagedEntityAssignedBot['permissionsSummary'] {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const row = value as Record<string, unknown>;
-    const checkedAt =
-      typeof row.checkedAt === 'string' && row.checkedAt.trim().length > 0 ? row.checkedAt : null;
-    const permissions = Array.isArray(row.permissions)
-      ? Array.from(
-          new Set(
-            row.permissions
-              .map((item) => (typeof item === 'string' ? item.trim() : ''))
-              .filter((item): item is string => item.length > 0),
-          ),
-        )
-      : [];
-
-    return {
-      checkedAt,
-      isAdmin: row.isAdmin === true,
-      isOwner: row.isOwner === true,
-      permissions,
-    };
-  }
-
-  private resolveManagedEntitySharedMode(
-    assignedBots: readonly ManagedEntityAssignedBot[],
-  ): ChatSummary['sharedMode'] {
-    const activeBots = assignedBots.filter((bot) => bot.membershipStatus === 'active');
-    if (activeBots.length <= 1) {
-      return 'owned';
-    }
-
-    const primaryBot = activeBots.find((bot) => bot.role === 'primary') ?? activeBots[0];
-    if (activeBots.some((bot) => bot.role === 'standby' && bot.capabilities.length > 0)) {
-      return 'shared-assist';
-    }
-
-    if (primaryBot?.lifecycleState === 'draining') {
-      return 'shared-failover';
-    }
-
-    return 'shared-standby';
+    return this.managedEntitiesRuntime.attachManagedEntityHeaderBotAssignments(header);
   }
 
   private mergeManagedEntitiesDiscoverySnapshots(
@@ -13126,8 +12767,7 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityType,
   ): Promise<void> {
-    await this.assertChatAdmin(chatId, userId, entityType);
-    await this.ensureEntityType(chatId, userId, entityType);
+    await this.managedEntitiesRuntime.assertManagedEntityAdminAccess(chatId, userId, entityType);
   }
 
   async assertManagedEntityReadAccess(
@@ -13136,15 +12776,12 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions = {},
   ): Promise<void> {
-    if (!options.skipAdminCheck) {
-      await this.assertReadOnlyChatAdmin(chatId, userId, entityType, {
-        forceRemote: options.forceRemote,
-        timeoutMs: options.timeoutMs,
-      });
-    }
-    if (!options.skipEntityCheck) {
-      await this.ensureEntityType(chatId, userId, entityType);
-    }
+    await this.managedEntitiesRuntime.assertManagedEntityReadAccess(
+      chatId,
+      userId,
+      entityType,
+      options,
+    );
   }
 
   async resolveUserProfilesForAdminSurface(
@@ -13236,13 +12873,15 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async resolveManagedEntityHeaderReadBotId(chatId: string): Promise<string | undefined> {
-    return this.resolveBackgroundReadBotAssignment(chatId);
+    return this.managedEntitiesRuntime.resolveManagedEntityHeaderReadBotId(chatId);
   }
 
   async attachManagedEntityHeaderBotAssignmentsForManagedEntities(
     header: ManagedEntityHeader,
   ): Promise<ManagedEntityHeader> {
-    return this.attachManagedEntityHeaderBotAssignments(header);
+    return this.managedEntitiesRuntime.attachManagedEntityHeaderBotAssignmentsForManagedEntities(
+      header,
+    );
   }
 
   buildChannelEngagementDialogArtifacts(
@@ -20896,20 +20535,11 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
-    return getManagedEntityHeaderValue({
-      prisma: this.prisma,
-      chatContextCache: this.chatContextCache,
-      maxClient: this.maxClient,
-      logger: this.logger,
-      chatId,
-      entityType,
-      options,
-      assertReadAccess: (readOptions) =>
-        this.assertManagedEntityReadAccess(chatId, user.userId, entityType, readOptions),
-      resolveReadBotId: () => this.resolveManagedEntityHeaderReadBotId(chatId),
-      attachBotAssignments: (header) =>
-        this.attachManagedEntityHeaderBotAssignmentsForManagedEntities(header),
-    });
+    if (entityType === 'channel') {
+      return this.managedEntitiesRuntime.getChannelHeader(chatId, user, options);
+    }
+
+    return this.managedEntitiesRuntime.getChatHeader(chatId, user, options);
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {
