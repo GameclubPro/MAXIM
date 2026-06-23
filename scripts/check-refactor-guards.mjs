@@ -807,10 +807,6 @@ function findMatchingBlockEnd(contents, openBraceIndex) {
   return -1;
 }
 
-function stripLeadingCssTrivia(contents) {
-  return contents.replace(/^(?:\s|\/\*[\s\S]*?\*\/)*/u, '');
-}
-
 function stripCssComments(contents) {
   return contents.replace(/\/\*[\s\S]*?\*\//gu, '');
 }

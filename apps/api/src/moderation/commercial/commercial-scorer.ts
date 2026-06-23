@@ -7,10 +7,7 @@ import {
 import type { CommercialThresholdProfile } from '../rule-engine-commercial-thresholds';
 import type { CommercialDecisionBand, CommercialSubtype } from '../rule-engine.contract';
 import { estimateCommercialFpRisk } from './commercial-explain';
-import {
-  hasStrongCommercialCampaignEvidence,
-  resolveCommercialEvidenceProfile,
-} from './commercial-evidence';
+import { resolveCommercialEvidenceProfile } from './commercial-evidence';
 import { isCommercialDeleteAction } from './commercial-subtypes';
 import { COMMERCIAL_ENGINE_CONFIG } from './commercial-config';
 import {

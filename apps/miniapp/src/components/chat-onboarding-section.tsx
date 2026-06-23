@@ -7,6 +7,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import { queryKeys } from '../lib/query-keys';
 import { GlassCard } from './ui/glass-card';
 import './chat-onboarding-section.css';
+import './chat-onboarding-command.css';
 
 export function ChatOnboardingSection({
   api,

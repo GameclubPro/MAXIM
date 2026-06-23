@@ -277,20 +277,6 @@ function readDateOption(args: readonly string[], name: string): Date | undefined
   return parsed;
 }
 
-function readPositiveIntOption(args: readonly string[], name: string): number | undefined {
-  const value = readStringOption(args, name);
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = parsePositiveInteger(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-
-  return parsed;
-}
-
 function readNonNegativeIntOption(args: readonly string[], name: string): number | undefined {
   const value = readStringOption(args, name);
   if (!value) {

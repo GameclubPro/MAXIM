@@ -43,6 +43,7 @@ import '../styles/settings-route-polish.css';
 import '../styles/managed-giveaway.css';
 import '../styles/broadcast-studio.css';
 import './settings-page.css';
+import './settings/settings-word-banlist.css';
 import './settings/settings-duplicate-stage.css';
 import '../styles/broadcast-autopost-polish.css';
 import {
@@ -302,9 +303,7 @@ import {
   mergeBotSpeechStyleSettings,
   buildSpeechStylePreviewSamples,
   formatApiError,
-  normalizeDayMinutes,
   minutesToTimeInput,
-  timeInputToMinutes,
   toLocalDateInputValue,
   toLocalTimeInputValue,
   parseIsoToLocalDateTime,

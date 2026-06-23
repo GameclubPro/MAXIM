@@ -1,7 +1,7 @@
-const URL_DELIMITER_PATTERN = /[\s<>"'`()\[\]{}]/u;
-const SCHEME_URL_PATTERN = /https?:\/\/[^\s<>"'`()\[\]{}]+/giu;
+const URL_DELIMITER_PATTERN = /[\s<>"'`()[\]{}]/u;
+const SCHEME_URL_PATTERN = /https?:\/\/[^\s<>"'`()[\]{}]+/giu;
 const BARE_URL_PATTERN =
-  /(?<![@\p{L}\p{N}\p{Cf}])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф)(?:[/?#][^\s<>"'`()\[\]{}]+)?/giu;
+  /(?<![@\p{L}\p{N}\p{Cf}])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?\.)+(?:xn--[a-z0-9-]{2,59}|[a-z]{2,24}|рф)(?:[/?#][^\s<>"'`()[\]{}]+)?/giu;
 const TRAILING_URL_PUNCTUATION_PATTERN = /[)\]},.;!?:]+$/u;
 
 type UrlMatch = {

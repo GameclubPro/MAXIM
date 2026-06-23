@@ -3788,17 +3788,6 @@ function buildChannelStats(
           : null
         : Math.round(((current - previous) / previous) * 1000) / 10,
   });
-  const hotWindows = [
-    { dayOfWeek: 4, hour: 18, posts: 3, averageViews: 5800, averageReactions: 310 },
-    { dayOfWeek: 2, hour: 12, posts: 2, averageViews: 4900, averageReactions: 250 },
-    { dayOfWeek: 6, hour: 11, posts: 2, averageViews: 4400, averageReactions: 220 },
-    { dayOfWeek: 1, hour: 20, posts: 1, averageViews: 3600, averageReactions: 180 },
-    { dayOfWeek: 5, hour: 9, posts: 1, averageViews: 2800, averageReactions: 120 },
-  ].map((item) => ({
-    ...item,
-    score: item.averageViews + item.averageReactions * 12 + item.posts * 4,
-  }));
-
   const response: ChannelStatsResponse = {
     channel: {
       id: channelId,

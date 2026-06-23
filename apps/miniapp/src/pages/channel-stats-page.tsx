@@ -16,6 +16,7 @@ import {
   UserXmark as IconUserXmark,
 } from 'iconoir-react';
 import '../styles/channel-stats.css';
+import '../styles/channel-stats-route-polish.css';
 import '../styles/channel-stats-executive.css';
 import type { CSSProperties, PointerEvent } from 'react';
 import { startTransition, useEffect, useMemo, useState } from 'react';
@@ -245,22 +246,6 @@ function formatSignedCount(value: number | null): string {
   }
 
   return '0';
-}
-
-function formatPositiveCount(value: number | null): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '—';
-  }
-
-  return `+${formatDenseCount(Math.max(0, value))}`;
-}
-
-function formatNegativeCount(value: number | null): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '—';
-  }
-
-  return `-${formatDenseCount(Math.max(0, value))}`;
 }
 
 function formatDenseSignedCount(value: number | null): string {

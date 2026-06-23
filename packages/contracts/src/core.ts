@@ -954,7 +954,7 @@ export const chatSettingsSchema = z
     ] as const;
     for (let index = 0; index < adminCommandEntries.length; index += 1) {
       const [key, commandName] = adminCommandEntries[index];
-      for (const [otherKey, otherCommandName] of adminCommandEntries.slice(0, index)) {
+      for (const [, otherCommandName] of adminCommandEntries.slice(0, index)) {
         if (commandName.toLowerCase() === otherCommandName.toLowerCase()) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
