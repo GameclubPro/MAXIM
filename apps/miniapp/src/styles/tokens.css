@@ -140,6 +140,7 @@
     linear-gradient(135deg, rgba(230, 106, 75, 0.055), rgba(35, 153, 170, 0.065));
   --suggest-polish-label-bg: rgba(230, 106, 75, 0.1);
   --suggest-polish-label-ink: #9e5039;
+  --suggest-polish-requirements-bg: rgba(255, 255, 255, 0.93);
   --suggest-polish-requirements-text: rgba(34, 48, 62, 0.74);
   --suggest-polish-code-bg: rgba(7, 48, 72, 0.1);
   --suggest-polish-code-ink: #17394f;
@@ -208,8 +209,9 @@ html[data-max-theme='dark'] {
     ),
     linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
   --suggest-polish-label-bg: rgba(240, 111, 80, 0.13);
-  --suggest-polish-label-ink: rgba(255, 188, 166, 0.9);
-  --suggest-polish-requirements-text: rgba(229, 240, 244, 0.9);
+  --suggest-polish-label-ink: rgba(255, 213, 201, 0.98);
+  --suggest-polish-requirements-bg: rgba(24, 36, 43, 0.98);
+  --suggest-polish-requirements-text: rgba(247, 251, 252, 0.98);
   --suggest-polish-code-bg: rgba(255, 255, 255, 0.09);
   --suggest-polish-code-ink: rgba(227, 244, 248, 0.92);
   --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.08);
@@ -221,6 +223,64 @@ html[data-max-theme='dark'] {
   --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.08);
   --suggest-polish-image-remove-bg: rgba(9, 18, 24, 0.78);
   --suggest-polish-image-remove-ink: rgba(227, 244, 248, 0.92);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) {
+    --suggest-polish-color-scheme: dark;
+    --suggest-polish-app-bg: #10171b;
+    --suggest-polish-bg-start: #10171b;
+    --suggest-polish-bg-end: #0c2027;
+    --suggest-polish-ink: rgba(242, 246, 248, 0.94);
+    --suggest-polish-muted: rgba(190, 207, 216, 0.8);
+    --suggest-polish-line: rgba(255, 255, 255, 0.09);
+    --suggest-polish-surface: rgba(18, 28, 34, 0.84);
+    --suggest-polish-surface-strong: rgba(25, 36, 43, 0.92);
+    --suggest-polish-shadow: rgba(0, 0, 0, 0.24);
+    --suggest-polish-surface-inset: rgba(255, 255, 255, 0.06);
+    --suggest-polish-control-bg: rgba(255, 255, 255, 0.07);
+    --suggest-polish-control-active-bg: rgba(61, 183, 202, 0.13);
+    --suggest-polish-control-border: rgba(61, 183, 202, 0.2);
+    --suggest-polish-control-ink: rgba(209, 244, 250, 0.9);
+    --suggest-polish-phone-bg: rgba(14, 27, 34, 0.96);
+    --suggest-polish-bubble-bg: #173746;
+    --suggest-polish-bubble-ink: rgba(242, 246, 248, 0.94);
+    --suggest-polish-bubble-border: rgba(255, 255, 255, 0.06);
+    --suggest-polish-bar-bg: rgba(14, 27, 34, 0.94);
+    --suggest-polish-placeholder: rgba(190, 207, 216, 0.62);
+    --suggest-polish-link: #7ed7e6;
+    --suggest-polish-warning-ink: #f5c275;
+    --suggest-polish-warning-bg: rgba(240, 164, 43, 0.16);
+    --suggest-polish-ready-ink: #8de0aa;
+    --suggest-polish-ready-bg: rgba(99, 186, 122, 0.16);
+    --suggest-polish-cancelled-ink: #f3a2b0;
+    --suggest-polish-cancelled-bg: rgba(214, 91, 120, 0.16);
+    --suggest-polish-coral: #f06f50;
+    --suggest-polish-cyan: #3db7ca;
+    --suggest-polish-green: #63ba7a;
+    --suggest-polish-plum: #9284f0;
+    --suggest-polish-backdrop-bg: linear-gradient(
+        180deg,
+        rgba(15, 22, 27, 0.99),
+        rgba(8, 30, 37, 0.97)
+      ),
+      linear-gradient(135deg, rgba(240, 111, 80, 0.08), rgba(61, 183, 202, 0.08));
+    --suggest-polish-label-bg: rgba(240, 111, 80, 0.13);
+    --suggest-polish-label-ink: rgba(255, 213, 201, 0.98);
+    --suggest-polish-requirements-bg: rgba(24, 36, 43, 0.98);
+    --suggest-polish-requirements-text: rgba(247, 251, 252, 0.98);
+    --suggest-polish-code-bg: rgba(255, 255, 255, 0.09);
+    --suggest-polish-code-ink: rgba(227, 244, 248, 0.92);
+    --suggest-polish-link-panel-input-bg: rgba(255, 255, 255, 0.08);
+    --suggest-polish-submit-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+    --suggest-polish-image-tile-bg: rgba(255, 255, 255, 0.07);
+    --suggest-polish-image-tile-ink: rgba(194, 238, 245, 0.72);
+    --suggest-polish-image-loader-bg: rgba(12, 30, 38, 0.86);
+    --suggest-polish-image-loader-ink: rgba(194, 238, 245, 0.9);
+    --suggest-polish-image-remove-border: rgba(255, 255, 255, 0.08);
+    --suggest-polish-image-remove-bg: rgba(9, 18, 24, 0.78);
+    --suggest-polish-image-remove-ink: rgba(227, 244, 248, 0.92);
+  }
 }
 
 html[data-max-client='native'] {

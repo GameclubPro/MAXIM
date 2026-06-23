@@ -1373,6 +1373,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const suggestComposerRef = useRef<HTMLElement | null>(null);
   const notificationToggleRef = useRef<HTMLButtonElement | null>(null);
   const commentsNotificationTopNudgeRef = useRef(0);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -3361,6 +3362,156 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         } as CSSProperties)
       : undefined;
 
+  useLayoutEffect(() => {
+    if (
+      dialogType !== 'suggest' ||
+      typeof window === 'undefined' ||
+      typeof document === 'undefined'
+    ) {
+      return undefined;
+    }
+
+    const viewport = scrollViewportRef.current;
+    const composer = suggestComposerRef.current;
+    if (!viewport || !composer) {
+      return undefined;
+    }
+
+    let frameId = 0;
+    let isEditorFocused = false;
+    const timers = new Set<number>();
+
+    const isSuggestEditorTarget = (target: EventTarget | null): target is Element =>
+      target instanceof Element &&
+      Boolean(
+        target.closest(
+          '.max-rich-text-editor__surface, .max-rich-text-editor__link-panel input, .channel-suggest-composer__field textarea',
+        ),
+      );
+
+    const readKeyboardOverlap = () => {
+      const rawValue = window
+        .getComputedStyle(document.documentElement)
+        .getPropertyValue('--app-keyboard-overlap');
+      const value = Number.parseFloat(rawValue);
+      return Number.isFinite(value) ? Math.max(0, value) : 0;
+    };
+
+    const setFocusedClass = (focused: boolean) => {
+      screenRef.current?.classList.toggle('is-suggest-editor-focused', focused);
+    };
+
+    const getFocusedAnchor = (): HTMLElement => {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && composer.contains(activeElement)) {
+        const linkPanel = activeElement.closest<HTMLElement>('.max-rich-text-editor__link-panel');
+        const bubble = activeElement.closest<HTMLElement>('.channel-suggest-composer__bubble');
+        return linkPanel ?? bubble ?? activeElement;
+      }
+
+      return composer;
+    };
+
+    const keepFocusedEditorVisible = (behavior: ScrollBehavior) => {
+      if (!isEditorFocused) {
+        return;
+      }
+
+      const visualViewport = window.visualViewport;
+      const viewportRect = viewport.getBoundingClientRect();
+      const visualTop = visualViewport?.offsetTop ?? 0;
+      const visualHeight = visualViewport?.height ?? window.innerHeight;
+      const keyboardOverlap = readKeyboardOverlap();
+      const isMobileViewport =
+        Math.min(window.innerWidth, visualViewport?.width ?? window.innerWidth) <= 640;
+      const isNativeClient = document.documentElement.dataset.maxClient === 'native';
+      const fallbackKeyboardReserve =
+        keyboardOverlap < 120 && (isNativeClient || isMobileViewport)
+          ? Math.min(320, Math.max(180, Math.round(visualHeight * 0.42)))
+          : 0;
+      const keyboardBottom = keyboardOverlap >= 120 ? window.innerHeight - keyboardOverlap : Infinity;
+      const visibleTop = Math.max(viewportRect.top, visualTop);
+      const visibleBottom = Math.min(
+        viewportRect.bottom,
+        visualTop + visualHeight - fallbackKeyboardReserve,
+        keyboardBottom,
+      );
+      const targetRect = getFocusedAnchor().getBoundingClientRect();
+      const bottomGap = targetRect.bottom + 18 - visibleBottom;
+
+      if (bottomGap > 1) {
+        viewport.scrollBy({ top: Math.ceil(bottomGap), behavior });
+        return;
+      }
+
+      const topGap = visibleTop + 10 - targetRect.top;
+      if (topGap > 1) {
+        viewport.scrollBy({ top: -Math.ceil(topGap), behavior });
+      }
+    };
+
+    const scheduleKeepVisible = (behavior: ScrollBehavior = 'auto') => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => keepFocusedEditorVisible(behavior));
+    };
+
+    const scheduleSettlingPasses = () => {
+      scheduleKeepVisible('smooth');
+      for (const delay of [80, 180, 320]) {
+        const timerId = window.setTimeout(() => {
+          timers.delete(timerId);
+          scheduleKeepVisible('auto');
+        }, delay);
+        timers.add(timerId);
+      }
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      if (!isSuggestEditorTarget(event.target)) {
+        return;
+      }
+
+      isEditorFocused = true;
+      setFocusedClass(true);
+      scheduleSettlingPasses();
+    };
+
+    const handleFocusOut = (event: FocusEvent) => {
+      const nextTarget = event.relatedTarget;
+      if (nextTarget instanceof Node && composer.contains(nextTarget)) {
+        return;
+      }
+
+      isEditorFocused = false;
+      setFocusedClass(false);
+    };
+
+    const handleViewportChange = () => {
+      scheduleKeepVisible('auto');
+    };
+
+    composer.addEventListener('focusin', handleFocusIn);
+    composer.addEventListener('focusout', handleFocusOut);
+    composer.addEventListener('input', handleViewportChange);
+    window.addEventListener('resize', handleViewportChange, { passive: true });
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      setFocusedClass(false);
+      for (const timerId of timers) {
+        window.clearTimeout(timerId);
+      }
+      composer.removeEventListener('focusin', handleFocusIn);
+      composer.removeEventListener('focusout', handleFocusOut);
+      composer.removeEventListener('input', handleViewportChange);
+      window.removeEventListener('resize', handleViewportChange);
+      window.visualViewport?.removeEventListener('resize', handleViewportChange);
+      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+    };
+  }, [dialogQuery.data, dialogQuery.error, dialogQuery.isLoading, dialogType]);
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -3609,6 +3760,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   {introText ? <SuggestionRequirements text={introText} /> : null}
 
                   <section
+                    ref={suggestComposerRef}
                     className={cn(
                       'channel-suggest-composer',
                       canSubmitMessage && 'is-ready',

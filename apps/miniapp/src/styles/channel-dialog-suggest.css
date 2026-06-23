@@ -1567,6 +1567,7 @@
 
 .channel-suggest-body {
   padding: 0 0 10px;
+  scroll-padding-bottom: 18px;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -1594,7 +1595,10 @@
   gap: 7px;
   padding: 8px 10px;
   border-radius: 13px;
+  background: var(--suggest-polish-requirements-bg);
   box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .channel-suggest-requirements__label {
@@ -1607,8 +1611,12 @@
 
 .channel-suggest-requirements__text {
   color: var(--suggest-polish-requirements-text);
-  font-size: 0.76rem;
-  line-height: 1.32;
+  font-size: 0.78rem;
+  line-height: 1.36;
+}
+
+.channel-suggest-requirements__text p {
+  color: inherit;
 }
 
 .channel-suggest-composer {
@@ -1844,6 +1852,56 @@
   box-shadow: none;
 }
 
+html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest {
+  padding-bottom: max(6px, var(--safe-bottom));
+}
+
+html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-body {
+  padding-bottom: max(18px, min(var(--app-keyboard-overlap), 320px));
+  scroll-padding-bottom: calc(22px + min(var(--app-keyboard-overlap), 320px));
+}
+
+html[data-max-client='native']
+  .channel-dialog-screen--suggest.is-suggest-editor-focused
+  .channel-suggest-body {
+  padding-bottom: max(220px, min(var(--app-keyboard-overlap), 320px));
+  scroll-padding-bottom: max(244px, calc(22px + min(var(--app-keyboard-overlap), 320px)));
+}
+
+html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-workspace {
+  padding-bottom: max(18px, min(var(--app-keyboard-overlap), 320px));
+}
+
+html[data-max-client='native']
+  .channel-dialog-screen--suggest.is-suggest-editor-focused
+  .channel-suggest-workspace {
+  padding-bottom: max(220px, min(var(--app-keyboard-overlap), 320px));
+}
+
+html[data-max-keyboard-open='true'] .channel-dialog-screen--suggest .channel-suggest-composer {
+  position: relative;
+  z-index: 2;
+}
+
+html[data-max-keyboard-open='true']
+  .channel-dialog-screen--suggest
+  .channel-suggest-composer__phone {
+  min-height: 118px;
+}
+
+html[data-max-keyboard-open='true']
+  .channel-dialog-screen--suggest
+  .channel-suggest-composer__rich-editor
+  .max-rich-text-editor__surface,
+html[data-max-keyboard-open='true']
+  .channel-dialog-screen--suggest
+  .channel-suggest-composer__field
+  textarea {
+  min-height: 76px;
+  max-height: min(136px, calc(var(--app-viewport-height) - 220px));
+  overflow-y: auto;
+}
+
 @media (max-width: 420px) {
   .channel-dialog-screen--suggest {
     padding: 0 7px max(7px, calc(var(--safe-bottom) + 4px));
@@ -1858,7 +1916,7 @@
   }
 
   .channel-suggest-requirements__text {
-    font-size: 0.72rem;
+    font-size: 0.76rem;
   }
 
   .channel-suggest-composer__phone {
@@ -1946,6 +2004,51 @@
     min-width: 36px;
     height: 36px;
     min-height: 36px;
+  }
+}
+
+html[data-max-theme='dark'] .channel-dialog-screen--suggest .channel-suggest-requirements,
+html[data-max-client='native'][data-max-theme='dark']
+  .channel-dialog-screen--suggest
+  .channel-suggest-requirements {
+  background: var(--suggest-polish-requirements-bg);
+}
+
+html[data-max-theme='dark'] .channel-dialog-screen--suggest .channel-suggest-requirements__text,
+html[data-max-client='native'][data-max-theme='dark']
+  .channel-dialog-screen--suggest
+  .channel-suggest-requirements__text {
+  color: var(--suggest-polish-requirements-text);
+  font-size: 0.78rem;
+  line-height: 1.36;
+}
+
+html[data-max-theme='dark'] .channel-dialog-screen--suggest .channel-suggest-requirements__text p,
+html[data-max-client='native'][data-max-theme='dark']
+  .channel-dialog-screen--suggest
+  .channel-suggest-requirements__text
+  p {
+  color: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-max-theme]) .channel-dialog-screen--suggest .channel-suggest-requirements {
+    background: var(--suggest-polish-requirements-bg);
+  }
+
+  html:not([data-max-theme])
+    .channel-dialog-screen--suggest
+    .channel-suggest-requirements__text {
+    color: var(--suggest-polish-requirements-text);
+    font-size: 0.78rem;
+    line-height: 1.36;
+  }
+
+  html:not([data-max-theme])
+    .channel-dialog-screen--suggest
+    .channel-suggest-requirements__text
+    p {
+    color: inherit;
   }
 }
 
