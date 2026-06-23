@@ -9,7 +9,10 @@ import {
 } from '@maxim/contracts';
 import { BadRequestException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { mapWithConcurrencyLimit } from './admin-legacy-utils';
+import type { AdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
 import {
   APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
   type AdminActionSource,
@@ -17,24 +20,18 @@ import {
 } from './admin.service.support';
 
 export class AdminDomainAllowlistRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminDomainAllowlistRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private assertChatAdmin(chatId: string, userId: string): Promise<void> {
+    return this.context.assertChatAdmin(chatId, userId);
   }
 
   async getDomainAllowlist(chatId: string, user: AuthUser): Promise<string[]> {
