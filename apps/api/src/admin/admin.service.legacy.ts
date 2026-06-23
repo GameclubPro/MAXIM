@@ -194,6 +194,7 @@ import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-
 import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
 import { createAdminChannelDialogMappingRuntimeContext } from './admin-channel-dialog-mapping-runtime-context';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
+import { createAdminChannelStatsRuntimeContext } from './admin-channel-stats-runtime-context';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { createAdminDomainAllowlistRuntimeContext } from './admin-domain-allowlist-runtime-context';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
@@ -459,7 +460,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(
     createAdminChannelDialogMappingRuntimeContext(this),
   );
-  private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
+  private readonly channelStatsRuntime = new AdminChannelStatsRuntime(
+    createAdminChannelStatsRuntimeContext(this),
+  );
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(
     createAdminDomainAllowlistRuntimeContext(this),
   );
@@ -6259,19 +6262,25 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     statsQuery: ChannelStatsQuery,
   ): Promise<ChannelStatsResponse> {
-    return (this.channelStatsRuntime as any).buildChannelStatsResponse(chatId, statsQuery);
+    return this.channelStatsRuntime.buildChannelStatsResponse(chatId, statsQuery);
   }
 
-  private buildChannelStatsResponseCacheKey(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsResponseCacheKey(...args);
+  private buildChannelStatsResponseCacheKey(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsResponseCacheKey']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsResponseCacheKey']> {
+    return this.channelStatsRuntime.buildChannelStatsResponseCacheKey(...args);
   }
 
-  private shouldRefreshChannelStats(...args: any[]) {
-    return (this.channelStatsRuntime as any).shouldRefreshChannelStats(...args);
+  private shouldRefreshChannelStats(
+    ...args: Parameters<AdminChannelStatsRuntime['shouldRefreshChannelStats']>
+  ): ReturnType<AdminChannelStatsRuntime['shouldRefreshChannelStats']> {
+    return this.channelStatsRuntime.shouldRefreshChannelStats(...args);
   }
 
-  private scheduleChannelStatsRefresh(...args: any[]) {
-    return (this.channelStatsRuntime as any).scheduleChannelStatsRefresh(...args);
+  private scheduleChannelStatsRefresh(
+    ...args: Parameters<AdminChannelStatsRuntime['scheduleChannelStatsRefresh']>
+  ): ReturnType<AdminChannelStatsRuntime['scheduleChannelStatsRefresh']> {
+    return this.channelStatsRuntime.scheduleChannelStatsRefresh(...args);
   }
 
   async getChannelActivityFeed(
@@ -12434,144 +12443,214 @@ export class AdminService implements OnModuleDestroy {
     return this.logsDashboardRuntime.getMembershipEventRows(chatId, from, to, eventTypes, options);
   }
 
-  private buildPreviousChannelStatsPeriodSnapshot(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildPreviousChannelStatsPeriodSnapshot(...args);
+  private buildPreviousChannelStatsPeriodSnapshot(
+    ...args: Parameters<AdminChannelStatsRuntime['buildPreviousChannelStatsPeriodSnapshot']>
+  ): ReturnType<AdminChannelStatsRuntime['buildPreviousChannelStatsPeriodSnapshot']> {
+    return this.channelStatsRuntime.buildPreviousChannelStatsPeriodSnapshot(...args);
   }
 
-  private buildChannelStatsComparison(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsComparison(...args);
+  private buildChannelStatsComparison(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsComparison']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsComparison']> {
+    return this.channelStatsRuntime.buildChannelStatsComparison(...args);
   }
 
-  private buildChannelStatsDeltaMetric(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsDeltaMetric(...args);
+  private buildChannelStatsDeltaMetric(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsDeltaMetric']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsDeltaMetric']> {
+    return this.channelStatsRuntime.buildChannelStatsDeltaMetric(...args);
   }
 
-  private buildChannelStatsSignals(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsSignals(...args);
+  private buildChannelStatsSignals(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsSignals']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsSignals']> {
+    return this.channelStatsRuntime.buildChannelStatsSignals(...args);
   }
 
-  private buildChannelStatsBestWindows(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsBestWindows(...args);
+  private buildChannelStatsBestWindows(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsBestWindows']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsBestWindows']> {
+    return this.channelStatsRuntime.buildChannelStatsBestWindows(...args);
   }
 
-  private resolveChannelStatsMoscowWindow(...args: any[]) {
-    return (this.channelStatsRuntime as any).resolveChannelStatsMoscowWindow(...args);
+  private resolveChannelStatsMoscowWindow(
+    ...args: Parameters<AdminChannelStatsRuntime['resolveChannelStatsMoscowWindow']>
+  ): ReturnType<AdminChannelStatsRuntime['resolveChannelStatsMoscowWindow']> {
+    return this.channelStatsRuntime.resolveChannelStatsMoscowWindow(...args);
   }
 
-  private formatChannelStatsSignedInteger(...args: any[]) {
-    return (this.channelStatsRuntime as any).formatChannelStatsSignedInteger(...args);
+  private formatChannelStatsSignedInteger(
+    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsSignedInteger']>
+  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsSignedInteger']> {
+    return this.channelStatsRuntime.formatChannelStatsSignedInteger(...args);
   }
 
-  private formatChannelStatsCompactCount(...args: any[]) {
-    return (this.channelStatsRuntime as any).formatChannelStatsCompactCount(...args);
+  private formatChannelStatsCompactCount(
+    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsCompactCount']>
+  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsCompactCount']> {
+    return this.channelStatsRuntime.formatChannelStatsCompactCount(...args);
   }
 
-  private buildChannelStatsBucketStarts(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsBucketStarts(...args);
+  private buildChannelStatsBucketStarts(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsBucketStarts']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsBucketStarts']> {
+    return this.channelStatsRuntime.buildChannelStatsBucketStarts(...args);
   }
 
-  private floorChannelStatsBucket(...args: any[]) {
-    return (this.channelStatsRuntime as any).floorChannelStatsBucket(...args);
+  private floorChannelStatsBucket(
+    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsBucket']>
+  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsBucket']> {
+    return this.channelStatsRuntime.floorChannelStatsBucket(...args);
   }
 
-  private shiftChannelStatsBucket(...args: any[]) {
-    return (this.channelStatsRuntime as any).shiftChannelStatsBucket(...args);
+  private shiftChannelStatsBucket(
+    ...args: Parameters<AdminChannelStatsRuntime['shiftChannelStatsBucket']>
+  ): ReturnType<AdminChannelStatsRuntime['shiftChannelStatsBucket']> {
+    return this.channelStatsRuntime.shiftChannelStatsBucket(...args);
   }
 
-  private buildParticipantSeries(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildParticipantSeries(...args);
+  private buildParticipantSeries(
+    ...args: Parameters<AdminChannelStatsRuntime['buildParticipantSeries']>
+  ): ReturnType<AdminChannelStatsRuntime['buildParticipantSeries']> {
+    return this.channelStatsRuntime.buildParticipantSeries(...args);
   }
 
-  private buildMembershipSeriesFromBucketRows(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildMembershipSeriesFromBucketRows(...args);
+  private buildMembershipSeriesFromBucketRows(
+    ...args: Parameters<AdminChannelStatsRuntime['buildMembershipSeriesFromBucketRows']>
+  ): ReturnType<AdminChannelStatsRuntime['buildMembershipSeriesFromBucketRows']> {
+    return this.channelStatsRuntime.buildMembershipSeriesFromBucketRows(...args);
   }
 
-  private buildPostViewMetrics(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildPostViewMetrics(...args);
+  private buildPostViewMetrics(
+    ...args: Parameters<AdminChannelStatsRuntime['buildPostViewMetrics']>
+  ): ReturnType<AdminChannelStatsRuntime['buildPostViewMetrics']> {
+    return this.channelStatsRuntime.buildPostViewMetrics(...args);
   }
 
-  private buildChannelStatsSummary(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsSummary(...args);
+  private buildChannelStatsSummary(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsSummary']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsSummary']> {
+    return this.channelStatsRuntime.buildChannelStatsSummary(...args);
   }
 
-  private buildChannelStatsMembershipDelta(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsMembershipDelta(...args);
+  private buildChannelStatsMembershipDelta(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsMembershipDelta']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsMembershipDelta']> {
+    return this.channelStatsRuntime.buildChannelStatsMembershipDelta(...args);
   }
 
-  private buildChannelStatsMembershipFlow(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsMembershipFlow(...args);
+  private buildChannelStatsMembershipFlow(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsMembershipFlow']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsMembershipFlow']> {
+    return this.channelStatsRuntime.buildChannelStatsMembershipFlow(...args);
   }
 
-  private buildChannelStatsDailySummary(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsDailySummary(...args);
+  private buildChannelStatsDailySummary(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsDailySummary']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsDailySummary']> {
+    return this.channelStatsRuntime.buildChannelStatsDailySummary(...args);
   }
 
-  private buildChannelStatsDailyMembershipFlows(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsDailyMembershipFlows(...args);
+  private buildChannelStatsDailyMembershipFlows(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsDailyMembershipFlows']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsDailyMembershipFlows']> {
+    return this.channelStatsRuntime.buildChannelStatsDailyMembershipFlows(...args);
   }
 
-  private buildChannelStatsViewWindowSummary(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildChannelStatsViewWindowSummary(...args);
+  private buildChannelStatsViewWindowSummary(
+    ...args: Parameters<AdminChannelStatsRuntime['buildChannelStatsViewWindowSummary']>
+  ): ReturnType<AdminChannelStatsRuntime['buildChannelStatsViewWindowSummary']> {
+    return this.channelStatsRuntime.buildChannelStatsViewWindowSummary(...args);
   }
 
-  private resolveLastAudienceCountAt(...args: any[]) {
-    return (this.channelStatsRuntime as any).resolveLastAudienceCountAt(...args);
+  private resolveLastAudienceCountAt(
+    ...args: Parameters<AdminChannelStatsRuntime['resolveLastAudienceCountAt']>
+  ): ReturnType<AdminChannelStatsRuntime['resolveLastAudienceCountAt']> {
+    return this.channelStatsRuntime.resolveLastAudienceCountAt(...args);
   }
 
-  private floorChannelStatsDay(...args: any[]) {
-    return (this.channelStatsRuntime as any).floorChannelStatsDay(...args);
+  private floorChannelStatsDay(
+    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsDay']>
+  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsDay']> {
+    return this.channelStatsRuntime.floorChannelStatsDay(...args);
   }
 
-  private floorChannelStatsMoscowDay(...args: any[]) {
-    return (this.channelStatsRuntime as any).floorChannelStatsMoscowDay(...args);
+  private floorChannelStatsMoscowDay(
+    ...args: Parameters<AdminChannelStatsRuntime['floorChannelStatsMoscowDay']>
+  ): ReturnType<AdminChannelStatsRuntime['floorChannelStatsMoscowDay']> {
+    return this.channelStatsRuntime.floorChannelStatsMoscowDay(...args);
   }
 
-  private formatChannelStatsMoscowDate(...args: any[]) {
-    return (this.channelStatsRuntime as any).formatChannelStatsMoscowDate(...args);
+  private formatChannelStatsMoscowDate(
+    ...args: Parameters<AdminChannelStatsRuntime['formatChannelStatsMoscowDate']>
+  ): ReturnType<AdminChannelStatsRuntime['formatChannelStatsMoscowDate']> {
+    return this.channelStatsRuntime.formatChannelStatsMoscowDate(...args);
   }
 
-  private toDateOrNull(...args: any[]) {
-    return (this.channelStatsRuntime as any).toDateOrNull(...args);
+  private toDateOrNull(
+    ...args: Parameters<AdminChannelStatsRuntime['toDateOrNull']>
+  ): ReturnType<AdminChannelStatsRuntime['toDateOrNull']> {
+    return this.channelStatsRuntime.toDateOrNull(...args);
   }
 
-  private buildContentSeriesFromBucketRows(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildContentSeriesFromBucketRows(...args);
+  private buildContentSeriesFromBucketRows(
+    ...args: Parameters<AdminChannelStatsRuntime['buildContentSeriesFromBucketRows']>
+  ): ReturnType<AdminChannelStatsRuntime['buildContentSeriesFromBucketRows']> {
+    return this.channelStatsRuntime.buildContentSeriesFromBucketRows(...args);
   }
 
-  private buildContentTotals(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildContentTotals(...args);
+  private buildContentTotals(
+    ...args: Parameters<AdminChannelStatsRuntime['buildContentTotals']>
+  ): ReturnType<AdminChannelStatsRuntime['buildContentTotals']> {
+    return this.channelStatsRuntime.buildContentTotals(...args);
   }
 
-  private sumChannelPostMetricViews(...args: any[]) {
-    return (this.channelStatsRuntime as any).sumChannelPostMetricViews(...args);
+  private sumChannelPostMetricViews(
+    ...args: Parameters<AdminChannelStatsRuntime['sumChannelPostMetricViews']>
+  ): ReturnType<AdminChannelStatsRuntime['sumChannelPostMetricViews']> {
+    return this.channelStatsRuntime.sumChannelPostMetricViews(...args);
   }
 
-  private buildAverageViewsSeriesFromPostMetrics(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildAverageViewsSeriesFromPostMetrics(...args);
+  private buildAverageViewsSeriesFromPostMetrics(
+    ...args: Parameters<AdminChannelStatsRuntime['buildAverageViewsSeriesFromPostMetrics']>
+  ): ReturnType<AdminChannelStatsRuntime['buildAverageViewsSeriesFromPostMetrics']> {
+    return this.channelStatsRuntime.buildAverageViewsSeriesFromPostMetrics(...args);
   }
 
-  private buildTopPosts(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildTopPosts(...args);
+  private buildTopPosts(
+    ...args: Parameters<AdminChannelStatsRuntime['buildTopPosts']>
+  ): ReturnType<AdminChannelStatsRuntime['buildTopPosts']> {
+    return this.channelStatsRuntime.buildTopPosts(...args);
   }
 
-  private hydrateTopPostPreviews(...args: any[]) {
-    return (this.channelStatsRuntime as any).hydrateTopPostPreviews(...args);
+  private hydrateTopPostPreviews(
+    ...args: Parameters<AdminChannelStatsRuntime['hydrateTopPostPreviews']>
+  ): ReturnType<AdminChannelStatsRuntime['hydrateTopPostPreviews']> {
+    return this.channelStatsRuntime.hydrateTopPostPreviews(...args);
   }
 
-  private buildTopReactions(...args: any[]) {
-    return (this.channelStatsRuntime as any).buildTopReactions(...args);
+  private buildTopReactions(
+    ...args: Parameters<AdminChannelStatsRuntime['buildTopReactions']>
+  ): ReturnType<AdminChannelStatsRuntime['buildTopReactions']> {
+    return this.channelStatsRuntime.buildTopReactions(...args);
   }
 
-  private readChannelPostReactions(...args: any[]) {
-    return (this.channelStatsRuntime as any).readChannelPostReactions(...args);
+  private readChannelPostReactions(
+    ...args: Parameters<AdminChannelStatsRuntime['readChannelPostReactions']>
+  ): ReturnType<AdminChannelStatsRuntime['readChannelPostReactions']> {
+    return this.channelStatsRuntime.readChannelPostReactions(...args);
   }
 
-  private readChannelPostReaction(...args: any[]) {
-    return (this.channelStatsRuntime as any).readChannelPostReaction(...args);
+  private readChannelPostReaction(
+    ...args: Parameters<AdminChannelStatsRuntime['readChannelPostReaction']>
+  ): ReturnType<AdminChannelStatsRuntime['readChannelPostReaction']> {
+    return this.channelStatsRuntime.readChannelPostReaction(...args);
   }
 
-  private resolveOfficialCoverageFrom(...args: any[]) {
-    return (this.channelStatsRuntime as any).resolveOfficialCoverageFrom(...args);
+  private resolveOfficialCoverageFrom(
+    ...args: Parameters<AdminChannelStatsRuntime['resolveOfficialCoverageFrom']>
+  ): ReturnType<AdminChannelStatsRuntime['resolveOfficialCoverageFrom']> {
+    return this.channelStatsRuntime.resolveOfficialCoverageFrom(...args);
   }
 
   private toSafeInteger(value: unknown): number {

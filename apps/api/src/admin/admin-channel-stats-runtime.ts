@@ -3,12 +3,17 @@ import {
   type ChannelStatsBucket,
   type ChannelStatsQuery,
   type ChannelStatsResponse,
+  type ManagedEntityBotCapability,
+  type ManagedEntityType,
+  type MembershipActivityPage,
+  type MembershipActivityQuery,
 } from '@maxim/contracts';
 import { Prisma } from '../prisma/prisma-client';
-import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
-import {
-  mapWithConcurrencyLimit,
-} from './admin-legacy-utils';
+import { MAX_API_SOURCE_TAGS, type MaxClientService } from '../max/max-client.service';
+import type { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import type { PrismaService } from '../prisma/prisma.service';
+import { mapWithConcurrencyLimit } from './admin-legacy-utils';
+import type { AdminChannelStatsRuntimeContext } from './admin-channel-stats-runtime-context';
 import {
   selectChannelStatsContentBucketRows,
   selectChannelStatsMembershipBucketRows,
@@ -37,30 +42,91 @@ import {
   type ChannelStatsSummaryWindowRow,
   type ChannelStatsViewsBucketPoint,
   type ChannelStatsViewSnapshotRow,
+  type ResolveUserProfilesOptions,
 } from './admin.service.support';
+import type { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
 export class AdminChannelStatsRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminChannelStatsRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
   }
 
-  private async buildChannelStatsResponse(
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get chatContextCache(): ChatContextCacheService {
+    return this.context.chatContextCache;
+  }
+
+  private get logger(): AdminChannelStatsRuntimeContext['logger'] {
+    return this.context.logger;
+  }
+
+  private get channelStatsCollector(): ChannelStatsCollectorService | undefined {
+    return this.context.channelStatsCollector;
+  }
+
+  private get channelStatsRefreshRuns(): Map<string, Promise<void>> {
+    return this.context.channelStatsRefreshRuns;
+  }
+
+  private resolveChannelStatsFrom(range: ChannelStatsQuery['range'], to: Date): Date {
+    return this.context.resolveChannelStatsFrom(range, to);
+  }
+
+  private resolveChannelStatsBucket(range: ChannelStatsQuery['range']): ChannelStatsBucket {
+    return this.context.resolveChannelStatsBucket(range);
+  }
+
+  private getMembershipActivityFeedPage(
+    chatId: string,
+    from: Date,
+    to: Date,
+    query: MembershipActivityQuery,
+    entityType?: ManagedEntityType,
+    profileOptions?: ResolveUserProfilesOptions,
+  ): Promise<MembershipActivityPage> {
+    return this.context.getMembershipActivityFeedPage(
+      chatId,
+      from,
+      to,
+      query,
+      entityType,
+      profileOptions,
+    );
+  }
+
+  private buildEmptyMembershipActivityPage(): MembershipActivityPage {
+    return this.context.buildEmptyMembershipActivityPage();
+  }
+
+  private invalidateChannelStatsResponseCache(chatId: string): void {
+    return this.context.invalidateChannelStatsResponseCache(chatId);
+  }
+
+  private resolveAssistBotAssignment(
+    chatId: string,
+    capability: ManagedEntityBotCapability,
+  ): Promise<string | undefined> {
+    return this.context.resolveAssistBotAssignment(chatId, capability);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
+  }
+
+  private toIsoString(value: unknown): string | null {
+    return this.context.toIsoString(value);
+  }
+
+  private toSafeInteger(value: unknown): number {
+    return this.context.toSafeInteger(value);
+  }
+
+  async buildChannelStatsResponse(
     chatId: string,
     statsQuery: ChannelStatsQuery,
   ): Promise<ChannelStatsResponse> {
@@ -544,7 +610,7 @@ export class AdminChannelStatsRuntime {
     return channelStatsResponseSchema.parse(response);
   }
 
-  private buildChannelStatsResponseCacheKey(
+  buildChannelStatsResponseCacheKey(
     chatId: string,
     userId: string,
     query: ChannelStatsQuery,
@@ -558,7 +624,7 @@ export class AdminChannelStatsRuntime {
     ].join(':');
   }
 
-  private shouldRefreshChannelStats(
+  shouldRefreshChannelStats(
     latestAudienceSnapshot: { capturedAt: Date } | null,
     syncState: { lastAudienceSyncAt: Date | null; lastViewsSyncAt: Date | null } | null,
   ): boolean {
@@ -575,7 +641,7 @@ export class AdminChannelStatsRuntime {
     return audienceStale || viewsStale;
   }
 
-  private scheduleChannelStatsRefresh(chatId: string): boolean {
+  scheduleChannelStatsRefresh(chatId: string): boolean {
     const collector = this.channelStatsCollector;
     if (!collector) {
       return false;
@@ -610,7 +676,7 @@ export class AdminChannelStatsRuntime {
     return true;
   }
 
-  private async buildPreviousChannelStatsPeriodSnapshot(
+  async buildPreviousChannelStatsPeriodSnapshot(
     chatId: string,
     from: Date,
     to: Date,
@@ -726,7 +792,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsComparison(
+  buildChannelStatsComparison(
     current: ChannelStatsPeriodTotals,
     previous: ChannelStatsPeriodTotals,
     period: { from: Date; to: Date },
@@ -753,7 +819,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsDeltaMetric(current: number, previous: number): ChannelStatsDeltaMetric {
+  buildChannelStatsDeltaMetric(current: number, previous: number): ChannelStatsDeltaMetric {
     const normalizedCurrent = this.toSafeInteger(current);
     const normalizedPrevious = this.toSafeInteger(previous);
     const absolute = normalizedCurrent - normalizedPrevious;
@@ -772,7 +838,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsSignals(params: {
+  buildChannelStatsSignals(params: {
     topPosts: ChannelStatsResponse['official']['content']['topPosts'];
     membershipSeries: ChannelStatsResponse['official']['series']['membership'];
     viewsSeries: ChannelStatsResponse['official']['series']['views'];
@@ -829,7 +895,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsBestWindows(
+  buildChannelStatsBestWindows(
     postViewMetrics: ChannelStatsPostViewMetric[],
   ): ChannelStatsBestWindow[] {
     const grouped = new Map<
@@ -887,7 +953,7 @@ export class AdminChannelStatsRuntime {
       .slice(0, 3);
   }
 
-  private resolveChannelStatsMoscowWindow(date: Date): { dayOfWeek: number; hour: number } {
+  resolveChannelStatsMoscowWindow(date: Date): { dayOfWeek: number; hour: number } {
     const moscowDate = new Date(date.getTime() + 3 * ONE_HOUR_MS);
     return {
       dayOfWeek: moscowDate.getUTCDay(),
@@ -895,12 +961,12 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private formatChannelStatsSignedInteger(value: number): string {
+  formatChannelStatsSignedInteger(value: number): string {
     const normalized = this.toSafeInteger(value);
     return normalized > 0 ? `+${normalized}` : String(normalized);
   }
 
-  private formatChannelStatsCompactCount(value: number): string {
+  formatChannelStatsCompactCount(value: number): string {
     const normalized = Math.max(0, this.toSafeInteger(value));
     if (normalized < 100_000) {
       return new Intl.NumberFormat('ru-RU').format(normalized);
@@ -912,7 +978,7 @@ export class AdminChannelStatsRuntime {
     }).format(normalized);
   }
 
-  private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
+  buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
     const starts: Date[] = [];
     let cursor = this.floorChannelStatsBucket(from, bucket);
     const end = this.floorChannelStatsBucket(to, bucket);
@@ -925,7 +991,7 @@ export class AdminChannelStatsRuntime {
     return starts;
   }
 
-  private floorChannelStatsBucket(date: Date, bucket: ChannelStatsBucket): Date {
+  floorChannelStatsBucket(date: Date, bucket: ChannelStatsBucket): Date {
     const result = new Date(date);
     result.setUTCMinutes(0, 0, 0);
     if (bucket === 'day') {
@@ -934,7 +1000,7 @@ export class AdminChannelStatsRuntime {
     return result;
   }
 
-  private shiftChannelStatsBucket(date: Date, bucket: ChannelStatsBucket, amount: number): Date {
+  shiftChannelStatsBucket(date: Date, bucket: ChannelStatsBucket, amount: number): Date {
     const result = new Date(date);
     if (bucket === 'hour') {
       result.setUTCHours(result.getUTCHours() + amount);
@@ -945,7 +1011,7 @@ export class AdminChannelStatsRuntime {
     return result;
   }
 
-  private buildParticipantSeries(
+  buildParticipantSeries(
     bucketStarts: Date[],
     bucket: ChannelStatsBucket,
     initialParticipantsCount: number | null,
@@ -971,7 +1037,7 @@ export class AdminChannelStatsRuntime {
     });
   }
 
-  private buildMembershipSeriesFromBucketRows(
+  buildMembershipSeriesFromBucketRows(
     bucketStarts: Date[],
     rows: ChannelStatsMembershipBucketRow[],
   ) {
@@ -998,7 +1064,7 @@ export class AdminChannelStatsRuntime {
     });
   }
 
-  private buildPostViewMetrics(
+  buildPostViewMetrics(
     posts: ChannelStatsPostRow[],
     snapshots: ChannelStatsViewSnapshotRow[],
     from: Date,
@@ -1049,7 +1115,7 @@ export class AdminChannelStatsRuntime {
     });
   }
 
-  private buildChannelStatsSummary(params: {
+  buildChannelStatsSummary(params: {
     participantsCount: number | null;
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>;
     summaryPosts?: ChannelStatsPostRow[];
@@ -1120,7 +1186,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsMembershipDelta(
+  buildChannelStatsMembershipDelta(
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): number | null {
@@ -1135,7 +1201,7 @@ export class AdminChannelStatsRuntime {
     );
   }
 
-  private buildChannelStatsMembershipFlow(
+  buildChannelStatsMembershipFlow(
     rows: ChannelStatsMembershipBucketRow[],
     hasCoverage: boolean,
   ): { joined: number | null; left: number | null; net: number | null } {
@@ -1157,7 +1223,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private buildChannelStatsDailySummary(
+  buildChannelStatsDailySummary(
     audienceSnapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     currentParticipants: number | null,
     now: Date,
@@ -1243,7 +1309,7 @@ export class AdminChannelStatsRuntime {
     return days;
   }
 
-  private buildChannelStatsDailyMembershipFlows(
+  buildChannelStatsDailyMembershipFlows(
     firstDay: Date,
     rows: ChannelStatsMembershipBucketRow[],
     membershipCoverageFrom: Date | null,
@@ -1293,7 +1359,7 @@ export class AdminChannelStatsRuntime {
     return flows;
   }
 
-  private buildChannelStatsViewWindowSummary(
+  buildChannelStatsViewWindowSummary(
     posts: ChannelStatsPostRow[],
     rows: ChannelStatsSummaryWindowRow[],
     now: Date,
@@ -1404,7 +1470,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private resolveLastAudienceCountAt(
+  resolveLastAudienceCountAt(
     snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
     at: Date,
   ): number | null {
@@ -1422,23 +1488,23 @@ export class AdminChannelStatsRuntime {
     return value;
   }
 
-  private floorChannelStatsDay(date: Date): Date {
+  floorChannelStatsDay(date: Date): Date {
     const result = new Date(date);
     result.setUTCHours(0, 0, 0, 0);
     return result;
   }
 
-  private floorChannelStatsMoscowDay(date: Date): Date {
+  floorChannelStatsMoscowDay(date: Date): Date {
     const moscowDate = new Date(date.getTime() + 3 * ONE_HOUR_MS);
     moscowDate.setUTCHours(0, 0, 0, 0);
     return new Date(moscowDate.getTime() - 3 * ONE_HOUR_MS);
   }
 
-  private formatChannelStatsMoscowDate(date: Date): string {
+  formatChannelStatsMoscowDate(date: Date): string {
     return new Date(date.getTime() + 3 * ONE_HOUR_MS).toISOString().slice(0, 10);
   }
 
-  private toDateOrNull(value: Date | string | null): Date | null {
+  toDateOrNull(value: Date | string | null): Date | null {
     if (value instanceof Date) {
       return Number.isFinite(value.getTime()) ? value : null;
     }
@@ -1451,7 +1517,7 @@ export class AdminChannelStatsRuntime {
     return null;
   }
 
-  private buildContentSeriesFromBucketRows(
+  buildContentSeriesFromBucketRows(
     bucketStarts: Date[],
     rows: ChannelStatsContentBucketRow[],
   ): ChannelStatsContentBucketPoint[] {
@@ -1489,7 +1555,7 @@ export class AdminChannelStatsRuntime {
     });
   }
 
-  private buildContentTotals(contentSeries: ChannelStatsContentBucketPoint[]) {
+  buildContentTotals(contentSeries: ChannelStatsContentBucketPoint[]) {
     return contentSeries.reduce(
       (totals, item) => ({
         posts: totals.posts + item.posts,
@@ -1504,14 +1570,14 @@ export class AdminChannelStatsRuntime {
     );
   }
 
-  private sumChannelPostMetricViews(postViewMetrics: ChannelStatsPostViewMetric[]): number {
+  sumChannelPostMetricViews(postViewMetrics: ChannelStatsPostViewMetric[]): number {
     return postViewMetrics.reduce(
       (total, metric) => total + Math.max(0, this.toSafeInteger(metric.post.latestViews)),
       0,
     );
   }
 
-  private buildAverageViewsSeriesFromPostMetrics(
+  buildAverageViewsSeriesFromPostMetrics(
     bucketStarts: Date[],
     postViewMetrics: ChannelStatsPostViewMetric[],
     bucket: ChannelStatsBucket,
@@ -1537,7 +1603,7 @@ export class AdminChannelStatsRuntime {
     });
   }
 
-  private buildTopPosts(postViewMetrics: ChannelStatsPostViewMetric[]) {
+  buildTopPosts(postViewMetrics: ChannelStatsPostViewMetric[]) {
     return postViewMetrics
       .sort(
         (left, right) =>
@@ -1554,7 +1620,7 @@ export class AdminChannelStatsRuntime {
       }));
   }
 
-  private async hydrateTopPostPreviews(
+  async hydrateTopPostPreviews(
     chatId: string,
     topPosts: ChannelStatsResponse['official']['content']['topPosts'],
   ): Promise<ChannelStatsResponse['official']['content']['topPosts']> {
@@ -1615,7 +1681,7 @@ export class AdminChannelStatsRuntime {
     }));
   }
 
-  private buildTopReactions(
+  buildTopReactions(
     posts: Array<{
       latestReactions: Prisma.JsonValue | null;
     }>,
@@ -1634,7 +1700,7 @@ export class AdminChannelStatsRuntime {
       .slice(0, 3);
   }
 
-  private readChannelPostReactions(
+  readChannelPostReactions(
     value: Prisma.JsonValue | null,
   ): Array<{ emoji: string; count: number }> {
     if (!Array.isArray(value)) {
@@ -1646,7 +1712,7 @@ export class AdminChannelStatsRuntime {
       .filter((item): item is { emoji: string; count: number } => item !== null);
   }
 
-  private readChannelPostReaction(
+  readChannelPostReaction(
     value: Prisma.JsonValue,
   ): { emoji: string; count: number } | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1666,7 +1732,7 @@ export class AdminChannelStatsRuntime {
     };
   }
 
-  private resolveOfficialCoverageFrom(
+  resolveOfficialCoverageFrom(
     syncState: {
       viewsCoverageFrom: Date | null;
       membershipCoverageFrom: Date | null;
