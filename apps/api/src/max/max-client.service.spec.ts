@@ -1109,6 +1109,73 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('extracts alternate MAX body text markup fields as markdown text', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-text-markup-1',
+                  text: 'MAX Docs',
+                  text_markup: [
+                    {
+                      from: 0,
+                      type: 'strong',
+                      length: 8,
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageTextAsMarkdown('mid-rules-text-markup-1');
+
+    expect(result).toBe('**MAX Docs**');
+    await service.onModuleDestroy();
+  });
+
+  it('normalizes MAX user mention markup to max user links', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-mention-1',
+                  text: 'Стас',
+                  markup: [
+                    {
+                      from: 0,
+                      type: 'user_mention',
+                      length: 4,
+                      user_link: 'user/67123224',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageTextAsMarkdown('mid-rules-mention-1');
+
+    expect(result).toBe('[Стас](max://user/67123224)');
+    await service.onModuleDestroy();
+  });
+
   it('splits multi-paragraph MAX markup when extracting markdown text', async () => {
     const sourceText = 'Заголовок\n\nВторой абзац';
     const httpService = {

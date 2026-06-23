@@ -1815,6 +1815,14 @@ export class ManagedGiveawayService {
     };
   }
 
+  private buildGiveawayResultsTextPayload(giveaway: PersistedGiveawayWithRelations): {
+    text: string;
+    textFormat?: MaxSendMessageOptions['textFormat'];
+  } {
+    const text = this.buildGiveawayResultsText(giveaway);
+    return containsSupportedMarkdownSyntax(text) ? { text, textFormat: 'markdown' } : { text };
+  }
+
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {
     const lines: string[] = ['🎉 Результаты розыгрыша:'];
     const prizeDisplayTitleById = this.buildPrizeDisplayTitleById(giveaway.prizes);
@@ -2120,9 +2128,7 @@ export class ManagedGiveawayService {
 
   private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
     const publicationBotId = await this.resolveGiveawayPublicationBotId(giveaway.sourceChatId);
-    const resultsTextPayload = this.buildFormattedGiveawayTextPayload(
-      this.buildGiveawayResultsText(giveaway),
-    );
+    const resultsTextPayload = this.buildGiveawayResultsTextPayload(giveaway);
     const resultOptions = this.mergeMessageOptionsWithTextFormat(
       await this.buildGiveawayResultsMessageOptions(giveaway),
       resultsTextPayload.textFormat,
@@ -2245,7 +2251,7 @@ export class ManagedGiveawayService {
   }
 
   private escapeMarkdown(value: string): string {
-    return value.replace(/([\\_*[\]()`])/g, '\\$1');
+    return value.replace(/([\\_*[\]()`~+])/g, '\\$1');
   }
 
   private assertGiveawayOpenForEntry(giveaway: PersistedGiveawayWithRelations): void {

@@ -975,9 +975,9 @@ describe('ManagedGiveawayService', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
-      expect.stringContaining('<a href="max://user/winner-1">CEO</a>'),
+      expect.stringContaining('🏆 Победитель:\n\n1. [CEO](max://user/winner-1)'),
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
         messageLink: {
           type: 'reply',
           mid: 'publication-1',
@@ -1374,6 +1374,44 @@ describe('ManagedGiveawayService', () => {
     expect(text).toContain('2. [CTO](max://user/winner-2)');
   });
 
+  it('publishes giveaway results as markdown with real line breaks', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'results-1',
+      url: 'https://max.ru/channels/source-1/messages/results-1',
+    });
+
+    await (service as any).republishGiveawayResults(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        winners: [
+          createWinner({ status: ManagedGiveawayWinnerStatus.SELECTED }),
+          createSecondWinner({ status: ManagedGiveawayWinnerStatus.SELECTED }),
+        ],
+      }),
+    );
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'source-1',
+      expect.stringContaining(
+        '🏆 Победители:\n\n1. [CEO](max://user/winner-1) — Главный приз\n2. [CTO](max://user/winner-2) — Второй приз',
+      ),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+  });
+
   it('keeps winner mention as a hyperlink when refreshing an existing results post', async () => {
     const prisma = createPrismaMock();
     const maxClient = createMaxClientMock();
@@ -1397,9 +1435,9 @@ describe('ManagedGiveawayService', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'source-1',
       'results-1',
-      expect.stringContaining('<a href="max://user/winner-1">CEO</a>'),
+      expect.stringContaining('[CEO](max://user/winner-1)'),
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
         messageLink: {
           type: 'reply',
           mid: 'publication-1',

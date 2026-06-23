@@ -3608,15 +3608,24 @@ export class MaxClientService implements OnModuleDestroy {
 
   private extractMessageMarkup(message: Record<string, unknown> | null): MaxMessageMarkup[] {
     const body = this.asRecord(message?.body);
-    const rawMarkup = Array.isArray(body?.markup)
-      ? body.markup
-      : Array.isArray(message?.markup)
-        ? message.markup
-        : [];
+    const rawMarkupCandidate =
+      [
+        body?.markup,
+        body?.text_markup,
+        body?.textMarkup,
+        body?.caption_markup,
+        body?.captionMarkup,
+        message?.markup,
+        message?.text_markup,
+        message?.textMarkup,
+        message?.caption_markup,
+        message?.captionMarkup,
+      ].find((candidate) => Array.isArray(candidate) && candidate.length > 0) ?? [];
+    const rawMarkup: unknown[] = Array.isArray(rawMarkupCandidate) ? rawMarkupCandidate : [];
 
     return rawMarkup
-      .map((item) => this.normalizeMessageMarkup(item))
-      .filter((item): item is MaxMessageMarkup => item !== null);
+      .map((item: unknown) => this.normalizeMessageMarkup(item))
+      .filter((item: MaxMessageMarkup | null): item is MaxMessageMarkup => item !== null);
   }
 
   private normalizeMessageMarkup(value: unknown): MaxMessageMarkup | null {
@@ -3900,11 +3909,7 @@ export class MaxClientService implements OnModuleDestroy {
             }
           : null;
       case 'user_mention': {
-        const mentionTarget = markup.userLink
-          ? markup.userLink.startsWith('max://')
-            ? markup.userLink
-            : `https://max.ru/${markup.userLink}`
-          : null;
+        const mentionTarget = this.resolveMentionMarkupHref(markup.userLink);
         return mentionTarget
           ? {
               open: '[',
@@ -3940,7 +3945,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private escapeMarkdownText(value: string): string {
-    return value.replace(/([\\_*[\]()`])/g, '\\$1');
+    return value.replace(/([\\#_*[\]()`~+])/g, '\\$1');
   }
 
   private resolveMarkupHtmlTags(
@@ -3973,14 +3978,16 @@ export class MaxClientService implements OnModuleDestroy {
               priority: 10,
             }
           : null;
-      case 'user_mention':
-        return markup.userLink
+      case 'user_mention': {
+        const mentionTarget = this.resolveMentionMarkupHref(markup.userLink);
+        return mentionTarget
           ? {
-              open: `<a href="${this.escapeHtmlAttribute(`https://max.ru/${markup.userLink}`)}">`,
+              open: `<a href="${this.escapeHtmlAttribute(mentionTarget)}">`,
               close: '</a>',
               priority: 10,
             }
           : null;
+      }
       default:
         return null;
     }
@@ -3996,6 +4003,24 @@ export class MaxClientService implements OnModuleDestroy {
 
   private escapeHtmlAttribute(value: string): string {
     return this.escapeHtml(value).replaceAll("'", '&#39;');
+  }
+
+  private resolveMentionMarkupHref(value: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    if (/^(?:max:\/\/|https?:\/\/)/iu.test(normalized)) {
+      return normalized;
+    }
+
+    const trimmed = normalized.replace(/^\/+/u, '');
+    return trimmed.startsWith('user/') ? `max://${trimmed}` : `https://max.ru/${trimmed}`;
   }
 
   private extractEditableAttachments(
