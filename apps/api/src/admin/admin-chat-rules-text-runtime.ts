@@ -529,6 +529,8 @@ import {
 } from './admin.service.support';
 import type { AdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 import {
+  buildRulesTextFromSettings as buildRulesTextFromSettingsValue,
+  buildRulesTextItemsFromSettings as buildRulesTextItemsFromSettingsValue,
   buildRulesSanctionsSummary as buildRulesSanctionsSummaryValue,
   formatRulesConjunctionList as formatRulesConjunctionListValue,
   formatRulesDuplicateAllowanceLabel as formatRulesDuplicateAllowanceLabelValue,
@@ -707,30 +709,7 @@ export class AdminChatRulesTextRuntime {
     domains: DomainAllowlistEntry[];
     requiredSubscriptionChannels: ManagedEntityHeader[];
   }): string {
-    const items = this.buildRulesTextItemsFromSettings(input);
-    if (items.length === 0) {
-      throw new BadRequestException('Нет активных настроек, из которых можно собрать правила.');
-    }
-
-    const lines = ['Правила чата:', ''];
-    const numberedItems: string[] = [];
-
-    for (const [index, item] of items.entries()) {
-      const numberedItem = `${index + 1}. ${item}`;
-      const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
-      if (candidate.length > 2_000) {
-        break;
-      }
-      numberedItems.push(numberedItem);
-    }
-
-    if (numberedItems.length === 0) {
-      throw new BadRequestException(
-        'Не удалось собрать короткий текст правил из текущих настроек.',
-      );
-    }
-
-    return [...lines, ...numberedItems].join('\n');
+    return buildRulesTextFromSettingsValue(input);
   }
 
   private buildRulesTextItemsFromSettings(input: {
@@ -738,127 +717,7 @@ export class AdminChatRulesTextRuntime {
     domains: DomainAllowlistEntry[];
     requiredSubscriptionChannels: ManagedEntityHeader[];
   }): string[] {
-    const { settings, requiredSubscriptionChannels, domains } = input;
-    const items: string[] = [];
-
-    if (settings.linkPolicy === 'BLOCKLIST_ONLY') {
-      items.push('Пожалуйста, не отправляйте ссылки: бот их удаляет.');
-    } else if (settings.linkPolicy === 'ALLOWLIST_ONLY') {
-      items.push(
-        domains.length > 0
-          ? 'Можно отправлять только ссылки из разрешённого списка.'
-          : 'Ссылки здесь ограничены: если нужно, сначала согласуйте их с администраторами.',
-      );
-    } else if (settings.linkPolicy === 'ALERT_ONLY') {
-      items.push('Ссылки бот проверяет, но не удаляет автоматически.');
-    }
-
-    if (this.isRequiredSubscriptionCurrentlyActive(settings)) {
-      const channelTitles = requiredSubscriptionChannels
-        .map((channel) => channel.title.trim())
-        .filter(Boolean);
-      items.push(
-        channelTitles.length > 0
-          ? `Чтобы писать в чат, сначала подпишитесь на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
-          : 'Чтобы писать в чат, сначала подпишитесь на обязательные чаты или каналы.',
-      );
-    }
-
-    if (settings.russianProfanityFilterEnabled) {
-      items.push('Пожалуйста, без мата и грубой лексики.');
-    }
-
-    if (settings.commercialAdsFilterEnabled) {
-      items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
-    }
-
-    if (settings.thematicCodewordEnabled) {
-      const codeword = settings.thematicCodeword.trim();
-      items.push(
-        codeword
-          ? `Если пишете по теме, начинайте сообщение со слова "${codeword}".`
-          : 'Если включён тематический фильтр, придерживайтесь темы чата.',
-      );
-    }
-
-    if (settings.antiDuplicateEnabled) {
-      const allowedCount = this.resolveRulesDuplicateAllowedCount(settings);
-      items.push(
-        allowedCount === 0
-          ? 'Не повторяйте одно и то же сообщение несколько раз.'
-          : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatRulesDuplicateAllowanceLabel(allowedCount)}.`,
-      );
-    }
-
-    if (settings.antiSpamEnabled) {
-      items.push('Пожалуйста, не флудите и не спамьте.');
-    }
-
-    if (settings.messageCountLimitEnabled) {
-      items.push(
-        `Пожалуйста, не отправляйте больше ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${this.formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
-      );
-    }
-
-    if (settings.maxMessageLengthEnabled) {
-      items.push(
-        `Старайтесь писать короче: до ${settings.maxMessageLength} символов в одном сообщении.`,
-      );
-    }
-
-    if (settings.photoMessageCooldownEnabled) {
-      items.push(
-        `Фото можно отправлять не чаще одного раза в ${settings.photoMessageCooldownHours} ${this.formatRulesHoursLabel(settings.photoMessageCooldownHours)}.`,
-      );
-    }
-
-    if (settings.stickerMessageCooldownEnabled) {
-      items.push(
-        `Стикеры можно отправлять не чаще одного раза в ${settings.stickerMessageCooldownMinutes} ${this.formatRulesMinutesLabel(settings.stickerMessageCooldownMinutes)}.`,
-      );
-    }
-
-    if (!settings.photoMessagesEnabled) {
-      items.push('Фото сюда отправлять нельзя.');
-    }
-
-    if (!settings.videoMessagesEnabled) {
-      items.push('Видео сюда отправлять нельзя.');
-    }
-
-    if (!settings.fileMessagesEnabled) {
-      items.push('Файлы сюда отправлять нельзя.');
-    }
-
-    if (!settings.voiceMessagesEnabled) {
-      items.push('Голосовые сообщения сюда отправлять нельзя.');
-    }
-
-    if (!settings.phoneNumbersEnabled) {
-      items.push('Телефонные номера в сообщениях запрещены.');
-    }
-
-    if (settings.nightModeEnabled) {
-      items.push(
-        `Ночью чат работает тише: ограничения действуют с ${this.formatRulesTime(settings.nightModeStartTimeMinutes)} до ${this.formatRulesTime(settings.nightModeEndTimeMinutes)}.`,
-      );
-    }
-
-    const sanctionsSummary = this.buildRulesSanctionsSummary(
-      this.isRequiredSubscriptionCurrentlyActive(settings)
-        ? settings
-        : {
-            ...settings,
-            requiredSubscriptionWarnEnabled: false,
-            requiredSubscriptionMuteEnabled: false,
-            requiredSubscriptionBanEnabled: false,
-          },
-    );
-    if (sanctionsSummary) {
-      items.push(sanctionsSummary);
-    }
-
-    return items;
+    return buildRulesTextItemsFromSettingsValue(input);
   }
 
   private buildRulesSanctionsSummary(
