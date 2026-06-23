@@ -1,26 +1,21 @@
 import { raceWithTimeout } from '../common/promise-timeout.util';
 import type { AdminSuggestionDeliveryJob } from './admin-suggestion-delivery.queue';
 import { CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS } from './admin.service.support';
+import type { AdminSuggestionDeliveryRuntimeContext } from './admin-suggestion-delivery-runtime-context';
 
 export class AdminSuggestionDeliveryRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminSuggestionDeliveryRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get adminSuggestionDeliveryQueue() {
+    return this.context.adminSuggestionDeliveryQueue;
+  }
+
+  private get logger() {
+    return this.context.logger;
+  }
+
+  private processChannelSuggestionDeliveryJobWithinTimeout(auditLogId: string): Promise<void> {
+    return this.context.processChannelSuggestionDeliveryJobWithinTimeout(auditLogId);
   }
 
   async processChannelSuggestionDeliveryJob(auditLogId: string): Promise<void> {

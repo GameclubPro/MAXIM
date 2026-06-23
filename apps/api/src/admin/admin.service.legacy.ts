@@ -200,6 +200,7 @@ import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
 import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
 import { AdminSuggestionDeliveryRuntime } from './admin-suggestion-delivery-runtime';
+import { createAdminSuggestionDeliveryRuntimeContext } from './admin-suggestion-delivery-runtime-context';
 import {
   publishChannelEngagementMessage as publishChannelEngagementMessageValue,
   type BuildChannelEngagementDialogArtifactsParams,
@@ -456,7 +457,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(this);
   private readonly participantsRuntime = new AdminParticipantsRuntime(this);
   private readonly requiredSubscriptionRuntime = new AdminRequiredSubscriptionRuntime(this);
-  private readonly suggestionDeliveryRuntime = new AdminSuggestionDeliveryRuntime(this);
+  private readonly suggestionDeliveryRuntime = new AdminSuggestionDeliveryRuntime(
+    createAdminSuggestionDeliveryRuntimeContext(this),
+  );
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
