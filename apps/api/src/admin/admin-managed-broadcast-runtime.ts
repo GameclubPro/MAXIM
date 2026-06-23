@@ -208,6 +208,7 @@ import {
   type SystemModeSnapshot,
 } from '../system/system-mode.service';
 import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
+import type { ManagedEntityAccessLossService } from '../max/managed-entity-access-loss.service';
 import {
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   type AdminManagedEntitiesRefreshJob,
@@ -573,6 +574,38 @@ export class AdminManagedBroadcastRuntime {
         return true;
       },
     });
+  }
+
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get logger(): Logger {
+    return this.context.logger;
+  }
+
+  private get backgroundRuntimeGovernorService(): BackgroundRuntimeGovernorService | undefined {
+    return this.context.backgroundRuntimeGovernorService;
+  }
+
+  private get managedEntityAccessLossService(): ManagedEntityAccessLossService | undefined {
+    return this.context.managedEntityAccessLossService;
+  }
+
+  private get managedBroadcastDegradePauseLogAtMs(): number {
+    return this.context.managedBroadcastDegradePauseLogAtMs;
+  }
+
+  private set managedBroadcastDegradePauseLogAtMs(value: number) {
+    this.context.managedBroadcastDegradePauseLogAtMs = value;
+  }
+
+  private resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
+    return this.context.resolveSystemModeSnapshot();
   }
 
   async sendBroadcast(
