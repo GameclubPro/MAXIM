@@ -190,6 +190,7 @@ import {
   saveChatRulesDraft,
 } from './admin-chat-rules';
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
+import { createAdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 import { AdminChannelDialogMappingRuntime } from './admin-channel-dialog-mapping-runtime';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
@@ -444,7 +445,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedBroadcastRuntime = new AdminManagedBroadcastRuntime(
     createAdminManagedBroadcastRuntimeContext(this),
   );
-  private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(this);
+  private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(
+    createAdminChatRulesTextRuntimeContext(this),
+  );
   private readonly channelDialogMappingRuntime = new AdminChannelDialogMappingRuntime(this);
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(this);

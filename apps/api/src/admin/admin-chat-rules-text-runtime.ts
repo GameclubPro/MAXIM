@@ -527,6 +527,7 @@ import {
   type ChannelSuggestionReviewAction,
   type ChannelSuggestionAdminDelivery,
 } from './admin.service.support';
+import type { AdminChatRulesTextRuntimeContext } from './admin-chat-rules-text-runtime-context';
 export type {
   AdminActionSource,
   ChannelPublicationEngagementContext,
@@ -536,19 +537,19 @@ export type {
 export class AdminChatRulesTextRuntime {
   [key: string]: any;
 
-  constructor(private readonly context: any) {
+  constructor(private readonly context: AdminChatRulesTextRuntimeContext) {
     return new Proxy(this, {
       get: (target, prop, receiver) => {
         if (prop in target) {
           return Reflect.get(target, prop, receiver);
         }
-        return this.context[prop as keyof typeof this.context];
+        return this.context.read(prop);
       },
       set: (target, prop, value, receiver) => {
         if (prop in target) {
           return Reflect.set(target, prop, value, receiver);
         }
-        this.context[prop as keyof typeof this.context] = value;
+        this.context.write(prop, value);
         return true;
       },
     });
