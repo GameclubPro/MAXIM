@@ -196,6 +196,7 @@ import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
 import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
 import { AdminManualModerationRuntime } from './admin-manual-moderation-runtime';
+import { createAdminManualModerationRuntimeContext } from './admin-manual-moderation-runtime-context';
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
 import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
@@ -453,7 +454,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(this);
   private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(this);
-  private readonly manualModerationRuntime = new AdminManualModerationRuntime(this);
+  private readonly manualModerationRuntime = new AdminManualModerationRuntime(
+    createAdminManualModerationRuntimeContext(this),
+  );
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(this);
   private readonly participantsRuntime = new AdminParticipantsRuntime(this);
   private readonly requiredSubscriptionRuntime = new AdminRequiredSubscriptionRuntime(this);

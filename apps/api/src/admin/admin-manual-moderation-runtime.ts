@@ -3,27 +3,40 @@ import { createHash } from 'node:crypto';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import type { AdminManualGroupModerationCommandJob } from './admin-manual-fanout.queue';
 import type { AdminSuperBanJob } from './admin-super-ban.queue';
+import type { AdminManualModerationRuntimeContext } from './admin-manual-moderation-runtime-context';
 import { ADMIN_SUPER_BAN_QUEUE_PRIORITY } from './admin.service.support';
 
 export class AdminManualModerationRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminManualModerationRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get adminSuperBanQueue() {
+    return this.context.adminSuperBanQueue;
+  }
+
+  private get logger() {
+    return this.context.logger;
+  }
+
+  private enqueueManualModerationFanout(job: Parameters<
+    AdminManualModerationRuntimeContext['enqueueManualModerationFanout']
+  >[0]): Promise<boolean> {
+    return this.context.enqueueManualModerationFanout(job);
+  }
+
+  private isKnownRuntimeBotUserId(userId: string | null | undefined): boolean {
+    return this.context.isKnownRuntimeBotUserId(userId);
+  }
+
+  private isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
+    return this.context.isSuperBanDeveloperUserId(userId);
+  }
+
+  private processDeveloperSuperBanJob(job: AdminSuperBanJob): Promise<void> {
+    return this.context.processDeveloperSuperBanJob(job);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
   }
 
   async enqueueManualGroupModerationCommand(params: {
