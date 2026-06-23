@@ -202,6 +202,7 @@ import { createAdminManualModerationRuntimeContext } from './admin-manual-modera
 import { AdminManagedEntitiesRuntime } from './admin-managed-entities-runtime';
 import { createAdminManagedEntitiesRuntimeContext } from './admin-managed-entities-runtime-context';
 import { AdminParticipantsRuntime } from './admin-participants-runtime';
+import { createAdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
 import { AdminRequiredSubscriptionRuntime } from './admin-required-subscription-runtime';
 import { createAdminRequiredSubscriptionRuntimeContext } from './admin-required-subscription-runtime-context';
 import { AdminSuggestionDeliveryRuntime } from './admin-suggestion-delivery-runtime';
@@ -468,7 +469,9 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesRuntime = new AdminManagedEntitiesRuntime(
     createAdminManagedEntitiesRuntimeContext(this),
   );
-  private readonly participantsRuntime = new AdminParticipantsRuntime(this);
+  private readonly participantsRuntime = new AdminParticipantsRuntime(
+    createAdminParticipantsRuntimeContext(this),
+  );
   private readonly requiredSubscriptionRuntime = new AdminRequiredSubscriptionRuntime(
     createAdminRequiredSubscriptionRuntimeContext(this),
   );

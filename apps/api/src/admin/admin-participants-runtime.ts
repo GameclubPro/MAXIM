@@ -15,11 +15,15 @@ import { BadRequestException } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MAX_API_SOURCE_TAGS,
+  type MaxClientService,
   type MaxChatMemberAccess,
   type MaxChatMemberRole,
   type MaxChatRosterMember,
 } from '../max/max-client.service';
+import type { Prisma } from '../prisma/prisma-client';
+import type { PrismaService } from '../prisma/prisma.service';
 import { buildChatParticipantsPageCacheKey, isMaxApiThrottleError } from './admin-legacy-utils';
+import type { AdminParticipantsRuntimeContext } from './admin-participants-runtime-context';
 import {
   ADMIN_ACTION_HEALTH_LANE,
   ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
@@ -29,27 +33,100 @@ import {
   EVENTS_FEED_PAGE_CACHE_TTL_MS,
   ONE_HOUR_MS,
   type ChatParticipantsSearchCursor,
+  type TimedPromiseCacheEntry,
 } from './admin.service.support';
 
 export class AdminParticipantsRuntime {
-  [key: string]: any;
+  constructor(private readonly context: AdminParticipantsRuntimeContext) {}
 
-  constructor(private readonly context: any) {
-    return new Proxy(this, {
-      get: (target, prop, receiver) => {
-        if (prop in target) {
-          return Reflect.get(target, prop, receiver);
-        }
-        return this.context[prop as keyof typeof this.context];
-      },
-      set: (target, prop, value, receiver) => {
-        if (prop in target) {
-          return Reflect.set(target, prop, value, receiver);
-        }
-        this.context[prop as keyof typeof this.context] = value;
-        return true;
-      },
-    });
+  private get prisma(): PrismaService {
+    return this.context.prisma;
+  }
+
+  private get maxClient(): MaxClientService {
+    return this.context.maxClient;
+  }
+
+  private get logger(): AdminParticipantsRuntimeContext['logger'] {
+    return this.context.logger;
+  }
+
+  private get chatParticipantsPageCache(): Map<
+    string,
+    TimedPromiseCacheEntry<ChatParticipantsPage>
+  > {
+    return this.context.chatParticipantsPageCache;
+  }
+
+  private assertReadOnlyChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType?: ManagedEntityType | null,
+    options?: Parameters<AdminParticipantsRuntimeContext['assertReadOnlyChatAdmin']>[3],
+  ): Promise<void> {
+    return this.context.assertReadOnlyChatAdmin(chatId, userId, entityType, options);
+  }
+
+  private buildParticipantViolationCountWhere(
+    chatId: string,
+    userIds: readonly string[],
+    from: Date,
+    to: Date,
+  ): Prisma.ModerationEventWhereInput {
+    return this.context.buildParticipantViolationCountWhere(chatId, userIds, from, to);
+  }
+
+  private buildProfileMentionHandoffUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userId: string,
+    displayName: string | null,
+  ): string | null {
+    return this.context.buildProfileMentionHandoffUrl(chatId, entityType, userId, displayName);
+  }
+
+  private buildUserProfileUrl(username: string | null): string | null {
+    return this.context.buildUserProfileUrl(username);
+  }
+
+  private ensureEntityType(
+    chatId: string,
+    userId: string,
+    expectedEntityType: ManagedEntityType,
+  ): Promise<void> {
+    return this.context.ensureEntityType(chatId, userId, expectedEntityType);
+  }
+
+  private getManagedEntityHeader(
+    ...args: Parameters<AdminParticipantsRuntimeContext['getManagedEntityHeader']>
+  ): ReturnType<AdminParticipantsRuntimeContext['getManagedEntityHeader']> {
+    return this.context.getManagedEntityHeader(...args);
+  }
+
+  private normalizeMaxProfileUrl(value: string | null): string | null {
+    return this.context.normalizeMaxProfileUrl(value);
+  }
+
+  private prepareManualModerationTarget(
+    ...args: Parameters<AdminParticipantsRuntimeContext['prepareManualModerationTarget']>
+  ): ReturnType<AdminParticipantsRuntimeContext['prepareManualModerationTarget']> {
+    return this.context.prepareManualModerationTarget(...args);
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return this.context.readTrimmedString(value);
+  }
+
+  private resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
+    return this.context.resolveBackgroundReadBotAssignment(chatId);
+  }
+
+  private resolveLogsDashboardFrom(range: ChatParticipantsQuery['range'], to: Date): Date {
+    return this.context.resolveLogsDashboardFrom(range, to);
+  }
+
+  private toSafeInteger(value: unknown): number {
+    return this.context.toSafeInteger(value);
   }
 
   async getChatParticipantsPage(
