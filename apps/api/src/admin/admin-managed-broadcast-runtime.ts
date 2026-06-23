@@ -112,10 +112,7 @@ import {
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
   type BroadcastImage,
-  DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_IMAGES,
-  MAX_BROADCAST_LINK_BUTTONS,
-  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
   INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
@@ -299,6 +296,12 @@ import {
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
+import {
+  buildManagedBroadcastButtonState as buildManagedBroadcastButtonStateValue,
+  buildManagedBroadcastLinkButtonRows,
+  normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
+  type ManagedBroadcastLegacyButtonState,
+} from './admin-managed-broadcast-buttons';
 import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
@@ -4053,6 +4056,26 @@ export class AdminManagedBroadcastRuntime {
     }
 
     return 'broadcast-image.jpg';
+  }
+
+  private normalizeManagedBroadcastButtons(
+    rawButtons: unknown,
+    legacy?: ManagedBroadcastLegacyButtonState,
+  ): BroadcastLinkButton[] {
+    return normalizeManagedBroadcastButtonsValue(rawButtons, legacy);
+  }
+
+  private buildManagedBroadcastButtonState(
+    rawButtons: unknown,
+    legacy?: ManagedBroadcastLegacyButtonState,
+  ) {
+    return buildManagedBroadcastButtonStateValue(rawButtons, legacy);
+  }
+
+  private buildBroadcastLinkButtonRows(
+    buttons: readonly BroadcastLinkButton[],
+  ): MaxMessageButton[][] {
+    return buildManagedBroadcastLinkButtonRows(buttons);
   }
 
   private getCurrentManagedBroadcastOccurrence(row: PersistedManagedBroadcast): number {

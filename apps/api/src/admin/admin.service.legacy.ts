@@ -75,9 +75,6 @@ import {
   updateChannelDialogNotificationsResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
-  DEFAULT_BROADCAST_BUTTON_TEXT,
-  MAX_BROADCAST_LINK_BUTTONS,
-  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   normalizeDeleteBotMessagesDelayMinutes,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -253,6 +250,12 @@ import {
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
+import {
+  buildManagedBroadcastButtonState as buildManagedBroadcastButtonStateValue,
+  buildManagedBroadcastLinkButtonRows,
+  normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
+  type ManagedBroadcastLegacyButtonState,
+} from './admin-managed-broadcast-buttons';
 
 import {
   DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
@@ -8146,102 +8149,22 @@ export class AdminService implements OnModuleDestroy {
 
   private normalizeManagedBroadcastButtons(
     rawButtons: unknown,
-    legacy?: {
-      buttonEnabled?: boolean;
-      buttonUrl?: string | null;
-      buttonText?: string | null;
-    },
+    legacy?: ManagedBroadcastLegacyButtonState,
   ): BroadcastLinkButton[] {
-    const normalizedButtons: BroadcastLinkButton[] = [];
-
-    if (Array.isArray(rawButtons)) {
-      for (const item of rawButtons) {
-        if (!item || typeof item !== 'object') {
-          continue;
-        }
-
-        const row = item as { text?: unknown; url?: unknown };
-        const url = this.normalizeLegacyProfileButtonUrl(
-          typeof row.url === 'string' ? row.url : '',
-        );
-
-        if (!url) {
-          continue;
-        }
-
-        normalizedButtons.push({
-          text:
-            typeof row.text === 'string' && row.text.trim().length > 0
-              ? row.text.trim()
-              : DEFAULT_BROADCAST_BUTTON_TEXT,
-          url,
-        });
-
-        if (normalizedButtons.length >= MAX_BROADCAST_LINK_BUTTONS) {
-          break;
-        }
-      }
-    }
-
-    if (normalizedButtons.length > 0) {
-      return normalizedButtons;
-    }
-
-    if (legacy?.buttonEnabled !== true) {
-      return [];
-    }
-
-    const legacyUrl = this.normalizeLegacyProfileButtonUrl(legacy.buttonUrl ?? '');
-    if (!legacyUrl) {
-      return [];
-    }
-
-    return [
-      {
-        text: legacy.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
-        url: legacyUrl,
-      },
-    ];
+    return normalizeManagedBroadcastButtonsValue(rawButtons, legacy);
   }
 
   private buildManagedBroadcastButtonState(
     rawButtons: unknown,
-    legacy?: {
-      buttonEnabled?: boolean;
-      buttonUrl?: string | null;
-      buttonText?: string | null;
-    },
-  ): {
-    buttons: BroadcastLinkButton[];
-    buttonEnabled: boolean;
-    buttonUrl: string;
-    buttonText: string;
-  } {
-    const buttons = this.normalizeManagedBroadcastButtons(rawButtons, legacy);
-    const primaryButton = buttons[0];
-
-    return {
-      buttons,
-      buttonEnabled: buttons.length > 0,
-      buttonUrl: primaryButton?.url ?? '',
-      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-    };
+    legacy?: ManagedBroadcastLegacyButtonState,
+  ) {
+    return buildManagedBroadcastButtonStateValue(rawButtons, legacy);
   }
 
-  private buildBroadcastLinkButtonRows(buttons: BroadcastLinkButton[]): MaxMessageButton[][] {
-    const rows: MaxMessageButton[][] = [];
-
-    for (let index = 0; index < buttons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
-      rows.push(
-        buttons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW).map((button) => ({
-          type: 'link',
-          text: button.text,
-          url: button.url,
-        })),
-      );
-    }
-
-    return rows;
+  private buildBroadcastLinkButtonRows(
+    buttons: readonly BroadcastLinkButton[],
+  ): MaxMessageButton[][] {
+    return buildManagedBroadcastLinkButtonRows(buttons);
   }
 
   async buildChannelPublicationEngagementContext(
