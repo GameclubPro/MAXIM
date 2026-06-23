@@ -18,14 +18,8 @@ import {
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
   dateRangeQuerySchema,
-  logsDashboardQuerySchema,
-  logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
-  moderationFeedPageSchema,
-  moderationFeedQuerySchema,
-  membershipActivityPageSchema,
-  membershipActivityQuerySchema,
   managedEntityBotCapabilitySchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
@@ -63,13 +57,11 @@ import {
   chatSettingsSchema,
   type ChannelSettingsScreenResponse,
   type DomainAllowlistEntry,
-  type LogsDashboardViolation,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedEntityType,
   type ManualModerationActionResult,
   type ModerationFeedPage,
-  type ModerationFeedQuery,
   type ModerationEvent,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
@@ -214,6 +206,7 @@ import {
 import { AdminChatRulesTextRuntime } from './admin-chat-rules-text-runtime';
 import { AdminChannelStatsRuntime } from './admin-channel-stats-runtime';
 import { AdminDomainAllowlistRuntime } from './admin-domain-allowlist-runtime';
+import { AdminLogsDashboardRuntime } from './admin-logs-dashboard-runtime';
 import {
   publishChannelEngagementMessage as publishChannelEngagementMessageValue,
   type BuildChannelEngagementDialogArtifactsParams,
@@ -255,9 +248,6 @@ import { resolveRequiredSubscriptionChannelByKnownLink } from './admin-required-
 import {
   buildChannelOverview,
   buildChatParticipantsPageCacheKey,
-  buildLogsDashboardResponseCacheKey,
-  buildMembershipActivityFeedPageCacheKey,
-  buildModerationFeedPageCacheKey,
   buildResolvedUserProfileCacheKey,
   fromPrismaEntityType,
   ignorePrismaUniqueConflict,
@@ -275,11 +265,6 @@ import {
   resolvePresentableManagedEntityTitle,
   toPrismaEntityType,
 } from './admin-legacy-utils';
-import {
-  selectLogsDashboardMembershipSummary,
-  selectLogsDashboardModerationSummary,
-} from './logs-dashboard-rollups';
-import { selectModerationFeedReadModelRows } from './stats-read-model-selectors';
 
 import {
   DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
@@ -291,10 +276,6 @@ import {
   CHANNEL_SUGGESTION_DELIVERY_JOB_TIMEOUT_MS,
   CHANNEL_SUGGESTION_SEND_TIMEOUT_MS,
   CHANNEL_SUGGESTION_UPLOAD_TIMEOUT_MS,
-  LOGS_DASHBOARD_VIOLATIONS_LIMIT,
-  MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-  LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
-  SLOW_LOGS_DASHBOARD_THRESHOLD_MS,
   EVENTS_FEED_PAGE_CACHE_TTL_MS,
   CHANNEL_STATS_RESPONSE_CACHE_TTL_MS,
   CHANNEL_STATS_REFRESHING_RESPONSE_CACHE_TTL_MS,
@@ -436,14 +417,12 @@ import {
   type ResolveManualModerationActionBotAssignmentOptions,
   type ResolvedUserProfile,
   type ResolveUserProfilesOptions,
-  type ModerationFeedCursor,
   type ChatParticipantsSearchCursor,
   type ChannelSuggestionActor,
   type ChannelSuggestionImageAsset,
   type ChannelDialogAttachmentAsset,
   type ChannelSuggestionTextMarkup,
   type ChannelSuggestionDeliveryInput,
-  type ModerationViolationRow,
   type MembershipEventRow,
   type ChannelDialogMessageSource,
   type DialogMessageEntityType,
@@ -477,6 +456,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly chatRulesTextRuntime = new AdminChatRulesTextRuntime(this);
   private readonly channelStatsRuntime = new AdminChannelStatsRuntime(this);
   private readonly domainAllowlistRuntime = new AdminDomainAllowlistRuntime(this);
+  private readonly logsDashboardRuntime = new AdminLogsDashboardRuntime(this);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
@@ -6628,26 +6608,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel', {
-      syncPersistedAccess: false,
-    });
-    await this.ensureEntityType(chatId, user.userId, 'channel');
-
-    const parsed = membershipActivityQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const now = new Date();
-    const from = this.resolveChannelStatsFrom(parsed.data.range, now);
-    return this.getCachedMembershipActivityFeedPage(
-      chatId,
-      user.userId,
-      from,
-      now,
-      parsed.data,
-      'channel',
-    );
+    return this.logsDashboardRuntime.getChannelActivityFeed(chatId, user, query);
   }
 
   async getSettings(
@@ -9592,224 +9553,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<LogsDashboardResponse> {
-    const startedAtMs = Date.now();
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, null);
-    const adminCheckedAtMs = Date.now();
-    const parsed = logsDashboardQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const cacheKey = buildLogsDashboardResponseCacheKey(
-      chatId,
-      user.userId,
-      parsed.data.range,
-      parsed.data.includeActivityPreview,
-      parsed.data.includeModerationPreview,
-    );
-    const cached = this.logsDashboardResponseCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      const response = await cached.promise;
-      const finishedAtMs = Date.now();
-      const totalMs = finishedAtMs - startedAtMs;
-      if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
-        this.logger.warn(
-          {
-            chatId,
-            userId: user.userId,
-            totalMs,
-            adminCheckMs: adminCheckedAtMs - startedAtMs,
-            responseMs: finishedAtMs - adminCheckedAtMs,
-            cacheHit: true,
-            range: parsed.data.range,
-            includeActivityPreview: parsed.data.includeActivityPreview,
-            includeModerationPreview: parsed.data.includeModerationPreview,
-          },
-          'Slow logs dashboard request completed',
-        );
-      }
-      return response;
-    }
-
-    const pending = this.buildLogsDashboardResponse(
-      chatId,
-      parsed.data.range,
-      parsed.data.includeActivityPreview,
-      parsed.data.includeModerationPreview,
-    ).catch((error: unknown) => {
-      const current = this.logsDashboardResponseCache.get(cacheKey);
-      if (current?.promise === pending) {
-        this.logsDashboardResponseCache.delete(cacheKey);
-      }
-      throw error;
-    });
-
-    this.logsDashboardResponseCache.set(cacheKey, {
-      expiresAtMs: Date.now() + LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
-      promise: pending,
-    });
-
-    const response = await pending;
-    const finishedAtMs = Date.now();
-    const totalMs = finishedAtMs - startedAtMs;
-    if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
-      this.logger.warn(
-        {
-          chatId,
-          userId: user.userId,
-          totalMs,
-          adminCheckMs: adminCheckedAtMs - startedAtMs,
-          responseMs: finishedAtMs - adminCheckedAtMs,
-          cacheHit: false,
-          range: parsed.data.range,
-          includeActivityPreview: parsed.data.includeActivityPreview,
-          includeModerationPreview: parsed.data.includeModerationPreview,
-        },
-        'Slow logs dashboard request completed',
-      );
-    }
-
-    return response;
-  }
-
-  private async buildLogsDashboardResponse(
-    chatId: string,
-    range: LogsDashboardRange,
-    includeActivityPreview = true,
-    includeModerationPreview = true,
-  ): Promise<LogsDashboardResponse> {
-    const startedAtMs = Date.now();
-    const now = new Date();
-    const from = this.resolveLogsDashboardFrom(range, now);
-    const headerPromise =
-      this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
-
-    const baseQueriesStartedAtMs = Date.now();
-    const [chat, membershipSummary, chatHeader, moderationSummary, moderationFeed] =
-      await Promise.all([
-        this.prisma.chat.findUnique({
-          where: { id: chatId },
-          select: { id: true, title: true },
-        }),
-        includeActivityPreview
-          ? selectLogsDashboardMembershipSummary(
-              this.prisma,
-              chatId,
-              from,
-              now,
-              (edgeChatId, edgeFrom, edgeTo, eventTypes) =>
-                this.getMembershipEventRows(edgeChatId, edgeFrom, edgeTo, eventTypes),
-            )
-          : Promise.resolve({ joinedUsers: 0, leftUsers: 0 }),
-        headerPromise,
-        includeModerationPreview
-          ? selectLogsDashboardModerationSummary(this.prisma, chatId, from, now)
-          : Promise.resolve({
-              warn: 0,
-              deleteMessage: 0,
-              mute: 0,
-              ban: 0,
-              unmute: 0,
-              unban: 0,
-              affectedUsers: 0,
-            }),
-        includeModerationPreview
-          ? this.getModerationFeedPage(
-              chatId,
-              from,
-              now,
-              {
-                range,
-                filter: 'ALL',
-                limit: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
-              },
-              'chat',
-              { allowRemoteLookup: false },
-            )
-          : this.buildEmptyModerationFeedPage(),
-      ]);
-    const baseQueriesFinishedAtMs = Date.now();
-
-    const joinedUsers = membershipSummary.joinedUsers;
-    const leftUsers = membershipSummary.leftUsers;
-    const activityFeedStartedAtMs = Date.now();
-    const activityFeed = includeActivityPreview
-      ? await this.getMembershipActivityFeedPage(
-          chatId,
-          from,
-          now,
-          {
-            range,
-            filter: 'all',
-            limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-          },
-          'chat',
-          { allowRemoteLookup: false },
-        )
-      : this.buildEmptyMembershipActivityPage();
-    const activityFeedFinishedAtMs = Date.now();
-    const response: LogsDashboardResponse = {
-      chat: {
-        id: chatId,
-        title: chat?.title?.trim() || 'Чат без названия',
-        participantsCount:
-          typeof chatHeader?.participantsCount === 'number' &&
-          Number.isFinite(chatHeader.participantsCount)
-            ? Math.max(0, Math.trunc(chatHeader.participantsCount))
-            : null,
-        avatarUrl: chatHeader?.avatarUrl?.trim() || null,
-      },
-      period: {
-        range,
-        from: from.toISOString(),
-        to: now.toISOString(),
-      },
-      membership: {
-        joinedUsers,
-        leftUsers,
-        netUsers: joinedUsers - leftUsers,
-      },
-      violationsSummary: {
-        warn: moderationSummary.warn,
-        deleteMessage: moderationSummary.deleteMessage,
-        mute: moderationSummary.mute,
-        ban: moderationSummary.ban,
-        unmute: moderationSummary.unmute,
-        unban: moderationSummary.unban,
-        affectedUsers: moderationSummary.affectedUsers,
-        total:
-          moderationSummary.warn +
-          moderationSummary.deleteMessage +
-          moderationSummary.mute +
-          moderationSummary.ban +
-          moderationSummary.unmute +
-          moderationSummary.unban,
-      },
-      violations: moderationFeed.items,
-      moderationFeed,
-      activityFeed,
-    };
-
-    const finishedAtMs = Date.now();
-    const totalMs = finishedAtMs - startedAtMs;
-    if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
-      this.logger.warn(
-        {
-          chatId,
-          totalMs,
-          range,
-          includeActivityPreview,
-          includeModerationPreview,
-          baseQueriesMs: baseQueriesFinishedAtMs - baseQueriesStartedAtMs,
-          activityFeedMs: activityFeedFinishedAtMs - activityFeedStartedAtMs,
-          moderationPreviewCount: moderationFeed.items.length,
-          activityPreviewCount: activityFeed.items.length,
-        },
-        'Slow logs dashboard build completed',
-      );
-    }
-
-    return logsDashboardResponseSchema.parse(response);
+    return this.logsDashboardRuntime.getLogsDashboard(chatId, user, query);
   }
 
   async getChatActivityFeed(
@@ -9817,25 +9561,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const parsed = membershipActivityQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const now = new Date();
-    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getCachedMembershipActivityFeedPage(
-      chatId,
-      user.userId,
-      from,
-      now,
-      parsed.data,
-      'chat',
-      { allowRemoteLookup: false },
-    );
+    return this.logsDashboardRuntime.getChatActivityFeed(chatId, user, query);
   }
 
   async getChatModerationFeed(
@@ -9843,19 +9569,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<ModerationFeedPage> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const parsed = moderationFeedQuerySchema.safeParse(query);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const now = new Date();
-    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getCachedModerationFeedPage(chatId, user.userId, from, now, parsed.data, 'chat', {
-      allowRemoteLookup: false,
-    });
+    return this.logsDashboardRuntime.getChatModerationFeed(chatId, user, query);
   }
 
   async getChatParticipantsPage(
@@ -13847,17 +13561,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
-    const toTimestamp = to.getTime();
-
-    if (range === '24h') {
-      return new Date(toTimestamp - 24 * 60 * 60 * 1000);
-    }
-
-    if (range === '30d') {
-      return new Date(toTimestamp - 30 * 24 * 60 * 60 * 1000);
-    }
-
-    return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
+    return this.logsDashboardRuntime.resolveLogsDashboardFrom(range, to);
   }
 
   private buildParticipantViolationCountWhere(
@@ -13884,243 +13588,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private normalizeModerationViolationMetadata(metadata: unknown): Record<string, unknown> | null {
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-      return null;
-    }
-
-    const normalized = { ...(metadata as Record<string, unknown>) };
-    if (
-      typeof normalized.muteDurationHours !== 'number' &&
-      typeof normalized.banDurationHours === 'number'
-    ) {
-      normalized.muteDurationHours = normalized.banDurationHours;
-    }
-
-    if (typeof normalized.muteExpiresAt !== 'string') {
-      if (typeof normalized.banExpiresAt === 'string') {
-        normalized.muteExpiresAt = normalized.banExpiresAt;
-      } else if (typeof normalized.unbanScheduledAt === 'string') {
-        normalized.muteExpiresAt = normalized.unbanScheduledAt;
-      }
-    }
-
-    return normalized;
-  }
-
-  private readStoredModerationTargetDisplayName(
-    metadata: Record<string, unknown> | null,
-  ): string | null {
-    return this.readTrimmedString(metadata?.targetDisplayName) ?? null;
-  }
-
-  private normalizeModerationViolationAction(
-    action: SanctionAction,
-    metadata: Record<string, unknown> | null,
-  ): SanctionAction {
-    if (action === SanctionAction.KICK) {
-      return SanctionAction.BAN;
-    }
-
-    if (
-      action === SanctionAction.BAN &&
-      metadata &&
-      (typeof metadata.muteDurationHours === 'number' ||
-        typeof metadata.banDurationHours === 'number')
-    ) {
-      return SanctionAction.MUTE;
-    }
-
-    return action;
-  }
-
-  private normalizeModerationViolationRuleCode(ruleCode: string, action: SanctionAction): string {
-    if (ruleCode === 'MANUAL_KICK') {
-      return 'MANUAL_BAN';
-    }
-
-    if (ruleCode === 'LOCAL_ADMIN_BLOCK') {
-      return ruleCode;
-    }
-
-    if (ruleCode === 'BAN_ACTIVE_DELETE') {
-      return 'MUTE_ACTIVE_DELETE';
-    }
-
-    if (ruleCode === 'GLOBAL_SPAMMER_KICK' || action === SanctionAction.KICK) {
-      return 'GLOBAL_SPAMMER_BAN';
-    }
-
-    return ruleCode;
-  }
-
-  private mapModerationViolationRow(
-    chatId: string,
-    entityType: ManagedEntityType,
-    row: ModerationViolationRow,
-    userProfiles: Map<string, ResolvedUserProfile>,
-  ): LogsDashboardViolation {
-    const metadata = this.normalizeModerationViolationMetadata(row.metadata);
-    const userProfile = userProfiles.get(row.userId);
-    const action = this.normalizeModerationViolationAction(row.action, metadata);
-    const ruleCode = this.normalizeModerationViolationRuleCode(row.ruleCode, row.action);
-    const userDisplayName =
-      this.readTrimmedString(row.userDisplayName) ??
-      this.readStoredModerationTargetDisplayName(metadata) ??
-      userProfile?.displayName ??
-      null;
-
-    return {
-      id: row.id,
-      action,
-      ruleCode,
-      userId: row.userId,
-      userDisplayName,
-      avatarUrl: row.avatarUrl ?? userProfile?.avatarUrl ?? null,
-      profileUrl: row.profileUrl ?? userProfile?.profileUrl ?? null,
-      profileHandoffUrl:
-        row.profileHandoffUrl ??
-        userProfile?.profileHandoffUrl ??
-        this.buildProfileMentionHandoffUrl(chatId, entityType, row.userId, userDisplayName),
-      createdAt: row.createdAt.toISOString(),
-      maskedExcerpt: row.maskedExcerpt,
-      metadata,
-    };
-  }
-
-  private encodeModerationFeedCursor(value: ModerationFeedCursor): string {
-    return Buffer.from(
-      JSON.stringify({
-        createdAt: value.createdAt.toISOString(),
-        id: value.id,
-      }),
-      'utf8',
-    ).toString('base64url');
-  }
-
-  private decodeModerationFeedCursor(cursor: string | undefined): ModerationFeedCursor | null {
-    const normalizedCursor = cursor?.trim() ?? '';
-    if (!normalizedCursor) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(
-        Buffer.from(normalizedCursor, 'base64url').toString('utf8'),
-      ) as Record<string, unknown>;
-      const createdAtIso = typeof parsed.createdAt === 'string' ? parsed.createdAt.trim() : '';
-      const id = typeof parsed.id === 'string' ? parsed.id.trim() : '';
-      const createdAt = new Date(createdAtIso);
-
-      if (!id || !createdAtIso || !Number.isFinite(createdAt.getTime())) {
-        return null;
-      }
-
-      return {
-        createdAt,
-        id,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private async getModerationFeedPage(
-    chatId: string,
-    from: Date,
-    to: Date,
-    query: ModerationFeedQuery,
-    entityType: ManagedEntityType = 'chat',
-    profileOptions: ResolveUserProfilesOptions = {},
-  ): Promise<ModerationFeedPage> {
-    const limit = Math.max(1, Math.min(100, query.limit));
-    const cursor = this.decodeModerationFeedCursor(query.cursor);
-    const rows = await selectModerationFeedReadModelRows(this.prisma, {
-      chatId,
-      from,
-      to,
-      filter: query.filter,
-      cursor,
-      limit: limit + 1,
-    });
-
-    const pageRows = rows.slice(0, limit);
-    const userIdsToResolve =
-      profileOptions.allowRemoteLookup === false
-        ? []
-        : pageRows
-            .filter((row) => !this.readTrimmedString(row.userDisplayName))
-            .map((row) => row.userId);
-    const userProfiles =
-      userIdsToResolve.length > 0
-        ? await this.resolveUserProfiles(chatId, entityType, userIdsToResolve, profileOptions)
-        : new Map<string, ResolvedUserProfile>();
-    const lastRow = pageRows.at(-1);
-
-    return moderationFeedPageSchema.parse({
-      items: pageRows.map((row) =>
-        this.mapModerationViolationRow(
-          chatId,
-          entityType,
-          row as ModerationViolationRow,
-          userProfiles,
-        ),
-      ),
-      hasMore: rows.length > limit,
-      nextCursor:
-        rows.length > limit && lastRow
-          ? this.encodeModerationFeedCursor({
-              createdAt: lastRow.createdAt,
-              id: lastRow.id,
-            })
-          : null,
-    });
-  }
-
-  private async getCachedModerationFeedPage(
-    chatId: string,
-    userId: string,
-    from: Date,
-    to: Date,
-    query: ModerationFeedQuery,
-    entityType: ManagedEntityType,
-    profileOptions: ResolveUserProfilesOptions = {},
-  ): Promise<ModerationFeedPage> {
-    const cacheKey = buildModerationFeedPageCacheKey(
-      chatId,
-      userId,
-      entityType,
-      query,
-      profileOptions,
-    );
-    const cached = this.moderationFeedPageCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.promise;
-    }
-
-    const pending = this.getModerationFeedPage(
-      chatId,
-      from,
-      to,
-      query,
-      entityType,
-      profileOptions,
-    ).catch((error: unknown) => {
-      const current = this.moderationFeedPageCache.get(cacheKey);
-      if (current?.promise === pending) {
-        this.moderationFeedPageCache.delete(cacheKey);
-      }
-      throw error;
-    });
-
-    this.moderationFeedPageCache.set(cacheKey, {
-      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
-      promise: pending,
-    });
-
-    return pending;
-  }
-
   private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {
     return this.resolveLogsDashboardFrom(range, to);
   }
@@ -14137,145 +13604,14 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType = 'chat',
     profileOptions: ResolveUserProfilesOptions = {},
   ): Promise<MembershipActivityPage> {
-    const allowRemoteLookup = profileOptions.allowRemoteLookup !== false;
-    const limit = Math.max(1, Math.min(100, query.limit));
-    const cursor = this.decodeMembershipActivityCursor(query.cursor);
-    const eventTypes =
-      query.filter === 'joined'
-        ? ['user_added']
-        : query.filter === 'left'
-          ? ['user_removed']
-          : ['user_added', 'user_removed'];
-    const rows = await this.getMembershipEventRows(chatId, from, to, eventTypes, {
-      cursor,
-      limit: limit + 1,
-      order: 'desc',
-    });
-
-    const pageRows = rows.slice(0, limit);
-    const userIdsToResolve = pageRows
-      .filter((row) => {
-        if (allowRemoteLookup) {
-          return true;
-        }
-
-        const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
-        return !directName;
-      })
-      .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
-      .filter(Boolean);
-    const userProfiles = await this.resolveUserProfiles(
-      chatId,
-      entityType,
-      userIdsToResolve,
-      profileOptions,
-    );
-    const items = pageRows
-      .map((row) => {
-        const createdAt = this.toIsoString(row.created_at);
-        if (!createdAt) {
-          return null;
-        }
-
-        const normalizedUserId =
-          typeof row.user_id === 'string' && row.user_id.trim()
-            ? row.user_id.trim()
-            : `unknown:${row.id}`;
-        const eventType = row.event_type === 'user_removed' ? 'left' : 'joined';
-        const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
-        const userProfile = userProfiles.get(normalizedUserId);
-        const userDisplayName = directName || userProfile?.displayName || 'Участник';
-
-        return {
-          id: row.id,
-          type: eventType,
-          userId: normalizedUserId,
-          userDisplayName,
-          avatarUrl: userProfile?.avatarUrl ?? null,
-          profileUrl: userProfile?.profileUrl ?? null,
-          profileHandoffUrl:
-            userProfile?.profileHandoffUrl ??
-            this.buildProfileMentionHandoffUrl(
-              chatId,
-              entityType,
-              normalizedUserId,
-              userDisplayName,
-            ),
-          createdAt,
-        };
-      })
-      .filter(
-        (
-          item,
-        ): item is {
-          id: string;
-          type: 'joined' | 'left';
-          userId: string;
-          userDisplayName: string;
-          avatarUrl: string | null;
-          profileUrl: string | null;
-          profileHandoffUrl: string | null;
-          createdAt: string;
-        } => item !== null,
-      );
-    const hasMore = rows.length > limit;
-    const lastItem = items[items.length - 1] ?? null;
-
-    return membershipActivityPageSchema.parse({
-      items,
-      hasMore,
-      nextCursor:
-        hasMore && lastItem
-          ? this.encodeMembershipActivityCursor({
-              createdAt: lastItem.createdAt,
-              id: lastItem.id,
-            })
-          : null,
-    });
-  }
-
-  private async getCachedMembershipActivityFeedPage(
-    chatId: string,
-    userId: string,
-    from: Date,
-    to: Date,
-    query: MembershipActivityQuery,
-    entityType: ManagedEntityType,
-    profileOptions: ResolveUserProfilesOptions = {},
-  ): Promise<MembershipActivityPage> {
-    const cacheKey = buildMembershipActivityFeedPageCacheKey(
-      chatId,
-      userId,
-      entityType,
-      query,
-      profileOptions,
-    );
-    const cached = this.membershipActivityFeedPageCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.promise;
-    }
-
-    const pending = this.getMembershipActivityFeedPage(
+    return this.logsDashboardRuntime.getMembershipActivityFeedPage(
       chatId,
       from,
       to,
       query,
       entityType,
       profileOptions,
-    ).catch((error: unknown) => {
-      const current = this.membershipActivityFeedPageCache.get(cacheKey);
-      if (current?.promise === pending) {
-        this.membershipActivityFeedPageCache.delete(cacheKey);
-      }
-      throw error;
-    });
-
-    this.membershipActivityFeedPageCache.set(cacheKey, {
-      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
-      promise: pending,
-    });
-
-    return pending;
+    );
   }
 
   private async buildChatParticipantsPage(
@@ -14799,19 +14135,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private buildEmptyModerationFeedPage(): ModerationFeedPage {
-    return moderationFeedPageSchema.parse({
-      items: [],
-      hasMore: false,
-      nextCursor: null,
-    });
+    return (this.logsDashboardRuntime as any).buildEmptyModerationFeedPage();
   }
 
   private buildEmptyMembershipActivityPage(): MembershipActivityPage {
-    return membershipActivityPageSchema.parse({
-      items: [],
-      hasMore: false,
-      nextCursor: null,
-    });
+    return this.logsDashboardRuntime.buildEmptyMembershipActivityPage();
   }
 
   private async getMembershipEventRows(
@@ -14825,38 +14153,7 @@ export class AdminService implements OnModuleDestroy {
       order?: 'asc' | 'desc';
     } = {},
   ): Promise<MembershipEventRow[]> {
-    const order = options.order === 'asc' ? 'asc' : 'desc';
-    const orderDirectionSql = Prisma.raw(order === 'asc' ? 'ASC' : 'DESC');
-    const cursor = order === 'desc' ? (options.cursor ?? null) : null;
-    const cursorClause = cursor
-      ? Prisma.sql`
-          AND (
-            event_at < ${cursor.createdAt}
-            OR (event_at = ${cursor.createdAt} AND source_event_id < ${cursor.id})
-          )
-        `
-      : Prisma.empty;
-    const limitClause =
-      typeof options.limit === 'number' && Number.isFinite(options.limit)
-        ? Prisma.sql`LIMIT ${Math.max(1, Math.trunc(options.limit))}`
-        : Prisma.empty;
-
-    return this.prisma.$queryRaw<MembershipEventRow[]>`
-      SELECT
-        source_event_id AS id,
-        event_at AS created_at,
-        event_type,
-        user_id,
-        sender_name
-      FROM chat_membership_activity_feed_items
-      WHERE chat_id = ${chatId}
-        AND event_type IN (${Prisma.join(eventTypes)})
-        AND event_at >= ${from}
-        AND event_at <= ${to}
-        ${cursorClause}
-      ORDER BY event_at ${orderDirectionSql}, source_event_id ${orderDirectionSql}
-      ${limitClause}
-    `;
+    return this.logsDashboardRuntime.getMembershipEventRows(chatId, from, to, eventTypes, options);
   }
 
   private buildPreviousChannelStatsPeriodSnapshot(...args: any[]) {
@@ -15060,34 +14357,6 @@ export class AdminService implements OnModuleDestroy {
 
     const parsed = new Date(normalized);
     return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
-  }
-
-  private encodeMembershipActivityCursor(cursor: { createdAt: string; id: string }): string {
-    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
-  }
-
-  private decodeMembershipActivityCursor(
-    value: string | undefined,
-  ): { createdAt: string; id: string } | null {
-    if (!value) {
-      return null;
-    }
-
-    try {
-      const decoded = Buffer.from(value, 'base64url').toString('utf8');
-      const parsed = JSON.parse(decoded) as { createdAt?: unknown; id?: unknown };
-      const createdAt =
-        typeof parsed.createdAt === 'string' ? this.toIsoString(parsed.createdAt) : null;
-      const id = typeof parsed.id === 'string' ? parsed.id.trim() : '';
-
-      if (!createdAt || !id) {
-        throw new Error('Invalid membership activity cursor');
-      }
-
-      return { createdAt, id };
-    } catch {
-      throw new BadRequestException('Неверный cursor для activity feed.');
-    }
   }
 
   private async resolveUserDisplayNames(
