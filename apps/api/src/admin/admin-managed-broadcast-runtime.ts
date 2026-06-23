@@ -283,8 +283,6 @@ import {
   fromPrismaEntityType,
   isBotAdminLookupDeniedError,
   isFallbackTitle,
-  isMaxApiThrottleError,
-  isMaxApiTimeoutError,
   isPrivateDialogChatUnavailableError,
   isPrivateDirectChat,
   isPrismaKnownError,
@@ -302,6 +300,15 @@ import {
   normalizeManagedBroadcastButtons as normalizeManagedBroadcastButtonsValue,
   type ManagedBroadcastLegacyButtonState,
 } from './admin-managed-broadcast-buttons';
+import {
+  decodeBroadcastImageBase64 as decodeBroadcastImageBase64Value,
+  hasRetriableManagedBroadcastAttachment,
+  isAttachmentNotReadyError as isAttachmentNotReadyErrorValue,
+  isManagedBroadcastSlotConflictError as isManagedBroadcastSlotConflictErrorValue,
+  resolveBroadcastImageFileName as resolveBroadcastImageFileNameValue,
+  resolveManagedBroadcastSendRetryDelayMs as resolveManagedBroadcastSendRetryDelayMsValue,
+  type ManagedBroadcastRetriableAttachmentOptions,
+} from './admin-managed-broadcast-media';
 import {
   selectLogsDashboardMembershipSummary,
   selectLogsDashboardModerationSummary,
@@ -3949,48 +3956,17 @@ export class AdminManagedBroadcastRuntime {
   private resolveManagedBroadcastSendRetryDelayMs(
     error: unknown,
     attempt: number,
-    options:
-      | Pick<
-          MaxSendMessageOptions,
-          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
-        >
-      | undefined,
+    options: ManagedBroadcastRetriableAttachmentOptions,
   ): number | null {
-    if (this.hasRetriableMaxAttachment(options) && this.isAttachmentNotReadyError(error)) {
-      return BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? null;
-    }
-
-    if (isMaxApiThrottleError(error)) {
-      return BROADCAST_THROTTLE_RETRY_DELAYS_MS[attempt - 1] ?? null;
-    }
-
-    if (isMaxApiTimeoutError(error)) {
-      return BROADCAST_TIMEOUT_RETRY_DELAYS_MS[attempt - 1] ?? null;
-    }
-
-    return null;
+    return resolveManagedBroadcastSendRetryDelayMsValue(error, attempt, options);
   }
 
-  private hasRetriableMaxAttachment(
-    options:
-      | Pick<
-          MaxSendMessageOptions,
-          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
-        >
-      | undefined,
-  ): boolean {
-    return Boolean(options?.imagePayload) || Boolean(options?.attachments?.length);
+  private hasRetriableMaxAttachment(options: ManagedBroadcastRetriableAttachmentOptions): boolean {
+    return hasRetriableManagedBroadcastAttachment(options);
   }
 
   private isAttachmentNotReadyError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status !== 400) {
-      return false;
-    }
-
-    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
-    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
-    return normalized.includes('attachment.not.ready') || normalized.includes('not ready');
+    return isAttachmentNotReadyErrorValue(error);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -3998,64 +3974,15 @@ export class AdminManagedBroadcastRuntime {
   }
 
   private isManagedBroadcastSlotConflictError(error: unknown): boolean {
-    const code = (error as { code?: unknown })?.code;
-    if (code !== 'P2002') {
-      return false;
-    }
-
-    const metaTarget = (error as { meta?: { target?: unknown } })?.meta?.target;
-    const targetValue = Array.isArray(metaTarget)
-      ? metaTarget.map((item) => String(item).toLowerCase()).join(',')
-      : typeof metaTarget === 'string'
-        ? metaTarget.toLowerCase()
-        : '';
-    const message = error instanceof Error ? error.message.toLowerCase() : '';
-
-    return (
-      targetValue.includes('managed_broadcast_occurrences_slot_key') ||
-      targetValue.includes('source_chat_id') ||
-      targetValue.includes('sourcechatid') ||
-      message.includes('managed_broadcast_occurrences_slot_key')
-    );
+    return isManagedBroadcastSlotConflictErrorValue(error);
   }
 
   private decodeBroadcastImageBase64(value: string): Buffer {
-    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
-    if (!normalized) {
-      throw new BadRequestException('Добавьте фото для автопостинга.');
-    }
-
-    let imageBuffer: Buffer;
-    try {
-      imageBuffer = Buffer.from(normalized, 'base64');
-    } catch {
-      throw new BadRequestException('Не удалось прочитать фото.');
-    }
-
-    if (imageBuffer.length === 0) {
-      throw new BadRequestException('Не удалось прочитать фото.');
-    }
-
-    return imageBuffer;
+    return decodeBroadcastImageBase64Value(value);
   }
 
   private resolveBroadcastImageFileName(fileName: string, mimeType: string): string {
-    const trimmed = fileName.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-
-    if (mimeType === 'image/png') {
-      return 'broadcast-image.png';
-    }
-    if (mimeType === 'image/webp') {
-      return 'broadcast-image.webp';
-    }
-    if (mimeType === 'image/gif') {
-      return 'broadcast-image.gif';
-    }
-
-    return 'broadcast-image.jpg';
+    return resolveBroadcastImageFileNameValue(fileName, mimeType);
   }
 
   private normalizeManagedBroadcastButtons(
