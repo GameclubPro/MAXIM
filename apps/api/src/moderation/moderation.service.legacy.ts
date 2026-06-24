@@ -13164,6 +13164,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isChannelMessage(update: MaxUpdate): boolean {
+    if (update.message?.entityType === 'channel') {
+      return true;
+    }
+
     const raw = this.asRecord(update.raw);
     const message = this.asRecord(raw?.message);
     const recipient = this.asRecord(message?.recipient);

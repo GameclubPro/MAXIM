@@ -7050,6 +7050,30 @@ describe('ModerationService', () => {
     });
   });
 
+  it('recognizes channel updates by normalized parser entityType', () => {
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message!,
+        chatId: 'channel-1',
+        entityType: 'channel',
+      },
+      raw: {},
+    } satisfies MaxUpdate;
+
+    expect(
+      (service as unknown as { isChannelMessage(update: MaxUpdate): boolean }).isChannelMessage(
+        update,
+      ),
+    ).toBe(true);
+  });
+
   it('sends the night mode close notice from the schedule transition', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:15.000Z'));
     try {
