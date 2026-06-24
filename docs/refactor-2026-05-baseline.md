@@ -100,8 +100,10 @@ and make each extraction reviewable through focused tests.
   session normalization, pending input/mass-action parsing, and private-control
   screen/entity/view parsers. `private-control-draft-normalizer.ts` owns pure
   broadcast/suggestion draft normalization, broadcast target-state resolution,
-  broadcast draft cloning, and suggestion draft object normalization while
-  attachment download/upload and MAX media handling remain in legacy.
+  broadcast draft cloning, and suggestion draft object normalization.
+  `private-control-media-attachments.ts` owns private bot attachment extraction,
+  image/video download, media MIME/filename normalization, and suggestion media
+  upload draft construction.
   Private forwarded-command parsing/extraction now lives in
   `admin-forwarded-command.util.ts` private wrappers/options, while action
   handlers remain in legacy behind `ManualModerationService`.
@@ -139,12 +141,7 @@ and make each extraction reviewable through focused tests.
    seam is closed; keep future private-control manual command work behind
    `ManualModerationService` or a narrower command service instead of direct
    `AdminService`. Move decomposition seams in this order:
-   A. Extract attachment/media I/O helpers only after draft state is stable:
-   suggestion image/video download conversion, broadcast media payload assembly,
-   MAX media upload option merging, and related validation. Keep service calls
-   behind existing `MaxClientService`, `ManagedBroadcastService`, and
-   `ChannelDialogService` boundaries.
-   B. Extract pure render helpers only where they do not fetch data: launcher,
+   A. Extract pure render helpers only where they do not fetch data: launcher,
    moved-to-miniapp screens, preview payload rendering, small section summaries,
    and button/layout/string helpers. Defer rules/broadcast/giveaway/events/logs
    screens that fetch data.

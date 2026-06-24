@@ -118,17 +118,10 @@ import type {
   ActiveBotSpeechProfile,
   CallbackAction,
   ChannelSectionKey,
-  DownloadedBinaryAsset,
-  DownloadedImageAsset,
   ForwardedModerationActionCommand,
   ForwardedModerationTarget,
   ForwardedRulesSource,
   GiveawayHandoffStartPayload,
-  ParsedFileAttachment,
-  ParsedImageAttachment,
-  ParsedImageFileAttachment,
-  ParsedImageSourceAttachment,
-  ParsedVideoSourceAttachment,
   PendingInput,
   PendingMassAction,
   PrivateBroadcastDraft,
@@ -140,8 +133,6 @@ import type {
   PrivateSectionView,
   PrivateSession,
   PrivateSuggestionDraft,
-  PrivateSuggestionImageDraft,
-  PrivateSuggestionVideoDraft,
   PrivateUiMode,
   PrivateView,
   ProfileMentionStartPayload,
@@ -165,6 +156,18 @@ import {
   parsePrivateControlUiMode,
   toPrivateControlPositiveInt,
 } from './private-control-session-normalizer';
+import {
+  buildPrivateDownloadedFileName,
+  buildPrivateSuggestionImageDraftsFromImages,
+  buildPrivateSuggestionMediaDraftFromVideo,
+  downloadPrivateImageSourceAttachment,
+  extractPrivateFirstFileAttachment,
+  extractPrivateFirstImageSourceAttachment,
+  extractPrivateFirstVideoSourceAttachment,
+  extractPrivateImageSourceAttachments,
+  hasPrivateVideoAttachment,
+  type PrivateControlMediaAttachmentUploader,
+} from './private-control-media-attachments';
 import {
   dedupePrivateForwardedModerationTargets,
   dedupePrivateForwardedRulesSources,
@@ -749,6 +752,7 @@ export class PrivateControlService {
   private readonly privateCallbackAckTimeoutMs: number;
   private readonly privateCallbackEditTimeoutMs: number;
   private readonly privateDialogSendTimeoutMs: number;
+  private readonly privateControlMediaUploader: PrivateControlMediaAttachmentUploader;
   private readonly sessionStore: PrivateControlSessionStore;
   private readonly launcherIntroSeenUsers = new Set<string>();
   private readonly activeBroadcastPublishes = new Set<string>();
@@ -804,6 +808,10 @@ export class PrivateControlService {
       configService?.get('PRIVATE_DIALOG_SEND_TIMEOUT_MS'),
       DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
     );
+    this.privateControlMediaUploader = {
+      uploadImage: (data, fileName, mimeType) => this.maxClient.uploadImage(data, fileName, mimeType),
+      uploadVideo: (data, fileName, mimeType) => this.maxClient.uploadVideo(data, fileName, mimeType),
+    };
     this.sessionStore = new PrivateControlSessionStore({
       redisCounter,
       logger: this.logger,
@@ -1454,9 +1462,9 @@ export class PrivateControlService {
       }
     }
 
-    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-    const fileAttachment = this.extractFirstFileAttachment(context.update);
-    const hasVideoAttachment = this.hasVideoAttachment(context.update);
+    const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
+    const fileAttachment = extractPrivateFirstFileAttachment(context.update);
+    const hasVideoAttachment = hasPrivateVideoAttachment(context.update);
 
     if (session.pendingInput) {
       await this.processPendingInput(context, session);
@@ -4116,9 +4124,9 @@ export class PrivateControlService {
       }
 
       case 'channel_suggestion': {
-        const imageSourceAttachments = this.extractImageSourceAttachments(context.update);
-        const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
-        const fileAttachment = this.extractFirstFileAttachment(context.update);
+        const imageSourceAttachments = extractPrivateImageSourceAttachments(context.update);
+        const videoSourceAttachment = extractPrivateFirstVideoSourceAttachment(context.update);
+        const fileAttachment = extractPrivateFirstFileAttachment(context.update);
 
         if (fileAttachment && imageSourceAttachments.length === 0 && !videoSourceAttachment) {
           throw new BadRequestException(
@@ -4143,8 +4151,9 @@ export class PrivateControlService {
         }
 
         if (videoSourceAttachment) {
-          nextVideo = await this.buildSuggestionMediaDraftFromVideo(
+          nextVideo = await buildPrivateSuggestionMediaDraftFromVideo(
             videoSourceAttachment,
+            this.privateControlMediaUploader,
             'channel-suggestion',
           );
           nextImages = [];
@@ -4161,8 +4170,9 @@ export class PrivateControlService {
 
           nextImages = [
             ...baseImages,
-            ...(await this.buildSuggestionImageDraftsFromImages(
+            ...(await buildPrivateSuggestionImageDraftsFromImages(
               imageSourceAttachments,
+              this.privateControlMediaUploader,
               'channel-suggestion',
             )),
           ];
@@ -4308,8 +4318,8 @@ export class PrivateControlService {
       }
 
       case 'broadcast_photo': {
-        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-        const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
+        const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
+        const videoSourceAttachment = extractPrivateFirstVideoSourceAttachment(context.update);
         if (imageSourceAttachment && videoSourceAttachment) {
           throw new BadRequestException(
             'В один автопостинг можно добавить либо фото, либо одно видео.',
@@ -4322,8 +4332,9 @@ export class PrivateControlService {
         }
 
         if (videoSourceAttachment) {
-          const video = await this.buildSuggestionMediaDraftFromVideo(
+          const video = await buildPrivateSuggestionMediaDraftFromVideo(
             videoSourceAttachment,
+            this.privateControlMediaUploader,
             'private-broadcast',
           );
           session.broadcastDraft.imageEnabled = false;
@@ -4335,7 +4346,7 @@ export class PrivateControlService {
           session.broadcastDraft.mediaMimeType = video.mimeType;
           session.broadcastDraft.mediaFileName = video.fileName;
         } else if (imageSourceAttachment) {
-          const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
+          const downloaded = await downloadPrivateImageSourceAttachment(imageSourceAttachment);
           session.broadcastDraft.imageEnabled = true;
           session.broadcastDraft.imageBase64 = downloaded.base64;
           session.broadcastDraft.imageMimeType = downloaded.mimeType;
@@ -4492,14 +4503,14 @@ export class PrivateControlService {
 
       case 'giveaway_photo': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
-        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
         if (!imageSourceAttachment) {
           throw new BadRequestException(
             'Отправьте фото или PNG/WebP/JPG файлом отдельным сообщением.',
           );
         }
 
-        const downloaded = await this.downloadImageSourceAttachment(
+        const downloaded = await downloadPrivateImageSourceAttachment(
           imageSourceAttachment,
           'private-giveaway',
         );
@@ -4791,9 +4802,9 @@ export class PrivateControlService {
 
     const formattedText = extractIncomingFormattedText(context.update, rawText);
     const normalizedText = formattedText.trim();
-    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-    const fileAttachment = this.extractFirstFileAttachment(context.update);
-    const hasVideoAttachment = this.hasVideoAttachment(context.update);
+    const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
+    const fileAttachment = extractPrivateFirstFileAttachment(context.update);
+    const hasVideoAttachment = hasPrivateVideoAttachment(context.update);
 
     if (hasVideoAttachment) {
       throw new BadRequestException(
@@ -4838,7 +4849,7 @@ export class PrivateControlService {
     let imageFileName = currentRules.imageFileName;
 
     if (imageSourceAttachment) {
-      const downloaded = await this.downloadImageSourceAttachment(
+      const downloaded = await downloadPrivateImageSourceAttachment(
         imageSourceAttachment,
         'private-rules',
       );
@@ -4886,8 +4897,8 @@ export class PrivateControlService {
   ): Promise<void> {
     const textPayload = extractIncomingFormattedTextPayload(context.update, rawText);
     const normalizedText = textPayload.text.trim();
-    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-    const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
+    const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
+    const videoSourceAttachment = extractPrivateFirstVideoSourceAttachment(context.update);
 
     if (imageSourceAttachment && videoSourceAttachment) {
       throw new BadRequestException(
@@ -4908,7 +4919,7 @@ export class PrivateControlService {
     }
 
     if (imageSourceAttachment) {
-      const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
+      const downloaded = await downloadPrivateImageSourceAttachment(imageSourceAttachment);
       session.broadcastDraft.imageEnabled = true;
       session.broadcastDraft.imageBase64 = downloaded.base64;
       session.broadcastDraft.imageMimeType = downloaded.mimeType;
@@ -4920,8 +4931,9 @@ export class PrivateControlService {
     }
 
     if (videoSourceAttachment) {
-      const video = await this.buildSuggestionMediaDraftFromVideo(
+      const video = await buildPrivateSuggestionMediaDraftFromVideo(
         videoSourceAttachment,
+        this.privateControlMediaUploader,
         'private-broadcast',
       );
       session.broadcastDraft.imageEnabled = false;
@@ -4949,10 +4961,10 @@ export class PrivateControlService {
     const normalizedText = formattedText.trim();
     const clearText = normalizedText === '-';
     const hasTextUpdate = clearText || normalizedText.length > 0;
-    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+    const imageSourceAttachment = extractPrivateFirstImageSourceAttachment(context.update);
 
     if (!hasTextUpdate && !imageSourceAttachment) {
-      if (this.hasVideoAttachment(context.update)) {
+      if (hasPrivateVideoAttachment(context.update)) {
         throw new BadRequestException(
           'Видео для публикации розыгрыша пока не поддерживается. Отправьте текст или изображение.',
         );
@@ -4963,7 +4975,7 @@ export class PrivateControlService {
     }
 
     const downloaded = imageSourceAttachment
-      ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'private-giveaway')
+      ? await downloadPrivateImageSourceAttachment(imageSourceAttachment, 'private-giveaway')
       : null;
     const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
     const nextHasText = hasTextUpdate ? !clearText : draft.description.trim().length > 0;
@@ -6589,7 +6601,7 @@ export class PrivateControlService {
 
       return await this.maxClient.uploadImage(
         imageBuffer,
-        this.buildDownloadedFileName(filePrefix, content.imageFileName, null, mimeType),
+        buildPrivateDownloadedFileName(filePrefix, content.imageFileName, null, mimeType),
         mimeType,
       );
     } catch (error: unknown) {
@@ -10008,638 +10020,6 @@ export class PrivateControlService {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
-  }
-
-  private collectMessageAttachments(update: MaxUpdate): Record<string, unknown>[] {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return [];
-    }
-
-    const messageCandidates = [
-      this.asRecord(raw.message),
-      this.asRecord(this.asRecord(raw.data)?.message),
-      this.asRecord(this.asRecord(raw.event)?.message),
-    ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
-
-    const attachments: Record<string, unknown>[] = [];
-
-    for (const message of messageCandidates) {
-      const body = this.asRecord(message.body);
-      const candidates = [
-        message.attachments,
-        body?.attachments,
-        this.asRecord(message.data)?.attachments,
-        this.asRecord(message.payload)?.attachments,
-      ];
-
-      for (const node of candidates) {
-        if (!Array.isArray(node)) {
-          continue;
-        }
-
-        for (const attachment of node) {
-          if (!attachment || typeof attachment !== 'object') {
-            continue;
-          }
-
-          attachments.push(attachment as Record<string, unknown>);
-        }
-      }
-    }
-
-    return attachments;
-  }
-
-  private extractImageSourceAttachments(update: MaxUpdate): ParsedImageSourceAttachment[] {
-    const attachments: ParsedImageSourceAttachment[] = [];
-
-    for (const row of this.collectMessageAttachments(update)) {
-      const imageAttachment = this.parseImageAttachment(row);
-      if (imageAttachment) {
-        attachments.push({
-          kind: 'image',
-          attachment: imageAttachment,
-        });
-        continue;
-      }
-
-      const imageFileAttachment = this.parseImageFileAttachment(row);
-      if (imageFileAttachment) {
-        attachments.push({
-          kind: 'file',
-          attachment: imageFileAttachment,
-        });
-      }
-    }
-
-    return attachments;
-  }
-
-  private extractFirstImageSourceAttachment(update: MaxUpdate): ParsedImageSourceAttachment | null {
-    return this.extractImageSourceAttachments(update)[0] ?? null;
-  }
-
-  private extractFirstFileAttachment(update: MaxUpdate): ParsedFileAttachment | null {
-    for (const row of this.collectMessageAttachments(update)) {
-      const parsed = this.parseFileAttachment(row);
-      if (parsed) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
-
-  private parseImageAttachment(row: Record<string, unknown>): ParsedImageAttachment | null {
-    const type = this.readLowerString(row.type);
-    if (type !== 'image') {
-      return null;
-    }
-
-    const payload = this.asRecord(row.payload);
-    if (!payload) {
-      return null;
-    }
-
-    const url = this.readString(payload.url);
-    if (!url) {
-      return null;
-    }
-
-    return {
-      url,
-      token: this.readString(payload.token) ?? null,
-      photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
-      width: this.readOptionalInteger(payload.width ?? payload.w),
-      height: this.readOptionalInteger(payload.height ?? payload.h),
-      mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType),
-      mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
-      payloadKeys: Object.keys(payload).sort(),
-    };
-  }
-
-  private parseImageFileAttachment(row: Record<string, unknown>): ParsedImageFileAttachment | null {
-    const parsed = this.parseFileAttachment(row);
-    if (!parsed?.url) {
-      return null;
-    }
-
-    const resolvedMimeType = this.resolveImageMimeType(
-      parsed.mimeType,
-      parsed.fileName,
-      parsed.url,
-    );
-    if (!resolvedMimeType) {
-      return null;
-    }
-
-    return {
-      url: parsed.url,
-      token: parsed.token,
-      fileId: parsed.fileId,
-      fileName: parsed.fileName,
-      size: parsed.size,
-      mimeType: resolvedMimeType,
-      mediaType: parsed.mediaType,
-      payloadKeys: parsed.payloadKeys,
-    };
-  }
-
-  private extractFirstVideoSourceAttachment(update: MaxUpdate): ParsedVideoSourceAttachment | null {
-    for (const row of this.collectMessageAttachments(update)) {
-      const type = this.readLowerString(row.type);
-      const payload = this.asRecord(row.payload);
-
-      if (type === 'video' && payload) {
-        const url = this.readString(payload.url);
-        const mimeType = this.resolveVideoMimeType(
-          this.readLowerString(payload.mime_type ?? payload.mimeType),
-          this.readString(payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName),
-          url,
-        );
-        if (!url || !mimeType) {
-          continue;
-        }
-
-        return {
-          url,
-          token: this.readString(payload.token) ?? null,
-          fileId:
-            this.readString(
-              payload.video_id ?? payload.videoId ?? payload.file_id ?? payload.fileId,
-            ) ?? null,
-          fileName:
-            this.readString(
-              payload.file_name ??
-                payload.fileName ??
-                row.file_name ??
-                row.fileName ??
-                row.filename ??
-                row.name,
-            ) ?? null,
-          size: this.readOptionalInteger(payload.size ?? row.size),
-          mimeType,
-          mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
-          payloadKeys: Object.keys(payload).sort(),
-        };
-      }
-
-      const parsed = this.parseFileAttachment(row);
-      if (!parsed?.url) {
-        continue;
-      }
-
-      const mimeType = this.resolveVideoMimeType(parsed.mimeType, parsed.fileName, parsed.url);
-      if (!mimeType) {
-        continue;
-      }
-
-      return {
-        ...parsed,
-        url: parsed.url,
-        mimeType,
-      };
-    }
-
-    return null;
-  }
-
-  private hasVideoAttachment(update: MaxUpdate): boolean {
-    for (const row of this.collectMessageAttachments(update)) {
-      const type = this.readLowerString(row.type);
-      const payload = this.asRecord(row.payload);
-      const mimeType = this.readLowerString(payload?.mime_type ?? payload?.mimeType);
-
-      if (type === 'video' || mimeType?.startsWith('video/')) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private async downloadImageAttachment(
-    imageAttachment: ParsedImageAttachment,
-    filePrefix = 'private-broadcast',
-  ): Promise<DownloadedImageAsset> {
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 10_000);
-    const controller = new AbortController();
-
-    try {
-      const response = await fetch(imageAttachment.url, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new BadRequestException(`Не удалось загрузить фото (${response.status}).`);
-      }
-
-      const mimeTypeHeader = response.headers.get('content-type') ?? '';
-      const mimeType = mimeTypeHeader.toLowerCase().startsWith('image/')
-        ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
-        : (imageAttachment.mimeType ?? 'image/jpeg');
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      if (buffer.length === 0) {
-        throw new BadRequestException('Фото оказалось пустым.');
-      }
-
-      const extension = this.extensionFromMimeType(mimeType);
-      const fileName = imageAttachment.photoId
-        ? `${filePrefix}-${imageAttachment.photoId}.${extension}`
-        : `${filePrefix}-${Date.now()}.${extension}`;
-
-      return {
-        base64: buffer.toString('base64'),
-        mimeType,
-        fileName,
-      };
-    } catch (error: unknown) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      throw new BadRequestException('Не удалось загрузить фото из сообщения.');
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async downloadImageSourceAttachment(
-    imageSourceAttachment: ParsedImageSourceAttachment,
-    filePrefix = 'private-broadcast',
-  ): Promise<DownloadedImageAsset> {
-    if (imageSourceAttachment.kind === 'image') {
-      return this.downloadImageAttachment(imageSourceAttachment.attachment, filePrefix);
-    }
-
-    return this.downloadImageFileAttachment(imageSourceAttachment.attachment, filePrefix);
-  }
-
-  private async downloadVideoSourceAttachment(
-    videoSourceAttachment: ParsedVideoSourceAttachment,
-    filePrefix = 'channel-suggestion',
-  ): Promise<DownloadedBinaryAsset> {
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 10_000);
-    const controller = new AbortController();
-
-    try {
-      const response = await fetch(videoSourceAttachment.url, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new BadRequestException(`Не удалось загрузить видео (${response.status}).`);
-      }
-
-      const mimeTypeHeader = response.headers.get('content-type') ?? '';
-      const mimeType = this.resolveVideoMimeType(
-        mimeTypeHeader.toLowerCase().startsWith('video/')
-          ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
-          : videoSourceAttachment.mimeType,
-        videoSourceAttachment.fileName,
-        videoSourceAttachment.url,
-      );
-      if (!mimeType) {
-        throw new BadRequestException('Файл должен быть видео.');
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      if (buffer.length === 0) {
-        throw new BadRequestException('Видео оказалось пустым.');
-      }
-
-      const fileName = this.buildDownloadedFileName(
-        filePrefix,
-        videoSourceAttachment.fileName ?? this.fileNameFromUrl(videoSourceAttachment.url),
-        videoSourceAttachment.fileId,
-        mimeType,
-      );
-
-      return {
-        buffer,
-        mimeType,
-        fileName,
-      };
-    } catch (error: unknown) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      throw new BadRequestException('Не удалось загрузить видео из сообщения.');
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async buildSuggestionImageDraftsFromImages(
-    imageSourceAttachments: ParsedImageSourceAttachment[],
-    filePrefix = 'channel-suggestion',
-  ): Promise<PrivateSuggestionImageDraft[]> {
-    const drafts: PrivateSuggestionImageDraft[] = [];
-
-    for (const imageSourceAttachment of imageSourceAttachments) {
-      drafts.push(await this.buildSuggestionMediaDraftFromImage(imageSourceAttachment, filePrefix));
-    }
-
-    return drafts;
-  }
-
-  private async buildSuggestionMediaDraftFromImage(
-    imageSourceAttachment: ParsedImageSourceAttachment,
-    filePrefix = 'channel-suggestion',
-  ): Promise<PrivateSuggestionImageDraft> {
-    const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment, filePrefix);
-    const payload = await this.maxClient.uploadImage(
-      Buffer.from(downloaded.base64, 'base64'),
-      downloaded.fileName,
-      downloaded.mimeType,
-    );
-
-    return {
-      kind: 'image',
-      mimeType: downloaded.mimeType,
-      fileName: downloaded.fileName,
-      payload,
-    };
-  }
-
-  private async buildSuggestionMediaDraftFromVideo(
-    videoSourceAttachment: ParsedVideoSourceAttachment,
-    filePrefix = 'channel-suggestion',
-  ): Promise<PrivateSuggestionVideoDraft> {
-    const downloaded = await this.downloadVideoSourceAttachment(videoSourceAttachment, filePrefix);
-    const payload = await this.maxClient.uploadVideo(
-      downloaded.buffer,
-      downloaded.fileName,
-      downloaded.mimeType,
-    );
-
-    return {
-      kind: 'video',
-      mimeType: downloaded.mimeType,
-      fileName: downloaded.fileName,
-      payload,
-    };
-  }
-
-  private async downloadImageFileAttachment(
-    imageFileAttachment: ParsedImageFileAttachment,
-    filePrefix = 'private-broadcast',
-  ): Promise<DownloadedImageAsset> {
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 10_000);
-    const controller = new AbortController();
-
-    try {
-      const response = await fetch(imageFileAttachment.url, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new BadRequestException(`Не удалось загрузить файл (${response.status}).`);
-      }
-
-      const mimeTypeHeader = response.headers.get('content-type') ?? '';
-      const mimeType = this.resolveImageMimeType(
-        mimeTypeHeader.toLowerCase().startsWith('image/')
-          ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
-          : imageFileAttachment.mimeType,
-        imageFileAttachment.fileName,
-        imageFileAttachment.url,
-      );
-      if (!mimeType) {
-        throw new BadRequestException('Файл должен быть изображением.');
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      if (buffer.length === 0) {
-        throw new BadRequestException('Файл оказался пустым.');
-      }
-
-      const fileName = this.buildDownloadedFileName(
-        filePrefix,
-        imageFileAttachment.fileName ?? this.fileNameFromUrl(imageFileAttachment.url),
-        imageFileAttachment.fileId,
-        mimeType,
-      );
-
-      return {
-        base64: buffer.toString('base64'),
-        mimeType,
-        fileName,
-      };
-    } catch (error: unknown) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      throw new BadRequestException('Не удалось загрузить изображение из файла.');
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private extensionFromMimeType(mimeType: string): string {
-    if (mimeType === 'image/png') {
-      return 'png';
-    }
-    if (mimeType === 'image/webp') {
-      return 'webp';
-    }
-    if (mimeType === 'image/gif') {
-      return 'gif';
-    }
-    if (mimeType === 'image/heic') {
-      return 'heic';
-    }
-    if (mimeType === 'video/mp4') {
-      return 'mp4';
-    }
-    if (mimeType === 'video/quicktime') {
-      return 'mov';
-    }
-    if (mimeType === 'video/webm') {
-      return 'webm';
-    }
-    if (mimeType === 'video/x-msvideo') {
-      return 'avi';
-    }
-    if (mimeType === 'video/x-m4v') {
-      return 'm4v';
-    }
-
-    return 'jpg';
-  }
-
-  private parseFileAttachment(row: Record<string, unknown>): ParsedFileAttachment | null {
-    const type = this.readLowerString(row.type);
-    if (type !== 'file') {
-      return null;
-    }
-
-    const payload = this.asRecord(row.payload);
-    if (!payload) {
-      return null;
-    }
-
-    return {
-      url: this.readString(payload.url) ?? null,
-      token: this.readString(payload.token) ?? null,
-      fileId: this.readString(payload.file_id ?? payload.fileId) ?? null,
-      fileName:
-        this.readString(
-          payload.file_name ??
-            payload.fileName ??
-            row.file_name ??
-            row.fileName ??
-            row.filename ??
-            row.name,
-        ) ?? null,
-      size: this.readOptionalInteger(payload.size ?? row.size),
-      mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType ?? row.mime_type),
-      mediaType: this.readLowerString(payload.media_type ?? payload.mediaType ?? row.media_type),
-      payloadKeys: Object.keys(payload).sort(),
-    };
-  }
-
-  private resolveImageMimeType(
-    mimeType: string | null,
-    fileName: string | null,
-    url: string | null,
-  ): string | null {
-    if (mimeType?.startsWith('image/')) {
-      return mimeType;
-    }
-
-    return (
-      this.inferImageMimeTypeFromFileName(fileName) ??
-      this.inferImageMimeTypeFromFileName(this.fileNameFromUrl(url))
-    );
-  }
-
-  private resolveVideoMimeType(
-    mimeType: string | null,
-    fileName: string | null,
-    url: string | null,
-  ): string | null {
-    if (mimeType?.startsWith('video/')) {
-      return mimeType;
-    }
-
-    return (
-      this.inferVideoMimeTypeFromFileName(fileName) ??
-      this.inferVideoMimeTypeFromFileName(this.fileNameFromUrl(url))
-    );
-  }
-
-  private inferImageMimeTypeFromFileName(fileName: string | null): string | null {
-    if (!fileName) {
-      return null;
-    }
-
-    const normalized = fileName.trim().toLowerCase();
-    if (normalized.endsWith('.png')) {
-      return 'image/png';
-    }
-    if (normalized.endsWith('.webp')) {
-      return 'image/webp';
-    }
-    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
-      return 'image/jpeg';
-    }
-    if (normalized.endsWith('.gif')) {
-      return 'image/gif';
-    }
-    if (normalized.endsWith('.heic')) {
-      return 'image/heic';
-    }
-
-    return null;
-  }
-
-  private inferVideoMimeTypeFromFileName(fileName: string | null): string | null {
-    if (!fileName) {
-      return null;
-    }
-
-    const normalized = fileName.trim().toLowerCase();
-    if (normalized.endsWith('.mp4')) {
-      return 'video/mp4';
-    }
-    if (normalized.endsWith('.mov')) {
-      return 'video/quicktime';
-    }
-    if (normalized.endsWith('.webm')) {
-      return 'video/webm';
-    }
-    if (normalized.endsWith('.avi')) {
-      return 'video/x-msvideo';
-    }
-    if (normalized.endsWith('.m4v')) {
-      return 'video/x-m4v';
-    }
-
-    return null;
-  }
-
-  private fileNameFromUrl(url: string | null): string | null {
-    if (!url) {
-      return null;
-    }
-
-    try {
-      const parsed = new URL(url);
-      const lastSegment = parsed.pathname.split('/').filter(Boolean).pop();
-      if (!lastSegment) {
-        return null;
-      }
-
-      const decoded = decodeURIComponent(lastSegment).trim();
-      return decoded.length > 0 ? decoded : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private buildDownloadedFileName(
-    filePrefix: string,
-    preferredFileName: string | null,
-    fallbackId: string | null,
-    mimeType: string,
-  ): string {
-    const normalizedFileName = this.normalizeDownloadedFileName(preferredFileName);
-    if (normalizedFileName) {
-      return normalizedFileName;
-    }
-
-    const extension = this.extensionFromMimeType(mimeType);
-    return `${filePrefix}-${fallbackId ?? Date.now()}.${extension}`;
-  }
-
-  private normalizeDownloadedFileName(fileName: string | null): string | null {
-    if (!fileName) {
-      return null;
-    }
-
-    const sanitized = fileName
-      .trim()
-      .replace(/[/\\?%*:|"<>]/gu, '-')
-      .replace(/\s+/gu, ' ');
-
-    return sanitized.length > 0 ? sanitized : null;
   }
 
   private resolvePrimaryScreen(_session: PrivateSession): PrivateScreen {
