@@ -224,6 +224,39 @@ function createRedisCounterMock() {
   };
 }
 
+function createModerationServiceWithManualBridge(params: {
+  prisma: unknown;
+  ruleEngine: unknown;
+  sanctionService: unknown;
+  maxClient: unknown;
+  manualBridge: unknown;
+}) {
+  return new ModerationService(
+    params.prisma as never,
+    params.ruleEngine as never,
+    params.sanctionService as never,
+    params.maxClient as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    params.manualBridge as never,
+  );
+}
+
 function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
@@ -8465,18 +8498,13 @@ describe('ModerationService', () => {
       applyManualSystemBan: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate({
       ...createAdminForwardedBanUpdate(),
@@ -8553,18 +8581,13 @@ describe('ModerationService', () => {
       applyManualSystemBan: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate('БаН!'));
 
@@ -8629,18 +8652,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
@@ -8711,18 +8729,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate('заблокировать'));
 
@@ -8782,18 +8795,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate('бан везде'));
 
@@ -8857,18 +8865,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     const update = createAdminReplyModerationUpdate('супер бан');
     update.message!.senderId = '98315271';
@@ -8947,18 +8950,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminReplyModerationUpdate('super ban'));
 
@@ -9015,18 +9013,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminReplyModerationUpdate('мут'));
 
@@ -9078,18 +9071,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     const update = createAdminReplyModerationUpdate();
     delete (
@@ -9163,18 +9151,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate());
 
@@ -9245,18 +9228,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('мут 12'));
 
@@ -9323,18 +9301,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('тихо 12'));
 
@@ -9401,18 +9374,13 @@ describe('ModerationService', () => {
       applyManualOpenChatCommand: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     const baseUpdate = createUpdate();
     const baseMessage = baseUpdate.message!;
@@ -9498,18 +9466,13 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     const baseUpdate = createUpdate();
     const baseMessage = baseUpdate.message!;
@@ -9592,18 +9555,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('мут 12'));
 
@@ -9655,18 +9613,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('мут 88'));
 
@@ -9727,18 +9680,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('навсегда'));
 
@@ -9813,18 +9761,13 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedRulesUpdate());
 
@@ -9910,18 +9853,13 @@ describe('ModerationService', () => {
       }),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedRulesUpdate('регламент'));
 
@@ -9983,18 +9921,13 @@ describe('ModerationService', () => {
       applyManualSystemBan: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate('бан 24'));
 
@@ -10054,18 +9987,13 @@ describe('ModerationService', () => {
       applyManualModerationAction: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate('бан', 'chat-2'));
 
@@ -10380,18 +10308,13 @@ describe('ModerationService', () => {
       applyManualSystemBan: jest.fn(),
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      sanctionService as never,
-      maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      adminService as never,
-    );
+    const service = createModerationServiceWithManualBridge({
+      prisma,
+      ruleEngine,
+      sanctionService,
+      maxClient,
+      manualBridge: adminService,
+    });
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
@@ -13992,7 +13915,7 @@ describe('ModerationService', () => {
     const privateControlService = {
       openChannelSuggestionFromCallback: jest.fn().mockResolvedValue(true),
     };
-    const adminService = {
+    const dialogLinkService = {
       parseChannelSuggestionStartPayload: jest.fn().mockReturnValue({
         chatId: 'channel-1',
         token: 'cdt-suggest-token-1',
@@ -14009,12 +13932,12 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       privateControlService as never,
-      adminService as never,
+      dialogLinkService as never,
     );
 
     await service.handleUpdate(createChannelSuggestionCallbackUpdate('cds-channel-1:token'));
 
-    expect(adminService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith(
+    expect(dialogLinkService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith(
       'cds-channel-1:token',
     );
     expect(privateControlService.openChannelSuggestionFromCallback).toHaveBeenCalledWith({

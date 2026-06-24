@@ -169,6 +169,55 @@ export class AdminDialogLinkHelper {
     };
   }
 
+  parseChannelSuggestionStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; token: string } | null {
+    const compactPayload = this.parseCompactChannelSuggestionStartPayload(startPayload);
+    if (compactPayload) {
+      return compactPayload;
+    }
+
+    if (!startPayload || !startPayload.startsWith(CHANNEL_DIALOG_START_PARAM_PREFIX)) {
+      return null;
+    }
+
+    const encodedPayload = startPayload.slice(CHANNEL_DIALOG_START_PARAM_PREFIX.length);
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<{
+        v: number;
+        k: string;
+        c: string;
+        m: string;
+        t: string;
+      }>;
+      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+      const token = typeof parsed.t === 'string' ? parsed.t.trim() : '';
+
+      if (
+        parsed.v !== 1 ||
+        parsed.k !== 'channel-dialog' ||
+        parsed.m !== 'suggest' ||
+        !chatId ||
+        !token
+      ) {
+        return null;
+      }
+
+      return {
+        chatId,
+        token,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   buildProfileMentionStartPayload(params: {
     chatId: string;
     entityType: ManagedEntityType;

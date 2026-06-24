@@ -73,7 +73,7 @@ import {
   resolveManagedEntityAccessLossReason,
 } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
-import { AdminService } from '../admin/admin.service';
+import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
@@ -477,7 +477,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly privateControlService?: PrivateControlService,
-    @Optional() private readonly adminService?: AdminService,
+    @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotContextService?: MaxBotContextService,
@@ -623,7 +623,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private get manualModerationCommandBridge(): ManualModerationCommandBridge | null {
-    return this.injectedManualModerationService ?? this.adminService ?? null;
+    return this.injectedManualModerationService ?? null;
   }
 
   private isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
@@ -871,8 +871,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const callbackId = this.extractCallbackId(update);
       const callbackPayload = this.extractCallbackPayload(update);
       const suggestionPayload =
-        callbackPayload && this.adminService
-          ? this.adminService.parseChannelSuggestionStartPayload(callbackPayload)
+        callbackPayload && this.adminDialogLinkService
+          ? this.adminDialogLinkService.parseChannelSuggestionStartPayload(callbackPayload)
           : null;
       if (callbackId && suggestionPayload && this.privateControlService) {
         const callbackUserId = this.extractCallbackUserId(update) ?? senderId;
@@ -13531,13 +13531,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     suggestionEntryMode: PersistedChannelSettings['postSuggestionsEntryMode'] = 'BOT',
   ): MaxMessageButton {
     if (type === 'suggest' && suggestionEntryMode !== 'MINIAPP') {
-      const adminSuggestionPayloadBuilder = this.adminService as
-        | {
-            buildChannelSuggestionStartPayload?: (chatId: string, threadId: string) => string;
-          }
-        | undefined;
       const startPayload =
-        adminSuggestionPayloadBuilder?.buildChannelSuggestionStartPayload?.(chatId, threadId) ??
+        this.adminDialogLinkService?.buildChannelSuggestionStartPayload(chatId, threadId) ??
         this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
       const botStartUrl = this.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {

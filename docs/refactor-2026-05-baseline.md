@@ -76,6 +76,10 @@ and make each extraction reviewable through focused tests.
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
   command execution.
+- Moderation/AdminService bridge cleanup is complete for the moderation hot path:
+  channel-suggestion payload parse/build moved behind `AdminDialogLinkService`,
+  `ModerationService` no longer injects `AdminService`, and
+  `manualModerationCommandBridge` no longer falls back to `AdminService`.
 - Private control extraction has started:
   shared private-control types/constants and `PrivateControlSessionStore` are
   separated from `private-control.service.legacy.ts`.
@@ -85,16 +89,7 @@ and make each extraction reviewable through focused tests.
 
 ## Next Optimized Plan
 
-1. Finish the moderation/AdminService bridge cleanup.
-   Move channel-suggestion payload parse/build helpers out of `AdminService` into
-   a focused channel-dialog or manual-moderation helper, then remove the
-   `AdminService` fallback from `manualModerationCommandBridge`. Do not claim full
-   `AdminService` decoupling until the constructor no longer needs it.
-   Validate with:
-   `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts channel-dialog.service.spec.ts admin.service.spec.ts`
-   and `npm run check:refactor-guards`.
-
-2. Deepen `ModerationAccessService` only by moving complete access seams.
+1. Deepen `ModerationAccessService` only by moving complete access seams.
    Keep thin wrappers in `moderation.service.legacy.ts` for hot-path stability, but
    move access lookup state together with methods such as
    `resolveSenderChatAdminCheck`, `recheckSenderChatAdminBeforeModeration`,
@@ -106,7 +101,7 @@ and make each extraction reviewable through focused tests.
    `npm test --workspace @maxim/api -- moderation.admin-access.spec.ts moderation.service.spec.ts`
    and `npm run typecheck --workspace @maxim/api`.
 
-3. Harden bot routing behavior before extracting more callers.
+2. Harden bot routing behavior before extracting more callers.
    Keep `moderation_action` on plural routes with explicit bot priority,
    dedupe/trim candidates, scoped terminal 403/404 handling per bot, read fallback
    order of unified read route -> read bot resolver -> legacy single route ->
@@ -114,7 +109,7 @@ and make each extraction reviewable through focused tests.
    Validate with:
    `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.shared-chat.spec.ts max-membership-lookup.service.spec.ts`.
 
-4. Continue night-mode as a runtime service behind `ModerationExecutionService`.
+3. Continue night-mode as a runtime service behind `ModerationExecutionService`.
    Extract only business logic behind the existing execution boundary; do not add
    another public execution bridge. Preserve schedule-driven close/open notices and
    webhook-only delete gates.
@@ -123,7 +118,7 @@ and make each extraction reviewable through focused tests.
    plus relevant `moderation.service.spec.ts` and `admin-settings.service.spec.ts`
    cases when behavior moves.
 
-5. Slice `PrivateControlService` after the moderation hot path stabilizes.
+4. Slice `PrivateControlService` after the moderation hot path stabilizes.
    Keep `PrivateControlService` as the public facade. Next low-risk slices are
    draft/media normalization, render builders, forwarded action handlers, then
    handoff/broadcast/channel-suggestion action services. Leave callback routing
@@ -133,7 +128,7 @@ and make each extraction reviewable through focused tests.
    `channel-dialog.service.spec.ts managed-giveaway.service.spec.ts` for action or
    handoff moves.
 
-6. Continue mini app settings extraction as second priority.
+5. Continue mini app settings extraction as second priority.
    `SettingsExtraSection` and `SettingsCommentsSection` are extracted. Next split
    required subscription in two stages: presentational blocks first, controller
    hook second. Keep `VkParsingCard`, required-subscription picker, broadcast
@@ -143,7 +138,7 @@ and make each extraction reviewable through focused tests.
    `npm run typecheck --workspace @maxim/miniapp`,
    and `npm run build --workspace @maxim/miniapp`.
 
-7. Keep contracts extraction opportunistic and subpath-based.
+6. Keep contracts extraction opportunistic and subpath-based.
    If a domain needs new shared contracts, create/update a subpath export and
    synchronize API, mini app, tests, and typechecks in the same slice. Do not use
    `core.ts` as a catch-all.

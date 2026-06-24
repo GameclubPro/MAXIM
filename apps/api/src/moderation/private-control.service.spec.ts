@@ -556,6 +556,7 @@ function createHarness(
     managedGiveaway?: ManagedGiveawayDetails | null;
     rules?: ChatRules;
     maxBotLinkService?: Record<string, unknown>;
+    adminDialogLinkService?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -757,6 +758,10 @@ function createHarness(
       reviewStatus: 'published',
       publishedUrl: 'https://max.ru/chats/channel-1/message/777',
     }),
+    publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
+    ...overrides.adminService,
+  };
+  const adminDialogLinkService = {
     parseChannelSuggestionStartPayload: jest.fn((payload: string | null) => {
       if (!payload?.startsWith('cds-')) {
         return null;
@@ -775,8 +780,7 @@ function createHarness(
 
       return { chatId, token };
     }),
-    publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
-    ...overrides.adminService,
+    ...overrides.adminDialogLinkService,
   };
   const adminSettingsService = {
     updateRules: adminService.updateRules,
@@ -997,6 +1001,7 @@ function createHarness(
     } as never,
     overrides.maxBotLinkService as never,
     overrides.managedBroadcastService as never,
+    adminDialogLinkService as never,
   );
 
   return {
@@ -1004,6 +1009,7 @@ function createHarness(
     maxClient,
     adminService,
     adminSettingsService,
+    adminDialogLinkService,
     managedGiveawayService,
     redisCounter,
     chats,

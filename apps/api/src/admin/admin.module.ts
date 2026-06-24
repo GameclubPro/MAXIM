@@ -21,6 +21,7 @@ import { AdminBroadcastController } from './admin-broadcast.controller';
 import { AdminDialogController } from './admin-dialog.controller';
 import { AdminGiveawayController } from './admin-giveaway.controller';
 import { AdminManualModerationController } from './admin-manual-moderation.controller';
+import { AdminDialogLinkService } from './admin-dialog-link.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminManagedEntitiesController } from './admin-managed-entities.controller';
 import { AdminSettingsController } from './admin-settings.controller';
@@ -76,6 +77,7 @@ import { VkSyncService } from './vk-sync.service';
   ],
   providers: [
     AdminService,
+    AdminDialogLinkService,
     AdminSettingsService,
     ChannelDialogService,
     ChannelStatsCollectorService,
@@ -115,6 +117,7 @@ import { VkSyncService } from './vk-sync.service';
   ],
   exports: [
     AdminService,
+    AdminDialogLinkService,
     AdminSettingsService,
     ChannelDialogService,
     ManualModerationService,

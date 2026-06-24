@@ -28,6 +28,7 @@ import {
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
+import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
@@ -743,6 +744,7 @@ export class PrivateControlService {
     @Optional() configService?: ConfigService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly managedBroadcastService?: ManagedBroadcastService,
+    @Optional() private readonly adminDialogLinkService?: AdminDialogLinkService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -932,7 +934,7 @@ export class PrivateControlService {
       return;
     }
     const channelSuggestionPayload =
-      this.adminService.parseChannelSuggestionStartPayload(startPayload);
+      this.adminDialogLinkService?.parseChannelSuggestionStartPayload(startPayload) ?? null;
     if (channelSuggestionPayload) {
       session.pendingInput = {
         kind: 'channel_suggestion',
