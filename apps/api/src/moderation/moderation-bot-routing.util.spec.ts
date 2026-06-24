@@ -4,6 +4,7 @@ import {
   readExecutionOwnerBotId,
   resolveAutoAttachBotId,
   resolveChatReadBotId,
+  resolveModerationActionBotIds,
   resolveUnifiedBotRoute,
 } from './moderation-bot-routing.util';
 
@@ -286,5 +287,145 @@ describe('moderation bot routing util', () => {
       purpose: 'read',
       chatId: 'chat-1',
     });
+  });
+
+  it('prefers an explicit moderation action bot id', async () => {
+    const resolveBotRoutes = jest.fn();
+
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: {
+            resolveBotRoutes,
+          } as never,
+        },
+        {
+          chatId: 'chat-1',
+          action: 'delete_message',
+          explicitBotId: ' action-bot ',
+        },
+      ),
+    ).resolves.toEqual(['action-bot']);
+
+    expect(resolveBotRoutes).not.toHaveBeenCalled();
+  });
+
+  it('resolves moderation action candidates from multi-route routing', async () => {
+    const resolveBotRoutes = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'moderation_action',
+        action: 'delete_message',
+        candidateBotIds: [' bot-a ', 'bot-b', 'bot-a', '', '   '],
+      }),
+    );
+    const resolveBotIdsForModerationAction = jest.fn();
+    const resolveBotIdForModerationAction = jest.fn();
+
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: {
+            resolveBotRoutes,
+            resolveBotIdsForModerationAction,
+            resolveBotIdForModerationAction,
+          } as never,
+        },
+        {
+          chatId: 'chat-1',
+          action: 'delete_message',
+        },
+      ),
+    ).resolves.toEqual(['bot-a', 'bot-b']);
+
+    expect(resolveBotRoutes).toHaveBeenCalledWith({
+      purpose: 'moderation_action',
+      chatId: 'chat-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+    expect(resolveBotIdsForModerationAction).not.toHaveBeenCalled();
+    expect(resolveBotIdForModerationAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps an empty moderation action route as no candidates', async () => {
+    const resolveBotRoutes = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'moderation_action',
+        action: 'moderate_member',
+        candidateBotIds: [],
+      }),
+    );
+    const resolveBotIdsForModerationAction = jest.fn().mockResolvedValue(['fallback-bot']);
+
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: {
+            resolveBotRoutes,
+            resolveBotIdsForModerationAction,
+          } as never,
+        },
+        {
+          chatId: 'chat-1',
+          action: 'moderate_member',
+        },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(resolveBotIdsForModerationAction).not.toHaveBeenCalled();
+  });
+
+  it('falls back to moderation action bot helper list, single helper, then null candidate', async () => {
+    const listResolver = {
+      resolveBotIdsForModerationAction: jest
+        .fn()
+        .mockResolvedValue([' helper-a ', 'helper-b', 'helper-a', '']),
+    };
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: listResolver as never,
+        },
+        {
+          chatId: 'chat-1',
+          action: 'delete_message',
+        },
+      ),
+    ).resolves.toEqual(['helper-a', 'helper-b']);
+    expect(listResolver.resolveBotIdsForModerationAction).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      action: 'delete_message',
+      fallbackToPrimary: true,
+    });
+
+    const singleResolver = {
+      resolveBotIdForModerationAction: jest.fn().mockResolvedValue('single-bot'),
+    };
+    await expect(
+      resolveModerationActionBotIds(
+        {
+          maxBotLinkService: singleResolver as never,
+        },
+        {
+          chatId: 'chat-1',
+          action: 'moderate_member',
+        },
+      ),
+    ).resolves.toEqual(['single-bot']);
+    expect(singleResolver.resolveBotIdForModerationAction).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      action: 'moderate_member',
+      fallbackToPrimary: true,
+    });
+
+    await expect(
+      resolveModerationActionBotIds(
+        {},
+        {
+          chatId: 'chat-1',
+          action: 'delete_message',
+        },
+      ),
+    ).resolves.toEqual([null]);
   });
 });

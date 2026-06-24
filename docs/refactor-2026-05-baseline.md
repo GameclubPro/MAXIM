@@ -62,13 +62,14 @@ and make each extraction reviewable through focused tests.
 - Rule-engine extraction has already split detection context, hot-path profiling,
   message/media limits, commercial detection, normalization, topic filters,
   duplicate state, and related specs into focused modules.
-- Moderation access/read-bot slice has started:
+- Moderation access/read-bot slice is largely extracted:
   `moderation-access.service.ts` owns chat-admin access checks, remote lookup
   batching/cache/backoff, and transient MAX lookup handling, with legacy wrappers
   delegating into it.
-- Bot routing helpers have started:
-  `moderation-bot-routing.util.ts` centralizes read, action, and auto-attach bot
-  route selection helpers used by the legacy facade.
+- Bot routing helpers have started and now cover the main non-I/O selection
+  seams:
+  `moderation-bot-routing.util.ts` centralizes read, moderation-action, and
+  auto-attach bot route selection helpers used by the legacy facade.
 - Night-mode execution has started:
   `night-mode-transition-runtime.service.ts` owns transition execution logic while
   `ModerationExecutionService` remains the public queue/runtime entrypoint.
@@ -89,34 +90,41 @@ and make each extraction reviewable through focused tests.
 
 ## Next Optimized Plan
 
-1. Deepen `ModerationAccessService` only by moving complete access seams.
-   Keep thin wrappers in `moderation.service.legacy.ts` for hot-path stability, but
-   move access lookup state together with methods such as
-   `resolveSenderChatAdminCheck`, `recheckSenderChatAdminBeforeModeration`,
-   `isOtherBotAdminModerationBypass`, `getRemoteChatAdminAccess`,
-   batch shared-cache read/write helpers, guarded timeout execution, and
-   `persistRemoteAdminGrant`. Leave destructive roster refresh scheduling in
-   legacy until action routing is thinner.
+1. Finish remaining moderation access/bot-routing debt only at complete seams.
+   Keep thin wrappers in `moderation.service.legacy.ts` for hot-path stability.
+   Access lookup state and methods such as `resolveSenderChatAdminCheck`,
+   `recheckSenderChatAdminBeforeModeration`, `isOtherBotAdminModerationBypass`,
+   `getRemoteChatAdminAccess`, batch shared-cache helpers, guarded timeout
+   execution, and `persistRemoteAdminGrant` already live in
+   `ModerationAccessService`. `moderation-bot-routing.util.ts` owns read,
+   moderation-action candidate, and auto-attach route selection. The next API
+   cleanup here should remove residual wrapper/coupling debt or add focused tests,
+   not reopen moved logic. Leave destructive roster refresh scheduling and action
+   execution/backoff state in legacy until a complete runtime service seam is
+   available.
    Validate with:
-   `npm test --workspace @maxim/api -- moderation.admin-access.spec.ts moderation.service.spec.ts`
+   `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.admin-access.spec.ts moderation.shared-chat.spec.ts moderation.service.spec.ts`
    and `npm run typecheck --workspace @maxim/api`.
 
-2. Harden bot routing behavior before extracting more callers.
-   Keep `moderation_action` on plural routes with explicit bot priority,
-   dedupe/trim candidates, scoped terminal 403/404 handling per bot, read fallback
-   order of unified read route -> read bot resolver -> legacy single route ->
-   `null`, and separate webhook vs poll auto-attach behavior.
-   Validate with:
-   `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.shared-chat.spec.ts max-membership-lookup.service.spec.ts`.
-
-3. Continue night-mode as a runtime service behind `ModerationExecutionService`.
+2. Continue night-mode as a runtime service behind `ModerationExecutionService`.
    Extract only business logic behind the existing execution boundary; do not add
-   another public execution bridge. Preserve schedule-driven close/open notices and
-   webhook-only delete gates.
+   another public execution bridge. The current runtime service owns
+   transition-state/lock/schedule decisions; notice send/delete rendering and
+   terminal handling still call hooks back into legacy and are the next complete
+   seams to move. Preserve schedule-driven close/open notices and webhook-only
+   delete gates.
    Validate with:
    `npm test --workspace @maxim/api -- night-mode-transition`
    plus relevant `moderation.service.spec.ts` and `admin-settings.service.spec.ts`
    cases when behavior moves.
+
+3. Keep manual/admin command bridging out of the moderation hot path.
+   `ModerationService` no longer injects `AdminService`; continue routing manual
+   group/private commands through `ManualModerationService` and focused helpers.
+   Watch super-ban, fanout, developer actions, and channel-suggestion handoff
+   paths for accidental legacy admin coupling.
+   Validate with:
+   `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts admin-dialog-link.service.spec.ts`.
 
 4. Slice `PrivateControlService` after the moderation hot path stabilizes.
    Keep `PrivateControlService` as the public facade. Next low-risk slices are

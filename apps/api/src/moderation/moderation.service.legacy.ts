@@ -158,6 +158,7 @@ import {
   readExecutionOwnerBotId as readExecutionOwnerBotIdFromUpdate,
   resolveAutoAttachBotId as resolveAutoAttachBotIdForModeration,
   resolveChatReadBotId as resolveChatReadBotIdForModeration,
+  resolveModerationActionBotIds as resolveModerationActionBotIdsForModeration,
   resolveUnifiedBotRoute as resolveUnifiedBotRouteForModeration,
 } from './moderation-bot-routing.util';
 import {
@@ -10786,68 +10787,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     action: 'delete_message' | 'moderate_member';
     explicitBotId?: string | null;
   }): Promise<Array<string | null>> {
-    const explicitBotId =
-      typeof params.explicitBotId === 'string' && params.explicitBotId.trim().length > 0
-        ? params.explicitBotId.trim()
-        : null;
-    if (explicitBotId) {
-      return [explicitBotId];
-    }
-
-    const route = await this.resolveUnifiedBotRoute({
-      purpose: 'moderation_action',
-      chatId: params.chatId,
-      action: params.action,
-      fallbackToPrimary: true,
-    });
-    if (route) {
-      return Array.from(
-        new Set(
-          route.candidateBotIds
-            .map((botId) => (typeof botId === 'string' ? botId.trim() : ''))
-            .filter((botId) => botId.length > 0),
-        ),
-      );
-    }
-
-    const maxBotLinkService = this.maxBotLinkService as unknown as {
-      resolveBotIdsForModerationAction?: (params: {
-        chatId: string;
-        action: 'delete_message' | 'moderate_member';
-        fallbackToPrimary?: boolean;
-      }) => Promise<string[]>;
-      resolveBotIdForModerationAction?: (params: {
-        chatId: string;
-        action: 'delete_message' | 'moderate_member';
-        fallbackToPrimary?: boolean;
-      }) => Promise<string | null>;
-    };
-
-    if (typeof maxBotLinkService?.resolveBotIdsForModerationAction === 'function') {
-      const resolvedBotIds = await maxBotLinkService.resolveBotIdsForModerationAction({
-        chatId: params.chatId,
-        action: params.action,
-        fallbackToPrimary: true,
-      });
-      return Array.from(
-        new Set(
-          resolvedBotIds
-            .map((botId) => (typeof botId === 'string' ? botId.trim() : ''))
-            .filter((botId) => botId.length > 0),
-        ),
-      );
-    }
-
-    if (typeof maxBotLinkService?.resolveBotIdForModerationAction === 'function') {
-      const resolvedBotId = await maxBotLinkService.resolveBotIdForModerationAction({
-        chatId: params.chatId,
-        action: params.action,
-        fallbackToPrimary: true,
-      });
-      return resolvedBotId ? [resolvedBotId] : [];
-    }
-
-    return [null];
+    return resolveModerationActionBotIdsForModeration(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+      },
+      params,
+    );
   }
 
   private async refreshModerationActionCandidateBotIds(params: {
