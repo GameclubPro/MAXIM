@@ -40,7 +40,7 @@ The wrapper runs repo-standard commands on the VPS without storing secrets in gi
 ```sh
 ./infra/scripts/vps-connect.sh shell
 ./infra/scripts/vps-connect.sh health
-./infra/scripts/vps-connect.sh deploy main miniapp-static
+./infra/scripts/vps-connect.sh deploy main miniapp-major-static
 ./infra/scripts/vps-connect.sh deploy main api-ingress api-admin api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-action
 ```
 
@@ -57,7 +57,7 @@ The emulator starts the Vite mini-app locally, opens `/app/?preview=1` with mock
 
 Use `--target native` for MAX-like full-screen inspection. Native emulator and native screenshots install a safe MAX Bridge shim by default: `window.MAX.WebApp`/`window.WebApp` expose preview `initData`, platform, BackButton, haptics, share/download, and native storage while recording calls in `window.__MAXIM_VISUAL_BRIDGE_EVENTS__` instead of closing or leaving the page. Pass `--no-max-bridge` to the emulator, or set `MINIAPP_SCREENSHOT_MAX_BRIDGE=0` only when you intentionally need a bridge-free browser check.
 
-The visual audit uses the production `/app/` domains (`major-maksimov.ru` and the restricted-LTE `app2.major-maksimov.ru` shell), native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, the MAX Bridge shim, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
+The visual audit uses the production Major `/app/` origin by default (`https://major-maksimov.ru/app/`), native-like screenshots without the preview frame, Android/iPhone/iPhone SE profiles, light/dark schemes, simulated keyboard state, the MAX Bridge shim, and strict layout assertions for blank screens, viewport overflow, fixed controls, comments safe-area, and charts. CDN/app2/Object Storage checks are paused for routine work. Use `MINIAPP_VISUAL_AUDIT_QUICK=1 npm run audit:miniapp:visual` for a shorter preflight.
 
 ## Role-based API runtime
 

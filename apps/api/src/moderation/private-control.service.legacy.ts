@@ -76,9 +76,6 @@ import {
   DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
   DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
   DUPLICATE_ALLOWED_COUNT_MAX,
-  DUPLICATE_ALLOWED_COUNT_MIN,
-  DUPLICATE_FLOW_SETTING_KEYS,
-  DUPLICATE_THRESHOLD_MAX,
   ENTITY_CALLBACK_ACTIONS,
   GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
   GIVEAWAY_HANDOFF_START_PAYLOAD,
@@ -199,6 +196,12 @@ import {
   parsePrivateGiveawayHandoffStartPayload,
   parsePrivateProfileMentionStartPayload,
 } from './private-control-handoff-start-payload';
+import {
+  isPrivateDuplicateFlowSettingKey,
+  normalizePrivateDuplicateFlowSettings,
+  resolvePrivateDuplicateAllowedCount,
+  resolvePrivateDuplicateSharedWindowSec,
+} from './private-control-duplicate-flow';
 import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -4633,159 +4636,14 @@ export class PrivateControlService {
       [key]: value,
     };
     const nextSettings = this.isDuplicateFlowSettingKey(key)
-      ? this.normalizeDuplicateFlowSettings(nextSettingsBase)
+      ? normalizePrivateDuplicateFlowSettings(nextSettingsBase)
       : nextSettingsBase;
 
     await this.adminService.updateSettings(chatId, actor, nextSettings, 'private_bot');
   }
 
   private isDuplicateFlowSettingKey(key: keyof ChatSettings): boolean {
-    return (DUPLICATE_FLOW_SETTING_KEYS as readonly (keyof ChatSettings)[]).includes(key);
-  }
-
-  private resolveDuplicateSharedWindowSec(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-      | 'duplicateWarnWindowSec'
-      | 'duplicateMuteWindowSec'
-      | 'duplicateBanWindowSec'
-    >,
-  ): number {
-    if (settings.duplicateWarnEnabled) {
-      return settings.duplicateWarnWindowSec;
-    }
-
-    if (settings.duplicateMuteEnabled) {
-      return settings.duplicateMuteWindowSec;
-    }
-
-    if (settings.duplicateBanEnabled) {
-      return settings.duplicateBanWindowSec;
-    }
-
-    return settings.duplicateWarnWindowSec;
-  }
-
-  private resolveDuplicateFirstThreshold(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-      | 'duplicateWarnMaxCount'
-      | 'duplicateMuteMaxCount'
-      | 'duplicateBanMaxCount'
-    >,
-  ): number {
-    if (settings.duplicateWarnEnabled) {
-      return settings.duplicateWarnMaxCount;
-    }
-
-    if (settings.duplicateMuteEnabled) {
-      return settings.duplicateMuteMaxCount;
-    }
-
-    if (settings.duplicateBanEnabled) {
-      return settings.duplicateBanMaxCount;
-    }
-
-    return settings.duplicateWarnMaxCount;
-  }
-
-  private resolveDuplicateAllowedCountMax(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateBotMessageEnabled'
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-    >,
-  ): number {
-    const duplicateThresholdOffset =
-      (settings.duplicateBotMessageEnabled ? 2 : 1) +
-      (settings.duplicateWarnEnabled ? 1 : 0) +
-      (settings.duplicateMuteEnabled ? 1 : 0);
-
-    return Math.max(
-      DUPLICATE_ALLOWED_COUNT_MIN,
-      DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset,
-    );
-  }
-
-  private resolveDuplicateAllowedCount(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateBotMessageEnabled'
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-      | 'duplicateWarnMaxCount'
-      | 'duplicateMuteMaxCount'
-      | 'duplicateBanMaxCount'
-    >,
-  ): number {
-    const rawAllowedCount =
-      this.resolveDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1);
-    return Math.max(
-      DUPLICATE_ALLOWED_COUNT_MIN,
-      Math.min(this.resolveDuplicateAllowedCountMax(settings), rawAllowedCount),
-    );
-  }
-
-  private buildDuplicateFlowSettings(
-    settings: Pick<
-      ChatSettings,
-      | 'duplicateBotMessageEnabled'
-      | 'duplicateWarnEnabled'
-      | 'duplicateMuteEnabled'
-      | 'duplicateBanEnabled'
-    > & {
-      allowedCount: number;
-      windowSec: number;
-    },
-  ): Pick<
-    ChatSettings,
-    | 'duplicateWarnWindowSec'
-    | 'duplicateMuteWindowSec'
-    | 'duplicateBanWindowSec'
-    | 'duplicateWarnMaxCount'
-    | 'duplicateMuteMaxCount'
-    | 'duplicateBanMaxCount'
-  > {
-    const allowedCount = Math.max(
-      DUPLICATE_ALLOWED_COUNT_MIN,
-      Math.min(this.resolveDuplicateAllowedCountMax(settings), Math.round(settings.allowedCount)),
-    );
-    const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
-    const warnThreshold = allowedCount + (settings.duplicateBotMessageEnabled ? 2 : 1);
-    const muteThreshold = warnThreshold + (settings.duplicateWarnEnabled ? 1 : 0);
-    const banThreshold = muteThreshold + (settings.duplicateMuteEnabled ? 1 : 0);
-
-    return {
-      duplicateWarnWindowSec: windowSec,
-      duplicateMuteWindowSec: windowSec,
-      duplicateBanWindowSec: windowSec,
-      duplicateWarnMaxCount: warnThreshold,
-      duplicateMuteMaxCount: muteThreshold,
-      duplicateBanMaxCount: banThreshold,
-    };
-  }
-
-  private normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSettings {
-    return {
-      ...settings,
-      ...this.buildDuplicateFlowSettings({
-        duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
-        duplicateWarnEnabled: settings.duplicateWarnEnabled,
-        duplicateMuteEnabled: settings.duplicateMuteEnabled,
-        duplicateBanEnabled: settings.duplicateBanEnabled,
-        allowedCount: this.resolveDuplicateAllowedCount(settings),
-        windowSec: this.resolveDuplicateSharedWindowSec(settings),
-      }),
-    };
+    return isPrivateDuplicateFlowSettingKey(key);
   }
 
   private async updateSingleChannelSetting(
@@ -5961,7 +5819,7 @@ export class PrivateControlService {
     }
 
     if (settings.antiDuplicateEnabled) {
-      const allowedCount = this.resolveDuplicateAllowedCount(settings);
+      const allowedCount = resolvePrivateDuplicateAllowedCount(settings);
       items.push(
         allowedCount === 0
           ? 'Не повторяйте одно и то же сообщение несколько раз.'
@@ -7194,8 +7052,8 @@ export class PrivateControlService {
           `Кнопка: ${this.describeBooleanCompact(settings.thematicFiltersBotButtonEnabled)}`,
         ];
       case 'duplicates': {
-        const duplicateWindowSec = this.resolveDuplicateSharedWindowSec(settings);
-        const duplicateAllowedCount = this.resolveDuplicateAllowedCount(settings);
+        const duplicateWindowSec = resolvePrivateDuplicateSharedWindowSec(settings);
+        const duplicateAllowedCount = resolvePrivateDuplicateAllowedCount(settings);
         return [
           `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
           `Этапы: объяснение ${this.describeBooleanCompact(settings.duplicateBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.duplicateBanEnabled)}`,

@@ -64,7 +64,7 @@ and make each extraction reviewable through focused tests.
 - Rule-engine extraction has already split detection context, hot-path profiling,
   message/media limits, commercial detection, normalization, topic filters,
   duplicate state, and related specs into focused modules.
-- Moderation access/read-bot slice is largely extracted:
+- Moderation access/read-bot slice is extracted for the moderation hot path:
   `moderation-access.service.ts` owns chat-admin access checks, remote lookup
   batching/cache/backoff, and transient MAX lookup handling, with legacy wrappers
   delegating into it.
@@ -73,7 +73,7 @@ and make each extraction reviewable through focused tests.
   `moderation-bot-routing.util.ts` centralizes read, moderation-action, and
   auto-attach/night-mode transition bot route selection helpers used by the
   legacy facade.
-- Night-mode execution has started:
+- Night-mode transition execution is extracted:
   `night-mode-transition-runtime.service.ts` owns transition execution logic while
   `ModerationExecutionService` remains the public queue/runtime entrypoint.
   `night-mode-transition-notice.util.ts` owns pure close/open notice rendering
@@ -83,8 +83,8 @@ and make each extraction reviewable through focused tests.
   options composition for close notices. `BotSpeechMediaService` owns shared
   bot-speech media resolution/upload/option merging for night-mode and other
   moderation notices. `NightModeTransitionEventService` owns close/open
-  transition moderation-event creation and metadata while legacy still supplies
-  a focused adapter for generic button builders.
+  transition moderation-event creation and metadata. Legacy still owns the
+  incoming message delete gates for active night-mode/manual-force-close checks.
 - Manual/admin command bridge has started:
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
@@ -109,86 +109,95 @@ and make each extraction reviewable through focused tests.
   handlers remain in legacy behind `ManualModerationService`.
   Private-control manual moderation/rules command calls now route through
   `ManualModerationService` instead of direct `AdminService` calls.
+  `private-control-duplicate-flow.ts` owns duplicate-flow allowed-count/window
+  normalization and threshold rebuild helpers used by legacy settings rendering
+  and updates.
 - Settings page extraction has started:
   comments and extra sections are delegated to focused components while keeping
   route-owned state and lazy boundaries intact.
 
 ## Next Optimized Plan
 
-1. Protect the completed moderation hot-path seams before taking new runtime cuts.
-   Access lookup state and methods such as `resolveSenderChatAdminCheck`,
-   `recheckSenderChatAdminBeforeModeration`, `isOtherBotAdminModerationBypass`,
-   `getRemoteChatAdminAccess`, batch shared-cache helpers, guarded timeout
-   execution, and `persistRemoteAdminGrant` already live in
-   `ModerationAccessService`. `moderation-bot-routing.util.ts` owns read,
-   moderation-action candidate, and auto-attach/night-mode route selection.
-   Night-mode runtime, delivery, notice rendering, bot-speech media, closed-notice
-   options, and transition-event creation are already behind focused modules.
-   `ModerationService` no longer injects `AdminService`; channel-suggestion
-   payload parse/build is behind `AdminDialogLinkService`, and manual command
-   execution goes through `ManualModerationService`. The next work in these files
-   should be regression guards, residual wrapper deletion, or complete-service
-   extractions only. Leave destructive roster refresh scheduling and action
-   execution/backoff state in legacy until a complete runtime service seam is
-   available.
+1. Freeze the completed moderation hot-path seams.
+   Treat moderation access/read-bot and night-mode transition extraction as
+   protected boundaries, not the next broad work item. `ModerationAccessService`
+   owns access lookup/cache/backoff, `moderation-bot-routing.util.ts` owns read,
+   action, auto-attach, and night-mode route selection, and `ModerationService`
+   no longer injects `AdminService`. Residual work in moderation should be either
+   regression guards, thin-wrapper deletion, or a complete service extraction.
+   Do not pull destructive roster refresh scheduling or moderation-action
+   fallback/backoff snapshot state apart until a full runtime service seam exists.
    Validate with:
    `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.admin-access.spec.ts moderation.shared-chat.spec.ts moderation.service.spec.ts`
    and `npm run typecheck --workspace @maxim/api`.
 
-2. Make `PrivateControlService` the next primary backend slice.
+2. Make `PrivateControlService` settings schema/rendering the primary backend
+   slice. `private-control.service.legacy.ts` is exactly at its guard cap, so the
+   next extraction should reduce it materially without touching callback routing.
    Keep `PrivateControlService` as the only public facade and do not import
-   `private-control.service.legacy.ts` from new code. The manual-command bridge
-   seam is closed; keep future private-control manual command work behind
-   `ManualModerationService` or a narrower command service instead of direct
-   `AdminService`. Move decomposition seams in this order:
-   A. Extract pure render helpers only where they do not fetch data: launcher,
-   moved-to-miniapp screens, preview payload rendering, small section summaries,
-   and button/layout/string helpers. Defer rules/broadcast/giveaway/events/logs
-   screens that fetch data.
-   B. Extract handoff state/delivery helpers for broadcast, rules, giveaway, and
-   profile mention flows, preserving the existing session fields and idempotency.
-   C. Extract action bridges for broadcast publishing, channel suggestions,
-   giveaway actions, settings/rules, and domain allowlist operations through
-   existing focused services where available. Extend `ManagedBroadcastService`,
-   `ChannelDialogService`, `ManagedGiveawayService`, and `ManualModerationService`
-   rather than adding new logic to `AdminService`.
-   D. Move callback routing, pending-input orchestration, `respond`, error
-   handling, and context parsing last, after render, draft, handoff, and action
-   services are covered by focused tests.
-   Validate after each step with:
-   `npm test --workspace @maxim/api -- private-control-launcher-renderer.spec.ts private-control-handoff-state.spec.ts private-control-handoff-delivery.spec.ts private-control-profile-mention-handoff.spec.ts private-control-handoff-start-payload.spec.ts private-control-draft-normalizer.spec.ts private-control-session-normalizer.spec.ts private-control.service.spec.ts`
-   for session/draft state cuts; add `manual-moderation.service.spec.ts` for the
-   manual-command bridge seam, and
-   `admin-forwarded-command.util.spec.ts private-control-media-attachments.spec.ts`
-   for future private bot command/media cuts. Add
-   `miniapp-mutation-tunnel.controller.spec.ts admin-dialog-link.service.spec.ts channel-dialog.service.spec.ts managed-giveaway.service.spec.ts managed-broadcast.service.spec.ts`
-   whenever handoff/action paths move.
+   `private-control.service.legacy.ts` from new code.
+   A. Extract inline settings schema/config such as `SECTION_LABELS`,
+   `CHANNEL_SECTION_LABELS`, `SECTION_FIELDS`, `CHANNEL_SECTION_FIELDS`,
+   `SECTION_SETTING_KEYS`, `SECTION_ORDER`, and `SECTION_CARD_FIELDS` into
+   `private-control-settings-schema.ts`.
+   B. Extract deterministic settings render/search helpers such as
+   `findSettingMatches`, `buildFieldAliases`, `buildSectionFieldConfigs`,
+   `buildSectionSummaryLines`, `buildSectionActionRows`,
+   `buildChannelSectionSummary`, `buildChannelSectionRows`,
+   `describeLinkPolicy`, `describeBooleanCompact`, `formatNumberPreset`, and
+   `resolveSectionViewForField` into `private-control-settings-renderer.ts`.
+   C. Leave `processCallback`, pending-input orchestration, `respond`, context
+   parsing, and data-fetching rules/broadcast/giveaway/events/logs screens in
+   legacy until the pure settings renderer is covered by focused tests.
+   Preserve `SECTION_SETTING_KEYS` behavior because it controls bulk
+   `applySettingsToAllChats` semantics.
+   Validate with:
+   `npm test --workspace @maxim/api -- private-control-duplicate-flow.spec.ts private-control-settings-renderer.spec.ts private-control.service.spec.ts`,
+   then `npm run typecheck --workspace @maxim/api`, then
+   `npm run check:refactor-guards`. After each reduction, set the
+   `private-control.service.legacy.ts` guard cap to the new exact line count.
 
-3. Keep manual/admin command bridging out of runtime hot paths while private
-   control is split. `ManualModerationService` is still partly a bridge over
-   legacy `AdminService`; that is acceptable as an extraction boundary, but new
-   manual command logic should land behind it or behind narrower focused helpers.
-   Watch super-ban, fanout, developer actions, channel-suggestion handoff, and
-   private-control admin callbacks for accidental new `AdminService` coupling.
+3. Only after the private-control settings cut, take the residual night-mode
+   delete-gate slice if it still pays for itself. The focused target is
+   `handleNightModeMessage`, `handleNightModeForceCloseMessage`,
+   `isNightModeActiveNow`, and `isNightModeForceCloseActiveNow` in a small
+   runtime service that keeps `ModerationExecutionService` as the public
+   queue/runtime entrypoint. Keep terminal MAX 403/404 access-loss handling in
+   the existing night-mode delivery/runtime services.
+   Validate with:
+   `npm test --workspace @maxim/api -- night-mode-transition moderation.service.spec.ts`
+   and `npm run typecheck --workspace @maxim/api`.
+
+4. Keep manual/admin command bridging contained behind existing facades.
+   The moderation hot path is no longer directly coupled to `AdminService`, but
+   `ManualModerationService` is still partly a bridge over legacy admin methods.
+   Future manual-command work should split silence/open-chat, fanout,
+   developer super-ban, domain allowlist, and private-control admin callbacks
+   behind `ManualModerationService` or narrower focused helpers. Do not add new
+   direct `AdminService` dependencies in runtime/private-control code.
    Validate with:
    `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts admin-dialog-link.service.spec.ts`.
 
-4. Continue mini app settings extraction as second priority.
+5. Continue mini app settings extraction as second priority.
    `SettingsExtraSection` and `SettingsCommentsSection` are extracted. Next split
    required subscription in two stages: presentational blocks first, controller
-   hook second. Keep `VkParsingCard`, required-subscription picker, broadcast
-   composer, stats/events clients, and route CSS lazy boundaries intact. Material
-   UI checks should use local screenshots or Major production-origin screenshots;
-   `npm run audit:miniapp:visual` defaults to `https://major-maksimov.ru/app/`.
+   hook second. After that, consider lazy `rules` and `broadcast` workspaces,
+   reusing channel-settings boundaries where they already exist. Keep
+   `VkParsingCard`, required-subscription picker, broadcast composer, stats/events
+   clients, and route CSS lazy boundaries intact. Material UI checks should use
+   local screenshots or Major production-origin screenshots only.
    Validate with:
    `npm run check:miniapp-css`,
    `npm run typecheck --workspace @maxim/miniapp`,
    and `npm run build --workspace @maxim/miniapp`.
 
-5. Keep contracts extraction opportunistic and subpath-based.
+6. Keep contracts extraction subpath-based and source-runtime safe.
    If a domain needs new shared contracts, create/update a subpath export and
-   synchronize API, mini app, tests, and typechecks in the same slice. Do not use
-   `core.ts` as a catch-all.
+   synchronize package exports, root TS paths, API Jest mappers, API, mini app,
+   tests, and typechecks in the same slice. Do not use `core.ts` as a catch-all.
+   Audit tracked `packages/contracts/src/*.js` shims before moving runtime values:
+   stale JS beside TS sources can mislead source-runtime imports even when TS/Jest
+   resolution is correct.
    Validate with:
    `npm run typecheck:contracts` and API contract specs before broader checks.
 

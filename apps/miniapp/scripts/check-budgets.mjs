@@ -152,9 +152,7 @@ const channelStatsAssets = collectAssets(findManifestKey('src/pages/channel-stat
 const channelStatsIncrementalJs = difference(channelStatsAssets.js, startupJs);
 const giveawayAssets = collectAssets(findManifestKey('src/pages/giveaway-page.tsx'));
 const giveawayIncrementalJs = difference(giveawayAssets.js, startupJs);
-const vkParsingCardAssets = collectAssets(
-  findManifestKey('src/components/vk-parsing/vk-parsing-card.tsx'),
-);
+const vkParsingCardAssets = collectAssets(findManifestKey('src/components/vk-parsing-card.tsx'));
 const vkParsingCardIncrementalJs = difference(vkParsingCardAssets.js, startupJs);
 
 const startupJsGzip = sumGzip(startupJs);
