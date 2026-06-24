@@ -5,6 +5,7 @@ import {
   resolveAutoAttachBotId,
   resolveChatReadBotId,
   resolveModerationActionBotIds,
+  resolveNightModeTransitionBotId,
   resolveUnifiedBotRoute,
 } from './moderation-bot-routing.util';
 
@@ -287,6 +288,134 @@ describe('moderation bot routing util', () => {
       purpose: 'read',
       chatId: 'chat-1',
     });
+  });
+
+  it('resolves night mode transition bot id from background scan route first', async () => {
+    const resolveBotRoute = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'capability',
+        capability: 'background_scans',
+        botId: ' route-scan-bot ',
+      }),
+    );
+    const resolveBotIdForCapability = jest.fn().mockResolvedValue('scan-helper-bot');
+    const resolveBotIdForRead = jest.fn().mockResolvedValue('read-bot');
+
+    await expect(
+      resolveNightModeTransitionBotId(
+        {
+          maxBotLinkService: {
+            resolveBotRoute,
+            resolveBotIdForCapability,
+            resolveBotIdForRead,
+          } as never,
+        },
+        'chat-1',
+      ),
+    ).resolves.toBe('route-scan-bot');
+
+    expect(resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'capability',
+      chatId: 'chat-1',
+      capability: 'background_scans',
+      fallbackToPrimary: true,
+    });
+    expect(resolveBotIdForCapability).not.toHaveBeenCalled();
+    expect(resolveBotIdForRead).not.toHaveBeenCalled();
+  });
+
+  it('falls back from night mode route to capability helper and trims it', async () => {
+    const resolveBotRoute = jest.fn().mockResolvedValue(
+      createRoute({
+        purpose: 'capability',
+        capability: 'background_scans',
+        botId: null,
+      }),
+    );
+    const resolveBotIdForCapability = jest.fn().mockResolvedValue(' scan-helper-bot ');
+    const resolveBotIdForRead = jest.fn().mockResolvedValue('read-bot');
+
+    await expect(
+      resolveNightModeTransitionBotId(
+        {
+          maxBotLinkService: {
+            resolveBotRoute,
+            resolveBotIdForCapability,
+            resolveBotIdForRead,
+          } as never,
+        },
+        'chat-1',
+      ),
+    ).resolves.toBe('scan-helper-bot');
+
+    expect(resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      capability: 'background_scans',
+    });
+    expect(resolveBotIdForRead).not.toHaveBeenCalled();
+  });
+
+  it('falls back from empty night mode capability helper to read routing', async () => {
+    const resolveBotRoute = jest
+      .fn()
+      .mockResolvedValueOnce(
+        createRoute({
+          purpose: 'capability',
+          capability: 'background_scans',
+          botId: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createRoute({
+          purpose: 'read',
+          botId: 'read-route-bot',
+        }),
+      );
+
+    await expect(
+      resolveNightModeTransitionBotId(
+        {
+          maxBotLinkService: {
+            resolveBotRoute,
+            resolveBotIdForCapability: jest.fn().mockResolvedValue(null),
+          } as never,
+        },
+        'chat-1',
+      ),
+    ).resolves.toBe('read-route-bot');
+
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(1, {
+      purpose: 'capability',
+      chatId: 'chat-1',
+      capability: 'background_scans',
+      fallbackToPrimary: true,
+    });
+    expect(resolveBotRoute).toHaveBeenNthCalledWith(2, {
+      purpose: 'read',
+      chatId: 'chat-1',
+    });
+  });
+
+  it('returns null when night mode routing has no usable bot id', async () => {
+    await expect(
+      resolveNightModeTransitionBotId(
+        {
+          maxBotLinkService: {
+            resolveBotRoute: jest.fn().mockResolvedValue(
+              createRoute({
+                purpose: 'capability',
+                capability: 'background_scans',
+                botId: '   ',
+              }),
+            ),
+            resolveBotIdForCapability: jest.fn().mockResolvedValue(''),
+            resolveBotIdForRead: jest.fn().mockResolvedValue('  '),
+            resolveBotId: jest.fn().mockResolvedValue(null),
+          } as never,
+        },
+        'chat-1',
+      ),
+    ).resolves.toBeNull();
   });
 
   it('prefers an explicit moderation action bot id', async () => {

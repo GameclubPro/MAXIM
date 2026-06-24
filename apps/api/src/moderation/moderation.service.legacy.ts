@@ -157,6 +157,7 @@ import {
   resolveAutoAttachBotId as resolveAutoAttachBotIdForModeration,
   resolveChatReadBotId as resolveChatReadBotIdForModeration,
   resolveModerationActionBotIds as resolveModerationActionBotIdsForModeration,
+  resolveNightModeTransitionBotId as resolveNightModeTransitionBotIdForModeration,
   resolveUnifiedBotRoute as resolveUnifiedBotRouteForModeration,
 } from './moderation-bot-routing.util';
 import {
@@ -15624,21 +15625,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveNightModeTransitionBotId(chatId: string): Promise<string | null> {
-    const route = await this.resolveUnifiedBotRoute({
-      purpose: 'capability',
+    return resolveNightModeTransitionBotIdForModeration(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+      },
       chatId,
-      capability: 'background_scans',
-      fallbackToPrimary: true,
-    });
-    const botId =
-      route?.botId ??
-      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
-        chatId,
-        capability: 'background_scans',
-      })) ??
-      (await this.resolveChatReadBotId(chatId));
-
-    return typeof botId === 'string' && botId.trim().length > 0 ? botId.trim() : null;
+    );
   }
 
   private scheduleChannelAutoPostStartupScan() {

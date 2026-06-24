@@ -108,6 +108,27 @@ export async function resolveAutoAttachBotId(
   return await resolveChatReadBotId(deps, chatId);
 }
 
+export async function resolveNightModeTransitionBotId(
+  deps: Pick<ModerationBotRoutingDependencies, 'maxBotLinkService'>,
+  chatId: string,
+): Promise<string | null> {
+  const route = await resolveUnifiedBotRoute(deps, {
+    purpose: 'capability',
+    chatId,
+    capability: 'background_scans',
+    fallbackToPrimary: true,
+  });
+  const botId =
+    route?.botId ??
+    (await deps.maxBotLinkService?.resolveBotIdForCapability?.({
+      chatId,
+      capability: 'background_scans',
+    })) ??
+    (await resolveChatReadBotId(deps, chatId));
+
+  return typeof botId === 'string' && botId.trim().length > 0 ? botId.trim() : null;
+}
+
 export async function resolveModerationActionBotIds(
   deps: Pick<ModerationBotRoutingDependencies, 'maxBotLinkService'>,
   params: {
