@@ -7092,6 +7092,11 @@ describe('ModerationService', () => {
           nightModeTimezone: 'Europe/Moscow',
           nightModeBotMessageEnabled: true,
           nightModeBotMessageText: '',
+          commentsEnabled: true,
+          nightModeCommentsEnabled: true,
+          nightModeBotButtonEnabled: true,
+          nightModeBotButtonUrl: 'https://max.ru/night-rules',
+          nightModeBotButtonText: 'Правила',
           nightModeOpenMessageEnabled: true,
         }),
         chat: {
@@ -7111,6 +7116,23 @@ describe('ModerationService', () => {
           actionHealthLane: 'background',
           sourceTag: 'night_mode_transition',
           botId: 'bot-1',
+        }),
+      );
+      expect(maxClient.sendMessageImmediateWithId.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          buttons: [
+            [
+              expect.objectContaining({
+                text: '💬 Комментарии · 0',
+              }),
+            ],
+            [
+              {
+                text: 'Правила',
+                url: 'https://max.ru/night-rules',
+              },
+            ],
+          ],
         }),
       );
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();

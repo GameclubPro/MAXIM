@@ -337,6 +337,10 @@ import {
   isNightModeNoticeMessage as isNightModeNoticeTextMessage,
   normalizeNightModeDayMinutes,
 } from './night-mode-transition-notice.util';
+import {
+  buildNightModeClosedNoticeOptions as composeNightModeClosedNoticeOptions,
+  buildNightModeCommentsButton,
+} from './night-mode-transition-closed-notice-options.util';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -15549,45 +15553,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params.rulesPublishedUrl ?? null,
       params.rulesPublishedMessageId ?? null,
     );
-    const commentsButton = this.buildNightModeCommentsButton(
-      params.chatId,
-      params.commentsEnabled,
-      params.nightModeCommentsEnabled,
-    );
+    const commentsButton = buildNightModeCommentsButton({
+      chatId: params.chatId,
+      commentsEnabled: params.commentsEnabled,
+      nightModeCommentsEnabled: params.nightModeCommentsEnabled,
+      buildButton: ({ chatId, threadId, text }) =>
+        this.buildChatDialogButton(chatId, 'comments', threadId, text),
+    });
 
-    if (!commentsButton) {
-      return baseOptions;
-    }
-
-    const buttons: MaxMessageButton[][] = [[commentsButton]];
-    if (baseOptions?.buttons?.length) {
-      buttons.push(...baseOptions.buttons);
-    } else if (baseOptions?.button) {
-      buttons.push([baseOptions.button]);
-    }
-
-    return {
-      buttons,
-      ...(baseOptions?.messageLink ? { messageLink: baseOptions.messageLink } : {}),
-      ...(baseOptions?.debugContext ? { debugContext: baseOptions.debugContext } : {}),
-    };
-  }
-
-  private buildNightModeCommentsButton(
-    chatId: string,
-    commentsEnabled: boolean,
-    nightModeCommentsEnabled: boolean,
-  ): MaxMessageButton | null {
-    if (!commentsEnabled || !nightModeCommentsEnabled) {
-      return null;
-    }
-
-    return this.buildChatDialogButton(
-      chatId,
-      'comments',
-      randomUUID(),
-      formatCommentsButtonText('💬 Комментарии', 0),
-    );
+    return composeNightModeClosedNoticeOptions({
+      baseOptions,
+      commentsButton,
+    });
   }
 
   private async createNightModeTransitionEvent(params: {
