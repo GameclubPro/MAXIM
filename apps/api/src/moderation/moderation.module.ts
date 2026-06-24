@@ -14,6 +14,7 @@ import {
   ModerationExecutionService,
 } from './moderation-execution.service';
 import { NightModeTransitionModule } from './night-mode-transition.module';
+import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import { NightModeTransitionRuntimeService } from './night-mode-transition-runtime.service';
 import { NightModeTransitionProcessor } from './night-mode-transition.processor';
 import { GlobalSpammerDenormProcessor } from './global-spammer-denorm.processor';
@@ -55,6 +56,7 @@ const moderationProviders = [
   },
   ModerationExecutionService,
   ModerationAccessService,
+  NightModeTransitionDeliveryService,
   NightModeTransitionRuntimeService,
   PrivateControlService,
   GlobalSpammerIntelligenceService,

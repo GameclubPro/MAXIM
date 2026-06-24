@@ -74,7 +74,9 @@ and make each extraction reviewable through focused tests.
   `night-mode-transition-runtime.service.ts` owns transition execution logic while
   `ModerationExecutionService` remains the public queue/runtime entrypoint.
   `night-mode-transition-notice.util.ts` owns pure close/open notice rendering
-  and self-notice matching.
+  and self-notice matching. `night-mode-transition-delivery.service.ts` owns
+  schedule notice send/delete flow and terminal MAX access-loss handling while
+  legacy still supplies focused adapters for existing button/media/event helpers.
 - Manual/admin command bridge has started:
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
@@ -112,12 +114,14 @@ and make each extraction reviewable through focused tests.
    Extract only business logic behind the existing execution boundary; do not add
    another public execution bridge. The current runtime service owns
    transition-state/lock/schedule decisions, and the notice util owns pure
-   close/open text rendering plus self-notice matching. Notice delivery remains
-   in legacy hooks; the next complete seam is a focused delivery service for
-   send/delete, media/options, event creation, and terminal MAX handling. Preserve
+   close/open text rendering plus self-notice matching. The delivery service owns
+   send/delete sequencing, request lanes/source tags, event callback timing, and
+   terminal MAX handling. The next complete seams are reducing the legacy adapter
+   surface one concern at a time: closed-notice button/options composition,
+   bot-speech media upload, bot-id routing, then event creation metadata. Preserve
    schedule-driven close/open notices and webhook-only delete gates.
    Validate with:
-   `npm test --workspace @maxim/api -- night-mode-transition-notice.util.spec.ts bot-speech.spec.ts moderation.service.spec.ts moderation-execution.service.spec.ts night-mode-transition.processor.spec.ts night-mode-transition-scheduler.service.spec.ts night-mode-transition.queue.spec.ts`
+   `npm test --workspace @maxim/api -- night-mode-transition-delivery.service.spec.ts night-mode-transition-notice.util.spec.ts bot-speech.spec.ts moderation.service.spec.ts moderation-execution.service.spec.ts night-mode-transition.processor.spec.ts night-mode-transition-scheduler.service.spec.ts night-mode-transition.queue.spec.ts managed-entity-access-loss.service.spec.ts`
    plus `admin-settings.service.spec.ts` cases when schedule reconciliation moves.
 
 3. Keep manual/admin command bridging out of the moderation hot path.

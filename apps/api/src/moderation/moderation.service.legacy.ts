@@ -69,8 +69,6 @@ import {
 } from '../max/max-bot-link.service';
 import {
   ManagedEntityAccessLossService,
-  classifyMaxTerminalChatActionError,
-  resolveManagedEntityAccessLossReason,
 } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
@@ -323,15 +321,14 @@ import {
 } from './moderation.service.support';
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
-  NIGHT_MODE_TRANSITION_PROCESS_STOP,
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
 import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import {
   NightModeTransitionRuntimeService,
-  type NightModeTransitionNoticeResult,
 } from './night-mode-transition-runtime.service';
+import { NightModeTransitionDeliveryService } from './night-mode-transition-delivery.service';
 import {
   buildNightModeClosedNotice as buildNightModeClosedNoticeText,
   buildNightModeOpenedNotice as buildNightModeOpenedNoticeText,
@@ -339,11 +336,6 @@ import {
   isNightModeNoticeMessage as isNightModeNoticeTextMessage,
   normalizeNightModeDayMinutes,
 } from './night-mode-transition-notice.util';
-
-type NightModeTransitionOperation =
-  | 'send-close-notice'
-  | 'send-open-notice'
-  | 'delete-close-notice';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -474,6 +466,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly sharedChatExecutionMemoryLocks = new Map<string, string>();
   private moderationAccessServiceInstance: ModerationAccessService | null = null;
   private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
+  private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -506,6 +499,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedNightModeTransitionRuntime?: NightModeTransitionRuntimeService,
     @Optional()
     private readonly injectedManualModerationService?: ManualModerationService,
+    @Optional()
+    private readonly injectedNightModeTransitionDelivery?: NightModeTransitionDeliveryService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -630,6 +625,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.nightModeTransitionRuntimeInstance;
   }
 
+  private get nightModeTransitionDelivery(): NightModeTransitionDeliveryService {
+    if (this.injectedNightModeTransitionDelivery) {
+      return this.injectedNightModeTransitionDelivery;
+    }
+    if (!this.nightModeTransitionDeliveryInstance) {
+      this.nightModeTransitionDeliveryInstance = new NightModeTransitionDeliveryService(
+        this.maxClient,
+        this.managedEntityAccessLossService,
+      );
+    }
+    return this.nightModeTransitionDeliveryInstance;
+  }
+
   private get manualModerationCommandBridge(): ManualModerationCommandBridge | null {
     return this.injectedManualModerationService ?? null;
   }
@@ -643,18 +651,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private createNightModeTransitionHooks() {
-    return {
-      sendClosedNotice: (
-        settings: Parameters<typeof this.sendNightModeClosedTransitionNotice>[0],
-        snapshot: Parameters<typeof this.sendNightModeClosedTransitionNotice>[1],
-      ) => this.sendNightModeClosedTransitionNotice(settings, snapshot),
-      sendOpenedNotice: (
-        settings: Parameters<typeof this.sendNightModeOpenedTransitionNotice>[0],
-        snapshot: Parameters<typeof this.sendNightModeOpenedTransitionNotice>[1],
-      ) => this.sendNightModeOpenedTransitionNotice(settings, snapshot),
-      deleteClosedNotice: (chatId: string, messageId: string) =>
-        this.deleteNightModeClosedTransitionNotice(chatId, messageId),
-    };
+    return this.nightModeTransitionDelivery.createHooks({
+      getActiveBotSpeechProfile: () => this.resolveActiveBotSpeechProfile(),
+      buildClosedNoticeOptions: (settings) =>
+        this.buildNightModeClosedNoticeOptions({
+          chatId: settings.chatId,
+          commentsEnabled: settings.commentsEnabled,
+          nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
+          nightModeBotButtons: settings.nightModeBotButtons,
+          nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
+          nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
+          nightModeBotButtonText: settings.nightModeBotButtonText,
+          nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
+          rulesPublishedUrl: settings.chat?.rules?.publishedUrl ?? null,
+          rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
+        }),
+      resolveBotSpeechMedia: (settings, fieldKey) =>
+        this.resolveBotSpeechMedia(settings, fieldKey),
+      withBotSpeechMediaOptions: (options, media, uploadOptions) =>
+        this.withBotSpeechMediaOptions(options, media, uploadOptions),
+      resolveBotId: (chatId) => this.resolveNightModeTransitionBotId(chatId),
+      createEvent: (params) => this.createNightModeTransitionEvent(params),
+    });
   }
 
   private withBotModerationEventData(
@@ -15508,246 +15526,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.nightModeTransitionRuntime.resolveNightModeTransitionSnapshot(settings, now);
   }
 
-  private async sendNightModeClosedTransitionNotice(
-    settings: Pick<
-      ChatSettings,
-      | 'chatId'
-      | 'nightModeBotMessageText'
-      | 'nightModeCommentsEnabled'
-      | 'nightModeBotButtons'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeBotButtonUrl'
-      | 'nightModeBotButtonText'
-      | 'nightModeRulesButtonEnabled'
-      | 'commentsEnabled'
-      | 'botSpeechStyle'
-      | 'botSpeechMedia'
-    > & {
-      chat?: {
-        rules?: {
-          publishedUrl: string | null;
-          publishedMessageId: string | null;
-        } | null;
-      } | null;
-    },
-    snapshot: {
-      startMinutes: number;
-      endMinutes: number;
-      timezone: string;
-      sessionKey: string;
-    },
-  ): Promise<NightModeTransitionNoticeResult> {
-    const messageText = this.buildNightModeClosedNotice(
-      snapshot.startMinutes,
-      snapshot.endMinutes,
-      snapshot.timezone,
-      settings.nightModeBotMessageText,
-      settings.botSpeechStyle,
-    );
-    const messageOptions = this.buildNightModeClosedNoticeOptions({
-      chatId: settings.chatId,
-      commentsEnabled: settings.commentsEnabled,
-      nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
-      nightModeBotButtons: settings.nightModeBotButtons,
-      nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
-      nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
-      nightModeBotButtonText: settings.nightModeBotButtonText,
-      nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
-      rulesPublishedUrl: settings.chat?.rules?.publishedUrl ?? null,
-      rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
-    });
-    const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
-    const messageOptionsWithMedia = await this.withBotSpeechMediaOptions(
-      messageOptions ?? undefined,
-      this.resolveBotSpeechMedia(settings, 'nightModeBotMessageText'),
-      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
-    );
-    let sent: { messageId: string | null };
-    try {
-      sent = await this.maxClient.sendMessageImmediateWithId(
-        settings.chatId,
-        messageText,
-        this.withMarkdownMessageOptions(messageOptionsWithMedia ?? null),
-        this.buildNightModeTransitionRequestOptions(botId),
-      );
-    } catch (error: unknown) {
-      const terminalResult = await this.handleTerminalNightModeTransitionError({
-        chatId: settings.chatId,
-        botId,
-        operation: 'send-close-notice',
-        error,
-      });
-      if (terminalResult) {
-        return {
-          ...terminalResult,
-          messageId: null,
-        };
-      }
-      throw error;
-    }
-
-    await this.createNightModeTransitionEvent({
-      chatId: settings.chatId,
-      messageId: sent.messageId,
-      ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
-      sessionKey: snapshot.sessionKey,
-      timezone: snapshot.timezone,
-      startMinutes: snapshot.startMinutes,
-      endMinutes: snapshot.endMinutes,
-    });
-
-    return {
-      ...NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
-      messageId: sent.messageId,
-    };
-  }
-
-  private async sendNightModeOpenedTransitionNotice(
-    settings: Pick<
-      ChatSettings,
-      'chatId' | 'nightModeOpenMessageText' | 'botSpeechStyle' | 'botSpeechMedia'
-    >,
-    snapshot: {
-      startMinutes: number;
-      endMinutes: number;
-      timezone: string;
-      sessionKey: string;
-    },
-  ): Promise<NightModeTransitionProcessResult> {
-    const messageText = this.buildNightModeOpenedNotice(
-      snapshot.startMinutes,
-      snapshot.endMinutes,
-      snapshot.timezone,
-      settings.nightModeOpenMessageText,
-      settings.botSpeechStyle,
-    );
-    const botId = await this.resolveNightModeTransitionBotId(settings.chatId);
-    const messageOptions = await this.withBotSpeechMediaOptions(
-      undefined,
-      this.resolveBotSpeechMedia(settings, 'nightModeOpenMessageText'),
-      { botId, sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION },
-    );
-    let sent: { messageId: string | null };
-    try {
-      sent = await this.maxClient.sendMessageImmediateWithId(
-        settings.chatId,
-        messageText,
-        this.withMarkdownMessageOptions(messageOptions ?? null),
-        this.buildNightModeTransitionRequestOptions(botId),
-      );
-    } catch (error: unknown) {
-      const terminalResult = await this.handleTerminalNightModeTransitionError({
-        chatId: settings.chatId,
-        botId,
-        operation: 'send-open-notice',
-        error,
-      });
-      if (terminalResult) {
-        return terminalResult;
-      }
-      throw error;
-    }
-
-    await this.createNightModeTransitionEvent({
-      chatId: settings.chatId,
-      messageId: sent.messageId,
-      ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
-      sessionKey: snapshot.sessionKey,
-      timezone: snapshot.timezone,
-      startMinutes: snapshot.startMinutes,
-      endMinutes: snapshot.endMinutes,
-    });
-    return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-  }
-
-  private async deleteNightModeClosedTransitionNotice(
-    chatId: string,
-    messageId: string,
-  ): Promise<NightModeTransitionProcessResult> {
-    const botId = await this.resolveNightModeTransitionBotId(chatId);
-    try {
-      await this.maxClient.deleteMessage(chatId, messageId, {
-        immediate: true,
-        trafficClass: 'background',
-        actionHealthLane: 'background',
-        sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
-        ignoreFailureMetricStatuses: [403, 404],
-        ...(botId ? { botId } : {}),
-      });
-    } catch (error: unknown) {
-      const terminalResult = await this.handleTerminalNightModeTransitionError({
-        chatId,
-        botId,
-        messageId,
-        operation: 'delete-close-notice',
-        error,
-      });
-      if (terminalResult) {
-        return terminalResult;
-      }
-      throw error;
-    }
-    return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-  }
-
-  private async handleTerminalNightModeTransitionError(params: {
-    chatId: string;
-    botId: string | null;
-    messageId?: string;
-    operation: NightModeTransitionOperation;
-    error: unknown;
-  }): Promise<NightModeTransitionProcessResult | null> {
-    const classification = classifyMaxTerminalChatActionError(params.error);
-    if (!classification) {
-      return null;
-    }
-
-    this.logTerminalNightModeTransitionError(params);
-    const accessLossReason = resolveManagedEntityAccessLossReason(
-      this.mapNightModeTransitionOperation(params.operation),
-      classification,
-    );
-    if (!accessLossReason) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    await this.managedEntityAccessLossService?.recordManagedEntityAccessLost({
-      chatId: params.chatId,
-      botId: params.botId,
-      reason: accessLossReason,
-      source: `night_mode_transition:${params.operation}`,
-      lastMaxErrorCode: classification.code,
-      lastMaxErrorMessage: classification.message,
-      lastMaxStatusCode: classification.statusCode,
-    });
-    return NIGHT_MODE_TRANSITION_PROCESS_STOP;
-  }
-
-  private mapNightModeTransitionOperation(
-    operation: NightModeTransitionOperation,
-  ): 'send' | 'delete' {
-    return operation === 'delete-close-notice' ? 'delete' : 'send';
-  }
-
-  private logTerminalNightModeTransitionError(params: {
-    chatId: string;
-    messageId?: string;
-    operation: NightModeTransitionOperation;
-    error: unknown;
-  }): void {
-    this.logger.debug(
-      {
-        chatId: params.chatId,
-        ...(params.messageId ? { messageId: params.messageId } : {}),
-        operation: params.operation,
-        status: this.extractStatusCode(params.error),
-        code: this.extractMaxErrorCode(params.error),
-        error: params.error instanceof Error ? params.error.message : String(params.error),
-      },
-      'Skipped terminal night mode transition action',
-    );
-  }
-
   private buildNightModeClosedNoticeOptions(params: {
     chatId: string;
     commentsEnabled: boolean;
@@ -15809,23 +15587,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       randomUUID(),
       formatCommentsButtonText('💬 Комментарии', 0),
     );
-  }
-
-  private withMarkdownMessageOptions(options: MaxSendMessageOptions | null): MaxSendMessageOptions {
-    return {
-      ...(options ?? {}),
-      textFormat: 'markdown',
-    };
-  }
-
-  private buildNightModeTransitionRequestOptions(botId: string | null): MaxActionDispatchOptions {
-    return {
-      trafficClass: 'background',
-      actionHealthLane: 'background',
-      sourceTag: MAX_API_SOURCE_TAGS.NIGHT_MODE_TRANSITION,
-      ignoreFailureMetricStatuses: [403, 404],
-      ...(botId ? { botId } : {}),
-    };
   }
 
   private async createNightModeTransitionEvent(params: {
