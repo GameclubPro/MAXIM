@@ -2036,6 +2036,8 @@ describe('WebhookService', () => {
       maxChatAdminRosterSyncService as never,
     );
 
+    const beforeIngestMs = Date.now();
+
     await expect(
       service.ingest(
         {
@@ -2064,6 +2066,10 @@ describe('WebhookService', () => {
       source: 'webhook_bot_added',
       retryUntilMs: expect.any(Number),
     });
+    const scheduledJob =
+      maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mock.calls[0]?.[0];
+    expect(scheduledJob.retryUntilMs).toBeGreaterThanOrEqual(beforeIngestMs + 120_000);
+    expect(scheduledJob.retryUntilMs).toBeLessThanOrEqual(Date.now() + 120_000);
   });
 
   it('prewarms admin roster snapshots for webhook membership churn updates', async () => {

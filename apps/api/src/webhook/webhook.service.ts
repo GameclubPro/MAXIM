@@ -96,7 +96,7 @@ const STORED_CHAT_BINDING_REUSE_UPDATE_TYPES = new Set([
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
-  private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 45_000;
+  private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 120_000;
   private readonly rawPayloadSampleRate: number;
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
