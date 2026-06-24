@@ -1,64 +1,198 @@
-# MAXIM Reliability Refactor Baseline, May 2026
+# MAXIM Reliability Refactor Plan, June 2026 Refresh
 
-This document is the first safety baseline for the May 2026 reliability-first refactor. It is intentionally conservative: preserve public behavior, keep runtime deploys small, and make future decomposition easier to review.
+This document is the current safety baseline for the reliability-first refactor.
+It should stay conservative: preserve public behavior, keep runtime deploys small,
+and make each extraction reviewable through focused tests.
+
+## Non-Negotiable Boundaries
+
+- Do not expand the allowed direct `*.legacy` import set. Public facade files remain
+  the only temporary legacy import boundary.
+- Runtime entrypoints stay behind focused services:
+  `WebhookIngestionService`, `ModerationExecutionService`,
+  `MaxActionDispatchService`, and `ManagedEntitiesDiscoveryService`.
+- New runtime/admin hot-path code should route through focused services before
+  touching legacy implementations.
+- Do not grow `packages/contracts/src/core.ts`; add or use subpath exports for
+  new domains and keep package exports, root TS paths, and API Jest mappers aligned.
+- Routine mini app deploy and smoke target is only
+  `https://major-maksimov.ru/app/`. Do not publish or smoke CDN/app2/Object Storage
+  unless CDN/restricted-LTE work is explicitly resumed.
+- For API validation, do not run Prisma-generating API Jest/typecheck commands in
+  parallel.
 
 ## Current Fitness Gates
 
-- `npm run lint`
-- `npm run typecheck`
-- `npm run test --workspace @maxim/api`
-- `npm run test --workspace @maxim/miniapp`
-- `npm run build --workspace @maxim/api`
-- `npm run build --workspace @maxim/miniapp`
-- `npm run check:refactor-guards`
-- For broader runtime slices, finish with `npm run check` before push/deploy.
+- Boundary guard: `npm run check:refactor-guards`.
+- API focused gates:
+  - `npm test --workspace @maxim/api -- moderation.admin-access.spec.ts moderation.shared-chat.spec.ts`
+  - `npm test --workspace @maxim/api -- night-mode-transition`
+  - `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts`
+  - `npm test --workspace @maxim/api -- private-control.service.spec.ts channel-dialog.service.spec.ts managed-giveaway.service.spec.ts`
+- Mini app focused gates:
+  - `npm run check:miniapp-css`
+  - `npm run typecheck --workspace @maxim/miniapp`
+  - `npm run build --workspace @maxim/miniapp`
+- Contracts gates:
+  - `npm run typecheck:contracts`
+  - `npm test --workspace @maxim/api -- contracts`
+- Broad/risky runtime slices finish with `npm run check` before push/deploy.
 
-## Hotspots
+## Current Hotspots
 
-- API: `apps/api/src/admin/admin.service.ts` is the largest admin surface and mixes managed entities, settings/rules, broadcasts, dialogs, member tools, and operational helpers.
-- API: `apps/api/src/moderation/moderation.service.ts` combines webhook pipeline orchestration, bypass/access checks, moderation action dispatch, shared-chat guards, and background scanners.
-- API: `apps/api/src/moderation/rule-engine.service.ts` is the rule facade and detector host; `detect()` must remain the behavioral boundary while detectors are extracted.
-- Miniapp: `apps/miniapp/src/pages/settings-page.tsx` is the largest interactive workspace and should be decomposed by lazy settings workspaces.
-- Miniapp: `apps/miniapp/src/styles/lazy-pages.css` is the largest CSS bundle and should lose route-specific styles over time.
+- API: `apps/api/src/admin/admin.service.legacy.ts` remains the large admin
+  implementation behind the `AdminService` facade. New admin entrypoints should
+  prefer focused services such as `ManagedEntitiesService`, `AdminSettingsService`,
+  `ManagedBroadcastService`, `ManualModerationService`, `ChannelDialogService`,
+  and `ManagedGiveawayService`.
+- API: `apps/api/src/moderation/moderation.service.legacy.ts` remains the large
+  moderation implementation behind the `ModerationService` facade. Webhook,
+  queue, action, and discovery entrypoints must not call it directly.
+- API: `apps/api/src/moderation/private-control.service.legacy.ts` remains the
+  large private-control implementation behind the `PrivateControlService` facade.
+- API: `apps/api/src/moderation/rule-engine.service.ts` is the rule facade and
+  detector host; `detect()` remains the behavioral boundary while detectors are
+  extracted.
+- Mini app: `apps/miniapp/src/pages/settings-page.legacy.tsx` remains the largest
+  settings route implementation behind the settings page facade.
+- Contracts: `packages/contracts/src/core.ts` remains large but should not grow.
 
-## First Boundaries
+## Completed Refactor Slices
 
-- Rule engine extraction keeps `RuleEngineService.detect()` as the public facade and moves normalization, link checks, topic filter checks, blocked-word matching, and duplicate Redis state into focused modules under `apps/api/src/moderation/`.
-- The first rule-engine tranche extracted detection context, hot-path profiling, and message/media limits into focused modules with focused specs.
-- Contract subpaths are available for high-churn domains: `settings`, `bot-speech`, `broadcast`, `managed-entities`, `giveaway`, and `system`.
-- Miniapp route/component CSS extraction has started with lazy handoff and broadcast button sheet styles, leaving `lazy-pages.css` as the compatibility bundle to shrink gradually.
+- Rule-engine extraction has already split detection context, hot-path profiling,
+  message/media limits, commercial detection, normalization, topic filters,
+  duplicate state, and related specs into focused modules.
+- Moderation access/read-bot slice has started:
+  `moderation-access.service.ts` owns chat-admin access checks, remote lookup
+  batching/cache/backoff, and transient MAX lookup handling, with legacy wrappers
+  delegating into it.
+- Bot routing helpers have started:
+  `moderation-bot-routing.util.ts` centralizes read, action, and auto-attach bot
+  route selection helpers used by the legacy facade.
+- Night-mode execution has started:
+  `night-mode-transition-runtime.service.ts` owns transition execution logic while
+  `ModerationExecutionService` remains the public queue/runtime entrypoint.
+- Manual/admin command bridge has started:
+  forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
+  and `ModerationService` prefers `ManualModerationService` for group/manual admin
+  command execution.
+- Private control extraction has started:
+  shared private-control types/constants and `PrivateControlSessionStore` are
+  separated from `private-control.service.legacy.ts`.
+- Settings page extraction has started:
+  comments and extra sections are delegated to focused components while keeping
+  route-owned state and lazy boundaries intact.
 
-## Runtime Invariants
+## Next Optimized Plan
 
-- Public HTTP routes, miniapp route semantics, MAX webhook behavior, and Prisma schema stay unchanged in the first tranche.
-- `packages/contracts` remains the source of truth for API payloads shared by API and miniapp.
-- Production API still uses one shared API image split by `APP_ROLE`; API code changes require all shared API roles to be recreated during deploy.
-- MAX calls keep explicit traffic classes/source tags and stay within documented rate limits.
-- Webhook hot paths must fail open or defer optional work before blocking shard responsiveness.
-- Managed entities home visibility remains access-edge scoped and must not reintroduce launch-context assumptions.
+1. Finish the moderation/AdminService bridge cleanup.
+   Move channel-suggestion payload parse/build helpers out of `AdminService` into
+   a focused channel-dialog or manual-moderation helper, then remove the
+   `AdminService` fallback from `manualModerationCommandBridge`. Do not claim full
+   `AdminService` decoupling until the constructor no longer needs it.
+   Validate with:
+   `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts channel-dialog.service.spec.ts admin.service.spec.ts`
+   and `npm run check:refactor-guards`.
+
+2. Deepen `ModerationAccessService` only by moving complete access seams.
+   Keep thin wrappers in `moderation.service.legacy.ts` for hot-path stability, but
+   move access lookup state together with methods such as
+   `resolveSenderChatAdminCheck`, `recheckSenderChatAdminBeforeModeration`,
+   `isOtherBotAdminModerationBypass`, `getRemoteChatAdminAccess`,
+   batch shared-cache read/write helpers, guarded timeout execution, and
+   `persistRemoteAdminGrant`. Leave destructive roster refresh scheduling in
+   legacy until action routing is thinner.
+   Validate with:
+   `npm test --workspace @maxim/api -- moderation.admin-access.spec.ts moderation.service.spec.ts`
+   and `npm run typecheck --workspace @maxim/api`.
+
+3. Harden bot routing behavior before extracting more callers.
+   Keep `moderation_action` on plural routes with explicit bot priority,
+   dedupe/trim candidates, scoped terminal 403/404 handling per bot, read fallback
+   order of unified read route -> read bot resolver -> legacy single route ->
+   `null`, and separate webhook vs poll auto-attach behavior.
+   Validate with:
+   `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.shared-chat.spec.ts max-membership-lookup.service.spec.ts`.
+
+4. Continue night-mode as a runtime service behind `ModerationExecutionService`.
+   Extract only business logic behind the existing execution boundary; do not add
+   another public execution bridge. Preserve schedule-driven close/open notices and
+   webhook-only delete gates.
+   Validate with:
+   `npm test --workspace @maxim/api -- night-mode-transition`
+   plus relevant `moderation.service.spec.ts` and `admin-settings.service.spec.ts`
+   cases when behavior moves.
+
+5. Slice `PrivateControlService` after the moderation hot path stabilizes.
+   Keep `PrivateControlService` as the public facade. Next low-risk slices are
+   draft/media normalization, render builders, forwarded action handlers, then
+   handoff/broadcast/channel-suggestion action services. Leave callback routing
+   and pending-input orchestration until the end.
+   Validate after each step with:
+   `npm test --workspace @maxim/api -- private-control.service.spec.ts`; add
+   `channel-dialog.service.spec.ts managed-giveaway.service.spec.ts` for action or
+   handoff moves.
+
+6. Continue mini app settings extraction as second priority.
+   `SettingsExtraSection` and `SettingsCommentsSection` are extracted. Next split
+   required subscription in two stages: presentational blocks first, controller
+   hook second. Keep `VkParsingCard`, required-subscription picker, broadcast
+   composer, stats/events clients, and route CSS lazy boundaries intact.
+   Validate with:
+   `npm run check:miniapp-css`,
+   `npm run typecheck --workspace @maxim/miniapp`,
+   and `npm run build --workspace @maxim/miniapp`.
+
+7. Keep contracts extraction opportunistic and subpath-based.
+   If a domain needs new shared contracts, create/update a subpath export and
+   synchronize API, mini app, tests, and typechecks in the same slice. Do not use
+   `core.ts` as a catch-all.
+   Validate with:
+   `npm run typecheck:contracts` and API contract specs before broader checks.
+
+## Deployment Rule
+
+- Docs, tests, and refactor-plan updates do not require VPS deploy.
+- Runtime-affecting changes in API, mini app, contracts, Prisma, Docker, or MAX
+  integration should finish with local validation and a VPS deploy unless the user
+  explicitly says not to deploy.
+- For shared API code changes, recreate every API role that uses the shared image.
+- For routine mini app production checks while Major is primary, deploy/smoke
+  `miniapp-major-static` and `https://major-maksimov.ru/app/` only.
 
 ## Golden Flows
 
-- MAX webhook ingestion: signature/header validation, queue routing, outbox repair, and duplicate handling.
-- Moderation hot path: admin/bot bypass, rule detection, sanction/action fallback, timeout profile, and shared-chat execution guard.
-- MAX API reliability: global/per-chat rate limits, circuit/backoff behavior, membership lookup, media upload, and action dispatch.
-- Managed entities home: fresh access edges, published snapshots/diffs, recent `bot_added` bootstrap, refresh/backoff state, favorites.
-- Broadcasts: compose, schedule/calendar conflict detection, target audience, test delivery, retry/cancel/recovery.
-- Giveaways: draft, publish, eligibility checks, draw, claim, reroll, delivery, cancellation.
-- Miniapp launch/deep links: `startapp` route parsing, MAX bridge init data refresh, bot handoff links, prefixed app deployments.
+- MAX webhook ingestion: signature/header validation, queue routing, outbox
+  repair, and duplicate handling.
+- Moderation hot path: admin/bot bypass, rule detection, sanction/action fallback,
+  timeout profile, and shared-chat execution guard.
+- MAX API reliability: global/per-chat rate limits, circuit/backoff behavior,
+  membership lookup, media upload, and action dispatch.
+- Managed entities home: fresh access edges, published snapshots/diffs, recent
+  `bot_added` bootstrap, refresh/backoff state, favorites.
+- Broadcasts: compose, schedule/calendar conflict detection, target audience,
+  test delivery, retry/cancel/recovery.
+- Giveaways: draft, publish, eligibility checks, draw, claim, reroll, delivery,
+  cancellation.
+- Mini app launch/deep links: `startapp` route parsing, MAX bridge init data
+  refresh, bot handoff links, prefixed app deployments.
 
 ## Modernization Backlog
 
 - Keep Node 24 as the baseline.
-- Patch/minor dependency updates can proceed inside current majors after fitness gates pass.
+- Patch/minor dependency updates can proceed inside current majors after fitness
+  gates pass.
 - Prisma audit debt: `npm audit --omit=dev` currently reports
   `GHSA-92pp-h63x-v22m` through Prisma's `@prisma/dev -> @hono/node-server`
   chain. Do not run `npm audit fix --force` for it, because npm proposes
-  installing Prisma 6.19.3. Track this until a Prisma 7-compatible patch
-  resolves the transitive advisory.
-- Jest 30 is complete; keep it behind the API test gate when touching test runtime.
-- Vite 8 is complete; keep it behind the miniapp typecheck, test, build, and bundle-budget gates.
-- Zod 4 is complete; keep contract changes behind contracts, API, and miniapp gates.
+  installing Prisma 6.19.3. Track this until a Prisma 7-compatible patch resolves
+  the transitive advisory.
+- Jest 30 is complete; keep it behind the API test gate when touching test
+  runtime.
+- Vite 8 is complete; keep it behind the mini app typecheck, test, build, and
+  bundle-budget gates.
+- Zod 4 is complete; keep contract changes behind contracts, API, and mini app
+  gates.
 - Prisma 7 remains a separate upgrade track after decomposition.
-- Prisma 7 needs its own generated-client/import-path/driver-adapter plan.
-- React Compiler and Nest SWC are opt-in experiments after component and service boundaries are stable.
+- React Compiler and Nest SWC are opt-in experiments after component and service
+  boundaries are stable.
