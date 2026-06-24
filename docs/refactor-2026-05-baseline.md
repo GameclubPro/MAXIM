@@ -156,7 +156,7 @@ and make each extraction reviewable through focused tests.
    handling, and context parsing last, after render, draft, handoff, and action
    services are covered by focused tests.
    Validate after each step with:
-   `npm test --workspace @maxim/api -- private-control-launcher-renderer.spec.ts private-control-handoff-state.spec.ts private-control-handoff-delivery.spec.ts private-control-profile-mention-handoff.spec.ts private-control-draft-normalizer.spec.ts private-control-session-normalizer.spec.ts private-control.service.spec.ts`
+   `npm test --workspace @maxim/api -- private-control-launcher-renderer.spec.ts private-control-handoff-state.spec.ts private-control-handoff-delivery.spec.ts private-control-profile-mention-handoff.spec.ts private-control-handoff-start-payload.spec.ts private-control-draft-normalizer.spec.ts private-control-session-normalizer.spec.ts private-control.service.spec.ts`
    for session/draft state cuts; add `manual-moderation.service.spec.ts` for the
    manual-command bridge seam, and
    `admin-forwarded-command.util.spec.ts private-control-media-attachments.spec.ts`
