@@ -78,8 +78,10 @@ and make each extraction reviewable through focused tests.
   and self-notice matching. `night-mode-transition-delivery.service.ts` owns
   schedule notice send/delete flow and terminal MAX access-loss handling.
   `night-mode-transition-closed-notice-options.util.ts` owns comments/base-button
-  options composition for close notices while legacy still supplies focused
-  adapters for generic button builders, media upload, and event helpers.
+  options composition for close notices. `BotSpeechMediaService` owns shared
+  bot-speech media resolution/upload/option merging for night-mode and other
+  moderation notices while legacy still supplies focused adapters for generic
+  button builders and event helpers.
 - Manual/admin command bridge has started:
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
@@ -120,9 +122,9 @@ and make each extraction reviewable through focused tests.
    close/open text rendering plus self-notice matching. The delivery service owns
    send/delete sequencing, request lanes/source tags, event callback timing, and
    terminal MAX handling. Closed-notice options composition is isolated in
-   `night-mode-transition-closed-notice-options.util.ts`. The next complete seams
-   are reducing the remaining legacy adapter surface one concern at a time:
-   bot-speech media upload, then event creation metadata. Preserve
+   `night-mode-transition-closed-notice-options.util.ts`, and shared bot-speech
+   media handling is isolated in `BotSpeechMediaService`. The next complete seam
+   is reducing the remaining legacy event creation metadata adapter. Preserve
    schedule-driven close/open notices, webhook-only delete gates, and the
    `moderation-bot-routing.util.ts` night-mode bot-id fallback order.
    Validate with:

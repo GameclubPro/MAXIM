@@ -51,8 +51,6 @@ function createAdapters(
     buildClosedNoticeOptions: jest.fn().mockReturnValue({
       buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://example.test' }]],
     }),
-    resolveBotSpeechMedia: jest.fn().mockReturnValue(null),
-    withBotSpeechMediaOptions: jest.fn(async (options) => options),
     resolveBotId: jest.fn().mockResolvedValue('bot-1'),
     createEvent: jest.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -65,19 +63,23 @@ describe('NightModeTransitionDeliveryService', () => {
       sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-close-1' }),
       deleteMessage: jest.fn(),
     };
-    const service = new NightModeTransitionDeliveryService(maxClient as never);
-    const adapters = createAdapters({
-      resolveBotSpeechMedia: jest.fn().mockReturnValue({
+    const botSpeechMediaService = {
+      resolveMedia: jest.fn().mockReturnValue({
         base64: 'aW1hZ2U=',
         mimeType: 'image/png',
         fileName: 'night.png',
         fieldKey: 'nightModeBotMessageText',
       }),
-      withBotSpeechMediaOptions: jest.fn(async (options) => ({
+      withMediaOptions: jest.fn(async (options) => ({
         ...(options ?? {}),
         imagePayload: { token: 'image-token' },
       })),
-    });
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      botSpeechMediaService as never,
+    );
+    const adapters = createAdapters();
 
     await expect(
       service.sendClosedNotice(
@@ -107,7 +109,11 @@ describe('NightModeTransitionDeliveryService', () => {
         botId: 'bot-1',
       },
     );
-    expect(adapters.withBotSpeechMediaOptions).toHaveBeenCalledWith(
+    expect(botSpeechMediaService.resolveMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-1' }),
+      'nightModeBotMessageText',
+    );
+    expect(botSpeechMediaService.withMediaOptions).toHaveBeenCalledWith(
       expect.any(Object),
       expect.objectContaining({ fieldKey: 'nightModeBotMessageText' }),
       { botId: 'bot-1', sourceTag: 'night_mode_transition' },
@@ -128,7 +134,14 @@ describe('NightModeTransitionDeliveryService', () => {
       sendMessageImmediateWithId: jest.fn().mockResolvedValue({ messageId: 'msg-open-1' }),
       deleteMessage: jest.fn(),
     };
-    const service = new NightModeTransitionDeliveryService(maxClient as never);
+    const botSpeechMediaService = {
+      resolveMedia: jest.fn().mockReturnValue(null),
+      withMediaOptions: jest.fn(async (options) => options),
+    };
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      botSpeechMediaService as never,
+    );
     const adapters = createAdapters();
 
     await expect(
@@ -155,6 +168,10 @@ describe('NightModeTransitionDeliveryService', () => {
         botId: 'bot-1',
       }),
     );
+    expect(botSpeechMediaService.resolveMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 'chat-1' }),
+      'nightModeOpenMessageText',
+    );
     expect(adapters.createEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'chat-1',
@@ -174,7 +191,14 @@ describe('NightModeTransitionDeliveryService', () => {
     const accessLoss = {
       recordManagedEntityAccessLost: jest.fn().mockResolvedValue(undefined),
     };
-    const service = new NightModeTransitionDeliveryService(maxClient as never, accessLoss as never);
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      accessLoss as never,
+    );
 
     await expect(
       service.sendClosedNotice(
@@ -212,7 +236,14 @@ describe('NightModeTransitionDeliveryService', () => {
     const accessLoss = {
       recordManagedEntityAccessLost: jest.fn(),
     };
-    const service = new NightModeTransitionDeliveryService(maxClient as never, accessLoss as never);
+    const service = new NightModeTransitionDeliveryService(
+      maxClient as never,
+      {
+        resolveMedia: jest.fn().mockReturnValue(null),
+        withMediaOptions: jest.fn(async (options) => options),
+      } as never,
+      accessLoss as never,
+    );
 
     await expect(
       service.deleteClosedNotice('chat-1', 'close-message-1', createAdapters()),

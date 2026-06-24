@@ -45,6 +45,7 @@ import { GlobalSpammerIntelligenceService } from './global-spammer-intelligence.
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
+import { BotSpeechMediaService } from './bot-speech-media.service';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -56,6 +57,7 @@ const moderationProviders = [
   },
   ModerationExecutionService,
   ModerationAccessService,
+  BotSpeechMediaService,
   NightModeTransitionDeliveryService,
   NightModeTransitionRuntimeService,
   PrivateControlService,

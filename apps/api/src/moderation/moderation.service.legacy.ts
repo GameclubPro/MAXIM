@@ -341,6 +341,11 @@ import {
   buildNightModeClosedNoticeOptions as composeNightModeClosedNoticeOptions,
   buildNightModeCommentsButton,
 } from './night-mode-transition-closed-notice-options.util';
+import {
+  BotSpeechMediaService,
+  type BotSpeechMediaUploadOptions,
+  type BotSpeechResolvedMedia,
+} from './bot-speech-media.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -361,20 +366,6 @@ type RequiredSubscriptionMembershipResult = {
   missingChannelIds: string[];
   unresolvedChannelIds: string[];
   terminalChannelIds: string[];
-};
-
-type BotSpeechResolvedMedia = {
-  base64: string;
-  mimeType: string;
-  fileName: string;
-  fieldKey: BotSpeechMediaFieldKey;
-};
-
-type BotSpeechMediaUploadOptions = {
-  trafficClass?: 'interactive' | 'background';
-  actionHealthLane?: 'interactive' | 'background';
-  sourceTag?: string;
-  botId?: string | null;
 };
 
 @Injectable()
@@ -472,6 +463,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private moderationAccessServiceInstance: ModerationAccessService | null = null;
   private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
   private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
+  private botSpeechMediaServiceInstance: BotSpeechMediaService | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -506,6 +498,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedManualModerationService?: ManualModerationService,
     @Optional()
     private readonly injectedNightModeTransitionDelivery?: NightModeTransitionDeliveryService,
+    @Optional()
+    private readonly injectedBotSpeechMediaService?: BotSpeechMediaService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -637,10 +631,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!this.nightModeTransitionDeliveryInstance) {
       this.nightModeTransitionDeliveryInstance = new NightModeTransitionDeliveryService(
         this.maxClient,
+        this.botSpeechMediaService,
         this.managedEntityAccessLossService,
       );
     }
     return this.nightModeTransitionDeliveryInstance;
+  }
+
+  private get botSpeechMediaService(): BotSpeechMediaService {
+    if (this.injectedBotSpeechMediaService) {
+      return this.injectedBotSpeechMediaService;
+    }
+    if (!this.botSpeechMediaServiceInstance) {
+      this.botSpeechMediaServiceInstance = new BotSpeechMediaService(this.maxClient);
+    }
+    return this.botSpeechMediaServiceInstance;
   }
 
   private get manualModerationCommandBridge(): ManualModerationCommandBridge | null {
@@ -671,10 +676,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           rulesPublishedUrl: settings.chat?.rules?.publishedUrl ?? null,
           rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
         }),
-      resolveBotSpeechMedia: (settings, fieldKey) =>
-        this.resolveBotSpeechMedia(settings, fieldKey),
-      withBotSpeechMediaOptions: (options, media, uploadOptions) =>
-        this.withBotSpeechMediaOptions(options, media, uploadOptions),
       resolveBotId: (chatId) => this.resolveNightModeTransitionBotId(chatId),
       createEvent: (params) => this.createNightModeTransitionEvent(params),
     });
@@ -15230,24 +15231,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: { botSpeechMedia?: unknown },
     fieldKey?: BotSpeechMediaFieldKey,
   ): BotSpeechResolvedMedia | null {
-    if (!fieldKey) {
-      return null;
-    }
-
-    const media = this.asRecord(settings.botSpeechMedia);
-    const image = media ? this.asRecord(media[fieldKey]) : null;
-    const base64 = this.readString(image?.base64);
-    const mimeType = this.readString(image?.mimeType);
-    if (!base64 || !mimeType?.toLowerCase().startsWith('image/')) {
-      return null;
-    }
-
-    return {
-      base64,
-      mimeType,
-      fileName: this.readString(image?.fileName) ?? 'bot-message-image.jpg',
-      fieldKey,
-    };
+    return this.botSpeechMediaService.resolveMedia(settings, fieldKey);
   }
 
   private async withBotSpeechMediaOptions(
@@ -15255,41 +15239,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     media?: BotSpeechResolvedMedia | null,
     uploadOptions: BotSpeechMediaUploadOptions = {},
   ): Promise<MaxSendMessageOptions | undefined> {
-    if (!media) {
-      return options;
-    }
-
-    let imagePayload: Record<string, unknown>;
-    try {
-      imagePayload = await this.uploadBotSpeechImage(media, uploadOptions);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          fieldKey: media.fieldKey,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to upload bot speech image; sending text-only notice',
-      );
-      return options;
-    }
-
-    return {
-      ...(options ?? {}),
-      imagePayload,
-    };
+    return this.botSpeechMediaService.withMediaOptions(options, media, uploadOptions);
   }
 
   private async uploadBotSpeechImage(
     media: BotSpeechResolvedMedia,
     options: BotSpeechMediaUploadOptions = {},
   ): Promise<Record<string, unknown>> {
-    const imageBuffer = Buffer.from(media.base64, 'base64');
-    return this.maxClient.uploadImage(imageBuffer, media.fileName, media.mimeType, {
-      trafficClass: options.trafficClass ?? 'background',
-      actionHealthLane: options.actionHealthLane ?? 'background',
-      sourceTag: options.sourceTag ?? MAX_API_SOURCE_TAGS.MODERATION_NOTICE,
-      ...(options.botId ? { botId: options.botId } : {}),
-    });
+    return this.botSpeechMediaService.uploadImage(media, options);
   }
 
   private async shouldSendBotNotice(chatId: string): Promise<boolean> {
