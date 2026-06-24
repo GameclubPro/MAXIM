@@ -16435,6 +16435,78 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('schedules a full roster sync after user-scoped recent bot_added access is confirmed', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'channel-late-admin',
+          chat_title: 'Поздний канал',
+          is_channel: 'true',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Поздний канал',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-late-admin',
+      title: 'Поздний канал',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-04-05T00:10:00.000Z'),
+      primaryBotId: null,
+      botId: null,
+    });
+    const rosterSync = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      rosterSync as never,
+    );
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'channel',
+      ),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'channel-late-admin',
+        title: 'Поздний канал',
+        createdAt: '2026-04-05T00:10:00.000Z',
+        entityType: 'channel',
+      }),
+    ]);
+
+    expect(rosterSync.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'channel-late-admin',
+      entityType: 'channel',
+      source: 'admin_access_validation',
+      retryUntilMs: null,
+    });
+  });
+
   it('re-arms a user-scoped recent bot_added fast lane when bot admin rights are still propagating', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw

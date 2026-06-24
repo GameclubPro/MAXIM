@@ -3755,6 +3755,10 @@ export class AdminService implements OnModuleDestroy {
         );
       }
 
+      if (params.source === 'recent_bot_added_bootstrap') {
+        this.scheduleAdminAccessValidationRosterSync(summary.id, summary.entityType);
+      }
+
       return summary;
     } catch (error: unknown) {
       if (!isPrismaKnownError(error, 'P2024')) {
