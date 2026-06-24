@@ -46,6 +46,7 @@ import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { BotSpeechMediaService } from './bot-speech-media.service';
+import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
@@ -58,6 +59,7 @@ const moderationProviders = [
   ModerationExecutionService,
   ModerationAccessService,
   BotSpeechMediaService,
+  NightModeTransitionEventService,
   NightModeTransitionDeliveryService,
   NightModeTransitionRuntimeService,
   PrivateControlService,

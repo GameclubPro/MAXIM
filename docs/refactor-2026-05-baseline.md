@@ -80,8 +80,9 @@ and make each extraction reviewable through focused tests.
   `night-mode-transition-closed-notice-options.util.ts` owns comments/base-button
   options composition for close notices. `BotSpeechMediaService` owns shared
   bot-speech media resolution/upload/option merging for night-mode and other
-  moderation notices while legacy still supplies focused adapters for generic
-  button builders and event helpers.
+  moderation notices. `NightModeTransitionEventService` owns close/open
+  transition moderation-event creation and metadata while legacy still supplies
+  a focused adapter for generic button builders.
 - Manual/admin command bridge has started:
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
@@ -123,10 +124,12 @@ and make each extraction reviewable through focused tests.
    send/delete sequencing, request lanes/source tags, event callback timing, and
    terminal MAX handling. Closed-notice options composition is isolated in
    `night-mode-transition-closed-notice-options.util.ts`, and shared bot-speech
-   media handling is isolated in `BotSpeechMediaService`. The next complete seam
-   is reducing the remaining legacy event creation metadata adapter. Preserve
-   schedule-driven close/open notices, webhook-only delete gates, and the
-   `moderation-bot-routing.util.ts` night-mode bot-id fallback order.
+   media handling is isolated in `BotSpeechMediaService`. Close/open transition
+   event creation metadata is isolated in `NightModeTransitionEventService`.
+   Preserve schedule-driven close/open notices, webhook-only delete gates, and
+   the `moderation-bot-routing.util.ts` night-mode bot-id fallback order. The
+   next night-mode cleanup should remove residual wrapper/coupling debt rather
+   than reopen moved logic.
    Validate with:
    `npm test --workspace @maxim/api -- night-mode-transition-delivery.service.spec.ts night-mode-transition-notice.util.spec.ts bot-speech.spec.ts moderation.service.spec.ts moderation-execution.service.spec.ts night-mode-transition.processor.spec.ts night-mode-transition-scheduler.service.spec.ts night-mode-transition.queue.spec.ts managed-entity-access-loss.service.spec.ts`
    plus `admin-settings.service.spec.ts` cases when schedule reconciliation moves.

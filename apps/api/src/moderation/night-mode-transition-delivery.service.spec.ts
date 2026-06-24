@@ -52,8 +52,13 @@ function createAdapters(
       buttons: [[{ type: 'link', text: 'Комментарии', url: 'https://example.test' }]],
     }),
     resolveBotId: jest.fn().mockResolvedValue('bot-1'),
-    createEvent: jest.fn().mockResolvedValue(undefined),
     ...overrides,
+  };
+}
+
+function createEventService() {
+  return {
+    createTransitionEvent: jest.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -75,9 +80,11 @@ describe('NightModeTransitionDeliveryService', () => {
         imagePayload: { token: 'image-token' },
       })),
     };
+    const eventService = createEventService();
     const service = new NightModeTransitionDeliveryService(
       maxClient as never,
       botSpeechMediaService as never,
+      eventService as never,
     );
     const adapters = createAdapters();
 
@@ -118,7 +125,7 @@ describe('NightModeTransitionDeliveryService', () => {
       expect.objectContaining({ fieldKey: 'nightModeBotMessageText' }),
       { botId: 'bot-1', sourceTag: 'night_mode_transition' },
     );
-    expect(adapters.createEvent).toHaveBeenCalledWith({
+    expect(eventService.createTransitionEvent).toHaveBeenCalledWith({
       chatId: 'chat-1',
       messageId: 'msg-close-1',
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
@@ -138,9 +145,11 @@ describe('NightModeTransitionDeliveryService', () => {
       resolveMedia: jest.fn().mockReturnValue(null),
       withMediaOptions: jest.fn(async (options) => options),
     };
+    const eventService = createEventService();
     const service = new NightModeTransitionDeliveryService(
       maxClient as never,
       botSpeechMediaService as never,
+      eventService as never,
     );
     const adapters = createAdapters();
 
@@ -172,7 +181,7 @@ describe('NightModeTransitionDeliveryService', () => {
       expect.objectContaining({ chatId: 'chat-1' }),
       'nightModeOpenMessageText',
     );
-    expect(adapters.createEvent).toHaveBeenCalledWith(
+    expect(eventService.createTransitionEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: 'chat-1',
         messageId: 'msg-open-1',
@@ -197,6 +206,7 @@ describe('NightModeTransitionDeliveryService', () => {
         resolveMedia: jest.fn().mockReturnValue(null),
         withMediaOptions: jest.fn(async (options) => options),
       } as never,
+      createEventService() as never,
       accessLoss as never,
     );
 
@@ -242,6 +252,7 @@ describe('NightModeTransitionDeliveryService', () => {
         resolveMedia: jest.fn().mockReturnValue(null),
         withMediaOptions: jest.fn(async (options) => options),
       } as never,
+      createEventService() as never,
       accessLoss as never,
     );
 

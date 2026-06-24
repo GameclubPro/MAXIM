@@ -346,6 +346,7 @@ import {
   type BotSpeechMediaUploadOptions,
   type BotSpeechResolvedMedia,
 } from './bot-speech-media.service';
+import { NightModeTransitionEventService } from './night-mode-transition-event.service';
 
 type ManualModerationCommandBridge = Pick<
   ManualModerationService,
@@ -464,6 +465,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
   private nightModeTransitionDeliveryInstance: NightModeTransitionDeliveryService | null = null;
   private botSpeechMediaServiceInstance: BotSpeechMediaService | null = null;
+  private nightModeTransitionEventServiceInstance: NightModeTransitionEventService | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -500,6 +502,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly injectedNightModeTransitionDelivery?: NightModeTransitionDeliveryService,
     @Optional()
     private readonly injectedBotSpeechMediaService?: BotSpeechMediaService,
+    @Optional()
+    private readonly injectedNightModeTransitionEventService?: NightModeTransitionEventService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -632,10 +636,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.nightModeTransitionDeliveryInstance = new NightModeTransitionDeliveryService(
         this.maxClient,
         this.botSpeechMediaService,
+        this.nightModeTransitionEventService,
         this.managedEntityAccessLossService,
       );
     }
     return this.nightModeTransitionDeliveryInstance;
+  }
+
+  private get nightModeTransitionEventService(): NightModeTransitionEventService {
+    if (this.injectedNightModeTransitionEventService) {
+      return this.injectedNightModeTransitionEventService;
+    }
+    if (!this.nightModeTransitionEventServiceInstance) {
+      this.nightModeTransitionEventServiceInstance = new NightModeTransitionEventService(
+        this.prisma,
+        this.configService,
+        this.maxBotContextService,
+      );
+    }
+    return this.nightModeTransitionEventServiceInstance;
   }
 
   private get botSpeechMediaService(): BotSpeechMediaService {
@@ -677,7 +696,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           rulesPublishedMessageId: settings.chat?.rules?.publishedMessageId ?? null,
         }),
       resolveBotId: (chatId) => this.resolveNightModeTransitionBotId(chatId),
-      createEvent: (params) => this.createNightModeTransitionEvent(params),
     });
   }
 
@@ -15521,40 +15539,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return composeNightModeClosedNoticeOptions({
       baseOptions,
       commentsButton,
-    });
-  }
-
-  private async createNightModeTransitionEvent(params: {
-    chatId: string;
-    messageId: string | null;
-    ruleCode: 'NIGHT_MODE_CLOSE_NOTICE' | 'NIGHT_MODE_OPEN_NOTICE';
-    sessionKey: string;
-    timezone: string;
-    startMinutes: number;
-    endMinutes: number;
-  }): Promise<void> {
-    await this.createBotModerationEvent({
-      data: {
-        chatId: params.chatId,
-        userId: this.ownBotUserId ?? 'bot',
-        messageId: params.messageId,
-        eventType: EventType.SYSTEM,
-        ruleCode: params.ruleCode,
-        action: SanctionAction.NONE,
-        maskedExcerpt: null,
-        score: 0.1,
-        operator: Operator.BOT,
-        metadata: {
-          reason:
-            params.ruleCode === 'NIGHT_MODE_CLOSE_NOTICE'
-              ? 'Night mode close notice sent by schedule'
-              : 'Night mode open notice sent by schedule',
-          sessionKey: params.sessionKey,
-          nightModeTimezone: params.timezone,
-          nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
-          nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
-        },
-      },
     });
   }
 

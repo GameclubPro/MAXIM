@@ -27,6 +27,10 @@ import type {
   NightModeTransitionRuntimeSettings,
 } from './night-mode-transition-runtime.service';
 import { BotSpeechMediaService } from './bot-speech-media.service';
+import {
+  NightModeTransitionEventService,
+  type NightModeTransitionEventParams,
+} from './night-mode-transition-event.service';
 
 export type NightModeTransitionDeliveryOperation =
   | 'send-close-notice'
@@ -46,17 +50,6 @@ export type NightModeTransitionDeliveryAdapters = {
     settings: NightModeTransitionRuntimeSettings,
   ): MaxSendMessageOptions | null;
   resolveBotId(chatId: string): Promise<string | null>;
-  createEvent(params: NightModeTransitionDeliveryEventParams): Promise<void>;
-};
-
-export type NightModeTransitionDeliveryEventParams = {
-  chatId: string;
-  messageId: string | null;
-  ruleCode: 'NIGHT_MODE_CLOSE_NOTICE' | 'NIGHT_MODE_OPEN_NOTICE';
-  sessionKey: string;
-  timezone: string;
-  startMinutes: number;
-  endMinutes: number;
 };
 
 @Injectable()
@@ -66,6 +59,7 @@ export class NightModeTransitionDeliveryService {
   constructor(
     private readonly maxClient: MaxClientService,
     private readonly botSpeechMediaService: BotSpeechMediaService,
+    private readonly nightModeTransitionEventService: NightModeTransitionEventService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
   ) {}
@@ -126,7 +120,7 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
-    await adapters.createEvent({
+    await this.createEvent({
       chatId: settings.chatId,
       messageId: sent.messageId,
       ruleCode: 'NIGHT_MODE_CLOSE_NOTICE',
@@ -186,7 +180,7 @@ export class NightModeTransitionDeliveryService {
       throw error;
     }
 
-    await adapters.createEvent({
+    await this.createEvent({
       chatId: settings.chatId,
       messageId: sent.messageId,
       ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
@@ -196,6 +190,10 @@ export class NightModeTransitionDeliveryService {
       endMinutes: snapshot.endMinutes,
     });
     return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+  }
+
+  private async createEvent(params: NightModeTransitionEventParams): Promise<void> {
+    await this.nightModeTransitionEventService.createTransitionEvent(params);
   }
 
   async deleteClosedNotice(
