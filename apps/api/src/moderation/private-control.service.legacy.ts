@@ -179,8 +179,6 @@ import {
 import { PrivateControlSessionStore } from './private-control-session.store';
 import {
   compactPrivateText,
-  escapePrivateHtml,
-  escapePrivateHtmlAttribute,
   escapePrivateMarkdown,
   privateMarkdownTitle,
   renderPrivateLauncherHomeView,
@@ -199,6 +197,10 @@ import {
   deliverPrivateScreenHandoffToKnownPrivateChat,
   type PrivateScreenHandoffKind,
 } from './private-control-handoff-delivery';
+import {
+  deliverPrivateProfileMentionHandoffToKnownPrivateChat,
+  renderPrivateProfileMentionMessage,
+} from './private-control-profile-mention-handoff';
 import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -8736,13 +8738,14 @@ export class PrivateControlService {
     displayName: string,
     userId: string,
   ): Promise<void> {
-    const mentionText = `<a href="${this.escapeHtmlAttribute(`max://user/${encodeURIComponent(userId)}`)}">${this.escapeHtml(displayName)}</a>`;
+    const message = renderPrivateProfileMentionMessage({
+      displayName,
+      userId,
+    });
     await this.sendImmediate(
       privateChatId,
-      `<p><strong>${this.escapeHtml('Профиль пользователя')}</strong></p><p>${mentionText}</p>`,
-      {
-        textFormat: 'html',
-      },
+      message.text,
+      message.options,
     );
   }
 
@@ -8778,31 +8781,22 @@ export class PrivateControlService {
     session: PrivateSession,
     payload: { displayName: string; userId: string },
   ): Promise<void> {
-    if (!session.lastPrivateChatId) {
-      this.clearDeliveredProfileMentionHandoff(session);
-      return;
-    }
-
-    try {
-      await this.sendProfileMentionToPrivateChat(
-        session.lastPrivateChatId,
-        payload.displayName,
-        payload.userId,
-      );
-      markPrivateHandoffDelivered(session, 'profileMention', session.lastPrivateChatId);
-      await this.saveSession(user.userId, session);
-    } catch (error: unknown) {
-      this.clearDeliveredProfileMentionHandoff(session);
-      this.logger.warn(
-        {
-          userId: user.userId,
-          chatId: session.lastPrivateChatId,
-          targetUserId: payload.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to proactively deliver profile mention handoff to private chat',
-      );
-    }
+    await deliverPrivateProfileMentionHandoffToKnownPrivateChat(session, payload, {
+      send: (privateChatId, message) =>
+        this.sendImmediate(privateChatId, message.text, message.options),
+      saveSession: (currentSession) => this.saveSession(user.userId, currentSession),
+      onFailure: (error, privateChatId) => {
+        this.logger.warn(
+          {
+            userId: user.userId,
+            chatId: privateChatId,
+            targetUserId: payload.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to proactively deliver profile mention handoff to private chat',
+        );
+      },
+    });
   }
 
   private compactButtonLayout(
@@ -10295,14 +10289,6 @@ export class PrivateControlService {
 
   private escapeMarkdown(value: string): string {
     return escapePrivateMarkdown(value);
-  }
-
-  private escapeHtml(value: string): string {
-    return escapePrivateHtml(value);
-  }
-
-  private escapeHtmlAttribute(value: string): string {
-    return escapePrivateHtmlAttribute(value);
   }
 
   private formatIsoDate(iso: string, timeZone?: string | null): string {
