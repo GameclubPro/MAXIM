@@ -551,6 +551,7 @@ function createHarness(
     settings?: typeof defaultSettings;
     channelSettings?: typeof defaultChannelSettings;
     adminService?: Record<string, unknown>;
+    manualModerationService?: Record<string, unknown>;
     adminSettingsService?: Record<string, unknown>;
     managedBroadcastService?: Record<string, unknown>;
     managedGiveaway?: ManagedGiveawayDetails | null;
@@ -675,29 +676,6 @@ function createHarness(
       });
       return currentRules;
     }),
-    adoptChatRulesFromMessage: jest
-      .fn()
-      .mockImplementation(async (_chatId, _actor, payload: Record<string, unknown>) => {
-        currentRules = createRules({
-          ...currentRules,
-          ...(typeof payload.text === 'string' && payload.text.trim()
-            ? {
-                text: payload.text,
-                autoTextEnabled: false,
-              }
-            : {}),
-          publishedMessageId:
-            typeof payload.sourceMessageId === 'string' && payload.sourceMessageId.trim()
-              ? payload.sourceMessageId
-              : null,
-          publishedUrl:
-            typeof payload.sourceMessageUrl === 'string' && payload.sourceMessageUrl.trim()
-              ? payload.sourceMessageUrl
-              : 'https://max.ru/chats/chat-1/message/321',
-          publishedAt: new Date().toISOString(),
-        });
-        return currentRules;
-      }),
     sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     sendChannelBroadcast: jest
       .fn()
@@ -725,15 +703,6 @@ function createHarness(
       moderationFeed: { items: [], hasMore: false, nextCursor: null },
       activityFeed: { items: [], hasMore: false, nextCursor: null },
     }),
-    applyManualModerationAction: jest.fn().mockResolvedValue({ success: true, message: 'Готово' }),
-    applyManualSystemBan: jest.fn().mockResolvedValue({
-      ok: true,
-      action: 'BAN',
-      userId: 'user-77',
-      muteDurationHours: null,
-      unbanScheduledAt: null,
-      message: 'Пользователь забанен.',
-    }),
     getChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
@@ -760,6 +729,41 @@ function createHarness(
     }),
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
+  };
+  const manualModerationService = {
+    adoptChatRulesFromMessage: jest
+      .fn()
+      .mockImplementation(async (_chatId, _actor, payload: Record<string, unknown>) => {
+        currentRules = createRules({
+          ...currentRules,
+          ...(typeof payload.text === 'string' && payload.text.trim()
+            ? {
+                text: payload.text,
+                autoTextEnabled: false,
+              }
+            : {}),
+          publishedMessageId:
+            typeof payload.sourceMessageId === 'string' && payload.sourceMessageId.trim()
+              ? payload.sourceMessageId
+              : null,
+          publishedUrl:
+            typeof payload.sourceMessageUrl === 'string' && payload.sourceMessageUrl.trim()
+              ? payload.sourceMessageUrl
+              : 'https://max.ru/chats/chat-1/message/321',
+          publishedAt: new Date().toISOString(),
+        });
+        return currentRules;
+      }),
+    applyManualModerationAction: jest.fn().mockResolvedValue({ success: true, message: 'Готово' }),
+    applyManualSystemBan: jest.fn().mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-77',
+      muteDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Пользователь забанен.',
+    }),
+    ...overrides.manualModerationService,
   };
   const adminDialogLinkService = {
     parseChannelSuggestionStartPayload: jest.fn((payload: string | null) => {
@@ -980,6 +984,7 @@ function createHarness(
     maxClient as never,
     adminService as never,
     adminSettingsService as never,
+    manualModerationService as never,
     managedGiveawayService as never,
     redisCounter as never,
     {
@@ -1008,6 +1013,7 @@ function createHarness(
     service,
     maxClient,
     adminService,
+    manualModerationService,
     adminSettingsService,
     adminDialogLinkService,
     managedGiveawayService,
@@ -1444,7 +1450,7 @@ describe('PrivateControlService', () => {
   });
 
   it('bans a forwarded sender from private chat with the permanent ban command', async () => {
-    const { service, adminService, maxClient, chats } = createHarness({
+    const { service, manualModerationService, maxClient, chats } = createHarness({
       settings: {
         ...defaultSettings,
         muteDurationHours: 12,
@@ -1453,7 +1459,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate());
 
-    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
+    expect(manualModerationService.applyManualSystemBan).toHaveBeenCalledWith(
       chats[0].id,
       'user-77',
       expect.objectContaining({
@@ -1462,17 +1468,17 @@ describe('PrivateControlService', () => {
       }),
       'private_command',
     );
-    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(manualModerationService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Забанен: Нарушитель (user-77)');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
   });
 
   it('binds a forwarded rules message from private chat to moderation buttons', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
+    const { service, manualModerationService, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateForwardedRulesUpdate());
 
-    expect(adminService.adoptChatRulesFromMessage).toHaveBeenCalledWith(
+    expect(manualModerationService.adoptChatRulesFromMessage).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({
         userId: 'user-1',
@@ -1491,8 +1497,8 @@ describe('PrivateControlService', () => {
   });
 
   it('mutes a forwarded sender from private chat for 6 hours by default', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    adminService.applyManualModerationAction.mockResolvedValueOnce({
+    const { service, manualModerationService, maxClient, chats } = createHarness();
+    manualModerationService.applyManualModerationAction.mockResolvedValueOnce({
       ok: true,
       action: 'MUTE',
       userId: 'user-77',
@@ -1503,7 +1509,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+    expect(manualModerationService.applyManualModerationAction).toHaveBeenCalledWith(
       chats[0].id,
       'user-77',
       expect.objectContaining({
@@ -1516,15 +1522,15 @@ describe('PrivateControlService', () => {
       },
       'private_command',
     );
-    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Мут на 6ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
   it('mutes a forwarded sender from private chat for the requested number of hours', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    adminService.applyManualModerationAction.mockResolvedValueOnce({
+    const { service, manualModerationService, maxClient, chats } = createHarness();
+    manualModerationService.applyManualModerationAction.mockResolvedValueOnce({
       ok: true,
       action: 'MUTE',
       userId: 'user-77',
@@ -1535,7 +1541,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 12'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+    expect(manualModerationService.applyManualModerationAction).toHaveBeenCalledWith(
       chats[0].id,
       'user-77',
       expect.objectContaining({
@@ -1548,15 +1554,15 @@ describe('PrivateControlService', () => {
       },
       'private_command',
     );
-    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Мут на 12ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
   it('treats private forwarded mute command duration 88 as a permanent mute', async () => {
-    const { service, adminService, maxClient, chats } = createHarness();
-    adminService.applyManualModerationAction.mockResolvedValueOnce({
+    const { service, manualModerationService, maxClient, chats } = createHarness();
+    manualModerationService.applyManualModerationAction.mockResolvedValueOnce({
       ok: true,
       action: 'MUTE',
       userId: 'user-77',
@@ -1567,7 +1573,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 88'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+    expect(manualModerationService.applyManualModerationAction).toHaveBeenCalledWith(
       chats[0].id,
       'user-77',
       expect.objectContaining({
@@ -1580,14 +1586,14 @@ describe('PrivateControlService', () => {
       },
       'private_command',
     );
-    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Мут бессрочно.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
   it('rejects explicit duration in the forwarded ban command', async () => {
-    const { service, adminService, maxClient } = createHarness({
+    const { service, manualModerationService, maxClient } = createHarness({
       settings: {
         ...defaultSettings,
         muteDurationHours: 6,
@@ -1596,7 +1602,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('бан 24'));
 
-    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(manualModerationService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain(
       'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
     );

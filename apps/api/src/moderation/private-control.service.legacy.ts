@@ -31,6 +31,7 @@ import {
 import { AdminDialogLinkService } from '../admin/admin-dialog-link.service';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
+import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import {
@@ -739,6 +740,7 @@ export class PrivateControlService {
     private readonly maxClient: MaxClientService,
     private readonly adminService: AdminService,
     private readonly adminSettingsService: AdminSettingsService,
+    private readonly manualModerationService: ManualModerationService,
     private readonly managedGiveawayService: ManagedGiveawayService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
@@ -1532,13 +1534,13 @@ export class PrivateControlService {
     const target = uniqueTargets[0];
     const result =
       command.action === 'BAN'
-        ? await this.adminService.applyManualSystemBan(
+        ? await this.manualModerationService.applyManualSystemBan(
             target.chatId,
             target.userId,
             context.actor,
             'private_command',
           )
-        : await this.adminService.applyManualModerationAction(
+        : await this.manualModerationService.applyManualModerationAction(
             target.chatId,
             target.userId,
             context.actor,
@@ -1577,7 +1579,7 @@ export class PrivateControlService {
     }
 
     const sourceMessage = uniqueSources[0];
-    const result = await this.adminService.adoptChatRulesFromMessage(
+    const result = await this.manualModerationService.adoptChatRulesFromMessage(
       sourceMessage.chatId,
       context.actor,
       {
@@ -4248,7 +4250,7 @@ export class PrivateControlService {
           throw new BadRequestException('Неизвестное действие');
         }
 
-        const result = await this.adminService.applyManualModerationAction(
+        const result = await this.manualModerationService.applyManualModerationAction(
           session.selectedChatId!,
           targetUserId,
           context.actor,
@@ -5105,7 +5107,7 @@ export class PrivateControlService {
       case 'manual_mute_duration': {
         this.assertChatSelected(session);
         const muteDurationHours = this.parseIntInput(rawText, 1, 336);
-        const result = await this.adminService.applyManualModerationAction(
+        const result = await this.manualModerationService.applyManualModerationAction(
           session.selectedChatId!,
           pendingInput.targetUserId,
           context.actor,

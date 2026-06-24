@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-const DEFAULT_BASE_URLS = ['https://major-maksimov.ru/app/', 'https://app2.major-maksimov.ru/app/'];
+const DEFAULT_BASE_URLS = ['https://major-maksimov.ru/app/'];
 const DEFAULT_SCENARIOS = [
   'home',
   'home-channels',

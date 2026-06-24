@@ -520,6 +520,12 @@ export class ManualModerationService {
     return this.legacyAdminService.applyManualModerationAction(...args);
   }
 
+  applyManualSystemBan(
+    ...args: Parameters<AdminService['applyManualSystemBan']>
+  ): ReturnType<AdminService['applyManualSystemBan']> {
+    return this.legacyAdminService.applyManualSystemBan(...args);
+  }
+
   adoptChatRulesFromMessage(
     ...args: Parameters<AdminService['adoptChatRulesFromMessage']>
   ): ReturnType<AdminService['adoptChatRulesFromMessage']> {

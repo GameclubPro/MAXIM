@@ -18,6 +18,8 @@ and make each extraction reviewable through focused tests.
 - Routine mini app deploy and smoke target is only
   `https://major-maksimov.ru/app/`. Do not publish or smoke CDN/app2/Object Storage
   unless CDN/restricted-LTE work is explicitly resumed.
+- Routine mini app visual tooling should also stay Major-only by default. CDN/app2
+  URLs require an explicit override tied to resumed CDN/restricted-LTE work.
 - For API validation, do not run Prisma-generating API Jest/typecheck commands in
   parallel.
 
@@ -93,76 +95,94 @@ and make each extraction reviewable through focused tests.
   `manualModerationCommandBridge` no longer falls back to `AdminService`.
 - Private control extraction has started:
   shared private-control types/constants and `PrivateControlSessionStore` are
-  separated from `private-control.service.legacy.ts`.
+  separated from `private-control.service.legacy.ts`. Private-control manual
+  moderation/rules command calls now route through `ManualModerationService`
+  instead of direct `AdminService` calls.
 - Settings page extraction has started:
   comments and extra sections are delegated to focused components while keeping
   route-owned state and lazy boundaries intact.
 
 ## Next Optimized Plan
 
-1. Finish remaining moderation access/bot-routing debt only at complete seams.
-   Keep thin wrappers in `moderation.service.legacy.ts` for hot-path stability.
+1. Protect the completed moderation hot-path seams before taking new runtime cuts.
    Access lookup state and methods such as `resolveSenderChatAdminCheck`,
    `recheckSenderChatAdminBeforeModeration`, `isOtherBotAdminModerationBypass`,
    `getRemoteChatAdminAccess`, batch shared-cache helpers, guarded timeout
    execution, and `persistRemoteAdminGrant` already live in
    `ModerationAccessService`. `moderation-bot-routing.util.ts` owns read,
-   moderation-action candidate, and auto-attach route selection. The next API
-   cleanup here should remove residual wrapper/coupling debt or add focused tests,
-   not reopen moved logic. Leave destructive roster refresh scheduling and action
+   moderation-action candidate, and auto-attach/night-mode route selection.
+   Night-mode runtime, delivery, notice rendering, bot-speech media, closed-notice
+   options, and transition-event creation are already behind focused modules.
+   `ModerationService` no longer injects `AdminService`; channel-suggestion
+   payload parse/build is behind `AdminDialogLinkService`, and manual command
+   execution goes through `ManualModerationService`. The next work in these files
+   should be regression guards, residual wrapper deletion, or complete-service
+   extractions only. Leave destructive roster refresh scheduling and action
    execution/backoff state in legacy until a complete runtime service seam is
    available.
    Validate with:
    `npm test --workspace @maxim/api -- moderation-bot-routing.util.spec.ts moderation.admin-access.spec.ts moderation.shared-chat.spec.ts moderation.service.spec.ts`
    and `npm run typecheck --workspace @maxim/api`.
 
-2. Continue night-mode as a runtime service behind `ModerationExecutionService`.
-   Extract only business logic behind the existing execution boundary; do not add
-   another public execution bridge. The current runtime service owns
-   transition-state/lock/schedule decisions, and the notice util owns pure
-   close/open text rendering plus self-notice matching. The delivery service owns
-   send/delete sequencing, request lanes/source tags, event callback timing, and
-   terminal MAX handling. Closed-notice options composition is isolated in
-   `night-mode-transition-closed-notice-options.util.ts`, and shared bot-speech
-   media handling is isolated in `BotSpeechMediaService`. Close/open transition
-   event creation metadata is isolated in `NightModeTransitionEventService`.
-   Preserve schedule-driven close/open notices, webhook-only delete gates, and
-   the `moderation-bot-routing.util.ts` night-mode bot-id fallback order. The
-   next night-mode cleanup should remove residual wrapper/coupling debt rather
-   than reopen moved logic.
-   Validate with:
-   `npm test --workspace @maxim/api -- night-mode-transition-delivery.service.spec.ts night-mode-transition-notice.util.spec.ts bot-speech.spec.ts moderation.service.spec.ts moderation-execution.service.spec.ts night-mode-transition.processor.spec.ts night-mode-transition-scheduler.service.spec.ts night-mode-transition.queue.spec.ts managed-entity-access-loss.service.spec.ts`
-   plus `admin-settings.service.spec.ts` cases when schedule reconciliation moves.
+2. Make `PrivateControlService` the next primary backend slice.
+   Keep `PrivateControlService` as the only public facade and do not import
+   `private-control.service.legacy.ts` from new code. The manual-command bridge
+   seam is closed; keep future private-control manual command work behind
+   `ManualModerationService` or a narrower command service instead of direct
+   `AdminService`. Move decomposition seams in this order:
+   A. Extract session creation/normalization next: `createDefaultSession`,
+   `normalizeSession`, pending input and pending mass-action parsing, plus screen,
+   entity, and view parsers. This matches the existing `PrivateControlSessionStore`
+   seam and avoids callback-routing changes.
+   B. Extract draft/state normalization separately from media I/O:
+   `normalizeBroadcastDraft`, `normalizeSuggestionDraft`, suggestion draft object
+   normalization, and pure broadcast target-state helpers. Defer attachment
+   download/upload and MAX media handling.
+   C. Extract pure forwarded-command parsing/extraction before moving action
+   handlers. Keep admin-applying handlers in legacy until command execution is
+   behind a narrower service.
+   D. Extract pure render helpers only where they do not fetch data: launcher,
+   moved-to-miniapp screens, preview payload rendering, small section summaries,
+   and button/layout/string helpers. Defer rules/broadcast/giveaway/events/logs
+   screens that fetch data.
+   E. Extract handoff state/delivery helpers for broadcast, rules, giveaway, and
+   profile mention flows, preserving the existing session fields and idempotency.
+   F. Extract action bridges for broadcast publishing, channel suggestions,
+   giveaway actions, settings/rules, and domain allowlist operations through
+   existing focused services where available. Extend `ManagedBroadcastService`,
+   `ChannelDialogService`, `ManagedGiveawayService`, and `ManualModerationService`
+   rather than adding new logic to `AdminService`.
+   G. Move callback routing, pending-input orchestration, `respond`, error
+   handling, and context parsing last, after render, draft, handoff, and action
+   services are covered by focused tests.
+   Validate after each step with:
+   `npm test --workspace @maxim/api -- private-control.service.spec.ts`; add
+   `manual-moderation.service.spec.ts` for the manual-command bridge seam, and
+   `miniapp-mutation-tunnel.controller.spec.ts admin-dialog-link.service.spec.ts channel-dialog.service.spec.ts managed-giveaway.service.spec.ts managed-broadcast.service.spec.ts`
+   whenever handoff/action paths move.
 
-3. Keep manual/admin command bridging out of the moderation hot path.
-   `ModerationService` no longer injects `AdminService`; continue routing manual
-   group/private commands through `ManualModerationService` and focused helpers.
-   Watch super-ban, fanout, developer actions, and channel-suggestion handoff
-   paths for accidental legacy admin coupling.
+3. Keep manual/admin command bridging out of runtime hot paths while private
+   control is split. `ManualModerationService` is still partly a bridge over
+   legacy `AdminService`; that is acceptable as an extraction boundary, but new
+   manual command logic should land behind it or behind narrower focused helpers.
+   Watch super-ban, fanout, developer actions, channel-suggestion handoff, and
+   private-control admin callbacks for accidental new `AdminService` coupling.
    Validate with:
    `npm test --workspace @maxim/api -- moderation.service.spec.ts manual-moderation.service.spec.ts admin-dialog-link.service.spec.ts`.
 
-4. Slice `PrivateControlService` after the moderation hot path stabilizes.
-   Keep `PrivateControlService` as the public facade. Next low-risk slices are
-   draft/media normalization, render builders, forwarded action handlers, then
-   handoff/broadcast/channel-suggestion action services. Leave callback routing
-   and pending-input orchestration until the end.
-   Validate after each step with:
-   `npm test --workspace @maxim/api -- private-control.service.spec.ts`; add
-   `channel-dialog.service.spec.ts managed-giveaway.service.spec.ts` for action or
-   handoff moves.
-
-5. Continue mini app settings extraction as second priority.
+4. Continue mini app settings extraction as second priority.
    `SettingsExtraSection` and `SettingsCommentsSection` are extracted. Next split
    required subscription in two stages: presentational blocks first, controller
    hook second. Keep `VkParsingCard`, required-subscription picker, broadcast
-   composer, stats/events clients, and route CSS lazy boundaries intact.
+   composer, stats/events clients, and route CSS lazy boundaries intact. Material
+   UI checks should use local screenshots or Major production-origin screenshots;
+   `npm run audit:miniapp:visual` defaults to `https://major-maksimov.ru/app/`.
    Validate with:
    `npm run check:miniapp-css`,
    `npm run typecheck --workspace @maxim/miniapp`,
    and `npm run build --workspace @maxim/miniapp`.
 
-6. Keep contracts extraction opportunistic and subpath-based.
+5. Keep contracts extraction opportunistic and subpath-based.
    If a domain needs new shared contracts, create/update a subpath export and
    synchronize API, mini app, tests, and typechecks in the same slice. Do not use
    `core.ts` as a catch-all.

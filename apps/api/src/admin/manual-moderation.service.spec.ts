@@ -626,3 +626,27 @@ describe('ManualModerationService spammer profiles', () => {
     );
   });
 });
+
+describe('ManualModerationService command bridge', () => {
+  it('forwards system ban commands through the legacy admin boundary', async () => {
+    const legacyAdminService = {
+      ...createLegacyAdminServiceMock(),
+      applyManualSystemBan: jest.fn().mockResolvedValue({ ok: true, message: 'Забанен' }),
+    };
+    const service = new ManualModerationService(
+      legacyAdminService as never,
+      createGlobalSpammerIntelligenceMock() as never,
+    );
+
+    await expect(
+      service.applyManualSystemBan('chat-1', 'user-1', authUser, 'private_command'),
+    ).resolves.toEqual({ ok: true, message: 'Забанен' });
+
+    expect(legacyAdminService.applyManualSystemBan).toHaveBeenCalledWith(
+      'chat-1',
+      'user-1',
+      authUser,
+      'private_command',
+    );
+  });
+});
