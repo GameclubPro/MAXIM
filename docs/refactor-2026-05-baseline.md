@@ -112,6 +112,8 @@ and make each extraction reviewable through focused tests.
   `private-control-duplicate-flow.ts` owns duplicate-flow allowed-count/window
   normalization and threshold rebuild helpers used by legacy settings rendering
   and updates.
+  `private-control-settings-schema.ts` owns private-control settings labels,
+  field configs, section order, card groups, and bulk-apply setting key groups.
 - Settings page extraction has started:
   comments and extra sections are delegated to focused components while keeping
   route-owned state and lazy boundaries intact.
@@ -136,17 +138,13 @@ and make each extraction reviewable through focused tests.
    next extraction should reduce it materially without touching callback routing.
    Keep `PrivateControlService` as the only public facade and do not import
    `private-control.service.legacy.ts` from new code.
-   A. Extract inline settings schema/config such as `SECTION_LABELS`,
-   `CHANNEL_SECTION_LABELS`, `SECTION_FIELDS`, `CHANNEL_SECTION_FIELDS`,
-   `SECTION_SETTING_KEYS`, `SECTION_ORDER`, and `SECTION_CARD_FIELDS` into
-   `private-control-settings-schema.ts`.
-   B. Extract deterministic settings render/search helpers such as
+   A. Extract deterministic settings render/search helpers such as
    `findSettingMatches`, `buildFieldAliases`, `buildSectionFieldConfigs`,
    `buildSectionSummaryLines`, `buildSectionActionRows`,
    `buildChannelSectionSummary`, `buildChannelSectionRows`,
    `describeLinkPolicy`, `describeBooleanCompact`, `formatNumberPreset`, and
    `resolveSectionViewForField` into `private-control-settings-renderer.ts`.
-   C. Leave `processCallback`, pending-input orchestration, `respond`, context
+   B. Leave `processCallback`, pending-input orchestration, `respond`, context
    parsing, and data-fetching rules/broadcast/giveaway/events/logs screens in
    legacy until the pure settings renderer is covered by focused tests.
    Preserve `SECTION_SETTING_KEYS` behavior because it controls bulk
