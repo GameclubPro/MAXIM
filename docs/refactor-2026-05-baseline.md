@@ -95,9 +95,12 @@ and make each extraction reviewable through focused tests.
   `manualModerationCommandBridge` no longer falls back to `AdminService`.
 - Private control extraction has started:
   shared private-control types/constants and `PrivateControlSessionStore` are
-  separated from `private-control.service.legacy.ts`. Private-control manual
-  moderation/rules command calls now route through `ManualModerationService`
-  instead of direct `AdminService` calls.
+  separated from `private-control.service.legacy.ts`.
+  `private-control-session-normalizer.ts` owns session creation, persisted
+  session normalization, pending input/mass-action parsing, and private-control
+  screen/entity/view parsers while draft/media normalization remains in legacy.
+  Private-control manual moderation/rules command calls now route through
+  `ManualModerationService` instead of direct `AdminService` calls.
 - Settings page extraction has started:
   comments and extra sections are delegated to focused components while keeping
   route-owned state and lazy boundaries intact.
@@ -130,34 +133,31 @@ and make each extraction reviewable through focused tests.
    seam is closed; keep future private-control manual command work behind
    `ManualModerationService` or a narrower command service instead of direct
    `AdminService`. Move decomposition seams in this order:
-   A. Extract session creation/normalization next: `createDefaultSession`,
-   `normalizeSession`, pending input and pending mass-action parsing, plus screen,
-   entity, and view parsers. This matches the existing `PrivateControlSessionStore`
-   seam and avoids callback-routing changes.
-   B. Extract draft/state normalization separately from media I/O:
+   A. Extract draft/state normalization next, separately from media I/O:
    `normalizeBroadcastDraft`, `normalizeSuggestionDraft`, suggestion draft object
    normalization, and pure broadcast target-state helpers. Defer attachment
    download/upload and MAX media handling.
-   C. Extract pure forwarded-command parsing/extraction before moving action
+   B. Extract pure forwarded-command parsing/extraction before moving action
    handlers. Keep admin-applying handlers in legacy until command execution is
    behind a narrower service.
-   D. Extract pure render helpers only where they do not fetch data: launcher,
+   C. Extract pure render helpers only where they do not fetch data: launcher,
    moved-to-miniapp screens, preview payload rendering, small section summaries,
    and button/layout/string helpers. Defer rules/broadcast/giveaway/events/logs
    screens that fetch data.
-   E. Extract handoff state/delivery helpers for broadcast, rules, giveaway, and
+   D. Extract handoff state/delivery helpers for broadcast, rules, giveaway, and
    profile mention flows, preserving the existing session fields and idempotency.
-   F. Extract action bridges for broadcast publishing, channel suggestions,
+   E. Extract action bridges for broadcast publishing, channel suggestions,
    giveaway actions, settings/rules, and domain allowlist operations through
    existing focused services where available. Extend `ManagedBroadcastService`,
    `ChannelDialogService`, `ManagedGiveawayService`, and `ManualModerationService`
    rather than adding new logic to `AdminService`.
-   G. Move callback routing, pending-input orchestration, `respond`, error
+   F. Move callback routing, pending-input orchestration, `respond`, error
    handling, and context parsing last, after render, draft, handoff, and action
    services are covered by focused tests.
    Validate after each step with:
-   `npm test --workspace @maxim/api -- private-control.service.spec.ts`; add
-   `manual-moderation.service.spec.ts` for the manual-command bridge seam, and
+   `npm test --workspace @maxim/api -- private-control-session-normalizer.spec.ts private-control.service.spec.ts`
+   for session/draft state cuts; add `manual-moderation.service.spec.ts` for
+   the manual-command bridge seam, and
    `miniapp-mutation-tunnel.controller.spec.ts admin-dialog-link.service.spec.ts channel-dialog.service.spec.ts managed-giveaway.service.spec.ts managed-broadcast.service.spec.ts`
    whenever handoff/action paths move.
 

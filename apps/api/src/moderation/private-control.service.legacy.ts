@@ -158,6 +158,23 @@ import type {
   SettingFieldConfig,
   SettingFieldType,
 } from './private-control.types';
+import {
+  createDefaultPrivateControlSession,
+  normalizePrivateControlPendingInput,
+  normalizePrivateControlPendingMassAction,
+  normalizePrivateControlSession,
+  parsePrivateControlBroadcastView,
+  parsePrivateControlChannelSection,
+  parsePrivateControlEntityType,
+  parsePrivateControlHomeTab,
+  parsePrivateControlLogsRange,
+  parsePrivateControlScreen,
+  parsePrivateControlSection,
+  parsePrivateControlSectionView,
+  parsePrivateControlSettingFieldType,
+  parsePrivateControlUiMode,
+  toPrivateControlPositiveInt,
+} from './private-control-session-normalizer';
 import { PrivateControlSessionStore } from './private-control-session.store';
 import { RedisCounterService } from './redis-counter.service';
 
@@ -8895,27 +8912,15 @@ export class PrivateControlService {
   }
 
   private parseSection(value: string | undefined): PrivateSectionKey | null {
-    if (!value) {
-      return null;
-    }
-
-    return SECTION_ORDER.includes(value as PrivateSectionKey) ? (value as PrivateSectionKey) : null;
+    return parsePrivateControlSection(value);
   }
 
   private parseChannelSection(value: string | undefined): ChannelSectionKey | null {
-    if (value === 'post_suggestions' || value === 'comments') {
-      return value;
-    }
-
-    return null;
+    return parsePrivateControlChannelSection(value);
   }
 
   private parseLogsRange(value: string | undefined): LogsDashboardRange {
-    if (value === '24h' || value === '7d' || value === '30d') {
-      return value;
-    }
-
-    return '7d';
+    return parsePrivateControlLogsRange(value);
   }
 
   private findFieldConfig(
@@ -11487,333 +11492,26 @@ export class PrivateControlService {
   }
 
   private createDefaultSession(): PrivateSession {
-    return {
-      version: 3,
-      lastPrivateChatId: null,
-      lastBroadcastHandoffDeliveredChatId: null,
-      lastBroadcastHandoffDeliveredAt: null,
-      lastGiveawayHandoffDeliveredChatId: null,
-      lastGiveawayHandoffDeliveredAt: null,
-      lastRulesHandoffDeliveredChatId: null,
-      lastRulesHandoffDeliveredAt: null,
-      lastProfileMentionHandoffDeliveredChatId: null,
-      lastProfileMentionHandoffDeliveredAt: null,
-      pendingProfileMentionChatId: null,
-      pendingProfileMentionUserId: null,
-      pendingProfileMentionDisplayName: null,
-      selectedChatId: null,
-      selectedEntityType: null,
-      managedGiveawayId: null,
-      entityTab: 'chat',
-      uiMode: 'modern',
-      screen: 'home',
-      homeTab: 'quick',
-      sectionView: 'basic',
-      searchQuery: null,
-      lastScreenStack: [],
-      broadcastView: 'basic',
-      section: null,
-      channelSection: null,
-      chatPage: 1,
-      domainPage: 1,
-      eventsPage: 1,
-      manualPage: 1,
-      logsRange: '7d',
-      manualTargetUserId: null,
-      pendingInput: null,
-      pendingMassAction: null,
-      broadcastDraft: {
-        ...DEFAULT_BROADCAST_DRAFT,
-      },
-      suggestionDraft: null,
-    };
+    return createDefaultPrivateControlSession();
   }
 
   private normalizeSession(raw: unknown): PrivateSession {
-    const fallback = this.createDefaultSession();
-    if (!raw || typeof raw !== 'object') {
-      return fallback;
-    }
-
-    const row = raw as Partial<PrivateSession>;
-    const selectedChatId =
-      typeof row.selectedChatId === 'string' && row.selectedChatId.trim().length > 0
-        ? row.selectedChatId.trim()
-        : null;
-    const parsedSelectedEntityType = this.parseEntityType(row.selectedEntityType);
-
-    return {
-      version: 3,
-      lastPrivateChatId:
-        typeof row.lastPrivateChatId === 'string' && row.lastPrivateChatId.trim().length > 0
-          ? row.lastPrivateChatId.trim()
-          : null,
-      lastBroadcastHandoffDeliveredChatId:
-        typeof row.lastBroadcastHandoffDeliveredChatId === 'string' &&
-        row.lastBroadcastHandoffDeliveredChatId.trim().length > 0
-          ? row.lastBroadcastHandoffDeliveredChatId.trim()
-          : null,
-      lastBroadcastHandoffDeliveredAt:
-        typeof row.lastBroadcastHandoffDeliveredAt === 'number' &&
-        Number.isFinite(row.lastBroadcastHandoffDeliveredAt)
-          ? row.lastBroadcastHandoffDeliveredAt
-          : null,
-      lastGiveawayHandoffDeliveredChatId:
-        typeof row.lastGiveawayHandoffDeliveredChatId === 'string' &&
-        row.lastGiveawayHandoffDeliveredChatId.trim().length > 0
-          ? row.lastGiveawayHandoffDeliveredChatId.trim()
-          : null,
-      lastGiveawayHandoffDeliveredAt:
-        typeof row.lastGiveawayHandoffDeliveredAt === 'number' &&
-        Number.isFinite(row.lastGiveawayHandoffDeliveredAt)
-          ? row.lastGiveawayHandoffDeliveredAt
-          : null,
-      lastRulesHandoffDeliveredChatId:
-        typeof row.lastRulesHandoffDeliveredChatId === 'string' &&
-        row.lastRulesHandoffDeliveredChatId.trim().length > 0
-          ? row.lastRulesHandoffDeliveredChatId.trim()
-          : null,
-      lastRulesHandoffDeliveredAt:
-        typeof row.lastRulesHandoffDeliveredAt === 'number' &&
-        Number.isFinite(row.lastRulesHandoffDeliveredAt)
-          ? row.lastRulesHandoffDeliveredAt
-          : null,
-      lastProfileMentionHandoffDeliveredChatId:
-        typeof row.lastProfileMentionHandoffDeliveredChatId === 'string' &&
-        row.lastProfileMentionHandoffDeliveredChatId.trim().length > 0
-          ? row.lastProfileMentionHandoffDeliveredChatId.trim()
-          : null,
-      lastProfileMentionHandoffDeliveredAt:
-        typeof row.lastProfileMentionHandoffDeliveredAt === 'number' &&
-        Number.isFinite(row.lastProfileMentionHandoffDeliveredAt)
-          ? row.lastProfileMentionHandoffDeliveredAt
-          : null,
-      pendingProfileMentionChatId:
-        typeof row.pendingProfileMentionChatId === 'string' &&
-        row.pendingProfileMentionChatId.trim().length > 0
-          ? row.pendingProfileMentionChatId.trim()
-          : null,
-      pendingProfileMentionUserId:
-        typeof row.pendingProfileMentionUserId === 'string' &&
-        row.pendingProfileMentionUserId.trim().length > 0
-          ? row.pendingProfileMentionUserId.trim()
-          : null,
-      pendingProfileMentionDisplayName:
-        typeof row.pendingProfileMentionDisplayName === 'string' &&
-        row.pendingProfileMentionDisplayName.trim().length > 0
-          ? row.pendingProfileMentionDisplayName.trim()
-          : null,
-      selectedChatId,
-      selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),
-      managedGiveawayId:
-        typeof row.managedGiveawayId === 'string' && row.managedGiveawayId.trim().length > 0
-          ? row.managedGiveawayId.trim()
-          : null,
-      entityTab: this.parseEntityType(row.entityTab) ?? parsedSelectedEntityType ?? 'chat',
-      uiMode: this.parseUiMode(row.uiMode),
-      screen: this.parseScreen(row.screen),
-      homeTab: this.parseHomeTab(row.homeTab),
-      sectionView: this.parseSectionView(row.sectionView),
-      searchQuery:
-        typeof row.searchQuery === 'string' && row.searchQuery.trim().length > 0
-          ? row.searchQuery.trim()
-          : null,
-      lastScreenStack: Array.isArray(row.lastScreenStack)
-        ? row.lastScreenStack
-            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-            .slice(-20)
-        : [],
-      broadcastView: this.parseBroadcastView(row.broadcastView),
-      section: this.parseSection(typeof row.section === 'string' ? row.section : undefined),
-      channelSection: this.parseChannelSection(
-        typeof row.channelSection === 'string' ? row.channelSection : undefined,
-      ),
-      chatPage: this.toPositiveInt(row.chatPage, 1),
-      domainPage: this.toPositiveInt(row.domainPage, 1),
-      eventsPage: this.toPositiveInt(row.eventsPage, 1),
-      manualPage: this.toPositiveInt(row.manualPage, 1),
-      logsRange: this.parseLogsRange(typeof row.logsRange === 'string' ? row.logsRange : undefined),
-      manualTargetUserId:
-        typeof row.manualTargetUserId === 'string' && row.manualTargetUserId.trim().length > 0
-          ? row.manualTargetUserId.trim()
-          : null,
-      pendingInput: this.normalizePendingInput(row.pendingInput),
-      pendingMassAction: this.normalizePendingMassAction(row.pendingMassAction),
-      broadcastDraft: this.normalizeBroadcastDraft(row.broadcastDraft),
-      suggestionDraft: this.normalizeSuggestionDraft(row.suggestionDraft),
-    };
+    return normalizePrivateControlSession(raw, {
+      normalizeBroadcastDraft: (draft) => this.normalizeBroadcastDraft(draft),
+      normalizeSuggestionDraft: (draft) => this.normalizeSuggestionDraft(draft),
+    });
   }
 
   private normalizePendingInput(raw: unknown): PendingInput | null {
-    if (!raw || typeof raw !== 'object') {
-      return null;
-    }
-
-    const row = raw as Partial<PendingInput> & Record<string, unknown>;
-    const kind = typeof row.kind === 'string' ? row.kind : null;
-    if (!kind) {
-      return null;
-    }
-
-    if (kind === 'set_field') {
-      const section = this.parseSection(typeof row.section === 'string' ? row.section : undefined);
-      const key = typeof row.key === 'string' ? (row.key as keyof ChatSettings) : null;
-      const type = this.parseSettingFieldType(typeof row.type === 'string' ? row.type : undefined);
-      if (!section || !key || !type) {
-        return null;
-      }
-
-      return {
-        kind,
-        section,
-        key,
-        type,
-        min: typeof row.min === 'number' ? row.min : undefined,
-        max: typeof row.max === 'number' ? row.max : undefined,
-      };
-    }
-
-    if (kind === 'set_channel_field') {
-      const section = this.parseChannelSection(
-        typeof row.section === 'string' ? row.section : undefined,
-      );
-      const key = typeof row.key === 'string' ? (row.key as keyof ChannelSettings) : null;
-      const type = this.parseSettingFieldType(typeof row.type === 'string' ? row.type : undefined);
-      if (!section || !key || !type) {
-        return null;
-      }
-
-      return {
-        kind,
-        section,
-        key,
-        type,
-        min: typeof row.min === 'number' ? row.min : undefined,
-        max: typeof row.max === 'number' ? row.max : undefined,
-      };
-    }
-
-    if (kind === 'schedule_domain') {
-      if (typeof row.domain !== 'string' || !row.domain.trim()) {
-        return null;
-      }
-      return {
-        kind,
-        domain: row.domain.trim(),
-        domainLabel:
-          typeof row.domainLabel === 'string' && row.domainLabel.trim()
-            ? row.domainLabel.trim()
-            : row.domain.trim(),
-      };
-    }
-
-    if (kind === 'channel_suggestion') {
-      if (typeof row.chatId !== 'string' || !row.chatId.trim()) {
-        return null;
-      }
-      if (typeof row.token !== 'string' || !row.token.trim()) {
-        return null;
-      }
-      return {
-        kind,
-        chatId: row.chatId.trim(),
-        token: row.token.trim(),
-      };
-    }
-
-    if (kind === 'manual_mute_duration') {
-      if (typeof row.targetUserId !== 'string' || !row.targetUserId.trim()) {
-        return null;
-      }
-      return {
-        kind,
-        targetUserId: row.targetUserId.trim(),
-      };
-    }
-
-    if (kind === 'giveaway_prize') {
-      const index = this.toPositiveInt(row.index, 1) - 1;
-      return {
-        kind,
-        index: Math.max(0, index),
-      };
-    }
-
-    const allowedKinds: PendingInput['kind'][] = [
-      'search_settings',
-      'add_domain',
-      'broadcast_content',
-      'broadcast_text',
-      'broadcast_button_url',
-      'broadcast_button_text',
-      'broadcast_send_at',
-      'broadcast_cycle_every_hours',
-      'broadcast_cycle_count',
-      'broadcast_photo',
-      'rules_text',
-      'rules_photo',
-      'channel_suggestion',
-      'giveaway_title',
-      'giveaway_content',
-      'giveaway_description',
-      'giveaway_start_at',
-      'giveaway_end_at',
-      'giveaway_claim_hours',
-      'giveaway_photo',
-    ];
-
-    if (allowedKinds.includes(kind as PendingInput['kind'])) {
-      return {
-        kind: kind as PendingInput['kind'],
-      } as PendingInput;
-    }
-
-    return null;
+    return normalizePrivateControlPendingInput(raw);
   }
 
   private parseSettingFieldType(value: string | undefined): SettingFieldType | null {
-    if (
-      value === 'boolean' ||
-      value === 'number' ||
-      value === 'text' ||
-      value === 'url' ||
-      value === 'enum' ||
-      value === 'time' ||
-      value === 'timezone'
-    ) {
-      return value;
-    }
-
-    return null;
+    return parsePrivateControlSettingFieldType(value);
   }
 
   private normalizePendingMassAction(raw: unknown): PendingMassAction | null {
-    if (!raw || typeof raw !== 'object') {
-      return null;
-    }
-
-    const row = raw as Partial<PendingMassAction> & Record<string, unknown>;
-    if (row.kind === 'apply_section') {
-      const section = this.parseSection(typeof row.section === 'string' ? row.section : undefined);
-      if (!section) {
-        return null;
-      }
-
-      return {
-        kind: 'apply_section',
-        section,
-        targetChats: this.toPositiveInt(row.targetChats, 1),
-      };
-    }
-
-    if (row.kind === 'broadcast') {
-      return {
-        kind: 'broadcast',
-        targetChats: this.toPositiveInt(row.targetChats, 1),
-      };
-    }
-
-    return null;
+    return normalizePrivateControlPendingMassAction(raw);
   }
 
   private normalizeBroadcastDraft(raw: unknown): PrivateBroadcastDraft {
@@ -12022,54 +11720,27 @@ export class PrivateControlService {
   }
 
   private parseScreen(value: unknown): PrivateScreen {
-    if (
-      value === 'chat_select' ||
-      value === 'home' ||
-      value === 'settings_hub' ||
-      value === 'section' ||
-      value === 'channel_section' ||
-      value === 'domains' ||
-      value === 'rules' ||
-      value === 'broadcast' ||
-      value === 'giveaway' ||
-      value === 'events' ||
-      value === 'logs' ||
-      value === 'search' ||
-      value === 'manual_users' ||
-      value === 'manual_actions'
-    ) {
-      return value;
-    }
-
-    if (value === 'main') {
-      return 'home';
-    }
-
-    return 'home';
+    return parsePrivateControlScreen(value);
   }
 
   private parseEntityType(value: unknown): ManagedEntityType | null {
-    if (value === 'chat' || value === 'channel') {
-      return value;
-    }
-
-    return null;
+    return parsePrivateControlEntityType(value);
   }
 
   private parseUiMode(_value: unknown): PrivateUiMode {
-    return 'modern';
+    return parsePrivateControlUiMode(_value);
   }
 
   private parseHomeTab(value: unknown): PrivateHomeTab {
-    return value === 'all' ? 'all' : 'quick';
+    return parsePrivateControlHomeTab(value);
   }
 
   private parseSectionView(value: unknown): PrivateSectionView {
-    return value === 'advanced' ? 'advanced' : 'basic';
+    return parsePrivateControlSectionView(value);
   }
 
   private parseBroadcastView(value: unknown): PrivateBroadcastView {
-    return value === 'advanced' ? 'advanced' : 'basic';
+    return parsePrivateControlBroadcastView(value);
   }
 
   private sessionKey(userId: string): string {
@@ -12111,19 +11782,7 @@ export class PrivateControlService {
   }
 
   private toPositiveInt(value: unknown, fallback: number): number {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      const rounded = Math.trunc(value);
-      return rounded > 0 ? rounded : fallback;
-    }
-
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number.parseInt(value, 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-
-    return fallback;
+    return toPrivateControlPositiveInt(value, fallback);
   }
 
   private paginate<T>(items: T[], rawPage: number, pageSize: number) {
