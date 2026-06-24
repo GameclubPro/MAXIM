@@ -15,6 +15,7 @@ import {
   DEFAULT_MUTE_DURATION_HOURS,
   MAX_ACTIVE_MUTE_DURATION_HOURS,
   MAX_FORWARD_SCAN_DEPTH,
+  PERMANENT_MUTE_COMMAND_DURATION_HOURS,
   type AdminForwardedModerationCommand,
   type ForwardedModerationTarget,
   type ForwardedRulesSource,
@@ -32,6 +33,27 @@ export type AdminForwardedCommandSettings = Partial<
     | 'adminOpenChatCommandName'
   >
 >;
+
+export type PrivateForwardedModerationCommand =
+  | {
+      action: 'BAN';
+    }
+  | {
+      action: 'MUTE';
+      muteDurationHours?: number;
+      mutePermanent?: true;
+    }
+  | {
+      action: 'RULES';
+    };
+
+export type PrivateForwardedModerationTarget = Omit<ForwardedModerationTarget, 'messageId'>;
+
+export type ForwardedExtractionOptions = {
+  messageNodeMode?: 'raw-fallback' | 'incoming-message';
+  readPrivateForwardedFields?: boolean;
+  skipPrivateDirectChats?: boolean;
+};
 
 export function parseAdminForwardedModerationCommand(
   text: string,
@@ -190,6 +212,74 @@ export function parseAdminForwardedModerationCommand(
   };
 }
 
+export function parsePrivateForwardedModerationCommand(
+  text: string,
+): PrivateForwardedModerationCommand | null {
+  const normalized = readLowerString(text);
+  if (!normalized) {
+    return null;
+  }
+
+  if (/^(?:бан|ban)[.!]?$/u.test(normalized)) {
+    return {
+      action: 'BAN',
+    };
+  }
+
+  if (
+    /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
+      normalized,
+    )
+  ) {
+    throw new BadRequestException(
+      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+    );
+  }
+
+  if (/^(?:правило|правила|rule|rules)[.!]?$/u.test(normalized)) {
+    return {
+      action: 'RULES',
+    };
+  }
+
+  if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
+    return {
+      action: 'MUTE',
+      muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
+    };
+  }
+
+  const muteDurationMatch = normalized.match(
+    /^(?:мут|мьют|мью|mute)\s+(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+  );
+  if (!muteDurationMatch) {
+    return null;
+  }
+
+  const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+  if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
+    return {
+      action: 'MUTE',
+      mutePermanent: true,
+    };
+  }
+
+  if (
+    !Number.isInteger(muteDurationHours) ||
+    muteDurationHours < 1 ||
+    muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
+  ) {
+    throw new BadRequestException(
+      `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+    );
+  }
+
+  return {
+    action: 'MUTE',
+    muteDurationHours,
+  };
+}
+
 export function getAdminCommandName(
   commandName: string | null | undefined,
   fallback: string,
@@ -238,13 +328,13 @@ export function extractDirectIncomingMessageText(update: MaxUpdate): string {
 export function extractForwardedModerationTargets(
   update: MaxUpdate,
   fallbackReplyChatId?: string | null,
+  options: ForwardedExtractionOptions = {},
 ): ForwardedModerationTarget[] {
-  const raw = asRecord(update.raw);
-  if (!raw) {
+  const messageNode = getForwardedCommandMessageNode(update, options);
+  if (!messageNode) {
     return [];
   }
 
-  const messageNode = extractRawMessageNode(raw) ?? raw;
   const body = asRecord(messageNode.body);
   const content = asRecord(messageNode.content);
   const payload = asRecord(messageNode.payload);
@@ -274,10 +364,20 @@ export function extractForwardedModerationTargets(
 
   const targets: ForwardedModerationTarget[] = [];
   for (const candidate of candidates) {
-    collectForwardedModerationTargets(candidate, targets, 0, fallbackReplyChatId);
+    collectForwardedModerationTargets(candidate, targets, 0, fallbackReplyChatId, options);
   }
 
   return dedupeForwardedModerationTargets(targets);
+}
+
+export function extractPrivateForwardedModerationTargets(
+  update: MaxUpdate,
+): PrivateForwardedModerationTarget[] {
+  return extractForwardedModerationTargets(update, null, {
+    messageNodeMode: 'incoming-message',
+    readPrivateForwardedFields: true,
+    skipPrivateDirectChats: true,
+  }).map(({ messageId: _messageId, ...target }) => target);
 }
 
 export function dedupeForwardedModerationTargets(
@@ -303,13 +403,29 @@ export function dedupeForwardedModerationTargets(
   return [...unique.values()];
 }
 
-export function extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
-  const raw = asRecord(update.raw);
-  if (!raw) {
+export function dedupePrivateForwardedModerationTargets<
+  T extends { chatId: string; userId: string },
+>(targets: readonly T[]): T[] {
+  const unique = new Map<string, T>();
+  for (const target of targets) {
+    const key = `${target.chatId}:${target.userId}`;
+    if (!unique.has(key)) {
+      unique.set(key, target);
+    }
+  }
+
+  return [...unique.values()];
+}
+
+export function extractForwardedRulesSources(
+  update: MaxUpdate,
+  options: ForwardedExtractionOptions = {},
+): ForwardedRulesSource[] {
+  const messageNode = getForwardedCommandMessageNode(update, options);
+  if (!messageNode) {
     return [];
   }
 
-  const messageNode = extractRawMessageNode(raw) ?? raw;
   const body = asRecord(messageNode.body);
   const content = asRecord(messageNode.content);
   const payload = asRecord(messageNode.payload);
@@ -339,10 +455,18 @@ export function extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesS
 
   const sources: ForwardedRulesSource[] = [];
   for (const candidate of candidates) {
-    collectForwardedRulesSources(candidate, sources);
+    collectForwardedRulesSources(candidate, sources, 0, options);
   }
 
   return dedupeForwardedRulesSources(sources);
+}
+
+export function extractPrivateForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
+  return extractForwardedRulesSources(update, {
+    messageNodeMode: 'incoming-message',
+    readPrivateForwardedFields: true,
+    skipPrivateDirectChats: true,
+  });
 }
 
 export function dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
@@ -356,6 +480,8 @@ export function dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): Fo
 
   return [...unique.values()];
 }
+
+export const dedupePrivateForwardedRulesSources = dedupeForwardedRulesSources;
 
 function matchesAdminCommandName(normalizedText: string, commandName: string): boolean {
   return (
@@ -392,11 +518,35 @@ function readAdminCommandText(value: unknown): string | null {
   return readString(value)?.replace(/\s+/g, ' ') ?? null;
 }
 
+function getForwardedCommandMessageNode(
+  update: MaxUpdate,
+  options: ForwardedExtractionOptions,
+): Record<string, unknown> | null {
+  const raw = asRecord(update.raw);
+  if (!raw) {
+    return null;
+  }
+
+  if (options.messageNodeMode === 'incoming-message') {
+    const data = asRecord(raw.data);
+    const event = asRecord(raw.event);
+    return (
+      asRecord(raw.message) ??
+      (data ? asRecord(data.message) : null) ??
+      (event ? asRecord(event.message) : null) ??
+      null
+    );
+  }
+
+  return extractRawMessageNode(raw) ?? raw;
+}
+
 function collectForwardedModerationTargets(
   node: unknown,
   acc: ForwardedModerationTarget[],
   depth = 0,
   fallbackReplyChatId?: string | null,
+  options: ForwardedExtractionOptions = {},
 ): void {
   if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
     return;
@@ -404,7 +554,7 @@ function collectForwardedModerationTargets(
 
   if (Array.isArray(node)) {
     for (const item of node) {
-      collectForwardedModerationTargets(item, acc, depth + 1, fallbackReplyChatId);
+      collectForwardedModerationTargets(item, acc, depth + 1, fallbackReplyChatId, options);
     }
     return;
   }
@@ -414,14 +564,14 @@ function collectForwardedModerationTargets(
     return;
   }
 
-  const target = parseForwardedModerationTarget(row, fallbackReplyChatId);
+  const target = parseForwardedModerationTarget(row, fallbackReplyChatId, options);
   if (target) {
     acc.push(target);
   }
 
   for (const value of Object.values(row)) {
     if (value && (typeof value === 'object' || Array.isArray(value))) {
-      collectForwardedModerationTargets(value, acc, depth + 1, fallbackReplyChatId);
+      collectForwardedModerationTargets(value, acc, depth + 1, fallbackReplyChatId, options);
     }
   }
 }
@@ -429,11 +579,12 @@ function collectForwardedModerationTargets(
 function parseForwardedModerationTarget(
   row: Record<string, unknown>,
   fallbackReplyChatId?: string | null,
+  options: ForwardedExtractionOptions = {},
 ): ForwardedModerationTarget | null {
   const chatId =
     readChatIdFromEntity(row) ?? (isReplyLinkedMessage(row) ? readString(fallbackReplyChatId) : null);
-  const userId = readUserIdFromForwardedNode(row);
-  if (!chatId || !userId) {
+  const userId = readUserIdFromForwardedNode(row, options);
+  if (!chatId || !userId || shouldSkipForwardedChat(chatId, options)) {
     return null;
   }
 
@@ -455,6 +606,7 @@ function collectForwardedRulesSources(
   node: unknown,
   acc: ForwardedRulesSource[],
   depth = 0,
+  options: ForwardedExtractionOptions = {},
 ): void {
   if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
     return;
@@ -462,7 +614,7 @@ function collectForwardedRulesSources(
 
   if (Array.isArray(node)) {
     for (const item of node) {
-      collectForwardedRulesSources(item, acc, depth + 1);
+      collectForwardedRulesSources(item, acc, depth + 1, options);
     }
     return;
   }
@@ -472,21 +624,24 @@ function collectForwardedRulesSources(
     return;
   }
 
-  const source = parseForwardedRulesSource(row);
+  const source = parseForwardedRulesSource(row, options);
   if (source) {
     acc.push(source);
   }
 
   for (const value of Object.values(row)) {
     if (value && (typeof value === 'object' || Array.isArray(value))) {
-      collectForwardedRulesSources(value, acc, depth + 1);
+      collectForwardedRulesSources(value, acc, depth + 1, options);
     }
   }
 }
 
-function parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRulesSource | null {
+function parseForwardedRulesSource(
+  row: Record<string, unknown>,
+  options: ForwardedExtractionOptions = {},
+): ForwardedRulesSource | null {
   const chatId = readChatIdFromEntity(row);
-  if (!chatId) {
+  if (!chatId || shouldSkipForwardedChat(chatId, options)) {
     return null;
   }
 
@@ -501,11 +656,21 @@ function parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRules
     chatTitle: readChatTitleFromEntity(row),
     messageId,
     url,
-    text: readForwardedMessageText(row),
+    text: readForwardedMessageText(row, options),
   };
 }
 
-function readUserIdFromForwardedNode(node: Record<string, unknown>): string | null {
+function readUserIdFromForwardedNode(
+  node: Record<string, unknown>,
+  options: ForwardedExtractionOptions,
+): string | null {
+  if (options.readPrivateForwardedFields) {
+    const directUserId = readPrivateUserIdFromEntity(node);
+    if (directUserId) {
+      return directUserId;
+    }
+  }
+
   const sender = asRecord(node.sender);
   const from = asRecord(node.from);
   const user = asRecord(node.user);
@@ -516,13 +681,17 @@ function readUserIdFromForwardedNode(node: Record<string, unknown>): string | nu
   );
 
   for (const candidate of candidates) {
-    const userId = readUserIdFromEntity(candidate);
+    const userId = options.readPrivateForwardedFields
+      ? readPrivateUserIdFromEntity(candidate)
+      : readUserIdFromEntity(candidate);
     if (userId) {
       return userId;
     }
   }
 
-  return readUserIdFromEntity(node);
+  return options.readPrivateForwardedFields
+    ? readPrivateUserIdFromEntity(node)
+    : readUserIdFromEntity(node);
 }
 
 function readSenderNameFromForwardedNode(node: Record<string, unknown>): string | null {
@@ -674,7 +843,10 @@ function readMessageUrlFromForwardedNode(node: Record<string, unknown>): string 
   return null;
 }
 
-function readForwardedMessageText(node: Record<string, unknown>): string | null {
+function readForwardedMessageText(
+  node: Record<string, unknown>,
+  options: ForwardedExtractionOptions,
+): string | null {
   const body = asRecord(node.body);
   const content = asRecord(node.content);
   const payload = asRecord(node.payload);
@@ -691,6 +863,10 @@ function readForwardedMessageText(node: Record<string, unknown>): string | null 
     payload?.text,
     nestedMessage?.text,
   ];
+  if (options.readPrivateForwardedFields) {
+    candidates.splice(6, 0, body?.caption);
+    candidates.push(payload?.caption, nestedMessage?.caption);
+  }
 
   for (const candidate of candidates) {
     const normalized = readString(candidate);
@@ -735,12 +911,42 @@ function readDisplayNameFromEntity(node: Record<string, unknown>): string | null
   return null;
 }
 
-function readUserIdFromEntity(node: Record<string, unknown>): string | null {
+function readExplicitUserIdFromEntity(node: Record<string, unknown>): string | null {
   const explicitCandidates = [node.user_id, node.userId, node.member_id, node.memberId];
   for (const value of explicitCandidates) {
     if (typeof value === 'string' || typeof value === 'number') {
       return String(value);
     }
+  }
+
+  return null;
+}
+
+function readPrivateUserIdFromEntity(node: Record<string, unknown>): string | null {
+  const explicit = readExplicitUserIdFromEntity(node);
+  if (explicit) {
+    return explicit;
+  }
+
+  const senderIdCandidates = [node.sender_id, node.senderId];
+  for (const value of senderIdCandidates) {
+    if (typeof value === 'string' || typeof value === 'number') {
+      return String(value);
+    }
+  }
+
+  const idCandidate = node.id;
+  if (typeof idCandidate === 'string' || typeof idCandidate === 'number') {
+    return String(idCandidate);
+  }
+
+  return null;
+}
+
+function readUserIdFromEntity(node: Record<string, unknown>): string | null {
+  const explicit = readExplicitUserIdFromEntity(node);
+  if (explicit) {
+    return explicit;
   }
 
   const idCandidate = node.id;
@@ -752,6 +958,14 @@ function readUserIdFromEntity(node: Record<string, unknown>): string | null {
   }
 
   return null;
+}
+
+function shouldSkipForwardedChat(chatId: string, options: ForwardedExtractionOptions): boolean {
+  return Boolean(options.skipPrivateDirectChats && isPrivateDirectChat(chatId));
+}
+
+function isPrivateDirectChat(chatId: string): boolean {
+  return /^[1-9]\d*$/u.test(chatId);
 }
 
 function looksLikeUserEntity(node: Record<string, unknown>): boolean {

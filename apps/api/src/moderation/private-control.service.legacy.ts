@@ -90,15 +90,12 @@ import {
   DUPLICATE_FLOW_SETTING_KEYS,
   DUPLICATE_THRESHOLD_MAX,
   ENTITY_CALLBACK_ACTIONS,
-  FORWARDED_MUTE_DURATION_HOURS_DEFAULT,
-  FORWARDED_MUTE_DURATION_HOURS_MAX,
   GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
   GIVEAWAY_HANDOFF_START_PAYLOAD,
   GIVEAWAY_HANDOFF_START_PREFIX,
   LAUNCHER_INTRO_MARKER_TTL_SEC,
   LEGACY_CALLBACK_PREFIX,
   MAX_CALLBACK_PREFIX,
-  MAX_FORWARDED_COMMAND_SCAN_DEPTH,
   MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS,
   MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS,
   MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS,
@@ -109,7 +106,6 @@ import {
   PAGE_SIZE_DOMAINS,
   PAGE_SIZE_EVENTS,
   PAGE_SIZE_MANUAL_USERS,
-  PERMANENT_MUTE_COMMAND_DURATION_HOURS,
   PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
   PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
   PROFILE_MENTION_START_PREFIX,
@@ -125,7 +121,6 @@ import type {
   DownloadedBinaryAsset,
   DownloadedImageAsset,
   ForwardedModerationActionCommand,
-  ForwardedModerationCommand,
   ForwardedModerationTarget,
   ForwardedRulesSource,
   GiveawayHandoffStartPayload,
@@ -170,6 +165,13 @@ import {
   parsePrivateControlUiMode,
   toPrivateControlPositiveInt,
 } from './private-control-session-normalizer';
+import {
+  dedupePrivateForwardedModerationTargets,
+  dedupePrivateForwardedRulesSources,
+  extractPrivateForwardedModerationTargets,
+  extractPrivateForwardedRulesSources,
+  parsePrivateForwardedModerationCommand,
+} from './admin-forwarded-command.util';
 import {
   clonePrivateBroadcastDraft,
   normalizePrivateBroadcastDraft,
@@ -1430,16 +1432,16 @@ export class PrivateControlService {
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatId(session, context.chatId);
     const directText = this.extractDirectIncomingText(context.update);
-    const forwardedModerationCommand = this.parseForwardedModerationCommand(directText);
+    const forwardedModerationCommand = parsePrivateForwardedModerationCommand(directText);
     if (forwardedModerationCommand) {
       if (forwardedModerationCommand.action === 'RULES') {
-        const forwardedRulesSources = this.extractForwardedRulesSources(context.update);
+        const forwardedRulesSources = extractPrivateForwardedRulesSources(context.update);
         if (forwardedRulesSources.length > 0) {
           await this.handleForwardedRulesCommand(context, session, forwardedRulesSources);
           return;
         }
       } else {
-        const forwardedTargets = this.extractForwardedModerationTargets(context.update);
+        const forwardedTargets = extractPrivateForwardedModerationTargets(context.update);
         if (forwardedTargets.length > 0) {
           await this.handleForwardedModerationCommand(
             context,
@@ -1543,7 +1545,7 @@ export class PrivateControlService {
     targets: ForwardedModerationTarget[],
     command: ForwardedModerationActionCommand,
   ): Promise<void> {
-    const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
+    const uniqueTargets = dedupePrivateForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
       throw new BadRequestException(
         'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «бан» или «мут».',
@@ -1590,7 +1592,7 @@ export class PrivateControlService {
     session: PrivateSession,
     sources: ForwardedRulesSource[],
   ): Promise<void> {
-    const uniqueSources = this.dedupeForwardedRulesSources(sources);
+    const uniqueSources = dedupePrivateForwardedRulesSources(sources);
     if (uniqueSources.length !== 1) {
       throw new BadRequestException(
         'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «правило» или «правила».',
@@ -1618,83 +1620,6 @@ export class PrivateControlService {
     }
     lines.push('Кнопка «Правила» в нарушениях включена.');
     await this.sendImmediate(context.chatId, lines.join('\n'));
-  }
-
-  private parseForwardedModerationCommand(text: string): ForwardedModerationCommand | null {
-    const normalized = this.readLowerString(text);
-    if (!normalized) {
-      return null;
-    }
-
-    if (
-      normalized === 'бан' ||
-      normalized === 'ban' ||
-      normalized === 'бан!' ||
-      normalized === 'ban!'
-    ) {
-      return {
-        action: 'BAN',
-      };
-    }
-
-    if (
-      /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
-        normalized,
-      )
-    ) {
-      throw new BadRequestException(
-        'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
-      );
-    }
-
-    if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
-      if (/^(?:правило|правила|rule|rules)[.!]?$/u.test(normalized)) {
-        return {
-          action: 'RULES',
-        };
-      }
-
-      if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
-        return {
-          action: 'MUTE',
-          muteDurationHours: FORWARDED_MUTE_DURATION_HOURS_DEFAULT,
-        };
-      }
-
-      const muteDurationMatch = normalized.match(
-        /^(?:мут|мьют|мью|mute)\s+(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-      );
-      if (!muteDurationMatch) {
-        return null;
-      }
-
-      const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
-      if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
-        return {
-          action: 'MUTE',
-          mutePermanent: true,
-        };
-      }
-
-      if (
-        !Number.isInteger(muteDurationHours) ||
-        muteDurationHours < 1 ||
-        muteDurationHours > FORWARDED_MUTE_DURATION_HOURS_MAX
-      ) {
-        throw new BadRequestException(
-          `Длительность мута должна быть от 1 до ${FORWARDED_MUTE_DURATION_HOURS_MAX} часов.`,
-        );
-      }
-
-      return {
-        action: 'MUTE',
-        muteDurationHours,
-      };
-    }
-
-    return {
-      action: 'BAN',
-    };
   }
 
   private extractDirectIncomingText(update: MaxUpdate): string {
@@ -1731,487 +1656,6 @@ export class PrivateControlService {
     }
 
     return '';
-  }
-
-  private extractForwardedModerationTargets(update: MaxUpdate): ForwardedModerationTarget[] {
-    const messageNode = extractIncomingMessageNode(update);
-    if (!messageNode) {
-      return [];
-    }
-
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
-    const candidates = [
-      messageNode.link,
-      messageNode.forward,
-      messageNode.forwarded_message,
-      messageNode.forwardedMessage,
-      body?.link,
-      body?.forward,
-      body?.forwarded_message,
-      body?.forwardedMessage,
-      content?.link,
-      content?.forward,
-      content?.forwarded_message,
-      content?.forwardedMessage,
-      payload?.link,
-      payload?.forward,
-      payload?.forwarded_message,
-      payload?.forwardedMessage,
-      nestedMessage?.link,
-      nestedMessage?.forward,
-      nestedMessage?.forwarded_message,
-      nestedMessage?.forwardedMessage,
-    ];
-
-    const targets: ForwardedModerationTarget[] = [];
-    for (const candidate of candidates) {
-      this.collectForwardedModerationTargets(candidate, targets);
-    }
-
-    return this.dedupeForwardedModerationTargets(targets);
-  }
-
-  private collectForwardedModerationTargets(
-    node: unknown,
-    acc: ForwardedModerationTarget[],
-    depth = 0,
-  ): void {
-    if (depth > MAX_FORWARDED_COMMAND_SCAN_DEPTH || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectForwardedModerationTargets(item, acc, depth + 1);
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const target = this.parseForwardedModerationTarget(row);
-    if (target) {
-      acc.push(target);
-    }
-
-    for (const value of Object.values(row)) {
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedModerationTargets(value, acc, depth + 1);
-      }
-    }
-  }
-
-  private parseForwardedModerationTarget(
-    row: Record<string, unknown>,
-  ): ForwardedModerationTarget | null {
-    const chatId = this.extractChatIdFromNode(row);
-    const userId = this.extractUserIdFromNode(row);
-    if (!chatId || !userId || this.isPrivateDirectChat(chatId)) {
-      return null;
-    }
-
-    return {
-      chatId,
-      chatTitle: this.extractChatTitleFromNode(row),
-      userId,
-      senderName: this.extractSenderNameFromNode(row),
-    };
-  }
-
-  private dedupeForwardedModerationTargets(
-    targets: ForwardedModerationTarget[],
-  ): ForwardedModerationTarget[] {
-    const unique = new Map<string, ForwardedModerationTarget>();
-    for (const target of targets) {
-      const key = `${target.chatId}:${target.userId}`;
-      if (!unique.has(key)) {
-        unique.set(key, target);
-      }
-    }
-
-    return [...unique.values()];
-  }
-
-  private extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
-    const messageNode = extractIncomingMessageNode(update);
-    if (!messageNode) {
-      return [];
-    }
-
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
-    const candidates = [
-      messageNode.link,
-      messageNode.forward,
-      messageNode.forwarded_message,
-      messageNode.forwardedMessage,
-      body?.link,
-      body?.forward,
-      body?.forwarded_message,
-      body?.forwardedMessage,
-      content?.link,
-      content?.forward,
-      content?.forwarded_message,
-      content?.forwardedMessage,
-      payload?.link,
-      payload?.forward,
-      payload?.forwarded_message,
-      payload?.forwardedMessage,
-      nestedMessage?.link,
-      nestedMessage?.forward,
-      nestedMessage?.forwarded_message,
-      nestedMessage?.forwardedMessage,
-    ];
-
-    const sources: ForwardedRulesSource[] = [];
-    for (const candidate of candidates) {
-      this.collectForwardedRulesSources(candidate, sources);
-    }
-
-    return this.dedupeForwardedRulesSources(sources);
-  }
-
-  private collectForwardedRulesSources(
-    node: unknown,
-    acc: ForwardedRulesSource[],
-    depth = 0,
-  ): void {
-    if (depth > MAX_FORWARDED_COMMAND_SCAN_DEPTH || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectForwardedRulesSources(item, acc, depth + 1);
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const source = this.parseForwardedRulesSource(row);
-    if (source) {
-      acc.push(source);
-    }
-
-    for (const value of Object.values(row)) {
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedRulesSources(value, acc, depth + 1);
-      }
-    }
-  }
-
-  private parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRulesSource | null {
-    const chatId = this.extractChatIdFromNode(row);
-    if (!chatId || this.isPrivateDirectChat(chatId)) {
-      return null;
-    }
-
-    const messageId = this.extractMessageIdFromNode(row);
-    const url = this.extractMessageUrlFromNode(row);
-    if (!messageId && !url) {
-      return null;
-    }
-
-    return {
-      chatId,
-      chatTitle: this.extractChatTitleFromNode(row),
-      messageId,
-      url,
-      text: this.extractMessageTextFromNode(row),
-    };
-  }
-
-  private dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
-    const unique = new Map<string, ForwardedRulesSource>();
-    for (const source of sources) {
-      const key = `${source.chatId}:${source.messageId ?? source.url ?? ''}`;
-      if (!unique.has(key)) {
-        unique.set(key, source);
-      }
-    }
-
-    return [...unique.values()];
-  }
-
-  private extractChatIdFromNode(node: Record<string, unknown>): string | null {
-    const chat = this.asRecord(node.chat);
-    const recipient = this.asRecord(node.recipient);
-    const conversation = this.asRecord(node.conversation);
-    const payloadChat = this.asRecord(this.asRecord(node.payload)?.chat);
-    const candidates = [
-      node.chatId,
-      node.chat_id,
-      chat?.chatId,
-      chat?.chat_id,
-      chat?.id,
-      recipient?.chatId,
-      recipient?.chat_id,
-      recipient?.id,
-      conversation?.chat_id,
-      conversation?.chatId,
-      conversation?.id,
-      payloadChat?.chat_id,
-      payloadChat?.chatId,
-      payloadChat?.id,
-    ];
-
-    for (const candidate of candidates) {
-      const value = this.normalizeEntityId(candidate);
-      if (value) {
-        return value;
-      }
-    }
-
-    return null;
-  }
-
-  private extractUserIdFromNode(node: Record<string, unknown>): string | null {
-    const sender = this.asRecord(node.sender);
-    const from = this.asRecord(node.from);
-    const user = this.asRecord(node.user);
-    const actor = this.asRecord(node.actor);
-    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
-    const candidates = [
-      node.senderId,
-      node.sender_id,
-      sender?.id,
-      sender?.user_id,
-      sender?.userId,
-      from?.id,
-      from?.user_id,
-      from?.userId,
-      user?.id,
-      user?.user_id,
-      user?.userId,
-      actor?.id,
-      actor?.user_id,
-      actor?.userId,
-      payloadSender?.id,
-      payloadSender?.user_id,
-      payloadSender?.userId,
-    ];
-
-    for (const candidate of candidates) {
-      const value = this.normalizeEntityId(candidate);
-      if (value) {
-        return value;
-      }
-    }
-
-    return null;
-  }
-
-  private extractSenderNameFromNode(node: Record<string, unknown>): string | null {
-    const sender = this.asRecord(node.sender);
-    const from = this.asRecord(node.from);
-    const user = this.asRecord(node.user);
-    const actor = this.asRecord(node.actor);
-    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
-    const directCandidates = [
-      node.sender_name,
-      node.senderName,
-      node.display_name,
-      node.displayName,
-      sender?.display_name,
-      sender?.displayName,
-      sender?.name,
-      sender?.full_name,
-      sender?.fullName,
-      sender?.nickname,
-      from?.display_name,
-      from?.displayName,
-      from?.name,
-      from?.full_name,
-      from?.fullName,
-      user?.display_name,
-      user?.displayName,
-      user?.name,
-      user?.full_name,
-      user?.fullName,
-      actor?.display_name,
-      actor?.displayName,
-      actor?.name,
-      actor?.full_name,
-      actor?.fullName,
-      payloadSender?.display_name,
-      payloadSender?.displayName,
-      payloadSender?.name,
-      payloadSender?.full_name,
-      payloadSender?.fullName,
-    ];
-
-    for (const candidate of directCandidates) {
-      const value = this.readString(candidate);
-      if (value) {
-        return value;
-      }
-    }
-
-    const nameNodes = [sender, from, user, actor, payloadSender].filter(
-      (item): item is Record<string, unknown> => Boolean(item),
-    );
-    for (const value of nameNodes) {
-      const firstName = this.readString(
-        value.first_name ?? value.firstName ?? value.given_name ?? value.givenName,
-      );
-      const lastName = this.readString(
-        value.last_name ?? value.lastName ?? value.family_name ?? value.familyName,
-      );
-      const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-      if (fullName) {
-        return fullName;
-      }
-    }
-
-    return null;
-  }
-
-  private extractChatTitleFromNode(node: Record<string, unknown>): string | null {
-    const chat = this.asRecord(node.chat);
-    const recipient = this.asRecord(node.recipient);
-    const candidates = [
-      node.chatTitle,
-      node.chat_title,
-      node.chatName,
-      node.chat_name,
-      chat?.title,
-      chat?.name,
-      recipient?.title,
-      recipient?.chat_title,
-      recipient?.chatTitle,
-      recipient?.name,
-      recipient?.display_name,
-    ];
-
-    for (const candidate of candidates) {
-      const value = this.readString(candidate);
-      if (value) {
-        return value;
-      }
-    }
-
-    return null;
-  }
-
-  private extractMessageIdFromNode(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      body?.mid,
-      body?.message_id,
-      body?.messageId,
-      content?.mid,
-      content?.message_id,
-      content?.messageId,
-      payload?.mid,
-      payload?.message_id,
-      payload?.messageId,
-      nestedMessage?.mid,
-      nestedMessage?.message_id,
-      nestedMessage?.messageId,
-      node.message_id,
-      node.messageId,
-      node.mid,
-      node.id,
-    ];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' || typeof candidate === 'number') {
-        const normalized = String(candidate).trim();
-        if (normalized.length > 0) {
-          return normalized;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private extractMessageUrlFromNode(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      node.url,
-      node.message_url,
-      node.messageUrl,
-      body?.url,
-      body?.message_url,
-      body?.messageUrl,
-      content?.url,
-      content?.message_url,
-      content?.messageUrl,
-      payload?.url,
-      payload?.message_url,
-      payload?.messageUrl,
-      nestedMessage?.url,
-      nestedMessage?.message_url,
-      nestedMessage?.messageUrl,
-    ];
-
-    for (const candidate of candidates) {
-      const normalized = this.readString(candidate);
-      if (normalized) {
-        return normalized;
-      }
-    }
-
-    return null;
-  }
-
-  private extractMessageTextFromNode(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      node.text,
-      node.caption,
-      node.message_text,
-      node.messageText,
-      body?.text,
-      body?.caption,
-      body?.plain,
-      content?.text,
-      content?.caption,
-      payload?.text,
-      payload?.caption,
-      nestedMessage?.text,
-      nestedMessage?.caption,
-    ];
-
-    for (const candidate of candidates) {
-      const normalized = this.readString(candidate);
-      if (normalized) {
-        return normalized;
-      }
-    }
-
-    return null;
-  }
-
-  private normalizeEntityId(value: unknown): string | null {
-    if (typeof value !== 'string' && typeof value !== 'number') {
-      return null;
-    }
-
-    const normalized = String(value).trim();
-    return normalized.length > 0 ? normalized : null;
   }
 
   private async processChannelSuggestionEditCallback(

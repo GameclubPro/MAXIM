@@ -5,8 +5,11 @@ import {
   extractDirectIncomingMessageText,
   extractForwardedModerationTargets,
   extractForwardedRulesSources,
+  extractPrivateForwardedModerationTargets,
+  extractPrivateForwardedRulesSources,
   getAdminCommandName,
   parseAdminForwardedModerationCommand,
+  parsePrivateForwardedModerationCommand,
 } from './admin-forwarded-command.util';
 
 function createCommandUpdate(params: {
@@ -104,7 +107,18 @@ function createReplyUpdate(text = 'мут'): MaxUpdate {
   };
 }
 
-function createRulesUpdate(text = 'правило'): MaxUpdate {
+function createRulesUpdate(
+  text = 'правило',
+  params: {
+    forwardedChatId?: string | number;
+    body?: Record<string, unknown>;
+  } = {},
+): MaxUpdate {
+  const forwardedChatId = params.forwardedChatId ?? 'chat-1';
+  const body = params.body ?? {
+    mid: 'mid-rules-source-1',
+    text: '1. Без спама.',
+  };
   return {
     updateId: 'upd-admin-rules-1',
     type: 'message_created',
@@ -122,13 +136,10 @@ function createRulesUpdate(text = 'правило'): MaxUpdate {
           text,
           forwarded_message: {
             recipient: {
-              chat_id: 'chat-1',
-              title: 'Chat 1',
+              chat_id: forwardedChatId,
+              title: forwardedChatId === 'chat-1' ? 'Chat 1' : 'Другой чат',
             },
-            body: {
-              mid: 'mid-rules-source-1',
-              text: '1. Без спама.',
-            },
+            body,
           },
         },
       },
@@ -166,10 +177,45 @@ describe('admin forwarded command util', () => {
     });
   });
 
+  it('parses private forwarded commands with private-only semantics', () => {
+    expect(parsePrivateForwardedModerationCommand('БаН!')).toEqual({
+      action: 'BAN',
+    });
+    expect(parsePrivateForwardedModerationCommand('ban!')).toEqual({
+      action: 'BAN',
+    });
+    expect(parsePrivateForwardedModerationCommand('мут')).toEqual({
+      action: 'MUTE',
+      muteDurationHours: 6,
+    });
+    expect(parsePrivateForwardedModerationCommand('мью 12ч')).toEqual({
+      action: 'MUTE',
+      muteDurationHours: 12,
+    });
+    expect(parsePrivateForwardedModerationCommand('мут 88')).toEqual({
+      action: 'MUTE',
+      mutePermanent: true,
+    });
+    expect(parsePrivateForwardedModerationCommand('правила.')).toEqual({
+      action: 'RULES',
+    });
+
+    expect(parsePrivateForwardedModerationCommand('супер бан')).toBeNull();
+    expect(parsePrivateForwardedModerationCommand('бан везде')).toBeNull();
+    expect(parsePrivateForwardedModerationCommand('тишина')).toBeNull();
+    expect(parsePrivateForwardedModerationCommand('открыть')).toBeNull();
+  });
+
   it('rejects obsolete ban durations and invalid mute/silence durations', () => {
     expect(() => parseAdminForwardedModerationCommand('бан 24')).toThrow(BadRequestException);
     expect(() => parseAdminForwardedModerationCommand('мут 999')).toThrow(BadRequestException);
     expect(() => parseAdminForwardedModerationCommand('тишина 0')).toThrow(BadRequestException);
+    expect(() => parsePrivateForwardedModerationCommand('бан 24')).toThrow(
+      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+    );
+    expect(() => parsePrivateForwardedModerationCommand('мут 999')).toThrow(
+      'Длительность мута должна быть от 1 до 336 часов.',
+    );
   });
 
   it('normalizes configured command labels', () => {
@@ -236,6 +282,32 @@ describe('admin forwarded command util', () => {
     ]);
   });
 
+  it('keeps private forwarded extraction narrower than admin extraction', () => {
+    expect(extractPrivateForwardedModerationTargets(createReplyUpdate())).toEqual([]);
+    expect(
+      extractPrivateForwardedModerationTargets(
+        createCommandUpdate({
+          forwardedChatId: '123456',
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      extractPrivateForwardedModerationTargets(
+        createCommandUpdate({
+          forwardedChatId: '-100123456',
+          forwardedUserId: 42,
+        }),
+      ),
+    ).toEqual([
+      {
+        chatId: '-100123456',
+        chatTitle: 'Другой чат',
+        userId: '42',
+        senderName: 'Нарушитель',
+      },
+    ]);
+  });
+
   it('extracts forwarded rules sources separately from moderation targets', () => {
     expect(extractForwardedRulesSources(createRulesUpdate())).toEqual([
       {
@@ -244,6 +316,35 @@ describe('admin forwarded command util', () => {
         messageId: 'mid-rules-source-1',
         url: null,
         text: '1. Без спама.',
+      },
+    ]);
+  });
+
+  it('filters private direct dialogs for private forwarded rule sources', () => {
+    expect(
+      extractPrivateForwardedRulesSources(
+        createRulesUpdate('правила', {
+          forwardedChatId: '123456',
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      extractPrivateForwardedRulesSources(
+        createRulesUpdate('правила', {
+          forwardedChatId: '-100123456',
+          body: {
+            mid: 'mid-rules-source-2',
+            caption: '1. Не флудить.',
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        chatId: '-100123456',
+        chatTitle: 'Другой чат',
+        messageId: 'mid-rules-source-2',
+        url: null,
+        text: '1. Не флудить.',
       },
     ]);
   });
