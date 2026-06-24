@@ -98,7 +98,10 @@ and make each extraction reviewable through focused tests.
   separated from `private-control.service.legacy.ts`.
   `private-control-session-normalizer.ts` owns session creation, persisted
   session normalization, pending input/mass-action parsing, and private-control
-  screen/entity/view parsers while draft/media normalization remains in legacy.
+  screen/entity/view parsers. `private-control-draft-normalizer.ts` owns pure
+  broadcast/suggestion draft normalization, broadcast target-state resolution,
+  broadcast draft cloning, and suggestion draft object normalization while
+  attachment download/upload and MAX media handling remain in legacy.
   Private-control manual moderation/rules command calls now route through
   `ManualModerationService` instead of direct `AdminService` calls.
 - Settings page extraction has started:
@@ -133,13 +136,14 @@ and make each extraction reviewable through focused tests.
    seam is closed; keep future private-control manual command work behind
    `ManualModerationService` or a narrower command service instead of direct
    `AdminService`. Move decomposition seams in this order:
-   A. Extract draft/state normalization next, separately from media I/O:
-   `normalizeBroadcastDraft`, `normalizeSuggestionDraft`, suggestion draft object
-   normalization, and pure broadcast target-state helpers. Defer attachment
-   download/upload and MAX media handling.
-   B. Extract pure forwarded-command parsing/extraction before moving action
+   A. Extract pure forwarded-command parsing/extraction before moving action
    handlers. Keep admin-applying handlers in legacy until command execution is
    behind a narrower service.
+   B. Extract attachment/media I/O helpers only after draft state is stable:
+   suggestion image/video download conversion, broadcast media payload assembly,
+   MAX media upload option merging, and related validation. Keep service calls
+   behind existing `MaxClientService`, `ManagedBroadcastService`, and
+   `ChannelDialogService` boundaries.
    C. Extract pure render helpers only where they do not fetch data: launcher,
    moved-to-miniapp screens, preview payload rendering, small section summaries,
    and button/layout/string helpers. Defer rules/broadcast/giveaway/events/logs
@@ -155,9 +159,9 @@ and make each extraction reviewable through focused tests.
    handling, and context parsing last, after render, draft, handoff, and action
    services are covered by focused tests.
    Validate after each step with:
-   `npm test --workspace @maxim/api -- private-control-session-normalizer.spec.ts private-control.service.spec.ts`
-   for session/draft state cuts; add `manual-moderation.service.spec.ts` for
-   the manual-command bridge seam, and
+   `npm test --workspace @maxim/api -- private-control-draft-normalizer.spec.ts private-control-session-normalizer.spec.ts private-control.service.spec.ts`
+   for session/draft state cuts; add `manual-moderation.service.spec.ts` for the
+   manual-command bridge seam, and
    `miniapp-mutation-tunnel.controller.spec.ts admin-dialog-link.service.spec.ts channel-dialog.service.spec.ts managed-giveaway.service.spec.ts managed-broadcast.service.spec.ts`
    whenever handoff/action paths move.
 

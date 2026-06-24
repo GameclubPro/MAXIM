@@ -8,8 +8,6 @@ import {
   managedGiveawayHandoffRequestSchema,
   profileMentionHandoffRequestSchema,
   stepDeleteBotMessagesDelayMinutes,
-  type BroadcastLinkButton,
-  type BroadcastTargetMode,
   type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -67,8 +65,6 @@ import {
   extractIncomingFormattedTextPayload,
   extractIncomingMessageNode,
   extractIncomingSuggestionTextPayload,
-  normalizeIncomingMessageMarkup,
-  type IncomingMessageMarkup,
 } from './private-control-markup-importer';
 import {
   BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX,
@@ -150,7 +146,6 @@ import type {
   PrivateSession,
   PrivateSuggestionDraft,
   PrivateSuggestionImageDraft,
-  PrivateSuggestionMediaDraft,
   PrivateSuggestionVideoDraft,
   PrivateUiMode,
   PrivateView,
@@ -175,6 +170,13 @@ import {
   parsePrivateControlUiMode,
   toPrivateControlPositiveInt,
 } from './private-control-session-normalizer';
+import {
+  clonePrivateBroadcastDraft,
+  normalizePrivateBroadcastDraft,
+  normalizePrivateBroadcastTargetChatIds,
+  normalizePrivateSuggestionDraft,
+  resolvePrivateBroadcastDraftTargetState,
+} from './private-control-draft-normalizer';
 import { PrivateControlSessionStore } from './private-control-session.store';
 import { RedisCounterService } from './redis-counter.service';
 
@@ -1072,7 +1074,7 @@ export class PrivateControlService {
     const hasMatchingDraft =
       session.selectedChatId === sourceChatId && session.selectedEntityType === entityType;
     const preservedDraft = hasMatchingDraft
-      ? this.normalizeBroadcastDraft(session.broadcastDraft)
+      ? normalizePrivateBroadcastDraft(session.broadcastDraft)
       : DEFAULT_BROADCAST_DRAFT;
     const hasPreservedContent =
       preservedDraft.text.trim().length > 0 || preservedDraft.imageEnabled;
@@ -1090,7 +1092,7 @@ export class PrivateControlService {
     session.pendingInput = hasPreservedContent ? null : { kind: 'broadcast_content' };
     const scheduleMode: BroadcastScheduleMode =
       parsed.data.scheduleMode === 'calendar' ? 'calendar' : 'legacy';
-    const targetState = this.resolveBroadcastDraftTargetState({
+    const targetState = resolvePrivateBroadcastDraftTargetState({
       targetMode: entityType === 'channel' ? 'current' : parsed.data.targetMode,
       targetChatIds: parsed.data.targetChatIds,
       applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
@@ -1181,7 +1183,7 @@ export class PrivateControlService {
 
     const session = await this.loadSession(user.userId);
     if (session.selectedChatId === sourceChatId && session.selectedEntityType === entityType) {
-      session.broadcastDraft = this.cloneBroadcastDraft(DEFAULT_BROADCAST_DRAFT);
+      session.broadcastDraft = clonePrivateBroadcastDraft(DEFAULT_BROADCAST_DRAFT);
       session.pendingInput = null;
       if (session.pendingMassAction?.kind === 'broadcast') {
         session.pendingMassAction = null;
@@ -3313,7 +3315,7 @@ export class PrivateControlService {
 
           const selectedChatId = session.selectedChatId!;
           const selectedEntityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
-          const broadcastDraft = this.cloneBroadcastDraft(session.broadcastDraft);
+          const broadcastDraft = clonePrivateBroadcastDraft(session.broadcastDraft);
           const diagnostics = {
             callbackAction: 'mass_confirm',
             callbackArgs: [] as string[],
@@ -4085,7 +4087,7 @@ export class PrivateControlService {
               new Set([session.selectedChatId!, ...availableChats.map((chat) => chat.id)]),
             ).length;
           } else if (session.broadcastDraft.targetMode === 'selected') {
-            targetChats = this.normalizeBroadcastTargetChatIds(
+            targetChats = normalizePrivateBroadcastTargetChatIds(
               session.broadcastDraft.targetChatIds,
             ).length;
           }
@@ -4123,7 +4125,7 @@ export class PrivateControlService {
 
         const selectedChatId = session.selectedChatId!;
         const selectedEntityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
-        const broadcastDraft = this.cloneBroadcastDraft(session.broadcastDraft);
+        const broadcastDraft = clonePrivateBroadcastDraft(session.broadcastDraft);
         const diagnostics = {
           callbackAction: 'broadcast_send',
           callbackArgs: [] as string[],
@@ -5564,80 +5566,17 @@ export class PrivateControlService {
         : 'Текст публикации обновлён. Фото можно добавить позже.';
   }
 
-  private cloneBroadcastDraft(draft: PrivateBroadcastDraft): PrivateBroadcastDraft {
-    return {
-      ...draft,
-      buttons: draft.buttons.map((button) => ({ ...button })),
-      targetChatIds: [...draft.targetChatIds],
-      scheduledSlots: [...draft.scheduledSlots],
-      mediaPayload: draft.mediaPayload ? { ...draft.mediaPayload } : null,
-    };
-  }
-
-  private normalizeBroadcastTargetChatIds(
-    targetChatIds: readonly string[],
-    fallbackChatId?: string | null,
-  ): string[] {
-    const normalized = Array.from(
-      new Set(
-        targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
-      ),
-    );
-    if (normalized.length > 0) {
-      return normalized;
-    }
-
-    return fallbackChatId?.trim() ? [fallbackChatId.trim()] : [];
-  }
-
-  private resolveBroadcastDraftTargetState(params: {
-    targetMode?: BroadcastTargetMode;
-    targetChatIds?: readonly string[];
-    applyToAllChats?: boolean;
-    fallbackChatId?: string | null;
-  }): {
-    targetMode: BroadcastTargetMode;
-    targetChatIds: string[];
-    applyToAllChats: boolean;
-  } {
-    const targetChatIds = this.normalizeBroadcastTargetChatIds(
-      params.targetChatIds ?? [],
-      params.targetMode === 'current' ? params.fallbackChatId : undefined,
-    );
-    let targetMode: BroadcastTargetMode;
-
-    if (params.targetMode === 'all' || params.applyToAllChats) {
-      targetMode = 'all';
-    } else if (params.targetMode === 'selected') {
-      targetMode = 'selected';
-    } else if (targetChatIds.length > 0) {
-      const fallbackChatId = params.fallbackChatId?.trim() ?? '';
-      targetMode =
-        fallbackChatId && targetChatIds.length === 1 && targetChatIds[0] === fallbackChatId
-          ? 'current'
-          : 'selected';
-    } else {
-      targetMode = 'current';
-    }
-
-    return {
-      targetMode,
-      targetChatIds,
-      applyToAllChats: targetMode === 'all',
-    };
-  }
-
   private buildBroadcastHandoffState(
     entityType: ManagedEntityType,
     draft: PrivateBroadcastDraft,
   ): BroadcastHandoffState {
     const targetState =
       entityType === 'channel'
-        ? this.resolveBroadcastDraftTargetState({
+        ? resolvePrivateBroadcastDraftTargetState({
             targetMode: 'current',
             targetChatIds: draft.targetChatIds,
           })
-        : this.resolveBroadcastDraftTargetState({
+        : resolvePrivateBroadcastDraftTargetState({
             targetMode: draft.targetMode,
             targetChatIds: draft.targetChatIds,
             applyToAllChats: draft.applyToAllChats,
@@ -5667,7 +5606,7 @@ export class PrivateControlService {
     actor: AuthUser;
     draft: PrivateBroadcastDraft;
   }): Promise<SendBroadcastResult> {
-    const targetState = this.resolveBroadcastDraftTargetState({
+    const targetState = resolvePrivateBroadcastDraftTargetState({
       targetMode: params.selectedEntityType === 'channel' ? 'current' : params.draft.targetMode,
       targetChatIds: params.draft.targetChatIds,
       applyToAllChats:
@@ -8949,7 +8888,7 @@ export class PrivateControlService {
     if (flag === 'apply_to_all') {
       if (session.selectedEntityType === 'channel') {
         session.broadcastDraft.targetMode = 'current';
-        session.broadcastDraft.targetChatIds = this.normalizeBroadcastTargetChatIds(
+        session.broadcastDraft.targetChatIds = normalizePrivateBroadcastTargetChatIds(
           session.broadcastDraft.targetChatIds,
           session.selectedChatId,
         );
@@ -8958,7 +8897,7 @@ export class PrivateControlService {
       }
       const nextApplyToAll = !session.broadcastDraft.applyToAllChats;
       session.broadcastDraft.targetMode = nextApplyToAll ? 'all' : 'current';
-      session.broadcastDraft.targetChatIds = this.normalizeBroadcastTargetChatIds(
+      session.broadcastDraft.targetChatIds = normalizePrivateBroadcastTargetChatIds(
         session.broadcastDraft.targetChatIds,
         session.selectedChatId,
       );
@@ -11497,8 +11436,8 @@ export class PrivateControlService {
 
   private normalizeSession(raw: unknown): PrivateSession {
     return normalizePrivateControlSession(raw, {
-      normalizeBroadcastDraft: (draft) => this.normalizeBroadcastDraft(draft),
-      normalizeSuggestionDraft: (draft) => this.normalizeSuggestionDraft(draft),
+      normalizeBroadcastDraft: normalizePrivateBroadcastDraft,
+      normalizeSuggestionDraft: normalizePrivateSuggestionDraft,
     });
   }
 
@@ -11512,211 +11451,6 @@ export class PrivateControlService {
 
   private normalizePendingMassAction(raw: unknown): PendingMassAction | null {
     return normalizePrivateControlPendingMassAction(raw);
-  }
-
-  private normalizeBroadcastDraft(raw: unknown): PrivateBroadcastDraft {
-    if (!raw || typeof raw !== 'object') {
-      return {
-        ...DEFAULT_BROADCAST_DRAFT,
-      };
-    }
-
-    const row = raw as Partial<PrivateBroadcastDraft>;
-    const buttons = Array.isArray(row.buttons)
-      ? row.buttons
-          .filter((item): item is BroadcastLinkButton => {
-            if (!item || typeof item !== 'object') {
-              return false;
-            }
-
-            const candidate = item as { text?: unknown; url?: unknown };
-            return (
-              typeof candidate.url === 'string' &&
-              candidate.url.trim().length > 0 &&
-              typeof candidate.text === 'string'
-            );
-          })
-          .map((item) => ({
-            text: item.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
-            url: item.url.trim(),
-          }))
-      : row.buttonEnabled === true &&
-          typeof row.buttonUrl === 'string' &&
-          row.buttonUrl.trim().length > 0
-        ? [
-            {
-              text:
-                typeof row.buttonText === 'string' && row.buttonText.trim().length > 0
-                  ? row.buttonText.trim()
-                  : DEFAULT_BROADCAST_BUTTON_TEXT,
-              url: row.buttonUrl.trim(),
-            },
-          ]
-        : [];
-    const primaryButton = buttons[0];
-    const targetState = this.resolveBroadcastDraftTargetState({
-      targetMode: row.targetMode,
-      targetChatIds: Array.isArray(row.targetChatIds)
-        ? row.targetChatIds.filter((item): item is string => typeof item === 'string')
-        : [],
-      applyToAllChats: row.applyToAllChats === true,
-    });
-    const mediaPayload =
-      row.mediaPayload && typeof row.mediaPayload === 'object' && !Array.isArray(row.mediaPayload)
-        ? (row.mediaPayload as Record<string, unknown>)
-        : null;
-    const mediaType = row.mediaType === 'video' && mediaPayload ? 'video' : null;
-
-    return {
-      text: typeof row.text === 'string' ? row.text : '',
-      textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
-      targetMode: targetState.targetMode,
-      targetChatIds: targetState.targetChatIds,
-      applyToAllChats: targetState.applyToAllChats,
-      buttons,
-      buttonEnabled: buttons.length > 0,
-      buttonUrl: primaryButton?.url ?? '',
-      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-      imageEnabled: mediaType ? false : row.imageEnabled === true,
-      imageBase64: mediaType ? '' : typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
-      imageMimeType: mediaType
-        ? ''
-        : typeof row.imageMimeType === 'string'
-          ? row.imageMimeType
-          : '',
-      imageFileName: mediaType
-        ? ''
-        : typeof row.imageFileName === 'string'
-          ? row.imageFileName
-          : '',
-      mediaType,
-      mediaPayload: mediaType ? mediaPayload : null,
-      mediaMimeType: mediaType && typeof row.mediaMimeType === 'string' ? row.mediaMimeType : '',
-      mediaFileName: mediaType && typeof row.mediaFileName === 'string' ? row.mediaFileName : '',
-      scheduleMode: row.scheduleMode === 'calendar' ? 'calendar' : 'legacy',
-      scheduleTimezone:
-        typeof row.scheduleTimezone === 'string' && row.scheduleTimezone.trim().length > 0
-          ? row.scheduleTimezone.trim()
-          : DEFAULT_BROADCAST_DRAFT.scheduleTimezone,
-      scheduledSlots: Array.isArray(row.scheduledSlots)
-        ? Array.from(
-            new Set(
-              row.scheduledSlots
-                .filter(
-                  (item): item is string => typeof item === 'string' && item.trim().length > 0,
-                )
-                .map((item) => item.trim()),
-            ),
-          ).sort((left, right) => left.localeCompare(right))
-        : [],
-      sendAt: typeof row.sendAt === 'string' ? row.sendAt : null,
-      cycleEnabled: row.cycleEnabled === true,
-      cycleEveryHours: this.toPositiveInt(
-        (row as Partial<PrivateBroadcastDraft> & { cycleEveryDays?: unknown }).cycleEveryHours ??
-          (typeof (row as { cycleEveryDays?: unknown }).cycleEveryDays === 'number'
-            ? Number((row as { cycleEveryDays?: unknown }).cycleEveryDays) * 24
-            : undefined),
-        24,
-      ),
-      cycleCount: this.toPositiveInt(row.cycleCount, 1),
-    };
-  }
-
-  private normalizeSuggestionDraft(raw: unknown): PrivateSuggestionDraft | null {
-    if (!raw || typeof raw !== 'object') {
-      return null;
-    }
-
-    const row = raw as Partial<PrivateSuggestionDraft>;
-    const rawRow = row as Record<string, unknown>;
-    const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
-    const token = typeof row.token === 'string' ? row.token.trim() : '';
-
-    if (!chatId || !token) {
-      return null;
-    }
-
-    const images = this.normalizeSuggestionImageDrafts(rawRow.images);
-    const legacyMedia = this.normalizeSuggestionMediaDraft(rawRow.media);
-    const video =
-      this.normalizeSuggestionVideoDraft(rawRow.video) ??
-      (legacyMedia?.kind === 'video' ? legacyMedia : null);
-    const normalizedImages =
-      images.length > 0 ? images : legacyMedia?.kind === 'image' ? [legacyMedia] : [];
-    const textMarkup = this.normalizeSuggestionTextMarkup(rawRow.textMarkup);
-
-    return {
-      chatId,
-      token,
-      text: typeof row.text === 'string' ? row.text : '',
-      textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
-      textMarkup,
-      images: normalizedImages,
-      video,
-      imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
-      imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
-      imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
-      sourceMessageId:
-        typeof row.sourceMessageId === 'string' && row.sourceMessageId.trim().length > 0
-          ? row.sourceMessageId.trim()
-          : null,
-      previewMessageId:
-        typeof row.previewMessageId === 'string' && row.previewMessageId.trim().length > 0
-          ? row.previewMessageId.trim()
-          : null,
-    };
-  }
-
-  private normalizeSuggestionMediaDraft(raw: unknown): PrivateSuggestionMediaDraft | null {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return null;
-    }
-
-    const row = raw as Record<string, unknown>;
-    const kind = row.kind === 'video' ? 'video' : row.kind === 'image' ? 'image' : null;
-    const mimeType = typeof row.mimeType === 'string' ? row.mimeType.trim() : '';
-    const fileName = typeof row.fileName === 'string' ? row.fileName.trim() : '';
-    const payload =
-      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-        ? (row.payload as Record<string, unknown>)
-        : null;
-
-    if (!kind || !mimeType || !fileName || !payload || Object.keys(payload).length === 0) {
-      return null;
-    }
-
-    return {
-      kind,
-      mimeType,
-      fileName,
-      payload,
-    };
-  }
-
-  private normalizeSuggestionImageDrafts(raw: unknown): PrivateSuggestionImageDraft[] {
-    if (!Array.isArray(raw)) {
-      return [];
-    }
-
-    return raw
-      .map((item) => this.normalizeSuggestionMediaDraft(item))
-      .filter((item): item is PrivateSuggestionImageDraft => item?.kind === 'image')
-      .slice(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES);
-  }
-
-  private normalizeSuggestionVideoDraft(raw: unknown): PrivateSuggestionVideoDraft | null {
-    const media = this.normalizeSuggestionMediaDraft(raw);
-    return media?.kind === 'video' ? media : null;
-  }
-
-  private normalizeSuggestionTextMarkup(raw: unknown): IncomingMessageMarkup[] {
-    if (!Array.isArray(raw)) {
-      return [];
-    }
-
-    return raw
-      .map((item) => normalizeIncomingMessageMarkup(item))
-      .filter((item): item is IncomingMessageMarkup => item !== null);
   }
 
   private parseScreen(value: unknown): PrivateScreen {
