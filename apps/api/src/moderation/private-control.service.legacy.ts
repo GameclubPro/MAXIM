@@ -32,13 +32,7 @@ import { AdminSettingsService } from '../admin/admin-settings.service';
 import { ManualModerationService } from '../admin/manual-moderation.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
-import {
-  BOT_START_APP_LINE,
-  buildBotStartIntroLines,
-  buildBotStartQuickActionText,
-} from '../common/bot-start-greeting';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
-import { buildUserAgreementShortNotice } from '../common/user-agreement-notice';
 import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
@@ -183,6 +177,16 @@ import {
   resolvePrivateBroadcastDraftTargetState,
 } from './private-control-draft-normalizer';
 import { PrivateControlSessionStore } from './private-control-session.store';
+import {
+  compactPrivateText,
+  escapePrivateHtml,
+  escapePrivateHtmlAttribute,
+  escapePrivateMarkdown,
+  privateMarkdownTitle,
+  renderPrivateLauncherHomeView,
+  renderPrivateLauncherIntroView,
+  renderPrivateMiniappMovedView,
+} from './private-control-launcher-renderer';
 import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -9313,33 +9317,22 @@ export class PrivateControlService {
     const entityTitle = session.selectedChatId
       ? await this.resolveManagedEntityTitle(context.actor, entityType, session.selectedChatId)
       : null;
-    const lines = [
-      this.markdownTitle(config.title),
-      '',
-      ...(entityTitle ? [`${entityLabel}: ${this.escapeMarkdown(entityTitle)}`] : []),
-      config.description,
-      'В боте оставлены только базовые действия: принять текст, фото или видео и подтвердить публикацию.',
-    ];
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: [
-          [
-            this.buildMiniappLaunchButton(
-              config.buttonText,
-              config.miniappRoute,
-              config.miniappUrl,
-            ),
-          ],
-          ...(config.includeBackButton === false
-            ? []
-            : [[this.callbackButton('↩️ Назад', this.cb('back'))]]),
-          ...this.buildFooterButtons({ includeMiniapp: false }),
-        ],
-        textFormat: 'markdown',
-      },
-    };
+    return renderPrivateMiniappMovedView({
+      title: config.title,
+      description: config.description,
+      entityLabel,
+      entityTitle,
+      launchButton: this.buildMiniappLaunchButton(
+        config.buttonText,
+        config.miniappRoute,
+        config.miniappUrl,
+      ),
+      backButton:
+        config.includeBackButton === false
+          ? null
+          : this.callbackButton('↩️ Назад', this.cb('back')),
+      footerButtons: this.buildFooterButtons({ includeMiniapp: false }),
+    });
   }
 
   private async renderEntitySettingsMovedToMiniappScreen(
@@ -9382,37 +9375,23 @@ export class PrivateControlService {
 
   private renderLauncherHomeView(notice: string | null = null): PrivateView {
     const profile = this.resolveActiveBotSpeechProfile();
-    const lines = [
-      this.markdownTitle(profile.characterName),
-      '',
-      BOT_START_APP_LINE,
-      buildUserAgreementShortNotice(this.appBaseUrl),
-      buildBotStartQuickActionText(profile),
-      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
-    ];
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: this.buildFooterButtons(),
-        textFormat: 'markdown',
-      },
-    };
+    return renderPrivateLauncherHomeView({
+      profile,
+      appBaseUrl: this.appBaseUrl,
+      notice,
+      footerButtons: this.buildFooterButtons(),
+    });
   }
 
   private renderLauncherIntroView(): PrivateView {
     const profile = this.resolveActiveBotSpeechProfile();
-    const lines = buildBotStartIntroLines(profile, (title) => this.markdownTitle(title), {
+    return renderPrivateLauncherIntroView({
+      profile,
       appBaseUrl: this.appBaseUrl,
+      footerButtons: this.buildFooterButtons({
+        supportText: '🆘 Техпомощь',
+      }),
     });
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: this.buildFooterButtons({
-          supportText: '🆘 Техпомощь',
-        }),
-        textFormat: 'markdown',
-      },
-    };
   }
 
   private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
@@ -10386,33 +10365,23 @@ export class PrivateControlService {
   }
 
   private compactText(value: string, maxLength: number): string {
-    const normalized = value.replace(/\s+/g, ' ').trim();
-    if (normalized.length <= maxLength) {
-      return normalized;
-    }
-
-    return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+    return compactPrivateText(value, maxLength);
   }
 
   private markdownTitle(title: string): string {
-    return `**${this.escapeMarkdown(title)}**`;
+    return privateMarkdownTitle(title);
   }
 
   private escapeMarkdown(value: string): string {
-    return value.replace(/([\\_*[\]()`])/g, '\\$1');
+    return escapePrivateMarkdown(value);
   }
 
   private escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return escapePrivateHtml(value);
   }
 
   private escapeHtmlAttribute(value: string): string {
-    return this.escapeHtml(value);
+    return escapePrivateHtmlAttribute(value);
   }
 
   private formatIsoDate(iso: string, timeZone?: string | null): string {
