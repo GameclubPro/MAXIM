@@ -2,7 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import { ChatBotMembershipStatus } from '../prisma/prisma-client';
+import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
@@ -275,6 +275,13 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
   }
 
   private async hasActiveBotMembership(chatId: string): Promise<boolean> {
+    if (
+      typeof this.prisma.chat?.findUnique === 'function' &&
+      !(await this.isChatEntity(chatId))
+    ) {
+      return false;
+    }
+
     if (typeof this.prisma.chatBotMembership?.count !== 'function') {
       return true;
     }
@@ -297,8 +304,19 @@ export class NightModeTransitionSchedulerService implements OnModuleInit, OnModu
     return activeCount > 0;
   }
 
+  private async isChatEntity(chatId: string): Promise<boolean> {
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        entityType: true,
+      },
+    });
+    return chat?.entityType === ChatEntityType.CHAT;
+  }
+
   private buildActiveOrLegacyBotMembershipFilter() {
     return {
+      entityType: ChatEntityType.CHAT,
       OR: [
         {
           botMemberships: {

@@ -1,9 +1,10 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { ChatSettings } from '../prisma/prisma-client';
+import { ChatEntityType, type ChatSettings } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   NIGHT_MODE_TRANSITION_PROCESS_CONTINUE,
+  NIGHT_MODE_TRANSITION_PROCESS_STOP,
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
@@ -44,6 +45,7 @@ export type NightModeTransitionRuntimeSettings = Pick<
   | 'botSpeechMedia'
 > & {
   chat?: {
+    entityType?: ChatEntityType | null;
     rules?: {
       publishedUrl: string | null;
       publishedMessageId: string | null;
@@ -108,6 +110,7 @@ export class NightModeTransitionRuntimeService {
       include: {
         chat: {
           select: {
+            entityType: true,
             rules: {
               select: {
                 publishedUrl: true,
@@ -120,6 +123,9 @@ export class NightModeTransitionRuntimeService {
     });
     if (!settings?.nightModeEnabled) {
       return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
+    }
+    if (settings.chat?.entityType === ChatEntityType.CHANNEL) {
+      return NIGHT_MODE_TRANSITION_PROCESS_STOP;
     }
 
     const scheduledFor = new Date(job.scheduledFor);

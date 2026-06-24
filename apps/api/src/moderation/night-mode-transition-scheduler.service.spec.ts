@@ -1,5 +1,5 @@
 import type { Queue } from 'bullmq';
-import { ChatBotMembershipStatus } from '../prisma/prisma-client';
+import { ChatBotMembershipStatus, ChatEntityType } from '../prisma/prisma-client';
 import { NightModeTransitionSchedulerService } from './night-mode-transition-scheduler.service';
 import {
   NIGHT_MODE_TRANSITION_JOB_NAME,
@@ -28,6 +28,7 @@ describe('NightModeTransitionSchedulerService', () => {
         where: {
           nightModeEnabled: true,
           chat: {
+            entityType: ChatEntityType.CHAT,
             OR: [
               {
                 botMemberships: {
@@ -51,6 +52,9 @@ describe('NightModeTransitionSchedulerService', () => {
 
   it('does not enqueue reconciled settings for chats without active bot membership', async () => {
     const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHAT }),
+      },
       chatBotMembership: {
         count: jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(0),
       },
@@ -71,6 +75,12 @@ describe('NightModeTransitionSchedulerService', () => {
       nightModeTimezone: 'Europe/Moscow',
     });
 
+    expect(prisma.chat.findUnique).toHaveBeenCalledWith({
+      where: { id: 'chat-removed' },
+      select: {
+        entityType: true,
+      },
+    });
     expect(prisma.chatBotMembership.count).toHaveBeenNthCalledWith(1, {
       where: {
         chatId: 'chat-removed',
@@ -82,6 +92,41 @@ describe('NightModeTransitionSchedulerService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
       },
     });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('does not enqueue reconciled settings for channels', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({ entityType: ChatEntityType.CHANNEL }),
+      },
+      chatBotMembership: {
+        count: jest.fn(),
+      },
+    };
+    const queue = {
+      getJobs: jest.fn().mockResolvedValue([]),
+      add: jest.fn(),
+    };
+    const service = new NightModeTransitionSchedulerService(
+      prisma as never,
+      queue as unknown as Queue<NightModeTransitionJob>,
+    );
+
+    await service.reconcileChatSettings('channel-1', {
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 23 * 60,
+      nightModeEndTimeMinutes: 8 * 60,
+      nightModeTimezone: 'Europe/Moscow',
+    });
+
+    expect(prisma.chat.findUnique).toHaveBeenCalledWith({
+      where: { id: 'channel-1' },
+      select: {
+        entityType: true,
+      },
+    });
+    expect(prisma.chatBotMembership.count).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 

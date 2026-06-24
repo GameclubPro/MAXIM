@@ -7337,6 +7337,77 @@ describe('ModerationService', () => {
     }
   });
 
+  it('stops night mode transition jobs for channels', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:00:15.000Z'));
+    try {
+      const prisma = {
+        chatSettings: {
+          findUnique: jest.fn().mockResolvedValue({
+            ...createSettings({
+              chatId: 'channel-1',
+              nightModeEnabled: true,
+              nightModeStartTimeMinutes: 23 * 60,
+              nightModeEndTimeMinutes: 8 * 60,
+              nightModeTimezone: 'Europe/Moscow',
+              nightModeBotMessageEnabled: true,
+              nightModeOpenMessageEnabled: true,
+            }),
+            chat: {
+              entityType: ChatEntityType.CHANNEL,
+              rules: null,
+            },
+          }),
+        },
+        moderationEvent: {
+          create: jest.fn(),
+        },
+      };
+      const maxClient = {
+        sendMessageImmediateWithId: jest.fn(),
+        deleteMessage: jest.fn(),
+      };
+      const redisCounter = createRedisCounterMock();
+      const service = new ModerationService(
+        prisma as never,
+        {} as never,
+        {} as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        { get: jest.fn().mockReturnValue('bot-1') } as never,
+        redisCounter as never,
+      );
+
+      await expect(
+        service.processNightModeTransitionJob({
+          chatId: 'channel-1',
+          transition: 'close',
+          scheduledFor: '2026-05-30T20:00:00.000Z',
+          sessionKey: 'v1:Europe/Moscow:23:00:08:00:2026-05-30',
+        }),
+      ).resolves.toEqual({ shouldEnqueueNext: false });
+
+      expect(prisma.chatSettings.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { chatId: 'channel-1' },
+          include: {
+            chat: {
+              select: expect.objectContaining({
+                entityType: true,
+              }),
+            },
+          },
+        }),
+      );
+      expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(redisCounter.setStringWithTtl).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('sends the close notice when the close job runs after the boundary minute', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-05-30T20:12:10.000Z'));
     try {

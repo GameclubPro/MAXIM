@@ -15478,6 +15478,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'botSpeechMedia'
     > & {
       chat?: {
+        entityType?: ChatEntityType | null;
         rules?: {
           publishedUrl: string | null;
           publishedMessageId: string | null;
