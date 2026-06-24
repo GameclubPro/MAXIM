@@ -332,6 +332,13 @@ import {
   NightModeTransitionRuntimeService,
   type NightModeTransitionNoticeResult,
 } from './night-mode-transition-runtime.service';
+import {
+  buildNightModeClosedNotice as buildNightModeClosedNoticeText,
+  buildNightModeOpenedNotice as buildNightModeOpenedNoticeText,
+  formatNightModeMinutesAsTime,
+  isNightModeNoticeMessage as isNightModeNoticeTextMessage,
+  normalizeNightModeDayMinutes,
+} from './night-mode-transition-notice.util';
 
 type NightModeTransitionOperation =
   | 'send-close-notice'
@@ -11763,18 +11770,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeDayMinutes(value: number, fallback: number): number {
-    if (Number.isInteger(value) && value >= 0 && value <= 1_439) {
-      return value;
-    }
-
-    return fallback;
+    return normalizeNightModeDayMinutes(value, fallback);
   }
 
   private formatMinutesAsTime(value: number): string {
-    const normalized = this.normalizeDayMinutes(value, 0);
-    const hours = Math.floor(normalized / 60);
-    const minutes = normalized % 60;
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    return formatNightModeMinutesAsTime(value);
   }
 
   private buildNightModeClosedNotice(
@@ -11784,20 +11784,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
-    const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
-    const nightStatus = 'Новые сообщения временно не принимаются.';
-
-    return this.renderEditableBotSpeechTemplate({
-      style: botSpeechStyle,
-      fieldKey: 'nightModeBotMessageText',
-      overrideText: templateText,
-      replacements: {
-        user: '',
-        night_window: windowLabel,
-        night_timezone: timezoneLabel,
-        night_status: nightStatus,
-      },
+    return buildNightModeClosedNoticeText({
+      startMinutes,
+      endMinutes,
+      timezone,
+      templateText,
+      botSpeechStyle,
+      activeBotSpeechProfile: this.resolveActiveBotSpeechProfile(),
     });
   }
 
@@ -11808,20 +11801,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
-    const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
-    const openingStatus = 'Группа снова открыта.';
-
-    return this.renderEditableBotSpeechTemplate({
-      style: botSpeechStyle,
-      fieldKey: 'nightModeOpenMessageText',
-      overrideText: templateText,
-      replacements: {
-        user: '',
-        night_window: windowLabel,
-        night_timezone: timezoneLabel,
-        opening_status: openingStatus,
-      },
+    return buildNightModeOpenedNoticeText({
+      startMinutes,
+      endMinutes,
+      timezone,
+      templateText,
+      botSpeechStyle,
+      activeBotSpeechProfile: this.resolveActiveBotSpeechProfile(),
     });
   }
 
@@ -15118,51 +15104,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'botSpeechStyle'
     >;
   }): boolean {
-    if (
-      !params.settings.nightModeEnabled ||
-      (!params.settings.nightModeBotMessageEnabled && !params.settings.nightModeOpenMessageEnabled)
-    ) {
-      return false;
-    }
-
-    const normalizedMessage = this.normalizeTextForComparison(params.text);
-    if (!normalizedMessage) {
-      return false;
-    }
-
-    if (params.settings.nightModeBotMessageEnabled) {
-      const expectedClosedNotice = this.buildNightModeClosedNotice(
-        params.settings.nightModeStartTimeMinutes,
-        params.settings.nightModeEndTimeMinutes,
-        params.settings.nightModeTimezone,
-        params.settings.nightModeBotMessageText,
-        params.settings.botSpeechStyle,
-      );
-
-      if (normalizedMessage === this.normalizeTextForComparison(expectedClosedNotice)) {
-        return true;
-      }
-    }
-
-    if (params.settings.nightModeOpenMessageEnabled) {
-      const expectedOpenNotice = this.buildNightModeOpenedNotice(
-        params.settings.nightModeStartTimeMinutes,
-        params.settings.nightModeEndTimeMinutes,
-        params.settings.nightModeTimezone,
-        params.settings.nightModeOpenMessageText,
-        params.settings.botSpeechStyle,
-      );
-
-      if (normalizedMessage === this.normalizeTextForComparison(expectedOpenNotice)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private normalizeTextForComparison(value: string): string {
-    return value.replace(/\s+/g, ' ').trim();
+    return isNightModeNoticeTextMessage({
+      text: params.text,
+      settings: params.settings,
+      activeBotSpeechProfile: this.resolveActiveBotSpeechProfile(),
+    });
   }
 
   private buildBotMessageDispatchOptions(params: {

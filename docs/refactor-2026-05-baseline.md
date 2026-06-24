@@ -73,6 +73,8 @@ and make each extraction reviewable through focused tests.
 - Night-mode execution has started:
   `night-mode-transition-runtime.service.ts` owns transition execution logic while
   `ModerationExecutionService` remains the public queue/runtime entrypoint.
+  `night-mode-transition-notice.util.ts` owns pure close/open notice rendering
+  and self-notice matching.
 - Manual/admin command bridge has started:
   forwarded admin-command parsing is isolated in `admin-forwarded-command.util.ts`,
   and `ModerationService` prefers `ManualModerationService` for group/manual admin
@@ -109,14 +111,14 @@ and make each extraction reviewable through focused tests.
 2. Continue night-mode as a runtime service behind `ModerationExecutionService`.
    Extract only business logic behind the existing execution boundary; do not add
    another public execution bridge. The current runtime service owns
-   transition-state/lock/schedule decisions; notice send/delete rendering and
-   terminal handling still call hooks back into legacy and are the next complete
-   seams to move. Preserve schedule-driven close/open notices and webhook-only
-   delete gates.
+   transition-state/lock/schedule decisions, and the notice util owns pure
+   close/open text rendering plus self-notice matching. Notice delivery remains
+   in legacy hooks; the next complete seam is a focused delivery service for
+   send/delete, media/options, event creation, and terminal MAX handling. Preserve
+   schedule-driven close/open notices and webhook-only delete gates.
    Validate with:
-   `npm test --workspace @maxim/api -- night-mode-transition`
-   plus relevant `moderation.service.spec.ts` and `admin-settings.service.spec.ts`
-   cases when behavior moves.
+   `npm test --workspace @maxim/api -- night-mode-transition-notice.util.spec.ts bot-speech.spec.ts moderation.service.spec.ts moderation-execution.service.spec.ts night-mode-transition.processor.spec.ts night-mode-transition-scheduler.service.spec.ts night-mode-transition.queue.spec.ts`
+   plus `admin-settings.service.spec.ts` cases when schedule reconciliation moves.
 
 3. Keep manual/admin command bridging out of the moderation hot path.
    `ModerationService` no longer injects `AdminService`; continue routing manual
