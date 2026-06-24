@@ -22,7 +22,7 @@ const guardedFiles = [
   },
   {
     path: 'apps/api/src/moderation/private-control.service.legacy.ts',
-    maxLines: 10465,
+    maxLines: 10427,
     targetLines: 9500,
     reason:
       'PrivateControlService is a legacy hotspot; session, draft normalization, and render builders should keep moving to focused modules.',

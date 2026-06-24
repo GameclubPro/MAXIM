@@ -187,6 +187,14 @@ import {
   renderPrivateLauncherIntroView,
   renderPrivateMiniappMovedView,
 } from './private-control-launcher-renderer';
+import {
+  clearPendingPrivateProfileMentionHandoff,
+  clearPrivateHandoffDelivery,
+  markPrivateHandoffDelivered,
+  readPendingPrivateProfileMentionDisplayName,
+  rememberPendingPrivateProfileMentionHandoff,
+  wasPrivateHandoffRecentlyDelivered,
+} from './private-control-handoff-state';
 import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -8573,98 +8581,65 @@ export class PrivateControlService {
   }
 
   private wasBroadcastHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    if (
-      !session.lastBroadcastHandoffDeliveredChatId ||
-      session.lastBroadcastHandoffDeliveredChatId !== chatId
-    ) {
-      return false;
-    }
-
-    if (typeof session.lastBroadcastHandoffDeliveredAt !== 'number') {
-      return false;
-    }
-
-    return Date.now() - session.lastBroadcastHandoffDeliveredAt < BROADCAST_HANDOFF_DEDUP_WINDOW_MS;
+    return wasPrivateHandoffRecentlyDelivered(
+      session,
+      'broadcast',
+      chatId,
+      BROADCAST_HANDOFF_DEDUP_WINDOW_MS,
+    );
   }
 
   private clearDeliveredBroadcastHandoff(session: PrivateSession): void {
-    session.lastBroadcastHandoffDeliveredChatId = null;
-    session.lastBroadcastHandoffDeliveredAt = null;
+    clearPrivateHandoffDelivery(session, 'broadcast');
   }
 
   private wasGiveawayHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    if (
-      !session.lastGiveawayHandoffDeliveredChatId ||
-      session.lastGiveawayHandoffDeliveredChatId !== chatId
-    ) {
-      return false;
-    }
-
-    if (typeof session.lastGiveawayHandoffDeliveredAt !== 'number') {
-      return false;
-    }
-
-    return Date.now() - session.lastGiveawayHandoffDeliveredAt < GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS;
+    return wasPrivateHandoffRecentlyDelivered(
+      session,
+      'giveaway',
+      chatId,
+      GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
+    );
   }
 
   private clearDeliveredGiveawayHandoff(session: PrivateSession): void {
-    session.lastGiveawayHandoffDeliveredChatId = null;
-    session.lastGiveawayHandoffDeliveredAt = null;
+    clearPrivateHandoffDelivery(session, 'giveaway');
   }
 
   private wasRulesHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
-    if (
-      !session.lastRulesHandoffDeliveredChatId ||
-      session.lastRulesHandoffDeliveredChatId !== chatId
-    ) {
-      return false;
-    }
-
-    if (typeof session.lastRulesHandoffDeliveredAt !== 'number') {
-      return false;
-    }
-
-    return Date.now() - session.lastRulesHandoffDeliveredAt < RULES_HANDOFF_DEDUP_WINDOW_MS;
+    return wasPrivateHandoffRecentlyDelivered(
+      session,
+      'rules',
+      chatId,
+      RULES_HANDOFF_DEDUP_WINDOW_MS,
+    );
   }
 
   private clearDeliveredRulesHandoff(session: PrivateSession): void {
-    session.lastRulesHandoffDeliveredChatId = null;
-    session.lastRulesHandoffDeliveredAt = null;
+    clearPrivateHandoffDelivery(session, 'rules');
   }
 
   private wasProfileMentionHandoffAlreadyDelivered(
     session: PrivateSession,
     chatId: string,
   ): boolean {
-    if (
-      !session.lastProfileMentionHandoffDeliveredChatId ||
-      session.lastProfileMentionHandoffDeliveredChatId !== chatId
-    ) {
-      return false;
-    }
-
-    if (typeof session.lastProfileMentionHandoffDeliveredAt !== 'number') {
-      return false;
-    }
-
-    return (
-      Date.now() - session.lastProfileMentionHandoffDeliveredAt <
-      PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS
+    return wasPrivateHandoffRecentlyDelivered(
+      session,
+      'profileMention',
+      chatId,
+      PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
     );
   }
 
   private clearDeliveredProfileMentionHandoff(session: PrivateSession): void {
-    session.lastProfileMentionHandoffDeliveredChatId = null;
-    session.lastProfileMentionHandoffDeliveredAt = null;
+    clearPrivateHandoffDelivery(session, 'profileMention');
   }
 
   private rememberPendingProfileMentionHandoff(
     session: PrivateSession,
     payload: { chatId: string; userId: string; displayName: string },
   ): void {
-    session.pendingProfileMentionChatId = payload.chatId.trim() || null;
-    session.pendingProfileMentionUserId = payload.userId.trim() || null;
-    session.pendingProfileMentionDisplayName = payload.displayName.trim() || null;
+    rememberPendingPrivateProfileMentionHandoff(session, payload);
   }
 
   private readPendingProfileMentionDisplayName(
@@ -8672,20 +8647,11 @@ export class PrivateControlService {
     chatId: string,
     userId: string,
   ): string | null {
-    if (
-      session.pendingProfileMentionChatId !== chatId ||
-      session.pendingProfileMentionUserId !== userId
-    ) {
-      return null;
-    }
-
-    return session.pendingProfileMentionDisplayName?.trim() || null;
+    return readPendingPrivateProfileMentionDisplayName(session, chatId, userId);
   }
 
   private clearPendingProfileMentionHandoff(session: PrivateSession): void {
-    session.pendingProfileMentionChatId = null;
-    session.pendingProfileMentionUserId = null;
-    session.pendingProfileMentionDisplayName = null;
+    clearPendingPrivateProfileMentionHandoff(session);
   }
 
   private createSyntheticPrivateContext(user: AuthUser, privateChatId: string): PrivateContext {
@@ -8729,8 +8695,7 @@ export class PrivateControlService {
         callbackId: null,
         notification: null,
       });
-      session.lastBroadcastHandoffDeliveredChatId = session.lastPrivateChatId;
-      session.lastBroadcastHandoffDeliveredAt = Date.now();
+      markPrivateHandoffDelivered(session, 'broadcast', session.lastPrivateChatId);
       await this.saveSession(user.userId, session);
     } catch (error: unknown) {
       this.clearDeliveredBroadcastHandoff(session);
@@ -8761,8 +8726,7 @@ export class PrivateControlService {
         callbackId: null,
         notification: null,
       });
-      session.lastGiveawayHandoffDeliveredChatId = session.lastPrivateChatId;
-      session.lastGiveawayHandoffDeliveredAt = Date.now();
+      markPrivateHandoffDelivered(session, 'giveaway', session.lastPrivateChatId);
       await this.saveSession(user.userId, session);
     } catch (error: unknown) {
       this.clearDeliveredGiveawayHandoff(session);
@@ -8793,8 +8757,7 @@ export class PrivateControlService {
         callbackId: null,
         notification: null,
       });
-      session.lastRulesHandoffDeliveredChatId = session.lastPrivateChatId;
-      session.lastRulesHandoffDeliveredAt = Date.now();
+      markPrivateHandoffDelivered(session, 'rules', session.lastPrivateChatId);
       await this.saveSession(user.userId, session);
     } catch (error: unknown) {
       this.clearDeliveredRulesHandoff(session);
@@ -8867,8 +8830,7 @@ export class PrivateControlService {
         payload.displayName,
         payload.userId,
       );
-      session.lastProfileMentionHandoffDeliveredChatId = session.lastPrivateChatId;
-      session.lastProfileMentionHandoffDeliveredAt = Date.now();
+      markPrivateHandoffDelivered(session, 'profileMention', session.lastPrivateChatId);
       await this.saveSession(user.userId, session);
     } catch (error: unknown) {
       this.clearDeliveredProfileMentionHandoff(session);
