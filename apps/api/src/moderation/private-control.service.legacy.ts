@@ -28,7 +28,6 @@ import {
   type UpdateManagedGiveawayRequest,
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
-import type { BotSpeechPersona } from '@maxim/contracts/bot-speech';
 import { AdminService } from '../admin/admin.service';
 import { AdminSettingsService } from '../admin/admin-settings.service';
 import { ManagedBroadcastService } from '../admin/managed-broadcast.service';
@@ -69,517 +68,96 @@ import {
   normalizeIncomingMessageMarkup,
   type IncomingMessageMarkup,
 } from './private-control-markup-importer';
-import { RedisCounterService } from './redis-counter.service';
-
-const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
-const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
-const LAUNCHER_INTRO_MARKER_TTL_SEC = 365 * 24 * 60 * 60;
-const DEFAULT_PRIVATE_CALLBACK_INLINE_BUDGET_MS = 2_500;
-const DEFAULT_PRIVATE_CALLBACK_ACK_TIMEOUT_MS = 800;
-const DEFAULT_PRIVATE_CALLBACK_EDIT_TIMEOUT_MS = 1_500;
-const DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS = 2_500;
-const DEFERRED_PRIVATE_CALLBACK_NOTIFICATION = 'Обрабатываю команду...';
-
-type PrivateSectionKey =
-  | 'links'
-  | 'greeting'
-  | 'profanityFilter'
-  | 'commercialFilter'
-  | 'thematicFilters'
-  | 'duplicates'
-  | 'limits'
-  | 'night'
-  | 'extra';
-
-type ChannelSectionKey = 'post_suggestions' | 'comments';
-
-type SettingFieldType = 'boolean' | 'number' | 'text' | 'url' | 'enum' | 'time' | 'timezone';
-
-type SettingFieldConfig = {
-  key: keyof ChatSettings;
-  label: string;
-  type: SettingFieldType;
-  min?: number;
-  max?: number;
-  step?: number;
-  presets?: readonly number[];
-  enumValues?: readonly string[];
-};
-
-type PendingInput =
-  | {
-      kind: 'set_field';
-      section: PrivateSectionKey;
-      key: keyof ChatSettings;
-      type: SettingFieldType;
-      min?: number;
-      max?: number;
-    }
-  | {
-      kind: 'set_channel_field';
-      section: ChannelSectionKey;
-      key: keyof ChannelSettings;
-      type: SettingFieldType;
-      min?: number;
-      max?: number;
-    }
-  | { kind: 'search_settings' }
-  | { kind: 'add_domain' }
-  | { kind: 'schedule_domain'; domain: string; domainLabel: string }
-  | { kind: 'broadcast_content' }
-  | { kind: 'broadcast_text' }
-  | { kind: 'broadcast_button_url' }
-  | { kind: 'broadcast_button_text' }
-  | { kind: 'broadcast_send_at' }
-  | { kind: 'broadcast_cycle_every_hours' }
-  | { kind: 'broadcast_cycle_count' }
-  | { kind: 'broadcast_photo' }
-  | { kind: 'rules_text' }
-  | { kind: 'rules_photo' }
-  | { kind: 'channel_suggestion'; chatId: string; token: string }
-  | { kind: 'giveaway_title' }
-  | { kind: 'giveaway_content' }
-  | { kind: 'giveaway_description' }
-  | { kind: 'giveaway_start_at' }
-  | { kind: 'giveaway_end_at' }
-  | { kind: 'giveaway_claim_hours' }
-  | { kind: 'giveaway_photo' }
-  | { kind: 'giveaway_prize'; index: number }
-  | { kind: 'manual_mute_duration'; targetUserId: string };
-
-type PendingMassAction =
-  | {
-      kind: 'apply_section';
-      section: PrivateSectionKey;
-      targetChats: number;
-    }
-  | {
-      kind: 'broadcast';
-      targetChats: number;
-    };
-
-type PrivateBroadcastDraft = {
-  text: string;
-  textFormat: BroadcastTextFormat;
-  targetMode: BroadcastTargetMode;
-  targetChatIds: string[];
-  applyToAllChats: boolean;
-  buttons: BroadcastLinkButton[];
-  buttonEnabled: boolean;
-  buttonUrl: string;
-  buttonText: string;
-  imageEnabled: boolean;
-  imageBase64: string;
-  imageMimeType: string;
-  imageFileName: string;
-  mediaType: 'video' | null;
-  mediaPayload: Record<string, unknown> | null;
-  mediaMimeType: string;
-  mediaFileName: string;
-  scheduleMode: BroadcastScheduleMode;
-  scheduleTimezone: string;
-  scheduledSlots: string[];
-  sendAt: string | null;
-  cycleEnabled: boolean;
-  cycleEveryHours: number;
-  cycleCount: number;
-};
-
-type PrivateSuggestionImageDraft = {
-  kind: 'image';
-  mimeType: string;
-  fileName: string;
-  payload: Record<string, unknown>;
-};
-
-type PrivateSuggestionVideoDraft = {
-  kind: 'video';
-  mimeType: string;
-  fileName: string;
-  payload: Record<string, unknown>;
-};
-
-type PrivateSuggestionMediaDraft = PrivateSuggestionImageDraft | PrivateSuggestionVideoDraft;
-
-type PrivateSuggestionDraft = {
-  chatId: string;
-  token: string;
-  text: string;
-  textFormat: BroadcastTextFormat;
-  textMarkup: IncomingMessageMarkup[];
-  images: PrivateSuggestionImageDraft[];
-  video: PrivateSuggestionVideoDraft | null;
-  // Legacy field keeps older persisted drafts readable until they are replaced.
-  media?: PrivateSuggestionMediaDraft | null;
-  // Legacy fields keep older persisted drafts readable until they are replaced.
-  imageBase64: string;
-  imageMimeType: string;
-  imageFileName: string;
-  sourceMessageId: string | null;
-  previewMessageId: string | null;
-};
-
-type ActiveBotSpeechProfile = {
-  persona: BotSpeechPersona;
-  characterName: string;
-};
-
-type PrivateScreen =
-  | 'chat_select'
-  | 'home'
-  | 'settings_hub'
-  | 'section'
-  | 'channel_section'
-  | 'domains'
-  | 'rules'
-  | 'broadcast'
-  | 'giveaway'
-  | 'events'
-  | 'logs'
-  | 'search'
-  | 'manual_users'
-  | 'manual_actions';
-
-type PrivateUiMode = 'modern' | 'legacy';
-type PrivateHomeTab = 'quick' | 'all';
-type PrivateSectionView = 'basic' | 'advanced';
-type PrivateBroadcastView = 'basic' | 'advanced';
-
-type PrivateSession = {
-  version: 3;
-  lastPrivateChatId: string | null;
-  lastBroadcastHandoffDeliveredChatId: string | null;
-  lastBroadcastHandoffDeliveredAt: number | null;
-  lastGiveawayHandoffDeliveredChatId: string | null;
-  lastGiveawayHandoffDeliveredAt: number | null;
-  lastRulesHandoffDeliveredChatId: string | null;
-  lastRulesHandoffDeliveredAt: number | null;
-  lastProfileMentionHandoffDeliveredChatId: string | null;
-  lastProfileMentionHandoffDeliveredAt: number | null;
-  pendingProfileMentionChatId: string | null;
-  pendingProfileMentionUserId: string | null;
-  pendingProfileMentionDisplayName: string | null;
-  selectedChatId: string | null;
-  selectedEntityType: ManagedEntityType | null;
-  managedGiveawayId: string | null;
-  entityTab: ManagedEntityType;
-  uiMode: PrivateUiMode;
-  screen: PrivateScreen;
-  homeTab: PrivateHomeTab;
-  sectionView: PrivateSectionView;
-  searchQuery: string | null;
-  lastScreenStack: string[];
-  broadcastView: PrivateBroadcastView;
-  section: PrivateSectionKey | null;
-  channelSection: ChannelSectionKey | null;
-  chatPage: number;
-  domainPage: number;
-  eventsPage: number;
-  manualPage: number;
-  logsRange: LogsDashboardRange;
-  manualTargetUserId: string | null;
-  pendingInput: PendingInput | null;
-  pendingMassAction: PendingMassAction | null;
-  broadcastDraft: PrivateBroadcastDraft;
-  suggestionDraft: PrivateSuggestionDraft | null;
-};
-
-type PrivateContext = {
-  update: MaxUpdate;
-  chatId: string;
-  actor: AuthUser;
-  text: string;
-  callbackId: string | null;
-  callbackPayload: string | null;
-};
-
-type PrivateView = {
-  text: string;
-  options?: MaxSendMessageOptions;
-};
-
-type CallbackAction = {
-  action: string;
-  args: string[];
-};
-
-type GiveawayHandoffStartPayload = {
-  v: 1;
-  k: 'giveaway-handoff';
-  c: string;
-  e: ManagedEntityType;
-  g: string | null;
-};
-
-type ProfileMentionStartPayload = {
-  v: 1;
-  k: 'profile-mention';
-  c: string;
-  e: ManagedEntityType;
-  u: string;
-  n: string;
-};
-
-type ParsedImageAttachment = {
-  url: string;
-  token: string | null;
-  photoId: string | null;
-  width: number | null;
-  height: number | null;
-  mimeType: string | null;
-  mediaType: string | null;
-  payloadKeys: string[];
-};
-
-type ParsedImageFileAttachment = {
-  url: string;
-  token: string | null;
-  fileId: string | null;
-  fileName: string | null;
-  size: number | null;
-  mimeType: string | null;
-  mediaType: string | null;
-  payloadKeys: string[];
-};
-
-type ParsedImageSourceAttachment =
-  | {
-      kind: 'image';
-      attachment: ParsedImageAttachment;
-    }
-  | {
-      kind: 'file';
-      attachment: ParsedImageFileAttachment;
-    };
-
-type ParsedFileAttachment = {
-  url: string | null;
-  token: string | null;
-  fileId: string | null;
-  fileName: string | null;
-  size: number | null;
-  mimeType: string | null;
-  mediaType: string | null;
-  payloadKeys: string[];
-};
-
-type ParsedVideoSourceAttachment = ParsedFileAttachment & {
-  url: string;
-  mimeType: string;
-};
-
-type DownloadedImageAsset = {
-  base64: string;
-  mimeType: string;
-  fileName: string;
-};
-
-type DownloadedBinaryAsset = {
-  buffer: Buffer;
-  mimeType: string;
-  fileName: string;
-};
-
-type ForwardedModerationCommand =
-  | {
-      action: 'BAN';
-    }
-  | {
-      action: 'MUTE';
-      muteDurationHours?: number;
-      mutePermanent?: true;
-    }
-  | {
-      action: 'RULES';
-    };
-
-type ForwardedModerationActionCommand = Exclude<
+import {
+  BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX,
+  BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC,
+  BROADCAST_HANDOFF_DEDUP_WINDOW_MS,
+  BROADCAST_HANDOFF_START_PAYLOAD,
+  BROADCAST_PUBLISH_DEDUP_WINDOW_MS,
+  BUTTON_TEXT_MAX_SINGLE_COLUMN,
+  BUTTON_TEXT_MAX_TWO_COLUMNS,
+  CALLBACK_REFRESH_NOTIFICATION,
+  CALLBACK_STALE_NOTIFICATION,
+  CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+  CHAT_ONLY_CALLBACK_ACTIONS,
+  CHANNEL_ONLY_CALLBACK_ACTIONS,
+  DEFAULT_BROADCAST_DRAFT,
+  DEFAULT_PRIVATE_CALLBACK_ACK_TIMEOUT_MS,
+  DEFAULT_PRIVATE_CALLBACK_EDIT_TIMEOUT_MS,
+  DEFAULT_PRIVATE_CALLBACK_INLINE_BUDGET_MS,
+  DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
+  DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
+  DUPLICATE_ALLOWED_COUNT_MAX,
+  DUPLICATE_ALLOWED_COUNT_MIN,
+  DUPLICATE_FLOW_SETTING_KEYS,
+  DUPLICATE_THRESHOLD_MAX,
+  ENTITY_CALLBACK_ACTIONS,
+  FORWARDED_MUTE_DURATION_HOURS_DEFAULT,
+  FORWARDED_MUTE_DURATION_HOURS_MAX,
+  GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS,
+  GIVEAWAY_HANDOFF_START_PAYLOAD,
+  GIVEAWAY_HANDOFF_START_PREFIX,
+  LAUNCHER_INTRO_MARKER_TTL_SEC,
+  LEGACY_CALLBACK_PREFIX,
+  MAX_CALLBACK_PREFIX,
+  MAX_FORWARDED_COMMAND_SCAN_DEPTH,
+  MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS,
+  MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS,
+  MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS,
+  MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS,
+  MINIAPP_ROUTE_START_PARAM_PREFIX,
+  MINIAPP_RULES_ONLY_CALLBACK_ACTIONS,
+  MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS,
+  PAGE_SIZE_DOMAINS,
+  PAGE_SIZE_EVENTS,
+  PAGE_SIZE_MANUAL_USERS,
+  PERMANENT_MUTE_COMMAND_DURATION_HOURS,
+  PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+  PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS,
+  PROFILE_MENTION_START_PREFIX,
+  RULES_HANDOFF_DEDUP_WINDOW_MS,
+  RULES_HANDOFF_START_PAYLOAD,
+  SEARCH_RESULT_LIMIT,
+  SUPPORT_CHAT_URL,
+} from './private-control.constants';
+import type {
+  ActiveBotSpeechProfile,
+  CallbackAction,
+  ChannelSectionKey,
+  DownloadedBinaryAsset,
+  DownloadedImageAsset,
+  ForwardedModerationActionCommand,
   ForwardedModerationCommand,
-  {
-    action: 'RULES';
-  }
->;
-
-type ForwardedModerationTarget = {
-  chatId: string;
-  chatTitle: string | null;
-  userId: string;
-  senderName: string | null;
-};
-
-type ForwardedRulesSource = {
-  chatId: string;
-  chatTitle: string | null;
-  messageId: string | null;
-  url: string | null;
-  text: string | null;
-};
-
-const SESSION_TTL_SEC = 45 * 60;
-const SESSION_KEY_PREFIX = 'private-ui:v2';
-const BROADCAST_COMPOSER_CLIENT_RESET_KEY_PREFIX = 'miniapp:broadcast-composer-reset:v1';
-const BROADCAST_COMPOSER_CLIENT_RESET_TTL_SEC = 7 * 24 * 60 * 60;
-const BROADCAST_HANDOFF_DEDUP_WINDOW_MS = 20_000;
-const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
-const RULES_HANDOFF_DEDUP_WINDOW_MS = 20_000;
-const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
-const BROADCAST_PUBLISH_DEDUP_WINDOW_MS = 15_000;
-const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
-const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
-const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
-const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
-const PROFILE_MENTION_START_PREFIX = 'pmh-';
-const PAGE_SIZE_DOMAINS = 8;
-const PAGE_SIZE_EVENTS = 10;
-const PAGE_SIZE_MANUAL_USERS = 8;
-const SEARCH_RESULT_LIMIT = 8;
-const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
-const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
-const FORWARDED_MUTE_DURATION_HOURS_DEFAULT = 6;
-const FORWARDED_MUTE_DURATION_HOURS_MAX = 336;
-const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
-const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
-const DUPLICATE_ALLOWED_COUNT_MIN = 0;
-const DUPLICATE_ALLOWED_COUNT_MAX = 16;
-const DUPLICATE_THRESHOLD_MAX = 20;
-const DUPLICATE_FLOW_SETTING_KEYS = [
-  'duplicateBotMessageEnabled',
-  'duplicateWarnEnabled',
-  'duplicateMuteEnabled',
-  'duplicateBanEnabled',
-  'duplicateWarnWindowSec',
-  'duplicateWarnMaxCount',
-  'duplicateMuteWindowSec',
-  'duplicateMuteMaxCount',
-  'duplicateBanWindowSec',
-  'duplicateBanMaxCount',
-] as const satisfies readonly (keyof ChatSettings)[];
-const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
-const MAX_CALLBACK_PREFIX = 'pc2';
-const LEGACY_CALLBACK_PREFIX = 'pc';
-const CALLBACK_REFRESH_NOTIFICATION = 'Меню обновлено';
-const CALLBACK_STALE_NOTIFICATION = 'Кнопки устарели, обновляю экран';
-const MAX_FORWARDED_COMMAND_SCAN_DEPTH = 8;
-const MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_settings_hub',
-  'open_section',
-  'toggle',
-  'set_enum',
-  'set_number_preset',
-  'step_number',
-  'set_input',
-  'section_view',
-  'open_search',
-  'search_jump',
-  'apply_section_preview',
-  'open_domains',
-  'domains_page',
-  'domain_add_prompt',
-  'domain_remove',
-  'domain_schedule_prompt',
-]);
-const MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_events',
-  'events_page',
-  'open_logs',
-  'logs_range',
-  'open_manual_users',
-  'manual_users_page',
-  'manual_select_user',
-  'manual_action',
-]);
-const MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS = new Set<string>([
-  'open_channel_section',
-  'toggle_channel',
-  'set_channel_input',
-  'publish_channel_engagement',
-]);
-const MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_giveaway',
-  'refresh_giveaway',
-  'giveaway_create',
-  'giveaway_input_prompt',
-  'giveaway_clear_start',
-  'giveaway_clear_photo',
-  'giveaway_add_prize',
-  'giveaway_remove_last_prize',
-  'giveaway_publish',
-  'giveaway_close',
-  'giveaway_cancel',
-  'giveaway_reroll',
-  'giveaway_deliver',
-]);
-const MINIAPP_RULES_ONLY_CALLBACK_ACTIONS = new Set<string>(['rules_toggle_attach']);
-const MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS = new Set<string>([
-  'broadcast_view',
-  'broadcast_toggle',
-  'broadcast_clear_timer',
-]);
-
-const CHAT_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_settings_hub',
-  'open_section',
-  'toggle',
-  'set_enum',
-  'set_number_preset',
-  'step_number',
-  'set_input',
-  'section_view',
-  'open_search',
-  'open_rules',
-  'rules_autofill',
-  'rules_input_prompt',
-  'rules_clear_photo',
-  'rules_toggle_attach',
-  'rules_publish',
-  'rules_reset_publication',
-  'search_jump',
-  'apply_section_preview',
-  'open_domains',
-  'domains_page',
-  'domain_add_prompt',
-  'domain_remove',
-  'domain_schedule_prompt',
-  'open_events',
-  'events_page',
-  'open_logs',
-  'logs_range',
-  'open_manual_users',
-  'manual_users_page',
-  'manual_select_user',
-  'manual_action',
-]);
-
-const CHANNEL_ONLY_CALLBACK_ACTIONS = new Set<string>([
-  'open_channel_section',
-  'toggle_channel',
-  'set_channel_input',
-  'publish_channel_engagement',
-]);
-
-const ENTITY_CALLBACK_ACTIONS = new Set<string>([
-  'open_broadcast',
-  'open_giveaway',
-  'refresh_giveaway',
-  'giveaway_create',
-  'giveaway_input_prompt',
-  'giveaway_clear_start',
-  'giveaway_clear_photo',
-  'giveaway_add_prize',
-  'giveaway_remove_last_prize',
-  'giveaway_publish',
-  'giveaway_close',
-  'giveaway_cancel',
-  'giveaway_reroll',
-  'giveaway_deliver',
-  'broadcast_view',
-  'broadcast_toggle',
-  'broadcast_input_prompt',
-  'broadcast_clear_content',
-  'broadcast_clear_timer',
-  'broadcast_clear_photo',
-  'broadcast_send',
-]);
+  ForwardedModerationTarget,
+  ForwardedRulesSource,
+  GiveawayHandoffStartPayload,
+  ParsedFileAttachment,
+  ParsedImageAttachment,
+  ParsedImageFileAttachment,
+  ParsedImageSourceAttachment,
+  ParsedVideoSourceAttachment,
+  PendingInput,
+  PendingMassAction,
+  PrivateBroadcastDraft,
+  PrivateBroadcastView,
+  PrivateContext,
+  PrivateHomeTab,
+  PrivateScreen,
+  PrivateSectionKey,
+  PrivateSectionView,
+  PrivateSession,
+  PrivateSuggestionDraft,
+  PrivateSuggestionImageDraft,
+  PrivateSuggestionMediaDraft,
+  PrivateSuggestionVideoDraft,
+  PrivateUiMode,
+  PrivateView,
+  ProfileMentionStartPayload,
+  SettingFieldConfig,
+  SettingFieldType,
+} from './private-control.types';
+import { PrivateControlSessionStore } from './private-control-session.store';
+import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
   links: 'Модерация ссылок',
@@ -1134,33 +712,6 @@ const SECTION_CARD_FIELDS: Record<
   },
 };
 
-const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
-  text: '',
-  textFormat: 'plain',
-  targetMode: 'current',
-  targetChatIds: [],
-  applyToAllChats: false,
-  buttons: [],
-  buttonEnabled: false,
-  buttonUrl: '',
-  buttonText: DEFAULT_BROADCAST_BUTTON_TEXT,
-  imageEnabled: false,
-  imageBase64: '',
-  imageMimeType: '',
-  imageFileName: '',
-  mediaType: null,
-  mediaPayload: null,
-  mediaMimeType: '',
-  mediaFileName: '',
-  scheduleMode: 'legacy',
-  scheduleTimezone: 'Europe/Moscow',
-  scheduledSlots: [],
-  sendAt: null,
-  cycleEnabled: false,
-  cycleEveryHours: 24,
-  cycleCount: 1,
-};
-
 @Injectable()
 export class PrivateControlService {
   private readonly logger = new Logger(PrivateControlService.name);
@@ -1175,10 +726,7 @@ export class PrivateControlService {
   private readonly privateCallbackAckTimeoutMs: number;
   private readonly privateCallbackEditTimeoutMs: number;
   private readonly privateDialogSendTimeoutMs: number;
-  private readonly memorySession = new Map<
-    string,
-    { expiresAt: number; session: PrivateSession }
-  >();
+  private readonly sessionStore: PrivateControlSessionStore;
   private readonly launcherIntroSeenUsers = new Set<string>();
   private readonly activeBroadcastPublishes = new Set<string>();
   private readonly recentBroadcastPublishes = new Map<
@@ -1231,6 +779,12 @@ export class PrivateControlService {
       configService?.get('PRIVATE_DIALOG_SEND_TIMEOUT_MS'),
       DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
     );
+    this.sessionStore = new PrivateControlSessionStore({
+      redisCounter,
+      logger: this.logger,
+      normalizeSession: (raw) => this.normalizeSession(raw),
+      createDefaultSession: () => this.createDefaultSession(),
+    });
   }
 
   async handleUpdate(update: MaxUpdate): Promise<void> {
@@ -11834,45 +11388,11 @@ export class PrivateControlService {
   }
 
   private async loadSession(userId: string): Promise<PrivateSession> {
-    const sessionKey = this.sessionKey(userId);
-    if (this.redisCounter) {
-      const raw = await this.redisCounter.getString(sessionKey);
-      if (raw) {
-        try {
-          return this.normalizeSession(JSON.parse(raw));
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to parse private control session from redis',
-          );
-        }
-      }
-    }
-
-    const memory = this.memorySession.get(sessionKey);
-    if (memory && memory.expiresAt > Date.now()) {
-      return this.normalizeSession(memory.session);
-    }
-
-    return this.createDefaultSession();
+    return this.sessionStore.loadSession(userId);
   }
 
   private async loadSessionForDiagnostics(userId: string): Promise<PrivateSession | null> {
-    try {
-      return await this.loadSession(userId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to load private control session for diagnostics',
-      );
-      return null;
-    }
+    return this.sessionStore.loadSessionForDiagnostics(userId);
   }
 
   private extractBadRequestDetails(error: unknown): string | null {
@@ -11959,22 +11479,7 @@ export class PrivateControlService {
   }
 
   private async saveSession(userId: string, session: PrivateSession): Promise<void> {
-    const normalized = this.normalizeSession(session);
-    const sessionKey = this.sessionKey(userId);
-
-    if (this.redisCounter) {
-      await this.redisCounter.setStringWithTtl(
-        sessionKey,
-        JSON.stringify(normalized),
-        SESSION_TTL_SEC,
-      );
-      return;
-    }
-
-    this.memorySession.set(sessionKey, {
-      expiresAt: Date.now() + SESSION_TTL_SEC * 1_000,
-      session: normalized,
-    });
+    await this.sessionStore.saveSession(userId, session);
   }
 
   private createDefaultSession(): PrivateSession {
@@ -12564,7 +12069,7 @@ export class PrivateControlService {
   }
 
   private sessionKey(userId: string): string {
-    return `${SESSION_KEY_PREFIX}:${userId}`;
+    return this.sessionStore.sessionKey(userId);
   }
 
   private async rememberBroadcastComposerClientReset(

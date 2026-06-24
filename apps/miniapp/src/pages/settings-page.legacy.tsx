@@ -188,6 +188,8 @@ import {
 } from '../lib/use-managed-entities-visibility-refresh';
 import { useVisualViewportOverlayStyle } from '../lib/use-visual-viewport-overlay-style';
 import { SettingsApplyTargetSheet } from './settings/settings-apply-target-sheet';
+import { SettingsCommentsSection } from './settings/settings-comments-section';
+import { SettingsExtraSection } from './settings/settings-extra-section';
 import { SettingsSectionSaveFooter } from './settings/settings-section-save-footer';
 import { useBroadcastImageDraft } from './settings/use-broadcast-image-draft';
 import {
@@ -10408,197 +10410,36 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </GlassCard>
             ) : null}
 
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
-              style={{ animationDelay: '338ms', order: 3 }}
-              aria-label="Комментарии"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Комментарии"
-                  summary={commentsCardSummary}
-                  status={commentsCardStatus}
-                  icon="comments"
-                  tone="mint"
-                  open={expandedSections.comments}
-                  controls="settings-comments-content"
-                  onClick={() => toggleSection('comments')}
-                  hideChevron
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-comments-content"
-                open={expandedSections.comments}
-                title="Комментарии"
-                summary={commentsCardSummary}
-                tone="mint"
-                className="settings-drilldown__panel--board settings-drilldown__panel--comments"
-                onClose={() => toggleSection('comments')}
-                footer={
-                  <div className="settings-drilldown__footer-actions is-single-action">
-                    <button
-                      type="button"
-                      className="button button--accent"
-                      onClick={() => void handleSaveComments()}
-                      disabled={isSavingComments || !isCommentsDirty()}
-                    >
-                      {isSavingComments ? 'Сохраняем...' : 'Сохранить'}
-                    </button>
-                  </div>
-                }
-              >
-                <div
-                  id="settings-comments-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.comments && 'is-open',
-                  )}
-                >
-                  {expandedSections.comments ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Включить комментарии
-                            </span>
-                            <div className="settings-native-toggle__title-actions">
-                              <SettingsHintAnchor
-                                hintKey="commentsEnabled"
-                                openHintKey={openHintKey}
-                                onToggleHint={toggleHint}
-                                label="Как работают комментарии в чатах"
-                              >
-                                В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот
-                                сам публикует сообщение с кнопкой комментариев. Для постов админа
-                                бот отправляет копию с той же разметкой и удаляет исходное
-                                сообщение, а для автопостинга кнопка ставится сразу на сообщение
-                                бота.
-                              </SettingsHintAnchor>
-                            </div>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить комментарии в чатах"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.commentsEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        commentsEnabled: enabled,
-                                        commentsAdminsEnabled:
-                                          enabled &&
-                                          !current.commentsAdminsEnabled &&
-                                          !current.commentsChatBroadcastsEnabled
-                                            ? true
-                                            : current.commentsAdminsEnabled,
-                                        commentsAllEnabled: false,
-                                      }
-                                    : current,
-                                );
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
-                      {draft.commentsEnabled ? (
-                        <>
-                          <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  Только у админов
-                                </span>
-                                <div className="settings-native-toggle__title-actions">
-                                  <SettingsHintAnchor
-                                    hintKey="commentsAdmins"
-                                    openHintKey={openHintKey}
-                                    onToggleHint={toggleHint}
-                                    label="Как работают комментарии для постов админов"
-                                  >
-                                    Когда пишет админ, бот публикует такое же сообщение от себя с
-                                    кнопкой комментариев и удаляет исходное. Это нужно, потому что
-                                    MAX не умеет вешать кнопку прямо под сообщением человека в чате.
-                                  </SettingsHintAnchor>
-                                </div>
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Комментарии под постами админов"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.commentsAdminsEnabled}
-                                  onChange={(event) =>
-                                    setFieldValue('commentsAdminsEnabled', event.target.checked)
-                                  }
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  Для автопостинга
-                                </span>
-                                <div className="settings-native-toggle__title-actions">
-                                  <SettingsHintAnchor
-                                    hintKey="commentsChatBroadcasts"
-                                    openHintKey={openHintKey}
-                                    onToggleHint={toggleHint}
-                                    label="Как работают комментарии для автопостинга"
-                                  >
-                                    Для автопостинга бот публикует сообщение сам и сразу добавляет в
-                                    него кнопку комментариев. Сообщения участников чата при этом не
-                                    заменяются.
-                                  </SettingsHintAnchor>
-                                </div>
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Комментарии для автопостинга в чатах"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.commentsChatBroadcastsEnabled}
-                                  onChange={(event) =>
-                                    setFieldValue(
-                                      'commentsChatBroadcastsEnabled',
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-                        </>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
+            <SettingsCommentsSection
+              draft={draft}
+              expanded={expandedSections.comments}
+              summary={commentsCardSummary}
+              status={commentsCardStatus}
+              openHintKey={openHintKey}
+              isSaving={isSavingComments}
+              canSave={isCommentsDirty()}
+              onToggleSection={() => toggleSection('comments')}
+              onToggleHint={toggleHint}
+              onSave={() => void handleSaveComments()}
+              onToggleCommentsEnabled={(enabled) =>
+                setDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        commentsEnabled: enabled,
+                        commentsAdminsEnabled:
+                          enabled &&
+                          !current.commentsAdminsEnabled &&
+                          !current.commentsChatBroadcastsEnabled
+                            ? true
+                            : current.commentsAdminsEnabled,
+                        commentsAllEnabled: false,
+                      }
+                    : current,
+                )
+              }
+              onFieldChange={(key, value) => setFieldValue(key, value)}
+            />
 
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
@@ -11072,148 +10913,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               />
             </Suspense>
 
-            <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '372ms', order: 31 }}
-              aria-label="Сервис"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Сервис"
-                  summary={extraHeaderSummary}
-                  status={extraCardStatus}
-                  icon="tools"
-                  tone="amber"
-                  open={expandedSections.extra}
-                  controls="settings-extra-content"
-                  onClick={() => toggleSection('extra')}
-                  hideChevron
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-extra-content"
-                open={expandedSections.extra}
-                title="Сервис"
-                summary={extraHeaderSummary}
-                tone="amber"
-                className="settings-drilldown__panel--notice settings-drilldown__panel--extra"
-                onClose={() => toggleSection('extra')}
-                footer={renderSectionSaveFooter('extra')}
-              >
-                <div
-                  id="settings-extra-content"
-                  className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
-                >
-                  {expandedSections.extra ? (
-                    <div className="settings-section__collapse-inner">
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Удалять свои сообщения
-                            </span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'deleteBotMessages' && 'is-open',
-                              )}
-                              aria-label="Пояснение для удаления своих сообщений ботом"
-                              aria-controls="delete-bot-messages-hint"
-                              aria-expanded={openHintKey === 'deleteBotMessages'}
-                              onClick={() => toggleHint('deleteBotMessages')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить удаление собственных сообщений бота"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.deleteBotMessagesEnabled}
-                              onChange={(event) =>
-                                setFieldValue('deleteBotMessagesEnabled', event.target.checked)
-                              }
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'deleteBotMessages' ? (
-                          <p id="delete-bot-messages-hint" className="settings-native-toggle__hint">
-                            Бот будет автоматически удалять собственные сообщения через выбранное
-                            время.
-                          </p>
-                        ) : null}
-                      </div>
-
-                      {draft.deleteBotMessagesEnabled ? (
-                        <DeleteDelayStepper
-                          title="Через сколько удалять"
-                          value={draft.deleteBotMessagesDelayMinutes}
-                          fieldError={fieldErrors.deleteBotMessagesDelayMinutes}
-                          groupAriaLabel="Задержка удаления сообщений бота"
-                          decreaseAriaLabel="Уменьшить задержку удаления сообщений бота"
-                          increaseAriaLabel="Увеличить задержку удаления сообщений бота"
-                          onAdjust={adjustDeleteBotMessagesDelay}
-                        />
-                      ) : null}
-
-                      <div className="settings-native-toggle">
-                        <div className="settings-native-toggle__row">
-                          <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Удалять ботов из группы
-                            </span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'removeBotsFromGroup' && 'is-open',
-                              )}
-                              aria-label="Пояснение для удаления ботов из группы"
-                              aria-controls="remove-bots-hint"
-                              aria-expanded={openHintKey === 'removeBotsFromGroup'}
-                              onClick={() => toggleHint('removeBotsFromGroup')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить удаление ботов из группы"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.removeBotsFromGroupEnabled}
-                              onChange={(event) =>
-                                setFieldValue('removeBotsFromGroupEnabled', event.target.checked)
-                              }
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-
-                        {openHintKey === 'removeBotsFromGroup' ? (
-                          <p id="remove-bots-hint" className="settings-native-toggle__hint">
-                            Если включено, бот-аккаунты будут автоматически удаляться из группы.
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
+            <SettingsExtraSection
+              draft={draft}
+              expanded={expandedSections.extra}
+              summary={extraHeaderSummary}
+              status={extraCardStatus}
+              openHintKey={openHintKey}
+              fieldErrors={fieldErrors}
+              footer={renderSectionSaveFooter('extra')}
+              onToggleSection={() => toggleSection('extra')}
+              onToggleHint={toggleHint}
+              onFieldChange={(key, value) => setFieldValue(key, value)}
+              onAdjustDeleteBotMessagesDelay={adjustDeleteBotMessagesDelay}
+            />
 
             <GlassCard
               className="settings-speech-style-card settings-home-entry settings-home-entry--speech stagger-in"

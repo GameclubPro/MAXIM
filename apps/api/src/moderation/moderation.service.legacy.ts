@@ -74,6 +74,7 @@ import {
 } from '../max/managed-entity-access-loss.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
+import { ManualModerationService } from '../admin/manual-moderation.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   appendAdminContactMarkdownLink as appendAdminContactMarkdownLinkText,
@@ -100,6 +101,7 @@ import {
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { ModerationExecutionService } from './moderation-execution.service';
 import { PrivateControlService } from './private-control.service';
+import { ModerationAccessService } from './moderation-access.service';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
@@ -143,6 +145,21 @@ import {
   extractRawMessageNode,
   shouldSkipAntiSpamBurstForForward,
 } from './moderation-update-extractors';
+import {
+  dedupeForwardedModerationTargets,
+  dedupeForwardedRulesSources,
+  extractDirectIncomingMessageText,
+  extractForwardedModerationTargets,
+  extractForwardedRulesSources,
+  getAdminCommandName,
+  parseAdminForwardedModerationCommand,
+} from './admin-forwarded-command.util';
+import {
+  readExecutionOwnerBotId as readExecutionOwnerBotIdFromUpdate,
+  resolveAutoAttachBotId as resolveAutoAttachBotIdForModeration,
+  resolveChatReadBotId as resolveChatReadBotIdForModeration,
+  resolveUnifiedBotRoute as resolveUnifiedBotRouteForModeration,
+} from './moderation-bot-routing.util';
 import {
   COMMERCIAL_CAMPAIGN_WINDOW_SEC,
   COMMERCIAL_CAMPAIGN_VELOCITY_WINDOWS_SEC,
@@ -211,17 +228,10 @@ import {
   REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC,
   BOT_NOTICE_TOKEN_BUCKET_TTL_SEC,
   DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
-  CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
-  CHAT_ADMIN_CACHE_TTL_MS,
   ADMIN_CONTACT_DISPLAY_NAME_CACHE_TTL_MS,
   ADMIN_CONTACT_DISPLAY_NAME_LOOKUP_TIMEOUT_MS,
   CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
   DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS,
-  CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS,
-  CHAT_ADMIN_LOOKUP_BACKOFF_MS,
-  DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
-  CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS,
-  CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS,
   BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS,
   LEGACY_MODERATION_CONCURRENCY,
   CRITICAL_MODERATION_CONCURRENCY,
@@ -249,8 +259,6 @@ import {
   CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
   CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
   DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
-  NIGHT_MODE_TRANSITION_LOCK_TTL_MS,
-  NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE,
   DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE,
@@ -297,11 +305,8 @@ import {
   type ChannelAutoPostMessageText,
   type ChannelAutoPostScanState,
   type ChannelAutoPostExecutionPlan,
-  type PendingChatAdminLookupBatch,
-  type PendingChatAdminSharedCacheBatch,
   type LocalGlobalSpammerAdminDecision,
   type PendingGlobalSpammerExemptionLookupBatch,
-  type NightModeTransitionState,
   type WebhookHotPathProfile,
   type RulesButtonReference,
   type RequiredSubscriptionMembershipLookupOptions,
@@ -311,8 +316,6 @@ import {
   type ChannelDialogType,
   type ModerationActionAttemptResult,
   type AdminForwardedModerationCommand,
-  type ForwardedModerationTarget,
-  type ForwardedRulesSource,
   type GlobalSpammerTrackingResult,
   type PrivateControlCommand,
   type ActiveBotSpeechProfile,
@@ -323,19 +326,26 @@ import {
   type NightModeTransitionJob,
   type NightModeTransitionProcessResult,
 } from './night-mode-transition.queue';
+import type { NightModeTransitionSnapshot } from './night-mode-transition-time.util';
 import {
-  resolveNightModeTransitionSnapshot as resolveNightModeTransitionSnapshotValue,
-  type NightModeTransitionSnapshot,
-} from './night-mode-transition-time.util';
-
-type NightModeTransitionNoticeResult = NightModeTransitionProcessResult & {
-  messageId: string | null;
-};
+  NightModeTransitionRuntimeService,
+  type NightModeTransitionNoticeResult,
+} from './night-mode-transition-runtime.service';
 
 type NightModeTransitionOperation =
   | 'send-close-notice'
   | 'send-open-notice'
   | 'delete-close-notice';
+
+type ManualModerationCommandBridge = Pick<
+  ManualModerationService,
+  | 'adoptChatRulesFromMessage'
+  | 'applyManualChatSilenceCommand'
+  | 'applyManualOpenChatCommand'
+  | 'enqueueDeveloperSuperBanCommand'
+  | 'enqueueManualGroupModerationCommand'
+  | 'isSuperBanDeveloperUserId'
+>;
 
 type RequiredSubscriptionMembershipResolution = {
   membership: boolean | null;
@@ -366,29 +376,7 @@ type BotSpeechMediaUploadOptions = {
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly blockedDomainDetector = new MessageLimitsBlockedDomainDetector();
   private readonly logger = new Logger(ModerationService.name);
-  private readonly chatAdminAccessCache = new Map<
-    string,
-    {
-      expiresAt: number;
-      state: RemoteChatAdminAccessState;
-    }
-  >();
-  private readonly chatAdminSharedCacheReadInFlight = new Map<
-    string,
-    Promise<RemoteChatAdminAccessState | null>
-  >();
-  private readonly chatAdminLookupInFlight = new Map<
-    string,
-    Promise<RemoteChatAdminAccessState | null>
-  >();
-  private readonly chatAdminLookupBackoffUntilMs = new Map<string, number>();
-  private readonly chatAdminChatBackoffUntilMs = new Map<string, number>();
   private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
-  private readonly pendingChatAdminSharedCacheBatches = new Map<
-    string,
-    PendingChatAdminSharedCacheBatch
-  >();
-  private readonly pendingChatAdminLookupBatches = new Map<string, PendingChatAdminLookupBatch>();
   private readonly requiredSubscriptionMembershipCache = new Map<
     string,
     {
@@ -453,8 +441,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
-  private readonly nightModeTransitionMemoryState = new Map<string, NightModeTransitionState>();
-  private readonly nightModeTransitionMemoryLocks = new Set<string>();
   private readonly appBaseUrl: string | null;
   private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
@@ -470,8 +456,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly botNoticeTokenBucketLimit: number;
-  private readonly chatAdminLookupTimeoutMs: number;
-  private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
   private readonly sharedChatExecutionLookupTimeoutMs: number;
   private readonly sharedChatExecutionLockTimeoutMs: number;
   private readonly webhookUserFacingTimeoutMs: number;
@@ -480,6 +464,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly backgroundWorkSoftPauseWorkerShare: number;
   private readonly backgroundWorkSoftPauseWorkerPressure: number;
   private readonly sharedChatExecutionMemoryLocks = new Map<string, string>();
+  private moderationAccessServiceInstance: ModerationAccessService | null = null;
+  private nightModeTransitionRuntimeInstance: NightModeTransitionRuntimeService | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -488,7 +474,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly maxClient: MaxClientService,
     @Optional() private readonly chatContextCache?: ChatContextCacheService,
     @Optional() private readonly systemModeService?: SystemModeService,
-    @Optional() configService?: ConfigService,
+    @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly privateControlService?: PrivateControlService,
     @Optional() private readonly adminService?: AdminService,
@@ -506,6 +492,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly globalSpammerIntelligence?: GlobalSpammerIntelligenceService,
     @Optional()
     private readonly managedEntityAccessLossService?: ManagedEntityAccessLossService,
+    @Optional()
+    private readonly injectedModerationAccessService?: ModerationAccessService,
+    @Optional()
+    private readonly injectedNightModeTransitionRuntime?: NightModeTransitionRuntimeService,
+    @Optional()
+    private readonly injectedManualModerationService?: ManualModerationService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -566,15 +558,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       DEFAULT_BOT_NOTICE_TOKEN_BUCKET_LIMIT,
       1,
     );
-    this.chatAdminLookupTimeoutMs = this.readPositiveConfigInt(
-      configService?.get<number>('CHAT_ADMIN_LOOKUP_TIMEOUT_MS'),
-      DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
-      250,
-    );
-    this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown = this.readBooleanConfig(
-      configService?.get<boolean | string>('CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN'),
-      false,
-    );
     this.sharedChatExecutionLookupTimeoutMs = this.readPositiveConfigInt(
       configService?.get<number>('SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS'),
       DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS,
@@ -607,6 +590,63 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE'),
       DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE,
     );
+  }
+
+  private get moderationAccessService(): ModerationAccessService {
+    if (this.injectedModerationAccessService) {
+      return this.injectedModerationAccessService;
+    }
+    if (!this.moderationAccessServiceInstance) {
+      this.moderationAccessServiceInstance = new ModerationAccessService(
+        this.prisma,
+        this.maxClient,
+        this.chatContextCache,
+        this.configService,
+        this.maxBotLinkService,
+        this.runtimeDiagnosticsService,
+      );
+    }
+    return this.moderationAccessServiceInstance;
+  }
+
+  private get nightModeTransitionRuntime(): NightModeTransitionRuntimeService {
+    if (this.injectedNightModeTransitionRuntime) {
+      return this.injectedNightModeTransitionRuntime;
+    }
+    if (!this.nightModeTransitionRuntimeInstance) {
+      this.nightModeTransitionRuntimeInstance = new NightModeTransitionRuntimeService(
+        this.prisma,
+        this.redisCounter,
+      );
+    }
+    return this.nightModeTransitionRuntimeInstance;
+  }
+
+  private get manualModerationCommandBridge(): ManualModerationCommandBridge | null {
+    return this.injectedManualModerationService ?? this.adminService ?? null;
+  }
+
+  private isSuperBanDeveloperUserId(userId: string | null | undefined): boolean {
+    const bridge = this.manualModerationCommandBridge;
+    return (
+      typeof bridge?.isSuperBanDeveloperUserId === 'function' &&
+      bridge.isSuperBanDeveloperUserId(userId) === true
+    );
+  }
+
+  private createNightModeTransitionHooks() {
+    return {
+      sendClosedNotice: (
+        settings: Parameters<typeof this.sendNightModeClosedTransitionNotice>[0],
+        snapshot: Parameters<typeof this.sendNightModeClosedTransitionNotice>[1],
+      ) => this.sendNightModeClosedTransitionNotice(settings, snapshot),
+      sendOpenedNotice: (
+        settings: Parameters<typeof this.sendNightModeOpenedTransitionNotice>[0],
+        snapshot: Parameters<typeof this.sendNightModeOpenedTransitionNotice>[1],
+      ) => this.sendNightModeOpenedTransitionNotice(settings, snapshot),
+      deleteClosedNotice: (chatId: string, messageId: string) =>
+        this.deleteNightModeClosedTransitionNotice(chatId, messageId),
+    };
   }
 
   private withBotModerationEventData(
@@ -988,8 +1028,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (
         messageId &&
-        typeof this.adminService?.isSuperBanDeveloperUserId === 'function' &&
-        this.adminService.isSuperBanDeveloperUserId(senderId) &&
+        this.isSuperBanDeveloperUserId(senderId) &&
         (await this.handleAdminForwardedModerationCommand({
           update,
           chatId,
@@ -1040,7 +1079,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             !hotChatBackoffActive &&
             !degradeMode &&
             !destructiveAccessGateActive &&
-            !this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown,
+            !this.moderationAccessService.syncRemoteLookupWhenLocalAdminsKnown,
         },
       );
       if (senderChatAdminCheck.isAdmin) {
@@ -5245,10 +5284,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<boolean> {
     const { update, chatId, chatTitle, senderId, senderName, messageId, settings, superBanOnly } =
       params;
-    const directText = this.extractDirectIncomingMessageText(update);
+    const directText = extractDirectIncomingMessageText(update);
     let command: AdminForwardedModerationCommand | null;
     try {
-      command = this.parseAdminForwardedModerationCommand(directText, settings);
+      command = parseAdminForwardedModerationCommand(directText, settings);
     } catch (error: unknown) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -5271,19 +5310,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       chatTitle: chatTitle?.trim() || null,
     };
-    if (!this.adminService) {
+    const manualBridge = this.manualModerationCommandBridge;
+    if (!manualBridge) {
       this.logger.warn(
         {
           chatId,
           actorUserId: senderId,
           action: command.action,
         },
-        'Admin forwarded command ignored: AdminService is unavailable',
+        'Admin forwarded command ignored: manual moderation service is unavailable',
       );
       return false;
     }
 
-    if (command.action === 'SUPER_BAN' && !this.adminService.isSuperBanDeveloperUserId(senderId)) {
+    if (command.action === 'SUPER_BAN' && !manualBridge.isSuperBanDeveloperUserId(senderId)) {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
@@ -5293,16 +5333,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (command.action === 'RULES') {
-      const rulesCommandHelpText = `\`${this.getAdminCommandName(
+      const rulesCommandHelpText = `\`${getAdminCommandName(
         settings.adminRulesCommandName,
         ADMIN_RULES_COMMAND_NAME_DEFAULT,
       )}\``;
-      const sources = this.extractForwardedRulesSources(update);
+      const sources = extractForwardedRulesSources(update);
       if (sources.length === 0) {
         return false;
       }
 
-      const uniqueSources = this.dedupeForwardedRulesSources(sources);
+      const uniqueSources = dedupeForwardedRulesSources(sources);
       if (uniqueSources.length !== 1) {
         await this.sendGroupAdminCommandNotice({
           chatId,
@@ -5323,7 +5363,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        await this.adminService.adoptChatRulesFromMessage(
+        await manualBridge.adoptChatRulesFromMessage(
           chatId,
           actor,
           {
@@ -5367,7 +5407,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         const result =
           command.action === 'SILENCE'
-            ? await this.adminService.applyManualChatSilenceCommand(
+            ? await manualBridge.applyManualChatSilenceCommand(
                 chatId,
                 actor,
                 {
@@ -5375,7 +5415,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 },
                 'group_command',
               )
-            : await this.adminService.applyManualOpenChatCommand(chatId, actor, 'group_command');
+            : await manualBridge.applyManualOpenChatCommand(chatId, actor, 'group_command');
 
         await this.deleteAdminCommandMessage(chatId, messageId);
         await this.sendGroupAdminCommandNotice({
@@ -5406,12 +5446,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const targets = this.extractForwardedModerationTargets(update, chatId);
+    const targets = extractForwardedModerationTargets(update, chatId);
     const commandHelpText =
       command.action === 'SUPER_BAN'
         ? '`супер бан`'
         : command.action === 'MUTE'
-          ? `\`${this.getAdminCommandName(
+          ? `\`${getAdminCommandName(
               command.mutePermanent
                 ? settings.adminPermanentMuteCommandName
                 : settings.adminMuteCommandName,
@@ -5419,7 +5459,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 ? ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT
                 : ADMIN_MUTE_COMMAND_NAME_DEFAULT,
             )}\``
-          : `\`${this.getAdminCommandName(
+          : `\`${getAdminCommandName(
               command.fanoutAllChats
                 ? settings.adminBanAllCommandName
                 : settings.adminBanCommandName,
@@ -5436,7 +5476,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
+    const uniqueTargets = dedupeForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
       await this.sendGroupAdminCommandNotice({
         chatId,
@@ -5461,7 +5501,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       commandBotId = this.readExecutionOwnerBotId(update);
       const queued =
         command.action === 'SUPER_BAN'
-          ? await this.adminService.enqueueDeveloperSuperBanCommand({
+          ? await manualBridge.enqueueDeveloperSuperBanCommand({
               sourceChatId: chatId,
               commandBotId,
               targetUserId: target.userId,
@@ -5472,7 +5512,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
               deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
             })
-          : await this.adminService.enqueueManualGroupModerationCommand({
+          : await manualBridge.enqueueManualGroupModerationCommand({
               sourceChatId: chatId,
               commandBotId,
               targetUserId: target.userId,
@@ -5537,685 +5577,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return true;
-  }
-
-  private parseAdminForwardedModerationCommand(
-    text: string,
-    settings?: Pick<
-      ChatSettings,
-      | 'adminBanCommandName'
-      | 'adminBanAllCommandName'
-      | 'adminMuteCommandName'
-      | 'adminPermanentMuteCommandName'
-      | 'adminRulesCommandName'
-      | 'adminSilenceCommandName'
-      | 'adminOpenChatCommandName'
-    >,
-  ): AdminForwardedModerationCommand | null {
-    const normalized = this.readAdminCommandText(text);
-    if (!normalized) {
-      return null;
-    }
-    const normalizedLower = normalized.toLowerCase();
-    const banCommandName = this.getAdminCommandName(
-      settings?.adminBanCommandName,
-      ADMIN_BAN_COMMAND_NAME_DEFAULT,
-    );
-    const banAllCommandName = this.getAdminCommandName(
-      settings?.adminBanAllCommandName,
-      ADMIN_BAN_ALL_COMMAND_NAME_DEFAULT,
-    );
-    const muteCommandName = this.getAdminCommandName(
-      settings?.adminMuteCommandName,
-      ADMIN_MUTE_COMMAND_NAME_DEFAULT,
-    );
-    const permanentMuteCommandName = this.getAdminCommandName(
-      settings?.adminPermanentMuteCommandName,
-      ADMIN_PERMANENT_MUTE_COMMAND_NAME_DEFAULT,
-    );
-    const rulesCommandName = this.getAdminCommandName(
-      settings?.adminRulesCommandName,
-      ADMIN_RULES_COMMAND_NAME_DEFAULT,
-    );
-    const silenceCommandName = this.getAdminCommandName(
-      settings?.adminSilenceCommandName,
-      ADMIN_SILENCE_COMMAND_NAME_DEFAULT,
-    );
-    const openChatCommandName = this.getAdminCommandName(
-      settings?.adminOpenChatCommandName,
-      ADMIN_OPEN_CHAT_COMMAND_NAME_DEFAULT,
-    );
-
-    const muteCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalizedLower,
-      muteCommandName,
-    );
-    const silenceCommandMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalizedLower,
-      silenceCommandName,
-    );
-
-    if (/^(?:супер[\s-]+бан|super[\s-]+ban)[.!]?$/u.test(normalizedLower)) {
-      return {
-        action: 'SUPER_BAN',
-      };
-    }
-
-    if (this.matchesAdminCommandName(normalizedLower, permanentMuteCommandName)) {
-      return {
-        action: 'MUTE',
-        mutePermanent: true,
-      };
-    }
-
-    const banDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalizedLower,
-      banCommandName,
-    );
-    if (banDurationMatch && banDurationMatch.durationText !== null) {
-      throw new BadRequestException(
-        `Команда \`${banCommandName}\` теперь делает только постоянный системный бан. Используйте просто \`${banCommandName}\`.`,
-      );
-    }
-
-    const banAllDurationMatch = this.matchAdminCommandNameWithOptionalDuration(
-      normalizedLower,
-      banAllCommandName,
-    );
-    if (banAllDurationMatch && banAllDurationMatch.durationText !== null) {
-      throw new BadRequestException(
-        `Команда \`${banAllCommandName}\` теперь делает только постоянный системный бан во всех чатах админа. Используйте просто \`${banAllCommandName}\`.`,
-      );
-    }
-
-    if (this.matchesAdminCommandName(normalizedLower, rulesCommandName)) {
-      return {
-        action: 'RULES',
-      };
-    }
-
-    if (this.matchesAdminCommandName(normalizedLower, openChatCommandName)) {
-      return {
-        action: 'OPEN_CHAT',
-      };
-    }
-
-    if (silenceCommandMatch?.durationText === null) {
-      return {
-        action: 'SILENCE',
-      };
-    }
-
-    if (silenceCommandMatch) {
-      const silenceDurationHours = Number.parseInt(silenceCommandMatch.durationText, 10);
-      if (
-        !Number.isInteger(silenceDurationHours) ||
-        silenceDurationHours < 1 ||
-        silenceDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
-      ) {
-        throw new BadRequestException(
-          `Длительность тишины должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
-        );
-      }
-
-      return {
-        action: 'SILENCE',
-        silenceDurationHours,
-      };
-    }
-
-    if (this.matchesAdminCommandName(normalizedLower, banAllCommandName)) {
-      return {
-        action: 'BAN',
-        fanoutAllChats: true,
-      };
-    }
-
-    if (this.matchesAdminCommandName(normalizedLower, banCommandName)) {
-      return {
-        action: 'BAN',
-      };
-    }
-
-    if (muteCommandMatch?.durationText === null) {
-      return {
-        action: 'MUTE',
-        muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
-      };
-    }
-
-    if (!muteCommandMatch) {
-      return null;
-    }
-
-    const muteDurationHours = Number.parseInt(muteCommandMatch.durationText, 10);
-    if (
-      !Number.isInteger(muteDurationHours) ||
-      muteDurationHours < 1 ||
-      muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
-    ) {
-      throw new BadRequestException(
-        `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
-      );
-    }
-
-    return {
-      action: 'MUTE',
-      muteDurationHours,
-    };
-  }
-
-  private matchesAdminCommandName(
-    normalizedText: string,
-    commandName: string,
-  ): boolean {
-    return (
-      normalizedText === commandName ||
-      normalizedText === `${commandName}!` ||
-      normalizedText === `${commandName}.`
-    );
-  }
-
-  private matchAdminCommandNameWithOptionalDuration(
-    normalizedText: string,
-    commandName: string,
-  ): { commandName: string; durationText: string | null } | null {
-    if (this.matchesAdminCommandName(normalizedText, commandName)) {
-      return { commandName, durationText: null };
-    }
-
-    if (!normalizedText.startsWith(`${commandName} `)) {
-      return null;
-    }
-
-    const suffix = normalizedText.slice(commandName.length).trim();
-    const durationMatch = suffix.match(
-      /^(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-    );
-    if (durationMatch) {
-      return { commandName, durationText: durationMatch[1] };
-    }
-
-    return null;
-  }
-
-  private getAdminCommandName(commandName: string | null | undefined, fallback: string): string {
-    return this.readLowerString(commandName)?.replace(/\s+/g, ' ') ?? fallback.toLowerCase();
-  }
-
-  private readAdminCommandText(value: unknown): string | null {
-    return this.readString(value)?.replace(/\s+/g, ' ') ?? null;
-  }
-
-  private extractDirectIncomingMessageText(update: MaxUpdate): string {
-    const normalizedText = this.readString(update.message?.text);
-    if (normalizedText) {
-      return normalizedText;
-    }
-
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return '';
-    }
-
-    const messageNode = extractRawMessageNode(raw) ?? raw;
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
-    const candidates = [
-      messageNode.text,
-      messageNode.caption,
-      messageNode.message_text,
-      messageNode.messageText,
-      body?.text,
-      body?.plain,
-      content?.text,
-      content?.caption,
-      payload?.text,
-      nestedMessage?.text,
-    ];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' && candidate.trim().length > 0) {
-        return candidate.trim();
-      }
-    }
-
-    return '';
-  }
-
-  private extractForwardedModerationTargets(
-    update: MaxUpdate,
-    fallbackReplyChatId?: string | null,
-  ): ForwardedModerationTarget[] {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return [];
-    }
-
-    const messageNode = extractRawMessageNode(raw) ?? raw;
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
-    const candidates = [
-      messageNode.link,
-      messageNode.forward,
-      messageNode.forwarded_message,
-      messageNode.forwardedMessage,
-      body?.link,
-      body?.forward,
-      body?.forwarded_message,
-      body?.forwardedMessage,
-      content?.link,
-      content?.forward,
-      content?.forwarded_message,
-      content?.forwardedMessage,
-      payload?.link,
-      payload?.forward,
-      payload?.forwarded_message,
-      payload?.forwardedMessage,
-      nestedMessage?.link,
-      nestedMessage?.forward,
-      nestedMessage?.forwarded_message,
-      nestedMessage?.forwardedMessage,
-    ];
-
-    const targets: ForwardedModerationTarget[] = [];
-    for (const candidate of candidates) {
-      this.collectForwardedModerationTargets(candidate, targets, 0, fallbackReplyChatId);
-    }
-
-    return this.dedupeForwardedModerationTargets(targets);
-  }
-
-  private collectForwardedModerationTargets(
-    node: unknown,
-    acc: ForwardedModerationTarget[],
-    depth = 0,
-    fallbackReplyChatId?: string | null,
-  ): void {
-    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectForwardedModerationTargets(item, acc, depth + 1, fallbackReplyChatId);
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const target = this.parseForwardedModerationTarget(row, fallbackReplyChatId);
-    if (target) {
-      acc.push(target);
-    }
-
-    for (const value of Object.values(row)) {
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedModerationTargets(value, acc, depth + 1, fallbackReplyChatId);
-      }
-    }
-  }
-
-  private parseForwardedModerationTarget(
-    row: Record<string, unknown>,
-    fallbackReplyChatId?: string | null,
-  ): ForwardedModerationTarget | null {
-    const chatId =
-      this.readChatIdFromEntity(row) ??
-      (this.isReplyLinkedMessage(row) ? this.readString(fallbackReplyChatId) : null);
-    const userId = this.readUserIdFromForwardedNode(row);
-    if (!chatId || !userId) {
-      return null;
-    }
-
-    return {
-      chatId,
-      chatTitle: this.readChatTitleFromEntity(row),
-      userId,
-      senderName: this.readSenderNameFromForwardedNode(row),
-      messageId: this.readMessageIdFromForwardedNode(row),
-    };
-  }
-
-  private isReplyLinkedMessage(node: Record<string, unknown>): boolean {
-    const type = this.readLowerString(node.type ?? node.link_type ?? node.linkType);
-    return type === 'reply';
-  }
-
-  private dedupeForwardedModerationTargets(
-    targets: ForwardedModerationTarget[],
-  ): ForwardedModerationTarget[] {
-    const unique = new Map<string, ForwardedModerationTarget>();
-    for (const target of targets) {
-      const key = `${target.chatId}:${target.userId}`;
-      const existing = unique.get(key);
-      if (!existing) {
-        unique.set(key, target);
-        continue;
-      }
-
-      if (!existing.messageId && target.messageId) {
-        unique.set(key, {
-          ...existing,
-          messageId: target.messageId,
-        });
-      }
-    }
-
-    return [...unique.values()];
-  }
-
-  private extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return [];
-    }
-
-    const messageNode = extractRawMessageNode(raw) ?? raw;
-    const body = this.asRecord(messageNode.body);
-    const content = this.asRecord(messageNode.content);
-    const payload = this.asRecord(messageNode.payload);
-    const nestedMessage = this.asRecord(messageNode.message);
-    const candidates = [
-      messageNode.link,
-      messageNode.forward,
-      messageNode.forwarded_message,
-      messageNode.forwardedMessage,
-      body?.link,
-      body?.forward,
-      body?.forwarded_message,
-      body?.forwardedMessage,
-      content?.link,
-      content?.forward,
-      content?.forwarded_message,
-      content?.forwardedMessage,
-      payload?.link,
-      payload?.forward,
-      payload?.forwarded_message,
-      payload?.forwardedMessage,
-      nestedMessage?.link,
-      nestedMessage?.forward,
-      nestedMessage?.forwarded_message,
-      nestedMessage?.forwardedMessage,
-    ];
-
-    const sources: ForwardedRulesSource[] = [];
-    for (const candidate of candidates) {
-      this.collectForwardedRulesSources(candidate, sources);
-    }
-
-    return this.dedupeForwardedRulesSources(sources);
-  }
-
-  private collectForwardedRulesSources(
-    node: unknown,
-    acc: ForwardedRulesSource[],
-    depth = 0,
-  ): void {
-    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        this.collectForwardedRulesSources(item, acc, depth + 1);
-      }
-      return;
-    }
-
-    const row = this.asRecord(node);
-    if (!row) {
-      return;
-    }
-
-    const source = this.parseForwardedRulesSource(row);
-    if (source) {
-      acc.push(source);
-    }
-
-    for (const value of Object.values(row)) {
-      if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectForwardedRulesSources(value, acc, depth + 1);
-      }
-    }
-  }
-
-  private parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRulesSource | null {
-    const chatId = this.readChatIdFromEntity(row);
-    if (!chatId) {
-      return null;
-    }
-
-    const messageId = this.readMessageIdFromForwardedNode(row);
-    const url = this.readMessageUrlFromForwardedNode(row);
-    if (!messageId && !url) {
-      return null;
-    }
-
-    return {
-      chatId,
-      chatTitle: this.readChatTitleFromEntity(row),
-      messageId,
-      url,
-      text: this.readForwardedMessageText(row),
-    };
-  }
-
-  private dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
-    const unique = new Map<string, ForwardedRulesSource>();
-    for (const source of sources) {
-      const key = `${source.chatId}:${source.messageId ?? source.url ?? ''}`;
-      if (!unique.has(key)) {
-        unique.set(key, source);
-      }
-    }
-
-    return [...unique.values()];
-  }
-
-  private readUserIdFromForwardedNode(node: Record<string, unknown>): string | null {
-    const sender = this.asRecord(node.sender);
-    const from = this.asRecord(node.from);
-    const user = this.asRecord(node.user);
-    const actor = this.asRecord(node.actor);
-    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
-    const candidates = [sender, from, user, actor, payloadSender].filter(
-      (item): item is Record<string, unknown> => item !== null,
-    );
-
-    for (const candidate of candidates) {
-      const userId = this.readUserIdFromEntity(candidate);
-      if (userId) {
-        return userId;
-      }
-    }
-
-    return this.readUserIdFromEntity(node);
-  }
-
-  private readSenderNameFromForwardedNode(node: Record<string, unknown>): string | null {
-    const sender = this.asRecord(node.sender);
-    const from = this.asRecord(node.from);
-    const user = this.asRecord(node.user);
-    const actor = this.asRecord(node.actor);
-    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
-    const candidates = [sender, from, user, actor, payloadSender, node].filter(
-      (item): item is Record<string, unknown> => item !== null,
-    );
-
-    for (const candidate of candidates) {
-      const displayName = this.readDisplayNameFromEntity(candidate);
-      if (displayName) {
-        return displayName;
-      }
-    }
-
-    return null;
-  }
-
-  private readChatIdFromEntity(node: Record<string, unknown>): string | null {
-    const chat = this.asRecord(node.chat);
-    const recipient = this.asRecord(node.recipient);
-    const conversation = this.asRecord(node.conversation);
-    const payloadChat = this.asRecord(this.asRecord(node.payload)?.chat);
-    const candidates = [
-      node.chatId,
-      node.chat_id,
-      chat?.chatId,
-      chat?.chat_id,
-      chat?.id,
-      recipient?.chatId,
-      recipient?.chat_id,
-      recipient?.id,
-      conversation?.chatId,
-      conversation?.chat_id,
-      conversation?.id,
-      payloadChat?.chatId,
-      payloadChat?.chat_id,
-      payloadChat?.id,
-    ];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' || typeof candidate === 'number') {
-        const normalized = String(candidate).trim();
-        if (normalized.length > 0) {
-          return normalized;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private readChatTitleFromEntity(node: Record<string, unknown>): string | null {
-    const chat = this.asRecord(node.chat);
-    const recipient = this.asRecord(node.recipient);
-    const candidates = [
-      node.chatTitle,
-      node.chat_title,
-      node.chatName,
-      node.chat_name,
-      chat?.title,
-      chat?.name,
-      recipient?.title,
-      recipient?.chat_title,
-      recipient?.chatTitle,
-      recipient?.name,
-      recipient?.display_name,
-    ];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' && candidate.trim().length > 0) {
-        return candidate.trim();
-      }
-    }
-
-    return null;
-  }
-
-  private readMessageIdFromForwardedNode(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      body?.mid,
-      body?.message_id,
-      body?.messageId,
-      content?.mid,
-      content?.message_id,
-      content?.messageId,
-      payload?.mid,
-      payload?.message_id,
-      payload?.messageId,
-      nestedMessage?.mid,
-      nestedMessage?.message_id,
-      nestedMessage?.messageId,
-      node.message_id,
-      node.messageId,
-      node.mid,
-      node.id,
-    ];
-
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' || typeof candidate === 'number') {
-        const normalized = String(candidate).trim();
-        if (normalized.length > 0) {
-          return normalized;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private readMessageUrlFromForwardedNode(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      node.url,
-      node.message_url,
-      node.messageUrl,
-      body?.url,
-      body?.message_url,
-      body?.messageUrl,
-      content?.url,
-      content?.message_url,
-      content?.messageUrl,
-      payload?.url,
-      payload?.message_url,
-      payload?.messageUrl,
-      nestedMessage?.url,
-      nestedMessage?.message_url,
-      nestedMessage?.messageUrl,
-    ];
-
-    for (const candidate of candidates) {
-      const normalized = this.readString(candidate);
-      if (normalized) {
-        return normalized;
-      }
-    }
-
-    return null;
-  }
-
-  private readForwardedMessageText(node: Record<string, unknown>): string | null {
-    const body = this.asRecord(node.body);
-    const content = this.asRecord(node.content);
-    const payload = this.asRecord(node.payload);
-    const nestedMessage = this.asRecord(node.message);
-    const candidates = [
-      node.text,
-      node.caption,
-      node.message_text,
-      node.messageText,
-      body?.text,
-      body?.plain,
-      content?.text,
-      content?.caption,
-      payload?.text,
-      nestedMessage?.text,
-    ];
-
-    for (const candidate of candidates) {
-      const normalized = this.readString(candidate);
-      if (normalized) {
-        return normalized;
-      }
-    }
-
-    return null;
   }
 
   private async deleteAdminCommandMessage(chatId: string, messageId: string): Promise<void> {
@@ -10649,12 +10010,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private readExecutionOwnerBotId(update: MaxUpdate): string | null {
-    const value = (
-      update as MaxUpdate & {
-        executionOwnerBotId?: unknown;
-      }
-    ).executionOwnerBotId;
-    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+    return readExecutionOwnerBotIdFromUpdate(update);
   }
 
   private async handlePrivateChatControl(update: MaxUpdate): Promise<void> {
@@ -11172,37 +10528,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveUnifiedBotRoute(request: MaxBotRouteRequest): Promise<MaxBotRoute | null> {
-    const routeResolver = this.maxBotLinkService as unknown as {
-      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
-      resolveBotRoutes?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
-    };
-    if (
-      request.purpose === 'moderation_action' &&
-      typeof routeResolver?.resolveBotRoutes === 'function'
-    ) {
-      return routeResolver.resolveBotRoutes(request);
-    }
-
-    if (typeof routeResolver?.resolveBotRoute === 'function') {
-      return routeResolver.resolveBotRoute(request);
-    }
-
-    return null;
+    return resolveUnifiedBotRouteForModeration(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+      },
+      request,
+    );
   }
 
   private async resolveChatReadBotId(chatId: string): Promise<string | null> {
-    const route = await this.resolveUnifiedBotRoute({
-      purpose: 'read',
+    return resolveChatReadBotIdForModeration(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+      },
       chatId,
-    });
-    if (route?.botId) {
-      return route.botId;
-    }
-
-    return (
-      (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
-      (await this.maxBotLinkService?.resolveBotId?.({ chatId })) ??
-      null
     );
   }
 
@@ -11210,31 +10549,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     source: 'webhook' | 'poll',
   ): Promise<string | null> {
-    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
-    if (typeof activeBotId === 'string' && activeBotId.trim().length > 0) {
-      return activeBotId.trim();
-    }
-
-    if (source === 'poll') {
-      const scanBotRoute = await this.resolveUnifiedBotRoute({
-        purpose: 'capability',
-        chatId,
-        capability: 'background_scans',
-        fallbackToPrimary: true,
-      });
-      const scanBotId =
-        scanBotRoute?.botId ??
-        (await this.maxBotLinkService?.resolveBotIdForCapability?.({
-          chatId,
-          capability: 'background_scans',
-        })) ??
-        null;
-      if (typeof scanBotId === 'string' && scanBotId.trim().length > 0) {
-        return scanBotId.trim();
-      }
-    }
-
-    return await this.resolveChatReadBotId(chatId);
+    return resolveAutoAttachBotIdForModeration(
+      {
+        maxBotLinkService: this.maxBotLinkService,
+        maxBotContextService: this.maxBotContextService,
+      },
+      chatId,
+      source,
+    );
   }
 
   private async recordChannelAutoPostAccessLossIfTerminal(params: {
@@ -12151,106 +11473,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       prefetchRemoteLookupWhenLocalAdminsKnown?: boolean;
     },
   ): Promise<ChatAdminCheckResult> {
-    const startedAtMs = Date.now();
-    const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
-    if (localIsAdmin) {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: true, source: 'local' },
-        'admin-check.local',
-        startedAtMs,
-      );
-    }
-
-    const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
-      allowLookup: false,
-    });
-    if (cachedRemoteAdminAccess === 'granted') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: true, source: 'remote' },
-        'admin-check.remote-cache',
-        startedAtMs,
-      );
-    }
-    if (cachedRemoteAdminAccess === 'user_denied') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'remote' },
-        'admin-check.remote-cache',
-        startedAtMs,
-      );
-    }
-
-    const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
-    if (options?.allowRemoteLookup === false) {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
-        'admin-check.local-fallback',
-        startedAtMs,
-      );
-    }
-    if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown) {
-      if (options.prefetchRemoteLookupWhenLocalAdminsKnown) {
-        void this.prefetchRemoteChatAdminAccess(chatId, userId);
-      }
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
-        'admin-check.local-fallback',
-        startedAtMs,
-      );
-    }
-
-    if (
-      typeof options?.remoteLookupSoftTimeoutMs === 'number' &&
-      options.remoteLookupSoftTimeoutMs > 0
-    ) {
-      const remoteAdminAccess = await this.getRemoteChatAdminAccessWithin(chatId, userId, {
-        maxWaitMs: options.remoteLookupSoftTimeoutMs,
-      });
-      if (remoteAdminAccess) {
-        if (remoteAdminAccess === 'granted') {
-          return this.finalizeAdminCheckResult(
-            { isAdmin: true, source: 'remote' },
-            'admin-check.remote-soft-timeout',
-            startedAtMs,
-          );
-        }
-        return this.finalizeAdminCheckResult(
-          { isAdmin: false, source: 'remote' },
-          'admin-check.remote-soft-timeout',
-          startedAtMs,
-        );
-      }
-
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'local_fallback' },
-        'admin-check.soft-timeout-fallback',
-        startedAtMs,
-      );
-    }
-
-    const remoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId);
-    if (remoteAdminAccess) {
-      if (remoteAdminAccess === 'granted') {
-        return this.finalizeAdminCheckResult(
-          { isAdmin: true, source: 'remote' },
-          'admin-check.remote',
-          startedAtMs,
-        );
-      }
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'remote' },
-        'admin-check.remote',
-        startedAtMs,
-      );
-    }
-
-    // Fallback for temporary MAX API issues: keep local allowlist behavior.
-    return this.finalizeAdminCheckResult(
-      {
-        isAdmin: localIsAdmin,
-        source: 'local_fallback',
-      },
-      'admin-check.local-fallback',
-      startedAtMs,
+    return this.moderationAccessService.resolveSenderChatAdminCheck(
+      chatId,
+      localAdminUserIds,
+      userId,
+      options,
     );
   }
 
@@ -12263,60 +11490,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       maxWaitMs?: number;
     },
   ): Promise<ChatAdminCheckResult> {
-    if (initialResult.isAdmin || initialResult.source !== 'local_fallback') {
-      return initialResult;
-    }
-
-    const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
-    if (!localAdminsKnown) {
-      return initialResult;
-    }
-
-    const startedAtMs = Date.now();
-    const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
-      allowLookup: false,
-    });
-    if (cachedRemoteAdminAccess === 'granted') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: true, source: 'remote+local' },
-        'admin-check.violation-cache',
-        startedAtMs,
-      );
-    }
-    if (cachedRemoteAdminAccess === 'user_denied') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'remote' },
-        'admin-check.violation-cache',
-        startedAtMs,
-      );
-    }
-
-    const maxWaitMs = Math.max(
-      1,
-      Math.ceil(options?.maxWaitMs ?? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS),
-    );
-    const remoteAdminAccess = await this.getRemoteChatAdminAccessWithin(chatId, userId, {
-      maxWaitMs,
-    });
-    if (remoteAdminAccess === 'granted') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: true, source: 'remote+local' },
-        'admin-check.violation-recheck',
-        startedAtMs,
-      );
-    }
-    if (remoteAdminAccess === 'user_denied') {
-      return this.finalizeAdminCheckResult(
-        { isAdmin: false, source: 'remote' },
-        'admin-check.violation-recheck',
-        startedAtMs,
-      );
-    }
-
-    return this.finalizeAdminCheckResult(
+    return this.moderationAccessService.recheckSenderChatAdminBeforeModeration(
+      chatId,
+      localAdminUserIds,
+      userId,
       initialResult,
-      'admin-check.violation-fallback',
-      startedAtMs,
+      options,
     );
   }
 
@@ -12465,66 +11644,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     degradeMode: boolean;
     hotChatBackoffActive: boolean;
   }): Promise<boolean> {
-    const { chatId, localAdminUserIds, senderId, degradeMode, hotChatBackoffActive } = params;
-    const senderAdminCheck = await this.resolveSenderChatAdminCheck(
-      chatId,
-      localAdminUserIds,
-      senderId,
-      {
-        allowRemoteLookup: !degradeMode && !hotChatBackoffActive,
-        skipRemoteLookupWhenLocalAdminsKnown: false,
-        remoteLookupSoftTimeoutMs:
-          !degradeMode && !hotChatBackoffActive
-            ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
-            : undefined,
-      },
-    );
-    if (!senderAdminCheck.isAdmin) {
-      return false;
-    }
-
-    this.logger.debug(
-      {
-        chatId,
-        userId: senderId,
-        source: senderAdminCheck.source,
-      },
-      'Moderation bypassed for admin bot sender',
-    );
-    return true;
+    return this.moderationAccessService.isOtherBotAdminModerationBypass(params);
   }
 
   private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
-    if (!Array.isArray(adminUserIds) || adminUserIds.length === 0) {
-      return false;
-    }
-
-    const senderVariants = this.buildUserIdVariants(userId);
-    if (senderVariants.size === 0) {
-      return false;
-    }
-
-    for (const adminUserId of adminUserIds) {
-      for (const variant of this.buildUserIdVariants(adminUserId)) {
-        if (senderVariants.has(variant)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    return this.moderationAccessService.isSenderChatAdmin(adminUserIds, userId);
   }
 
   private buildChatAdminAccessLookupKey(chatId: string, userId: string): string {
-    const normalizedUserId =
-      [...this.buildUserIdVariants(userId)].sort((left, right) => {
-        if (left.length !== right.length) {
-          return left.length - right.length;
-        }
-        return left.localeCompare(right);
-      })[0] ?? userId.trim().toLowerCase();
-
-    return `${chatId}:${normalizedUserId}`;
+    return this.moderationAccessService.buildChatAdminAccessLookupKey(chatId, userId);
   }
 
   private async getRemoteChatAdminAccess(
@@ -12534,44 +11662,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       allowLookup?: boolean;
     } = {},
   ): Promise<RemoteChatAdminAccessState | null> {
-    const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
-    const now = Date.now();
-    const cached = this.chatAdminAccessCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return cached.state;
-    }
-    const staleCached = cached?.state ?? null;
-
-    const cachedFromSharedStore = await this.readChatAdminAccessFromSharedCache(
-      chatId,
-      userId,
-      now,
-    );
-    if (cachedFromSharedStore) {
-      this.chatAdminLookupBackoffUntilMs.delete(cacheKey);
-      return cachedFromSharedStore;
-    }
-
-    const backoffUntilMs = this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0;
-    if (backoffUntilMs > now) {
-      return staleCached;
-    }
-
-    const chatBackoffUntilMs = this.chatAdminChatBackoffUntilMs.get(chatId) ?? 0;
-    if (chatBackoffUntilMs > now) {
-      return staleCached;
-    }
-
-    if (options.allowLookup === false) {
-      return staleCached;
-    }
-
-    const inFlight = this.chatAdminLookupInFlight.get(cacheKey);
-    if (inFlight) {
-      return inFlight;
-    }
-
-    return this.enqueueChatAdminLookupBatch(chatId, userId, cacheKey, staleCached);
+    return this.moderationAccessService.getRemoteChatAdminAccess(chatId, userId, options);
   }
 
   private async getRemoteChatAdminAccessWithin(
@@ -12581,137 +11672,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       maxWaitMs: number;
     },
   ): Promise<RemoteChatAdminAccessState | null> {
-    const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
-    const lookupPromise = this.getRemoteChatAdminAccess(chatId, userId);
-    const maxWaitMs = Math.max(1, Math.ceil(options.maxWaitMs));
-
-    return raceWithTimeout({
-      operation: lookupPromise,
-      timeoutMs: maxWaitMs,
-      onTimeout: () => {
-        const softBackoffUntilMs = Date.now() + CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS;
-        if ((this.chatAdminChatBackoffUntilMs.get(chatId) ?? 0) < softBackoffUntilMs) {
-          this.chatAdminChatBackoffUntilMs.set(chatId, softBackoffUntilMs);
-        }
-        if ((this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0) < softBackoffUntilMs) {
-          this.chatAdminLookupBackoffUntilMs.set(cacheKey, softBackoffUntilMs);
-        }
-        return null;
-      },
-    });
-  }
-
-  private enqueueChatAdminLookupBatch(
-    chatId: string,
-    userId: string,
-    cacheKey: string,
-    staleCached: RemoteChatAdminAccessState | null,
-  ): Promise<RemoteChatAdminAccessState | null> {
-    let batch = this.pendingChatAdminLookupBatches.get(chatId);
-    if (!batch) {
-      batch = {
-        chatId,
-        lookups: new Map(),
-        scheduled: false,
-      };
-      this.pendingChatAdminLookupBatches.set(chatId, batch);
-    }
-
-    const lookupPromise = new Promise<RemoteChatAdminAccessState | null>((resolve) => {
-      batch!.lookups.set(cacheKey, {
-        cacheKey,
-        userId,
-        staleCached,
-        resolve,
-      });
-    });
-
-    const trackedLookupPromise = lookupPromise.finally(() => {
-      if (this.chatAdminLookupInFlight.get(cacheKey) === trackedLookupPromise) {
-        this.chatAdminLookupInFlight.delete(cacheKey);
-      }
-    });
-
-    this.chatAdminLookupInFlight.set(cacheKey, trackedLookupPromise);
-
-    if (!batch.scheduled) {
-      batch.scheduled = true;
-      void Promise.resolve().then(() => this.flushPendingChatAdminLookupBatch(chatId));
-    }
-
-    return trackedLookupPromise;
-  }
-
-  private async flushPendingChatAdminLookupBatch(chatId: string): Promise<void> {
-    const batch = this.pendingChatAdminLookupBatches.get(chatId);
-    if (!batch) {
-      return;
-    }
-
-    this.pendingChatAdminLookupBatches.delete(chatId);
-    const lookups = [...batch.lookups.values()];
-    if (lookups.length === 0) {
-      return;
-    }
-
-    const normalizedUserIds = Array.from(
-      new Set(lookups.map((lookup) => lookup.userId.trim()).filter((value) => value.length > 0)),
-    );
-    if (normalizedUserIds.length === 0) {
-      for (const lookup of lookups) {
-        lookup.resolve('user_denied');
-      }
-      return;
-    }
-
-    try {
-      const accessStates = await this.loadRemoteChatAdminAccessBatch(chatId, normalizedUserIds);
-      this.chatAdminChatBackoffUntilMs.delete(chatId);
-
-      for (const lookup of lookups) {
-        const normalizedUserId = lookup.userId.trim();
-        const accessState = accessStates.get(normalizedUserId) ?? lookup.staleCached;
-        if (!accessState) {
-          lookup.resolve(null);
-          continue;
-        }
-
-        this.chatAdminAccessCache.set(lookup.cacheKey, {
-          expiresAt: Date.now() + CHAT_ADMIN_CACHE_TTL_MS,
-          state: accessState,
-        });
-        this.chatAdminLookupBackoffUntilMs.delete(lookup.cacheKey);
-        void this.writeChatAdminAccessToSharedCache(chatId, lookup.userId, accessState);
-
-        if (accessState === 'granted') {
-          void this.persistRemoteAdminGrant(chatId, lookup.userId);
-        }
-
-        lookup.resolve(accessState);
-      }
-    } catch (error: unknown) {
-      const transient = this.isTransientMaxApiLookupError(error);
-      if (transient) {
-        const backoffUntilMs = Date.now() + CHAT_ADMIN_LOOKUP_BACKOFF_MS;
-        this.chatAdminChatBackoffUntilMs.set(chatId, backoffUntilMs);
-        for (const lookup of lookups) {
-          this.chatAdminLookupBackoffUntilMs.set(lookup.cacheKey, backoffUntilMs);
-        }
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          userIds: lookups.map((lookup) => lookup.userId),
-          backoffMs: transient ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to resolve chat admins for moderation bypass',
-      );
-      for (const lookup of lookups) {
-        lookup.resolve(lookup.staleCached);
-      }
-    }
+    return this.moderationAccessService.getRemoteChatAdminAccessWithin(chatId, userId, options);
   }
 
   private async loadRemoteChatAdminAccessBatch(
@@ -12723,69 +11684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       timeoutMs?: number;
     } = {},
   ): Promise<Map<string, RemoteChatAdminAccessState>> {
-    const normalizedUserIds = Array.from(
-      new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
-    );
-    const results = new Map<string, RemoteChatAdminAccessState>();
-    if (normalizedUserIds.length === 0) {
-      return results;
-    }
-
-    const resolvedBotId = await this.resolveChatReadBotId(chatId);
-    const requestOptions = {
-      trafficClass: options.trafficClass ?? ('interactive' as const),
-      actionHealthLane: 'background' as const,
-      ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
-      timeoutMs: options.timeoutMs ?? this.chatAdminLookupTimeoutMs,
-      ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-      ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-    };
-    const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
-
-    if (typeof maxClientWithAccess.getChatMembersAccess === 'function') {
-      const accessByUserId = await this.executeRemoteChatAdminLookupWithGuard(
-        () =>
-          maxClientWithAccess.getChatMembersAccess!.call(
-            this.maxClient,
-            chatId,
-            normalizedUserIds,
-            requestOptions,
-          ),
-        {
-          chatId,
-          userIds: normalizedUserIds,
-          botId: resolvedBotId,
-        },
-      );
-      for (const normalizedUserId of normalizedUserIds) {
-        const userAccess = accessByUserId.get(normalizedUserId) ?? null;
-        const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
-        const accessState: RemoteChatAdminAccessState = hasUserAccess ? 'granted' : 'user_denied';
-
-        results.set(normalizedUserId, accessState);
-      }
-
-      return results;
-    }
-
-    const getChatAdminIds = maxClientWithAccess.getChatAdminIds;
-    if (typeof getChatAdminIds !== 'function') {
-      return results;
-    }
-
-    const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId, requestOptions);
-    if (!Array.isArray(rawAdminUserIds)) {
-      return results;
-    }
-
-    for (const normalizedUserId of normalizedUserIds) {
-      results.set(
-        normalizedUserId,
-        this.isSenderChatAdmin(rawAdminUserIds, normalizedUserId) ? 'granted' : 'user_denied',
-      );
-    }
-
-    return results;
+    return this.moderationAccessService.loadRemoteChatAdminAccessBatch(chatId, userIds, options);
   }
 
   private shouldForceSynchronousRemoteAdminLookup(
@@ -12801,37 +11700,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'adminOpenChatCommandName'
     >,
   ): boolean {
-    if (this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown) {
-      return true;
-    }
-
-    const directText = this.extractDirectIncomingMessageText(update);
-    if (!directText.trim()) {
-      return false;
-    }
-
-    try {
-      return this.parseAdminForwardedModerationCommand(directText, settings) !== null;
-    } catch {
-      return true;
-    }
+    return this.moderationAccessService.shouldForceSynchronousRemoteAdminLookup(update, settings);
   }
 
   private prefetchRemoteChatAdminAccess(chatId: string, userId: string): void {
-    void this.getRemoteChatAdminAccess(chatId, userId).catch((error: unknown) => {
-      this.logger.debug(
-        {
-          chatId,
-          userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Background remote chat admin access prefetch failed',
-      );
-    });
-  }
-
-  private resolveChatAdminLookupGuardTimeoutMs(): number {
-    return this.chatAdminLookupTimeoutMs + CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS;
+    this.moderationAccessService.prefetchRemoteChatAdminAccess(chatId, userId);
   }
 
   private async executeRemoteChatAdminLookupWithGuard<T>(
@@ -12842,289 +11715,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botId?: string | null;
     },
   ): Promise<T> {
-    const startedAtMs = Date.now();
-    const timeoutMs = this.resolveChatAdminLookupGuardTimeoutMs();
-    const operationPromise = operation();
-
-    const result = await raceWithTimeout({
-      operation: operationPromise,
-      timeoutMs,
-      onTimeout: () => {
-        throw this.createChatAdminLookupTimeoutError(context, timeoutMs);
-      },
-    });
-    const durationMs = Date.now() - startedAtMs;
-    if (durationMs >= CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS) {
-      this.logger.warn(
-        {
-          chatId: context.chatId,
-          userIds: context.userIds,
-          botId: context.botId ?? null,
-          durationMs,
-        },
-        'Slow remote chat admin lookup completed close to the hot-path deadline',
-      );
-    }
-    return result;
-  }
-
-  private createChatAdminLookupTimeoutError(
-    context: {
-      chatId: string;
-      userIds: readonly string[];
-      botId?: string | null;
-    },
-    timeoutMs: number,
-  ): Error {
-    const error = new Error(
-      `Remote chat admin lookup for ${context.chatId} timed out after ${timeoutMs}ms`,
-    ) as Error & { code?: string };
-    error.code = 'ECONNABORTED';
-    return error;
-  }
-
-  private async readChatAdminAccessFromSharedCache(
-    chatId: string,
-    userId: string,
-    nowMs: number,
-  ): Promise<RemoteChatAdminAccessState | null> {
-    const chatContextCache = this.chatContextCache as
-      | (ChatContextCacheService & {
-          getAdminAccessBatch?: (
-            chatId: string,
-            userIds: readonly string[],
-          ) => Promise<Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>>;
-        })
-      | undefined;
-    if (
-      typeof chatContextCache?.getAdminAccess !== 'function' &&
-      typeof chatContextCache?.getAdminAccessBatch !== 'function'
-    ) {
-      return null;
-    }
-
-    const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
-    const inFlight = this.chatAdminSharedCacheReadInFlight.get(cacheKey);
-    if (inFlight) {
-      return inFlight;
-    }
-
-    return this.enqueueChatAdminSharedCacheReadBatch(chatId, userId, cacheKey, nowMs);
-  }
-
-  private enqueueChatAdminSharedCacheReadBatch(
-    chatId: string,
-    userId: string,
-    cacheKey: string,
-    nowMs: number,
-  ): Promise<RemoteChatAdminAccessState | null> {
-    let batch = this.pendingChatAdminSharedCacheBatches.get(chatId);
-    if (!batch) {
-      batch = {
-        chatId,
-        reads: new Map(),
-        scheduled: false,
-      };
-      this.pendingChatAdminSharedCacheBatches.set(chatId, batch);
-    }
-
-    const readPromise = new Promise<RemoteChatAdminAccessState | null>((resolve, reject) => {
-      batch!.reads.set(cacheKey, {
-        cacheKey,
-        userId,
-        resolve,
-        reject,
-      });
-    });
-
-    const trackedReadPromise = readPromise.finally(() => {
-      if (this.chatAdminSharedCacheReadInFlight.get(cacheKey) === trackedReadPromise) {
-        this.chatAdminSharedCacheReadInFlight.delete(cacheKey);
-      }
-    });
-
-    this.chatAdminSharedCacheReadInFlight.set(cacheKey, trackedReadPromise);
-
-    if (!batch.scheduled) {
-      batch.scheduled = true;
-      void Promise.resolve().then(() =>
-        this.flushPendingChatAdminSharedCacheReadBatch(chatId, nowMs),
-      );
-    }
-
-    return trackedReadPromise;
-  }
-
-  private async flushPendingChatAdminSharedCacheReadBatch(
-    chatId: string,
-    nowMs: number,
-  ): Promise<void> {
-    const batch = this.pendingChatAdminSharedCacheBatches.get(chatId);
-    if (!batch) {
-      return;
-    }
-
-    this.pendingChatAdminSharedCacheBatches.delete(chatId);
-    const reads = [...batch.reads.values()];
-    if (reads.length === 0) {
-      return;
-    }
-
-    try {
-      const accessStates = await this.loadSharedChatAdminAccessBatch(
-        chatId,
-        reads.map((read) => read.userId),
-      );
-
-      for (const read of reads) {
-        const normalizedUserId = read.userId.trim();
-        const cached = accessStates.get(normalizedUserId) ?? null;
-        if (cached === 'granted' || cached === 'user_denied') {
-          this.chatAdminAccessCache.set(read.cacheKey, {
-            expiresAt: nowMs + CHAT_ADMIN_CACHE_TTL_MS,
-            state: cached,
-          });
-        }
-        read.resolve(cached);
-      }
-    } catch (error: unknown) {
-      for (const read of reads) {
-        read.reject(error);
-      }
-    }
-  }
-
-  private async loadSharedChatAdminAccessBatch(
-    chatId: string,
-    userIds: readonly string[],
-  ): Promise<Map<string, RemoteChatAdminAccessState>> {
-    const chatContextCache = this.chatContextCache as
-      | (ChatContextCacheService & {
-          getAdminAccessBatch?: (
-            chatId: string,
-            userIds: readonly string[],
-          ) => Promise<Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>>;
-        })
-      | undefined;
-    const normalizedUserIds = Array.from(
-      new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
-    );
-    const results = new Map<string, RemoteChatAdminAccessState>();
-    if (normalizedUserIds.length === 0 || !chatContextCache) {
-      return results;
-    }
-
-    const userIdVariants = new Map<string, string[]>();
-    const normalizedVariantUserIds: string[] = [];
-    const variantSeen = new Set<string>();
-    for (const normalizedUserId of normalizedUserIds) {
-      const variants = [...this.buildUserIdVariants(normalizedUserId)];
-      userIdVariants.set(normalizedUserId, variants);
-      for (const variant of variants) {
-        if (variantSeen.has(variant)) {
-          continue;
-        }
-        variantSeen.add(variant);
-        normalizedVariantUserIds.push(variant);
-      }
-    }
-
-    const variantStates = new Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>();
-    if (typeof chatContextCache.getAdminAccessBatch === 'function') {
-      const cachedStates = await chatContextCache.getAdminAccessBatch(
-        chatId,
-        normalizedVariantUserIds,
-      );
-      for (const variant of normalizedVariantUserIds) {
-        variantStates.set(variant, cachedStates.get(variant) ?? null);
-      }
-    } else if (typeof chatContextCache.getAdminAccess === 'function') {
-      const cachedStates = await Promise.all(
-        normalizedVariantUserIds.map((variant) =>
-          chatContextCache.getAdminAccess!(chatId, variant),
-        ),
-      );
-      normalizedVariantUserIds.forEach((variant, index) => {
-        variantStates.set(variant, cachedStates[index] ?? null);
-      });
-    }
-
-    for (const normalizedUserId of normalizedUserIds) {
-      const variants = userIdVariants.get(normalizedUserId) ?? [];
-      for (const variant of variants) {
-        const cached = variantStates.get(variant);
-        if (cached === 'granted' || cached === 'user_denied') {
-          results.set(normalizedUserId, cached);
-          break;
-        }
-      }
-    }
-
-    return results;
-  }
-
-  private async writeChatAdminAccessToSharedCache(
-    chatId: string,
-    userId: string,
-    state: RemoteChatAdminAccessState,
-  ): Promise<void> {
-    const chatContextCache = this.chatContextCache;
-    if (!chatContextCache?.setAdminAccess) {
-      return;
-    }
-
-    try {
-      await Promise.all(
-        [...this.buildUserIdVariants(userId)].map((variant) =>
-          chatContextCache.setAdminAccess(chatId, variant, state),
-        ),
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to write chat admin access to shared cache',
-      );
-    }
+    return this.moderationAccessService.executeRemoteChatAdminLookupWithGuard(operation, context);
   }
 
   private async persistRemoteAdminGrant(chatId: string, userId: string): Promise<void> {
-    if (typeof this.prisma.chatAdminAllowlist?.upsert !== 'function') {
-      return;
-    }
-
-    try {
-      await this.prisma.chatAdminAllowlist.upsert({
-        where: {
-          chatId_userId: {
-            chatId,
-            userId,
-          },
-        },
-        create: {
-          chatId,
-          userId,
-        },
-        update: {},
-      });
-      if (typeof this.chatContextCache?.rememberChatAdminUser === 'function') {
-        await this.chatContextCache.rememberChatAdminUser(chatId, userId);
-      } else {
-        await this.chatContextCache?.invalidate?.(chatId);
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to persist remotely confirmed chat admin access',
-      );
-    }
+    return this.moderationAccessService.persistRemoteAdminGrant(chatId, userId);
   }
 
   private normalizeNightModeTimezone(value: string): string {
@@ -16113,15 +14708,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private finalizeAdminCheckResult(
-    result: ChatAdminCheckResult,
-    stage: string,
-    startedAtMs: number,
-  ): ChatAdminCheckResult {
-    this.recordRuntimeStageObservation(stage, Date.now() - startedAtMs);
-    return result;
-  }
-
   private createWebhookHotPathProfile(): WebhookHotPathProfile {
     const now = Date.now();
     return {
@@ -16979,72 +15565,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   async processNightModeTransitionJob(
     job: NightModeTransitionJob,
   ): Promise<NightModeTransitionProcessResult> {
-    if (typeof this.prisma.chatSettings?.findUnique !== 'function') {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    const settings = await this.prisma.chatSettings.findUnique({
-      where: { chatId: job.chatId },
-      include: {
-        chat: {
-          select: {
-            rules: {
-              select: {
-                publishedUrl: true,
-                publishedMessageId: true,
-              },
-            },
-          },
-        },
-      },
-    });
-    if (!settings?.nightModeEnabled) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    const scheduledFor = new Date(job.scheduledFor);
-    if (Number.isNaN(scheduledFor.getTime())) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    const scheduledSnapshot = this.resolveNightModeTransitionSnapshot(settings, scheduledFor);
-    const currentSnapshot = this.resolveNightModeTransitionSnapshot(settings);
-    if (
-      !scheduledSnapshot ||
-      !currentSnapshot ||
-      scheduledSnapshot.startMinutes === scheduledSnapshot.endMinutes ||
-      currentSnapshot.startMinutes === currentSnapshot.endMinutes
-    ) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    if (
-      scheduledSnapshot.sessionKey !== job.sessionKey ||
-      currentSnapshot.sessionKey !== job.sessionKey
-    ) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-    if (job.transition === 'close') {
-      if (
-        scheduledSnapshot.status !== 'closed' ||
-        !scheduledSnapshot.isCloseBoundary ||
-        currentSnapshot.status !== 'closed'
-      ) {
-        return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-      }
-
-      return this.processNightModeTransitionForChat(settings, scheduledSnapshot);
-    }
-
-    if (
-      scheduledSnapshot.status !== 'open' ||
-      !scheduledSnapshot.isOpenBoundary ||
-      currentSnapshot.status !== 'open'
-    ) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    return this.processNightModeTransitionForChat(settings, scheduledSnapshot);
+    return this.nightModeTransitionRuntime.processNightModeTransitionJob(
+      job,
+      this.createNightModeTransitionHooks(),
+    );
   }
 
   private async processNightModeTransitionForChat(
@@ -17078,90 +15602,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     },
     providedSnapshot?: NightModeTransitionSnapshot,
   ): Promise<NightModeTransitionProcessResult> {
-    const snapshot = providedSnapshot ?? this.resolveNightModeTransitionSnapshot(settings);
-    if (!snapshot) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    const lock = await this.acquireNightModeTransitionLock(settings.chatId);
-    if (!lock) {
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    }
-
-    try {
-      const currentState = await this.readNightModeTransitionState(settings.chatId);
-      if (snapshot.status === 'closed') {
-        const alreadyClosedForSession =
-          currentState?.status === 'closed' && currentState.sessionKey === snapshot.sessionKey;
-        if (
-          alreadyClosedForSession &&
-          (!snapshot.isCloseBoundary ||
-            !settings.nightModeBotMessageEnabled ||
-            currentState.closeNoticeMessageId)
-        ) {
-          return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-        }
-
-        let closeNoticeMessageId = alreadyClosedForSession
-          ? (currentState.closeNoticeMessageId ?? null)
-          : null;
-        if (
-          snapshot.isCloseBoundary &&
-          settings.nightModeBotMessageEnabled &&
-          !closeNoticeMessageId
-        ) {
-          const noticeResult = await this.sendNightModeClosedTransitionNotice(settings, snapshot);
-          if (!noticeResult.shouldEnqueueNext) {
-            return noticeResult;
-          }
-          closeNoticeMessageId = noticeResult.messageId;
-        }
-
-        await this.writeNightModeTransitionState(settings.chatId, {
-          status: 'closed',
-          sessionKey: snapshot.sessionKey,
-          closeNoticeMessageId,
-          updatedAt: new Date().toISOString(),
-        });
-        return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-      }
-
-      const previousCloseNoticeMessageId =
-        currentState?.status === 'closed' ? currentState.closeNoticeMessageId : null;
-      const transitionAlreadyRecorded =
-        currentState?.status === 'open' && currentState.sessionKey === snapshot.sessionKey;
-
-      if (previousCloseNoticeMessageId) {
-        const deleteResult = await this.deleteNightModeClosedTransitionNotice(
-          settings.chatId,
-          previousCloseNoticeMessageId,
-        );
-        if (!deleteResult.shouldEnqueueNext) {
-          return deleteResult;
-        }
-      }
-
-      if (
-        snapshot.isOpenBoundary &&
-        settings.nightModeOpenMessageEnabled &&
-        !transitionAlreadyRecorded
-      ) {
-        const noticeResult = await this.sendNightModeOpenedTransitionNotice(settings, snapshot);
-        if (!noticeResult.shouldEnqueueNext) {
-          return noticeResult;
-        }
-      }
-
-      await this.writeNightModeTransitionState(settings.chatId, {
-        status: 'open',
-        sessionKey: snapshot.sessionKey,
-        closeNoticeMessageId: null,
-        updatedAt: new Date().toISOString(),
-      });
-      return NIGHT_MODE_TRANSITION_PROCESS_CONTINUE;
-    } finally {
-      await this.releaseNightModeTransitionLock(lock);
-    }
+    return this.nightModeTransitionRuntime.processNightModeTransitionForChat(
+      settings,
+      this.createNightModeTransitionHooks(),
+      providedSnapshot,
+    );
   }
 
   private resolveNightModeTransitionSnapshot(
@@ -17174,7 +15619,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     >,
     now = new Date(),
   ): NightModeTransitionSnapshot | null {
-    return resolveNightModeTransitionSnapshotValue(settings, now);
+    return this.nightModeTransitionRuntime.resolveNightModeTransitionSnapshot(settings, now);
   }
 
   private async sendNightModeClosedTransitionNotice(
@@ -17547,110 +15992,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (await this.resolveChatReadBotId(chatId));
 
     return typeof botId === 'string' && botId.trim().length > 0 ? botId.trim() : null;
-  }
-
-  private buildNightModeTransitionStateKey(chatId: string): string {
-    return `night-mode-transition-state:v1:${chatId}`;
-  }
-
-  private buildNightModeTransitionLockKey(chatId: string): string {
-    return `night-mode-transition-lock:v1:${chatId}`;
-  }
-
-  private async readNightModeTransitionState(
-    chatId: string,
-  ): Promise<NightModeTransitionState | null> {
-    const key = this.buildNightModeTransitionStateKey(chatId);
-    const raw = this.redisCounter
-      ? await this.redisCounter.getString(key)
-      : JSON.stringify(this.nightModeTransitionMemoryState.get(key) ?? null);
-    if (!raw) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      return this.parseNightModeTransitionState(parsed);
-    } catch {
-      return null;
-    }
-  }
-
-  private async writeNightModeTransitionState(
-    chatId: string,
-    state: NightModeTransitionState,
-  ): Promise<void> {
-    const key = this.buildNightModeTransitionStateKey(chatId);
-    if (this.redisCounter) {
-      await this.redisCounter.setStringWithTtl(
-        key,
-        JSON.stringify(state),
-        NIGHT_MODE_TRANSITION_STATE_TTL_SEC,
-      );
-      return;
-    }
-
-    this.nightModeTransitionMemoryState.set(key, state);
-  }
-
-  private parseNightModeTransitionState(value: unknown): NightModeTransitionState | null {
-    const record = this.asRecord(value);
-    if (!record) {
-      return null;
-    }
-
-    const status = record.status;
-    const sessionKey = record.sessionKey;
-    if ((status !== 'open' && status !== 'closed') || typeof sessionKey !== 'string') {
-      return null;
-    }
-
-    const closeNoticeMessageId =
-      typeof record.closeNoticeMessageId === 'string' && record.closeNoticeMessageId.trim()
-        ? record.closeNoticeMessageId.trim()
-        : null;
-    const updatedAt =
-      typeof record.updatedAt === 'string' && record.updatedAt.trim()
-        ? record.updatedAt.trim()
-        : undefined;
-
-    return {
-      status,
-      sessionKey,
-      closeNoticeMessageId,
-      ...(updatedAt ? { updatedAt } : {}),
-    };
-  }
-
-  private async acquireNightModeTransitionLock(
-    chatId: string,
-  ): Promise<{ key: string; token: string; redis: boolean } | null> {
-    const key = this.buildNightModeTransitionLockKey(chatId);
-    if (this.redisCounter) {
-      const token = await this.redisCounter.acquireLock(key, NIGHT_MODE_TRANSITION_LOCK_TTL_MS);
-      return token ? { key, token, redis: true } : null;
-    }
-
-    if (this.nightModeTransitionMemoryLocks.has(key)) {
-      return null;
-    }
-
-    const token = randomUUID();
-    this.nightModeTransitionMemoryLocks.add(key);
-    return { key, token, redis: false };
-  }
-
-  private async releaseNightModeTransitionLock(lock: {
-    key: string;
-    token: string;
-    redis: boolean;
-  }): Promise<void> {
-    if (lock.redis) {
-      await this.redisCounter?.releaseLock(lock.key, lock.token);
-      return;
-    }
-
-    this.nightModeTransitionMemoryLocks.delete(lock.key);
   }
 
   private scheduleChannelAutoPostStartupScan() {

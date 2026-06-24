@@ -520,6 +520,42 @@ export class ManualModerationService {
     return this.legacyAdminService.applyManualModerationAction(...args);
   }
 
+  adoptChatRulesFromMessage(
+    ...args: Parameters<AdminService['adoptChatRulesFromMessage']>
+  ): ReturnType<AdminService['adoptChatRulesFromMessage']> {
+    return this.legacyAdminService.adoptChatRulesFromMessage(...args);
+  }
+
+  applyManualChatSilenceCommand(
+    ...args: Parameters<AdminService['applyManualChatSilenceCommand']>
+  ): ReturnType<AdminService['applyManualChatSilenceCommand']> {
+    return this.legacyAdminService.applyManualChatSilenceCommand(...args);
+  }
+
+  applyManualOpenChatCommand(
+    ...args: Parameters<AdminService['applyManualOpenChatCommand']>
+  ): ReturnType<AdminService['applyManualOpenChatCommand']> {
+    return this.legacyAdminService.applyManualOpenChatCommand(...args);
+  }
+
+  isSuperBanDeveloperUserId(
+    ...args: Parameters<AdminService['isSuperBanDeveloperUserId']>
+  ): ReturnType<AdminService['isSuperBanDeveloperUserId']> {
+    return this.legacyAdminService.isSuperBanDeveloperUserId(...args);
+  }
+
+  enqueueManualGroupModerationCommand(
+    ...args: Parameters<AdminService['enqueueManualGroupModerationCommand']>
+  ): ReturnType<AdminService['enqueueManualGroupModerationCommand']> {
+    return this.legacyAdminService.enqueueManualGroupModerationCommand(...args);
+  }
+
+  enqueueDeveloperSuperBanCommand(
+    ...args: Parameters<AdminService['enqueueDeveloperSuperBanCommand']>
+  ): ReturnType<AdminService['enqueueDeveloperSuperBanCommand']> {
+    return this.legacyAdminService.enqueueDeveloperSuperBanCommand(...args);
+  }
+
   addAdmin(...args: Parameters<AdminService['addAdmin']>): ReturnType<AdminService['addAdmin']> {
     return this.legacyAdminService.addAdmin(...args);
   }
