@@ -39,7 +39,7 @@ export function clearPrivateHandoffDelivery(
 export function markPrivateHandoffDelivered(
   session: PrivateSession,
   kind: PrivateHandoffKind,
-  chatId: string,
+  chatId: string | null,
   deliveredAtMs = Date.now(),
 ): void {
   writeDeliveredHandoffState(session, kind, {

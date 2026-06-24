@@ -195,6 +195,10 @@ import {
   rememberPendingPrivateProfileMentionHandoff,
   wasPrivateHandoffRecentlyDelivered,
 } from './private-control-handoff-state';
+import {
+  deliverPrivateScreenHandoffToKnownPrivateChat,
+  type PrivateScreenHandoffKind,
+} from './private-control-handoff-delivery';
 import { RedisCounterService } from './redis-counter.service';
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -8683,93 +8687,48 @@ export class PrivateControlService {
     user: AuthUser,
     session: PrivateSession,
   ): Promise<void> {
-    if (!session.lastPrivateChatId) {
-      this.clearDeliveredBroadcastHandoff(session);
-      return;
-    }
-
-    try {
-      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
-      const view = await this.renderByCurrentScreen(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      markPrivateHandoffDelivered(session, 'broadcast', session.lastPrivateChatId);
-      await this.saveSession(user.userId, session);
-    } catch (error: unknown) {
-      this.clearDeliveredBroadcastHandoff(session);
-      this.logger.warn(
-        {
-          userId: user.userId,
-          chatId: session.lastPrivateChatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to proactively deliver broadcast handoff to private chat',
-      );
-    }
+    await this.deliverScreenHandoffToKnownPrivateChat(user, session, 'broadcast');
   }
 
   private async deliverGiveawayHandoffToKnownPrivateChat(
     user: AuthUser,
     session: PrivateSession,
   ): Promise<void> {
-    if (!session.lastPrivateChatId) {
-      this.clearDeliveredGiveawayHandoff(session);
-      return;
-    }
-
-    try {
-      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
-      const view = await this.renderByCurrentScreen(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      markPrivateHandoffDelivered(session, 'giveaway', session.lastPrivateChatId);
-      await this.saveSession(user.userId, session);
-    } catch (error: unknown) {
-      this.clearDeliveredGiveawayHandoff(session);
-      this.logger.warn(
-        {
-          userId: user.userId,
-          chatId: session.lastPrivateChatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to proactively deliver giveaway handoff to private chat',
-      );
-    }
+    await this.deliverScreenHandoffToKnownPrivateChat(user, session, 'giveaway');
   }
 
   private async deliverRulesHandoffToKnownPrivateChat(
     user: AuthUser,
     session: PrivateSession,
   ): Promise<void> {
-    if (!session.lastPrivateChatId) {
-      this.clearDeliveredRulesHandoff(session);
-      return;
-    }
+    await this.deliverScreenHandoffToKnownPrivateChat(user, session, 'rules');
+  }
 
-    try {
-      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
-      const view = await this.renderByCurrentScreen(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      markPrivateHandoffDelivered(session, 'rules', session.lastPrivateChatId);
-      await this.saveSession(user.userId, session);
-    } catch (error: unknown) {
-      this.clearDeliveredRulesHandoff(session);
-      this.logger.warn(
-        {
-          userId: user.userId,
-          chatId: session.lastPrivateChatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to proactively deliver rules handoff to private chat',
-      );
-    }
+  private async deliverScreenHandoffToKnownPrivateChat(
+    user: AuthUser,
+    session: PrivateSession,
+    kind: PrivateScreenHandoffKind,
+  ): Promise<void> {
+    await deliverPrivateScreenHandoffToKnownPrivateChat(session, kind, {
+      createContext: (privateChatId) => this.createSyntheticPrivateContext(user, privateChatId),
+      render: (context, currentSession) => this.renderByCurrentScreen(context, currentSession),
+      respond: (context, currentSession, view) =>
+        this.respond(context, currentSession, view, {
+          callbackId: null,
+          notification: null,
+        }),
+      saveSession: (currentSession) => this.saveSession(user.userId, currentSession),
+      onFailure: (error, privateChatId) => {
+        this.logger.warn(
+          {
+            userId: user.userId,
+            chatId: privateChatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          `Failed to proactively deliver ${kind} handoff to private chat`,
+        );
+      },
+    });
   }
 
   private async sendProfileMentionToPrivateChat(
