@@ -36,6 +36,7 @@ import {
   managedGiveawayDetailsSchema,
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
+  manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   moderationFeedPageSchema,
   membershipActivityPageSchema,
@@ -4077,8 +4078,9 @@ function normalizePreviewGiveawayPrizes(value: unknown): ManagedGiveawayDetails[
 }
 
 function buildModerationMessage(payload: ManualModerationActionRequest): string {
+  const scopeLabel = payload.scope === 'all_chats' ? 'во всех чатах' : 'в этом чате';
   if (payload.action === 'MUTE') {
-    return `Участник замьючен на ${payload.muteDurationHours ?? 24}ч в preview-режиме.`;
+    return `Участник замьючен на ${payload.muteDurationHours ?? 24}ч ${scopeLabel} в preview-режиме.`;
   }
   if (payload.action === 'UNMUTE') {
     return 'Мут снят в preview-режиме.';
@@ -4086,7 +4088,7 @@ function buildModerationMessage(payload: ManualModerationActionRequest): string 
   if (payload.action === 'UNBAN') {
     return 'Участник разбанен в preview-режиме.';
   }
-  return 'Участник забанен в preview-режиме.';
+  return `Участник забанен ${scopeLabel} в preview-режиме.`;
 }
 
 function createModerationResult(
@@ -4731,6 +4733,7 @@ function createManualViolation(
       createdAt: now.toISOString(),
       maskedExcerpt: null,
       metadata: {
+        scope: payload.scope ?? 'current_chat',
         muteDurationHours: payload.muteDurationHours ?? 24,
         muteExpiresAt: addHours(now, payload.muteDurationHours ?? 24).toISOString(),
       },
@@ -4748,7 +4751,9 @@ function createManualViolation(
     profileHandoffUrl: user.profileHandoffUrl,
     createdAt: now.toISOString(),
     maskedExcerpt: null,
-    metadata: null,
+    metadata: {
+      scope: payload.scope ?? 'current_chat',
+    },
   };
 }
 
@@ -5507,7 +5512,7 @@ async function handleChatRequest(
 
   if (tail[0] === 'members' && tail[1] && tail[2] === 'moderation-action' && method === 'POST') {
     const userId = decodeURIComponent(tail[1]);
-    const payload = parseJsonBody(init) as ManualModerationActionRequest;
+    const payload = manualModerationActionRequestSchema.parse(parseJsonBody(init));
     const user = resolvePreviewUser(state, userId);
     state.chatViolations = [createManualViolation(userId, user, payload), ...state.chatViolations];
     return createModerationResult(userId, payload);

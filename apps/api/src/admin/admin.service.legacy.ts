@@ -407,6 +407,7 @@ import {
   type ManagedEntityAccessEdgeClient,
   type AdminActionSource,
   type ManualBanFollowUpSource,
+  type ManualModerationFanoutSource,
   type AdoptChatRulesFromMessageInput,
   type ManualMemberModerationAction,
   type ManualMemberManageMembersAction,
@@ -8654,7 +8655,17 @@ export class AdminService implements OnModuleDestroy {
       source,
       initiatedByUserId: user.userId,
     } as const;
+    const requestedScope =
+      parsed.data.scope ??
+      (source === 'miniapp' && parsed.data.action === 'BAN'
+        ? 'all_chats'
+        : parsed.data.action === 'MUTE' &&
+            (source === 'group_command' || source === 'private_command')
+          ? 'all_chats'
+          : 'current_chat');
+    const shouldFanoutManualAction = requestedScope === 'all_chats';
     const shouldFanoutCommandMute = source === 'group_command' || source === 'private_command';
+    const shouldFanoutMiniappMute = source === 'miniapp' && shouldFanoutManualAction;
 
     if (parsed.data.action === 'MUTE') {
       const mutePermanent = parsed.data.mutePermanent === true;
@@ -8672,7 +8683,8 @@ export class AdminService implements OnModuleDestroy {
       const muteExpiresAt = mutePermanent
         ? null
         : new Date(Date.now() + muteDurationHours! * ONE_HOUR_MS);
-      const { sourceMessageCleanup, crossChatMuteFanout } = shouldFanoutCommandMute
+      const { sourceMessageCleanup, crossChatMuteFanout } =
+        shouldFanoutCommandMute || shouldFanoutMiniappMute
         ? await this.resolveManualMuteCommandFollowUpSummaries({
             sourceChatId: chatId,
             targetUserId,
@@ -8680,7 +8692,7 @@ export class AdminService implements OnModuleDestroy {
             muteDurationHours,
             muteExpiresAt,
             mutePermanent,
-            source,
+            source: source as ManualModerationFanoutSource,
           })
         : {
             sourceMessageCleanup: this.summarizeManualModerationCleanup({
@@ -8705,13 +8717,14 @@ export class AdminService implements OnModuleDestroy {
         auditAction: 'MANUAL_MUTE_MEMBER',
         metadata: {
           ...metadataBase,
+          scope: requestedScope,
           reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
           ...this.buildManualMuteMetadataFields({
             muteDurationHours,
             muteExpiresAt,
             mutePermanent,
           }),
-          ...(shouldFanoutCommandMute
+          ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
             ? {
                 sourceMessageCleanup,
                 crossChatMuteFanout,
@@ -8721,12 +8734,13 @@ export class AdminService implements OnModuleDestroy {
         auditPayload: {
           userId: targetUserId,
           source,
+          scope: requestedScope,
           ...this.buildManualMuteMetadataFields({
             muteDurationHours,
             muteExpiresAt,
             mutePermanent,
           }),
-          ...(shouldFanoutCommandMute
+          ...(shouldFanoutCommandMute || shouldFanoutMiniappMute
             ? {
                 sourceMessageCleanup,
                 crossChatMuteFanout,
@@ -8811,7 +8825,7 @@ export class AdminService implements OnModuleDestroy {
         source,
         executionMode,
       });
-      const shouldFanoutMiniappBan = source === 'miniapp';
+      const shouldFanoutMiniappBan = source === 'miniapp' && shouldFanoutManualAction;
       const { sourceMessageCleanup, crossChatFanout } = shouldFanoutMiniappBan
         ? await this.resolveManualBanFollowUpSummaries({
             sourceChatId: chatId,
@@ -8819,20 +8833,36 @@ export class AdminService implements OnModuleDestroy {
             actor: user,
             source,
           })
-        : {
-            sourceMessageCleanup: this.summarizeManualModerationCleanup({
-              candidateMessageIds: [],
-              deletedMessageIds: [],
-              failedMessageIds: [],
-            }),
-            crossChatFanout: this.summarizeManualBanFanout({
-              removedChatIds: [],
-              skippedChatIds: [],
-              failedChatIds: [],
-              deletedMessageCount: 0,
-              failedMessageDeleteCount: 0,
-            }),
-          };
+        : source === 'miniapp'
+          ? {
+              sourceMessageCleanup: this.summarizeManualModerationCleanup(
+                await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId, {
+                  botId: resolvedBotId,
+                  logMessage: 'Failed to run recent message cleanup after miniapp manual ban',
+                }),
+              ),
+              crossChatFanout: this.summarizeManualBanFanout({
+                removedChatIds: [],
+                skippedChatIds: [],
+                failedChatIds: [],
+                deletedMessageCount: 0,
+                failedMessageDeleteCount: 0,
+              }),
+            }
+          : {
+              sourceMessageCleanup: this.summarizeManualModerationCleanup({
+                candidateMessageIds: [],
+                deletedMessageIds: [],
+                failedMessageIds: [],
+              }),
+              crossChatFanout: this.summarizeManualBanFanout({
+                removedChatIds: [],
+                skippedChatIds: [],
+                failedChatIds: [],
+                deletedMessageCount: 0,
+                failedMessageDeleteCount: 0,
+              }),
+            };
 
       await this.recordManualModerationAction({
         chatId,
@@ -8844,10 +8874,11 @@ export class AdminService implements OnModuleDestroy {
         auditAction: 'MANUAL_BAN_MEMBER',
         metadata: {
           ...metadataBase,
+          scope: requestedScope,
           reason: `Ручной бан участника ${this.describeManualModerationActionSource(source)}`,
           mode: executionMode,
           permanent: true,
-          ...(shouldFanoutMiniappBan
+          ...(source === 'miniapp'
             ? {
                 sourceMessageCleanup,
                 crossChatFanout,
@@ -8857,9 +8888,10 @@ export class AdminService implements OnModuleDestroy {
         auditPayload: {
           userId: targetUserId,
           source,
+          scope: requestedScope,
           mode: executionMode,
           permanent: true,
-          ...(shouldFanoutMiniappBan
+          ...(source === 'miniapp'
             ? {
                 sourceMessageCleanup,
                 crossChatFanout,
@@ -10179,7 +10211,7 @@ export class AdminService implements OnModuleDestroy {
     muteDurationHours: number | null;
     muteExpiresAt: Date | null;
     mutePermanent: boolean;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualModerationFanoutSource;
   }): Promise<{
     sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
     crossChatMuteFanout: ReturnType<AdminService['summarizeManualMuteFanout']>;
@@ -10326,7 +10358,7 @@ export class AdminService implements OnModuleDestroy {
     muteDurationHours: number | null;
     muteExpiresAt: Date | null;
     mutePermanent: boolean;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualModerationFanoutSource;
   }): AdminManualMuteFanoutJob {
     return {
       kind: 'manual_mute_fanout',
@@ -10579,7 +10611,7 @@ export class AdminService implements OnModuleDestroy {
     muteDurationHours: number | null;
     muteExpiresAt: Date | null;
     mutePermanent: boolean;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualModerationFanoutSource;
   }): Promise<{
     mutedChatIds: string[];
     skippedChatIds: string[];

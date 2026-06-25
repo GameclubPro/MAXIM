@@ -1,4 +1,4 @@
-import type { AdminActionSource } from './admin.service';
+import type { AdminActionSource, ManualModerationFanoutSource } from './admin.service.support';
 import type { QueueJobEnvelope, QueueRetryPolicyName } from '../common/queue-job-envelope';
 
 export const ADMIN_MANUAL_FANOUT_QUEUE = 'admin-manual-fanout';
@@ -26,7 +26,7 @@ export type AdminManualMuteFanoutJob = QueueJobEnvelope<
     muteDurationHours: number | null;
     muteExpiresAt: string | null;
     mutePermanent?: boolean;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualModerationFanoutSource;
   },
   ManualFanoutQueueMetadata
 >;

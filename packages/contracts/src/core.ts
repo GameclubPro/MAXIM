@@ -1747,9 +1747,13 @@ export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 export const manualModerationActionSchema = z.enum(['MUTE', 'BAN', 'UNMUTE', 'UNBAN']);
 export type ManualModerationAction = z.infer<typeof manualModerationActionSchema>;
 
+export const manualModerationScopeSchema = z.enum(['current_chat', 'all_chats']);
+export type ManualModerationScope = z.infer<typeof manualModerationScopeSchema>;
+
 export const manualModerationActionRequestSchema = z
   .object({
     action: manualModerationActionSchema,
+    scope: manualModerationScopeSchema.optional(),
     muteDurationHours: z.number().int().min(1).max(336).optional(),
     mutePermanent: z.boolean().optional(),
   })
@@ -1785,6 +1789,14 @@ export const manualModerationActionRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ['mutePermanent'],
         message: 'Бессрочный мут доступен только для действия MUTE.',
+      });
+    }
+
+    if (value.action !== 'MUTE' && value.action !== 'BAN' && value.scope !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['scope'],
+        message: 'Область действия доступна только для MUTE и BAN.',
       });
     }
   });

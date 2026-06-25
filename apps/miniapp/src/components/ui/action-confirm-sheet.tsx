@@ -20,6 +20,8 @@ type ActionConfirmSheetProps = {
   extraActionBusyLabel?: string;
   extraActionBusy?: boolean;
   extraActionDisabled?: boolean;
+  extraActionTone?: 'ghost' | 'danger' | 'accent';
+  actionOrder?: 'extra-cancel-confirm' | 'confirm-extra-cancel';
   onExtraAction?: () => void;
   onClose: () => void;
   onConfirm: () => void;
@@ -41,6 +43,8 @@ export function ActionConfirmSheet({
   extraActionBusyLabel = '...',
   extraActionBusy = false,
   extraActionDisabled = false,
+  extraActionTone = 'ghost',
+  actionOrder = 'extra-cancel-confirm',
   onExtraAction,
   onClose,
   onConfirm,
@@ -90,6 +94,45 @@ export function ActionConfirmSheet({
 
   const titleId = `${id}-title`;
   const summaryId = summary ? `${id}-summary` : undefined;
+  const extraActionButton =
+    extraActionLabel && onExtraAction ? (
+      <button
+        type="button"
+        className={cn(
+          'action-confirm-sheet__button',
+          `action-confirm-sheet__button--${extraActionTone}`,
+        )}
+        onClick={onExtraAction}
+        disabled={isBusy || extraActionBusy || extraActionDisabled}
+      >
+        {extraActionBusy ? extraActionBusyLabel : extraActionLabel}
+      </button>
+    ) : null;
+  const cancelButton = (
+    <button
+      type="button"
+      className="action-confirm-sheet__button action-confirm-sheet__button--ghost"
+      onClick={onClose}
+      disabled={isBusy}
+    >
+      {cancelLabel}
+    </button>
+  );
+  const confirmButton = (
+    <button
+      type="button"
+      className={cn(
+        'action-confirm-sheet__button',
+        tone === 'danger'
+          ? 'action-confirm-sheet__button--danger'
+          : 'action-confirm-sheet__button--accent',
+      )}
+      onClick={onConfirm}
+      disabled={isBusy}
+    >
+      {isBusy ? confirmBusyLabel : confirmLabel}
+    </button>
+  );
 
   return createPortal(
     <div className="action-confirm-sheet" aria-hidden={!open}>
@@ -128,37 +171,19 @@ export function ActionConfirmSheet({
           ) : null}
 
           <div className="action-confirm-sheet__actions">
-            {extraActionLabel && onExtraAction ? (
-              <button
-                type="button"
-                className="action-confirm-sheet__button action-confirm-sheet__button--ghost"
-                onClick={onExtraAction}
-                disabled={isBusy || extraActionBusy || extraActionDisabled}
-              >
-                {extraActionBusy ? extraActionBusyLabel : extraActionLabel}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="action-confirm-sheet__button action-confirm-sheet__button--ghost"
-              onClick={onClose}
-              disabled={isBusy}
-            >
-              {cancelLabel}
-            </button>
-            <button
-              type="button"
-              className={cn(
-                'action-confirm-sheet__button',
-                tone === 'danger'
-                  ? 'action-confirm-sheet__button--danger'
-                  : 'action-confirm-sheet__button--accent',
-              )}
-              onClick={onConfirm}
-              disabled={isBusy}
-            >
-              {isBusy ? confirmBusyLabel : confirmLabel}
-            </button>
+            {actionOrder === 'confirm-extra-cancel' ? (
+              <>
+                {confirmButton}
+                {extraActionButton}
+                {cancelButton}
+              </>
+            ) : (
+              <>
+                {extraActionButton}
+                {cancelButton}
+                {confirmButton}
+              </>
+            )}
           </div>
         </div>
       </section>

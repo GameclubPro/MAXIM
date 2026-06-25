@@ -4,6 +4,7 @@ import type {
   LogsDashboardViolation,
   ManualModerationAction,
   ManualModerationActionRequest,
+  ManualModerationScope,
   ChatParticipantItem,
   GlobalSpammerReviewAction,
   GlobalSpammerReviewCandidate,
@@ -28,6 +29,7 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 import { ChatParticipantSheet } from '../components/dashboard/chat-participant-sheet';
 import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
@@ -67,6 +69,7 @@ type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
 type EventsFilter = ModerationFeedFilter;
 type EventsSection = 'activity' | 'moderation' | 'participants';
+type ManualModerationScopeChoice = Extract<ManualModerationScope, 'current_chat' | 'all_chats'>;
 type SpammerDiagnosticsTarget = {
   userId: string;
   displayName: string;
@@ -75,6 +78,13 @@ type SpammerDiagnosticsTarget = {
   profileHandoffUrl?: string | null;
 };
 type ScoreMeterStyle = CSSProperties & { '--spammer-score': string };
+type PendingScopeAction = {
+  id: string;
+  userId: string;
+  action: Extract<ManualModerationAction, 'MUTE' | 'BAN'>;
+  source: 'participant' | 'spammer-diagnostics';
+  muteDurationHours?: number;
+};
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
@@ -1615,9 +1625,13 @@ function ViolationModerationControls({
   const releaseAction = resolveReleaseAction(violation);
   const [muteDurationHours, setMuteDurationHours] = useState(6);
   const [muteExpanded, setMuteExpanded] = useState(false);
+  const [pendingScopeAction, setPendingScopeAction] = useState<{
+    action: Extract<ManualModerationAction, 'MUTE' | 'BAN'>;
+    muteDurationHours?: number;
+  } | null>(null);
   const [pendingAction, setPendingAction] = useState<Extract<
     ManualModerationAction,
-    'BAN' | 'UNMUTE' | 'UNBAN'
+    'UNMUTE' | 'UNBAN'
   > | null>(null);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const mutePresets = [1, 6, 24, 168];
@@ -1637,17 +1651,50 @@ function ViolationModerationControls({
     },
   });
 
-  const applyAction = (action: ManualModerationAction, hours?: number) => {
+  const applyAction = (
+    action: ManualModerationAction,
+    hours?: number,
+    scope?: ManualModerationScopeChoice,
+  ) => {
     const normalizedHours =
       action === 'MUTE' ? clampMuteDurationHours(hours ?? muteDurationHours) : null;
     setStatus(null);
     if (action !== 'MUTE') {
       setPendingAction(null);
     }
+    if (action === 'MUTE' || action === 'BAN') {
+      setPendingScopeAction(null);
+    }
     applyMutation.mutate({
       action,
+      ...(scope ? { scope } : {}),
       ...(action === 'MUTE' ? { muteDurationHours: normalizedHours ?? muteDurationHours } : {}),
     });
+  };
+  const openScopeAction = (
+    action: Extract<ManualModerationAction, 'MUTE' | 'BAN'>,
+    hours?: number,
+  ) => {
+    setStatus(null);
+    setPendingAction(null);
+    setPendingScopeAction({
+      action,
+      ...(action === 'MUTE'
+        ? { muteDurationHours: clampMuteDurationHours(hours ?? muteDurationHours) }
+        : {}),
+    });
+  };
+  const closeScopeAction = () => {
+    if (applyMutation.isPending) {
+      return;
+    }
+    setPendingScopeAction(null);
+  };
+  const confirmScopeAction = (scope: ManualModerationScopeChoice) => {
+    if (!pendingScopeAction) {
+      return;
+    }
+    applyAction(pendingScopeAction.action, pendingScopeAction.muteDurationHours, scope);
   };
 
   return (
@@ -1664,6 +1711,7 @@ function ViolationModerationControls({
           onClick={() => {
             setStatus(null);
             setMuteExpanded(false);
+            setPendingScopeAction(null);
             setPendingAction(null);
             onOpenDiagnostics();
           }}
@@ -1680,6 +1728,7 @@ function ViolationModerationControls({
             onClick={() => {
               setStatus(null);
               setPendingAction(null);
+              setPendingScopeAction(null);
               setMuteExpanded((current) => !current);
             }}
           >
@@ -1694,7 +1743,14 @@ function ViolationModerationControls({
             onClick={() => {
               setStatus(null);
               setMuteExpanded(false);
-              setPendingAction((current) => (current === 'BAN' ? null : 'BAN'));
+              setPendingScopeAction((current) =>
+                current?.action === 'BAN'
+                  ? null
+                  : {
+                      action: 'BAN',
+                    },
+              );
+              setPendingAction(null);
             }}
           >
             Бан
@@ -1708,6 +1764,7 @@ function ViolationModerationControls({
             onClick={() => {
               setStatus(null);
               setMuteExpanded(false);
+              setPendingScopeAction(null);
               setPendingAction((current) => (current === releaseAction ? null : releaseAction));
             }}
           >
@@ -1790,7 +1847,7 @@ function ViolationModerationControls({
             type="button"
             className="button button--accent logs-violation-item__apply-button"
             disabled={applyMutation.isPending}
-            onClick={() => applyAction('MUTE', muteDurationHours)}
+            onClick={() => openScopeAction('MUTE', muteDurationHours)}
           >
             {applyMutation.isPending
               ? 'Применяем…'
@@ -1815,7 +1872,7 @@ function ViolationModerationControls({
             </button>
             <button
               type="button"
-              className={`button ${pendingAction === 'BAN' ? 'button--danger' : 'button--accent'}`}
+              className="button button--accent"
               disabled={applyMutation.isPending}
               onClick={() => applyAction(pendingAction)}
             >
@@ -1825,6 +1882,26 @@ function ViolationModerationControls({
             </button>
           </div>
         </div>
+      ) : null}
+
+      {pendingScopeAction ? (
+        <ActionConfirmSheet
+          id={`violation-scope-${violation.id}`}
+          open
+          title={pendingScopeAction.action === 'BAN' ? 'Бан' : 'Мут'}
+          confirmLabel="В этом чате"
+          confirmBusyLabel="Применяем..."
+          cancelLabel="Отмена"
+          tone={pendingScopeAction.action === 'BAN' ? 'danger' : 'accent'}
+          isBusy={applyMutation.isPending}
+          extraActionLabel="Во всех чатах"
+          extraActionBusyLabel="Применяем..."
+          extraActionTone={pendingScopeAction.action === 'BAN' ? 'danger' : 'accent'}
+          actionOrder="confirm-extra-cancel"
+          onExtraAction={() => confirmScopeAction('all_chats')}
+          onClose={closeScopeAction}
+          onConfirm={() => confirmScopeAction('current_chat')}
+        />
       ) : null}
 
       {status ? (
@@ -1903,6 +1980,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
   const [spammerDiagnosticsTarget, setSpammerDiagnosticsTarget] =
     useState<SpammerDiagnosticsTarget | null>(null);
+  const [pendingScopeAction, setPendingScopeAction] = useState<PendingScopeAction | null>(null);
   const [spammerDiagnosticsFullEnabledFor, setSpammerDiagnosticsFullEnabledFor] = useState<
     string | null
   >(null);
@@ -2337,6 +2415,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
       applyManualModerationAction(api, chatId ?? '', userId, payload),
     onSuccess: (result) => {
+      setPendingScopeAction((current) => (current?.source === 'participant' ? null : current));
       setSelectedParticipantId(null);
       pushToast({
         tone: 'success',
@@ -2354,9 +2433,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     },
   });
   const spammerDiagnosticsBanMutation = useMutation({
-    mutationFn: ({ userId }: { userId: string }) =>
-      applyManualModerationAction(api, chatId ?? '', userId, { action: 'BAN' }),
+    mutationFn: ({ userId, scope }: { userId: string; scope: ManualModerationScopeChoice }) =>
+      applyManualModerationAction(api, chatId ?? '', userId, { action: 'BAN', scope }),
     onSuccess: (result) => {
+      setPendingScopeAction((current) =>
+        current?.source === 'spammer-diagnostics' ? null : current,
+      );
       setSpammerDiagnosticsTarget(null);
       pushToast({
         tone: 'success',
@@ -2494,6 +2576,44 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
   }, [participantsFeed.items.length, selectedParticipant, selectedParticipantId]);
 
+  const openPendingScopeAction = (action: PendingScopeAction) => {
+    setPendingScopeAction(action);
+  };
+  const closePendingScopeAction = () => {
+    if (participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending) {
+      return;
+    }
+    setPendingScopeAction(null);
+  };
+  const applyPendingScopeAction = (scope: ManualModerationScopeChoice) => {
+    if (!pendingScopeAction) {
+      return;
+    }
+
+    if (pendingScopeAction.source === 'spammer-diagnostics') {
+      spammerDiagnosticsBanMutation.mutate({
+        userId: pendingScopeAction.userId,
+        scope,
+      });
+      return;
+    }
+
+    participantModerationMutation.mutate({
+      userId: pendingScopeAction.userId,
+      payload: {
+        action: pendingScopeAction.action,
+        scope,
+        ...(pendingScopeAction.action === 'MUTE'
+          ? {
+              muteDurationHours: clampMuteDurationHours(
+                pendingScopeAction.muteDurationHours ?? MUTE_DURATION_MIN_HOURS,
+              ),
+            }
+          : {}),
+      },
+    });
+  };
+
   const selectedFilterCount = useMemo(
     () => filterOptions.find((option) => option.value === eventsFilter)?.count ?? 0,
     [eventsFilter, filterOptions],
@@ -2544,8 +2664,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    spammerDiagnosticsBanMutation.mutate({
+    openPendingScopeAction({
+      id: `spammer-diagnostics-ban-${normalizedUserId}`,
       userId: normalizedUserId,
+      action: 'BAN',
+      source: 'spammer-diagnostics',
     });
   };
   const handleSpammerReviewRetry = () => {
@@ -3268,6 +3391,24 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         onProfileActivate={activateProfile}
       />
 
+      <ActionConfirmSheet
+        id={pendingScopeAction?.id ?? 'manual-moderation-scope'}
+        open={Boolean(pendingScopeAction)}
+        title={pendingScopeAction?.action === 'BAN' ? 'Бан' : 'Мут'}
+        confirmLabel="В этом чате"
+        confirmBusyLabel="Применяем..."
+        cancelLabel="Отмена"
+        tone={pendingScopeAction?.action === 'BAN' ? 'danger' : 'accent'}
+        isBusy={participantModerationMutation.isPending || spammerDiagnosticsBanMutation.isPending}
+        extraActionLabel="Во всех чатах"
+        extraActionBusyLabel="Применяем..."
+        extraActionTone={pendingScopeAction?.action === 'BAN' ? 'danger' : 'accent'}
+        actionOrder="confirm-extra-cancel"
+        onExtraAction={() => applyPendingScopeAction('all_chats')}
+        onClose={closePendingScopeAction}
+        onConfirm={() => applyPendingScopeAction('current_chat')}
+      />
+
       <ChatParticipantSheet
         open={Boolean(selectedParticipant)}
         item={selectedParticipant}
@@ -3326,12 +3467,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             return;
           }
 
-          participantModerationMutation.mutate({
+          openPendingScopeAction({
+            id: `participant-mute-${selectedParticipant.userId}`,
             userId: selectedParticipant.userId,
-            payload: {
-              action: 'MUTE',
-              muteDurationHours: clampMuteDurationHours(durationHours),
-            },
+            action: 'MUTE',
+            source: 'participant',
+            muteDurationHours: clampMuteDurationHours(durationHours),
           });
         }}
         onBan={() => {
@@ -3339,11 +3480,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             return;
           }
 
-          participantModerationMutation.mutate({
+          openPendingScopeAction({
+            id: `participant-ban-${selectedParticipant.userId}`,
             userId: selectedParticipant.userId,
-            payload: {
-              action: 'BAN',
-            },
+            action: 'BAN',
+            source: 'participant',
           });
         }}
       />

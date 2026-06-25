@@ -204,10 +204,11 @@ export type ManagedEntityAccessEdgeClient = {
 };
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
-export type ManualBanFollowUpSource = Extract<
+export type ManualModerationFanoutSource = Extract<
   AdminActionSource,
   'miniapp' | 'group_command' | 'private_command'
 >;
+export type ManualBanFollowUpSource = ManualModerationFanoutSource;
 
 export type AdoptChatRulesFromMessageInput = {
   sourceMessageId?: string | null;
