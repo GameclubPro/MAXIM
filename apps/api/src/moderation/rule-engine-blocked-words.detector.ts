@@ -1,8 +1,10 @@
 import { normalizeMessageLimitsBlockedWordCandidate } from '@maxim/contracts/settings';
+import { stripUrlsFromText } from '../common/url-text.util';
 import { normalizeMixedWriting } from './rule-engine-normalization';
 
 export type BlockedWordDetection = {
   blockedWord: string;
+  matchKind: 'inflection' | 'pattern';
 };
 
 type ResolvedBlockedWord = {
@@ -83,8 +85,10 @@ const BLOCKED_WORD_LATIN_INFLECTION_SUFFIXES = [
   'es',
   's',
 ] as const;
-const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 3;
+const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 4;
 const BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH = 4;
+const BLOCKED_WORD_ARTICLE_CODE_PATTERN =
+  /(?<![\p{L}\p{N}])(?:[A-Z0-9]{2,}(?:[-_/][A-Z0-9]{2,})+|[A-Z]{2,}\d[A-Z0-9_-]*|[A-Z0-9_-]*\d[A-Z]{2,}[A-Z0-9_-]*)(?![\p{L}\p{N}])/gu;
 
 export class MessageLimitsBlockedWordDetector {
   private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
@@ -100,7 +104,9 @@ export class MessageLimitsBlockedWordDetector {
       return null;
     }
 
-    const normalizedText = this.normalizeMessageLimitsBlockedWordText(text);
+    const normalizedText = this.normalizeMessageLimitsBlockedWordText(
+      this.stripMessageLimitsBlockedWordIgnoredTokens(stripUrlsFromText(text)),
+    );
     if (!normalizedText) {
       return null;
     }
@@ -174,12 +180,14 @@ export class MessageLimitsBlockedWordDetector {
       ) {
         return {
           blockedWord: blockedWord.blockedWord,
+          matchKind: 'pattern',
         };
       }
 
       if (candidate.inflection) {
         return {
           blockedWord: blockedWord.blockedWord,
+          matchKind: 'inflection',
         };
       }
     }
@@ -405,6 +413,10 @@ export class MessageLimitsBlockedWordDetector {
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
     const candidate = normalizeMessageLimitsBlockedWordCandidate(value);
     return candidate ? normalizeMixedWriting(candidate) : null;
+  }
+
+  private stripMessageLimitsBlockedWordIgnoredTokens(value: string): string {
+    return value.replace(BLOCKED_WORD_ARTICLE_CODE_PATTERN, ' ');
   }
 }
 

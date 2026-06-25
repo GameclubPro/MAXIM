@@ -129,6 +129,7 @@ export class RuleEngineMessageLimitsDetector {
       reason: `Blocked word detected: ${blockedWord.blockedWord}`,
       metadata: {
         blockedWord: blockedWord.blockedWord,
+        matchKind: blockedWord.matchKind,
       },
     };
   }

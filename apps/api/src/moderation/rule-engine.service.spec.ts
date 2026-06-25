@@ -3291,6 +3291,38 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('keeps short configured stop words on exact matching to reduce false positives', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({ messageLimitsBlockedWords: ['мат'] });
+
+    const exact = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Такой мат в чате запрещен.',
+      settings,
+      domainAllowlist: [],
+    });
+    const inflected = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-2',
+      text: 'Материалы для ремонта привезут вечером, матрасы завтра.',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(exact.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'мат', matchKind: 'pattern' }),
+        }),
+      ]),
+    );
+    expect(inflected.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(
+      false,
+    );
+  });
+
   it('detects high-signal compound stop words across spaces and punctuation', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({
@@ -3519,7 +3551,7 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('detects MESSAGE_BLOCKED_WORD inside obfuscated link text', async () => {
+  it('does not detect MESSAGE_BLOCKED_WORD inside urls', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -3529,13 +3561,21 @@ describe('RuleEngineService', () => {
       domainAllowlist: ['https://k-a-z-1-n-0.ru/join'],
     });
 
-    expect(result.violations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          ruleCode: 'MESSAGE_BLOCKED_WORD',
-          metadata: expect.objectContaining({ blockedWord: 'казино' }),
-        }),
-      ]),
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+  });
+
+  it('does not detect MESSAGE_BLOCKED_WORD inside product codes and article-like tokens', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Артикул CASINO-2026 и код STAVKA-XL оставьте в заявке.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['казино', 'ставка'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(
+      false,
     );
   });
 
