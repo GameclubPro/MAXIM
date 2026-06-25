@@ -827,6 +827,10 @@ describe('RuleEngineService', () => {
       'этот псих пишет опять',
       'додик, уйди из чата',
       'ty durak',
+      'ты кретин',
+      'ну ты кретин',
+      'какой же ты кретин',
+      'кретин, уйди из чата',
     ];
 
     for (const text of samples) {
@@ -840,6 +844,56 @@ describe('RuleEngineService', () => {
 
       expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
     }
+  });
+
+  it('does not detect PROFANITY for numeric size and horsepower notation from production logs', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const samples = [
+      '✅Обувь Р. 36/37. За всё 500. Ост. Больница КТ.',
+      '36/37р',
+      '36-37р, цена 800р, новые',
+      'Бензопила, мощность 3.6 л.с.',
+      'Мотор 36 л.с., бензин.',
+      'Продам бензопилу -6.10 лошадиных силы.',
+    ];
+
+    for (const text of samples) {
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+    }
+  });
+
+  it('keeps numeric-looking abuse blocked outside safe notation contexts', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты 36л конечно',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('does not detect PROFANITY for first-person mild self-deprecation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Получается я тоже кретин 😁',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
   it('detects PROFANITY for third-person targeted russian insults', async () => {
@@ -3291,6 +3345,63 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('ignores low-signal Russian words configured as stop words', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text:
+        'По этому поводу как раз есть вопрос: где это написано, какой адрес, ' +
+        'какая дата и вашу заявку уже приняли.',
+      settings: buildSettings({
+        messageLimitsBlockedWords: ['по', 'как', 'это', 'где', 'есть', 'какой', 'какая', 'вашу'],
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+  });
+
+  it.each([
+    ['ставка', 'Какая ставка по условиям.'],
+    ['рассылка', 'Как есть рассылка по чатам.'],
+    ['таро', 'Где это таро по вечерам.'],
+    ['подработка', 'Где есть подработка по вечерам.'],
+  ])(
+    'keeps meaningful blocked word "%s" active when low-signal words are ignored',
+    async (blockedWord, text) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text,
+        settings: buildSettings({
+          messageLimitsBlockedWords: [
+            'по',
+            'как',
+            'это',
+            'где',
+            'есть',
+            'какой',
+            'какая',
+            'вашу',
+            blockedWord,
+          ],
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+            metadata: expect.objectContaining({ blockedWord }),
+          }),
+        ]),
+      );
+    },
+  );
+
   it('keeps short configured stop words on exact matching to reduce false positives', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({ messageLimitsBlockedWords: ['мат'] });
@@ -3574,9 +3685,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(
-      false,
-    );
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
   it('detects PHONE_NUMBER_BLOCKED when phone numbers are disabled', async () => {
