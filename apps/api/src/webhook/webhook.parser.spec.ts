@@ -90,6 +90,50 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://example.com/abc');
   });
 
+  it('extracts captions from MAX body, payload, and nested message nodes', () => {
+    const bodyCaption = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-body-caption',
+        chat_id: 'chat-body-caption',
+        sender_id: 'user-body-caption',
+        created_at: '2026-06-25T09:00:00.000Z',
+        body: {
+          caption: 'Фото с подписью казино',
+          attachments: [{ type: 'image', payload: { token: 'photo-token-1' } }],
+        },
+      },
+    });
+    const payloadCaption = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-payload-caption',
+        chat_id: 'chat-payload-caption',
+        sender_id: 'user-payload-caption',
+        created_at: '2026-06-25T09:01:00.000Z',
+        payload: {
+          caption: 'Видео с подписью ставки',
+        },
+      },
+    });
+    const nestedMessageCaption = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-nested-caption',
+        chat_id: 'chat-nested-caption',
+        sender_id: 'user-nested-caption',
+        created_at: '2026-06-25T09:02:00.000Z',
+        message: {
+          caption: 'Вложенная подпись букмекер',
+        },
+      },
+    });
+
+    expect(bodyCaption.message?.text).toContain('Фото с подписью казино');
+    expect(payloadCaption.message?.text).toContain('Видео с подписью ставки');
+    expect(nestedMessageCaption.message?.text).toContain('Вложенная подпись букмекер');
+  });
+
   it('extracts unicode-domain urls from nested body.text', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

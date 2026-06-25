@@ -790,23 +790,32 @@ export class WebhookParser {
     const directCandidates = [
       message.text,
       message.caption,
+      message.plain,
       message.message_text,
       message.messageText,
       body?.text,
+      body?.caption,
       body?.plain,
       content?.text,
       content?.caption,
+      content?.plain,
       payload?.text,
+      payload?.caption,
+      payload?.plain,
       messageNode?.text,
+      messageNode?.caption,
+      messageNode?.plain,
+      messageNode?.message_text,
+      messageNode?.messageText,
     ];
 
-    let directText = '';
+    const directSnippets: string[] = [];
     for (const value of directCandidates) {
       if (typeof value === 'string' && value.trim().length > 0) {
-        directText = value.trim();
-        break;
+        directSnippets.push(value.trim());
       }
     }
+    const directText = this.mergeTextSnippets(directSnippets, []).join(' ');
 
     const supplementalTextSnippets = this.collectSupplementalTextSnippets(message);
     const supplementalLinkUrls = this.collectSupplementalLinkUrls(message);
@@ -877,24 +886,32 @@ export class WebhookParser {
 
     const candidates: unknown[] = [
       message.markup,
+      message.caption_markup,
+      message.captionMarkup,
       message.attachments,
       message.link,
       message.forward,
       message.forwarded_message,
       message.forwardedMessage,
       body?.markup,
+      body?.caption_markup,
+      body?.captionMarkup,
       body?.attachments,
       body?.link,
       body?.forward,
       body?.forwarded_message,
       body?.forwardedMessage,
       content?.markup,
+      content?.caption_markup,
+      content?.captionMarkup,
       content?.attachments,
       content?.link,
       content?.forward,
       content?.forwarded_message,
       content?.forwardedMessage,
       payload?.markup,
+      payload?.caption_markup,
+      payload?.captionMarkup,
       payload?.attachments,
       payload?.link,
       payload?.forward,
@@ -902,6 +919,8 @@ export class WebhookParser {
       payload?.forwardedMessage,
       messageNode?.link,
       messageNode?.markup,
+      messageNode?.caption_markup,
+      messageNode?.captionMarkup,
       messageNode?.attachments,
       messageNode?.forward,
       messageNode?.forwarded_message,
@@ -927,18 +946,28 @@ export class WebhookParser {
     const candidates: Array<{ node: unknown; allowShareAttachmentUrls?: boolean }> = [
       { node: message.link },
       { node: message.markup },
+      { node: message.caption_markup },
+      { node: message.captionMarkup },
       { node: message.attachments, allowShareAttachmentUrls: true },
       { node: body?.link },
       { node: body?.markup },
+      { node: body?.caption_markup },
+      { node: body?.captionMarkup },
       { node: body?.attachments, allowShareAttachmentUrls: true },
       { node: content?.link },
       { node: content?.markup },
+      { node: content?.caption_markup },
+      { node: content?.captionMarkup },
       { node: content?.attachments, allowShareAttachmentUrls: true },
       { node: payload?.link },
       { node: payload?.markup },
+      { node: payload?.caption_markup },
+      { node: payload?.captionMarkup },
       { node: payload?.attachments, allowShareAttachmentUrls: true },
       { node: messageNode?.link },
       { node: messageNode?.markup },
+      { node: messageNode?.caption_markup },
+      { node: messageNode?.captionMarkup },
       { node: messageNode?.attachments, allowShareAttachmentUrls: true },
     ];
 
