@@ -11,6 +11,12 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3002,
       host: '0.0.0.0',
+      proxy: {
+        '/api': {
+          target: env.VITE_ADMIN_API_DEV_TARGET || 'http://127.0.0.1:3001',
+          changeOrigin: true,
+        },
+      },
     },
     build: {
       manifest: true,

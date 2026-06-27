@@ -3324,6 +3324,59 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingPost.update).not.toHaveBeenCalled();
   });
 
+  it('keeps review-mode VK sources out of ordinary manual publish actions', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({ source, text: 'Только через Safety Desk' });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    await expect(
+      service.publishPost('channel-1', 'post-1', { userId: '98315271' } as never, {
+        text: 'Только через Safety Desk',
+        photoUrls: [],
+        linkUrls: [],
+      }),
+    ).rejects.toThrow('Safety Desk');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('clears stale queued jobs for review-mode VK sources without publishing', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({
+      source,
+      publishIdempotencyKey: 'review-job',
+      publishQueuedAt: new Date('2026-05-25T10:00:00.000Z'),
+      publishReason: 'manual-retry',
+    });
+    prisma.vkParsingPost.updateMany.mockResolvedValue({ count: 1 });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    await service.processPublishPostJob({
+      postId: 'post-1',
+      chatId: 'channel-1',
+      reason: 'manual-retry',
+      idempotencyKey: 'review-job',
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.updateMany).toHaveBeenLastCalledWith({
+      where: {
+        id: 'post-1',
+        publishIdempotencyKey: 'review-job',
+      },
+      data: {
+        publishQueuedAt: null,
+        publishScheduledAt: null,
+        publishLockedAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+      },
+    });
+  });
+
   it('uses cached media preflight failures with a photo-specific publish error', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource();

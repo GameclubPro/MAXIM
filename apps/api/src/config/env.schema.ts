@@ -72,6 +72,7 @@ const envSchema = z.object({
   INIT_DATA_HMAC_SECRET: z.string().optional(),
   INIT_DATA_MAX_AGE_SEC: z.coerce.number().int().positive().default(3600),
   SYSTEM_ADMIN_USER_IDS: z.string().optional(),
+  SAFETY_DESK_ALLOWED_HOSTS: z.string().optional(),
 
   WEBHOOK_GLOBAL_RPS_LIMIT: z.coerce.number().int().positive().default(300),
   WEBHOOK_BURST_LIMIT: z.coerce.number().int().positive().default(450),

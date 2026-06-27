@@ -107,6 +107,7 @@ const VK_SOURCE_STATUS_ACTIVE = 'ACTIVE';
 const VK_SOURCE_PUBLISH_MODE_IMMEDIATE = 'IMMEDIATE';
 const VK_SOURCE_PUBLISH_MODE_REVIEW = 'REVIEW';
 const VK_PUBLISH_JOB_NAME = 'publish-vk-post';
+const SAFETY_DESK_ACTOR_USER_ID = 'safety-desk-owner';
 const VK_PARSING_SYSTEM_ACTOR_USER_ID = 'vk-parsing-autopost';
 const VK_PARSING_SCHEDULE_STEP_MS = 15 * 60_000;
 const VK_PARSING_MAX_SCHEDULE_LOOKAHEAD_STEPS = (8 * 24 * 60) / 15;
@@ -208,6 +209,7 @@ export class VkPublishService {
     if (post.status === VK_POST_STATUS_PUBLISHED) {
       throw new BadRequestException('Этот VK-пост уже опубликован.');
     }
+    this.assertReviewSourceOwnerAction(post, actorUserId);
 
     const storedPhotoUrls = this.readStringArray(post.photoUrls);
     const storedLinkUrls = this.readStringArray(post.linkUrls);
@@ -266,6 +268,7 @@ export class VkPublishService {
     if (post.status === VK_POST_STATUS_UNAVAILABLE) {
       throw new BadRequestException('VK-пост недоступен в исходном источнике.');
     }
+    this.assertReviewSourceOwnerAction(post, null);
 
     const queued = await this.enqueuePostPublish(post, 'manual-retry');
     const updated = await this.prisma.vkParsingPost.findFirst({
@@ -285,6 +288,7 @@ export class VkPublishService {
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
     const post = await this.findSchedulablePost(chatId, postId);
+    this.assertReviewSourceOwnerAction(post, actorUserId);
     const scheduledAt = new Date(scheduledAtIso);
     if (!Number.isFinite(scheduledAt.getTime())) {
       throw new BadRequestException('Некорректное время публикации.');
@@ -345,6 +349,7 @@ export class VkPublishService {
     actorUserId: string,
   ): Promise<RetryVkParsingPostResult> {
     const post = await this.findSchedulablePost(chatId, postId);
+    this.assertReviewSourceOwnerAction(post, actorUserId);
     const queued = await this.enqueuePostPublish(post, 'manual-retry', new Date());
     await this.writeAuditLog(chatId, actorUserId, 'VK_PARSING_PUBLISH_NOW', {
       postId,
@@ -538,6 +543,10 @@ export class VkPublishService {
       include: { source: true },
     });
     if (!post || post.status === VK_POST_STATUS_PUBLISHED) {
+      return;
+    }
+    if (post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW) {
+      await this.clearQueuedAutoPublishPost(post.id, params.idempotencyKey);
       return;
     }
 
@@ -1345,6 +1354,18 @@ export class VkPublishService {
       throw new BadRequestException('VK-пост недоступен в исходном источнике.');
     }
     return post;
+  }
+
+  private assertReviewSourceOwnerAction(
+    post: VkParsingPostWithSource,
+    actorUserId: string | null,
+  ): void {
+    if (
+      post.source.publishMode === VK_SOURCE_PUBLISH_MODE_REVIEW &&
+      actorUserId !== SAFETY_DESK_ACTOR_USER_ID
+    ) {
+      throw new BadRequestException('Публикация этого источника доступна только через Safety Desk.');
+    }
   }
 
   private resolvePhotoMediaIdentityMap(post: {

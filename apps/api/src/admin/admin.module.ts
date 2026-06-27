@@ -51,6 +51,9 @@ import { VkParsingService } from './vk-parsing.service';
 import { VkPublishService } from './vk-publish.service';
 import { VkSourceService } from './vk-source.service';
 import { VkSyncService } from './vk-sync.service';
+import { SafetyDeskAdminGuard } from './safety-desk-admin.guard';
+import { SafetyDeskController } from './safety-desk.controller';
+import { SafetyDeskService } from './safety-desk.service';
 
 @Module({
   imports: [
@@ -74,6 +77,7 @@ import { VkSyncService } from './vk-sync.service';
     AdminDialogController,
     AdminGiveawayController,
     AdminManualModerationController,
+    SafetyDeskController,
   ],
   providers: [
     AdminService,
@@ -107,6 +111,8 @@ import { VkSyncService } from './vk-sync.service';
     VkParsingMediaCacheService,
     VkParsingPostImportRepository,
     VkParsingService,
+    SafetyDeskAdminGuard,
+    SafetyDeskService,
     ...(roleRunsAction(getAppRole()) ? [VkParsingRunnerService] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingSyncProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [VkParsingPublishProcessor] : []),

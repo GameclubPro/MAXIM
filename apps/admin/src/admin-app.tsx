@@ -15,6 +15,14 @@ import {
   Xmark,
   XmarkCircle,
 } from 'iconoir-react';
+import {
+  safetyDeskDecisionResponseSchema,
+  safetyDeskQueueResponseSchema,
+  type SafetyDeskAuditEntry,
+  type SafetyDeskDecisionResponse,
+  type SafetyDeskQueueItem,
+  type SafetyDeskQueueResponse,
+} from '@maxim/contracts';
 import { useEffect, useMemo, useState } from 'react';
 
 type RiskLevel = 'low' | 'medium' | 'high' | 'blocked';
@@ -32,82 +40,36 @@ type ModerationItem = {
   scheduledAt: string;
   text: string;
   domains: string[];
+  photoUrls: string[];
+  originalUrl: string | null;
   reasons: string[];
   checks: Array<{ label: string; state: 'passed' | 'warning' | 'blocked' }>;
 };
 
 type AuditEntry = {
   id: string;
-  itemId: string;
+  itemId: string | null;
   title: string;
-  action: 'approved' | 'rejected' | 'rechecked' | 'refreshed' | 'exported';
+  action: string;
   createdAt: string;
 };
 
-const accessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE || 'maxim-local';
-const queueStorageKey = 'maxim-admin-review-queue-v2';
-const auditStorageKey = 'maxim-admin-audit-v2';
+type Metrics = {
+  review: number;
+  approved: number;
+  stopped: number;
+  servicePosts: number;
+};
 
-const seedItems: ModerationItem[] = [
-  {
-    id: 'br-1048',
-    title: 'Публикация с внешней ссылкой',
-    source: 'scheduled',
-    status: 'review',
-    risk: 'medium',
-    entity: 'Канал администраторов',
-    author: 'Мария',
-    scheduledAt: 'Сегодня, 18:20',
-    text: 'Новая инструкция для администраторов: порядок проверки приветствий, ссылок и кнопок перед публикацией.',
-    domains: ['major-maksimov.ru'],
-    reasons: ['Внешняя ссылка требует подтверждения', 'Публикация запланирована в несколько целей'],
-    checks: [
-      { label: 'Запрещенные категории не найдены', state: 'passed' },
-      { label: 'Ссылки извлечены и проверены', state: 'warning' },
-      { label: 'Принудительного добавления пользователей нет', state: 'passed' },
-    ],
-  },
-  {
-    id: 'br-1051',
-    title: 'Короткий автопост без ссылок',
-    source: 'manual',
-    status: 'approved',
-    risk: 'low',
-    entity: 'Чат модераторов',
-    author: 'Алексей',
-    scheduledAt: 'Опубликовано 14:05',
-    text: 'Плановая памятка для администраторов: проверьте закреп и правила чата.',
-    domains: [],
-    reasons: ['Низкий риск', 'Публикация разрешена автоматически'],
-    checks: [
-      { label: 'Текст прошел фильтр', state: 'passed' },
-      { label: 'Медиа отсутствуют', state: 'passed' },
-      { label: 'Целевая аудитория ограничена управляемым чатом', state: 'passed' },
-    ],
-  },
-  {
-    id: 'br-1053',
-    title: 'Пост из внешнего источника',
-    source: 'vk',
-    status: 'blocked',
-    risk: 'blocked',
-    entity: 'Городской канал',
-    author: 'VK parser',
-    scheduledAt: 'Пропущено 16:00',
-    text: 'Материал из источника содержит несколько контактов, ссылку на оплату и коммерческие маркеры.',
-    domains: ['short.link', 'pay.example'],
-    reasons: [
-      'Подозрительный короткий домен',
-      'Финансовые маркеры в тексте',
-      'Нужна ручная переработка',
-    ],
-    checks: [
-      { label: 'Ссылки высокого риска', state: 'blocked' },
-      { label: 'Коммерческие маркеры найдены', state: 'blocked' },
-      { label: 'В чат ничего не отправлено', state: 'passed' },
-    ],
-  },
-];
+const accessCode = import.meta.env.VITE_ADMIN_ACCESS_CODE || 'maxim-local';
+const safetyDeskApiBase = '/api/v1/safety-desk';
+
+const emptyMetrics: Metrics = {
+  review: 0,
+  approved: 0,
+  stopped: 0,
+  servicePosts: 0,
+};
 
 const policySteps = [
   {
@@ -133,18 +95,21 @@ export function AdminApp() {
   const [code, setCode] = useState('');
   const [filter, setFilter] = useState<'all' | QueueStatus>('all');
   const [query, setQuery] = useState('');
-  const [queueItems, setQueueItems] = useState<ModerationItem[]>(readStoredQueue);
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>(readStoredAudit);
-  const [selectedId, setSelectedId] = useState(seedItems[0]?.id ?? '');
+  const [queueItems, setQueueItems] = useState<ModerationItem[]>([]);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [metrics, setMetrics] = useState<Metrics>(emptyMetrics);
+  const [selectedId, setSelectedId] = useState('');
   const [notice, setNotice] = useState('Готово к проверке');
+  const [loading, setLoading] = useState(false);
+  const [busyItemId, setBusyItemId] = useState<string | null>(null);
 
   useEffect(() => {
-    localStorage.setItem(queueStorageKey, JSON.stringify(queueItems));
-  }, [queueItems]);
+    if (!unlocked) {
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem(auditStorageKey, JSON.stringify(auditEntries));
-  }, [auditEntries]);
+    void refreshQueue('Очередь загружена');
+  }, [unlocked]);
 
   const visibleItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -162,117 +127,71 @@ export function AdminApp() {
   }, [filter, query, queueItems]);
 
   const selectedItem = visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0];
-  const metrics = useMemo(
-    () => ({
-      review: queueItems.filter((item) => item.status === 'review').length,
-      approved: queueItems.filter((item) => item.status === 'approved').length,
-      blocked: queueItems.filter((item) => item.status === 'blocked' || item.status === 'rejected')
-        .length,
-      servicePosts: 0,
-    }),
-    [queueItems],
-  );
 
   function unlock() {
     if (code.trim() === accessCode) {
       sessionStorage.setItem('maxim-admin', '1');
       setUnlocked(true);
+      setNotice('Загружаю живую очередь проверки');
     }
   }
 
-  function addAudit(item: ModerationItem, action: AuditEntry['action']) {
-    const entry: AuditEntry = {
-      id: `${item.id}-${Date.now()}`,
-      itemId: item.id,
-      title: item.title,
-      action,
-      createdAt: formatTime(new Date()),
-    };
-    setAuditEntries((current) => [entry, ...current].slice(0, 12));
+  async function refreshQueue(successMessage = 'Очередь обновлена с сервера') {
+    setLoading(true);
+    try {
+      const response = await fetchQueue();
+      applyQueueResponse(response);
+      setNotice(successMessage);
+    } catch (error) {
+      setNotice(readErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function updateItem(
+  async function approveItem(itemId: string) {
+    await runDecision(itemId, 'approve', 'Публикую материал после одобрения');
+  }
+
+  async function rejectItem(itemId: string) {
+    await runDecision(itemId, 'reject', 'Отклоняю материал без отправки в MAX');
+  }
+
+  async function recheckItem(itemId: string) {
+    await runDecision(itemId, 'recheck', 'Возвращаю материал на повторную проверку');
+  }
+
+  async function runDecision(
     itemId: string,
-    updater: (item: ModerationItem) => ModerationItem,
-    action: AuditEntry['action'],
-    message: string,
+    action: 'approve' | 'reject' | 'recheck',
+    progressMessage: string,
   ) {
-    setQueueItems((current) =>
-      current.map((item) => {
-        if (item.id !== itemId) {
-          return item;
-        }
-
-        const nextItem = updater(item);
-        addAudit(nextItem, action);
-        setNotice(message);
-        return nextItem;
-      }),
-    );
+    setBusyItemId(itemId);
+    setNotice(progressMessage);
+    try {
+      const response = await postDecision(itemId, action);
+      applyQueueResponse(response.queue, response.item?.id ?? itemId);
+      setNotice(response.message);
+    } catch (error) {
+      setNotice(readErrorMessage(error));
+    } finally {
+      setBusyItemId(null);
+    }
   }
 
-  function approveItem(itemId: string) {
-    updateItem(
-      itemId,
-      (item) => ({
-        ...item,
-        status: 'approved',
-        risk: 'low',
-        scheduledAt: `Одобрено ${formatTime(new Date())}`,
-        reasons: ['Материал одобрен владельцем', ...withoutDecisionReasons(item.reasons)],
-        checks: item.checks.map((check) => ({ ...check, state: 'passed' })),
-      }),
-      'approved',
-      'Материал одобрен и снят с ручной проверки',
-    );
-  }
+  function applyQueueResponse(response: SafetyDeskQueueResponse, preferredId = selectedId) {
+    const nextItems = response.items.map(mapQueueItem);
+    setQueueItems(nextItems);
+    setAuditEntries(response.audit.map(mapAuditEntry));
+    setMetrics({
+      review: response.summary.review,
+      approved: response.summary.approved,
+      stopped: response.summary.rejected + response.summary.blocked,
+      servicePosts: response.summary.servicePosts,
+    });
 
-  function rejectItem(itemId: string) {
-    updateItem(
-      itemId,
-      (item) => ({
-        ...item,
-        status: 'rejected',
-        risk: 'high',
-        scheduledAt: `Отклонено ${formatTime(new Date())}`,
-        reasons: ['Материал отклонен владельцем', ...withoutDecisionReasons(item.reasons)],
-      }),
-      'rejected',
-      'Материал отклонен, в MAX ничего не отправлено',
-    );
-  }
-
-  function recheckItem(itemId: string) {
-    updateItem(
-      itemId,
-      (item) => ({
-        ...item,
-        status: 'review',
-        risk: item.domains.length > 0 ? 'medium' : 'low',
-        scheduledAt: `Повторная проверка ${formatTime(new Date())}`,
-        reasons: ['Запрошена повторная проверка', ...withoutDecisionReasons(item.reasons)],
-        checks: item.checks.map((check) =>
-          check.state === 'blocked' ? { ...check, state: 'warning' } : check,
-        ),
-      }),
-      'rechecked',
-      'Материал возвращен на повторную проверку',
-    );
-  }
-
-  function refreshQueue() {
-    setQueueItems(readStoredQueue());
-    setAuditEntries((current) => [
-      {
-        id: `refresh-${Date.now()}`,
-        itemId: 'queue',
-        title: 'Очередь проверки',
-        action: 'refreshed',
-        createdAt: formatTime(new Date()),
-      },
-      ...current,
-    ]);
-    setNotice('Очередь обновлена из сохраненного состояния');
+    const hasPreferred = preferredId && nextItems.some((item) => item.id === preferredId);
+    setSelectedId(hasPreferred ? preferredId : (nextItems[0]?.id ?? ''));
   }
 
   function exportForMax() {
@@ -289,17 +208,7 @@ export function AdminApp() {
     link.download = `maxim-safety-desk-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    setAuditEntries((current) => [
-      {
-        id: `export-${Date.now()}`,
-        itemId: 'queue',
-        title: 'Экспорт для MAX',
-        action: 'exported',
-        createdAt: formatTime(new Date()),
-      },
-      ...current,
-    ]);
-    setNotice('Экспорт подготовлен и скачан');
+    setNotice('Экспорт текущей очереди подготовлен и скачан');
   }
 
   if (!unlocked) {
@@ -378,7 +287,12 @@ export function AdminApp() {
             <h1>Модерация автопостинга</h1>
           </div>
           <div className="topbar__actions">
-            <button className="ghost-action" type="button" onClick={refreshQueue}>
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={loading}
+              onClick={() => void refreshQueue()}
+            >
               <Refresh width={18} height={18} />
               Обновить
             </button>
@@ -392,7 +306,7 @@ export function AdminApp() {
         <section className="metrics" aria-label="Сводка">
           <Metric label="Ожидают" value={String(metrics.review)} tone="warning" />
           <Metric label="Одобрено" value={String(metrics.approved)} tone="success" />
-          <Metric label="Остановлено" value={String(metrics.blocked)} tone="danger" />
+          <Metric label="Остановлено" value={String(metrics.stopped)} tone="danger" />
           <Metric
             label="Служебных постов в чатах"
             value={String(metrics.servicePosts)}
@@ -401,7 +315,7 @@ export function AdminApp() {
         </section>
 
         <div className="notice-bar" role="status">
-          {notice}
+          {loading ? 'Обновляю данные...' : notice}
         </div>
 
         <section className="queue-layout" id="queue">
@@ -420,6 +334,7 @@ export function AdminApp() {
                   ['all', 'Все'],
                   ['review', 'Проверка'],
                   ['approved', 'Одобрено'],
+                  ['rejected', 'Отклонено'],
                   ['blocked', 'Блок'],
                 ].map(([value, label]) => (
                   <button
@@ -459,6 +374,7 @@ export function AdminApp() {
           {selectedItem ? (
             <ReviewDetails
               item={selectedItem}
+              busy={busyItemId === selectedItem.id}
               onApprove={approveItem}
               onReject={rejectItem}
               onRecheck={recheckItem}
@@ -534,11 +450,13 @@ function Metric({
 
 function ReviewDetails({
   item,
+  busy,
   onApprove,
   onReject,
   onRecheck,
 }: {
   item: ModerationItem;
+  busy: boolean;
   onApprove: (itemId: string) => void;
   onReject: (itemId: string) => void;
   onRecheck: (itemId: string) => void;
@@ -605,22 +523,32 @@ function ReviewDetails({
       </section>
 
       <footer className="review-actions">
-        <button className="secondary-action" type="button" onClick={() => onReject(item.id)}>
+        <button
+          className="secondary-action"
+          type="button"
+          disabled={busy}
+          onClick={() => void onReject(item.id)}
+        >
           <Xmark width={18} height={18} />
           Отклонить
         </button>
-        <button className="ghost-action" type="button" onClick={() => onRecheck(item.id)}>
+        <button
+          className="ghost-action"
+          type="button"
+          disabled={busy}
+          onClick={() => void onRecheck(item.id)}
+        >
           <Refresh width={18} height={18} />
           Проверить снова
         </button>
         <button
           className="primary-action"
           type="button"
-          disabled={item.status === 'approved'}
-          onClick={() => onApprove(item.id)}
+          disabled={busy || item.status === 'approved'}
+          onClick={() => void onApprove(item.id)}
         >
           <Check width={18} height={18} />
-          Одобрить
+          {busy ? 'Выполняю' : 'Одобрить'}
         </button>
       </footer>
     </article>
@@ -650,8 +578,22 @@ function PublicationPreview({ item }: { item: ModerationItem }) {
           <span />
           <strong>{item.entity}</strong>
         </div>
-        <p>{item.text}</p>
+        {item.photoUrls[0] && (
+          <img className="message-preview__image" src={item.photoUrls[0]} alt="" loading="lazy" />
+        )}
+        <p>{item.text || 'Текст отсутствует, проверь вложения и ссылку источника.'}</p>
       </article>
+
+      {(item.photoUrls.length > 0 || item.originalUrl) && (
+        <div className="attachment-preview">
+          {item.photoUrls.length > 0 && <span>Фото: {item.photoUrls.length}</span>}
+          {item.originalUrl && (
+            <a href={item.originalUrl} target="_blank" rel="noreferrer">
+              Открыть источник
+            </a>
+          )}
+        </div>
+      )}
 
       <div className="publication-preview__foot">
         <span>Перед одобрением проверь текст, цель публикации и домены.</span>
@@ -704,55 +646,144 @@ function sourceLabel(source: QueueSource) {
   return 'Ручная публикация';
 }
 
-function readStoredQueue(): ModerationItem[] {
-  const stored = readJson<ModerationItem[]>(queueStorageKey);
+async function fetchQueue(): Promise<SafetyDeskQueueResponse> {
+  const response = await fetch(`${safetyDeskApiBase}/queue`, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  return safetyDeskQueueResponseSchema.parse(await readJsonResponse(response));
+}
 
-  if (!stored || !Array.isArray(stored)) {
-    return seedItems;
+async function postDecision(
+  itemId: string,
+  action: 'approve' | 'reject' | 'recheck',
+): Promise<SafetyDeskDecisionResponse> {
+  const response = await fetch(`${safetyDeskApiBase}/items/${encodeURIComponent(itemId)}/${action}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+  return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
+}
+
+async function readJsonResponse(response: Response): Promise<unknown> {
+  const text = await response.text();
+  const payload = parseJsonPayload(text);
+  if (!response.ok) {
+    const message =
+      typeof payload === 'object' &&
+      payload !== null &&
+      'message' in payload &&
+      typeof payload.message === 'string'
+        ? payload.message
+        : `Ошибка API: ${response.status}`;
+    throw new Error(message);
   }
 
-  const knownIds = new Set(seedItems.map((item) => item.id));
-  const validStored = stored.filter((item) => knownIds.has(item.id));
-  const storedIds = new Set(validStored.map((item) => item.id));
-  const missingSeedItems = seedItems.filter((item) => !storedIds.has(item.id));
-  return [...validStored, ...missingSeedItems];
+  return payload;
 }
 
-function readStoredAudit(): AuditEntry[] {
-  const stored = readJson<AuditEntry[]>(auditStorageKey);
-  return Array.isArray(stored) ? stored.slice(0, 12) : [];
-}
-
-function readJson<T>(key: string): T | null {
-  try {
-    const value = localStorage.getItem(key);
-    return value ? (JSON.parse(value) as T) : null;
-  } catch {
+function parseJsonPayload(text: string): unknown {
+  if (!text) {
     return null;
   }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error('Safety Desk API недоступен или вернул некорректный ответ.');
+  }
+}
+
+function mapQueueItem(item: SafetyDeskQueueItem): ModerationItem {
+  return {
+    id: item.id,
+    title: item.title,
+    source: item.source === 'VK_REVIEW' ? 'vk' : 'scheduled',
+    status: mapStatus(item.status),
+    risk: mapRisk(item.risk),
+    entity: item.entityTitle,
+    author: item.author || item.sourceTitle,
+    scheduledAt: item.scheduledAt
+      ? formatDateTime(new Date(item.scheduledAt))
+      : `Импортировано ${formatDateTime(new Date(item.createdAt))}`,
+    text: item.text,
+    domains: item.domains,
+    photoUrls: item.photoUrls,
+    originalUrl: item.originalUrl,
+    reasons: item.reasons,
+    checks: item.checks.map((check) => ({
+      label: check.label,
+      state: check.state.toLowerCase() as 'passed' | 'warning' | 'blocked',
+    })),
+  };
+}
+
+function mapAuditEntry(entry: SafetyDeskAuditEntry): AuditEntry {
+  return {
+    id: entry.id,
+    itemId: entry.itemId,
+    title: entry.title,
+    action: entry.action,
+    createdAt: formatTime(new Date(entry.createdAt)),
+  };
+}
+
+function mapStatus(status: SafetyDeskQueueItem['status']): QueueStatus {
+  if (status === 'APPROVED') {
+    return 'approved';
+  }
+  if (status === 'REJECTED') {
+    return 'rejected';
+  }
+  if (status === 'BLOCKED') {
+    return 'blocked';
+  }
+  return 'review';
+}
+
+function mapRisk(risk: SafetyDeskQueueItem['risk']): RiskLevel {
+  if (risk === 'BLOCKED') {
+    return 'blocked';
+  }
+  return risk.toLowerCase() as RiskLevel;
+}
+
+function formatDateTime(date: Date): string {
+  if (!Number.isFinite(date.getTime())) {
+    return 'Время не указано';
+  }
+
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
-function withoutDecisionReasons(reasons: string[]): string[] {
-  return reasons.filter(
-    (reason) =>
-      !reason.startsWith('Материал одобрен') &&
-      !reason.startsWith('Материал отклонен') &&
-      !reason.startsWith('Запрошена повторная проверка'),
-  );
-}
-
-function auditActionLabel(action: AuditEntry['action']): string {
-  const labels: Record<AuditEntry['action'], string> = {
-    approved: 'Одобрено',
-    rejected: 'Отклонено',
-    rechecked: 'Повторная проверка',
-    refreshed: 'Обновлено',
-    exported: 'Экспорт',
+function auditActionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    SAFETY_DESK_APPROVE: 'Одобрено',
+    SAFETY_DESK_REJECT: 'Отклонено',
+    SAFETY_DESK_RECHECK: 'Повторная проверка',
   };
 
-  return labels[action];
+  return labels[action] ?? action;
+}
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Не удалось выполнить действие. Проверь соединение и попробуй еще раз.';
 }
