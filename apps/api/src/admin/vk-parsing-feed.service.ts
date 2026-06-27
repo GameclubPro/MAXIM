@@ -340,6 +340,10 @@ export class VkParsingFeedService {
       chatId: post.chatId,
       sourceTitle: post.source.title,
       sourceUrl: post.source.url,
+      sourcePublishMode:
+        post.source.publishMode === 'IMMEDIATE' || post.source.publishMode === 'REVIEW'
+          ? post.source.publishMode
+          : 'QUEUE',
       vkOwnerId: post.vkOwnerId,
       vkPostId: post.vkPostId,
       vkPublishedAt: post.vkPublishedAt ? post.vkPublishedAt.toISOString() : null,

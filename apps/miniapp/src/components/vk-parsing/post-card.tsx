@@ -81,15 +81,20 @@ export function PostCard({
   const unsupportedSummary = formatUnsupportedAttachmentSummary(post);
   const visiblePhotoUrls = post.photoUrls.slice(0, 4);
   const extraPhotoCount = Math.max(0, post.photoUrls.length - visiblePhotoUrls.length);
+  const isReviewMode =
+    post.sourcePublishMode === 'REVIEW' && (post.status === 'NEW' || post.status === 'FAILED');
+  const visibleStatusLabel = isReviewMode ? null : statusLabel;
+  const visiblePostIssue = isReviewMode ? null : postIssue;
 
   return (
     <article
       className={cn(
         'vk-parsing-post-card',
         `vk-parsing-post-card--${post.status.toLowerCase().replace(/_/gu, '-')}`,
+        isReviewMode && 'is-review-mode',
         isEditing && 'is-editing',
         publishState && 'has-publish-state',
-        postIssue?.isMediaIssue && 'has-media-issue',
+        visiblePostIssue?.isMediaIssue && 'has-media-issue',
       )}
     >
       <div className="vk-parsing-post-card__head">
@@ -100,7 +105,7 @@ export function PostCard({
           </div>
         </div>
         <div className="vk-parsing-post-card__head-actions">
-          {statusLabel ? (
+          {visibleStatusLabel ? (
             <span
               className={cn(
                 'vk-parsing-status-pill',
@@ -112,7 +117,7 @@ export function PostCard({
               title={post.autoPublishError ?? post.lastError ?? undefined}
             >
               {renderStatusIcon(post)}
-              {statusLabel}
+              {visibleStatusLabel}
             </span>
           ) : null}
           <a
@@ -128,12 +133,12 @@ export function PostCard({
         </div>
       </div>
 
-      {postIssue ? (
+      {visiblePostIssue ? (
         <div className="vk-parsing-post-card__issue" role="status">
           <WarningCircle aria-hidden />
           <span>
-            <strong>{postIssue.title}</strong>
-            {postIssue.detail}
+            <strong>{visiblePostIssue.title}</strong>
+            {visiblePostIssue.detail}
           </span>
         </div>
       ) : null}
@@ -151,6 +156,8 @@ export function PostCard({
           onToggleLink={onToggleLink}
           onCancel={onCancelEditing}
           onPublish={onPublishEditingPost}
+          submitLabel={isReviewMode ? 'Сохранить' : 'Опубликовать'}
+          pendingLabel={isReviewMode ? 'Сохраняем...' : 'Публикуем...'}
         />
       ) : (
         <>
@@ -180,52 +187,61 @@ export function PostCard({
             </div>
           ) : null}
 
-          <div className="vk-parsing-post-card__facts">
-            {photoCount > 0 ? (
-              <span>
-                <Camera aria-hidden />
-                {photoCount}
-              </span>
-            ) : null}
-            {linkCount > 0 ? (
-              <span>
-                <IconoirLink aria-hidden />
-                {linkCount}
-              </span>
-            ) : null}
-            {post.isAdvertising ? (
-              <span
-                className="vk-parsing-status-pill is-warning"
-                title={post.advertisingMarkers.join(', ') || undefined}
-              >
+          {isReviewMode ? (
+            <div className="vk-parsing-review-state" role="status">
+              <span className="vk-parsing-review-state__icon">
                 <ShieldCheck aria-hidden />
-                Реклама
               </span>
-            ) : null}
-            {unsupportedSummary ? (
-              <span title={unsupportedSummary}>
-                <WarningCircle aria-hidden />
-                {unsupportedSummary}
-              </span>
-            ) : null}
-            {publishState ? (
-              <span
-                className={cn(
-                  'vk-parsing-status-pill',
-                  publishState.tone === 'warning' && 'is-warning',
-                  publishState.tone === 'danger' && 'is-danger',
-                )}
-                title={publishState.title}
-              >
-                {publishState.tone === 'danger' ? (
+              <strong>На модерации</strong>
+            </div>
+          ) : (
+            <div className="vk-parsing-post-card__facts">
+              {photoCount > 0 ? (
+                <span>
+                  <Camera aria-hidden />
+                  {photoCount}
+                </span>
+              ) : null}
+              {linkCount > 0 ? (
+                <span>
+                  <IconoirLink aria-hidden />
+                  {linkCount}
+                </span>
+              ) : null}
+              {post.isAdvertising ? (
+                <span
+                  className="vk-parsing-status-pill is-warning"
+                  title={post.advertisingMarkers.join(', ') || undefined}
+                >
+                  <ShieldCheck aria-hidden />
+                  Реклама
+                </span>
+              ) : null}
+              {unsupportedSummary ? (
+                <span title={unsupportedSummary}>
                   <WarningCircle aria-hidden />
-                ) : (
-                  <RefreshCircle aria-hidden />
-                )}
-                {publishState.label}
-              </span>
-            ) : null}
-          </div>
+                  {unsupportedSummary}
+                </span>
+              ) : null}
+              {publishState ? (
+                <span
+                  className={cn(
+                    'vk-parsing-status-pill',
+                    publishState.tone === 'warning' && 'is-warning',
+                    publishState.tone === 'danger' && 'is-danger',
+                  )}
+                  title={publishState.title}
+                >
+                  {publishState.tone === 'danger' ? (
+                    <WarningCircle aria-hidden />
+                  ) : (
+                    <RefreshCircle aria-hidden />
+                  )}
+                  {publishState.label}
+                </span>
+              ) : null}
+            </div>
+          )}
 
           {post.status === 'PUBLISHED' && post.publishedUrl ? (
             <div className="vk-parsing-post-card__actions">
@@ -245,7 +261,7 @@ export function PostCard({
           post.status !== 'SKIPPED' &&
           post.status !== 'UNAVAILABLE' ? (
             <div className="vk-parsing-post-card__actions">
-              {post.status === 'FAILED' ? (
+              {post.status === 'FAILED' && !isReviewMode ? (
                 <button
                   type="button"
                   className="button button--ghost vk-parsing-action-button"

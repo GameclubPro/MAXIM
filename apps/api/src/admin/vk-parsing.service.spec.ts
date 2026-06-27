@@ -3342,6 +3342,39 @@ describe('VkParsingService', () => {
     expect(prisma.vkParsingPost.updateMany).not.toHaveBeenCalled();
   });
 
+  it('saves review-mode VK post edits without publishing to MAX', async () => {
+    const { service, prisma, maxClient } = createFixture();
+    const source = createSource({ publishMode: 'REVIEW' });
+    const post = createPostRow({
+      source,
+      text: 'Черновик до правки',
+      linkUrls: ['https://example.com/source'],
+      status: 'FAILED',
+      lastError: 'Предыдущая попытка остановлена.',
+    });
+    prisma.vkParsingPost.findFirst.mockResolvedValue(post);
+
+    await service.updateReviewPostDraft('channel-1', 'post-1', { userId: '98315271' } as never, {
+      text: 'Черновик после правки',
+      photoUrls: [],
+      linkUrls: ['https://example.com/source'],
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(prisma.vkParsingPost.update).toHaveBeenCalledWith({
+      where: { id: 'post-1' },
+      data: expect.objectContaining({
+        status: 'NEW',
+        text: 'Черновик после правки',
+        photoUrls: [],
+        linkUrls: ['https://example.com/source'],
+        publishQueuedAt: null,
+        publishLockedAt: null,
+        lastError: null,
+      }),
+    });
+  });
+
   it('clears stale queued jobs for review-mode VK sources without publishing', async () => {
     const { service, prisma, maxClient } = createFixture();
     const source = createSource({ publishMode: 'REVIEW' });

@@ -918,6 +918,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         chatId,
         sourceTitle: sourceOne.title,
         sourceUrl: sourceOne.url,
+        sourcePublishMode: sourceOne.publishMode,
         vkOwnerId: sourceOne.wallOwnerId,
         vkPostId: 4281,
         vkPublishedAt: addHours(now, -2.4).toISOString(),
@@ -953,6 +954,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         chatId,
         sourceTitle: sourceOne.title,
         sourceUrl: sourceOne.url,
+        sourcePublishMode: sourceOne.publishMode,
         vkOwnerId: sourceOne.wallOwnerId,
         vkPostId: 4276,
         vkPublishedAt: addHours(now, -7).toISOString(),
@@ -983,6 +985,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         chatId,
         sourceTitle: sourceTwo.title,
         sourceUrl: sourceTwo.url,
+        sourcePublishMode: sourceTwo.publishMode,
         vkOwnerId: sourceTwo.wallOwnerId,
         vkPostId: 119,
         vkPublishedAt: addHours(now, -10).toISOString(),
@@ -990,7 +993,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         url: `${sourceTwo.url}?w=wall${sourceTwo.wallOwnerId}_119`,
         photoUrls: [],
         linkUrls: ['https://example.com/promo'],
-        status: 'SKIPPED',
+        status: 'NEW',
         contentHash: 'preview-vk-119',
         publishedContentHash: null,
         publishedMessageId: null,
@@ -998,8 +1001,8 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         publishedAtMax: null,
         autoPublishedAt: null,
         autoPublishError: null,
-        skippedAt: addHours(now, -9.9).toISOString(),
-        skipReason: 'AD',
+        skippedAt: null,
+        skipReason: null,
         lastSeenAt: addHours(now, -9.8).toISOString(),
         missingSinceAt: null,
         unavailableAt: null,
@@ -1013,6 +1016,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         chatId,
         sourceTitle: sourceOne.title,
         sourceUrl: sourceOne.url,
+        sourcePublishMode: sourceOne.publishMode,
         vkOwnerId: sourceOne.wallOwnerId,
         vkPostId: 4259,
         vkPublishedAt: addHours(now, -19).toISOString(),
@@ -1043,6 +1047,7 @@ function createPreviewVkParsingFeed(chatId: string, now: Date): VkParsingFeed {
         chatId,
         sourceTitle: sourceTwo.title,
         sourceUrl: sourceTwo.url,
+        sourcePublishMode: sourceTwo.publishMode,
         vkOwnerId: sourceTwo.wallOwnerId,
         vkPostId: 4244,
         vkPublishedAt: addDays(now, -1).toISOString(),
@@ -1569,6 +1574,41 @@ function handleVkParsingPreviewRequest(
     return {
       handled: true,
       value: retryVkParsingPostResultSchema.parse({ post: updatedPost, queued: 1 }),
+    };
+  }
+
+  if (tail[1] === 'posts' && tail[2] && tail[3] === 'review-draft' && method === 'PATCH') {
+    const payload = publishVkParsingPostRequestSchema.parse(parseJsonBody(init));
+    const postId = decodeURIComponent(tail[2]);
+    const post = readFeed().posts.find((item) => item.id === postId);
+    if (!post) {
+      throw new Error(`Preview VK post not found: ${postId}`);
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatedPost: VkParsingPost = {
+      ...post,
+      text: payload.text,
+      photoUrls: payload.photoUrls,
+      linkUrls: payload.linkUrls,
+      status: 'NEW',
+      autoPublishError: null,
+      publishQueuedAt: null,
+      publishScheduledAt: null,
+      publishLockedAt: null,
+      publishCancelledAt: null,
+      publishCancelledByUserId: null,
+      lastError: null,
+      updatedAt: nowIso,
+    };
+    const feed = vkParsingFeedSchema.parse({
+      ...readFeed(),
+      posts: readFeed().posts.map((item) => (item.id === updatedPost.id ? updatedPost : item)),
+    });
+    writeFeed(feed);
+    return {
+      handled: true,
+      value: feed,
     };
   }
 

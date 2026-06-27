@@ -23,6 +23,7 @@ import {
   rollbackVkParsingAutopublish,
   retryVkParsingPost,
   scheduleVkParsingPost,
+  updateVkParsingReviewDraft,
   updateVkParsingSource,
   updateVkParsingSettings,
   type VkParsingEntityType,
@@ -282,6 +283,30 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     },
   });
 
+  const reviewDraftMutation = useMutation({
+    mutationFn: (payload: PublishPayload) =>
+      updateVkParsingReviewDraft(api, entityType, chatId, payload.postId, {
+        text: payload.text,
+        photoUrls: payload.photoUrls,
+        linkUrls: payload.linkUrls,
+      }),
+    onSuccess: (nextFeed) => {
+      setEditingPostId(null);
+      queryClient.setQueryData(queryKeys.vkParsing(entityType, chatId, feedQueryScope), nextFeed);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.vkParsing(entityType, chatId) });
+      pushToast({ tone: 'success', title: 'Сохранено на модерации' });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не сохранено',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const retryMutation = useMutation({
     mutationFn: (postId: string) => retryVkParsingPost(api, entityType, chatId, postId),
     onSuccess: () => {
@@ -441,16 +466,23 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
   }
 
   function publishEditingPost() {
-    if (!editingPost || publishMutation.isPending) {
+    if (!editingPost || publishMutation.isPending || reviewDraftMutation.isPending) {
       return;
     }
 
-    publishMutation.mutate({
+    const payload = {
       postId: editingPost.id,
       text: draftText,
       photoUrls: selectedPhotoUrls,
       linkUrls: selectedLinkUrls,
-    });
+    };
+
+    if (editingPost.sourcePublishMode === 'REVIEW') {
+      reviewDraftMutation.mutate(payload);
+      return;
+    }
+
+    publishMutation.mutate(payload);
   }
 
   function toggleSetting(key: VkParsingSettingKey, checked: boolean) {
@@ -547,7 +579,9 @@ export function useVkParsingCard({ api, chatId, active, entityType }: UseVkParsi
     selectedLinkUrls,
     publishingPostId: publishMutation.isPending
       ? (publishMutation.variables?.postId ?? null)
-      : null,
+      : reviewDraftMutation.isPending
+        ? (reviewDraftMutation.variables?.postId ?? null)
+        : null,
     retryingPostId: retryMutation.isPending ? (retryMutation.variables ?? null) : null,
     isAddingSource: addSourceMutation.isPending,
     isRemovingSource: removeSourceMutation.isPending,

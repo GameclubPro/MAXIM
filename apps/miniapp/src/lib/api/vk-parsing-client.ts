@@ -202,6 +202,24 @@ export async function publishVkParsingPost(
   return publishVkParsingPostResultSchema.parse(response);
 }
 
+export async function updateVkParsingReviewDraft(
+  api: ApiTransport,
+  entityType: VkParsingEntityType,
+  chatId: string,
+  postId: string,
+  payload: PublishVkParsingPostRequest,
+): Promise<VkParsingFeed> {
+  const requestBody = publishVkParsingPostRequestSchema.parse(payload);
+  const response = await api.request(
+    `${buildVkParsingPath(entityType, chatId)}/posts/${postId}/review-draft`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return vkParsingFeedSchema.parse(response);
+}
+
 export async function retryVkParsingPost(
   api: ApiTransport,
   entityType: VkParsingEntityType,

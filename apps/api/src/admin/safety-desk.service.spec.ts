@@ -135,10 +135,13 @@ describe('SafetyDeskService', () => {
     expect(queue.items[0]?.risk).toBe('LOW');
   });
 
-  it('counts posts with unsupported attachments as blocked instead of review', async () => {
+  it('keeps posts with unsupported attachments out of the owner review queue', async () => {
     const { prisma, service } = createFixture();
     prisma.vkParsingPost.findMany.mockResolvedValue([
       createReviewPost({
+        text: '',
+        photoUrls: [],
+        linkUrls: [],
         hasUnsupportedAttachments: true,
         unsupportedAttachments: [{ type: 'video', label: 'Видео', count: 1 }],
       }),
@@ -147,16 +150,29 @@ describe('SafetyDeskService', () => {
     const queue = await service.getQueue();
 
     expect(queue.summary.review).toBe(0);
-    expect(queue.summary.blocked).toBe(1);
-    expect(queue.items[0]).toMatchObject({
-      status: 'BLOCKED',
-      checks: expect.arrayContaining([
-        {
-          label: 'Есть неподдерживаемые вложения',
-          state: 'BLOCKED',
-        },
-      ]),
-    });
+    expect(queue.summary.blocked).toBe(0);
+    expect(queue.items).toEqual([]);
+  });
+
+  it('does not expose unsupported-only posts in the owner review queue', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        id: 'post-video',
+        text: '',
+        photoUrls: [],
+        linkUrls: [],
+        hasUnsupportedAttachments: true,
+        unsupportedAttachments: [{ type: 'video', label: 'Видео', count: 1 }],
+      }),
+      createReviewPost({ id: 'post-text', text: 'Можно проверить' }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.items.map((item) => item.id)).toEqual(['post-text']);
+    expect(queue.summary.review).toBe(1);
+    expect(queue.summary.blocked).toBe(0);
   });
 
   it('keeps posts with warnings approvable', async () => {

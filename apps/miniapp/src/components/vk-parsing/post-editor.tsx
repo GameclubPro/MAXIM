@@ -9,6 +9,8 @@ type PostEditorProps = {
   selectedLinkUrls: string[];
   stripLinksEnabled: boolean;
   isPublishing: boolean;
+  submitLabel?: string;
+  pendingLabel?: string;
   onDraftTextChange: (value: string) => void;
   onTogglePhoto: (url: string) => void;
   onToggleLink: (url: string) => void;
@@ -23,6 +25,8 @@ export function PostEditor({
   selectedLinkUrls,
   stripLinksEnabled,
   isPublishing,
+  submitLabel = 'Опубликовать',
+  pendingLabel = 'Публикуем...',
   onDraftTextChange,
   onTogglePhoto,
   onToggleLink,
@@ -70,7 +74,7 @@ export function PostEditor({
           onClick={onPublish}
         >
           <SendDiagonal aria-hidden />
-          {isPublishing ? 'Публикуем...' : 'Опубликовать'}
+          {isPublishing ? pendingLabel : submitLabel}
         </button>
       </div>
     </div>

@@ -11,11 +11,16 @@ import {
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ChatEntityType, Prisma } from '../prisma/prisma-client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  prepareVkParsingPublishPayload,
+  resolveVkParsingPostSkipReason,
+  type PreparedVkPublishPayload,
+} from './vk-parsing-content';
 import { VkPublishService } from './vk-publish.service';
 
 type ReviewPostRow = Prisma.VkParsingPostGetPayload<{
   include: {
-    chat: { select: { title: true; entityType: true } };
+    chat: { select: { title: true; entityType: true; vkParsingSettings: true } };
     source: true;
   };
 }>;
@@ -175,7 +180,7 @@ export class SafetyDeskService {
         autoPublishError: null,
       },
       include: {
-        chat: { select: { title: true, entityType: true } },
+        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
         source: true,
       },
     });
@@ -194,24 +199,32 @@ export class SafetyDeskService {
   }
 
   private async loadReviewPosts(): Promise<ReviewPostRow[]> {
-    return this.prisma.vkParsingPost.findMany({
+    const posts = await this.prisma.vkParsingPost.findMany({
       where: {
         status: { in: [VK_POST_STATUS_NEW, VK_POST_STATUS_FAILED] },
         publishCancelledAt: null,
         skippedAt: null,
         unavailableAt: null,
+        hasUnsupportedAttachments: false,
+        OR: [
+          { text: { not: '' } },
+          { photoUrls: { not: [] } },
+          { linkUrls: { not: [] } },
+        ],
         source: {
           status: VK_SOURCE_STATUS_ACTIVE,
           publishMode: VK_SOURCE_PUBLISH_MODE_REVIEW,
         },
       },
       include: {
-        chat: { select: { title: true, entityType: true } },
+        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
         source: true,
       },
       orderBy: [{ vkPublishedAt: 'desc' }, { createdAt: 'desc' }],
       take: 100,
     });
+
+    return posts.filter((post) => this.hasPublishableContent(post));
   }
 
   private async findReviewPostOrThrow(
@@ -233,7 +246,7 @@ export class SafetyDeskService {
         },
       },
       include: {
-        chat: { select: { title: true, entityType: true } },
+        chat: { select: { title: true, entityType: true, vkParsingSettings: true } },
         source: true,
       },
     });
@@ -258,10 +271,11 @@ export class SafetyDeskService {
   private mapReviewPost(post: ReviewPostRow): SafetyDeskQueueItem {
     const photoUrls = this.readStringArray(post.photoUrls);
     const linkUrls = this.readStringArray(post.linkUrls);
+    const prepared = this.preparePublishPayload(post, photoUrls, linkUrls);
     const domains = this.extractDomains([post.url, ...linkUrls]);
-    const risk = this.resolveRisk(post, domains, photoUrls);
-    const reasons = this.buildReasons(post, domains, photoUrls);
-    const checks = this.buildChecks(post, domains);
+    const risk = this.resolveRisk(post, prepared, domains, photoUrls);
+    const reasons = this.buildReasons(post, prepared, domains, photoUrls);
+    const checks = this.buildChecks(post, prepared, domains);
     const status =
       risk === 'BLOCKED' || checks.some((check) => check.state === 'BLOCKED')
         ? 'BLOCKED'
@@ -291,7 +305,12 @@ export class SafetyDeskService {
     };
   }
 
-  private buildReasons(post: ReviewPostRow, domains: string[], photoUrls: string[]): string[] {
+  private buildReasons(
+    post: ReviewPostRow,
+    prepared: PreparedVkPublishPayload | null,
+    domains: string[],
+    photoUrls: string[],
+  ): string[] {
     const reasons = ['Источник настроен на ручную проверку перед публикацией'];
 
     if (post.status === VK_POST_STATUS_FAILED || post.lastError) {
@@ -308,6 +327,9 @@ export class SafetyDeskService {
     if (post.hasUnsupportedAttachments) {
       reasons.push('Есть вложения, которые нельзя безопасно перенести автоматически');
     }
+    if (!prepared) {
+      reasons.push('После правил публикации не осталось текста, фото или ссылок');
+    }
     if (post.isAdvertising || this.readStringArray(post.advertisingMarkers).length > 0) {
       reasons.push('Найдены коммерческие маркеры, нужна ручная оценка');
     }
@@ -318,7 +340,11 @@ export class SafetyDeskService {
     return reasons;
   }
 
-  private buildChecks(post: ReviewPostRow, domains: string[]): SafetyDeskQueueItem['checks'] {
+  private buildChecks(
+    post: ReviewPostRow,
+    prepared: PreparedVkPublishPayload | null,
+    domains: string[],
+  ): SafetyDeskQueueItem['checks'] {
     return [
       {
         label: 'Принудительное добавление пользователей не используется',
@@ -337,6 +363,12 @@ export class SafetyDeskService {
       {
         label: domains.length > 0 ? 'Ссылки извлечены для проверки' : 'Внешних ссылок нет',
         state: domains.length > 0 ? 'WARNING' : 'PASSED',
+      },
+      {
+        label: prepared
+          ? 'Есть поддерживаемый текст, фото или ссылка'
+          : 'После правил публикации не осталось текста, фото или ссылок',
+        state: prepared ? 'PASSED' : 'BLOCKED',
       },
       {
         label: post.hasUnsupportedAttachments
@@ -372,10 +404,11 @@ export class SafetyDeskService {
 
   private resolveRisk(
     post: ReviewPostRow,
+    prepared: PreparedVkPublishPayload | null,
     domains: string[],
     photoUrls: string[],
   ): SafetyDeskRiskLevel {
-    if (post.status === VK_POST_STATUS_FAILED || post.lastError) {
+    if (!prepared || post.status === VK_POST_STATUS_FAILED || post.lastError) {
       return 'BLOCKED';
     }
     if (post.hasUnsupportedAttachments) {
@@ -470,6 +503,64 @@ export class SafetyDeskService {
     });
   }
 
+  private hasPublishableContent(post: ReviewPostRow): boolean {
+    return Boolean(
+      this.preparePublishPayload(
+        post,
+        this.readStringArray(post.photoUrls),
+        this.readStringArray(post.linkUrls),
+      ),
+    );
+  }
+
+  private preparePublishPayload(
+    post: ReviewPostRow,
+    photoUrls: string[],
+    linkUrls: string[],
+  ): PreparedVkPublishPayload | null {
+    const settings = this.resolveVkParsingSettings(post);
+    const skipReason = resolveVkParsingPostSkipReason(
+      {
+        text: post.text,
+        photoUrls,
+        linkUrls,
+        attachments: this.readRecords(post.attachments),
+        raw: this.asRecord(post.raw) ?? {},
+        isAdvertising: post.isAdvertising,
+        advertisingMarkers: this.readStringArray(post.advertisingMarkers),
+      },
+      settings,
+    );
+    if (skipReason) {
+      return null;
+    }
+
+    const prepared = prepareVkParsingPublishPayload(
+      {
+        text: post.text,
+        photoUrls,
+        linkUrls,
+      },
+      settings,
+    );
+    if (
+      prepared.text.trim().length === 0 &&
+      prepared.photoUrls.length === 0 &&
+      prepared.linkUrls.length === 0
+    ) {
+      return null;
+    }
+
+    return prepared;
+  }
+
+  private resolveVkParsingSettings(post: ReviewPostRow) {
+    return {
+      stripLinksEnabled: post.chat.vkParsingSettings?.stripLinksEnabled ?? false,
+      skipAdsEnabled: post.chat.vkParsingSettings?.skipAdsEnabled ?? false,
+    };
+  }
+
   private buildApproveAllMessage(approved: number, failed: number, total: number): string {
     if (total === 0) {
       return 'Нет материалов, доступных для массового одобрения.';
@@ -487,6 +578,16 @@ export class SafetyDeskService {
     return value.filter(
       (item): item is string => typeof item === 'string' && item.trim().length > 0,
     );
+  }
+
+  private readRecords(value: unknown): Array<Record<string, unknown>> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.asRecord(item))
+      .filter((item): item is Record<string, unknown> => item !== null);
   }
 
   private async writeAuditLog(

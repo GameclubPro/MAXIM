@@ -1,5 +1,6 @@
 import {
   bulkUpdateVkParsingSourcesRequestSchema,
+  publishVkParsingPostRequestSchema,
   rollbackVkParsingRequestSchema,
   scheduleVkParsingPostRequestSchema,
   updateVkParsingSettingsRequestSchema,
@@ -13,7 +14,7 @@ import {
   type VkParsingHealthSummary,
   type VkParsingRefreshResult,
 } from '@maxim/contracts';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { VkParsingAccessService } from './vk-parsing-access.service';
@@ -203,6 +204,54 @@ export class VkParsingService {
     return this.publishService.publishPost(chatId, postId, user.userId, body);
   }
 
+  async updateReviewPostDraft(
+    chatId: string,
+    postId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<VkParsingFeed> {
+    await this.accessService.assertAccess(chatId, user);
+    const parsed = publishVkParsingPostRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const post = await this.prisma.vkParsingPost.findFirst({
+      where: { id: postId, chatId },
+      include: { source: true },
+    });
+    if (!post || post.source.publishMode !== 'REVIEW') {
+      throw new NotFoundException('Пост на модерации не найден.');
+    }
+    if (post.status === 'PUBLISHED' || post.status === 'UNAVAILABLE' || post.status === 'SKIPPED') {
+      throw new BadRequestException('Этот пост уже нельзя вернуть на модерацию.');
+    }
+
+    const storedPhotoUrls = this.readStringArray(post.photoUrls);
+    const storedLinkUrls = this.readStringArray(post.linkUrls);
+    const photoUrls = this.assertSelectedUrls(parsed.data.photoUrls, storedPhotoUrls, 'фото');
+    const linkUrls = this.assertSelectedUrls(parsed.data.linkUrls, storedLinkUrls, 'ссылку');
+
+    await this.prisma.vkParsingPost.update({
+      where: { id: post.id },
+      data: {
+        status: 'NEW',
+        text: parsed.data.text,
+        photoUrls,
+        linkUrls,
+        publishLockedAt: null,
+        publishQueuedAt: null,
+        publishScheduledAt: null,
+        publishIdempotencyKey: null,
+        publishReason: null,
+        lastError: null,
+        autoPublishError: null,
+      },
+    });
+
+    return this.feedService.buildFeed(chatId, VK_PARSING_AVAILABLE_CAPABILITY);
+  }
+
   async retryPost(
     chatId: string,
     postId: string,
@@ -301,5 +350,24 @@ export class VkParsingService {
         payload: JSON.parse(JSON.stringify(payload ?? null)),
       },
     });
+  }
+
+  private assertSelectedUrls(selected: string[], stored: string[], label: string): string[] {
+    const storedSet = new Set(stored);
+    const normalized = [...new Set(selected.map((url) => url.trim()).filter(Boolean))];
+    const forbidden = normalized.find((url) => !storedSet.has(url));
+    if (forbidden) {
+      throw new BadRequestException(`Нельзя сохранить неизвестную ${label}.`);
+    }
+
+    return normalized;
+  }
+
+  private readStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
   }
 }

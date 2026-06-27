@@ -2788,6 +2788,7 @@ export const vkParsingPostSchema = z.object({
   chatId: z.string(),
   sourceTitle: z.string(),
   sourceUrl: z.string().url(),
+  sourcePublishMode: vkParsingPublishModeSchema.default('QUEUE'),
   vkOwnerId: z.number().int(),
   vkPostId: z.number().int(),
   vkPublishedAt: z.string().datetime().nullable(),

@@ -1300,6 +1300,40 @@
   gap: 5px;
 }
 
+.vk-parsing-review-state {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border: 1px solid var(--settings-panel-accent-border);
+  border-radius: var(--vk-radius);
+  background: var(--settings-panel-accent-soft);
+}
+
+.vk-parsing-review-state__icon {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--vk-accent-dark);
+  background: var(--vk-surface);
+}
+
+.vk-parsing-review-state__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.vk-parsing-review-state strong {
+  color: var(--vk-ink);
+  font-size: 13px;
+  font-weight: 820;
+  line-height: 1.18;
+}
+
 .vk-parsing-post-card__facts svg,
 .vk-parsing-status-pill svg {
   width: 14px;
@@ -1313,6 +1347,10 @@
   gap: 6px;
 }
 
+.vk-parsing-post-card.is-review-mode .vk-parsing-post-card__actions {
+  justify-content: stretch;
+}
+
 .vk-parsing-post-card__actions .button,
 .vk-parsing-action-button {
   min-height: 34px;
@@ -1322,6 +1360,11 @@
   gap: 7px;
   font-size: 12px;
   font-weight: 740;
+}
+
+.vk-parsing-post-card.is-review-mode .vk-parsing-action-button--primary {
+  width: 100%;
+  justify-content: center;
 }
 
 .vk-parsing-action-button--primary {

@@ -154,6 +154,44 @@ describe('MiniappMutationTunnelController', () => {
     expect(reply.status).toHaveBeenCalledWith(200);
   });
 
+  it('allows saving a VK review draft through the mutation tunnel', async () => {
+    const controller = new MiniappMutationTunnelController();
+    const reply = createReply();
+    const payload = JSON.stringify({ text: 'На модерации', photoUrls: [], linkUrls: [] });
+    const body = Buffer.from(payload, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/u, '');
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      }),
+    ) as typeof fetch;
+
+    await controller.tunnel(
+      {
+        method: 'PATCH',
+        path: '/channels/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
+        body,
+        contentType: 'application/json',
+      },
+      'InitData auth_date=1&hash=test',
+      reply as never,
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3001/api/v1/channels/-68195407437828/vk-parsing/posts/vkpost-1/review-draft',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: payload,
+      }),
+    );
+    expect(reply.status).toHaveBeenCalledWith(200);
+  });
+
   it('accepts gzip-compressed tunnel bodies', async () => {
     const controller = new MiniappMutationTunnelController();
     const reply = createReply();

@@ -200,7 +200,7 @@ const ALLOWED_TUNNEL_ROUTES: readonly TunnelRouteRule[] = [
   {
     method: 'PATCH',
     pattern: new RegExp(
-      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/posts/${ENTITY_ID_SEGMENT}/schedule$`,
+      `^/(chats|channels)/${ENTITY_ID_SEGMENT}/vk-parsing/posts/${ENTITY_ID_SEGMENT}/(schedule|review-draft)$`,
     ),
   },
   {

@@ -162,6 +162,16 @@ export class AdminVkParsingController {
     return this.vkParsingService.publishPost(chatId, postId, user, body);
   }
 
+  @Patch('channels/:chatId/vk-parsing/posts/:postId/review-draft')
+  updateChannelVkParsingReviewDraft(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateReviewPostDraft(chatId, postId, user, body);
+  }
+
   @Get('chats/:chatId/vk-parsing')
   getChatVkParsing(
     @Param('chatId') chatId: string,
@@ -304,5 +314,15 @@ export class AdminVkParsingController {
     @Body() body: unknown,
   ) {
     return this.vkParsingService.publishPost(chatId, postId, user, body);
+  }
+
+  @Patch('chats/:chatId/vk-parsing/posts/:postId/review-draft')
+  updateChatVkParsingReviewDraft(
+    @Param('chatId') chatId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.vkParsingService.updateReviewPostDraft(chatId, postId, user, body);
   }
 }
