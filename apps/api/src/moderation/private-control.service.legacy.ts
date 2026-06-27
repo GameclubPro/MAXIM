@@ -8471,6 +8471,7 @@ export class PrivateControlService {
     includeMiniapp?: boolean;
     includeSupport?: boolean;
     includeProblemReport?: boolean;
+    singleColumn?: boolean;
     supportText?: string;
     miniappText?: string;
     miniappRoute?: string | null;
@@ -8497,7 +8498,8 @@ export class PrivateControlService {
       });
     }
 
-    const rows: MaxMessageButton[][] = row.length > 0 ? [row] : [];
+    const rows: MaxMessageButton[][] =
+      config?.singleColumn === true ? row.map((button) => [button]) : row.length > 0 ? [row] : [];
     if (includeProblemReport) {
       rows.push([this.callbackButton('Сообщить о проблеме', this.cb('support_report'))]);
     }
@@ -8754,7 +8756,7 @@ export class PrivateControlService {
       profile,
       appBaseUrl: this.appBaseUrl,
       notice,
-      footerButtons: this.buildFooterButtons({ includeProblemReport: true }),
+      footerButtons: this.buildFooterButtons({ includeProblemReport: true, singleColumn: true }),
     });
   }
 
@@ -8765,6 +8767,7 @@ export class PrivateControlService {
       appBaseUrl: this.appBaseUrl,
       footerButtons: this.buildFooterButtons({
         includeProblemReport: true,
+        singleColumn: true,
         supportText: '🆘 Техпомощь',
       }),
     });

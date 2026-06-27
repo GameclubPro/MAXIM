@@ -1160,6 +1160,7 @@ describe('PrivateControlService', () => {
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
     ).toEqual(['📱 Приложение', '🆘 Поддержка', 'Сообщить о проблеме']);
+    expect(getLastButtons(maxClient).map((row) => row.length)).toEqual([1, 1, 1]);
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
@@ -1254,6 +1255,7 @@ describe('PrivateControlService', () => {
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
     ).toEqual(['📱 Приложение', '🆘 Техпомощь', 'Сообщить о проблеме']);
+    expect(getLastButtons(maxClient).map((row) => row.length)).toEqual([1, 1, 1]);
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(''));
 
