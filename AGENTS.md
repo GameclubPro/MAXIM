@@ -11,11 +11,13 @@
 - Monorepo workspaces:
   - `apps/api`: NestJS/Fastify API, Prisma, BullMQ workers, Postgres, Redis.
   - `apps/miniapp`: React 19 + Vite MAX mini app. MAX Bridge is loaded from `https://st.max.ru/js/max-web-app.js`.
+  - `apps/admin`: closed React/Vite Safety Desk for owner-side moderation review; not a MAX mini app.
   - `packages/contracts`: shared Zod/API contracts. Contract changes normally require matching API, mini app, tests, and typechecks.
 - Keep `packages/contracts` subpath exports, root `tsconfig.base.json` paths, and `apps/api/jest.config.cjs` mappers in sync so API Jest resolves ESM contract sources correctly.
 - Production API uses one shared API image split by `APP_ROLE`; `api-ingress` is the public API role, `api-admin` is the local admin/API role, and moderation/action/enqueue roles process queues.
 - Split API services also declare `APP_SERVICE_NAME`; keep the typed service/queue topology in `apps/api/src/runtime/runtime-topology.ts` aligned with compose service env.
 - Production mini app is served under `/app/`.
+- Production Safety Desk is served on `https://admin.major-maksimov.ru/` through nginx Basic Auth and `admin-static` on `127.0.0.1:3004`.
 
 ## Core workflow
 
@@ -37,6 +39,7 @@
 - `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default. Use `--include-agents` only when you intentionally want to commit agent-note changes. In a dirty tree it stages tracked changes broadly, so for partial commits use explicit `git add <paths> && git commit && git push`.
 - Rebuild only changed services. In practice that is usually `miniapp-static` and/or the shared API image.
 - `https://major-maksimov.ru/app/` is served by `miniapp-major-static`; `miniapp-static` serves `https://maxim.play-team.ru/app/`. For routine mini app production deploys while Major is primary, deploy `miniapp-major-static`.
+- For closed admin/Safety Desk changes, deploy `admin-static`. It is intentionally built without Docker cache during VPS deploys so the Vite-baked `ADMIN_ACCESS_CODE` from `/var/www/Chat_bot/.env` is refreshed; do not print that code. Server Basic Auth password is stored on the VPS at `/root/maxim-admin-basic-auth-password.txt`.
 - If shared API code or `packages/contracts` changed, recreate every prod API role that uses that image:
   - `api-ingress`
   - `api-admin`
