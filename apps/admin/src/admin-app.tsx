@@ -79,6 +79,7 @@ export function AdminApp() {
   const [notice, setNotice] = useState('Готово к проверке');
   const [loading, setLoading] = useState(false);
   const [busyItemId, setBusyItemId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     if (!unlocked) {
@@ -136,6 +137,30 @@ export function AdminApp() {
 
   async function recheckItem(itemId: string) {
     await runDecision(itemId, 'recheck', 'Возвращаю материал на повторную проверку');
+  }
+
+  async function approveAllVisible() {
+    const reviewCount = metrics.review;
+    if (reviewCount === 0) {
+      setNotice('Нет материалов для массового одобрения');
+      return;
+    }
+
+    if (!window.confirm(`Одобрить всю очередь проверки? Материалов: ${reviewCount}.`)) {
+      return;
+    }
+
+    setBulkBusy(true);
+    setNotice('Одобряю материалы из очереди');
+    try {
+      const response = await postApproveAll();
+      applyQueueResponse(response.queue);
+      setNotice(response.message);
+    } catch (error) {
+      setNotice(readErrorMessage(error));
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   async function runDecision(
@@ -235,9 +260,18 @@ export function AdminApp() {
         </div>
         <div className="topbar__actions">
           <button
+            className="primary-action"
+            type="button"
+            disabled={loading || bulkBusy || metrics.review === 0}
+            onClick={() => void approveAllVisible()}
+          >
+            <Check width={18} height={18} />
+            {bulkBusy ? 'Одобряю' : 'Одобрить все'}
+          </button>
+          <button
             className="ghost-action icon-action"
             type="button"
-            disabled={loading}
+            disabled={loading || bulkBusy}
             onClick={() => void refreshQueue()}
             title="Обновить"
             aria-label="Обновить"
@@ -594,6 +628,19 @@ async function postDecision(
       body: JSON.stringify({}),
     },
   );
+  return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
+}
+
+async function postApproveAll(): Promise<SafetyDeskDecisionResponse> {
+  const response = await fetch(`${safetyDeskApiBase}/queue/approve-all`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
   return safetyDeskDecisionResponseSchema.parse(await readJsonResponse(response));
 }
 

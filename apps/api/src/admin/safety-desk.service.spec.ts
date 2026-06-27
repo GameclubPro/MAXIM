@@ -100,13 +100,38 @@ describe('SafetyDeskService', () => {
       entityTitle: 'Канал: Канал администраторов',
       author: 'Источник MAXIM',
       text: expect.stringContaining('Проверяем публикацию'),
-      domains: ['example.com', 'vk.ru'],
+      domains: ['example.com'],
       photoUrls: ['https://cdn.example.com/photo.jpg'],
       status: 'REVIEW',
     });
     expect(queue.items[0]?.checks.map((check) => check.label)).toContain(
       'До решения владельца в MAX ничего не отправляется',
     );
+  });
+
+  it('treats VK and MAX links as trusted Safety Desk domains', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        url: 'https://vk.com/wall-36819802_101',
+        linkUrls: [
+          'https://vk.ru/club1',
+          'https://m.vk.com/wall-1_2',
+          'https://max.ru/channel/team',
+          'https://dev.max.ru/docs',
+        ],
+        photoUrls: [],
+      }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.items[0]?.domains).toEqual([]);
+    expect(queue.items[0]?.checks).toContainEqual({
+      label: 'Внешних ссылок нет',
+      state: 'PASSED',
+    });
+    expect(queue.items[0]?.risk).toBe('LOW');
   });
 
   it('approves a review item through the VK publish path and records audit', async () => {
@@ -116,11 +141,16 @@ describe('SafetyDeskService', () => {
 
     const result = await service.approveItem('post-1', 'maxim', {});
 
-    expect(vkPublishService.publishPost).toHaveBeenCalledWith('channel-1', 'post-1', 'safety-desk-owner', {
-      text: post.text,
-      photoUrls: ['https://cdn.example.com/photo.jpg'],
-      linkUrls: ['https://example.com/post'],
-    });
+    expect(vkPublishService.publishPost).toHaveBeenCalledWith(
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      {
+        text: post.text,
+        photoUrls: ['https://cdn.example.com/photo.jpg'],
+        linkUrls: ['https://example.com/post'],
+      },
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -133,10 +163,43 @@ describe('SafetyDeskService', () => {
     expect(result.message).toContain('опубликован');
   });
 
+  it('approves all review items through the VK publish path', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    const postOne = createReviewPost({ id: 'post-1', text: 'Первый пост' });
+    const postTwo = createReviewPost({ id: 'post-2', text: 'Второй пост' });
+    prisma.vkParsingPost.findMany
+      .mockResolvedValueOnce([postOne, postTwo])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.approveAllReviewItems('maxim', {});
+
+    expect(vkPublishService.publishPost).toHaveBeenCalledTimes(2);
+    expect(vkPublishService.publishPost).toHaveBeenNthCalledWith(
+      1,
+      'channel-1',
+      'post-1',
+      'safety-desk-owner',
+      expect.objectContaining({ text: 'Первый пост' }),
+    );
+    expect(vkPublishService.publishPost).toHaveBeenNthCalledWith(
+      2,
+      'channel-1',
+      'post-2',
+      'safety-desk-owner',
+      expect.objectContaining({ text: 'Второй пост' }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
+    expect(result.message).toContain('2');
+    expect(result.queue.summary.review).toBe(0);
+  });
+
   it('rejects a review item without sending anything to MAX', async () => {
     const { prisma, service, vkPublishService } = createFixture();
     prisma.vkParsingPost.findFirst.mockResolvedValue(createReviewPost());
-    prisma.vkParsingPost.update.mockResolvedValue(createReviewPost({ publishCancelledAt: new Date() }));
+    prisma.vkParsingPost.update.mockResolvedValue(
+      createReviewPost({ publishCancelledAt: new Date() }),
+    );
 
     const result = await service.rejectItem('post-1', 'maxim', {});
 

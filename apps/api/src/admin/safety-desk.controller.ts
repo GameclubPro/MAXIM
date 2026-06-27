@@ -21,6 +21,14 @@ export class SafetyDeskController {
     return this.safetyDeskService.approveItem(itemId, remoteUser ?? null, body);
   }
 
+  @Post('queue/approve-all')
+  approveAllReviewItems(
+    @Headers('x-remote-user') remoteUser: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.safetyDeskService.approveAllReviewItems(remoteUser ?? null, body);
+  }
+
   @Post('items/:itemId/reject')
   rejectItem(
     @Param('itemId') itemId: string,

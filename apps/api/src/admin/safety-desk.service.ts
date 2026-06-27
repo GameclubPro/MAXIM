@@ -30,6 +30,7 @@ const VK_POST_STATUS_PUBLISHED = 'PUBLISHED';
 const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const SAFETY_DESK_AUDIT_PREFIX = 'SAFETY_DESK_';
+const SAFETY_DESK_TRUSTED_DOMAIN_ROOTS = ['max.ru', 'vk.ru', 'vk.com'];
 
 @Injectable()
 export class SafetyDeskService {
@@ -71,32 +72,47 @@ export class SafetyDeskService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: false });
-    const photoUrls = this.readStringArray(post.photoUrls);
-    const linkUrls = this.readStringArray(post.linkUrls);
-    const result = await this.vkPublishService.publishPost(
-      post.chatId,
-      post.id,
-      SAFETY_DESK_ACTOR_USER_ID,
-      {
-        text: post.text,
-        photoUrls,
-        linkUrls,
-      },
+    await this.approveReviewPost(
+      await this.findReviewPostOrThrow(itemId, { includeCancelled: false }),
+      actorUserId,
+      parsed.data.reason ?? null,
     );
-    await this.writeAuditLog(post.chatId, actorUserId, 'SAFETY_DESK_APPROVE', {
-      postId: post.id,
-      sourceId: post.sourceId,
-      itemTitle: this.buildTitle(post),
-      reason: parsed.data.reason ?? null,
-      messageId: result.messageId,
-      url: result.url,
-    });
 
     return safetyDeskDecisionResponseSchema.parse({
       item: null,
       queue: await this.getQueue(),
       message: 'Материал одобрен и опубликован в MAX.',
+    });
+  }
+
+  async approveAllReviewItems(
+    actorUserId: string | null,
+    body: unknown,
+  ): Promise<SafetyDeskDecisionResponse> {
+    const parsed = safetyDeskDecisionRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const candidates = (await this.loadReviewPosts()).filter((post) =>
+      this.isBulkApprovableItem(this.mapReviewPost(post)),
+    );
+    let approved = 0;
+    let failed = 0;
+
+    for (const post of candidates) {
+      try {
+        await this.approveReviewPost(post, actorUserId, parsed.data.reason ?? null);
+        approved += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+
+    return safetyDeskDecisionResponseSchema.parse({
+      item: null,
+      queue: await this.getQueue(),
+      message: this.buildApproveAllMessage(approved, failed, candidates.length),
     });
   }
 
@@ -137,7 +153,10 @@ export class SafetyDeskService {
     });
   }
 
-  async recheckItem(itemId: string, actorUserId: string | null): Promise<SafetyDeskDecisionResponse> {
+  async recheckItem(
+    itemId: string,
+    actorUserId: string | null,
+  ): Promise<SafetyDeskDecisionResponse> {
     const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: true });
     const updated = await this.prisma.vkParsingPost.update({
       where: { id: post.id },
@@ -267,7 +286,9 @@ export class SafetyDeskService {
     const reasons = ['Источник настроен на ручную проверку перед публикацией'];
 
     if (post.status === VK_POST_STATUS_FAILED || post.lastError) {
-      reasons.push(`Предыдущая попытка остановлена: ${post.lastError ?? 'требуется повторная проверка'}`);
+      reasons.push(
+        `Предыдущая попытка остановлена: ${post.lastError ?? 'требуется повторная проверка'}`,
+      );
     }
     if (domains.length > 0) {
       reasons.push('Найдены внешние ссылки');
@@ -288,10 +309,7 @@ export class SafetyDeskService {
     return reasons;
   }
 
-  private buildChecks(
-    post: ReviewPostRow,
-    domains: string[],
-  ): SafetyDeskQueueItem['checks'] {
+  private buildChecks(post: ReviewPostRow, domains: string[]): SafetyDeskQueueItem['checks'] {
     return [
       {
         label: 'Принудительное добавление пользователей не используется',
@@ -322,6 +340,10 @@ export class SafetyDeskService {
         state: 'PASSED',
       },
     ];
+  }
+
+  private isBulkApprovableItem(item: SafetyDeskQueueItem): boolean {
+    return item.status === 'REVIEW' && item.checks.every((check) => check.state !== 'BLOCKED');
   }
 
   private resolveRisk(
@@ -379,8 +401,9 @@ export class SafetyDeskService {
     for (const url of urls) {
       try {
         const parsed = new URL(url);
-        if (parsed.hostname) {
-          domains.add(parsed.hostname.toLowerCase());
+        const hostname = parsed.hostname.toLowerCase();
+        if (hostname && !this.isTrustedDomain(hostname)) {
+          domains.add(hostname);
         }
       } catch {
         continue;
@@ -389,11 +412,57 @@ export class SafetyDeskService {
     return [...domains].sort();
   }
 
+  private isTrustedDomain(hostname: string): boolean {
+    const normalized = hostname.replace(/\.$/u, '');
+    return SAFETY_DESK_TRUSTED_DOMAIN_ROOTS.some(
+      (root) => normalized === root || normalized.endsWith(`.${root}`),
+    );
+  }
+
+  private async approveReviewPost(
+    post: ReviewPostRow,
+    actorUserId: string | null,
+    reason: string | null,
+  ): Promise<void> {
+    const photoUrls = this.readStringArray(post.photoUrls);
+    const linkUrls = this.readStringArray(post.linkUrls);
+    const result = await this.vkPublishService.publishPost(
+      post.chatId,
+      post.id,
+      SAFETY_DESK_ACTOR_USER_ID,
+      {
+        text: post.text,
+        photoUrls,
+        linkUrls,
+      },
+    );
+    await this.writeAuditLog(post.chatId, actorUserId, 'SAFETY_DESK_APPROVE', {
+      postId: post.id,
+      sourceId: post.sourceId,
+      itemTitle: this.buildTitle(post),
+      reason,
+      messageId: result.messageId,
+      url: result.url,
+    });
+  }
+
+  private buildApproveAllMessage(approved: number, failed: number, total: number): string {
+    if (total === 0) {
+      return 'Нет материалов, доступных для массового одобрения.';
+    }
+    if (failed > 0) {
+      return `Одобрено ${approved} из ${total}. Не удалось опубликовать: ${failed}.`;
+    }
+    return `Одобрено и опубликовано материалов: ${approved}.`;
+  }
+
   private readStringArray(value: Prisma.JsonValue | unknown): string[] {
     if (!Array.isArray(value)) {
       return [];
     }
-    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    return value.filter(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    );
   }
 
   private async writeAuditLog(
