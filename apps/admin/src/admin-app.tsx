@@ -412,6 +412,9 @@ function ReviewDetails({
   onReject: (itemId: string) => void;
   onRecheck: (itemId: string) => void;
 }) {
+  const approveBlockReason = getApproveBlockReason(item);
+  const canApprove = !approveBlockReason && item.status !== 'approved';
+
   return (
     <article className="review-card" aria-label="Детали проверки">
       <header className="review-card__header">
@@ -477,7 +480,7 @@ function ReviewDetails({
 
       <footer className="review-actions">
         <div className="action-status" aria-live="polite">
-          {busy ? 'Выполняю действие...' : 'Готово'}
+          {busy ? 'Выполняю действие...' : (approveBlockReason ?? 'Готово')}
         </div>
         <button
           className="secondary-action"
@@ -500,8 +503,9 @@ function ReviewDetails({
         <button
           className="primary-action"
           type="button"
-          disabled={busy || item.status === 'approved'}
+          disabled={busy || !canApprove}
           onClick={() => void onApprove(item.id)}
+          title={approveBlockReason ?? 'Одобрить и опубликовать'}
         >
           <Check width={18} height={18} />
           {busy ? 'Выполняю' : 'Одобрить'}
@@ -648,17 +652,47 @@ async function readJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   const payload = parseJsonPayload(text);
   if (!response.ok) {
-    const message =
-      typeof payload === 'object' &&
-      payload !== null &&
-      'message' in payload &&
-      typeof payload.message === 'string'
-        ? payload.message
-        : `Ошибка API: ${response.status}`;
-    throw new Error(message);
+    throw new Error(readApiErrorMessage(payload, response.status));
   }
 
   return payload;
+}
+
+function readApiErrorMessage(payload: unknown, status: number): string {
+  if (typeof payload === 'object' && payload !== null) {
+    const record = payload as Record<string, unknown>;
+    const message = formatApiErrorValue(record.message);
+    if (message) {
+      return message;
+    }
+
+    const error = formatApiErrorValue(record.error);
+    if (error) {
+      return error;
+    }
+  }
+
+  return `Ошибка API: ${status}`;
+}
+
+function formatApiErrorValue(value: unknown): string {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(formatApiErrorValue).filter(Boolean).join('; ');
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const formatted = Object.values(value as Record<string, unknown>)
+      .map(formatApiErrorValue)
+      .filter(Boolean)
+      .join('; ');
+    return formatted;
+  }
+
+  return '';
 }
 
 function parseJsonPayload(text: string): unknown {
@@ -726,6 +760,19 @@ function mapRisk(risk: SafetyDeskQueueItem['risk']): RiskLevel {
     return 'blocked';
   }
   return risk.toLowerCase() as RiskLevel;
+}
+
+function getApproveBlockReason(item: ModerationItem): string | null {
+  if (item.status === 'approved') {
+    return 'Материал уже одобрен.';
+  }
+
+  const blockedCheck = item.checks.find((check) => check.state === 'blocked');
+  if (blockedCheck) {
+    return blockedCheck.label;
+  }
+
+  return null;
 }
 
 function formatDateTime(date: Date): string {

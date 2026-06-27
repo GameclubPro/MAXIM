@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { ChatEntityType } from '../prisma/prisma-client';
 import { SafetyDeskService } from './safety-desk.service';
 
@@ -134,6 +135,44 @@ describe('SafetyDeskService', () => {
     expect(queue.items[0]?.risk).toBe('LOW');
   });
 
+  it('counts posts with unsupported attachments as blocked instead of review', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([
+      createReviewPost({
+        hasUnsupportedAttachments: true,
+        unsupportedAttachments: [{ type: 'video', label: 'Видео', count: 1 }],
+      }),
+    ]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.summary.review).toBe(0);
+    expect(queue.summary.blocked).toBe(1);
+    expect(queue.items[0]).toMatchObject({
+      status: 'BLOCKED',
+      checks: expect.arrayContaining([
+        {
+          label: 'Есть неподдерживаемые вложения',
+          state: 'BLOCKED',
+        },
+      ]),
+    });
+  });
+
+  it('keeps posts with warnings approvable', async () => {
+    const { prisma, service } = createFixture();
+    prisma.vkParsingPost.findMany.mockResolvedValue([createReviewPost({ isAdvertising: true })]);
+
+    const queue = await service.getQueue();
+
+    expect(queue.summary.review).toBe(1);
+    expect(queue.summary.blocked).toBe(0);
+    expect(queue.items[0]).toMatchObject({
+      status: 'REVIEW',
+      risk: 'HIGH',
+    });
+  });
+
   it('approves a review item through the VK publish path and records audit', async () => {
     const { prisma, service, vkPublishService } = createFixture();
     const post = createReviewPost();
@@ -161,6 +200,22 @@ describe('SafetyDeskService', () => {
       }),
     );
     expect(result.message).toContain('опубликован');
+  });
+
+  it('does not approve a blocked review item', async () => {
+    const { prisma, service, vkPublishService } = createFixture();
+    prisma.vkParsingPost.findFirst.mockResolvedValue(
+      createReviewPost({
+        hasUnsupportedAttachments: true,
+        unsupportedAttachments: [{ type: 'video', label: 'Видео', count: 1 }],
+      }),
+    );
+
+    await expect(service.approveItem('post-1', 'maxim', {})).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(vkPublishService.publishPost).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('approves all review items through the VK publish path', async () => {

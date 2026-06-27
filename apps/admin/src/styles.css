@@ -739,10 +739,13 @@ button:disabled {
 }
 
 .action-status {
+  min-width: 180px;
+  max-width: min(42vw, 520px);
   margin-right: auto;
   color: #667085;
   font-size: 12px;
   font-weight: 750;
+  line-height: 1.25;
 }
 
 .audit-section {
@@ -893,6 +896,11 @@ button:disabled {
   .search-field,
   .review-actions > button {
     flex: 1 1 auto;
+  }
+
+  .action-status {
+    max-width: none;
+    flex: 1 1 100%;
   }
 
   .review-meta,

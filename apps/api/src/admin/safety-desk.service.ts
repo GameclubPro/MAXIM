@@ -31,6 +31,8 @@ const VK_POST_STATUS_UNAVAILABLE = 'UNAVAILABLE';
 const VK_POST_STATUS_SKIPPED = 'SKIPPED';
 const SAFETY_DESK_AUDIT_PREFIX = 'SAFETY_DESK_';
 const SAFETY_DESK_TRUSTED_DOMAIN_ROOTS = ['max.ru', 'vk.ru', 'vk.com'];
+const SAFETY_DESK_BLOCKED_APPROVE_MESSAGE =
+  'Этот материал нельзя опубликовать автоматически: есть неподдерживаемые вложения или после фильтрации не осталось текста, фото или ссылок.';
 
 @Injectable()
 export class SafetyDeskService {
@@ -72,11 +74,13 @@ export class SafetyDeskService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    await this.approveReviewPost(
-      await this.findReviewPostOrThrow(itemId, { includeCancelled: false }),
-      actorUserId,
-      parsed.data.reason ?? null,
-    );
+    const post = await this.findReviewPostOrThrow(itemId, { includeCancelled: false });
+    const item = this.mapReviewPost(post);
+    if (!this.isApprovableItem(item)) {
+      throw new BadRequestException(this.buildNotApprovableMessage(item));
+    }
+
+    await this.approveReviewPost(post, actorUserId, parsed.data.reason ?? null);
 
     return safetyDeskDecisionResponseSchema.parse({
       item: null,
@@ -95,7 +99,7 @@ export class SafetyDeskService {
     }
 
     const candidates = (await this.loadReviewPosts()).filter((post) =>
-      this.isBulkApprovableItem(this.mapReviewPost(post)),
+      this.isApprovableItem(this.mapReviewPost(post)),
     );
     let approved = 0;
     let failed = 0;
@@ -256,7 +260,12 @@ export class SafetyDeskService {
     const linkUrls = this.readStringArray(post.linkUrls);
     const domains = this.extractDomains([post.url, ...linkUrls]);
     const risk = this.resolveRisk(post, domains, photoUrls);
-    const status = risk === 'BLOCKED' ? 'BLOCKED' : 'REVIEW';
+    const reasons = this.buildReasons(post, domains, photoUrls);
+    const checks = this.buildChecks(post, domains);
+    const status =
+      risk === 'BLOCKED' || checks.some((check) => check.state === 'BLOCKED')
+        ? 'BLOCKED'
+        : 'REVIEW';
 
     return {
       id: post.id,
@@ -277,8 +286,8 @@ export class SafetyDeskService {
       scheduledAt: post.publishScheduledAt ? post.publishScheduledAt.toISOString() : null,
       createdAt: post.createdAt.toISOString(),
       updatedAt: post.updatedAt.toISOString(),
-      reasons: this.buildReasons(post, domains, photoUrls),
-      checks: this.buildChecks(post, domains),
+      reasons,
+      checks,
     };
   }
 
@@ -342,8 +351,23 @@ export class SafetyDeskService {
     ];
   }
 
-  private isBulkApprovableItem(item: SafetyDeskQueueItem): boolean {
+  private isApprovableItem(item: SafetyDeskQueueItem): boolean {
     return item.status === 'REVIEW' && item.checks.every((check) => check.state !== 'BLOCKED');
+  }
+
+  private buildNotApprovableMessage(item: SafetyDeskQueueItem): string {
+    const blockedReasons = item.checks
+      .filter((check) => check.state === 'BLOCKED')
+      .map((check) => check.label);
+
+    if (blockedReasons.length === 0) {
+      const reason = item.reasons[0]?.trim();
+      return reason
+        ? `Этот материал нельзя опубликовать автоматически: ${reason}.`
+        : SAFETY_DESK_BLOCKED_APPROVE_MESSAGE;
+    }
+
+    return `Этот материал нельзя опубликовать автоматически: ${blockedReasons.join('; ')}.`;
   }
 
   private resolveRisk(
