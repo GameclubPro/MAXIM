@@ -358,7 +358,7 @@ export const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeForceCloseDays', label: 'Дни ручного закрытия', type: 'number' },
   ],
   extra: [
-    { key: 'deleteSpammersEnabled', label: 'Удалять спаммеров', type: 'boolean' },
+    { key: 'deleteSpammersEnabled', label: 'Удалять спамеров', type: 'boolean' },
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
     {
       key: 'deleteBotMessagesDelayMinutes',

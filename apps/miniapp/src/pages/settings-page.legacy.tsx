@@ -8165,7 +8165,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">Удалять спаммеров</span>
+                            <span className="settings-native-toggle__title">Удалять спамеров</span>
                             <div className="settings-native-toggle__title-actions">
                               <span
                                 className={cn(
@@ -8184,7 +8184,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   'settings-info-button',
                                   openHintKey === 'deleteSpammers' && 'is-open',
                                 )}
-                                aria-label="Пояснение для удаления спаммеров"
+                                aria-label="Пояснение для удаления спамеров"
                                 aria-controls="delete-spammers-hint"
                                 aria-expanded={openHintKey === 'deleteSpammers'}
                                 onClick={() => toggleHint('deleteSpammers')}
@@ -8196,7 +8196,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить удаление спаммеров"
+                            aria-label="Включить удаление спамеров"
                           >
                             <input
                               type="checkbox"

@@ -6533,7 +6533,7 @@ export class PrivateControlService {
         ];
       case 'extra':
         return [
-          `Удаление спаммеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,
+          `Удаление спамеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,
           `Сообщения бота: ${this.describeBooleanCompact(settings.deleteBotMessagesEnabled)} • задержка ${formatDeleteBotMessagesDelayLabel(settings.deleteBotMessagesDelayMinutes)}`,
           `Удаление ботов: ${this.describeBooleanCompact(settings.removeBotsFromGroupEnabled)}`,
         ];
