@@ -2393,22 +2393,22 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(async (chatId: string) => ({
         userId: 'id613002203036_bot',
-        isAdmin: true,
+        isAdmin: chatId !== 'channel-2',
         isOwner: false,
         permissions: [],
-      }),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        title: 'Новости MAX',
+      })),
+      getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => ({
+        chatId,
+        title: `Новости MAX ${chatId}`,
         participantsCount: 125,
         status: 'active',
         isPublic: true,
-        link: 'https://max.ru/news',
+        link: `https://max.ru/${chatId}`,
         lastEventAt: null,
         entityType: 'channel',
-      }),
+      })),
     };
 
     const service = new AdminService(
@@ -2491,7 +2491,7 @@ describe('AdminService required subscription settings', () => {
       );
       const result = await service.updateSettings('chat-1', actor, {
         requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
         requiredSubscriptionDurationDays: 10,
       });
 
@@ -3590,7 +3590,7 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('rejects an external required subscription channel when the bot is not its admin', async () => {
+  it('drops required subscription channels the bot cannot verify', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
@@ -3624,20 +3624,93 @@ describe('AdminService required subscription settings', () => {
       createConfigMock() as never,
     );
 
-    await expect(
-      service.updateSettings('chat-1', actor, {
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-ext-1'],
-      }),
-    ).rejects.toMatchObject({
-      response: {
-        requiredSubscriptionChannelIds: {
-          _errors: [
-            'Для обязательной подписки нужны чаты или каналы MAX, где бот состоит администратором и может проверить подписку.',
-          ],
-        },
-      },
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-ext-1'],
     });
+
+    expect(result.requiredSubscriptionEnabled).toBe(false);
+    expect(result.requiredSubscriptionChannelIds).toEqual([]);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: false,
+                requiredSubscriptionChannelIds: [],
+              }),
+            },
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps only verifiable required subscription targets from a mixed list', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(async (chatId: string) => ({
+        userId: 'id613002203036_bot',
+        isAdmin: chatId !== 'channel-3',
+        isOwner: false,
+        permissions: [],
+      })),
+      getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => ({
+        chatId,
+        title: `Канал ${chatId}`,
+        participantsCount: 100,
+        status: 'active',
+        isPublic: true,
+        link: `https://max.ru/${chatId}`,
+        lastEventAt: null,
+        entityType: 'channel',
+      })),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1', 'channel-2', 'channel-3'],
+    });
+
+    expect(result.requiredSubscriptionEnabled).toBe(true);
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1', 'channel-2']);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+              }),
+            },
+          }),
+        }),
+      }),
+    );
+    const cachedHeaderIds = chatContextCache.setManagedEntityHeader.mock.calls.map(
+      ([header]) => header.id,
+    );
+    expect(cachedHeaderIds).toEqual(expect.arrayContaining(['channel-1', 'channel-2']));
+    expect(cachedHeaderIds).not.toContain('channel-3');
   });
 
   it('disables required subscription when enabled payload has no channels', async () => {
@@ -3861,6 +3934,10 @@ describe('AdminService required subscription settings', () => {
     });
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
       chatId: 'channel-1',
+      entityType: 'channel',
+    });
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).not.toHaveBeenCalledWith({
+      chatId: 'channel-2',
       entityType: 'channel',
     });
   });

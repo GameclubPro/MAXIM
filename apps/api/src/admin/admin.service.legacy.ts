@@ -7819,8 +7819,8 @@ export class AdminService implements OnModuleDestroy {
     return this.requiredSubscriptionRuntime.normalizeRequiredSubscriptionChannelLink(value);
   }
 
-  private async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<void> {
-    await this.requiredSubscriptionRuntime.assertRequiredSubscriptionSettings(settings);
+  private async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<ChatSettings> {
+    return this.requiredSubscriptionRuntime.assertRequiredSubscriptionSettings(settings);
   }
 
   private async resolveRequiredSubscriptionEntityType(chatId: string): Promise<ManagedEntityType> {
@@ -12225,8 +12225,10 @@ export class AdminService implements OnModuleDestroy {
     await this.sendRulesPublishedPrivateConfirmation(user, publishedUrl);
   }
 
-  async assertRequiredSubscriptionSettingsForChatSettings(settings: ChatSettings): Promise<void> {
-    await this.assertRequiredSubscriptionSettings(settings);
+  async assertRequiredSubscriptionSettingsForChatSettings(
+    settings: ChatSettings,
+  ): Promise<ChatSettings> {
+    return this.assertRequiredSubscriptionSettings(settings);
   }
 
   async refreshChatSettingsExecutionReadiness(

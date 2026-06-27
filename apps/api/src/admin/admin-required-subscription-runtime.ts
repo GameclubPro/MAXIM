@@ -521,44 +521,47 @@ export class AdminRequiredSubscriptionRuntime {
     return null;
   }
 
-  async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<void> {
+  async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<ChatSettings> {
     if (!settings.requiredSubscriptionEnabled) {
-      return;
+      return settings;
     }
 
     const selectedChannelIds = settings.requiredSubscriptionChannelIds;
     if (selectedChannelIds.length === 0) {
-      throw new BadRequestException({
-        requiredSubscriptionChannelIds: {
-          _errors: ['Выберите хотя бы один чат или канал для обязательной подписки.'],
-        },
-      });
+      return {
+        ...settings,
+        requiredSubscriptionEnabled: false,
+        requiredSubscriptionChannelIds: [],
+      };
     }
 
-    const invalidChannelIds = (
+    const validChannelIds = (
       await mapWithConcurrencyLimit(
         selectedChannelIds,
         REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
         async (channelId) => {
           try {
             await this.resolveRequiredSubscriptionChannelById(channelId);
-            return null;
-          } catch {
             return channelId;
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                channelId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Dropped required subscription entity because the bot cannot verify membership',
+            );
+            return null;
           }
         },
       )
     ).filter((channelId): channelId is string => channelId !== null);
 
-    if (invalidChannelIds.length > 0) {
-      throw new BadRequestException({
-        requiredSubscriptionChannelIds: {
-          _errors: [
-            'Для обязательной подписки нужны чаты или каналы MAX, где бот состоит администратором и может проверить подписку.',
-          ],
-        },
-      });
-    }
+    return {
+      ...settings,
+      requiredSubscriptionEnabled: validChannelIds.length > 0,
+      requiredSubscriptionChannelIds: validChannelIds,
+    };
   }
 
   async resolveRequiredSubscriptionEntityType(chatId: string): Promise<ManagedEntityType> {

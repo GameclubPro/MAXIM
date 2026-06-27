@@ -581,7 +581,7 @@ export async function saveChatSettings(params: {
   body: unknown;
   source: AdminActionSource;
   resolveBotAssignmentData: () => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
-  assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<void>;
+  assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
   refreshExecutionReadiness: (settings: ChatSettings) => Promise<void>;
 }): Promise<ChatSettings> {
   const parsed = chatSettingsSchema.safeParse(params.body);
@@ -599,7 +599,7 @@ export async function saveChatSettings(params: {
       nightModeForceCloseUntil: true,
     },
   });
-  const normalizedSettings = normalizeChatSettings(
+  let normalizedSettings = normalizeChatSettings(
     parsed.data,
     {
       nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
@@ -610,7 +610,8 @@ export async function saveChatSettings(params: {
     },
     params.chatId,
   );
-  await params.assertRequiredSubscriptionSettings(normalizedSettings);
+  normalizedSettings =
+    (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
   const botAssignmentData = await params.resolveBotAssignmentData();
 
   await params.prisma.chat.upsert({

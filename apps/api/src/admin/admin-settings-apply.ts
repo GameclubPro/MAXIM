@@ -91,7 +91,7 @@ export async function applySettingsToAllChats(params: {
   resolveBotAssignmentData: (
     chatId: string,
   ) => Promise<ResolvedBotAssignmentData> | ResolvedBotAssignmentData;
-  assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<void>;
+  assertRequiredSubscriptionSettings: (settings: ChatSettings) => Promise<ChatSettings | void>;
   isRequiredSubscriptionCurrentlyActive: (settings: ChatSettings) => boolean;
   scheduleReadinessRefresh: (params: SettingsApplyReadinessRefresh) => void;
   botSpeechMediaKeys?: readonly string[];
@@ -100,7 +100,7 @@ export async function applySettingsToAllChats(params: {
   if (!parsed.success) {
     throw new BadRequestException(parsed.error.format());
   }
-  const normalizedSettings = params.normalizeSettings(parsed.data);
+  let normalizedSettings = params.normalizeSettings(parsed.data);
 
   const targetOrSettingKeys = params.targetOrSettingKeys ?? {
     mode: 'all' as const,
@@ -130,6 +130,17 @@ export async function applySettingsToAllChats(params: {
     shouldApplyBotSpeechMedia && Array.isArray(params.botSpeechMediaKeys)
       ? params.botSpeechMediaKeys
       : [];
+  const shouldValidateRequiredSubscription =
+    filteredSettingKeys.length === 0 ||
+    filteredSettingKeys.some((key) =>
+      REQUIRED_SUBSCRIPTION_SETTING_KEYS.includes(
+        key as (typeof REQUIRED_SUBSCRIPTION_SETTING_KEYS)[number],
+      ),
+    );
+  if (shouldValidateRequiredSubscription) {
+    normalizedSettings =
+      (await params.assertRequiredSubscriptionSettings(normalizedSettings)) ?? normalizedSettings;
+  }
   const settingsUpdatePayload: Partial<ChatSettings> =
     filteredSettingKeys.length > 0
       ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
@@ -145,16 +156,6 @@ export async function applySettingsToAllChats(params: {
           ...settingsUpdatePayload,
         }
       : normalizedSettings;
-  const shouldValidateRequiredSubscription =
-    filteredSettingKeys.length === 0 ||
-    filteredSettingKeys.some((key) =>
-      REQUIRED_SUBSCRIPTION_SETTING_KEYS.includes(
-        key as (typeof REQUIRED_SUBSCRIPTION_SETTING_KEYS)[number],
-      ),
-    );
-  if (shouldValidateRequiredSubscription) {
-    await params.assertRequiredSubscriptionSettings(normalizedSettings);
-  }
 
   await mapWithConcurrencyLimit(
     appliedChatIds,
