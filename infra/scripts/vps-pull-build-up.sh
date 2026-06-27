@@ -362,8 +362,13 @@ if ! run_migrations; then
 fi
 
 SERVICES_TO_BUILD=()
+BUILD_ADMIN_STATIC_IMAGE=0
 for service in "${SERVICES[@]}"; do
   if [[ "$BUILD_API_IMAGE" -eq 1 ]] && contains_service "$service" "${API_SERVICES[@]}"; then
+    continue
+  fi
+  if [[ "$service" == "admin-static" ]]; then
+    BUILD_ADMIN_STATIC_IMAGE=1
     continue
   fi
   SERVICES_TO_BUILD+=("$service")
@@ -371,6 +376,10 @@ done
 
 if [[ "${#SERVICES_TO_BUILD[@]}" -gt 0 ]]; then
   docker compose "${COMPOSE_FILES[@]}" build "${SERVICES_TO_BUILD[@]}"
+fi
+
+if [[ "$BUILD_ADMIN_STATIC_IMAGE" -eq 1 ]]; then
+  docker compose "${COMPOSE_FILES[@]}" build --no-cache admin-static
 fi
 
 ensure_compose_env

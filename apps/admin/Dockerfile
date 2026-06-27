@@ -20,7 +20,6 @@ COPY tsconfig.base.json ./
 COPY packages/contracts packages/contracts
 COPY apps/admin apps/admin
 
-RUN printf '%s' "$VITE_ADMIN_ACCESS_CODE" >/tmp/admin-access-code.cachekey
 RUN npm run build --workspace @maxim/admin
 
 FROM nginx:1.27-alpine AS runtime
