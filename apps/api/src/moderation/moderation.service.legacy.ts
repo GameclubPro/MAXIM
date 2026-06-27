@@ -1101,7 +1101,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.markWebhookHotPathStage(hotPathProfile, 'developer-forced-global-spammer');
-      if (await this.isDeveloperForcedGlobalSpammerCached(senderId)) {
+      if (
+        settings.deleteSpammersEnabled &&
+        (await this.isDeveloperForcedGlobalSpammerCached(senderId))
+      ) {
         await this.deleteAndKickDetectedGlobalSpammer({
           chatId,
           userId: senderId,

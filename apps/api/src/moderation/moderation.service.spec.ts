@@ -5733,7 +5733,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('restores developer-forced blacklist cache from registry and enforces when spammer deletion is disabled', async () => {
+  it('does not read or enforce developer-forced blacklist when spammer deletion is disabled', async () => {
     const expiresAt = new Date(Date.now() + 60_000);
     const prisma = {
       chat: {
@@ -5741,6 +5741,105 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({ deleteSpammersEnabled: false }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            userId: 'user-1',
+            expiresAt,
+            sourceBreakdown: {
+              DEVELOPER_FORCED: {
+                score: 1,
+                count: 1,
+                reasons: ['По решению разработчика бота за нарушение правил'],
+              },
+            },
+          },
+        ]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+      addToSetWithTtl: jest.fn().mockResolvedValue({ added: true, size: 1 }),
+      incrementWithTtl: jest.fn().mockResolvedValue(1),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(redisCounter.getString).not.toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+    );
+    expect(redisCounter.getString).not.toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerWarmMarkerKey(),
+    );
+    expect(prisma.globalSpammer.findMany).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).not.toHaveBeenCalledWith(
+      buildDeveloperForcedGlobalSpammerCacheKey('user-1'),
+      expect.any(String),
+      expect.any(Number),
+    );
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'GLOBAL_SPAMMER_KICK',
+        action: SanctionAction.KICK,
+      }),
+    });
+  });
+
+  it('restores developer-forced blacklist cache from registry and enforces when spammer deletion is enabled', async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
           domains: [],
           admins: [{ userId: 'owner-1' }],
         }),
@@ -5839,7 +5938,7 @@ describe('ModerationService', () => {
     expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-1');
   });
 
-  it('negative-caches developer-forced registry misses after checking Redis', async () => {
+  it('negative-caches developer-forced registry misses after checking Redis when spammer deletion is enabled', async () => {
     const createMessageUpdate = (messageId: string): MaxUpdate => ({
       ...createUpdate(),
       updateId: `upd-${messageId}`,
@@ -5853,7 +5952,7 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ deleteSpammersEnabled: false }),
+          settings: createSettings({ deleteSpammersEnabled: true }),
           domains: [],
           admins: [{ userId: 'owner-1' }],
         }),

@@ -771,7 +771,6 @@ export const SETTINGS_SECTION_KEYS = {
     'adminOpenChatCommandName',
   ],
   extra: [
-    'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',
     'removeBotsFromGroupEnabled',
