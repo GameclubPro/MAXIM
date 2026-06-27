@@ -46,7 +46,7 @@ if [[ ! -f "${REMOTE_AUTH}" ]]; then
 
   hash="$(openssl passwd -apr1 "${pass}")"
   printf 'maxim:%s\n' "${hash}" | sudo tee "${REMOTE_AUTH}" >/dev/null
-  sudo chmod 640 "${REMOTE_AUTH}"
+  sudo chmod 644 "${REMOTE_AUTH}"
   echo "Created ${REMOTE_AUTH} user maxim. Password is stored in ${REMOTE_AUTH_SECRET}."
 fi
 
