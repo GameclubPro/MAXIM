@@ -8657,14 +8657,10 @@ export class AdminService implements OnModuleDestroy {
     } as const;
     const requestedScope =
       parsed.data.scope ??
-      (source === 'miniapp' && parsed.data.action === 'BAN'
-        ? 'all_chats'
-        : parsed.data.action === 'MUTE' &&
-            (source === 'group_command' || source === 'private_command')
-          ? 'all_chats'
-          : 'current_chat');
+      (source === 'miniapp' && parsed.data.action === 'BAN' ? 'all_chats' : 'current_chat');
     const shouldFanoutManualAction = requestedScope === 'all_chats';
-    const shouldFanoutCommandMute = source === 'group_command' || source === 'private_command';
+    const shouldFanoutCommandMute =
+      shouldFanoutManualAction && (source === 'group_command' || source === 'private_command');
     const shouldFanoutMiniappMute = source === 'miniapp' && shouldFanoutManualAction;
 
     if (parsed.data.action === 'MUTE') {
@@ -9973,6 +9969,7 @@ export class AdminService implements OnModuleDestroy {
               actor,
               {
                 action: 'MUTE',
+                scope: 'current_chat',
                 ...(job.mutePermanent === true
                   ? { mutePermanent: true }
                   : {

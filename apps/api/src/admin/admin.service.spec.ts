@@ -5612,7 +5612,7 @@ describe('AdminService.applyManualModerationAction', () => {
     );
   });
 
-  it('fans out manual mute from command to other chats of the admin and clears recent messages in source chat', async () => {
+  it('keeps timed manual mute from command scoped to the source chat', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -5664,12 +5664,12 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-2', {
-      trafficClass: 'background',
-    });
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
-      immediate: true,
-    });
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalledWith(
+      'chat-2',
+      'user-2',
+      expect.anything(),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -5678,16 +5678,8 @@ describe('AdminService.applyManualModerationAction', () => {
           ruleCode: 'MANUAL_MUTE',
           action: 'MUTE',
           metadata: expect.objectContaining({
+            scope: 'current_chat',
             muteDurationHours: 6,
-            sourceMessageCleanup: expect.objectContaining({
-              candidateCount: 1,
-              deletedCount: 1,
-              failedCount: 0,
-            }),
-            crossChatMuteFanout: expect.objectContaining({
-              mutedChatsCount: 1,
-              mutedChatIds: ['chat-2'],
-            }),
           }),
         }),
       }),
@@ -5695,18 +5687,19 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          chatId: 'chat-2',
-          userId: 'user-2',
-          ruleCode: 'MANUAL_MUTE',
-          action: 'MUTE',
-          metadata: expect.objectContaining({
-            fanout: true,
-            sourceChatId: 'chat-1',
-            muteDurationHours: 6,
+          metadata: expect.not.objectContaining({
+            sourceMessageCleanup: expect.anything(),
+            crossChatMuteFanout: expect.anything(),
           }),
         }),
       }),
     );
+    expect(
+      prisma.moderationEvent.create.mock.calls.some(
+        (call: readonly [Record<string, unknown>]) =>
+          (call[0] as { data?: { chatId?: string } }).data?.chatId === 'chat-2',
+      ),
+    ).toBe(false);
     expect(result).toEqual({
       ok: true,
       action: 'MUTE',
@@ -5717,7 +5710,7 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
-  it('fans out permanent manual mute from command to other chats of the admin', async () => {
+  it('keeps permanent manual mute from command scoped to the source chat', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -5765,9 +5758,11 @@ describe('AdminService.applyManualModerationAction', () => {
       'group_command',
     );
 
-    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-2', {
-      trafficClass: 'background',
-    });
+    expect(maxClient.getChatMemberAccess).not.toHaveBeenCalledWith(
+      'chat-2',
+      'user-2',
+      expect.anything(),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -5776,13 +5771,10 @@ describe('AdminService.applyManualModerationAction', () => {
           ruleCode: 'MANUAL_MUTE',
           action: 'MUTE',
           metadata: expect.objectContaining({
+            scope: 'current_chat',
             mutePermanent: true,
             muteDurationHours: null,
             muteExpiresAt: null,
-            crossChatMuteFanout: expect.objectContaining({
-              mutedChatsCount: 1,
-              mutedChatIds: ['chat-2'],
-            }),
           }),
         }),
       }),
@@ -5790,20 +5782,19 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          chatId: 'chat-2',
-          userId: 'user-2',
-          ruleCode: 'MANUAL_MUTE',
-          action: 'MUTE',
-          metadata: expect.objectContaining({
-            fanout: true,
-            sourceChatId: 'chat-1',
-            mutePermanent: true,
-            muteDurationHours: null,
-            muteExpiresAt: null,
+          metadata: expect.not.objectContaining({
+            sourceMessageCleanup: expect.anything(),
+            crossChatMuteFanout: expect.anything(),
           }),
         }),
       }),
     );
+    expect(
+      prisma.moderationEvent.create.mock.calls.some(
+        (call: readonly [Record<string, unknown>]) =>
+          (call[0] as { data?: { chatId?: string } }).data?.chatId === 'chat-2',
+      ),
+    ).toBe(false);
     expect(result).toEqual({
       ok: true,
       action: 'MUTE',
@@ -7496,9 +7487,8 @@ describe('AdminService.applyManualSystemBan', () => {
     });
   });
 
-  it('queues manual mute fanout for group commands when background queue is available', async () => {
+  it('keeps group command manual mute scoped to the source chat when background queue is available', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatMemberAccess: jest.fn().mockResolvedValue({
@@ -7538,42 +7528,23 @@ describe('AdminService.applyManualSystemBan', () => {
       'group_command',
     );
 
-    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
-      'execute-admin-manual-fanout',
-      expect.objectContaining({
-        kind: 'manual_mute_fanout',
-        sourceChatId: 'chat-1',
-        targetUserId: 'user-2',
-        cleanupSourceChatMessages: true,
-        muteDurationHours: 6,
-        source: 'group_command',
-      }),
-      expect.objectContaining({
-        priority: 20,
-        attempts: 5,
-        removeOnComplete: true,
-        removeOnFail: false,
-        backoff: {
-          type: 'exponential',
-          delay: 1000,
-        },
-      }),
-    );
+    expect(adminManualFanoutQueue.add).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           chatId: 'chat-1',
           metadata: expect.objectContaining({
-            sourceMessageCleanup: expect.objectContaining({
-              mode: 'queued',
-              candidateCount: 0,
-              deletedCount: 0,
-            }),
-            crossChatMuteFanout: expect.objectContaining({
-              mode: 'queued',
-              mutedChatsCount: 0,
-              mutedChatIds: [],
-            }),
+            scope: 'current_chat',
+          }),
+        }),
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.not.objectContaining({
+            sourceMessageCleanup: expect.anything(),
+            crossChatMuteFanout: expect.anything(),
           }),
         }),
       }),
@@ -8440,6 +8411,7 @@ describe('AdminService.applyManualSystemBan', () => {
       {
         action: 'MUTE',
         mutePermanent: true,
+        scope: 'current_chat',
       },
       'group_command',
       {
